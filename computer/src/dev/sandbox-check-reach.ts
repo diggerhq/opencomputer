@@ -1,8 +1,9 @@
 // The part of sandbox-check.ts about reaching into a session's container
 // (work 103, step 9; C9 and C13): its previews through the runner's preview
 // socket, the virtual ports and the host's proxy; its terminal; and its files,
-// while it runs and while it is stopped. sandbox-check.ts owns the host, the
-// fake gateway and the threads; this file only asks and compares.
+// while it runs, while it is stopped and once it runs again. sandbox-check.ts
+// owns the host, the fake gateway and the threads; this file only asks and
+// compares.
 //
 // The `preview` and `unpreview` tools are called by the real runner and the
 // real Agent SDK: the turn's model is src/dev/fake-model.mjs, started inside
@@ -13,6 +14,11 @@
 // - Two threads of one person, each serving a different answer on the same
 //   port number inside its container, and the check itself listening on that
 //   number on the host: whose answer comes back says who was reached.
+// - `/files` has one place per thread, the workspace directory on the host
+//   that is mounted at `/workspace`: what is uploaded while the thread runs is
+//   read back while it is stopped, and the other way round.
+// - A third thread, another person's and with a session id of the API, is
+//   what a link out of a workspace points at, and whose journal is read.
 // - What it makes inside a container goes with the container; what it uploads
 //   to a stopped thread is in the thread's workspace, which sandbox-check.ts
 //   removes with the person's directory.
@@ -46,6 +52,8 @@ export interface Thread {
   run: RunRoot;
   /** Its workspace on the host. */
   workspace: string;
+  /** Its owner, as the wire names a member. */
+  member: string;
 }
 
 export interface Kit {
@@ -122,12 +130,20 @@ function tarOf(files: Record<string, string>): Buffer {
 }
 type Listing = { entries: { path: string; type: string; pushedBy: { id: string } | null }[] };
 const list = async (k: Kit, t: Thread) =>
-  (await k.wire.call<Listing>({ t: 'files.list', sessionId: t.sessionId, member: k.member, path: '', depth: 3 })).result?.entries.map((e) => e.path) ?? [];
+  (await k.wire.call<Listing>({ t: 'files.list', sessionId: t.sessionId, member: t.member, path: '', depth: 3, limit: 200 })).result?.entries.map((e) => e.path) ?? [];
 const code = (r: object) => ('error' in r ? (r.error as { code?: string; reason?: string }) : undefined);
+/** A path that was not followed out of a workspace: refused, or not there where the script ran. */
+const kept = (r: object) => ['invalid_path', 'path_not_found'].includes(code(r)?.code ?? '');
+/** What `/files` answers for each of these names of `t`, as an archive and as a file. */
+const reads = async (k: Kit, t: Thread, names: string[]) => (await Promise.all(names.flatMap((n) => [k.wire.get(t.sessionId, t.member, n, false), k.wire.get(t.sessionId, t.member, `${n}/marker-q`, true)])));
+const codes = (rs: object[]) => rs.map((r) => code(r)?.code ?? 'READ').join(' ');
 
-/** Both threads run. Starts the fake model in each and leaves `a`'s preview of APP_PORT taken down, `b`'s up. */
-export async function reachRunning(k: Kit, a: Thread, b: Thread) {
-  const { check, say } = k;
+/**
+ * All three threads run: `a` and `b` of one person, `q` of another, with a journal. Starts the fake model in `a` and
+ * `b` and leaves `a`'s preview of APP_PORT taken down, `b`'s up.
+ */
+export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
+  const { check } = k;
   const host = http.createServer((_, res) => res.end('the host')).listen(APP_PORT, '127.0.0.1');
   try {
     await new Promise((r, j) => host.once('listening', r).once('error', j));
@@ -221,15 +237,47 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread) {
     const out = await k.wire.get(a.sessionId, k.member, '../../etc/passwd', true);
     const link = await k.wire.get(a.sessionId, k.member, 's9-link', true);
     check(code(out)?.code === 'invalid_path' && code(link)?.code === 'invalid_path', `a path that leaves the workspace, by name or by symlink, is ${code(out)?.code} / ${code(link)?.code}`);
-    const onHost = await k.asRunner(['/bin/sh', '-c', `test -e "$1/s9-notes/a.txt" && echo yes || echo no`, 'sh', a.workspace]);
-    say(`(not checked until step 7 mounts the workspace) the upload is in A's workspace on the host: ${onHost.trim()}`);
+    const onHost = (await k.asRunner(['/bin/sh', '-c', 'cat "$1/s9-notes/a.txt"; stat -c %U "$1/s9-notes/a.txt"', 'sh', a.workspace]).catch((e) => String(e.message))).trim();
+    check(onHost.split('\n').join(' ') === 'pushed to A agent', `the upload to running A is in A's workspace on the host (${a.workspace}), the runners' user's: ${JSON.stringify(onHost)}`);
+
+    // ---- a terminal in a worktree
+    const tg = await k.wire.terminal(a.sessionId, a.member, 'cd hello && pwd && git rev-parse --show-toplevel && git status --porcelain --branch | head -n 1 && git log -1 --format=%s && echo from-terminal > s9-term && git add s9-term && git -c user.name=check -c user.email=check@example.com commit -qm "from the terminal" && git log -1 --format=%s 2>&1');
+    check('out' in tg && tg.exitCode === 0 && /^\/workspace\/hello\n\/workspace\/hello\n## sp\/\S+\nsandbox check\nfrom the terminal$/.test(tg.out.trim()),
+      `a terminal of A works in its worktree /workspace/hello: git knows the branch and the last commit, and commits: ${JSON.stringify('out' in tg ? tg.out : tg.error)}`);
+
+    // ---- links out of a workspace, to a sibling thread's and to another person's
+    await k.inside(q.id, 'echo secret-of-q > /workspace/marker-q');
+    await k.inside(b.id, 'echo secret-of-b > /workspace/marker-q');
+    await k.inside(a.id, `ln -s ${b.workspace} /workspace/s9-run-to-b; ln -s ${q.workspace} /workspace/s9-run-to-q; ln -s ../../../${path.basename(path.dirname(path.dirname(q.workspace)))}/sessions/${path.basename(q.workspace)} /workspace/s9-run-rel`);
+    const outs = await reads(k, a, ['s9-run-to-b', 's9-run-to-q', 's9-run-rel']);
+    const byName = await k.wire.get(a.sessionId, a.member, `../${path.basename(b.workspace)}/marker-q`, true);
+    check(outs.every(kept) && kept(byName), `from running A, links to the sibling's workspace and to another person's (absolute and relative) lead nowhere, as an archive or a file: ${codes(outs)}; by name: ${code(byName)?.code}`);
+    const own = await k.wire.get(q.sessionId, q.member, 'marker-q', true);
+    check('body' in own && own.body.toString() === 'secret-of-q\n', "and the other person reads that file through their own session's /files");
+
+    // ---- a session of the API, with its journal mounted: what its runner records
+    const tq = await k.wire.terminal(q.sessionId, q.member, 'id -u; pwd; cat marker-q');
+    check('out' in tq && tq.out.trim().split('\n').join(' ') === '1500 /workspace secret-of-q', `a terminal of the session ${q.sessionId} (another person's) opens in its container: ${JSON.stringify('out' in tq ? tq.out : tq.error)}`);
+    const notMine = await k.wire.terminal(q.sessionId, a.member, 'id');
+    check(code(notMine)?.code === 'forbidden', `the first person is refused a terminal of it: ${JSON.stringify(code(notMine))}`);
+    const pq = await k.wire.put(q.sessionId, q.member, 's9-q', tarOf({ 'q.txt': 'pushed to Q\n' })) as { result?: { upload: { files: number }; seq?: number | null }; error?: unknown };
+    check(pq.result?.upload.files === 1 && typeof pq.result.seq === 'number', `an upload to it is recorded by its runner, which answers the event's seq: ${JSON.stringify(pq.result ?? pq.error)}`);
+    const journal = path.join(k.dataDir, 'journals', q.sessionId, `${q.sessionId}.jsonl`);
+    const events = (await k.until(async () => {
+      const lines = (await k.asRunner(['/bin/cat', journal]).catch(() => '')).split('\n').filter(Boolean).map((l) => JSON.parse(l) as { seq: number; type: string; data?: Record<string, unknown>; actor?: { id?: string } });
+      return lines.some((e) => e.type === 'terminal.closed') ? lines : undefined;
+    }, 10_000)) ?? [];
+    const opened = events.find((e) => e.type === 'terminal.opened');
+    const pushed = events.find((e) => e.type === 'files.pushed');
+    check(!!opened && opened.actor?.id === q.member && !!pushed && pushed.seq === pq.result?.seq && pushed.data?.path === 's9-q' && events.some((e) => e.type === 'terminal.closed'),
+      `its journal ${journal} has terminal.opened (seq ${opened?.seq}), terminal.closed and files.pushed (seq ${pushed?.seq}: ${JSON.stringify(pushed?.data)})`);
   } finally {
     host.close();
   }
 }
 
-/** Both threads are stopped (their containers exited). */
-export async function reachStopped(k: Kit, a: Thread, b: Thread) {
+/** All three threads are stopped (their containers exited). */
+export async function reachStopped(k: Kit, a: Thread, b: Thread, q: Thread) {
   const { check } = k;
   const t = await k.wire.terminal(a.sessionId, k.member, 'id');
   check(code(t)?.code === 'conflict' && code(t)?.reason === 'session_not_running' && (await k.status(a.id)) === 'exited',
@@ -250,10 +298,36 @@ export async function reachStopped(k: Kit, a: Thread, b: Thread) {
   const notB = await k.wire.get(b.sessionId, k.member, 's9-stopped/note.txt', true);
   check('body' in back && back.body.toString() === 'pushed while stopped\n' && 'body' in tar && tar.body.includes('pushed while stopped') && code(notB)?.code === 'path_not_found',
     `it reads back from A as a file and as an archive, and from B it is ${code(notB)?.code}`);
+  const earlier = await k.wire.get(a.sessionId, k.member, 's9-notes/a.txt', true);
+  const term = await k.wire.get(a.sessionId, k.member, 'hello/s9-term', true);
+  check('body' in earlier && earlier.body.toString() === 'pushed to A\n' && 'body' in term && term.body.toString() === 'from-terminal\n',
+    `what was uploaded to A while it ran, and what its terminal wrote in the worktree, read back while it is stopped: ${'body' in earlier ? JSON.stringify(earlier.body.toString()) : code(earlier)?.code}, ${'body' in term ? JSON.stringify(term.body.toString()) : code(term)?.code}`);
   await k.asRunner(['/bin/ln', '-s', b.workspace, path.join(a.workspace, 's9-to-b')]);
-  const esc = await k.wire.get(a.sessionId, k.member, 's9-to-b', false);
+  await k.asRunner(['/bin/ln', '-s', q.workspace, path.join(a.workspace, 's9-to-q')]);
+  const there = (await k.asRunner(['/bin/cat', path.join(a.workspace, 's9-to-b', 'marker-q'), path.join(a.workspace, 's9-to-q', 'marker-q')]).catch((e) => String(e.message))).trim();
+  const outs = await reads(k, a, ['s9-to-b', 's9-to-q', 's9-run-to-b', 's9-run-to-q', 's9-run-rel']);
   const out = await k.wire.get(a.sessionId, k.member, '../' + path.basename(b.workspace), false);
-  const kept = (r: object) => ['invalid_path', 'path_not_found'].includes(code(r)?.code ?? '');
-  check(kept(esc) && kept(out), `B's workspace is not reached from A by a symlink (${code(esc)?.code}) or by name (${code(out)?.code})`);
-  check((await k.status(a.id)) === 'exited' && (await k.status(b.id)) === 'exited', 'none of it started a container');
+  check(there === 'secret-of-b\nsecret-of-q' && outs.every(kept) && kept(out),
+    `from stopped A, links that on the host lead to the sibling's workspace and to another person's (made now, and made inside while it ran) lead nowhere in the helper: ${codes(outs)}; by name: ${code(out)?.code}`);
+  const pq = await k.wire.put(q.sessionId, q.member, 's9-q-stopped', tarOf({ 'q.txt': 'pushed to stopped Q\n' }));
+  const lq = await list(k, q);
+  const qa = await k.wire.get(a.sessionId, k.member, 's9-q-stopped/q.txt', true);
+  check(pq.result?.upload.files === 1 && lq.includes('s9-q-stopped/q.txt') && lq.includes('s9-q/q.txt') && code(qa)?.code === 'path_not_found',
+    `an upload to the other person's stopped session is in their listing, beside the one made while it ran, and from A it is ${code(qa)?.code}: ${JSON.stringify(pq.result ?? pq.error)}`);
+  check((await k.status(a.id)) === 'exited' && (await k.status(b.id)) === 'exited' && (await k.status(q.id)) === 'exited', 'none of it started a container');
+}
+
+/** `a` runs again; `b` is still stopped. */
+export async function reachResumed(k: Kit, a: Thread, b: Thread) {
+  const { check } = k;
+  const inA = await k.inside(a.id, 'cat /workspace/s9-stopped/note.txt; stat -c %u /workspace/s9-stopped/note.txt; cat /workspace/s9-notes/a.txt');
+  const back = await k.wire.get(a.sessionId, k.member, 's9-stopped/note.txt', true);
+  check(inA.split('\n').join(' ') === 'pushed while stopped 1500 pushed to A' && 'body' in back && back.body.toString() === 'pushed while stopped\n',
+    `what was uploaded to A while it was stopped is in its /workspace now that it runs, the session user's, and reads back through its container: ${JSON.stringify(inA)}`);
+  const up = await k.wire.put(a.sessionId, k.member, 's9-stopped', tarOf({ 'note.txt': 'again\n' })) as { result?: { upload: { replaced: unknown } }; error?: unknown };
+  const mine = await k.wire.put(a.sessionId, k.member, 'hello', tarOf({ 'note.txt': 'again\n' }));
+  check(!!up.result?.upload.replaced && (await k.inside(a.id, 'cat /workspace/s9-stopped/note.txt')) === 'again' && code(mine)?.code === 'path_exists',
+    `a second upload of that name, now through the container, replaces it as an upload (${JSON.stringify(up.result ?? up.error)}); one over the worktree is ${code(mine)?.code}`);
+  const outs = await reads(k, a, ['s9-to-b', 's9-to-q']);
+  check(outs.every(kept) && (await k.status(b.id)) === 'exited', `the links made on the host while it was stopped lead nowhere inside it either: ${codes(outs)}`);
 }

@@ -6,10 +6,10 @@
 //
 // It checks a new thread (record, container, unit, cgroup, run directory,
 // token socket, the report's path), a warm delivery, what reaches into a
-// running container and a stopped one (step 9: previews, terminal, files, in
-// sandbox-check-reach.ts), the idle exit (container exited, home and record
-// kept) and the resume under the same id with the home intact; and it prints
-// what each start took.
+// running container, a stopped one and a resumed one (step 9: previews,
+// terminal, files, in sandbox-check-reach.ts), the idle exit (container
+// exited, home and record kept) and the resume under the same id with the home
+// intact; and it prints what each start took.
 //
 // Workspaces (step 7), with a definition of two public repositories the fake
 // gateway sends: the clones a helper container makes, the workspace and the
@@ -65,7 +65,7 @@ import { createTelemetry } from '../telemetry/emitter.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
-import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachRunning, reachStopped } from './sandbox-check-reach.js';
+import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -186,7 +186,7 @@ const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthr
 let ts = 1;
 /** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
 async function known(session: SessionSpec): Promise<string> {
-  const sessionId = mintId('cs');
+  const sessionId = session.sessionId ?? mintId('cs');
   const id = randomUUID();
   const member = session.owner.userId ?? '';
   toHost({ t: 'api', id, sessionId, method: 'sessions.get', params: { sessionId }, actor: { id: member, name: null, via: 'api', client: null }, member, session });
@@ -237,7 +237,7 @@ const all = [A1, A2, B];
 const sessions: string[] = [];
 let wire: WireClient | undefined;
 /** A thread as sandbox-check-reach.ts takes one: read once its container is there. */
-const reached = (name: string, t: Thread, sessionId: string): Reached => ({ name, spec: t.spec, sessionId, id: t.id(), run: t.run, workspace: t.workspace });
+const reached = (name: string, t: Thread, sessionId: string): Reached => ({ name, spec: t.spec, sessionId, id: t.id(), run: t.run, workspace: t.workspace, member: t.owner.userId as string });
 
 // ---- the host, and the cleanup
 
@@ -289,7 +289,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   check(!!hello && hello.branch === a.branch && hello.from === 'origin/master' && /^[0-9a-f]{40}$/.test(hello.base) && !ra?.repos?.spoon,
     `the record is the fork's record: ${JSON.stringify(ra?.repos)}`);
   const seen = await a.inside('cd /workspace/hello && git status --porcelain --branch && git rev-parse HEAD && cat .git && LC_ALL=C ls -A /workspace && ls /clones && ls /clones/hello/.git/worktrees && git -C /clones/hello config gc.worktreePruneExpire');
-  check(seen === [`## ${a.branch}`, hello?.base, 'gitdir: /clones/hello/.git/worktrees/hello', '.fork.json', 'AGENTS.md', 'hello', 'hello', 'hello', 'never'].join('\n'),
+  check(seen === [`## ${a.branch}`, hello?.base, 'gitdir: /clones/hello/.git/worktrees/hello', '.claude', '.fork.json', 'AGENTS.md', 'hello', 'hello', 'hello', 'never'].join('\n'),
     `inside: /workspace/hello is a clean worktree of /clones/hello on ${a.branch}, the registry holds it alone, the clone never prunes: ${JSON.stringify(seen)}`);
   const mounted = (await a.inside("awk '{print $5}' /proc/self/mountinfo | grep -E '^/(workspace|clones)' | sort")).split('\n');
   check(mounted.join(' ') === '/clones/hello /clones/hello/.git/worktrees /workspace', `mounted for it: ${mounted.join(' ')}`);
@@ -418,6 +418,7 @@ try {
   sessions.push(await known(A1.spec), await known(A2.spec));
   const a = reached('A', A1, sessions[0]);
   const b = reached('B', A2, sessions[1]);
+  const q = reached('Q', B, await known(B.spec));
   const wireSocket = path.join(RUN, 'wire', 'wire.sock');
   check(!!(await until(() => existsSync(wireSocket) || undefined, 10_000)), `the host serves its wire socket ${wireSocket}`);
   wire = await wireClient(wireSocket);
@@ -430,7 +431,7 @@ try {
     status: (cid) => byId(cid).inspect('{{.State.Status}}'),
     tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
   };
-  await reachRunning(kit, a, b);
+  await reachRunning(kit, a, b, q);
 
   // ---- idle exit
   kept.clear();
@@ -458,7 +459,8 @@ try {
 
   // ---- what reaches a stopped thread (step 9)
   check(!!(await until(async () => ((await A2.inspect('{{.State.Status}}')) === 'exited' && !(await A2.unitActive()) ? true : undefined), 30_000)), 'the second thread is stopped too');
-  await reachStopped(kit, a, b);
+  check(!!(await until(async () => ((await B.inspect('{{.State.Status}}')) === 'exited' && !(await B.unitActive()) ? true : undefined), 30_000)), "and the other person's");
+  await reachStopped(kit, a, b, q);
 
   // ---- resume
   const d3 = await A1.deliver();
@@ -470,7 +472,8 @@ try {
     `runner.launched of the resume: ${JSON.stringify(l3?.data)} duration ${l3?.duration_ms} ms`);
   check((await A1.askToken()).startsWith('ghs_fake'), 'its token socket answers again');
   const back = await A1.inside('cd /workspace/hello && git log --format=%s -1 && cat /workspace/marker-a && ls /clones/hello/.git/worktrees');
-  check(back === 'sandbox check\nsecret-of-a\nhello', `its workspace, its worktree and its registry are mounted again, as it left them (${JSON.stringify(back)})`);
+  check(back === 'from the terminal\nsecret-of-a\nhello', `its workspace, its worktree and its registry are mounted again, as it left them (${JSON.stringify(back)})`);
+  await reachResumed(kit, a, b);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
 } finally {
