@@ -43,6 +43,7 @@ import { type SandboxPlace, sandboxScripts } from './scripts.js';
 import { sandboxPrune } from './prune.js';
 import { sandboxStarts } from './start.js';
 import { SWEEP_AGE_MS, sandboxSweep } from './sweep.js';
+import { threadLocks } from './thread-lock.js';
 import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
@@ -84,6 +85,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   if (d.spares) throw new Error('SP_LAUNCH=podman: spares are not containers yet; set SP_POOL_SIZE=0');
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
+  const locks = threadLocks();
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
   const as = asRunner(user.sudo);
   const all = containers({
@@ -99,18 +101,18 @@ export function sandboxHost(d: SandboxHostDeps) {
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
-  const artifacts = sandboxArtifacts({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running });
+  const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   const dial = (socket: string) => dialSocket(socket, { uid: user.uid });
-  const sweep = sandboxSweep({ as, tm: d.tm, records, containers: all, runDir: path.join(d.run, 'sandbox'), runRoot, dataDir: d.data,
+  const sweep = sandboxSweep({ as, tm: d.tm, records, locks, containers: all, runDir: path.join(d.run, 'sandbox'), runRoot, dataDir: d.data,
     serveTokens: d.serveTokens, dial, adopt: d.adopt, running: d.running, ageMs: d.sweepAgeMs });
-  const prune = sandboxPrune({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
+  const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
     remove: all.remove, deleteRun: sweep.deleteRun });
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));
   return {
     stop: all.stop,
-    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
+    starts: sandboxStarts({ tm: d.tm, records, locks, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
     /** Host restart: the running containers taken back, by id (sweep.ts). */
     reconcile: sweep.reconcile,
     /** One sweep of what belongs to no thread; never rejects. */

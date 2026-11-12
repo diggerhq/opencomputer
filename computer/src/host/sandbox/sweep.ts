@@ -22,7 +22,11 @@
 //   `--force`, which would take a container using it along.
 // - A run directory goes only when its id has no container and no volume, no
 //   runner, and nothing touched it (or its record) for `ageMs`: a start makes
-//   the directory before the container.
+//   the directory before the container. The directory of an id that has a
+//   record goes in its thread's turn (thread-lock.ts), asked about again
+//   there: never under a start, which mounts it. Nothing else the sweep
+//   removes can be a starting thread's: a start writes its record first, and
+//   what has a record is not removed here.
 // - Records are never deleted here (prune.ts does, last).
 
 import type net from 'node:net';
@@ -36,6 +40,7 @@ import { TIMEOUTS } from './containers.js';
 import type { AsRunner } from './podman.js';
 import { emptyRunArgs, volumeRmArgs } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { ThreadLocks } from './thread-lock.js';
 
 /** "Only objects older than 10 minutes." */
 export const SWEEP_AGE_MS = 10 * 60_000;
@@ -46,6 +51,8 @@ export interface SweepDeps {
   as: AsRunner;
   tm: Telemetry;
   records: Pick<Records, 'all' | 'get'>;
+  /** The threads' turns, shared with the starts. */
+  locks: ThreadLocks;
   containers: Pick<Containers, 'inventory' | 'stop' | 'remove'>;
   /** `$SP_RUN/sandbox`, and a runner's run root in it. */
   runDir: string;
@@ -214,10 +221,16 @@ export function sandboxSweep(d: SweepDeps) {
       const dirs = runDirs();
       for (const id of dirs) {
         if (has.has(id) || homes.has(id) || d.running(id)) continue;
-        const st = lstatSync(path.join(d.runDir, id), { throwIfNoEntry: false });
-        const used = Date.parse(d.records.get(id)?.usedAt ?? '') || 0;
-        if (!st || !old(Math.max(st.mtimeMs, st.ctimeMs, used))) continue;
-        if (await deleteRun(id)) swept.run_dirs++;
+        const unused = () => {
+          const st = lstatSync(path.join(d.runDir, id), { throwIfNoEntry: false });
+          const used = Date.parse(d.records.get(id)?.usedAt ?? '') || 0;
+          return !!st && old(Math.max(st.mtimeMs, st.ctimeMs, used));
+        };
+        if (!unused()) continue;
+        // A thread's directory goes in the thread's turn: a start that had it wrote the record, and this looks again.
+        const r = d.records.get(id);
+        const gone = r ? await d.locks.run(r.person, r.key, async () => !d.running(id) && unused() && deleteRun(id)) : await deleteRun(id);
+        if (gone) swept.run_dirs++;
       }
       swept.units = await resetFailed(new Set(dirs)).catch((e) => (log.warn(`sandbox: failed units not reset: ${msg(e)}`), 0));
       await measure(inventory);

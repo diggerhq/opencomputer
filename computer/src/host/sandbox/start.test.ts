@@ -11,6 +11,7 @@ import type { TelemetryEvent } from '../../telemetry/envelope.js';
 import type { ContainerInfo } from './containers.js';
 import { sandboxRecords } from './records.js';
 import { type SandboxStartDeps, imageTag, sandboxStarts } from './start.js';
+import { threadLocks } from './thread-lock.js';
 
 const IMAGE = 'ghcr.io/diggerhq/computer-session:64a672bb773b059c82f67c9f52741a0540ca1d1c';
 const owner = { dir: 'pat', gitName: 'Pat', gitEmail: 'pat@example.com' };
@@ -24,6 +25,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
   const sent: TelemetryEvent[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(...b.events) });
   const records = sandboxRecords(mkdtempSync(path.join(tmpdir(), 'records-')));
+  const locks = threadLocks();
   const step = async <T>(name: string, v: T): Promise<T> => {
     log.push(name);
     const e = o.fail?.[name.split(' ')[0] as 'create'];
@@ -31,7 +33,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     return v;
   };
   const d: SandboxStartDeps = {
-    tm, records, image: IMAGE, abi: '2', version: 'v9',
+    tm, records, locks, image: IMAGE, abi: '2', version: 'v9',
     runRoot: (id) => `/run/sp/sandbox/${id}`,
     containers: {
       create: (id) => step(`create ${id}`, 11),
@@ -66,7 +68,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     dial: o.dial ?? (async () => sock),
   };
   const events = async () => (await tm.flush(), sent);
-  return { ...sandboxStarts(d), log, ups, records, events, tm };
+  return { ...sandboxStarts(d), log, ups, records, locks, events, tm };
 }
 const container = (id: string, over: Partial<ContainerInfo> = {}): ContainerInfo => ({ id, state: 'exited', abi: '2', image: IMAGE, createdAt: 0, ...over });
 
@@ -105,6 +107,25 @@ describe('sandbox start', () => {
     expect(again.log).toEqual(['dirs C1:1.1 ', 'inventory', `mint ${id} /run/sp/sandbox/${id} sdk=sdk1`, `up ${id} C1:1.1`, `mount ${id} 5 pat /workspace`]);
     expect(again.ups[0].session).toMatchObject({ sdkSessionId: 'sdk1', forkPath: '/workspace' });
     expect((await again.events()).find((e) => e.event_name === 'runner.launched')?.data).toMatchObject({ 'container.recreated': false });
+  });
+
+  it('a start waits for the thread\'s turn, and only then looks for its record: a thread pruned meanwhile starts as a new one and is prepared', async () => {
+    const t = rig({ definition: true, clones: ['alpha'] });
+    const old = { id: 'aaaaaaaaaaaaaaaa', person: 'pat', key: 'C1:1.1', createdAt: '', usedAt: '', repos: { alpha: { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' } } };
+    t.records.write(old);
+    let pruned!: () => void;
+    // What prune.ts does with the turn: everything of the thread goes, its record last.
+    void t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (pruned = () => (t.records.delete(old.id), r()))));
+    const starting = t.start(spec, {});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.log).toEqual([]);
+    expect(t.records.get(old.id)).toEqual(old); // not written by a start that has not begun
+    pruned();
+    const s = await starting;
+    expect(s.record.id).not.toBe(old.id);
+    expect(s.resumed).toBe(false);
+    expect(t.log).toContain(`create ${s.record.id}`);
+    expect(t.log).toContain(`prepare ${s.record.id} alpha`);
   });
 
   const resume = async (o: Parameters<typeof rig>[0], id = 'aaaaaaaaaaaaaaaa', sent: Partial<SessionSpec> = {}) => {

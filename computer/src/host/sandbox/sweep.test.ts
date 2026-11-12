@@ -7,6 +7,7 @@ import type { ContainerInfo, Inventory } from './containers.js';
 import { PodmanError } from './podman.js';
 import type { SandboxRecord } from './records.js';
 import { type SweepDeps, sandboxSweep } from './sweep.js';
+import { threadLocks } from './thread-lock.js';
 
 const A = 'aaaaaaaaaaaaaaaa';
 const B = 'bbbbbbbbbbbbbbbb';
@@ -34,6 +35,7 @@ function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecor
     as: { run, podman: (args) => run(['podman', ...args]) },
     tm: { emit: (name: string, f: { data: unknown }) => void events.push({ name, data: f.data }) } as never,
     records: { all: () => [...records.values()], get: (id) => records.get(id) },
+    locks: threadLocks(),
     containers: {
       inventory: async () => {
         log.push('inventory');
@@ -126,6 +128,26 @@ describe('sweep', () => {
     expect(existsSync(t.runRoot(A))).toBe(false);
     expect(t.ran('unshare')).toEqual([`podman unshare find ${t.runRoot(A)}/runners ${t.runRoot(A)}/secrets -mindepth 1 -delete`]);
     for (const id of [B, C, D, E, 'ffffffffffffffff', 'not-an-id']) expect(existsSync(t.runRoot(id))).toBe(true);
+  });
+
+  it('a run directory of a thread that is starting is left: the sweep waits for the thread\'s turn, then looks again', async () => {
+    const locks = threadLocks();
+    let rec = record(A);
+    const t = rig({ over: { locks, records: { all: () => [rec], get: () => rec } } });
+    t.dir(A);
+    let end!: () => void;
+    // A start: it has the turn, writes its record, and makes its container on this directory.
+    void locks.run('p', `C1:${A}`, () => new Promise<void>((r) => (end = () => ((rec = record(A, NOW)), r()))));
+    const pass = t.s.sweep();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.ran('unshare')).toEqual([]);
+    end();
+    expect(await pass).toMatchObject({ run_dirs: 0 });
+    expect(existsSync(t.runRoot(A))).toBe(true);
+    // A thread nobody starts: its old run directory goes, in its turn.
+    const idle = rig({ records: [record(B)] });
+    idle.dir(B);
+    expect(await idle.s.sweep()).toMatchObject({ run_dirs: 1 });
   });
 
   it('keeps a run directory whose content could not be removed, and one whose home could not be', async () => {
