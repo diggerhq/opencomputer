@@ -424,6 +424,7 @@ export default defineConfig({
             "test/auth.test.ts",
             "test/computer-grants.test.ts",
             "test/computer-model-access.test.ts",
+            "test/computer-model-profiles.test.ts",
             "test/computer-disk-growth.test.ts",
             "test/deployment-region.test.ts",
             "test/session-runtime-selection.test.ts",
