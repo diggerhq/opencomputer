@@ -96,15 +96,37 @@ EOF
 # release before it: such a runner still creates its checkpoint files in journals/ itself, as
 # agent, and would lose them. Until both hold the directory stays as provision.sh made it
 # (agent's, group-writable), and a later run tightens it.
+#
+# Which runners are left is read from the agent's user manager: the host starts every runner
+# as its unit sp-runner-<id>, whose ExecStart names the release's entry file, and a process
+# cannot change its unit's record. (Not /proc/*/cmdline: a session writes its own, so one
+# could hide a runner or name an old release for ever. Not /proc/<pid>/exe or cwd either:
+# those are node and the session's fork under every release.) A session runs as agent and
+# can still start a unit of that name that names an old release, so the wait has an end: a
+# release counts for 2 days after it was superseded (.sp-superseded, root's, in a directory
+# sessions cannot write), the time provision.sh keeps it at all. Runners exit after 2 h idle.
+old_runners() {
+  local uid records
+  uid="$(id -u "$AGENT_USER")"
+  [[ -S /run/user/$uid/bus ]] || return 1   # no user manager, so no runner
+  # A manager that does not answer says nothing about its runners: assume one.
+  records="$(runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+    systemctl --user show -p ExecStart --value 'sp-runner-*')" || return 0
+  grep -qF "$1/" <<<"$records"
+}
+
 journals_dir() {
   local dir="$DATA/journals" r releases
   [[ -d $dir ]] || return 0
   if [[ $1 == "$HOST_USER" && -e $SP_CURRENT/src/api/journal-dir.ts ]]; then
     releases="$(dirname "$(readlink -f "$SP_CURRENT")")"
     for r in "$releases"/*/; do
-      [[ -e ${r}src/api/journal-dir.ts ]] && continue
-      if grep -qsF "${r%/}" /proc/[0-9]*/cmdline; then
-        echo "sp-host: $dir stays group-writable: a runner of ${r%/} still writes there"
+      r="${r%/}"
+      [[ -e $r/src/api/journal-dir.ts ]] && continue
+      # Never superseded: it never ran. Superseded long ago: the deadline above.
+      [[ -f $r/.sp-superseded && -z "$(find "$r/.sp-superseded" -mtime +2)" ]] || continue
+      if old_runners "$r"; then
+        echo "sp-host: $dir stays group-writable: a runner of $r may still write there (until 2 days after $r was superseded)"
         return 0
       fi
     done
