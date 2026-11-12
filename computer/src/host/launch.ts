@@ -22,7 +22,7 @@ import { definitionFile } from '../workspaces/index.js';
 import { systemdRunPrefix } from './runner-limits.js';
 import { runnerUser } from './runner-user.js';
 import { runnerVars } from '../runner-env.js';
-import { PODMAN } from './sandbox/podman.js';
+import { PODMAN, type PodmanError, runBounded } from './sandbox/podman.js';
 import { startArgs, unitName } from './sandbox/podman-args.js';
 
 export type LaunchMode = 'systemd' | 'podman' | 'detached';
@@ -86,15 +86,24 @@ export function runnerCommand(root: string, has: (p: string) => boolean = exists
 /** The session's fork; a spare (work 069) has none yet and parks its Claude Code elsewhere. */
 const workingDirectory = (rs: RunnerSpec, env: NodeJS.ProcessEnv) => rs.session?.forkPath ?? env.HOME ?? os.homedir();
 
+/** Why a container's unit did not start, in a few words: the time it had, or the last thing systemd-run said. */
+export const unitFailure = (e: Partial<PodmanError>, timeoutMs: number) =>
+  e.timedOut ? `no answer in ${timeoutMs} ms` : String(e.stderr ?? '').trim().split('\n').pop() || `exit ${e.code ?? 'by a signal'}`;
+
 /** Start the runner; resolves once it was spawned (not yet listening). `timeoutMs` bounds each try of a unit's start. */
 export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, timeoutMs?: number) {
   const c = launchCommand(rs, how, env, root);
   if (!c.detached) {
     // A unit's name repeats (a session's before work 069, a thread's container since work 103): one may still be held by a runner that just quit.
     // cwd: the runners' user cannot enter every directory the host runs in, and sudo keeps it.
+    // A container's unit starts under timeout(1) as the runners' user: a signal to sudo would not end systemd-run (sandbox/podman.ts).
+    const at = c.args.indexOf('--');
+    const start = how === 'podman'
+      ? () => runBounded([c.cmd, ...c.args.slice(0, at)], c.args.slice(at + 1), { timeoutMs: timeoutMs ?? 20_000 })
+      : () => promisify(execFile)(c.cmd, c.args, { env: c.env, cwd: '/' });
     for (let i = 0; ; i++)
       try {
-        await promisify(execFile)(c.cmd, c.args, { env: c.env, cwd: '/', timeout: timeoutMs, killSignal: 'SIGKILL' });
+        await start();
         return;
       } catch (e: any) {
         if (i < 10 && /already/.test(String(e?.stderr ?? e?.message))) {
@@ -103,8 +112,7 @@ export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: Node
         }
         // execFile's own message is the whole command line; a container's start says why instead (it reaches the gateway's reply).
         if (how !== 'podman') throw e;
-        const why = e?.killed ? `no answer in ${timeoutMs} ms` : String(e?.stderr ?? '').trim().split('\n').pop() || `exit ${e?.code ?? e?.signal}`;
-        throw new Error(`unit ${unitName(rs.id!)} did not start: ${why}`);
+        throw new Error(`unit ${unitName(rs.id!)} did not start: ${unitFailure(e, timeoutMs ?? 20_000)}`);
       }
   }
   // Own session and process group, output to a log file: survives the host.
