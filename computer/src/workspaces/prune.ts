@@ -13,13 +13,15 @@ import { rm } from './as-runner.js';
 import { errText, git, personRoot, retention, scriptsFor, serial } from './clones.js';
 import { removeCodexHome } from './codex-homes.js';
 import { forkInfo } from './fork.js';
-import { clonesOf, lastUsed, worktrees } from './idle.js';
+import { clonesOf, lastUsed, realDir, worktrees } from './idle.js';
 import { hostScripts, row } from './script-runner.js';
 
 type RepoStatus = WorkspaceStatus['repos'][number];
 
 /** Remove a fork unless a worktree has uncommitted changes or commits on no remote. Returns why it was kept. */
 export async function pruneFork(forkPath: string): Promise<string | undefined> {
+  // A link where a fork should be: only the link goes, and nothing is read or run through it (not its target's key either).
+  if (!(await realDir(forkPath))) return void (await rm(forkPath));
   const wts = await worktrees(forkPath);
   // ws-inspect.sh reads without refreshing the index, whose new mtime would make the fork look used (lastUsed).
   const s = hostScripts(clonesOf(forkPath));

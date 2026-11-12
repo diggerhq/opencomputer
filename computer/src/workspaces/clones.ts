@@ -12,7 +12,7 @@
 //   the background, one preparation per person at a time.
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
@@ -20,7 +20,7 @@ import { HOST_DATA, type Person } from '../protocol.js';
 import { type Definition, isLazy, loadDefinition, type RepoDef } from './definition.js';
 import { command, copyFile, mkdir, writeFile } from './as-runner.js';
 import { Freshness, keyedQueue } from './fetch-schedule.js';
-import { hostScripts, row } from './script-runner.js';
+import { hostScripts, row, type ScriptRunner } from './script-runner.js';
 
 const exec = promisify(execFile);
 
@@ -63,14 +63,24 @@ export async function git(cwd: string, args: string[], timeout = 0) {
   const c = command('git', args, { GIT_TERMINAL_PROMPT: '0' });
   return (await exec(c.cmd, c.args, { cwd, timeout, env: c.env, maxBuffer: 20 << 20 })).stdout.trim();
 }
+let scripts: (clonesDir: string) => ScriptRunner = hostScripts;
+/** Who runs the scripts for a clones directory: the host itself unless told otherwise (a `podman` host: a helper container, host/sandbox/scripts.ts). */
+export const useScripts = (f: (clonesDir: string) => ScriptRunner) => void (scripts = f);
 /** The scripts (script-runner.ts) for the clones directory this clone is in, and its name there. */
-export const scriptsFor = (clone: string) => ({ s: hostScripts(path.dirname(clone)), repo: path.basename(clone) });
+export const scriptsFor = (clone: string) => ({ s: scripts(path.dirname(clone)), repo: path.basename(clone) });
 export function errText(e: any): string {
   if (e?.killed) return 'timed out';
   const lines = String(e?.stderr || e?.message || e).trim().split('\n').filter(Boolean);
   return lines.find((l) => /^(fatal|error):/.test(l)) ?? lines.pop() ?? 'failed';
 }
-export const isClone = (dir: string) => existsSync(path.join(dir, '.git'));
+/** A clone has a `.git` directory. Never followed: a session can write in a clone. */
+export const isClone = (dir: string) => {
+  try {
+    return lstatSync(path.join(dir, '.git'), { throwIfNoEntry: false })?.isDirectory() ?? false;
+  } catch {
+    return false; // `dir` is a file (ENOTDIR), or cannot be looked into
+  }
+};
 export const fetchErrorType = (e: unknown) => ((e as { killed?: boolean })?.killed ? 'timeout' : 'git_fetch');
 
 /** Timings the host agent reports as telemetry (work 054); calls never affect the work. */

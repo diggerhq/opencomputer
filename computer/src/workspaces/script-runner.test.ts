@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { configureAsRunner } from './as-runner.js';
+import { tarOf } from '../host/sandbox/tar.js';
 import { hostScripts, row, rows, ScriptError } from './script-runner.js';
 
 const tmp = mkdtempSync(path.join(tmpdir(), 'ws-scripts-'));
@@ -139,6 +140,36 @@ describe('workspace scripts', () => {
     expect(await run('ws-add.sh', [clones, workspace, 'sp/k1', '0', 'alpha=main'])).toBe(line);
   });
 
+  it('ws-add.sh unpacks a tar from its stdin into the workspace root, after the worktrees and with no repository at all', async () => {
+    const tar = tarOf([{ name: '.fork.json', text: '{"a":1}\n' }, { name: 'docs/AGENTS.md', text: 'hello\n' }]);
+    const ws = path.join(tmp, 'sessions', 'k3');
+    mkdirSync(ws);
+    writeFileSync(path.join(ws, '.fork.json'), 'old');
+    expect(await s.run('ws-add.sh', [clones, ws, 'sp/k3', '0'], { stdin: tar, timeoutMs: 20_000 })).toBe('');
+    expect(readFileSync(path.join(ws, '.fork.json'), 'utf8')).toBe('{"a":1}\n');
+    expect(readFileSync(path.join(ws, 'docs', 'AGENTS.md'), 'utf8')).toBe('hello\n');
+    const out = await s.run('ws-add.sh', [clones, ws, 'sp/k3', '0', 'alpha=main'], { stdin: tarOf([{ name: 'alpha/planted.txt', text: 'last' }]), timeoutMs: 20_000 });
+    expect(row(out, 'alpha')[0]).toBe('sp/k3');
+    expect(readFileSync(path.join(ws, 'alpha', 'planted.txt'), 'utf8')).toBe('last'); // unpacked after the worktree was there
+  });
+
+  it('ws-add.sh works several repositories at once and answers in the order asked', async () => {
+    const ws = path.join(tmp, 'sessions', 'k4');
+    mkdirSync(ws);
+    const out = await run('ws-add.sh', [clones, ws, 'sp/k4', '0', 'beta', 'nope', 'alpha=main']);
+    expect(out.split('\n').filter(Boolean).map((l) => l.split('\t').slice(0, 2).join(' '))).toEqual(['beta ok', 'nope failed', 'alpha ok']);
+  });
+
+  it('a clone keeps what only a registry elsewhere reaches: gc never prunes, and .git/worktrees is there', async () => {
+    const clone = path.join(clones, 'alpha');
+    expect(git(clone, 'config', '--local', 'gc.pruneExpire')).toBe('never');
+    expect(git(clone, 'config', '--local', 'gc.worktreePruneExpire')).toBe('never');
+    git(clone, 'config', '--local', '--unset', 'gc.pruneExpire');
+    await run('ws-sync.sh', ['--only=fetch', clones, 'alpha']);
+    expect(git(clone, 'config', '--local', 'gc.pruneExpire')).toBe('never');
+    expect(existsSync(path.join(clone, '.git', 'worktrees'))).toBe(true);
+  });
+
   it('ws-add.sh reports each repository on its own: not a worktree, no such clone, a failed fetch', async () => {
     mkdirSync(path.join(workspace, 'beta'));
     writeFileSync(path.join(workspace, 'beta', 'mine.txt'), 'x');
@@ -176,6 +207,19 @@ describe('workspace scripts', () => {
     expect(await run('ws-inspect.sh', [clones, workspace, 'alpha', 'missing'], asked)).toBe(
       `1\tok\tclean\t1\tsp/k1\t${common}\t1\t4\n2\tok\tdirty\t-\t\t\n`,
     );
+  });
+
+  it('ws-inspect.sh runs nothing a session configured: no fsmonitor, no hooks', async () => {
+    const clone = path.join(clones, 'alpha');
+    const planted = path.join(tmp, 'ran-by-inspect');
+    git(clone, 'config', '--local', 'core.fsmonitor', `touch ${planted}; false`);
+    try {
+      await run('ws-inspect.sh', ['--only=state', clones, workspace, 'alpha']);
+      await run('ws-inspect.sh', ['--only=ignored', clones, workspace, 'alpha'], '1\tnode_modules\n');
+      expect(existsSync(planted)).toBe(false);
+    } finally {
+      git(clone, 'config', '--local', '--unset', 'core.fsmonitor');
+    }
   });
 
   it('ws-forget.sh deletes the branch, and has nothing to do the second time', async () => {

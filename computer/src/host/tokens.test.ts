@@ -127,4 +127,36 @@ describe('token relay', () => {
       server.close();
     }
   });
+
+  it("the helpers' socket gives GitHub tokens for the definition's repositories and nothing else", async () => {
+    const asked: Extract<HostToGateway, { t: 'token' }>[] = [];
+    const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
+    const relay = tokenRelay((m) => {
+      asked.push(m);
+      queueMicrotask(() => relay.answer({ id: m.id, result: { token: 'ghs_h', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+      return true;
+    }, tm);
+    const dir = mkdtempSync(path.join(tmpdir(), 'tokens-'));
+    const socket = path.join(dir, 'token.sock');
+    const server = relay.serveHelper(socket, () => ['Acme/Widgets']);
+    await new Promise((r) => server.once('listening', r));
+    const ask = (req: unknown) =>
+      new Promise<{ token?: string; error?: string }>((resolve, reject) => {
+        const c = net.connect(socket, () => c.write(JSON.stringify(req) + '\n'));
+        let got = '';
+        c.on('data', (d) => (got += d)).on('end', () => resolve(JSON.parse(got))).on('error', reject);
+      });
+    try {
+      expect(await ask({ repos: ['acme/widgets.git'] })).toMatchObject({ token: 'ghs_h' });
+      expect(asked).toEqual([expect.objectContaining({ repos: ['acme/widgets.git'], sessionKey: undefined })]);
+      expect(await ask({ repos: ['acme/widgets', 'acme/other'] })).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({})).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({ repos: 'acme/widgets' })).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({ kind: 'opencomputer' })).toEqual({ error: 'this socket gives GitHub tokens only' });
+      expect(await ask({ kind: 'automation-repo', repos: ['acme/widgets'] })).toEqual({ error: 'this socket gives GitHub tokens only' });
+      expect(asked.length).toBe(1);
+    } finally {
+      server.close();
+    }
+  });
 });

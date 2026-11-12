@@ -16,8 +16,17 @@
 // - A transcript lives in the thread's home: `sdkSessionId` goes in only when
 //   the home volume was there before this start. A record alone (a first
 //   start whose Create failed, a volume removed) is a new home.
-// - The thread's workspace directory is made at every start: a first start
-//   may have failed before it was.
+// - The thread's workspace directory and its registries are made at every
+//   start: a first start may have failed before they were. The mounts
+//   (workspace.ts) are part of bringing the container up.
+// - A thread whose record has no `repos` gets its workspace prepared while its
+//   runner boots; the runner is connected to, and so given credentials and
+//   its first message, only after that. A start whose preparation failed is
+//   abandoned and its record keeps no `repos`, so the next start prepares
+//   again.
+// - `runner.launched` is one event per start with the container's timings,
+//   `container.add_ms` among them: it is emitted once the worktrees were
+//   added, with the time and the duration of the launch itself.
 // - A start's error is one line. Why a runner never listened goes to the
 //   host's log, never into the error (it reaches the gateway's reply).
 // - The runner's socket is in a directory the session can write: it is
@@ -25,6 +34,7 @@
 //   (runner-sockets.ts `dialSocket`, checked-socket.ts).
 
 import type net from 'node:net';
+import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { RunnerSpec, SessionSpec } from '../../protocol.js';
 import type { RunnerApi } from '../../protocol-api.js';
@@ -35,10 +45,11 @@ import type { Dimensions } from '../../telemetry/envelope.js';
 import { coldStart } from '../cold-start.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
 import type { Containers, Inventory } from './containers.js';
+import { WORKSPACE } from './mounts.js';
 import type { Records, SandboxRecord } from './records.js';
+import type { SandboxWorkspace } from './workspace.js';
 
-/** The session's fork, as its runner sees it. */
-export const WORKSPACE = '/workspace';
+export { WORKSPACE };
 
 export interface SandboxStartDeps {
   tm: Telemetry;
@@ -51,10 +62,10 @@ export interface SandboxStartDeps {
   version: string;
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
-  /** The thread's workspace on the host (`forkDir`). */
-  workspace(r: SandboxRecord): string;
-  /** `mkdir -p` as the runners' user. */
-  mkdir(dir: string): Promise<void>;
+  /** The thread's files: directories, mounts, worktrees (workspace.ts). */
+  workspace: Pick<SandboxWorkspace, 'repos' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
+  /** True when a workspace definition is in effect (`workspacesEnabled`). */
+  workspaces(): boolean;
   /** Connect to a runner's socket; undefined when nothing answers. */
   dial?: (socket: string) => Promise<net.Socket | undefined>;
 }
@@ -98,7 +109,7 @@ export function sandboxStarts(d: SandboxStartDeps) {
     const now = new Date().toISOString();
     const found = d.records.find(spec.owner.dir, spec.key);
     const { sdkSessionId, forkPath: _fork, ...fresh } = spec;
-    const record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
+    let record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
     d.records.write(record);
     const { id } = record;
     const run = d.runRoot(id);
@@ -112,11 +123,21 @@ export function sandboxStarts(d: SandboxStartDeps) {
       await c.stop(id).catch((e) => log.warn(`sandbox ${id} not stopped after a failed start: ${e?.message ?? e}`));
       tokens?.close();
     };
+    // What this start mounts; a thread without `repos` yet also gets a worktree of each (`prepare`).
+    let names: string[] = [];
+    const prepares = d.workspaces() && !record.repos;
+    let launch: { at: number; ms: number } | undefined;
+    const launched = (failed = false) => {
+      if (!launch) return;
+      tm.emit('runner.launched', { ...f, duration_ms: launch.ms, outcome: failed ? 'failed' : 'completed', ...(failed && { error_type: 'launch' as const }), data }, launch.at);
+      launch = undefined;
+    };
     const sock = await coldStart({
       up: async () => {
-        const launched = tm.start('runner.launched', { ...f, data });
+        const began = Date.now();
         try {
-          await d.mkdir(d.workspace(record));
+          names = d.workspace.repos(record);
+          await d.workspace.dirs(record, names);
           const inventory = found && (await c.inventory());
           // The transcript is in the home: resumed only into one that was there before this start.
           if (sdkSessionId && inventory && inventory.volumes.some((v) => v.id === id)) session = { ...fresh, sdkSessionId };
@@ -132,15 +153,35 @@ export function sandboxStarts(d: SandboxStartDeps) {
               throw e;
             });
           }
-          const up = await c.up(id, rs, record);
+          const binds = d.workspace.binds(record, names, api && path.dirname(api.journal));
+          const up = await c.up(id, rs, record, (pid) => d.workspace.mount(id, pid, record.person, binds));
           tokens = up.tokens;
           data['container.start_ms'] = up.startMs;
-          launched.end({ outcome: 'completed', data });
+          if (up.mountMs !== undefined) data['container.mount_ms'] = up.mountMs;
+          launch = { at: Date.now(), ms: Date.now() - began };
+          if (!prepares) launched();
         } catch (e) {
-          launched.end({ outcome: 'failed', error_type: 'launch', data });
+          launch = { at: Date.now(), ms: Date.now() - began };
+          launched(true);
           throw e;
         }
       },
+      prepare: prepares
+        ? async () => {
+            const done = tm.start('fork.done', f);
+            try {
+              const p = await d.workspace.prepare(id, names);
+              record = p.record;
+              data['container.add_ms'] = p.addMs;
+              done.end({ outcome: 'completed', data: { repos: Object.keys(p.record.repos ?? {}).length } });
+            } catch (e) {
+              done.end({ outcome: 'failed', error_type: 'git_worktree', data: { fork_error_type: 'git_worktree' } });
+              throw e;
+            } finally {
+              launched();
+            }
+          }
+        : undefined,
       ready: () =>
         awaitRunner(rs, {
           tm, f, t0,

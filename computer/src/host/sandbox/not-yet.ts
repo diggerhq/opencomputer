@@ -1,21 +1,19 @@
 // What a `podman` host refuses for a session in a container until the step
 // that builds it lands (work 103, "Build order"). Each of these still acts on
-// the host today: a preview probes and proxies the host's ports, a terminal
-// and `/files` run as the runners' user in the host's file tree, and
-// `checkout` adds worktrees by host paths. None of that is the session's
-// container, and a terminal on the host is outside the sandbox altogether.
+// the host today: a preview probes and proxies the host's ports, and a
+// terminal and `/files` run as the runners' user in the host's file tree.
+// None of that is the session's container, and a terminal on the host is
+// outside the sandbox altogether.
 //
 // Invariant: every such feature asks here, and only here, before it does
 // anything for a sandboxed session. The step that makes a feature work in the
 // container deletes its entry and its call:
-// - `checkout`: step 7 (workspaces in the container).
 // - `preview`, `terminal`, `files`: step 9.
 
 const WHAT = {
   preview: 'A preview is',
   terminal: 'A terminal is',
   files: 'Workspace files are',
-  checkout: 'Checking out a repository is',
 } as const;
 
 export type NotYet = keyof typeof WHAT;

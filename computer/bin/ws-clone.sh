@@ -3,7 +3,8 @@
 #
 # Clone <url> as <clones>/<repo> (cloneRepo in src/workspaces/clones.ts): into
 # <repo>.cloning, renamed when complete, so a clone that exists is whole. Then
-# each <setup> command through `sh -c` in the clone, stopping at the first
+# its garbage collection is told never to prune (ws_keep in ws-lib.sh), and
+# each <setup> command runs through `sh -c` in the clone, stopping at the first
 # that fails. <filter> (`blob:none` for a partial clone) and <branch> may be
 # empty. A clone already there is left as it is and its setup is not run again.
 #
@@ -35,6 +36,7 @@ if ! mv -T -- "$tmp" "$clone" 2>"$ws_tmp/err"; then
   ws_failed "$repo" "$(ws_why "Command failed: mv -T $tmp $clone")"
   exit 0
 fi
+ws_keep "$clone"
 # Setup commands are the repository's own: they run without the script's GIT_TERMINAL_PROMPT.
 unset GIT_TERMINAL_PROMPT
 for cmd in "$@"; do

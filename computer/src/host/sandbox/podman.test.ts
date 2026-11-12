@@ -15,7 +15,7 @@ function fake(result?: { err?: object; stdout?: string; stderr?: string }) {
     calls.push(call);
     finish = done;
     if (result) queueMicrotask(() => done((result.err as never) ?? null, result.stdout ?? '', result.stderr ?? ''));
-    return { stdin: { end: (d?: string) => void (call.stdin = d) }, kill: (s) => void signals.push(s) };
+    return { stdin: { end: (d?: string | Buffer) => void (call.stdin = d as string) }, kill: (s) => void signals.push(s) };
   };
   return { exec, calls, signals, finish: (...a: Parameters<Done>) => finish(...a) };
 }
@@ -32,6 +32,13 @@ describe('asRunner', () => {
       opts: { cwd: '/', maxBuffer: 16 * 2 ** 20, encoding: 'utf8' }, // no timeout of execFile's: its SIGKILL would stop at sudo
       stdin: undefined,
     }]);
+  });
+
+  it('a variable for the command goes into the sudo prefix, and stdin may be bytes', async () => {
+    const f = fake({ stdout: '' });
+    await asRunner(sudo, f.exec).podman(['unshare', 'true'], { timeoutMs: 1000, env: { SP_DATA: '/data' }, stdin: Buffer.from('x') });
+    expect(f.calls[0].args.slice(3, 7)).toEqual(['XDG_RUNTIME_DIR=/run/user/1500', 'SP_DATA=/data', '--', '/usr/bin/timeout']);
+    expect(String(f.calls[0].stdin)).toBe('x');
   });
 
   it('timeout(1) never gets 0, which would mean no limit', () => {

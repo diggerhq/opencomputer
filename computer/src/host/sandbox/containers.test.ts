@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -67,6 +67,34 @@ describe('containers', () => {
     const denied = rig((a) => (a[2] === 'find' ? fail('find: cannot delete: Permission denied\n') : ''));
     await expect(denied.c.up(ID, rs)).rejects.toThrow();
     expect(denied.log).not.toContain('start');
+  });
+
+  it('up: the mounts are part of the start, given the pid; a container that could not get them is stopped', async () => {
+    const t = rig((a) => (a[1] === 'inspect' ? '4242\n' : ''));
+    const up = await t.c.up(ID, rs, record, async (pid) => void t.log.push(`mount ${pid}`));
+    expect(t.log.slice(-2)).toEqual(['/usr/bin/systemctl --user is-active', 'mount 4242']);
+    expect(up.mountMs).toBeGreaterThanOrEqual(0);
+    expect((await t.c.up(ID, rs, record)).mountMs).toBeUndefined();
+    const bad = rig((a) => (a[1] === 'inspect' ? '4242\n' : ''));
+    await expect(bad.c.up(ID, rs, record, () => Promise.reject(new Error('sandbox-mount: refused')))).rejects.toThrow('sandbox-mount: refused');
+    expect(bad.log.slice(-2)).toEqual(['podman stop --time', 'tokens closed']);
+  });
+
+  it('the definition in effect is written again for a running container, and removed when there is none', () => {
+    const def = path.join(mkdtempSync(path.join(tmpdir(), 'def-')), 'definition.json');
+    writeFileSync(def, '{"name":"one"}');
+    let file: string | undefined = def;
+    const t = rig(() => '', { definition: () => file });
+    mkdirSync(t.run, { recursive: true });
+    t.c.rewriteDefinition(ID);
+    expect(readFileSync(`${t.run}/definition.json`, 'utf8')).toBe('{"name":"one"}');
+    writeFileSync(def, '{"name":"two"}');
+    t.c.rewriteDefinition(ID);
+    expect(readFileSync(`${t.run}/definition.json`, 'utf8')).toBe('{"name":"two"}');
+    expect(mode(`${t.run}/definition.json`)).toBe(0o640);
+    file = undefined;
+    t.c.rewriteDefinition(ID);
+    expect(existsSync(`${t.run}/definition.json`)).toBe(false);
   });
 
   it('up: a spare names no session on its token socket', async () => {
