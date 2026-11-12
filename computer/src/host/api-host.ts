@@ -282,7 +282,8 @@ export function apiHost(d: ApiHostDeps) {
       return forkPath && owner ? { forkPath, owner } : undefined;
     },
     async record(sessionId, type, data, actor) {
-      const w = await writer(sessionId, false);
+      // With no runner the host's own writer records it, opened as for any call: an upload to a stopped session is in its log.
+      const w = await writer(sessionId, true);
       const r = await w?.call(RECORD_METHOD, { sessionId, type, data }, { actor, member: actor.id });
       if (r?.error) log.warn(`${type} not recorded in ${sessionId}: ${r.error.code}`);
       return (r?.result as { seq?: number } | undefined)?.seq;
