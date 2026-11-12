@@ -1,5 +1,5 @@
 // Running Podman, and the few other commands a sandbox needs, as the runners'
-// user (work 103): `[...runnerUser.sudo, '--', '/usr/bin/podman', ...args]`.
+// user (work 103): `[...runnerUser.sudo, '--', '/usr/bin/timeout', ..., '/usr/bin/podman', ...args]`.
 // The host itself never holds Podman's state; every call is one process that
 // ends, bounded by the caller's timeout.
 //
