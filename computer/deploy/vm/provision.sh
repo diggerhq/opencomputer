@@ -446,7 +446,8 @@ install -d -m 0755 "$DATA/home"
 install -d -m 0750 -o "$AGENT_USER" -g "$AGENT_USER" "$AGENT_HOME" "$DATA/people"
 # Session journals (work 084, src/api/journal.ts): runners write them as agent, the host
 # (sp-host, in group agent) adopts them. $DATA is root's, so neither could create this itself.
-install -d -m 2770 -o "$AGENT_USER" -g "$AGENT_USER" "$DATA/journals"
+# Only when missing: on a migrated computer sp-host.sh (`journals_dir`) decides its owner and mode.
+[[ -d $DATA/journals ]] || install -d -m 2770 -o "$AGENT_USER" -g "$AGENT_USER" "$DATA/journals"
 # Host state the agent user writes: the gateway's workspace definition (052).
 install -d -m 0755 -o "$AGENT_USER" -g "$AGENT_USER" "$DATA/state"
 install -d -m 0700 -o "$AGENT_USER" -g "$AGENT_USER" "$AGENT_HOME/.config" "$AGENT_HOME/.config/environment.d"
@@ -517,8 +518,22 @@ if [[ ! -f $release/.sp-ready ]]; then
   [[ -f $release/dist/wire.js ]] || warn "no dist/wire.js: the client relay (slack-presence-wire) will not start on this release"
   [[ -d $release/bin ]] && chmod 0755 "$release"/bin/* 2>/dev/null || true
   printf 'SP_VERSION=%s\n' "$sha" > "$release/.sp-version.env"
+  # The session image this release runs with and its ABI (work 103): SP_IMAGE, SP_IMAGE_ABI.
+  bash "$release/deploy/vm/sandbox.sh" version-env "$release" >> "$release/.sp-version.env"
   touch "$release/.sp-ready"
 fi
+
+# Sessions in containers (work 103; deploy/vm/sandbox.sh): rootless Podman for
+# the agent with its storage on $DATA, then this release's image, pulled and
+# warm. Before the switch on purpose: if any of it fails, `current` stays where
+# it was and the next run (self-update.sh, 5 minutes) tries again, so a computer
+# never runs a release whose image it lacks. From the new release, not
+# `current`: the script and the image belong to the code about to run.
+SP_IMAGE="$(sed -n 's/^SP_IMAGE=//p' "$release/.sp-version.env")"
+[[ -n $SP_IMAGE ]] || die "$release/.sp-version.env names no SP_IMAGE (built by an older provision.sh? remove $release/.sp-ready to rebuild it)"
+AGENT_USER="$AGENT_USER" AGENT_UID="$AGENT_UID" SP_DATA="$DATA" bash "$release/deploy/vm/sandbox.sh" install
+AGENT_USER="$AGENT_USER" AGENT_UID="$AGENT_UID" bash "$release/deploy/vm/sandbox.sh" image "$SP_IMAGE"
+
 previous="$(readlink -f "$SP_CURRENT" 2>/dev/null || true)"
 if [[ -n $previous && $previous != "$release" && -d $previous ]]; then
   touch "$previous/.sp-superseded"   # pruning clock starts now, not at creation
@@ -542,6 +557,17 @@ for r in "$SP_RELEASES"/*/; do
   git -C "$SP_REPO" worktree remove --force "$r" || rm -rf "$r"
 done
 git -C "$SP_REPO" worktree prune
+
+# Session images: this release's and the previous one's stay (a rollback, and
+# containers made under it); the rest go unless a container still uses them.
+# The previous release is the one superseded last, also when this run switched nothing.
+keep_images=("$SP_IMAGE")
+last_superseded="$(ls -t "$SP_RELEASES"/*/.sp-superseded 2>/dev/null | head -1 || true)"
+if [[ -n $last_superseded ]]; then
+  previous_image="$(sed -n 's/^SP_IMAGE=//p' "$(dirname "$last_superseded")/.sp-version.env" 2>/dev/null || true)"
+  [[ -z $previous_image ]] || keep_images+=("$previous_image")
+fi
+AGENT_USER="$AGENT_USER" AGENT_UID="$AGENT_UID" bash "$SP_CURRENT/deploy/vm/sandbox.sh" prune-images "${keep_images[@]}"
 
 # --------------------------------------------------------------------------- agent environment
 log "environment for $AGENT_USER"
@@ -703,6 +729,14 @@ EOF
 # (SSM agent, Azure guest agent, cloud-init) is unaffected. EC2 and Azure serve
 # it on 169.254.169.254; IPv6: fd00:ec2::254 (EC2), fd20:ce::254 (GCE). All
 # rules on every cloud.
+# 168.63.129.16 is Azure's wireserver (the guest agent's channel: extensions and
+# their settings), blocked the same way (work 103). It is also Azure's DNS, the
+# upstream of the host's stub, and Podman writes it into a container's
+# resolv.conf; pasta's sockets are the agent's, so port 53 to it stays open,
+# from rules that sit above the REJECT. If the REJECT is missing, the ACCEPTs
+# are taken out first and inserted again after it: every rule goes in at the
+# top, and an ACCEPT left below the REJECT would cut the sessions' DNS.
+wire="-d 168.63.129.16"; owner="-m owner --uid-owner $AGENT_UID"
 cat > /etc/systemd/system/slack-presence-imds-block.service <<EOF
 [Unit]
 Description=Block the cloud instance metadata service (EC2 and Azure IMDS) for the $AGENT_USER user
@@ -715,6 +749,9 @@ RemainAfterExit=yes
 ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner $AGENT_UID -j REJECT'
 ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner $AGENT_UID -j REJECT'
 ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd20:ce::254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd20:ce::254 -m owner --uid-owner $AGENT_UID -j REJECT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire $owner -j REJECT 2>/dev/null || { iptables -D OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT 2>/dev/null; iptables -D OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT 2>/dev/null; iptables -I OUTPUT $wire $owner -j REJECT; }'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT'
 
 [Install]
 WantedBy=multi-user.target
@@ -776,7 +813,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now slack-presence-imds-block.service
+# Restart, not `enable --now`: a oneshot that is already active would not run rules added since.
+systemctl enable -q slack-presence-imds-block.service
+systemctl restart slack-presence-imds-block.service
 systemctl start user@"$AGENT_UID".service
 # Pick up the slice definition and environment.d (re-read on reload).
 runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR=/run/user/"$AGENT_UID" systemctl --user daemon-reload || true

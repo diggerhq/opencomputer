@@ -425,6 +425,7 @@ environment, which any session can change.
 | `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | the proxy's socket a subscription session's Claude Code uses (`ANTHROPIC_UNIX_SOCKET`); passed to runners |
 | `SP_CODEX_BIN` | `/usr/local/lib/codex/bin/codex` | the pinned Codex CLI a `harness: 'codex'` session runs as `codex app-server` (work 082); passed to runners |
 | `SP_CODEX_PEER_CHECK` | on | `off` lets any local process use a Codex session's model loopback; only where runners are not systemd units (a laptop). On, a connection is forwarded only when a process in the runner's own cgroup holds it, and refused if the cgroup cannot be read. Read from the host's own environment only: runners always get `on` unless the host runs with `off` |
+| `SP_IMAGE` / `SP_IMAGE_ABI` | unset | the session image of this release (`ghcr.io/diggerhq/computer-session:<git tree of deploy/image>`) and the integer in `deploy/image/ABI` (work 103). Never set by hand: `deploy/vm/provision.sh` writes both to the release's `.sp-version.env`, which the host unit loads, and pulls and warms the image before it switches to the release (`deploy/vm/sandbox.sh`). Nothing reads them yet |
 
 **Telemetry** (work 054; runners always hand telemetry to their host, which sends it only if `SP_TELEMETRY_URL` is set)
 

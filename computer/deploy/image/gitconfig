@@ -1,0 +1,22 @@
+# /etc/gitconfig of the session image (work 103): what deploy/vm/provision.sh writes
+# to agent's global config on the host. GitHub and automation-repository credentials
+# come only from the helper, which asks the host's token socket; the empty helper
+# resets the list, and useHttpPath lets the helper see the repository.
+[credential "https://github.com"]
+	helper =
+	helper = /opt/slack-presence/current/bin/git-credential-slack-presence
+	useHttpPath = true
+[credential "https://*.code.storage"]
+	helper =
+	helper = /opt/slack-presence/current/bin/git-credential-slack-presence
+	useHttpPath = true
+[init]
+	defaultBranch = main
+[fetch]
+	prune = true
+[push]
+	autoSetupRemote = true
+# Mounted clones, worktrees and the root-owned release all belong to other uids
+# than the one git may run as here (agent, or root through sudo).
+[safe]
+	directory = *
