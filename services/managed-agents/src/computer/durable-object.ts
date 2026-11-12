@@ -156,6 +156,7 @@ import {
   MODEL_VIEW_CODEX,
   type MintResult,
   type ModelAccess,
+  type ModelSession,
   type ModelSubmittedView,
   type ProbeOutcome,
   type RedeemInput,
@@ -3278,11 +3279,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
   }
 
-  /** Sessions running now, with their conversations (pushes go to these). */
-  private liveSessions(): Array<{ key: string; ownerId: string; channelId: string; threadTs: string }> {
-    return [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; channelId: string; threadTs: string }>(
-      "SELECT runner_key AS key, owner_id AS ownerId, channel_id AS channelId, thread_ts AS threadTs FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
-    )].flatMap((row) => (row.ownerId ? [{ key: row.key, ownerId: row.ownerId, channelId: row.channelId, threadTs: row.threadTs }] : []));
+  /** Sessions running now, with their conversations and last activity (pushes go to these). */
+  private liveSessions(): ModelSession[] {
+    return [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; channelId: string; threadTs: string; status: string; activeAt: number }>(
+      "SELECT runner_key AS key, owner_id AS ownerId, channel_id AS channelId, thread_ts AS threadTs, status, updated_at AS activeAt FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
+    )].flatMap((row) => (row.ownerId ? [{ key: row.key, ownerId: row.ownerId, channelId: row.channelId, threadTs: row.threadTs, status: row.status, activeAt: row.activeAt }] : []));
   }
 
   /** Slack says a person left, was deactivated or became a guest (work 077): their Claude subscription goes. */
