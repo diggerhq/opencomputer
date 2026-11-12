@@ -16,8 +16,9 @@
 // - The host never runs git, and never opens a workspace file: on a `podman`
 //   host every script goes through here.
 // - A helper gets a network only for a script that fetches, and never runs
-//   longer than the spec's table says (HELPER_SECONDS), whatever its caller
-//   asked: Podman ends it, since the script is its first process.
+//   longer than the spec's table says (HELPER_SECONDS; a clone: as long as
+//   its caller says), whatever its caller asked: Podman ends it, since the
+//   script is its first process.
 // - A script in a session's container is ended inside the container
 //   (`timeout`), so nothing of it is left running there when its time is up.
 // - Failures of a ScriptRunner are ScriptError, as from the host's runner, so
@@ -35,8 +36,14 @@ import { CLONES, WORKSPACE } from './mounts.js';
 import { type AsRunner, bounded, PODMAN, PodmanError, TIMEOUT } from './podman.js';
 import { type Bind, execArgs, HELPER_SCOPE, helperArgs } from './podman-args.js';
 
-/** Seconds a helper may run, by script (the spec's "Helper run"). */
-export const HELPER_SECONDS: Record<string, number> = { 'ws-clone.sh': 600, 'ws-sync.sh': 120, 'ws-fetch.sh': 120, 'ws-inspect.sh': 60, 'ws-forget.sh': 30 };
+/**
+ * Seconds a helper may run, by script (the spec's "Helper run"): the most its caller can ask, and what it gets when the
+ * caller names no limit. A clone's is the second only: its caller's limit (30 min for the clone and for each setup
+ * command, src/workspaces/clones.ts) applies whole.
+ */
+export const HELPER_SECONDS: Record<string, number> = { 'ws-clone.sh': 1800, 'ws-sync.sh': 120, 'ws-fetch.sh': 120, 'ws-inspect.sh': 60, 'ws-forget.sh': 30 };
+/** The scripts whose caller's limit is not capped. */
+const UNCAPPED = new Set(['ws-clone.sh']);
 /** The scripts that reach a remote. */
 const FETCHES = new Set(['ws-clone.sh', 'ws-sync.sh', 'ws-fetch.sh']);
 /** What the host waits past a script's own limit before it gives up on the command. */
@@ -120,7 +127,8 @@ export function sandboxScripts(d: ScriptsDeps) {
       async run(script, args, o) {
         const cap = HELPER_SECONDS[script];
         if (!cap) throw new Error(`${script} does not run in a helper container`);
-        const seconds = o.timeoutMs > 0 ? Math.min(cap, Math.max(1, Math.ceil(o.timeoutMs / 1000))) : cap;
+        const asked = Math.max(1, Math.ceil(o.timeoutMs / 1000));
+        const seconds = o.timeoutMs > 0 ? (UNCAPPED.has(script) ? asked : Math.min(cap, asked)) : cap;
         const argv = inHelper(person, [bin(script), ...args], { network: FETCHES.has(script), seconds, stdin: o.stdin !== undefined, binds });
         const span = d.tm.start('sandbox.helper', { data: { script } });
         const t0 = Date.now();

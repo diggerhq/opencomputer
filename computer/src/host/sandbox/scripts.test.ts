@@ -60,14 +60,16 @@ describe('workspace scripts in containers (work 103, C12)', () => {
 
   it('a helper is a container of its own in a scope, never longer than the table says, with a network only to fetch', async () => {
     const t = rig();
-    await t.s.helperScripts('pat').run('ws-clone.sh', ['/clones', 'alpha', 'https://x/a.git', '', ''], { timeoutMs: 1_800_000 });
+    // A clone has the caller's limit, 30 min for itself and for each setup command, and no cap of its own.
+    await t.s.helperScripts('pat').run('ws-clone.sh', ['/clones', 'alpha', 'https://x/a.git', '', ''], { timeoutMs: 3 * 1_800_000 });
     await t.s.helperScripts('pat', [{ src: '/data/people/pat/sessions/k', dst: '/workspace', ro: true }]).run('ws-inspect.sh', ['--only=state', '/clones', '/workspace', 'alpha'], { timeoutMs: 5_000, stdin: '1\tx\n' });
     const [clone, inspect] = t.runs;
     expect(clone.argv.slice(0, 3)).toEqual(['/usr/bin/systemd-run', '--user', '--scope']);
-    expect(clone.argv).toEqual(expect.arrayContaining(['/usr/bin/podman', 'run', '--rm', '--network=pasta', '--timeout', String(HELPER_SECONDS['ws-clone.sh']), '/data/people/pat/ws:/clones']));
+    expect(clone.argv).toEqual(expect.arrayContaining(['/usr/bin/podman', 'run', '--rm', '--network=pasta', '--timeout', '5400', '/data/people/pat/ws:/clones']));
     expect(clone.argv).not.toContain('--interactive');
     expect(clone.argv.slice(-6)).toEqual([`${BIN}/ws-clone.sh`, '/clones', 'alpha', 'https://x/a.git', '', '']);
-    expect(clone.o.timeoutMs).toBe(615_000);
+    expect(clone.o.timeoutMs).toBe(5_415_000);
+    expect(HELPER_SECONDS['ws-sync.sh']).toBe(120);
     expect(inspect.argv).toEqual(expect.arrayContaining(['--network=none', '--interactive', '--timeout', '5', '/data/people/pat/sessions/k:/workspace:ro']));
     expect(inspect.o).toEqual({ timeoutMs: 20_000, stdin: '1\tx\n' });
     const events = (await t.events()).filter((e) => e.event_name === 'sandbox.helper');
