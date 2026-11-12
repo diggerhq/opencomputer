@@ -16,10 +16,11 @@
 // - A stale-epoch drop is reported once per session and epoch (a runner stuck
 //   on an old epoch must not become one event per frame).
 
-import { readdir, stat } from 'node:fs/promises';
-import path from 'node:path';
+import { lstat, readdir } from 'node:fs/promises';
 import { checkCliForward } from '../api/cli-telemetry.js';
+import { journalIn } from '../api/journal-dir.js';
 import { checkWireEvent } from '../api/wire-events.js';
+import { isSessionId } from '../session-ids.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 import { MirrorMeter } from './mirror-meter.js';
 
@@ -109,7 +110,12 @@ export function apiMeter(t: Telemetry, o: ApiMeterOptions) {
   async function journalBytes(): Promise<number | undefined> {
     const read = (async () => {
       let total = 0;
-      for (const n of await readdir(o.journals)) if (n.endsWith('.jsonl')) total += (await stat(path.join(o.journals, n)).catch(() => undefined))?.size ?? 0;
+      // One directory per session (journal-dir.ts); lstat: a link a session planted is not measured.
+      for (const n of await readdir(o.journals)) {
+        if (!isSessionId(n)) continue;
+        const st = await lstat(journalIn(o.journals, n)).catch(() => undefined);
+        if (st?.isFile()) total += st.size;
+      }
       return total;
     })().catch(() => undefined);
     const late = new Promise<undefined>((r) => setTimeout(() => r(undefined), 1000).unref?.());

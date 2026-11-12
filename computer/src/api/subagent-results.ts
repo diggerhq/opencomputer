@@ -13,9 +13,10 @@
 //   the journal, as the runner and the host's writer run as different users.
 // - Never in memory past the call that reads it; never deleted (journals are not).
 
-import { chmodSync, closeSync, fchmodSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, fchmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { isId } from '../session-ids.js';
+import { OPEN, openRegular, readRegular } from './journal-dir.js';
 
 const dirOf = (journal: string) => `${journal}.results`;
 
@@ -26,10 +27,11 @@ export function saveResult(journal: string, subagentId: string, text: string): v
   try {
     chmodSync(dir, 0o770); // the umask may have masked the group bits
   } catch {} // made by the other writer, who owns it
+  if (!lstatSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`); // a link planted in the session's directory (journal-dir.ts)
   const file = path.join(dir, subagentId);
   const tmp = `${file}.tmp`;
   rmSync(tmp, { force: true });
-  const fd = openSync(tmp, 'w', 0o660);
+  const fd = openRegular(tmp, OPEN.create);
   try {
     try {
       fchmodSync(fd, 0o660);
@@ -45,7 +47,7 @@ export function saveResult(journal: string, subagentId: string, text: string): v
 export function loadResult(journal: string, subagentId: string): string | undefined {
   if (!isId('sa', subagentId)) return undefined;
   try {
-    return readFileSync(path.join(dirOf(journal), subagentId), 'utf8');
+    return readRegular(path.join(dirOf(journal), subagentId)).toString('utf8');
   } catch {
     return undefined;
   }
