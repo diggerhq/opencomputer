@@ -28,6 +28,11 @@
 #   fills its root disk with images.
 # - `image` succeeds only with the image present and warm. provision.sh switches
 #   `current` after it, so a computer never runs a release whose image it lacks.
+# - `image` holds an exclusive flock on $IMAGE_LOCK while it pulls and warms:
+#   both hold Podman's storage lock, and with it every Podman call of the
+#   agent, for minutes. The host waits for this lock before each of its own
+#   calls (src/host/sandbox/image-lock.ts) instead of timing out in them. The
+#   file is root's and only the host's group reads it: a session cannot hold it.
 # - `prune-images` never forces: an image a container still uses is refused by
 #   Podman and stays.
 set -euo pipefail
@@ -45,6 +50,9 @@ STORAGE="$DATA/containers/storage"
 # The agent's first subordinate ids where it has none. Nothing may assume this
 # range: whoever needs it reads /etc/subuid.
 SUBIDS=165536:65536
+# The same path in src/host/sandbox/image-lock.ts.
+IMAGE_LOCK=/run/slack-presence-image.lock
+HOST_USER="${HOST_USER:-sp-host}"
 
 log() { printf '\n== sandbox: %s\n' "$*"; }
 die() { echo "sandbox: $*" >&2; exit 1; }
@@ -153,9 +161,25 @@ EOF
 # image (113 s for 3.77 GB on a 2 vCPU computer, against 0.2 s afterwards), and
 # the storage lock holds every other Podman call meanwhile. Paying that here,
 # before the release runs, keeps it out of a person's first message.
+#
+# Measured with sessions alive (2 vCPU, 3.78 GB): exec, stop, start, create,
+# rm, ps and inspect of other containers each waited the 124 s of a warm-up,
+# and up to 13 s while one 300 MB layer was applied. Hence the lock.
 image() {
-  local ref="${1:?usage: sandbox.sh image <ref>}" try t0=$SECONDS
+  local ref="${1:?usage: sandbox.sh image <ref>}" try t0=$SECONDS group=root
   [[ $ref == "$REPOSITORY":* ]] || die "$ref is not a tag of $REPOSITORY"
+  # The lock ends with this process, whatever ends it, and sudo closes it for what
+  # `pm` starts, so nothing of Podman's can keep it. The file is there only while
+  # a run works (the host's check is then one stat, 7 ms of flock(1) otherwise),
+  # so a run that waited for another finds its file gone and takes the next one.
+  getent group "$HOST_USER" >/dev/null && group="$HOST_USER"
+  while :; do
+    [[ -e $IMAGE_LOCK ]] || install -m 0640 -o root -g "$group" /dev/null "$IMAGE_LOCK"
+    exec 9<"$IMAGE_LOCK" || continue
+    flock 9
+    [[ /dev/fd/9 -ef $IMAGE_LOCK ]] && break
+    exec 9<&-
+  done
   if ! pm image exists "$ref"; then
     log "pulling $ref"
     for try in 1 2 3; do
@@ -168,6 +192,8 @@ image() {
   pm rm --ignore sp-warm >/dev/null
   pm create --name sp-warm "--userns=keep-id:uid=$AGENT_UID,gid=$AGENT_UID" "$ref" >/dev/null
   pm rm sp-warm >/dev/null
+  rm -f "$IMAGE_LOCK"
+  exec 9<&-
   echo "image $ref present and warm ($(( SECONDS - t0 )) s)"
 }
 

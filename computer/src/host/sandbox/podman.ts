@@ -21,6 +21,7 @@
 //   2 s later), or 3 s after the timeout at the latest.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import { imageSettled } from './image-lock.js';
 
 export const PODMAN = '/usr/bin/podman';
 
@@ -97,8 +98,9 @@ export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: 
 }
 
 /** `sudo`: `runnerUser(env).sudo`, the prefix that makes a command the runners' user's. */
-export function asRunner(sudo: string[], exec?: Exec): AsRunner {
+export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<void> = imageSettled): AsRunner {
   const run = (argv: string[], o: RunOptions) =>
     argv[0]?.startsWith('/') ? runBounded(sudo, argv, o, exec) : Promise.reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
-  return { run, podman: (args, o) => run([PODMAN, ...args], o) };
+  // A Podman call's time starts once provisioning is not holding the storage (image-lock.ts).
+  return { run, podman: (args, o) => settled().then(() => run([PODMAN, ...args], o)) };
 }
