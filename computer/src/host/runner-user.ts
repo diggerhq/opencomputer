@@ -9,6 +9,8 @@ import { execFileSync } from 'node:child_process';
 export interface RunnerUser {
   /** Goes before systemd-run. */
   sudo: string[];
+  /** Their uid: what a socket of theirs belongs to. */
+  uid: number;
   /** The user's own HOME, USER, SHELL (and PATH, when the host's differs), over the host's. */
   env: Record<string, string>;
 }
@@ -35,6 +37,7 @@ export function runnerUser(env: RunnerUserEnv, passwd = (n: string) => execFileS
     const run = `/run/user/${uid}`;
     // sudoers keeps these two (env_keep), so systemd-run --user finds agent's manager.
     u = {
+      uid: Number(uid),
       sudo: [SUDO, '-n', '-u', name, `XDG_RUNTIME_DIR=${run}`, `DBUS_SESSION_BUS_ADDRESS=unix:path=${run}/bus`],
       env: { HOME: home, USER: name, SHELL: shell || '/bin/bash', ...(env.SP_RUNNER_PATH ? { PATH: env.SP_RUNNER_PATH } : {}) },
     };

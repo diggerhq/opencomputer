@@ -39,11 +39,16 @@ export class FileLock {
     });
   }
 
-  /** Hold an exclusive flock on `file` until `release` or this process ends. */
-  static take(file: string, waitMs = 0, flock = FLOCK): Promise<FileLock> {
+  /**
+   * Hold an exclusive flock on `file` until `release` or this process ends. With `fd` (the file, already open), the
+   * child locks that file through its descriptor and never resolves the name, which a session may have replaced.
+   */
+  static take(file: string, waitMs = 0, flock = FLOCK, fd?: number): Promise<FileLock> {
     const wait = waitMs > 0 ? ['-w', String(Math.max(waitMs / 1000, 0.001))] : ['-n'];
-    const child = spawn(flock, ['-x', ...wait, '-E', String(CONFLICT), '-o', file, 'sh', '-c', 'echo locked; exec cat'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    // /dev/fd/3 opens the file anew (its own open file description), so the lock is the child's, not this process's.
+    const target = fd === undefined ? file : '/dev/fd/3';
+    const child = spawn(flock, ['-x', ...wait, '-E', String(CONFLICT), '-o', target, 'sh', '-c', 'echo locked; exec cat'], {
+      stdio: fd === undefined ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', fd],
     });
     return new Promise((resolve, reject) => {
       let out = '';

@@ -25,6 +25,10 @@
 #   - $SP_RUN: sp-host's, group agent (setgid); runners/ and secrets/ group-writable
 #     (the one tmpfiles entry, `run_dirs` below; provision.sh writes it through `run-dirs`)
 #   - <SP_DATA>/state and $SP_RUN/traces: sp-host's (identity, telemetry spool, model routes, traces)
+#   - sessions in containers (work 103): $SP_RUN/sandbox and $SP_RUN/helper, the host's and
+#     read-only to the group; <SP_DATA>/state/sandboxes, the host's alone; <SP_DATA>/journals,
+#     the host's with group agent and no group write, once every runner writes its journal into
+#     the directory the host made for its session (`journals_dir` below)
 #   - the metadata service blocked for sp-host and modelproxy too
 #   - the client relay (work 084): sp-host joins group sp-wire (provision.sh makes
 #     it), so the host's wire socket ($SP_RUN/wire/wire.sock) can be sp-wire's and
@@ -80,8 +84,34 @@ d $SP_RUN 2750 $1 $AGENT_USER -
 d $SP_RUN/runners 2770 $1 $AGENT_USER -
 d $SP_RUN/secrets 2770 $1 $AGENT_USER -
 d $SP_RUN/traces 0700 $1 $1 -
+d $SP_RUN/sandbox 2750 $1 $AGENT_USER -
+d $SP_RUN/helper 2750 $1 $AGENT_USER -
 EOF
   systemd-tmpfiles --create /etc/tmpfiles.d/slack-presence.conf
+}
+
+# <SP_DATA>/journals. Sessions must not make names there (work 103, C8): the host makes
+# journals/<session>/ and a runner writes only inside its own. That needs the host's code to
+# make those directories (src/api/journal-dir.ts in the release) and no runner left from a
+# release before it: such a runner still creates its checkpoint files in journals/ itself, as
+# agent, and would lose them. Until both hold the directory stays as provision.sh made it
+# (agent's, group-writable), and a later run tightens it.
+journals_dir() {
+  local dir="$DATA/journals" r releases
+  [[ -d $dir ]] || return 0
+  if [[ $1 == "$HOST_USER" && -e $SP_CURRENT/src/api/journal-dir.ts ]]; then
+    releases="$(dirname "$(readlink -f "$SP_CURRENT")")"
+    for r in "$releases"/*/; do
+      [[ -e ${r}src/api/journal-dir.ts ]] && continue
+      if grep -qsF "${r%/}" /proc/[0-9]*/cmdline; then
+        echo "sp-host: $dir stays group-writable: a runner of ${r%/} still writes there"
+        return 0
+      fi
+    done
+    [[ $(stat -c '%U:%G %a' "$dir") == "$HOST_USER:$AGENT_USER 2750" ]] || { chown "$HOST_USER:$AGENT_USER" "$dir"; chmod 2750 "$dir"; }
+  else
+    [[ $(stat -c '%U:%G %a' "$dir") == "$AGENT_USER:$AGENT_USER 2770" ]] || { chown "$AGENT_USER:$AGENT_USER" "$dir"; chmod 2770 "$dir"; }
+  fi
 }
 
 # Everything but the switch itself; safe to repeat, and run by provision.sh on a migrated computer.
@@ -147,6 +177,9 @@ EOF
   # Symlinks a session planted there while the state was agent's would be followed by the host's writes.
   find "$DATA/state" -type l -delete
   chown -R "$HOST_USER:$HOST_USER" "$DATA/state" "$SP_RUN/traces"
+  # The sandbox records (work 103): what the host knows about each session's container.
+  install -d -m 0700 -o "$HOST_USER" -g "$HOST_USER" "$DATA/state/sandboxes"
+  journals_dir "$HOST_USER"
   # Traces of hosts before: telemetry only, and in a directory sessions can write to now.
   rm -f "$SP_RUN"/runners/*.trace.json
   # The runners' sockets: the new host dials them.
@@ -200,6 +233,7 @@ revert() {
   rm -f "$DROPIN" "$MARK"
   run_dirs "$AGENT_USER"
   chown -R "$AGENT_USER:$AGENT_USER" "$DATA/state" "$SP_RUN/traces"
+  journals_dir "$AGENT_USER"
   chown "$AGENT_USER" "$SP_RUN"/token.sock 2>/dev/null || true
   systemctl daemon-reload
   systemctl start "$UNIT"

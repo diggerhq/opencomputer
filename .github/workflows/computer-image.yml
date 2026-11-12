@@ -1,0 +1,144 @@
+name: Computer image
+
+# The session image of a computer (computer/deploy/image, work 103), built for
+# linux/amd64 and pushed to ghcr.io/diggerhq/computer-session:<tag>. The tag is
+# the git tree hash of computer/deploy/image, a content address: a build is
+# skipped when its tag exists, a branch's image harms nothing, and a test
+# computer on that branch finds it. Runs on a push to any branch (never a tag:
+# path filters are not evaluated for tag pushes, hence `branches`) and by hand
+# (workflow_dispatch, for a branch whose pushes did not touch these paths); a
+# pull request from a fork builds and tests without pushing. The only
+# credential is GITHUB_TOKEN.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - computer/deploy/image/**
+      - .github/workflows/computer-image.yml
+  pull_request:
+    paths:
+      - computer/deploy/image/**
+      - .github/workflows/computer-image.yml
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/diggerhq/computer-session
+  CONTEXT: computer/deploy/image
+
+jobs:
+  # The tag, in a job of its own so that the build's concurrency group can name it.
+  tag:
+    name: Tag
+    # A branch of this repository is built by its push; only forks need the pull request.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tree: ${{ steps.tag.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tag
+        id: tag
+        run: echo "tree=$(git rev-parse "HEAD:$CONTEXT")" >> "$GITHUB_OUTPUT"
+
+  image:
+    name: Build and push
+    needs: tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    # One build per tag at a time, whatever the branch: the second finds the
+    # tag and skips. A pull request never pushes, so it has a group of its own.
+    concurrency:
+      group: computer-image-${{ github.event_name == 'pull_request' && github.run_id || needs.tag.outputs.tree }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tag
+        id: tag
+        env:
+          TREE: ${{ needs.tag.outputs.tree }}
+        run: |
+          # The checkout is the one the tag job hashed.
+          test "$(git rev-parse "HEAD:$CONTEXT")" = "$TREE"
+          echo "ref=$IMAGE:$TREE" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Is the tag there already?
+        id: exists
+        env:
+          REF: ${{ steps.tag.outputs.ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Missing only when the registry says so. Any other failure (a 5xx,
+          # a timeout, a refused login) must not lead to a build that pushes
+          # over a tag that may exist: the tag is a content address.
+          if err="$(docker manifest inspect "$REF" 2>&1 >/dev/null)"; then
+            echo "$REF exists; nothing to build"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          elif grep -qiE 'manifest unknown|no such manifest|name unknown' <<<"$err"; then
+            echo "$REF is not in the registry; building"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          elif [[ $EVENT == pull_request ]]; then
+            # Not logged in and never pushes: build and test whatever the registry said.
+            echo "::warning::could not look up $REF; building without pushing: $err"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::could not tell whether $REF exists: $err"
+            exit 1
+          fi
+
+      - name: Build
+        if: steps.exists.outputs.found == 'false'
+        env:
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          args=()
+          while IFS= read -r line; do
+            case $line in ''|'#'*) continue ;; esac
+            args+=(--build-arg "$line")
+          done < "$CONTEXT/versions.env"
+          docker build --platform linux/amd64 "${args[@]}" -f "$CONTEXT/Containerfile" -t "$REF" "$CONTEXT"
+
+      # The image's own check (work 103, step 1), as the user the image declares.
+      - name: Test
+        if: steps.exists.outputs.found == 'false'
+        env:
+          REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          docker run --rm --entrypoint /bin/bash "$REF" -euc '
+            test "$(id -u):$(id -g)" = 1500:1500
+            node --version; go version; python3 --version; uv --version
+            "$SP_REAL_GH" --version; "$SP_REAL_OPENCOMPUTER" --version; "$SP_CODEX_BIN" --version; claude --version
+            podman --version; docker --version; git config --system --get-all safe.directory
+            sudo -n true
+            test "$(stat -c %u:%g ~/.local/share/containers ~/.local/bin ~/.cache ~/go /workspace /clones | sort -u)" = 1500:1500
+            playwright screenshot --browser chromium "data:text/html,<h1>session image</h1>" /tmp/shot.png
+            test -s /tmp/shot.png
+          '
+          # No boot file: the entrypoint says so with 71.
+          code=0; docker run --rm --env SP_RUN=/nonexistent "$REF" || code=$?
+          test "$code" = 71
+
+      - name: Push
+        if: github.event_name != 'pull_request' && steps.exists.outputs.found == 'false'
+        env:
+          REF: ${{ steps.tag.outputs.ref }}
+        run: docker push "$REF"

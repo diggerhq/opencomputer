@@ -1,11 +1,15 @@
 // How the host starts a runner outside its own process tree: a transient
-// systemd user unit on Linux, a detached process elsewhere. The one place to
+// systemd user unit on Linux (the runner itself, or `podman start --attach`
+// of its container, work 103), a detached process elsewhere. The one place to
 // change how runners are launched.
 //
 // Invariants: a runner gets RUNNER_SPEC and every variable in RUNNER_ENV
 // (runner-env.ts), each set even when empty, never credentials (those go over
 // its socket); a systemd unit also inherits the user manager's environment,
-// which sessions can change, so nothing a runner reads is left to it.
+// which sessions can change, so nothing a runner reads is left to it. A
+// container's unit carries no environment at all: the container's is fixed at
+// its creation and by boot.env (sandbox/boot-env.ts). A `podman` launch never
+// falls back to anything else: without the bundle or the runners' user it throws.
 
 import os from 'node:os';
 import path from 'node:path';
@@ -18,14 +22,28 @@ import { definitionFile } from '../workspaces/index.js';
 import { systemdRunPrefix } from './runner-limits.js';
 import { runnerUser } from './runner-user.js';
 import { runnerVars } from '../runner-env.js';
+import { PODMAN, type PodmanError, runBounded } from './sandbox/podman.js';
+import { startArgs, unitName } from './sandbox/podman-args.js';
 
-export type LaunchMode = 'systemd' | 'detached';
+export type LaunchMode = 'systemd' | 'podman' | 'detached';
 
 const SYSTEMD_RUN = systemdRunPrefix(os.totalmem());
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The command that starts a runner from the release at `root`. */
-export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string) {
+export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, has: (p: string) => boolean = existsSync) {
+  if (how === 'podman') {
+    // The container exists already (sandbox/containers.ts); its unit only holds `podman start --attach`.
+    const as = runnerUser(env);
+    if (!as) throw new Error('podman launch: no runner user (SP_RUNNER_USER); deploy/vm/sp-host.sh sets one up');
+    const boot = path.join(root, 'dist/runner-boot.mjs');
+    if (!has(boot)) throw new Error(`podman launch: ${boot} is absent, and a container has no tsx fallback`);
+    if (!rs.id) throw new Error('podman launch: a runner without an id');
+    const [cmd, ...pre] = [...as.sudo, '--', ...(env.SP_SYSTEMD_RUN || SYSTEMD_RUN).trim().split(/\s+/)];
+    const args = [...pre, '-p', 'Delegate=yes', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=20', '-p', 'StandardOutput=null', '-p', 'StandardError=journal',
+      `--unit=${unitName(rs.id).replace(/\.service$/, '')}`, '--collect', '--quiet', '--', PODMAN, ...startArgs(rs.id)];
+    return { cmd, args, env: env as Record<string, string>, detached: false };
+  }
   // Every RUNNER_ENV variable, set even when empty: a systemd unit would otherwise take the user manager's, which sessions can change (runner-env.ts).
   const vars: Record<string, string> = { ...runnerVars(env), RUNNER_SPEC: JSON.stringify(rs), SP_RUN: HOST_RUN };
   // Linux sets no TMPDIR, and the system prompt points scratch work at $TMPDIR: an empty one
@@ -68,18 +86,33 @@ export function runnerCommand(root: string, has: (p: string) => boolean = exists
 /** The session's fork; a spare (work 069) has none yet and parks its Claude Code elsewhere. */
 const workingDirectory = (rs: RunnerSpec, env: NodeJS.ProcessEnv) => rs.session?.forkPath ?? env.HOME ?? os.homedir();
 
-/** Start the runner; resolves once it was spawned (not yet listening). */
-export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string) {
+/** Why a container's unit did not start, in a few words: the time it had, or the last thing systemd-run said. */
+export const unitFailure = (e: Partial<PodmanError>, timeoutMs: number) =>
+  e.timedOut ? `no answer in ${timeoutMs} ms` : String(e.stderr ?? '').trim().split('\n').pop() || `exit ${e.code ?? 'by a signal'}`;
+
+/** Start the runner; resolves once it was spawned (not yet listening). `timeoutMs` bounds each try of a unit's start. */
+export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, timeoutMs?: number) {
   const c = launchCommand(rs, how, env, root);
   if (!c.detached) {
-    // A unit named by session (no runner id) may still be held by a runner that just quit.
+    // A unit's name repeats (a session's before work 069, a thread's container since work 103): one may still be held by a runner that just quit.
+    // cwd: the runners' user cannot enter every directory the host runs in, and sudo keeps it.
+    // A container's unit starts under timeout(1) as the runners' user: a signal to sudo would not end systemd-run (sandbox/podman.ts).
+    const at = c.args.indexOf('--');
+    const start = how === 'podman'
+      ? () => runBounded([c.cmd, ...c.args.slice(0, at)], c.args.slice(at + 1), { timeoutMs: timeoutMs ?? 20_000 })
+      : () => promisify(execFile)(c.cmd, c.args, { env: c.env, cwd: '/' });
     for (let i = 0; ; i++)
       try {
-        await promisify(execFile)(c.cmd, c.args, { env: c.env });
+        await start();
         return;
       } catch (e: any) {
-        if (i >= 10 || !/already/.test(String(e?.stderr ?? e?.message))) throw e;
-        await sleep(300);
+        if (i < 10 && /already/.test(String(e?.stderr ?? e?.message))) {
+          await sleep(300);
+          continue;
+        }
+        // execFile's own message is the whole command line; a container's start says why instead (it reaches the gateway's reply).
+        if (how !== 'podman') throw e;
+        throw new Error(`unit ${unitName(rs.id!)} did not start: ${unitFailure(e, timeoutMs ?? 20_000)}`);
       }
   }
   // Own session and process group, output to a log file: survives the host.
