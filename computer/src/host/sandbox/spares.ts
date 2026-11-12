@@ -42,11 +42,16 @@
 //   provisioning holds it. None of what makes or binds a spare is
 //   `repeatable` there: a Create, the mount helper or the worktrees' exec
 //   that ran out of time behind the lock fails, and the spare is discarded.
-// - Topping up never competes with a delivery it could wait for: one spare is
-//   made at a time, none while a thread's start is in flight (`during`), and
-//   none until SETTLE_MS after the last one ended, so that new threads coming
-//   one after the other take the spares there are with nothing made beside
-//   them. A spare already being made when a delivery arrives is not held.
+// - Topping up does not compete with a delivery it can wait for: one spare is
+//   made at a time, none while a thread's start is in flight (`during`), and,
+//   while the pool still has a spare, none until SETTLE_MS after the last one
+//   ended, so that new threads coming one after the other take the spares
+//   there are with nothing made beside them. With no spare left there is
+//   nothing to protect: the next new thread starts cold, so the spare is made
+//   as soon as no start is in flight. A spare already being made when a
+//   delivery arrives is not held.
+// - Topping up is not starved by deliveries: a spare that has waited DEFER_MS
+//   for its moment is made beside whatever is starting.
 // - A spare is this host's by the run directory Create mounts into it, below
 //   this host's SP_RUN, like any container (containers.ts `inventory`). It is
 //   never adopted by a later host (C14): the host's start removes every
@@ -83,8 +88,10 @@ export interface SpareDeps {
   workspace: Pick<SandboxWorkspace, 'repos' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
   /** Connect to a runner's socket; undefined when nothing answers. */
   dial?: (socket: string) => Promise<net.Socket | undefined>;
-  /** How long after a thread's start no spare is made; SETTLE_MS unless given. */
+  /** How long after a thread's start no spare is made while the pool has one; SETTLE_MS unless given. */
   settleMs?: number;
+  /** How long a spare waits for its moment at most; DEFER_MS unless given. */
+  deferMs?: number;
 }
 
 /** A spare that listens, not yet adopted. */
@@ -114,6 +121,8 @@ export type SandboxSpares = ReturnType<typeof sandboxSpares>;
 
 /** Measured on 2 vCPU: a spare made beside a new thread's claim takes it from 0.6 s to 1.1 s; a claim ends within 1 s. */
 export const SETTLE_MS = 2000;
+/** Starts that keep coming for this long get a spare made beside them: five claims' worth of waiting, and less than a cold start's delay on the thread after the pool ran out. */
+export const DEFER_MS = 10_000;
 
 const fail = (why: string): never => {
   throw new Error(why);
@@ -126,6 +135,7 @@ export function sandboxSpares(d: SpareDeps) {
   const mine = new Set<string>();
   const leaving = new Map<string, Promise<void>>();
   const settleMs = d.settleMs ?? SETTLE_MS;
+  const deferMs = d.deferMs ?? DEFER_MS;
   let starts = 0;
   let lastStart = 0;
   const waiting: (() => void)[] = [];
@@ -144,16 +154,27 @@ export function sandboxSpares(d: SpareDeps) {
       return await fn();
     } finally {
       lastStart = Date.now();
-      if (!--starts) for (const go of waiting.splice(0)) go();
+      if (!--starts) wake();
     }
   }
+  /** Whoever waits for a moment to make a spare looks again: the last start ended, the pool changed, the host stops. */
+  const wake = () => {
+    for (const go of waiting.splice(0)) go();
+  };
+  /** Resolves when a spare may be made: no start in flight and, unless the pool is empty, settled; or DEFER_MS after it was asked. */
   const quiet = async () => {
+    const latest = Date.now() + deferMs;
     for (;;) {
-      if (closed) return;
-      if (starts) await new Promise<void>((r) => waiting.push(r));
-      const left = lastStart + settleMs - Date.now();
-      if (!starts && left <= 0) return;
-      if (left > 0) await new Promise((r) => setTimeout(r, left));
+      const now = Date.now();
+      if (closed || now >= latest) return;
+      const settle = starts || !mine.size ? 0 : lastStart + settleMs - now;
+      if (!starts && settle <= 0) return;
+      let timer: NodeJS.Timeout | undefined;
+      await new Promise<void>((r) => {
+        waiting.push(r);
+        timer = setTimeout(r, Math.min(latest - now, settle || latest - now));
+      });
+      clearTimeout(timer);
     }
   };
 
@@ -230,6 +251,7 @@ export function sandboxSpares(d: SpareDeps) {
    */
   async function bind(id: string, spec: SessionSpec, f: Dimensions): Promise<Bound> {
     if (!mine.delete(id)) throw new Error(`${id} is not a spare of this host`);
+    wake(); // the pool has one fewer: a refill that waited for the settle may not have to
     if (d.records.find(spec.owner.dir, spec.key)) throw new Error(`${spec.key} has a sandbox already: it resumes, it takes no spare`);
     const { sdkSessionId: _transcript, forkPath: _fork, ...session } = spec; // a new home has no transcript; the runner's fork is /workspace
     const now = new Date().toISOString();
@@ -262,7 +284,7 @@ export function sandboxSpares(d: SpareDeps) {
     /** The host stops: every spare leaves, the one being made once its step in flight ended, and none is made after. Never rejects. */
     async close(): Promise<void> {
       closed = true;
-      for (const go of waiting.splice(0)) go();
+      wake();
       await Promise.all([queue, ...[...mine].filter((id) => id !== making).map(drop), ...leaving.values()]);
     },
     during,

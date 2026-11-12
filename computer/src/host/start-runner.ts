@@ -36,7 +36,8 @@
 //   Removed, and the delivery starts cold under the record's id: a failed
 //   claim loses no delivery.
 // - On a `podman` host the pool is topped up once the start that took a spare
-//   has settled, never beside it.
+//   has ended, not beside it, unless starts kept coming for 10 s
+//   (sandbox/spares.ts `quiet`).
 
 import type net from 'node:net';
 import { randomBytes } from 'node:crypto';

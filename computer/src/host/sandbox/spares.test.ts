@@ -17,7 +17,7 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false, destroy: () => {} } as unknown as net.Socket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean } = {}) {
+function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean } = {}) {
   const log: string[] = [];
   const ups: { rs: RunnerSpec; record: unknown; mount: unknown }[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
@@ -60,6 +60,7 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
     },
     dial: o.dial ?? (async () => sock),
     settleMs: o.settleMs ?? 0,
+    deferMs: o.deferMs,
   };
   return { ...sandboxSpares(d), log, ups, records, locks, runRoot, tm };
 }
@@ -221,16 +222,66 @@ describe('a spare container', () => {
     expect(t.log).toEqual([`create ${a.id}`, `up ${a.id}`, `create ${b.id}`, `up ${b.id}`]);
   });
 
-  it('is not made until a while after the last thread start ended', async () => {
+  it('while the pool has a spare, is not made until a while after the last thread start ended', async () => {
     const t = rig({ settleMs: 60 });
+    await t.launch();
+    t.log.length = 0;
     await t.during(async () => {});
-    const first = t.launch();
+    const second = t.launch();
     await tick();
     await t.during(async () => {}); // another thread: the wait starts again
     await new Promise((r) => setTimeout(r, 40));
     expect(t.log).toEqual([]);
-    await first;
+    await second;
     expect(t.log).toHaveLength(2);
+  });
+
+  it('when the pool is empty, is made as soon as no thread starts: the next thread would start cold', async () => {
+    const t = rig({ settleMs: 60_000 });
+    let done!: () => void;
+    const start = t.during(() => new Promise<void>((r) => (done = r)));
+    const first = t.launch();
+    await tick();
+    expect(t.log).toEqual([]);
+    done();
+    await start;
+    await first; // not 60 s later
+    expect(t.log).toHaveLength(2);
+  });
+
+  it('the pool empties while a refill waits for the settle: the wait ends with the start that took the last spare', async () => {
+    const t = rig({ settleMs: 60_000 });
+    const { id } = await t.launch();
+    await t.during(async () => {});
+    const second = t.launch(); // waits: the pool has a spare
+    await tick();
+    t.log.length = 0;
+    await t.during(() => t.bind(id, spec, {}));
+    const s = await second;
+    expect(t.log.slice(-2)).toEqual([`create ${s.id}`, `up ${s.id}`]);
+  });
+
+  it('under a steady stream of thread starts it is made all the same, once it has waited long enough', async () => {
+    for (const spares of [0, 1]) {
+      const t = rig({ settleMs: 60_000, deferMs: 50 });
+      if (spares) await t.launch();
+      t.log.length = 0;
+      // Starts that overlap, so that one is in flight for as long as the test runs.
+      let more = true;
+      const stream = (async () => {
+        const all: Promise<unknown>[] = [];
+        while (more) all.push(t.during(() => new Promise((r) => setTimeout(r, 12)))), await tick();
+        await Promise.all(all);
+      })();
+      await tick();
+      const t0 = Date.now();
+      const s = await t.launch();
+      more = false;
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(45);
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(t.log).toEqual([`create ${s.id}`, `up ${s.id}`]);
+      await stream;
+    }
   });
 
   it('waits for the image lock before Create', async () => {
