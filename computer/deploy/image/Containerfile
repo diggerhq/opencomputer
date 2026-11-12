@@ -39,8 +39,10 @@ RUN apt-get update -q \
       python3 python3-venv python3-pip sqlite3 \
       tmux htop sudo util-linux iproute2 tini \
       ffmpeg fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
-      podman podman-docker podman-compose buildah crun uidmap fuse-overlayfs slirp4netns netavark aardvark-dns \
- && rm -rf /var/lib/apt/lists/*
+      podman podman-docker podman-compose buildah crun uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
+ && rm -rf /var/lib/apt/lists/* \
+ && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
+ && setcap cap_setuid=ep /usr/bin/newuidmap && setcap cap_setgid=ep /usr/bin/newgidmap
 
 # ---- Node.js, from the official tarball, checksum-verified
 ARG NODE_VERSION
@@ -117,6 +119,7 @@ COPY --chmod=0644 subuid /etc/subuid
 COPY --chmod=0644 subuid /etc/subgid
 COPY --chmod=0440 sudoers /etc/sudoers.d/agent
 COPY --chmod=0644 containers.conf /etc/containers/containers.conf
+COPY --chmod=0644 registries.conf /etc/containers/registries.conf
 COPY --chmod=0644 gitconfig /etc/gitconfig
 COPY --chmod=0755 sp-session-init /usr/local/bin/sp-session-init
 
