@@ -20,6 +20,11 @@
 # - The proxy runs as its own system user with no home and no write access
 #   outside its runtime directory, so a runner (uid agent) can neither read its
 #   memory nor its tokens.
+# - The proxy's profiles (its upstreams, modelproxy/profiles/*.json in the
+#   release) are installed with the binary that reads them or not at all:
+#   $PROFILES holds exactly the release's files once that binary has loaded
+#   them (`-check`). A set it refuses is a release without a working binary:
+#   the installed binary and its profiles both stay.
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
@@ -27,16 +32,34 @@ SP_CURRENT="${SP_CURRENT:-/opt/slack-presence/current}"
 BIN=/usr/local/libexec/oc-modelproxy
 USER_=modelproxy
 RUN=/run/oc-modelproxy
+PROFILES=/etc/oc-modelproxy/profiles.d
 
 [[ ${1:-} == install ]] || { echo "usage: modelproxy.sh install" >&2; exit 2; }
 
 getent group sp-host >/dev/null || groupadd --system sp-host
 id "$USER_" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$USER_"
 
+# The release's profiles, copied beside $PROFILES (root's, 0755 and 0644) and
+# loaded there by the release's binary; false when it refuses them. A release
+# without modelproxy/profiles/ has a proxy from before profiles: nothing to do.
+stage_profiles() {
+  local from="$SP_CURRENT/modelproxy/profiles" f why="" copied=1
+  [[ -d $from ]] || return 0
+  install -d -m 0755 -o root -g root "$(dirname "$PROFILES")" "$PROFILES.new" || copied=0
+  for f in "$from"/*.json; do
+    [[ ! -f $f || $copied == 0 ]] || install -m 0644 -o root -g root "$f" "$PROFILES.new/" || copied=0
+  done
+  if [[ $copied == 1 ]] && why="$("$src" -check -profiles "$PROFILES.new" 2>&1)"; then return 0; fi
+  echo "WARNING: oc-modelproxy does not load this release's profiles: ${why:-they could not be copied to $PROFILES.new}" >&2
+  rm -rf "$PROFILES.new"
+  return 1
+}
+
 # Install only a binary that answers --version (a bundle made without one, or
-# built for another platform, keeps whatever is installed).
+# built for another platform, keeps whatever is installed) and loads its profiles.
 src="$SP_CURRENT/modelproxy/oc-modelproxy"
-if [[ -f $src ]] && "$src" --version >/dev/null 2>&1; then
+rm -rf "$PROFILES.new" # of a run that died
+if [[ -f $src ]] && "$src" --version >/dev/null 2>&1 && stage_profiles; then
   if ! cmp -s "$src" "$BIN"; then
     install -D -m 0755 "$src" "$BIN"
     changed=1
@@ -51,6 +74,18 @@ cat > /etc/tmpfiles.d/oc-modelproxy.conf <<EOF
 d $RUN 0755 $USER_ $USER_ -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/oc-modelproxy.conf
+
+# The profiles staged above take the place of the installed ones: exactly the
+# release's files, so one dropped from a release is gone here. The proxy reads
+# them once at start, so a changed set restarts it like a changed binary.
+if [[ -d $PROFILES.new ]]; then
+  diff -rq "$PROFILES.new" "$PROFILES" >/dev/null 2>&1 || changed=1
+  rm -rf "$PROFILES.old"
+  [[ ! -e $PROFILES ]] || mv "$PROFILES" "$PROFILES.old"
+  mv "$PROFILES.new" "$PROFILES"
+  rm -rf "$PROFILES.old"
+  "$BIN" -check -profiles "$PROFILES" >&2 || { echo "WARNING: oc-modelproxy does not load $PROFILES; its units are left as they are" >&2; exit 0; }
+fi
 
 cat > /etc/systemd/system/oc-modelproxy-api.socket <<EOF
 # Written by deploy/vm/modelproxy.sh install.

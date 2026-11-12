@@ -145,7 +145,7 @@ Rules that hold:
 
 ## Who is calling
 
-`-identity=cgroup` (default): the caller is `<id>` of the `sp-runner-<id>.service` unit the connection's peer process runs in, read once from its cgroup when the connection is accepted. The outermost such unit in the path wins, so a process cannot rename itself by creating cgroups below its own. This is routing, not isolation: sessions that share a uid can move between each other's units, so do not put mutually untrusted tenants on one computer.
+`-identity=cgroup` (default): the caller is `<id>` of the `sp-runner-<id>.service` unit the connection's peer process runs in, read once from its cgroup when the connection is accepted. The path is matched from its root: only slices and `user@<uid>.service` may lead to `slack-presence-runners.slice`, and the element right below that slice must be the unit. Nothing further down is read, so a session cannot rename itself by creating cgroups below its own unit, which is all it can create: a session in a container owns that subtree and sees nothing else of the hierarchy. With `-caller-uid`, a peer of any other uid is no caller; in a session's container those are its subordinate ids (its root, for one). The root of a container the session nests as its own user maps to that user's uid again (1500), not to a subordinate id, so it is a caller, and its session's: the uid separates the sessions' user from everything else, the cgroup one session from another. Sessions that run as plain units of one user, without containers, can move between each other's units: there this is routing, not isolation.
 
 `-identity=single`: every connection is the caller `single`. For a computer that runs one session outside systemd.
 
@@ -153,12 +153,13 @@ Rules that hold:
 
 | Flag | Default | |
 |---|---|---|
-| `-api-socket` | `/run/oc-modelproxy/api.sock` | the model clients' socket, when not socket-activated |
+| `-api-socket` | `/run/oc-modelproxy/api/api.sock` | the model clients' socket, when not socket-activated. In a directory of its own, so that a session's container can mount that directory and nothing else of the proxy's |
 | `-control-socket` | `/run/oc-modelproxy/control.sock` | the binder's socket, when not socket-activated |
 | `-profiles` | `/etc/oc-modelproxy/profiles.d` | directory of profile files |
 | `-check` | | load `-profiles`, print the first error, exit 0 or 1 |
 | `-placeholder` | `ssh-placeholder` | the only credential a caller may send |
 | `-identity` | `cgroup` | `cgroup` or `single` |
+| `-caller-uid` | `-1` (any) | with `-identity=cgroup`, the only uid a caller may have |
 | `-bindings-file` | `/run/oc-modelproxy/profile-bindings.json` | persisted bindings, without variables (empty: off) |
 | `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for an upstream connection |
 | `-drain-timeout` | `630s` | on SIGTERM, how long streams in flight may finish |
