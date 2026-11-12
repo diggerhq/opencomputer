@@ -91,6 +91,24 @@ describe('host previews', () => {
       expect(ports.all()).toEqual([]);
     });
 
+    it('unpreview: only a name of the caller\'s own sandbox; for any other the gateway is not asked and nothing is freed', async () => {
+      const { p, asked, ports } = rig(named);
+      await p.request('C1:1.2', { t: 'preview', id: 'r1', req: { port: 5173 } }, 'aaaa');
+      expect(await p.request('C1:3.4', { t: 'unpreview', id: 'r2', req: { name: 'demo' } }, 'bbbb')).toEqual({ t: 'previewed', id: 'r2', error: 'no preview named demo in this session' });
+      expect(await p.request('C1:3.4', { t: 'unpreview', id: 'r3', req: { name: 'never' } }, 'bbbb')).toEqual({ t: 'previewed', id: 'r3', error: 'no preview named never in this session' });
+      expect(asked.map((m) => m.t)).toEqual(['preview']);
+      expect(ports.all()).toHaveLength(1);
+    });
+
+    it('forget: a removed sandbox\'s name is unpreviewed at the gateway by the host itself, and a gateway that is away fails nothing', async () => {
+      const { p, asked } = rig(named);
+      p.forget('demo', 'C1:1.2');
+      expect(asked).toMatchObject([{ t: 'unpreview', from: 'C1:1.2', req: { name: 'demo' } }]);
+      const away = hostPreviews({ ask: () => false, tunnel: tunnel() });
+      expect(() => away.forget('demo', '')).not.toThrow();
+      await new Promise((r) => setImmediate(r));
+    });
+
     it('never previews a port of the host: a request that names no sandbox is refused before the gateway hears of it', async () => {
       const { p, asked } = rig(named);
       expect(await p.request('k', { t: 'preview', id: 'r1', req: { port: 22 } })).toEqual({ t: 'previewed', id: 'r1', error: 'this computer previews only sessions that run in a container' });

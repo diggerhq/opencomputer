@@ -18,6 +18,13 @@ export interface HostFigures {
   since_gateway_message_s?: number;
   telemetry_spooled_bytes: number;
   telemetry_dropped: number;
+  /** Work 103, a `podman` host as of its last sweep (sandbox/sweep.ts `SandboxHealth`). */
+  containers_running?: number;
+  containers_exited?: number;
+  containers_created?: number;
+  containers_other?: number;
+  data_used_pct?: number;
+  podman_bytes?: number;
 }
 
 interface CpuTimes {

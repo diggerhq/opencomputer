@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { imageSettled } from './image-lock.js';
-import { asRunner, type Exec } from './podman.js';
+import { imageBusy, imageSettled } from './image-lock.js';
+import { asRunner, type Exec, PodmanError } from './podman.js';
 
 describe('imageSettled', () => {
   it('costs nothing where provisioning never took the lock', async () => {
@@ -18,6 +18,32 @@ describe('imageSettled', () => {
     await expect(imageSettled({ lock: '/run/x.lock', waitS: 7, exists: () => true, flock })).resolves.toBeUndefined();
     expect(flock.mock.calls[0][0]).toEqual(['--shared', '--timeout', '7', '/run/x.lock', '/usr/bin/true']);
     await expect(imageSettled({ exists: () => true, flock: async () => undefined })).resolves.toBeUndefined();
+  });
+
+  it('after a wait that was a real one, waits for a run queued behind it too; within the one bound', async () => {
+    let t = 0;
+    const waits = [40_000, 30_000, 5];
+    const flock = vi.fn(async (_: string[]) => ((t += waits.shift() ?? 0), 0));
+    await imageSettled({ waitS: 100, exists: () => true, flock, now: () => t, nextMs: 1 });
+    expect(flock.mock.calls.map((c) => c[0][2])).toEqual(['100', '60', '30']);
+    // The file left behind by a run that died: one flock, no second look.
+    const left = vi.fn(async () => 0);
+    await imageSettled({ exists: () => true, flock: left, now: () => 0, nextMs: 1 });
+    expect(left).toHaveBeenCalledTimes(1);
+    // The bound is for all of it.
+    t = 0;
+    const long = vi.fn(async (_: string[]) => ((t += 60_000), 0));
+    await imageSettled({ waitS: 100, exists: () => true, flock: long, now: () => t, nextMs: 1 });
+    expect(long).toHaveBeenCalledTimes(2);
+  });
+
+  it('busy: only while the file is there and held', async () => {
+    expect(await imageBusy({ exists: () => false })).toBe(false);
+    expect(await imageBusy({ exists: () => true, flock: async () => 0 })).toBe(false);
+    expect(await imageBusy({ exists: () => true, flock: async () => undefined })).toBe(false);
+    const flock = vi.fn(async (_: string[]) => 1);
+    expect(await imageBusy({ lock: '/run/x.lock', exists: () => true, flock })).toBe(true);
+    expect(flock.mock.calls[0][0]).toEqual(['--shared', '--nonblock', '/run/x.lock', '/usr/bin/true']);
   });
 
   it.runIf(existsSync('/usr/bin/flock'))('waits for as long as the lock is held', async () => {
@@ -62,5 +88,40 @@ describe('asRunner with the image lock', () => {
     free();
     await call;
     expect(started).toEqual(['other', 'podman']);
+  });
+
+  it('a Podman call that ran out of time while provisioning holds the lock is made once more, after the wait; never otherwise', async () => {
+    const rig = (busy: boolean, fail: (n: number) => Error | null) => {
+      const log: string[] = [];
+      let n = 0;
+      const exec = ((_cmd: string, _args: string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+        log.push('podman');
+        const e = fail(n++);
+        if (e) queueMicrotask(() => cb(e, '', ''));
+        else queueMicrotask(() => cb(null, 'ok', ''));
+        return { kill: () => {} };
+      }) as unknown as Exec;
+      return { log, as: asRunner(['/usr/bin/sudo'], exec, async () => void log.push('settled'), async () => (log.push('busy?'), busy)) };
+    };
+    const failed = rig(true, () => Object.assign(new Error('exit 125'), { code: 125 }));
+    await expect(failed.as.podman(['ps'], { timeoutMs: 1000 })).rejects.toThrow(PodmanError);
+    expect(failed.log).toEqual(['settled', 'podman']);
+    // Timing out is the host's own timer: 20 ms, and a command that ends only when it is killed.
+    const slow = (busy: boolean) => {
+      const log: string[] = [];
+      let n = 0;
+      const exec = ((_cmd: string, _args: string[], _o: unknown, cb: (e: Error | null, out: string, err: string) => void) => {
+        log.push('podman');
+        if (n++) queueMicrotask(() => cb(null, 'ok', ''));
+        return { kill: () => cb(new Error('killed'), '', '') };
+      }) as unknown as Exec;
+      return { log, as: asRunner(['/usr/bin/sudo'], exec, async () => void log.push('settled'), async () => (log.push('busy?'), busy)) };
+    };
+    const held = slow(true);
+    expect(await held.as.podman(['ps'], { timeoutMs: 20 })).toBe('ok');
+    expect(held.log).toEqual(['settled', 'podman', 'busy?', 'settled', 'podman']);
+    const free = slow(false);
+    await expect(free.as.podman(['ps'], { timeoutMs: 20 })).rejects.toMatchObject({ timedOut: true });
+    expect(free.log).toEqual(['settled', 'podman', 'busy?']);
   });
 });

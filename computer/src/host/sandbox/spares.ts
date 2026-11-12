@@ -21,21 +21,23 @@
 //   goes with it; one whose record was written keeps the record and the run
 //   directory, and the thread's next start creates a container under the same
 //   id (start.ts, the resume).
-// - Every Podman call here goes through `as.podman` (podman.ts), which waits
-//   for the image lock: no spare is created while provisioning holds it.
+// - Every Podman call here goes through containers.ts and so `as.podman`
+//   (podman.ts), which waits for the image lock: no spare is created while
+//   provisioning holds it.
 // - Topping up never competes with a delivery it could wait for: one spare is
 //   made at a time, none while a thread's start is in flight (`during`), and
 //   none until SETTLE_MS after the last one ended, so that new threads coming
 //   one after the other take the spares there are with nothing made beside
 //   them. A spare already being made when a delivery arrives is not held.
-// - `clear` removes only containers of this host (their run directory, which
-//   Create mounts, is below this host's SP_RUN) that have no record: another
-//   host of the same runners' user keeps its own.
+// - A spare is this host's by the run directory Create mounts into it, below
+//   this host's SP_RUN, like any container (containers.ts `inventory`). It is
+//   never adopted by a later host (C14): the host's start removes every
+//   container of its own that has no record, and the sweep removes one older
+//   than its age that has no record and no connected runner (sweep.ts).
 
 import type net from 'node:net';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { rmSync } from 'node:fs';
 import type { RunnerSpec, SessionSpec } from '../../protocol.js';
 import type { RunnerApi } from '../../protocol-api.js';
 import { type RunRoot, socketFor } from '../../ipc.js';
@@ -44,16 +46,15 @@ import type { Telemetry } from '../../telemetry/emitter.js';
 import type { Dimensions } from '../../telemetry/envelope.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
 import type { Containers } from './containers.js';
-import type { AsRunner } from './podman.js';
-import { emptyRunArgs } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
 import type { SandboxWorkspace } from './workspace.js';
 
 export interface SpareDeps {
   tm: Telemetry;
   records: Records;
-  as: Pick<AsRunner, 'podman'>;
-  containers: Pick<Containers, 'create' | 'up' | 'pid' | 'remove' | 'inventory' | 'diagnose'>;
+  containers: Pick<Containers, 'create' | 'up' | 'pid' | 'remove' | 'diagnose'>;
+  /** Delete a run directory (sweep.ts); never rejects. */
+  deleteRun(id: string): Promise<unknown>;
   runRoot(id: string): RunRoot;
   version: string;
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
@@ -90,7 +91,6 @@ export interface Bound {
 
 export type SandboxSpares = ReturnType<typeof sandboxSpares>;
 
-const RM_TIMEOUT_MS = 30_000;
 /** Measured on 2 vCPU: a spare made beside a new thread's claim takes it from 0.6 s to 1.1 s; a claim ends within 1 s. */
 export const SETTLE_MS = 2000;
 
@@ -105,7 +105,6 @@ export function sandboxSpares(d: SpareDeps) {
   let lastStart = 0;
   const waiting: (() => void)[] = [];
   let queue: Promise<unknown> = Promise.resolve();
-  let cleared: Promise<void> = Promise.resolve();
 
   /** A thread's start: no spare is made while one is in flight. */
   async function during<T>(fn: () => Promise<T>): Promise<T> {
@@ -126,17 +125,6 @@ export function sandboxSpares(d: SpareDeps) {
     }
   };
 
-  /** What a container that served no thread leaves in its run directory, then the directory. */
-  async function rmRun(id: string) {
-    const run = d.runRoot(id);
-    await d.as.podman(emptyRunArgs(run), { timeoutMs: RM_TIMEOUT_MS }).catch(() => {}); // nothing there: nothing to empty
-    try {
-      rmSync(run, { recursive: true, force: true });
-    } catch (e) {
-      log.warn(`run directory of spare ${id} not removed: ${(e as Error)?.message ?? e}`);
-    }
-  }
-
   /** Remove (container and home); the run directory too unless a record says the id is a thread's. Once per id at a time; never rejects. */
   function drop(id: string): Promise<void> {
     mine.delete(id);
@@ -144,7 +132,7 @@ export function sandboxSpares(d: SpareDeps) {
     if (!p) {
       p = (async () => {
         await c.remove(id);
-        if (!d.records.get(id)) await rmRun(id);
+        if (!d.records.get(id)) await d.deleteRun(id);
       })().finally(() => leaving.delete(id));
       leaving.set(id, p);
     }
@@ -152,7 +140,6 @@ export function sandboxSpares(d: SpareDeps) {
   }
 
   async function one(): Promise<Spare> {
-    await cleared; // what a previous host left is gone first: `clear` and a new spare never meet
     await quiet();
     const id = randomBytes(8).toString('hex');
     const run = d.runRoot(id);
@@ -219,31 +206,18 @@ export function sandboxSpares(d: SpareDeps) {
     }
   }
 
-  /** At host start: every container of this host with no record is what a previous host left (its spares): Remove. */
-  function clear(): Promise<void> {
-    cleared = (async () => {
-      const { containers } = await c.inventory();
-      for (const x of containers) {
-        if (!x.mounts?.includes(d.runRoot(x.id))) continue; // another host's
-        if (d.records.get(x.id) || mine.has(x.id)) continue;
-        log.info(`sandbox ${x.id}: no record (a spare of a previous host); removing it`);
-        await drop(x.id);
-      }
-    })().catch((e) => log.warn(`spares of a previous host not cleared: ${e?.message ?? e}`));
-    return cleared;
-  }
-
   return {
     launch,
     bind,
     during,
-    clear,
     /** True when the thread has a record: it resumes, and never takes a spare. */
     known: (spec: SessionSpec) => !!d.records.find(spec.owner.dir, spec.key),
     /** A spare's connection closed (it exited, was evicted, the host told it to go): Remove. Nothing for a container that is a thread's. */
     gone: (id: string): Promise<void> => (mine.has(id) || leaving.has(id) ? drop(id) : Promise.resolve()),
     /** A spare that was taken and not claimed: Remove; its record, if written, stays. */
     discard: drop,
+    /** True from before a spare's Create until it is a thread's or gone: the sweep leaves it alone (host.ts). */
+    has: (id: string) => mine.has(id) || leaving.has(id),
     /** The ids of the spares that serve no thread. */
     ids: () => [...mine],
   };

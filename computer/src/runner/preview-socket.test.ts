@@ -6,7 +6,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import { previewSocketFor } from '../ipc.js';
-import { gatedPreviews, portOf, previewSocket } from './preview-socket.js';
+import { gatedPreviews, portOf, previewSocket, servedPreviews } from './preview-socket.js';
 
 const closers: (() => void)[] = [];
 afterEach(() => { for (const c of closers.splice(0)) c(); });
@@ -104,6 +104,19 @@ describe('gatedPreviews', () => {
     expect([...g.ports]).toEqual([5173]);
     await hooks.unpreview('demo');
     expect([...g.ports]).toEqual([]);
+  });
+
+  it('restore: the ports and names the host gives back after a resume are as if `preview` had just succeeded', async () => {
+    const g = fakeGate();
+    const unpreviewed: string[] = [];
+    const hooks = gatedPreviews({ preview: async (req) => ({ url: 'https://x', name: 'x', port: req.port, listening: true }), unpreview: async (name) => void unpreviewed.push(name) }, g);
+    hooks.restore([{ port: 5173, name: 'demo' }, { port: 8080, name: 'api' }]);
+    expect([...g.ports]).toEqual([5173, 8080]);
+    await hooks.unpreview('demo');
+    expect(unpreviewed).toEqual(['demo']);
+    expect([...g.ports]).toEqual([8080]);
+    // Without a socket (a runner outside a container) there is nothing to restore.
+    expect(() => servedPreviews(undefined, { preview: async () => ({}) as never, unpreview: async () => {} }).restore([{ port: 1, name: 'n' }])).not.toThrow();
   });
 
   it('closes a port whose request failed, unless it was open before', async () => {

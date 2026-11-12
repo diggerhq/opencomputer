@@ -9,7 +9,9 @@
 // running container, a stopped one and a resumed one (step 9: previews,
 // terminal, files, in sandbox-check-reach.ts), the idle exit (container
 // exited, home and record kept) and the resume under the same id with the home
-// intact; and it prints what each start took.
+// intact; and it prints what each start took. Then (step 8, in
+// sandbox-check-restart.ts) the host is killed and started again, twice: what
+// it takes back, stops, removes, sweeps and prunes.
 //
 // Workspaces (step 7), with a definition of two public repositories the fake
 // gateway sends: the clones a helper container makes, the workspace and the
@@ -42,6 +44,8 @@
 //   (their runners write no journal); the other person's thread is a session
 //   of the API: its deliveries carry its `sessionId`, and its runner writes
 //   its journal.
+// - The host is a child of the check, and more than one in a run: `host` is
+//   the one that runs now, and `hostLines` what all of them wrote.
 // - It removes what it made (containers, home volumes, records, run
 //   directories, the previews table, the person directories `sandbox-check`
 //   and `sandbox-check-b`, the journal directories, the upload records, the
@@ -71,6 +75,7 @@ import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
 import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
 import { spareChecks } from './sandbox-check-spares.js';
+import { restarts } from './sandbox-check-restart.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -162,6 +167,7 @@ const names = new Map<string, number>();
 const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
 /** What the gateway's welcome carries: with `--spares` the organization's Claude credential too (a spare parks a Claude Code with it), and repositories or none. */
 const gateway = { spares: SPARES, repos: true };
+const unpreviewed: { from: string; name: string }[] = [];
 /** Protocol 4: the host serves its wire socket, and a thread with a session id gets a journal (work 084), which its container must have mounted. */
 const welcome = (about: string) =>
   toHost({ t: 'welcome', protocol: 4, credentials: gateway.spares ? credentials : { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about, gateway.repos), preview, wire: { key: preview.key } });
@@ -180,6 +186,7 @@ wss.on('connection', (c) => {
       toHost({ t: 'previewed', id: m.id, result: { url: `https://${name}.opencomputer.app`, name, port: m.req.port } });
     }
     if (m.t === 'unpreview') {
+      unpreviewed.push({ from: m.from, name: m.req.name });
       names.delete(m.req.name);
       preview.ports = [APP_PORT, ...names.values()];
       toHost({ t: 'previews', preview });
@@ -240,7 +247,9 @@ type Thread = ReturnType<typeof thread>;
 const A1 = thread(PAT, 1);
 const A2 = thread(PAT, 2);
 const B = thread(QUINN, 3, SESSION_ID);
-const all = [A1, A2, B];
+/** Started by the step 8 checks only. */
+const C = thread(PAT, 4);
+const all = [A1, A2, B, C];
 /** The `cs_` ids the host was told for the Slack threads. */
 const sessions: string[] = [];
 let wire: WireClient | undefined;
@@ -249,16 +258,17 @@ const reached = (name: string, t: Thread, sessionId: string): Reached => ({ name
 
 // ---- the host, and the cleanup
 
-function startHost(env: Record<string, string> = {}): ChildProcess {
+const hostLines: string[] = [];
+function startHost(extra: Record<string, string> = {}): ChildProcess {
   const { SP_DEFINITION, WORKDIR, SLACK_BOT_TOKEN, ...rest } = process.env;
   const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check',
       SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
-      SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm', ...env },
+      SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm', ...extra },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  for (const s of [h.stdout!, h.stderr!]) s.on('data', (d) => process.stdout.write(String(d).replace(/^(?=.)/gm, '    host| ')));
+  for (const s of [h.stdout!, h.stderr!]) s.on('data', (d) => (hostLines.push(...String(d).split('\n').filter(Boolean)), process.stdout.write(String(d).replace(/^(?=.)/gm, '    host| '))));
   return h;
 }
 
@@ -398,7 +408,7 @@ if (SPARES) {
   await finish(host);
 }
 
-const host = startHost();
+let host = startHost();
 try {
   check(!!(await until(() => events.find((e) => e.t === 'hello'))), 'host with SP_LAUNCH=podman dialed the gateway and said hello');
   const cloneAt = Date.now();
@@ -509,6 +519,18 @@ try {
   const back = await A1.inside('cd /workspace/hello && git log --format=%s -1 && cat /workspace/marker-a && ls /clones/hello/.git/worktrees');
   check(back === 'from the terminal\nsecret-of-a\nhello', `its workspace, its worktree and its registry are mounted again, as it left them (${JSON.stringify(back)})`);
   await reachResumed(kit, a, b);
+
+  // ---- the host killed and started again; the sweep; Prune (step 8)
+  const times = await restarts({
+    kit, as, run: RUN, data: DATA, image: IMAGE, events, tel, names, unpreviewed, welcome, clone: mnt.clone, lines: hostLines,
+    kill: () => new Promise<void>((r) => (host.once('exit', () => r()), host.kill('SIGKILL'))),
+    async start(env) {
+      const [at, n] = [Date.now(), events.length];
+      host = startHost(env);
+      return (await until(() => events.slice(n).find((e) => e.t === 'hello'), 90_000)) ? Date.now() - at : undefined;
+    },
+  }, A1, A2, B, C);
+  say(`timings: ${JSON.stringify(times)}`);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
 }

@@ -99,6 +99,9 @@ export const removeArgs = (id: string) => [
 /** The container alone; its home volume stays for the one created next (Recreate). */
 export const recreateRemoveArgs = (id: string) => ['rm', '--force', containerName(id)];
 
+/** A home alone, for one no container uses (the sweep): without `--force`, which removes the containers that use a volume with it. */
+export const volumeRmArgs = (id: string) => ['volume', 'rm', volumeName(id)];
+
 export const inventoryArgs = () => ({
   containers: ['ps', '--all', '--filter', 'label=sp.runner', '--format', 'json'],
   volumes: ['volume', 'ls', '--filter', 'name=sp-home-', '--format', 'json'],

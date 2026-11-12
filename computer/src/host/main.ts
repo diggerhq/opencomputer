@@ -1,7 +1,8 @@
 // Host agent (work 045): one per machine. Dials the gateway over one
 // WebSocket, forks sessions, starts runners outside its own process tree,
-// forwards deliveries, relays GitHub tokens, and finds its runners again by
-// their sockets after a restart. Restarting it never ends a turn.
+// forwards deliveries, relays GitHub tokens, and finds its runners again
+// after a restart: by their sockets, or on a `podman` host from its records
+// and Podman's inventory (sandbox/sweep.ts). Restarting it never ends a turn.
 //
 //   SP_GATEWAY_URL=ws://…/host SP_HOST_TOKEN=… [SP_HOST_ID] [SP_DATA] [SP_RUN]
 //   [SP_DEFINITION]            workspace definition: fork with src/workspaces (VM); unset: ensureWorkdir (laptop).
@@ -10,6 +11,8 @@
 //   [SP_LAUNCH=systemd|podman|detached]  default systemd on Linux, detached elsewhere. podman (work 103): every
 //                              thread in its own container (sandbox/), spares too; needs SP_RUNNER_USER
 //   [SP_IMAGE] [SP_IMAGE_ABI]  the session image and its ABI, from the release's .sp-version.env; required by podman
+//   [SP_SWEEP_AGE_MS=600000]   podman: how old a container, home or run directory of no thread must be before the
+//                              sweep removes it (sandbox/sweep.ts); the sweep runs every half of it, at most every 5 minutes
 //   [SP_SYSTEMD_RUN="systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=12G -p MemoryMax=16G"]
 //                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
 //                              unit gets no --setenv); the
@@ -152,7 +155,9 @@ let stopping = false;
 const sandbox = LAUNCH === 'podman'
   ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm,
       mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-      serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => [...runners.values()].some((r) => r.id === id) })
+      serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => allRunners().some((r) => r.id === id),
+      adopt: (record, run, sock) => starts.adopt(record.id, sock, { verify: true, sandbox: { record, run } }),
+      unpreview: (name, from) => previews.forget(name, from), sweepAgeMs: env.SP_SWEEP_AGE_MS ? Number(env.SP_SWEEP_AGE_MS) : undefined })
   : undefined;
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
@@ -398,6 +403,9 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
     }
     // Ahead of the message on the same socket, so the turn starts with them.
     if (secrets) send(r.sock, { t: 'secrets', secrets } satisfies HostToRunner);
+    // A container that started for this delivery serves no preview yet: its runner is told the ports its thread had (work 103, "Previews").
+    const ports = cold && r.sandbox ? sandbox!.previews.ports.all().flatMap((e) => (e.id === r.id && e.name ? [{ port: e.port, name: e.name }] : [])) : [];
+    if (ports.length) send(r.sock, { t: 'preview-ports', ports } satisfies HostToRunner);
     r.lastDelivery = Date.now();
     r.owner = spec.owner;
     // Retention counts from the latest use; never awaited, so delivery doesn't wait on the disk.
@@ -457,8 +465,10 @@ mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
 const helperTokens = sandbox?.serveHelpers(); // workspace scripts in helper containers (sandbox/scripts.ts)
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
-void sandbox?.spares.clear(); // the spares of the host before this one (C14); a new spare waits for it, a thread's start does not
-api.rediscovered(await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+// A `podman` host never scans `runners/`, which its sessions' user can write: it takes back the running containers of its records.
+api.rediscovered(sandbox ? await sandbox.reconcile()
+  : await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+sandbox?.sweeping();
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();
@@ -481,6 +491,7 @@ const emitSample = () =>
     since_gateway_message_s: link.seenAt ? Math.round((Date.now() - link.seenAt) / 1000) : undefined,
     telemetry_spooled_bytes: telemetry.spooledBytes,
     telemetry_dropped: telemetry.dropped,
+    ...sandbox?.health(),
   }) });
 emitSample();
 setInterval(emitSample, 60_000).unref();

@@ -1,12 +1,12 @@
 import type net from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { RunnerSpec, SessionSpec } from '../../protocol.js';
 import type { RunnerApi } from '../../protocol-api.js';
 import { createTelemetry } from '../../telemetry/emitter.js';
-import { type ContainerInfo, containers } from './containers.js';
+import { containers } from './containers.js';
 import { type Exec, asRunner } from './podman.js';
 import { sandboxRecords } from './records.js';
 import { type SpareDeps, sandboxSpares } from './spares.js';
@@ -16,9 +16,8 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; have?: ContainerInfo[]; api?: boolean } = {}) {
+function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean } = {}) {
   const log: string[] = [];
-  const state = { have: o.have ?? [] };
   const ups: { rs: RunnerSpec; record: unknown; mount: unknown }[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
   const records = sandboxRecords(mkdtempSync(path.join(tmpdir(), 'records-')));
@@ -32,7 +31,7 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
   };
   const d: SpareDeps = {
     tm, records, runRoot, version: 'v9',
-    as: { podman: (args) => step(`podman ${args.join(' ')}`, '') },
+    deleteRun: async (id) => (rmSync(runRoot(id), { recursive: true, force: true }), step(`deleteRun ${id}`, true)),
     containers: {
       create: async (id) => (mkdirSync(runRoot(id), { recursive: true }), writeFileSync(path.join(runRoot(id), 'boot.env'), ''), step(`create ${id}`, 11)),
       up: async (id, rs, record, mount) => {
@@ -41,7 +40,6 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
       },
       pid: (id) => step(`pid ${id}`, 7),
       remove: (id) => step(`remove ${id}`, true),
-      inventory: async () => ({ containers: state.have, volumes: [] }),
       diagnose: async () => 'boom',
     },
     mint: async (s, id, run) => (await step(`mint ${id} ${run} sdk=${s.sdkSessionId ?? '-'} fork=${s.forkPath ?? '-'}`, 0), o.api ? ({ journal: '/data/journals/s1/journal.jsonl', token: 'tok' } as RunnerApi) : undefined),
@@ -60,7 +58,7 @@ function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pi
     dial: o.dial ?? (async () => sock),
     settleMs: o.settleMs ?? 0,
   };
-  return { ...sandboxSpares(d), log, ups, records, runRoot, tm, state };
+  return { ...sandboxSpares(d), log, ups, records, runRoot, tm };
 }
 
 describe('a spare container', () => {
@@ -73,6 +71,7 @@ describe('a spare container', () => {
     expect(t.records.all()).toEqual([]);
     expect(s).toMatchObject({ sock, run: t.runRoot(s.id), createMs: 11, startMs: 33 });
     expect(t.ids()).toEqual([s.id]);
+    expect(t.has(s.id)).toBe(true); // the sweep leaves it alone
     expect(t.tm.dropped).toEqual({});
   });
 
@@ -80,7 +79,7 @@ describe('a spare container', () => {
     const t = rig({ fail: { [at]: new Error('boom') } });
     await expect(t.launch()).rejects.toThrow('boom');
     const id = /^create (\w+)/.exec(t.log[0])![1];
-    expect(t.log.slice(-2)).toEqual([`remove ${id}`, `podman unshare find RUN/${id}/runners RUN/${id}/secrets -mindepth 1 -delete`]);
+    expect(t.log.slice(-2)).toEqual([`remove ${id}`, `deleteRun ${id}`]);
     expect(existsSync(t.runRoot(id))).toBe(false);
     expect(t.ids()).toEqual([]);
   });
@@ -146,7 +145,7 @@ describe('a spare container', () => {
     await t.bind(b.id, spec, {});
     t.log.length = 0;
     await Promise.all([t.gone(a.id), t.gone(a.id), t.gone(b.id)]);
-    expect(t.log).toEqual([`remove ${a.id}`, `podman unshare find RUN/${a.id}/runners RUN/${a.id}/secrets -mindepth 1 -delete`]); // once
+    expect(t.log).toEqual([`remove ${a.id}`, `deleteRun ${a.id}`]); // once
     expect(existsSync(t.runRoot(a.id))).toBe(false);
     expect(existsSync(t.runRoot(b.id))).toBe(true);
   });
@@ -177,22 +176,6 @@ describe('a spare container', () => {
     expect(t.log).toHaveLength(2);
   });
 
-  it('a new host removes the containers of its run root that have no record, and no other', async () => {
-    const info = (id: string, mounts: string[]): ContainerInfo => ({ id, state: 'running', abi: '2', image: 'i', createdAt: 0, mounts });
-    const ids = ['1111111111111111', '2222222222222222', '3333333333333333'];
-    const t = rig();
-    t.state.have = [info(ids[0], ['/home/agent', t.runRoot(ids[0])]), info(ids[1], ['/home/agent', t.runRoot(ids[1])]), info(ids[2], ['/home/agent', `/run/other/sandbox/${ids[2]}`])];
-    t.records.write({ id: ids[1], person: 'pat', key: 'C1:1.1', createdAt: '', usedAt: '' });
-    mkdirSync(t.runRoot(ids[0]));
-    const cleared = t.clear();
-    const live = t.launch(); // waits for the clearing, and is not what it clears
-    await cleared;
-    expect(t.log.filter((l) => l.startsWith('remove'))).toEqual([`remove ${ids[0]}`]);
-    expect(existsSync(t.runRoot(ids[0]))).toBe(false);
-    const { id } = await live;
-    expect(t.ids()).toEqual([id]);
-  });
-
   it('waits for the image lock before Create', async () => {
     let settle!: () => void;
     const settled = new Promise<void>((r) => (settle = r));
@@ -207,7 +190,7 @@ describe('a spare container', () => {
     const all = containers({ as, runRoot: (id) => path.join(runs, id), dataDir: '/data', root: '/root', image: 'i:1', abi: '1', start: async () => {}, vars: () => ({}), definition: () => undefined,
       serveTokens: () => ({ close() {} }) });
     const t = rig();
-    const spares = sandboxSpares({ tm: t.tm, records: t.records, as, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'] });
+    const spares = sandboxSpares({ tm: t.tm, records: t.records, deleteRun: async () => true, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'] });
     const p = spares.launch().catch((e) => e);
     await tick();
     expect(calls).toEqual([]); // provisioning holds the storage: nothing ran

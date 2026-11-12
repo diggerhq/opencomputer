@@ -13,7 +13,9 @@
 //   without a reply. So the socket is no way into the session's other
 //   listeners, whoever connects to it.
 // - The set of ports is this process's memory: a runner that starts again
-//   serves none until its session calls `preview` again.
+//   serves none until the host tells it the ports its thread had
+//   (`preview-ports`, once per start of its container; `restore`), or its
+//   session calls `preview` again.
 // - Without SP_PREVIEW_SOCKET (a runner outside a container) nothing listens
 //   and the hooks pass through unchanged.
 
@@ -84,20 +86,36 @@ export function previewSocket(socketPath: string, connect: (port: number) => net
   return { allow: (p) => void ports.add(p), revoke: (p) => void ports.delete(p), allowed: (p) => ports.has(p), server };
 }
 
+/** Preview hooks that can be given their previews back (the host's `preview-ports`, after a resume: the gate and the names are in memory only). */
+export interface RestoredPreviews extends PreviewHooks {
+  /** Allow each port and remember each name, as if `preview` had just succeeded for it. */
+  restore(ports: { port: number; name: string }[]): void;
+}
+
 /**
  * `hooks`, opening a port on the gate when its preview is asked for (the host probes it before it answers) and
  * closing it when the request fails or its name is unpreviewed.
  */
-export function gatedPreviews(hooks: PreviewHooks, gate: Pick<PreviewGate, 'allow' | 'revoke' | 'allowed'>): PreviewHooks {
+export function gatedPreviews(hooks: PreviewHooks, gate: Pick<PreviewGate, 'allow' | 'revoke' | 'allowed'>): RestoredPreviews {
   const names = new Map<string, number>();
+  const named = (name: string, port: number) => {
+    for (const [n, p] of names) if (p === port) names.delete(n); // a port has one name
+    names.set(name, port);
+  };
   return {
+    restore(ports) {
+      for (const { port, name } of ports) {
+        if (!Number.isInteger(port) || typeof name !== 'string') continue;
+        gate.allow(port);
+        named(name, port);
+      }
+    },
     async preview(req) {
       const had = gate.allowed(req.port);
       gate.allow(req.port);
       try {
         const r = await hooks.preview(req);
-        for (const [n, p] of names) if (p === req.port) names.delete(n); // a port has one name
-        names.set(r.name, req.port);
+        named(r.name, req.port);
         return r;
       } catch (e) {
         if (!had) gate.revoke(req.port);
@@ -114,5 +132,5 @@ export function gatedPreviews(hooks: PreviewHooks, gate: Pick<PreviewGate, 'allo
 }
 
 /** The hooks a runner uses: gated behind a preview socket at `socketPath`, or `hooks` itself without one. */
-export const servedPreviews = (socketPath: string | undefined, hooks: PreviewHooks): PreviewHooks =>
-  socketPath ? gatedPreviews(hooks, previewSocket(socketPath)) : hooks;
+export const servedPreviews = (socketPath: string | undefined, hooks: PreviewHooks): RestoredPreviews =>
+  socketPath ? gatedPreviews(hooks, previewSocket(socketPath)) : { ...hooks, restore: () => {} };

@@ -44,7 +44,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
       },
       stop: (id) => step(`stop ${id}`, undefined),
       remove: (id) => step(`remove ${id}`, true),
-      inventory: () => step('inventory', { containers: o.have ?? [], volumes: (o.homes ?? []).map((id) => ({ id, createdAt: 0 })) }),
+      inventory: () => step('inventory', { containers: o.have ?? [], volumes: (o.homes ?? []).map((id) => ({ id, createdAt: 0 })), foreign: [] }),
       stale: async () => !!o.stale,
       unitActive: async () => true,
       diagnose: async () => 'Active: inactive (dead)\n--- podman logs\nboom',

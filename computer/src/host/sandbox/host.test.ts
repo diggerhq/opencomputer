@@ -4,7 +4,7 @@ import { sandboxHost } from './host.js';
 
 const deps = (env: NodeJS.ProcessEnv) => ({
   env, run: '/nonexistent/run', data: '/nonexistent/data', root: '/nonexistent/root', version: 'v', tm: {} as Telemetry,
-  mint: async () => undefined, serveTokens: () => ({ close() {} }), serveHelper: () => ({}) as never, running: () => false,
+  mint: async () => undefined, serveTokens: () => ({ close() {} }), serveHelper: () => ({}) as never, running: () => false, adopt: async () => undefined, unpreview: () => {},
 });
 
 describe('sandboxHost', () => {
