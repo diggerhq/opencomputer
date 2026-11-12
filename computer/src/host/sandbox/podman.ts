@@ -10,6 +10,8 @@
 //   user cannot enter, and the host's own may be one.
 // - A call that fails or runs out of time rejects with PodmanError, which
 //   carries the exit code and stderr; nothing is retried here.
+// - `env` goes into the sudo prefix, the only way a variable reaches the
+//   command: sudo resets the rest. Only the mount helper is given one.
 
 import { execFile as nodeExecFile } from 'node:child_process';
 
@@ -31,7 +33,9 @@ export class PodmanError extends Error {
 
 export interface RunOptions {
   timeoutMs: number;
-  stdin?: string;
+  stdin?: string | Buffer;
+  /** Variables for the command, added to the sudo prefix. */
+  env?: Record<string, string>;
 }
 
 /** `execFile` as this file uses it; tests pass their own. */
@@ -40,7 +44,7 @@ export type Exec = (
   args: string[],
   o: { cwd: string; timeout: number; killSignal: 'SIGKILL'; maxBuffer: number; encoding: 'utf8' },
   done: (err: (Error & { code?: number | string | null; killed?: boolean }) | null, stdout: string, stderr: string) => void,
-) => { stdin?: { end(data?: string): void } | null };
+) => { stdin?: { end(data?: string | Buffer): void } | null };
 
 export interface AsRunner {
   /** `podman <args>` as the runners' user: its stdout. */
@@ -56,7 +60,7 @@ export function asRunner(sudo: string[], exec: Exec = nodeExecFile as unknown as
   const run = (argv: string[], o: RunOptions) =>
     new Promise<string>((resolve, reject) => {
       if (!argv[0]?.startsWith('/')) return reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
-      const [cmd, ...args] = [...sudo, '--', ...argv];
+      const [cmd, ...args] = [...sudo, ...Object.entries(o.env ?? {}).map(([k, v]) => `${k}=${v}`), '--', ...argv];
       const child = exec(cmd, args, { cwd: '/', timeout: o.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 16 * 2 ** 20, encoding: 'utf8' }, (err, stdout, stderr) => {
         if (!err) return resolve(stdout);
         const timedOut = !!err.killed;
