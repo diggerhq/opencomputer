@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HOST_PORTS, PREVIEW_PROXY_PORT } from '../preview-proxy.js';
-import { VIRTUAL_PORTS, previewPorts } from './preview-ports.js';
+import { PREVIEWS_PER_SANDBOX, VIRTUAL_PORTS, previewPorts } from './preview-ports.js';
 
 const file = () => path.join(mkdtempSync(path.join(os.tmpdir(), 'sp-ports-')), 'state', 'previews.json');
 
@@ -34,6 +34,19 @@ describe('virtual preview ports', () => {
     expect(() => t.assign('c', 1)).toThrow(/every preview port/);
     t.release(101);
     expect(t.assign('c', 1).entry.virtual).toBe(101);
+  });
+
+  it('gives one sandbox at most PREVIEWS_PER_SANDBOX numbers, whatever the others hold', () => {
+    const t = previewPorts(file());
+    expect(PREVIEWS_PER_SANDBOX).toBe(32);
+    for (let p = 1; p <= PREVIEWS_PER_SANDBOX; p++) t.assign('a', 3000 + p);
+    expect(() => t.assign('a', 4000)).toThrow('this session has 32 previews, the most it can have; unpreview one first');
+    expect(t.all().length).toBe(32);
+    // One it has already is still its own, and another sandbox is not held back.
+    expect(t.assign('a', 3001).fresh).toBe(false);
+    expect(t.assign('b', 4000).fresh).toBe(true);
+    t.release(t.assign('a', 3002).entry.virtual);
+    expect(t.assign('a', 4000).fresh).toBe(true);
   });
 
   it('finds and frees by name, and frees all of a sandbox', () => {

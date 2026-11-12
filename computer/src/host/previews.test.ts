@@ -109,6 +109,14 @@ describe('host previews', () => {
       await new Promise((r) => setImmediate(r));
     });
 
+    it('a session that has as many previews as it may is told so, and the gateway is not asked', async () => {
+      const { p, asked, ports } = rig(named);
+      for (let n = 0; n < 32; n++) ports.assign('aaaa', 4000 + n);
+      expect(await p.request('k', { t: 'preview', id: 'r1', req: { port: 5173 } }, 'aaaa')).toEqual({ t: 'previewed', id: 'r1', error: 'this session has 32 previews, the most it can have; unpreview one first' });
+      expect(asked).toEqual([]);
+      expect(await p.request('k', { t: 'preview', id: 'r2', req: { port: 5173 } }, 'bbbb')).toMatchObject({ result: { port: 5173 } });
+    });
+
     it('never previews a port of the host: a request that names no sandbox is refused before the gateway hears of it', async () => {
       const { p, asked } = rig(named);
       expect(await p.request('k', { t: 'preview', id: 'r1', req: { port: 22 } })).toEqual({ t: 'previewed', id: 'r1', error: 'this computer previews only sessions that run in a container' });

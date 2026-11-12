@@ -20,7 +20,8 @@ function rig(answer: () => string | Error = () => 'out') {
     if (a instanceof Error) throw a;
     return a;
   };
-  const as: AsRunner = { run: (argv, o) => (runs.push({ argv, o }), reply()), podman: () => reply() };
+  const podmans: string[][] = [];
+  const as: AsRunner = { run: (argv, o) => (runs.push({ argv, o }), reply()), podman: (args) => (podmans.push(args), reply()) };
   const started: string[][] = [];
   const children: EventEmitter[] = [];
   const s = sandboxScripts({
@@ -28,12 +29,12 @@ function rig(answer: () => string | Error = () => 'out') {
     execIn: (id, argv, o) => (execs.push({ id, argv, o }), reply()),
     spawn: (cmd, args) => {
       started.push([cmd, ...args]);
-      const child = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), { kill: () => true });
       children.push(child);
       return child as ChildProcess;
     },
   });
-  return { s, execs, runs, started, children, tm, events: async () => (await tm.flush(), sent) };
+  return { s, execs, runs, podmans, started, children, tm, events: async () => (await tm.flush(), sent) };
 }
 
 describe('workspace scripts in containers (work 103, C12)', () => {
@@ -60,14 +61,16 @@ describe('workspace scripts in containers (work 103, C12)', () => {
 
   it('a helper is a container of its own in a scope, never longer than the table says, with a network only to fetch', async () => {
     const t = rig();
-    await t.s.helperScripts('pat').run('ws-clone.sh', ['/clones', 'alpha', 'https://x/a.git', '', ''], { timeoutMs: 1_800_000 });
+    // A clone has the caller's limit, 30 min for itself and for each setup command, and no cap of its own.
+    await t.s.helperScripts('pat').run('ws-clone.sh', ['/clones', 'alpha', 'https://x/a.git', '', ''], { timeoutMs: 3 * 1_800_000 });
     await t.s.helperScripts('pat', [{ src: '/data/people/pat/sessions/k', dst: '/workspace', ro: true }]).run('ws-inspect.sh', ['--only=state', '/clones', '/workspace', 'alpha'], { timeoutMs: 5_000, stdin: '1\tx\n' });
     const [clone, inspect] = t.runs;
     expect(clone.argv.slice(0, 3)).toEqual(['/usr/bin/systemd-run', '--user', '--scope']);
-    expect(clone.argv).toEqual(expect.arrayContaining(['/usr/bin/podman', 'run', '--rm', '--network=pasta', '--timeout', String(HELPER_SECONDS['ws-clone.sh']), '/data/people/pat/ws:/clones']));
+    expect(clone.argv).toEqual(expect.arrayContaining(['/usr/bin/podman', 'run', '--rm', '--network=pasta', '--timeout', '5400', '/data/people/pat/ws:/clones']));
     expect(clone.argv).not.toContain('--interactive');
     expect(clone.argv.slice(-6)).toEqual([`${BIN}/ws-clone.sh`, '/clones', 'alpha', 'https://x/a.git', '', '']);
-    expect(clone.o.timeoutMs).toBe(615_000);
+    expect(clone.o.timeoutMs).toBe(5_415_000);
+    expect(HELPER_SECONDS['ws-sync.sh']).toBe(120);
     expect(inspect.argv).toEqual(expect.arrayContaining(['--network=none', '--interactive', '--timeout', '5', '/data/people/pat/sessions/k:/workspace:ro']));
     expect(inspect.o).toEqual({ timeoutMs: 20_000, stdin: '1\tx\n' });
     const events = (await t.events()).filter((e) => e.event_name === 'sandbox.helper');
@@ -114,12 +117,16 @@ describe('workspace scripts in containers (work 103, C12)', () => {
       expect(place.root).toBe('/workspace');
       place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
       place.spawn(['/bin/sh', '-c', 'x'], { stdin: true, write: true });
+      const tag = t.started[0].at(-6)?.slice('OPC_FILES='.length);
+      expect(tag).toMatch(/^[0-9a-f]{16}$/);
       expect(t.started[0]).toEqual([
         ...AS, '45.000', '/usr/bin/podman', 'exec', '--user', '1500:1500', '--workdir', '/workspace', `sp-runner-${ID}`,
-        '/usr/bin/timeout', '--kill-after=5', '30', '/bin/sh', '-c', 'x', 'sh', '/workspace',
+        '/usr/bin/timeout', '--kill-after=5', '30', '/usr/bin/env', `OPC_FILES=${tag}`, '/bin/sh', '-c', 'x', 'sh', '/workspace',
       ]);
       expect(t.started[1].slice(7, 11)).toEqual(['3615.000', '/usr/bin/podman', 'exec', '--interactive']);
-      expect(t.started[1].slice(-6)).toEqual(['/usr/bin/timeout', '--kill-after=5', '3600', '/bin/sh', '-c', 'x']);
+      expect(t.started[1].slice(-8, -5)).toEqual(['/usr/bin/timeout', '--kill-after=5', '3600']);
+      expect(t.started[1].slice(-3)).toEqual(['/bin/sh', '-c', 'x']);
+      expect(t.started[1].at(-4)).not.toBe(`OPC_FILES=${tag}`);
       expect([t.execs, t.runs]).toEqual([[], []]);
     });
 
@@ -140,6 +147,51 @@ describe('workspace scripts in containers (work 103, C12)', () => {
       t.children[1].emit('close', 125);
       expect((await t.events()).filter((e) => e.event_name === 'sandbox.helper').map((e) => [e.data?.script, e.outcome])).toEqual([['files', 'completed'], ['files', 'failed']]);
       expect(t.tm.dropped).toEqual({});
+    });
+
+    it('a running thread: a script whose command was ended, not over by itself, is ended in the container too', async () => {
+      const t = rig();
+      const place = t.s.filesPlace(sb);
+      const ps = [0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
+      const tags = t.started.map((a) => a.at(-4)?.slice('OPC_FILES='.length));
+      // The script's own exits: nothing of it is left. Ended by a signal, by timeout(1), or never started: its timeout in the container is told to end it.
+      t.children[0].emit('close', 0);
+      t.children[1].emit('close', 3);
+      t.children[2].emit('close', null);
+      t.children[2].emit('close', null);
+      t.children[3].emit('close', 124);
+      // `podman exec` that is told to end exits 0 (measured, Podman 4.9.3): being told is what counts, not the code.
+      expect(ps[4].kill('SIGTERM')).toBe(true);
+      t.children[4].emit('close', 0);
+      expect(t.podmans).toEqual([2, 3, 4].map((i) => ['exec', '--user', '1500:1500', `sp-runner-${ID}`, 'pkill', '-TERM', '-f', `^/usr/bin/timeout .* OPC_FILES=${tags[i]} `]));
+      const pattern = new RegExp(t.podmans[0].at(-1) as string);
+      expect(pattern.test(t.started[2].slice(-8).join(' '))).toBe(true);
+      expect(pattern.test(t.started[3].slice(-8).join(' '))).toBe(false);
+      // What it runs (env has become the shell) is not what is signalled: timeout(1) ends its whole group.
+      expect(pattern.test('/bin/sh -c x')).toBe(false);
+    });
+
+    it('a stopped thread: a helper whose command was ended, not over by itself, is stopped', async () => {
+      const t = rig();
+      const place = t.s.filesPlace({ ...sb, running: false });
+      const ps = [0, 1, 2, 3].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
+      const names = t.started.map((a) => a[a.indexOf('--name') + 1]);
+      expect(names[0]).toMatch(/^sp-files-[0-9a-f]{16}$/);
+      expect(new Set(names).size).toBe(4);
+      t.children[0].emit('close', 1);
+      t.children[1].emit('close', null);
+      t.children[2].emit('close', 143);
+      ps[3].kill();
+      t.children[3].emit('close', 0);
+      expect(t.podmans).toEqual([1, 2, 3].map((i) => ['stop', '--ignore', '--time', '2', names[i]]));
+    });
+
+    it('a place that fails to end what is left says so and goes on', async () => {
+      const t = rig(() => new PodmanError('failed', 125, 'no such container', false));
+      t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      t.children[0].emit('close', null);
+      await new Promise((r) => setImmediate(r));
+      expect(t.podmans.length).toBe(1);
     });
 
     it('only a shell script is started', () => {

@@ -208,6 +208,21 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
+  it('journals an upload to a session whose runner is gone through the host\'s writer, which it opens for it', async () => {
+    const t = setup();
+    t.a.onGateway(welcome(4));
+    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    await t.a.mint(spec, 'beef');
+    t.a.up('beef');
+    await tick(5);
+    t.a.down('beef');
+    // Nothing has asked for the session since its runner left: no writer of the host's is open.
+    expect(t.host.calls).toEqual([]);
+    expect(await t.a.hooks.record(S, 'files.pushed', { path: 'notes', files: 1, bytes: 9, replaced: false }, actor)).toBe(1);
+    expect(t.host.calls).toEqual([RECORD_METHOD]);
+    await t.a.stop();
+  });
+
   it('wakes the runner for a send the host writer recorded, as an API delivery', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));

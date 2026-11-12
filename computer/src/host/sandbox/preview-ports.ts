@@ -10,6 +10,8 @@
 //   round: never the lowest free, so a number just freed is not given to
 //   another session while a public name may still point at it. The place in
 //   the round is saved with the entries, so a host restart keeps it.
+// - One sandbox holds at most PREVIEWS_PER_SANDBOX numbers, so no session can
+//   use the range up for the others: one preview more fails, and says so.
 // - The table is in memory and in `$SP_DATA/state/previews.json` (0600,
 //   written whole to a temporary file and renamed). A file that does not
 //   parse is logged and read as empty: the names it held answer "port not
@@ -22,6 +24,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { log } from '../../log.js';
 
 export const VIRTUAL_PORTS = { first: 30000, last: 39999 } as const;
+/** The most numbers one sandbox holds at a time. */
+export const PREVIEWS_PER_SANDBOX = 32;
 
 export interface PreviewEntry {
   /** What the gateway, the Worker and the proxy's `X-Preview-Port` call this preview. */
@@ -35,7 +39,7 @@ export interface PreviewEntry {
 }
 
 export interface PreviewPorts {
-  /** The entry of `(id, port)`: its own when it has one (`fresh` false), else a new number. Throws when the range is used up. */
+  /** The entry of `(id, port)`: its own when it has one (`fresh` false), else a new number. Throws when `id` has as many as it may, or the range is used up. */
   assign(id: string, port: number): { entry: PreviewEntry; fresh: boolean };
   get(virtual: number): PreviewEntry | undefined;
   byName(name: string): PreviewEntry | undefined;
@@ -89,6 +93,9 @@ export function previewPorts(file: string, range: { first: number; last: number 
     assign(id, port) {
       const have = find((e) => e.id === id && e.port === port);
       if (have) return { entry: have, fresh: false };
+      let mine = 0;
+      for (const e of byVirtual.values()) if (e.id === id) mine++;
+      if (mine >= PREVIEWS_PER_SANDBOX) throw new Error(`this session has ${mine} previews, the most it can have; unpreview one first`);
       const size = range.last - range.first + 1;
       for (let i = 0; i < size; i++) {
         const virtual = range.first + ((next - range.first + i) % size);
