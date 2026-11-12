@@ -1,12 +1,15 @@
 // End-to-end check of sessions in containers (work 103), on a computer: the
 // host agent with SP_LAUNCH=podman against a fake gateway in this process,
 // runners rendering to a fake Slack client (SP_FAKE_SLACK=1, read back with
-// `podman logs`). No model call: every delivery is `!status`.
+// `podman logs`). No model call: a delivery is `!status`, or a turn whose
+// model is src/dev/fake-model.mjs inside the session's container.
 //
 // It checks a new thread (record, container, unit, cgroup, run directory,
-// token socket, the report's path), a warm delivery, the idle exit (container
-// exited, home and record kept) and the resume under the same id with the
-// home intact; and it prints what each start took.
+// token socket, the report's path), a warm delivery, what reaches into a
+// running container, a stopped one and a resumed one (step 9: previews,
+// terminal, files, in sandbox-check-reach.ts), the idle exit (container
+// exited, home and record kept) and the resume under the same id with the home
+// intact; and it prints what each start took.
 //
 // Workspaces (step 7), with a definition of two public repositories the fake
 // gateway sends: the clones a helper container makes, the workspace and the
@@ -27,18 +30,26 @@
 //       node --import tsx src/dev/sandbox-check.ts [--keep]
 //
 // Invariants:
-// - It refuses to run beside a host agent: it uses the computer's SP_RUN and
-//   SP_DATA (or the ones in its environment, set up the same way).
+// - It refuses to run beside a host agent: it is a host itself, on the
+//   computer's SP_RUN and SP_DATA (or the ones in its environment, set up the
+//   same way) and on the preview proxy's port.
+// - The gateway it plays speaks protocol 4, so the host serves its wire
+//   socket, and the check is the relay on it. Two threads of one person are
+//   Slack threads, whose `cs_` ids the host learns from an `api` frame each
+//   (their runners write no journal); the other person's thread is a session
+//   of the API: its deliveries carry its `sessionId`, and its runner writes
+//   its journal.
 // - It removes what it made (containers, home volumes, records, run
-//   directories, the person directories `sandbox-check` and `sandbox-check-b`,
-//   the journal directory, the definition it saved), pass or fail, unless `--keep`.
+//   directories, the previews table, the person directories `sandbox-check`
+//   and `sandbox-check-b`, the journal directories, the upload records, the
+//   definition it saved), pass or fail, unless `--keep`.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import type net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { runnerUser } from '../host/runner-user.js';
 import { mounts } from '../host/sandbox/mounts.js';
@@ -48,11 +59,14 @@ import { sandboxRecords } from '../host/sandbox/records.js';
 import { sandboxScripts } from '../host/sandbox/scripts.js';
 import { sandboxWorkspaces } from '../host/sandbox/workspace.js';
 import { runnersDir, sandboxRunFor, secretsFor, socketFor, tokenSocketFor } from '../ipc.js';
-import type { GatewayToHost, HostToGateway, Person, SessionSpec, TraceContext, WorkspaceDefinition } from '../protocol.js';
+import type { GatewayToHost, HostToGateway, Person, PreviewConfig, PreviewRequest, SessionSpec, TraceContext, WorkspaceDefinition } from '../protocol.js';
+import { mintId } from '../session-ids.js';
 import { createTelemetry } from '../telemetry/emitter.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
+import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
+import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const KEEP = process.argv.includes('--keep');
@@ -130,25 +144,55 @@ let conn: WebSocket | undefined;
 const wss = new WebSocketServer({ port: 0, path: '/host', verifyClient: ({ req }: { req: http.IncomingMessage }) => req.headers.authorization === 'Bearer check-token' });
 await new Promise((r) => wss.on('listening', r));
 const toHost = (m: GatewayToHost) => conn?.send(JSON.stringify(m));
-const person = (dir: string, slackUserId: string): Person => ({ slackUserId, dir, gitName: 'Sandbox Check', gitEmail: 'check@example.com' });
-const PAT = person('sandbox-check', 'U_OWNER');
-const QUINN = person('sandbox-check-b', 'U_OTHER');
-/** Protocol 4: a thread with a session id gets a journal (work 084), which its container must have mounted. */
-const welcome = (about: string) => toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about) });
+/** `userId`: the member the wire socket knows the person as, who alone may open a terminal in their sessions. */
+const person = (dir: string, slackUserId: string, userId: string): Person => ({ slackUserId, userId, dir, gitName: 'Sandbox Check', gitEmail: 'check@example.com' });
+const PAT = person('sandbox-check', 'U_OWNER', 'usr_sandbox_check');
+const QUINN = person('sandbox-check-b', 'U_OTHER', 'usr_sandbox_check_b');
+/** The previews this gateway registered: the allow-list holds APP_PORT from the start, which no host with containers may serve. */
+const preview: PreviewConfig = { tunnelToken: '', key: randomBytes(32).toString('base64url'), ports: [APP_PORT] };
+const asked: { from: string; req: PreviewRequest }[] = [];
+const names = new Map<string, number>();
+/** Protocol 4: the host serves its wire socket, and a thread with a session id gets a journal (work 084), which its container must have mounted. */
+const welcome = (about: string) =>
+  toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about), preview, wire: { key: preview.key } });
 wss.on('connection', (c) => {
   conn = c;
   c.on('message', (d) => {
     const m = JSON.parse(String(d)) as HostToGateway;
     events.push(m);
     if (m.t === 'hello') welcome('first');
+    if (m.t === 'preview') {
+      asked.push({ from: m.from, req: m.req });
+      const name = m.req.name ?? `p${m.req.port}`;
+      names.set(name, m.req.port);
+      preview.ports = [APP_PORT, ...names.values()];
+      toHost({ t: 'previews', preview });
+      toHost({ t: 'previewed', id: m.id, result: { url: `https://${name}.opencomputer.app`, name, port: m.req.port } });
+    }
+    if (m.t === 'unpreview') {
+      names.delete(m.req.name);
+      preview.ports = [APP_PORT, ...names.values()];
+      toHost({ t: 'previews', preview });
+      toHost({ t: 'previewed', id: m.id, result: { url: '', name: m.req.name, port: 0 } });
+    }
     if (m.t === 'token') {
       tokenSessions.push(m.sessionKey);
       toHost({ t: 'token', id: m.id, result: { token: `ghs_fake${tokenSessions.length}`, expiresAt: new Date(Date.now() + 3600_000).toISOString() } });
     }
   });
 });
-const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT' };
+/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
+const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
 let ts = 1;
+/** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
+async function known(session: SessionSpec): Promise<string> {
+  const sessionId = session.sessionId ?? mintId('cs');
+  const id = randomUUID();
+  const member = session.owner.userId ?? '';
+  toHost({ t: 'api', id, sessionId, method: 'sessions.get', params: { sessionId }, actor: { id: member, name: null, via: 'api', client: null }, member, session });
+  await until(() => events.find((e) => e.t === 'api-result' && e.id === id), 15_000);
+  return sessionId;
+}
 
 /** One thread of the check: its spec, and what the check reads of its container. */
 function thread(owner: Person, n: number, sessionId?: string) {
@@ -157,16 +201,16 @@ function thread(owner: Person, n: number, sessionId?: string) {
   const record = () => records().find(owner.dir, key);
   const id = () => record()?.id ?? '';
   const t = {
-    key, owner, record, id,
+    key, owner, spec, record, id,
     get run() { return sandboxRunFor(RUN, id()); },
     /** The thread's files, its worktree registry for a repository, on the host. */
     workspace: mnt.workspace({ person: owner.dir, key }),
     registry: (repo: string) => mnt.registry({ person: owner.dir, key }, repo),
     branch: `sp/${safeKey(key)}`,
-    async deliver(trace = mkTrace()) {
+    async deliver(trace = mkTrace(), text = '!status') {
       const d = randomUUID();
       const at = Date.now();
-      toHost({ t: 'deliver', id: d, session: spec, msg: { userId: owner.slackUserId ?? 'U_OWNER', text: '!status', ts: `3.${ts++}` }, credentials, trace });
+      toHost({ t: 'deliver', id: d, session: spec, msg: { userId: owner.slackUserId ?? 'U_OWNER', text, ts: `3.${ts++}` }, credentials, trace });
       const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000);
       return { reply, ms: Date.now() - at, trace };
     },
@@ -188,6 +232,12 @@ type Thread = ReturnType<typeof thread>;
 const A1 = thread(PAT, 1);
 const A2 = thread(PAT, 2);
 const B = thread(QUINN, 3, SESSION_ID);
+const all = [A1, A2, B];
+/** The `cs_` ids the host was told for the Slack threads. */
+const sessions: string[] = [];
+let wire: WireClient | undefined;
+/** A thread as sandbox-check-reach.ts takes one: read once its container is there. */
+const reached = (name: string, t: Thread, sessionId: string): Reached => ({ name, spec: t.spec, sessionId, id: t.id(), run: t.run, workspace: t.workspace, member: t.owner.userId as string });
 
 // ---- the host, and the cleanup
 
@@ -207,7 +257,10 @@ function startHost(): ChildProcess {
 async function cleanup() {
   if (KEEP) return say('--keep: left the containers and their files');
   const quiet = (p: Promise<unknown>) => p.catch((e) => say(`cleanup: ${e.message}`));
-  for (const t of [A1, A2, B]) {
+  rmSync(path.join(DATA, 'state', 'previews.json'), { force: true });
+  for (const s of [...sessions, SESSION_ID]) rmSync(path.join(DATA, 'state', 'uploads', `${s}.json`), { force: true });
+  for (const s of sessions) rmSync(path.join(DATA, 'journals', s), { recursive: true, force: true });
+  for (const t of all) {
     const id = t.id();
     if (!id) continue;
     const run = sandboxRunFor(RUN, id);
@@ -236,7 +289,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   check(!!hello && hello.branch === a.branch && hello.from === 'origin/master' && /^[0-9a-f]{40}$/.test(hello.base) && !ra?.repos?.spoon,
     `the record is the fork's record: ${JSON.stringify(ra?.repos)}`);
   const seen = await a.inside('cd /workspace/hello && git status --porcelain --branch && git rev-parse HEAD && cat .git && LC_ALL=C ls -A /workspace && ls /clones && ls /clones/hello/.git/worktrees && git -C /clones/hello config gc.worktreePruneExpire');
-  check(seen === [`## ${a.branch}`, hello?.base, 'gitdir: /clones/hello/.git/worktrees/hello', '.fork.json', 'AGENTS.md', 'hello', 'hello', 'hello', 'never'].join('\n'),
+  check(seen === [`## ${a.branch}`, hello?.base, 'gitdir: /clones/hello/.git/worktrees/hello', '.claude', '.fork.json', 'AGENTS.md', 'hello', 'hello', 'hello', 'never'].join('\n'),
     `inside: /workspace/hello is a clean worktree of /clones/hello on ${a.branch}, the registry holds it alone, the clone never prunes: ${JSON.stringify(seen)}`);
   const mounted = (await a.inside("awk '{print $5}' /proc/self/mountinfo | grep -E '^/(workspace|clones)' | sort")).split('\n');
   check(mounted.join(' ') === '/clones/hello /clones/hello/.git/worktrees /workspace', `mounted for it: ${mounted.join(' ')}`);
@@ -290,7 +343,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
 
   // ---- checkout, by the host's own parts in this process
   const tm = createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} });
-  const scripts = sandboxScripts({ as, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
+  const scripts = sandboxScripts({ as, sudo: user.sudo, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
     execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }) });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);
@@ -355,12 +408,39 @@ try {
   await A1.inside('echo x > /workspace/hello/node_modules/pkg/made-by-root && chmod 600 /workspace/hello/node_modules/pkg/made-by-root', '0:0');
 
   // ---- warm
-  kept.clear();
-  clearInterval(keeping);
   const d2 = await A1.deliver();
   check(!!d2.reply?.ok && (await A1.pid()) === pid, `second delivery → ok in ${d2.ms} ms, same container process`);
 
+  // ---- what reaches into a running container (step 9): the two threads of one person
+  const dA2 = await A2.deliver();
+  kept.add(A2);
+  check(!!dA2.reply?.ok && !!A2.id() && A2.id() !== id && (await A2.inspect('{{.State.Status}}')) === 'running', `the second thread of the same person runs in its own container ${containerName(A2.id())}`);
+  sessions.push(await known(A1.spec), await known(A2.spec));
+  const a = reached('A', A1, sessions[0]);
+  const b = reached('B', A2, sessions[1]);
+  const q = reached('Q', B, await known(B.spec));
+  const wireSocket = path.join(RUN, 'wire', 'wire.sock');
+  check(!!(await until(() => existsSync(wireSocket) || undefined, 10_000)), `the host serves its wire socket ${wireSocket}`);
+  wire = await wireClient(wireSocket);
+  const byId = (cid: string) => all.find((t) => t.id() === cid) ?? refuse(`no thread ${cid}`);
+  // Started here as the host starts them; nothing in this process runs a workspace script through it, so it is given no way to.
+  const files = sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
+    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')) });
+  const kit: Kit = {
+    root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
+    inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),
+    detached: (cid, argv) => podman(['exec', '--detach', '--user', '1500:1500', containerName(cid), ...argv]),
+    asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
+    status: (cid) => byId(cid).inspect('{{.State.Status}}'),
+    tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
+    filesPlace: (t, running) => files.filesPlace({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
+  };
+  await reachRunning(kit, a, b, q);
+
   // ---- idle exit
+  kept.clear();
+  clearInterval(keeping);
+  await A1.deliver();
   const idleAt = Date.now();
   check(!!(await until(async () => ((await A1.inspect('{{.State.Status}}')) === 'exited' ? true : undefined), IDLE_MS + 40_000)),
     `idle for ${IDLE_MS} ms: the runner left and the container is exited (${Date.now() - idleAt} ms after the delivery)`);
@@ -381,6 +461,11 @@ try {
   check(!existsSync(modules) && existsSync(path.join(A1.workspace, 'hello', '.venv')) && existsSync(path.join(A1.workspace, 'hello', 'README')),
     `housekeeping removed the ignored node_modules (with a file root made inside) ${Date.now() - keepAt} ms after it was asked, and kept .venv, which git does not ignore`);
 
+  // ---- what reaches a stopped thread (step 9)
+  check(!!(await until(async () => ((await A2.inspect('{{.State.Status}}')) === 'exited' && !(await A2.unitActive()) ? true : undefined), 30_000)), 'the second thread is stopped too');
+  check(!!(await until(async () => ((await B.inspect('{{.State.Status}}')) === 'exited' && !(await B.unitActive()) ? true : undefined), 30_000)), "and the other person's");
+  await reachStopped(kit, a, b, q);
+
   // ---- resume
   const d3 = await A1.deliver();
   check(!!d3.reply?.ok, `delivery after the idle exit → ok in ${d3.ms} ms (${d3.reply?.error ?? ''})`);
@@ -391,11 +476,13 @@ try {
     `runner.launched of the resume: ${JSON.stringify(l3?.data)} duration ${l3?.duration_ms} ms`);
   check((await A1.askToken()).startsWith('ghs_fake'), 'its token socket answers again');
   const back = await A1.inside('cd /workspace/hello && git log --format=%s -1 && cat /workspace/marker-a && ls /clones/hello/.git/worktrees');
-  check(back === 'sandbox check\nsecret-of-a\nhello', `its workspace, its worktree and its registry are mounted again, as it left them (${JSON.stringify(back)})`);
+  check(back === 'from the terminal\nsecret-of-a\nhello', `its workspace, its worktree and its registry are mounted again, as it left them (${JSON.stringify(back)})`);
+  await reachResumed(kit, a, b);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
 } finally {
   clearInterval(keeping);
+  wire?.close();
   host.kill('SIGTERM');
   await sleep(1500);
   host.kill('SIGKILL');

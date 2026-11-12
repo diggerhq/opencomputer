@@ -18,8 +18,10 @@ const counts: [string, number][] = [];
 const hooks: WireLinkHooks = {
   where: (sid) => (sid === 'cs_a' ? { socket: '/x/api.sock', token: 't', writer: 'host', epoch: 1 } : undefined),
   resume: async () => ({ status: 'starting' }),
-  workspace: (sid, what) =>
-    sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' } : sid === 'cs_boxed' ? { error: { code: 'unavailable', message: `no ${what} in a container`, status: 503 } as never } : undefined,
+  workspace: (sid) =>
+    sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
+    : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }
+    : undefined,
   record: async (sid, type, data) => {
     recorded.push([sid, type, data]);
     return 42;
@@ -127,20 +129,16 @@ describe('wire link', () => {
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
   });
 
-  it('does nothing for a session the host refuses a terminal or files for, and says why', async () => {
+  it("refuses a terminal in a session whose container is stopped, and starts nothing (C13)", async () => {
     const r = await relay();
     r.send({ t: 'hello', version: 'test' });
     await r.next((m) => m.t === 'welcome');
-    r.send({ t: 'terminal.open', id: '1', sessionId: 'cs_boxed', member: 'usr_owner', cols: 80, rows: 24 });
-    expect((await r.next((m) => m.id === '1')).error).toMatchObject({ code: 'unavailable', message: 'no terminal in a container' });
-    r.send({ t: 'files.list', id: '2', sessionId: 'cs_boxed', member: 'usr_owner', path: '' });
-    expect((await r.next((m) => m.id === '2')).error).toMatchObject({ message: 'no files in a container' });
-    r.send({ t: 'files.get', id: '3', sessionId: 'cs_boxed', member: 'usr_owner', path: 'hello.txt', file: true });
-    expect((await r.next((m) => m.id === '3')).error).toMatchObject({ message: 'no files in a container' });
-    r.send({ t: 'files.put', id: '4', sessionId: 'cs_boxed', member: 'usr_owner', path: 'up', format: 'tar' });
-    expect((await r.next((m) => m.id === '4')).error).toMatchObject({ message: 'no files in a container' });
-    expect(counts).toEqual([]);
+    r.send({ t: 'terminal.open', id: 't1', sessionId: 'cs_stopped', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    const { error } = await r.next((m) => m.id === 't1');
+    expect(error).toMatchObject({ code: 'conflict', status: 409, reason: 'session_not_running' });
+    expect(error.message).toMatch(/[Rr]esume the session first/);
     expect(recorded).toEqual([]);
+    expect(counts).toEqual([]);
     r.sock.destroy();
   });
 

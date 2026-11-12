@@ -78,7 +78,7 @@ export const CATALOG = {
   'fork.repo': host('repo', 'fetch_ms', 'worktree_ms', 'lock_wait_ms', 'fetch_error_type', 'fetch_skipped'),
   'fork.done': host('repos', 'fork_error_type'),
   'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms'),
-  // One workspace script in a helper container (work 103): `script` is its file name.
+  // One script in a helper container (work 103): `script` is a workspace script's file name, or `files` for a `/files` script on a stopped thread.
   'sandbox.helper': host('script'),
   'runner.ready': host('polls'),
   'deliver.forwarded': host('credentials_sent', 'secrets_count'),

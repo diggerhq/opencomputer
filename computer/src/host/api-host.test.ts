@@ -161,23 +161,13 @@ describe('apiHost', () => {
     t.a.onGateway(welcome(4));
     t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0 });
     let ws: unknown = 'pending';
-    void Promise.resolve(t.a.hooks.workspace(S, 'files')).then((w) => (ws = w));
+    void Promise.resolve(t.a.hooks.workspace(S)).then((w) => (ws = w));
     await tick(5);
     expect(ws).toBe('pending');
     forkDone();
     await tick(5);
     expect(ws).toEqual({ forkPath: '/forks/s1', owner: 'usr_1' });
-    expect(await t.a.hooks.workspace('cs_unknown0000000', 'files')).toBeUndefined();
-    await t.a.stop();
-  });
-
-  it('a session the host refuses a terminal or files for gets the refusal, not its fork (work 103)', async () => {
-    const t = setup({ start: async () => 'idle', forkPath: () => '/forks/s1', refuse: (key, what) => (what === 'terminal' ? `no terminal for ${key}` : undefined) });
-    t.a.onGateway(welcome(4));
-    t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0 });
-    await tick(5);
-    expect(await t.a.hooks.workspace(S, 'terminal')).toEqual({ error: expect.objectContaining({ code: 'unavailable', message: `no terminal for ${spec.key}`, status: 503 }) });
-    expect(await t.a.hooks.workspace(S, 'files')).toEqual({ forkPath: '/forks/s1', owner: 'usr_1' });
+    expect(await t.a.hooks.workspace('cs_unknown0000000')).toBeUndefined();
     await t.a.stop();
   });
 
@@ -215,6 +205,21 @@ describe('apiHost', () => {
     expect(await t.a.hooks.record(S, 'terminal.opened', { terminalId: 'tm_1', command: null }, actor)).toBe(1);
     expect(t.host.calls).toContain(RECORD_METHOD);
     expect(await t.a.hooks.record('cs_0000000000000009', 'files.pushed', {}, actor)).toBeUndefined();
+    await t.a.stop();
+  });
+
+  it('journals an upload to a session whose runner is gone through the host\'s writer, which it opens for it', async () => {
+    const t = setup();
+    t.a.onGateway(welcome(4));
+    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    await t.a.mint(spec, 'beef');
+    t.a.up('beef');
+    await tick(5);
+    t.a.down('beef');
+    // Nothing has asked for the session since its runner left: no writer of the host's is open.
+    expect(t.host.calls).toEqual([]);
+    expect(await t.a.hooks.record(S, 'files.pushed', { path: 'notes', files: 1, bytes: 9, replaced: false }, actor)).toBe(1);
+    expect(t.host.calls).toEqual([RECORD_METHOD]);
     await t.a.stop();
   });
 

@@ -76,6 +76,27 @@ export const pidArgs = (id: string) => ['inspect', '--format', '{{.State.Pid}}',
 export const execArgs = (id: string, argv: string[], o: { dir: string; interactive?: boolean }) =>
   ['exec', ...(o.interactive ? ['--interactive'] : []), '--user', SESSION_USER, '--workdir', o.dir, containerName(id), ...argv];
 
+/**
+ * A terminal's helper in the running container (terminal.ts): `helper` is `python3 <ROOT>/src/host/terminal-pty.py`
+ * and the terminal's unit name, which the helper ignores and `terminalHangUpArgs` matches.
+ */
+export const terminalArgs = (id: string, dir: string, term: string, helper: string[]) =>
+  ['exec', '--interactive', '--user', SESSION_USER, '--workdir', dir, '--env', `TERM=${term}`, containerName(id), ...helper];
+
+/** SIGHUP to the helper of one terminal (`unit`: `sp-term-<hex>`), whose `podman exec` is gone. */
+export const terminalHangUpArgs = (id: string, unit: string) =>
+  ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-HUP', '-f', `terminal-pty\\.py ${unit}$`];
+
+/** What a `/files` script in the running container is started through, so that `filesEndArgs` finds it: `env` becomes the script's shell, and the tag stays in the command line of the `timeout` before it. */
+export const filesTagged = (tag: string) => ['/usr/bin/env', `OPC_FILES=${tag}`];
+
+/** SIGTERM to the `timeout` of one `/files` script, whose `podman exec` is gone: it ends its whole process group (and kills it, `--kill-after`). */
+export const filesEndArgs = (id: string, tag: string) =>
+  ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-TERM', '-f', `^/usr/bin/timeout .* OPC_FILES=${tag} `];
+
+/** A helper container by its name, whose `podman run` is gone: SIGTERM, which a script with a handler acts on, then SIGKILL. */
+export const helperStopArgs = (name: string) => ['stop', '--ignore', '--time', '2', name];
+
 /** `seconds`: how long the runner gets after SIGTERM before SIGKILL. */
 export const stopArgs = (id: string, seconds: number) => ['stop', '--time', String(seconds), containerName(id)];
 
@@ -113,7 +134,7 @@ export interface Bind {
 export const mountArgs = (root: string, pid: number, id: string, person: string, binds: Bind[]) =>
   ['unshare', 'python3', '-I', path.join(root, 'bin', 'sandbox-mount.py'), String(pid), id, person, ...binds.map((b) => `${b.src}:${b.dst}`)];
 
-/** What a helper container's `podman run` is wrapped in, so that it lands in the runners' slice. */
+/** What a helper container's `podman run` is wrapped in: Podman needs a delegated cgroup of the runners' user (the host's own is not one), and it lands in the runners' slice. */
 export const HELPER_SCOPE = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--'];
 
 export interface HelperSpec {
@@ -132,23 +153,26 @@ export interface HelperSpec {
   stdin?: boolean;
   /** What a script on a stopped thread's files needs besides: its workspace, its worktree registries. */
   binds?: Bind[];
-  /** The script, by its path in the release, and its arguments. */
-  script: string;
-  args: string[];
+  /** A name of its own, for a caller that may have to stop it (`helperStopArgs`). */
+  name?: string;
+  /** What `/bin/sh` is given: a script by its path in the release and its arguments, or `-c`, a script's text and its arguments. */
+  sh: string[];
 }
 
-/** One run of a workspace script on one person's clones, with no session. */
+/** One run of a script on one person's clones, with no session. */
 export function helperArgs(h: HelperSpec): string[] {
   return [
-    'run', '--rm', ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
+    'run', '--rm', ...(h.name ? ['--name', h.name] : []), ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
     '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER, `--network=${h.network ? 'pasta' : 'none'}`, '--pids-limit=1024',
     // The script is the container's first process, which ignores a signal it has no handler for: Podman ends it.
     '--timeout', String(h.timeoutS),
+    // What it prints goes to whoever started it and nowhere else: a workspace's archive is not kept in a log.
+    '--log-driver=none',
     '--env', `SP_RUN=${h.run}`, '--env', `SP_TOKEN_SOCKET=${path.join(h.run, 'token.sock')}`, '--env', 'HOME=/tmp',
     '-v', `${path.join(h.people, h.person, 'ws')}:/clones`,
     '-v', `${h.run}:${h.run}`,
     '-v', `${RELEASES_DIR}:${RELEASES_DIR}:ro`,
     ...(h.binds ?? []).flatMap((b) => ['-v', `${b.src}:${b.dst}${b.ro ? ':ro' : ''}`]),
-    '--entrypoint', '/bin/sh', h.image, h.script, ...h.args,
+    '--entrypoint', '/bin/sh', h.image, ...h.sh,
   ];
 }

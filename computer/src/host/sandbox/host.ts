@@ -1,5 +1,6 @@
 // What a `podman` host is made of (work 103): the runners' user, the image of
-// its release, the records, the containers and the starts, put together from
+// its release, the records, the containers, the starts, the virtual preview
+// ports and where a session's terminal and files are, put together from
 // the host's environment. host/main.ts makes one when SP_LAUNCH=podman and
 // asks it for nothing else.
 //
@@ -33,8 +34,9 @@ import { sandboxArtifacts } from './artifacts.js';
 import { containers } from './containers.js';
 import { mounts } from './mounts.js';
 import { asRunner } from './podman.js';
+import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
-import { sandboxScripts } from './scripts.js';
+import { type SandboxPlace, sandboxScripts } from './scripts.js';
 import { sandboxStarts } from './start.js';
 import { sandboxWorkspaces } from './workspace.js';
 
@@ -71,15 +73,17 @@ export function sandboxHost(d: SandboxHostDeps) {
   if (d.spares) throw new Error('SP_LAUNCH=podman: spares are not containers yet; set SP_POOL_SIZE=0');
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
+  const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
   const as = asRunner(user.sudo);
   const all = containers({
     as, runRoot, dataDir: d.data, root: d.root, image, abi,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: d.serveTokens,
+    removed: (id) => ports.releaseAll(id),
   });
   const helperRun = path.join(d.run, 'helper');
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
-  const scripts = sandboxScripts({ as, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
+  const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
   const artifacts = sandboxArtifacts({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
@@ -89,6 +93,15 @@ export function sandboxHost(d: SandboxHostDeps) {
     stop: all.stop,
     starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled,
       dial: (socket) => dialSocket(socket, { uid: user.uid }) }),
+    /** Where a session's terminal and files are (api-host `sandbox`): from its record, never from what a runner said. */
+    async place(spec: SessionSpec): Promise<SandboxPlace | undefined> {
+      const r = records.find(spec.owner.dir, spec.key);
+      return r && { id: r.id, person: r.person, workspace: mnt.workspace(r), running: await all.unitActive(r.id) };
+    },
+    /** Where the `/files` scripts of a place run (api-wire.ts). */
+    files: scripts.filesPlace,
+    /** The virtual ports, and how a container's preview socket is reached (previews.ts). */
+    previews: { ports, run: runRoot, uid: user.uid },
     /** `checkout_repo` of a sandboxed session, by its runner id. */
     checkout: workspace.checkout,
     /** A delivery to a sandboxed session: its record is used now. */

@@ -74,6 +74,8 @@ export interface ContainersDeps {
   definition(): string | undefined;
   /** `tokens.serveRunner`. */
   serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /** A sandbox was removed: what else the host keeps by its id goes too (its preview ports, C9). */
+  removed?(id: string): void;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -218,6 +220,7 @@ export function containers(d: ContainersDeps) {
         ok = false;
         log.warn(`sandbox ${id} not removed: ${e?.message ?? e}`);
       });
+    d.removed?.(id);
     return ok;
   }
 

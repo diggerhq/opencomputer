@@ -1,37 +1,85 @@
-// The workspace scripts (bin/ws-*.sh) in containers (work 103, C12): the two
-// ScriptRunners of a `podman` host. `sessionScripts(id)` runs a script in a
-// thread's running container, as the session's user, where the workspace is
-// `/workspace` and the clones `/clones`. `helperScripts(person, binds?)` runs
-// one in a container made for that run, which sees that person's clones and
-// nothing of anybody else.
+// The one way a `podman` host runs a script on a person's files (work 103,
+// C12 and C13): in the thread's running container, as the session's user,
+// where the workspace is `/workspace` and the clones `/clones`; or in a helper
+// container made for that run, which sees that person's clones, what its
+// caller binds, and nothing of anybody else.
+//
+// `sessionScripts(id)` and `helperScripts(person, binds?)` are the two
+// ScriptRunners of the workspace scripts (bin/ws-*.sh): a script runs to its
+// end and its output is the answer. `filesPlace(thread)` is where the `/files`
+// scripts run (workspace-files.ts `Place`): the same two commands, started and
+// handed back, since a file or an archive is a stream; in the container while
+// the thread runs, else in a helper with its workspace bound at `/workspace`,
+// read-only unless the script writes, and never with a network.
 //
 // Invariants:
-// - The host never runs git: on a `podman` host every script goes through one
-//   of these two.
+// - The host never runs git, and never opens a workspace file: on a `podman`
+//   host every script goes through here.
 // - A helper gets a network only for a script that fetches, and never runs
-//   longer than the spec's table says (HELPER_SECONDS), whatever its caller
-//   asked: Podman ends it, since the script is its first process.
+//   longer than the spec's table says (HELPER_SECONDS; a clone: as long as
+//   its caller says), whatever its caller asked: Podman ends it, since the
+//   script is its first process.
 // - A script in a session's container is ended inside the container
 //   (`timeout`), so nothing of it is left running there when its time is up.
-// - Failures are ScriptError, as from the host's runner, so callers are the same.
+// - A `/files` script whose command on the host ended any other way than by
+//   the script's own exit (its reader went away, its time was up, the host
+//   ended it: the child's `kill`) is ended where it runs as well: ending
+//   `podman exec` or `podman run` leaves a process that neither reads nor
+//   writes running in the container (measured, Podman 4.9.3). So the host
+//   signals the script's `timeout` in the session's container, and stops the
+//   helper by its name.
+// - Failures of a ScriptRunner are ScriptError, as from the host's runner, so
+//   callers are the same. A `/files` script's exit code is its caller's to read.
+// - `running` in a SandboxPlace is what the host knew when the request came
+//   in. A container that stopped since makes `podman exec` fail, and the
+//   request with it; nothing falls back to the host.
 
+import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { ScriptError, type ScriptRunner } from '../../workspaces/script-runner.js';
 import type { Telemetry } from '../../telemetry/emitter.js';
+import type { Place } from '../workspace-files.js';
 import { CLONES, WORKSPACE } from './mounts.js';
-import { type AsRunner, PODMAN, PodmanError } from './podman.js';
-import { type Bind, HELPER_SCOPE, helperArgs } from './podman-args.js';
+import { type AsRunner, bounded, PODMAN, PodmanError, TIMEOUT } from './podman.js';
+import { type Bind, execArgs, filesEndArgs, filesTagged, HELPER_SCOPE, helperArgs, helperStopArgs } from './podman-args.js';
 
-/** Seconds a helper may run, by script (the spec's "Helper run"). */
-export const HELPER_SECONDS: Record<string, number> = { 'ws-clone.sh': 600, 'ws-sync.sh': 120, 'ws-fetch.sh': 120, 'ws-inspect.sh': 60, 'ws-forget.sh': 30 };
+/**
+ * Seconds a helper may run, by script (the spec's "Helper run"): the most its caller can ask, and what it gets when the
+ * caller names no limit. A clone's is the second only: its caller's limit (30 min for the clone and for each setup
+ * command, src/workspaces/clones.ts) applies whole.
+ */
+export const HELPER_SECONDS: Record<string, number> = { 'ws-clone.sh': 1800, 'ws-sync.sh': 120, 'ws-fetch.sh': 120, 'ws-inspect.sh': 60, 'ws-forget.sh': 30 };
+/** The scripts whose caller's limit is not capped. */
+const UNCAPPED = new Set(['ws-clone.sh']);
 /** The scripts that reach a remote. */
 const FETCHES = new Set(['ws-clone.sh', 'ws-sync.sh', 'ws-fetch.sh']);
 /** What the host waits past a script's own limit before it gives up on the command. */
 const GRACE_MS = 15_000;
-const TIMEOUT = '/usr/bin/timeout';
+/** Seconds a `/files` script may run at most: one that carries an archive of 1 GiB out, or an upload in. */
+export const FILES_SECONDS = 3600;
+
+/** What ending the rest of a `/files` script in its container may take. */
+const LEFT_MS = 20_000;
+
+/** A thread's sandbox as its terminal and its `/files` need it; sandbox/host.ts fills it from the thread's record. */
+export interface SandboxPlace {
+  /** The sandbox id (`sp-runner-<id>`). */
+  id: string;
+  /** `person.dir`. */
+  person: string;
+  /** The workspace on the host: what is mounted at `/workspace` while the thread runs. */
+  workspace: string;
+  /** The thread's container is running. */
+  running: boolean;
+}
 
 export interface ScriptsDeps {
   as: AsRunner;
+  /** `runnerUser(env).sudo`: for a script whose output is a stream, which `as` does not start. */
+  sudo: string[];
+  /** Starts such a script; tests pass their own. */
+  spawn?: (cmd: string, args: string[]) => ChildProcess;
   tm: Telemetry;
   /** The host's release (its `bin/` holds the scripts) and SP_DATA. */
   root: string;
@@ -59,6 +107,14 @@ export function sandboxScripts(d: ScriptsDeps) {
     return path.join(d.root, 'bin', script);
   };
 
+  /** `/bin/sh <sh…>` for a thread's running container, ended there after `seconds` (0: never). */
+  const inSession = (sh: string[], seconds: number) => [...(seconds > 0 ? [TIMEOUT, '--kill-after=5', String(seconds)] : []), '/bin/sh', ...sh];
+  /** `/bin/sh <sh…>` in a container of its own on `person`'s clones, ended by Podman after `seconds`: the whole command, for the runners' user. */
+  const inHelper = (person: string, sh: string[], o: { network: boolean; seconds: number; stdin: boolean; binds: Bind[]; name?: string }) => [
+    ...HELPER_SCOPE, PODMAN,
+    ...helperArgs({ name: o.name, person, people: path.join(d.dataDir, 'people'), run: d.helperRun, image: d.image, network: o.network, timeoutS: o.seconds, stdin: o.stdin, binds: o.binds, sh }),
+  ];
+
   /** In the thread's running container. */
   function sessionScripts(id: string): ScriptRunner {
     return {
@@ -66,7 +122,7 @@ export function sandboxScripts(d: ScriptsDeps) {
       workspace: () => WORKSPACE,
       async run(script, args, o) {
         const seconds = Math.max(1, Math.ceil(o.timeoutMs / 1000));
-        const argv = [...(o.timeoutMs > 0 ? [TIMEOUT, '--kill-after=5', String(seconds)] : []), '/bin/sh', bin(script), ...args];
+        const argv = inSession([bin(script), ...args], o.timeoutMs > 0 ? seconds : 0);
         return d.execIn(id, argv, { dir: '/', timeoutMs: o.timeoutMs > 0 ? o.timeoutMs + GRACE_MS : 0, stdin: o.stdin }).catch((e) => {
           throw failed(script, e, seconds);
         });
@@ -82,15 +138,13 @@ export function sandboxScripts(d: ScriptsDeps) {
       async run(script, args, o) {
         const cap = HELPER_SECONDS[script];
         if (!cap) throw new Error(`${script} does not run in a helper container`);
-        const seconds = o.timeoutMs > 0 ? Math.min(cap, Math.max(1, Math.ceil(o.timeoutMs / 1000))) : cap;
-        const argv = helperArgs({
-          person, people: path.join(d.dataDir, 'people'), run: d.helperRun, image: d.image, network: FETCHES.has(script), timeoutS: seconds,
-          stdin: o.stdin !== undefined, binds, script: bin(script), args,
-        });
+        const asked = Math.max(1, Math.ceil(o.timeoutMs / 1000));
+        const seconds = o.timeoutMs > 0 ? (UNCAPPED.has(script) ? asked : Math.min(cap, asked)) : cap;
+        const argv = inHelper(person, [bin(script), ...args], { network: FETCHES.has(script), seconds, stdin: o.stdin !== undefined, binds });
         const span = d.tm.start('sandbox.helper', { data: { script } });
         const t0 = Date.now();
         try {
-          const out = await d.as.run([...HELPER_SCOPE, PODMAN, ...argv], { timeoutMs: seconds * 1000 + GRACE_MS, stdin: o.stdin });
+          const out = await d.as.run(argv, { timeoutMs: seconds * 1000 + GRACE_MS, stdin: o.stdin });
           span.end({ outcome: 'completed' });
           return out;
         } catch (e) {
@@ -102,5 +156,45 @@ export function sandboxScripts(d: ScriptsDeps) {
     };
   }
 
-  return { sessionScripts, helperScripts };
+  const start = d.spawn ?? ((cmd, args) => nodeSpawn(cmd, args, { cwd: '/', stdio: ['pipe', 'pipe', 'pipe'] }));
+
+  /** Where the `/files` scripts of a thread run: started, not waited for; what the process prints and how it exits is the caller's. */
+  function filesPlace(sb: SandboxPlace): Place {
+    return {
+      root: WORKSPACE,
+      spawn(argv, mode) {
+        const [shell, ...sh] = argv;
+        if (shell !== '/bin/sh') throw new Error(`not a shell script: ${shell}`);
+        const seconds = Math.min(FILES_SECONDS, Math.max(1, Math.ceil(mode.seconds ?? FILES_SECONDS)));
+        const tag = randomBytes(8).toString('hex');
+        const command = sb.running
+          ? [PODMAN, ...execArgs(sb.id, [TIMEOUT, '--kill-after=5', String(seconds), ...filesTagged(tag), '/bin/sh', ...sh], { dir: WORKSPACE, interactive: mode.stdin })]
+          : inHelper(sb.person, sh, { name: `sp-files-${tag}`, network: false, seconds, stdin: !!mode.stdin, binds: [{ src: sb.workspace, dst: WORKSPACE, ro: !mode.write }] });
+        // The same bound as `as.run` puts on a command (podman.ts): past it timeout(1) ends what sudo started.
+        const [cmd, ...args] = [...d.sudo, '--', ...bounded(command, seconds * 1000 + GRACE_MS)];
+        const p = start(cmd, args);
+        const span = sb.running ? undefined : d.tm.start('sandbox.helper', { data: { script: 'files' } });
+        const t0 = Date.now();
+        p.once('error', () => span?.end({ outcome: 'failed', error_type: 'unknown' }));
+        // Whoever tells the command to end is noted: `podman exec` that was told exits 0, as if its script had (measured, Podman 4.9.3).
+        let told = false;
+        const kill = p.kill.bind(p);
+        p.kill = (signal) => {
+          told = true;
+          return kill(signal);
+        };
+        p.once('close', (code: number | null) => {
+          // The script's own exits (a path that is not there, or leaves the workspace) are answers, not failures of the helper.
+          const own = code !== null && code < 124;
+          span?.end(own ? { outcome: 'completed' } : { outcome: 'failed', error_type: Date.now() - t0 >= seconds * 1000 ? 'timeout' : 'unknown' });
+          if (own && !told) return;
+          // Ended, not over: what it ran may still be there. Nothing to end is the usual answer, and a failure here has nobody to tell.
+          d.as.podman(sb.running ? filesEndArgs(sb.id, tag) : helperStopArgs(`sp-files-${tag}`), { timeoutMs: LEFT_MS }).catch(() => {});
+        });
+        return p;
+      },
+    };
+  }
+
+  return { sessionScripts, helperScripts, filesPlace };
 }

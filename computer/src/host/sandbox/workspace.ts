@@ -99,9 +99,13 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
     return names.filter((name) => cloned(r.person, name));
   }
 
-  /** The thread's workspace and its registry for each of these repositories, made as the runners' user. Safe to repeat. */
+  /**
+   * The thread's workspace, the person's clones (which every helper container mounts, also one that only reads the
+   * workspace of a thread with no repository) and the thread's registry for each of these repositories, made as the
+   * runners' user. Safe to repeat.
+   */
   async function dirs(r: SandboxRecord, names: string[]): Promise<void> {
-    await d.as.run(['/bin/mkdir', '-p', '--', m.workspace(r), ...names.map((name) => m.registry(r, name))], { timeoutMs: MKDIR_TIMEOUT_MS });
+    await d.as.run(['/bin/mkdir', '-p', '--', m.workspace(r), m.clones(r.person), ...names.map((name) => m.registry(r, name))], { timeoutMs: MKDIR_TIMEOUT_MS });
   }
 
   /** What a start mounts, in order (mounts.ts). */

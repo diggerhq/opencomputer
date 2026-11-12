@@ -89,7 +89,7 @@ describe('a sandboxed thread\'s workspace (work 103, "Sequences")', () => {
   it('dirs: the workspace and a registry per repository, made as the runners\' user in one command', async () => {
     const t = rig();
     await t.w.dirs(t.record, ['alpha', 'beta']);
-    expect(t.log).toEqual(['/bin/mkdir -p -- /people/pat/sessions/C1-1-1 /people/pat/wt/C1-1-1/alpha /people/pat/wt/C1-1-1/beta']);
+    expect(t.log).toEqual(['/bin/mkdir -p -- /people/pat/sessions/C1-1-1 /people/pat/ws /people/pat/wt/C1-1-1/alpha /people/pat/wt/C1-1-1/beta']);
   });
 
   it('prepare: one ws-add.sh for all repositories, then the record\'s copy and the root files by tar, then `repos` in the record', async () => {
@@ -151,7 +151,7 @@ describe('a sandboxed thread\'s workspace (work 103, "Sequences")', () => {
     ]));
     expect(out.length).toBe(3);
     expect(t.log).toEqual([
-      '/bin/mkdir -p -- /people/pat/sessions/C1-1-1 /people/pat/wt/C1-1-1/lazy',
+      '/bin/mkdir -p -- /people/pat/sessions/C1-1-1 /people/pat/ws /people/pat/wt/C1-1-1/lazy',
       `podman unshare python3 -I /opt/r1/bin/sandbox-mount.py 4242 ${ID} pat`,
       'ws-add.sh 0 lazy',
       'ws-add.sh 0 <tar',

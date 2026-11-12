@@ -50,6 +50,7 @@ import { apiWake } from './api-wake.js';
 import { apiRelay, type WireHooks, type WireLinkLike } from './api-relay.js';
 import { type ApiMeter, apiMeter } from './api-meter.js';
 import type { Telemetry } from '../telemetry/emitter.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
   /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
@@ -77,12 +78,12 @@ export interface ApiHostDeps {
   buffered?(): number;
   /** Stop runner `runnerId` now (its session's epoch moved on): interrupt it, tell it to exit within 8 s, kill it after 10 s. */
   retire?(runnerId: string): Promise<unknown>;
-  /** Why this host opens no terminal, or serves no `/files`, for the session `key`; undefined when it does (sandbox/not-yet.ts). */
-  refuse?(key: string, what: 'terminal' | 'files'): string | undefined;
   /** Start the session's runner (or find it running), then deliver `msg`; resolves with its status. */
   start(spec: SessionSpec, o: StartOptions): Promise<SessionStatus | undefined>;
   /** The fork of the session's runner, if it reported one. */
   forkPath?(key: string): string | undefined;
+  /** Present where sessions run in containers (work 103): the session's sandbox, undefined when it has none yet. Its terminal and files are reached only there. */
+  sandbox?(spec: SessionSpec): Promise<SandboxPlace | undefined>;
   /** Serve the relay's local socket (api-wire.ts); absent: no relay on this host. */
   wire?(hooks: WireHooks): Promise<WireLinkLike>;
   /** The host's emitter: the API side's telemetry (api-meter.ts: the relay's frames, the mirror's turns, adoptions, api.sample). */
@@ -269,17 +270,20 @@ export function apiHost(d: ApiHostDeps) {
         (e) => ({ error: apiError('internal', String(e?.message ?? e), 500, { retryable: true }) }),
       );
     },
-    async workspace(sessionId, what) {
+    async workspace(sessionId) {
       await forking.get(sessionId); // a push right after the create: the fork it goes to is being made
       const spec = specs.get(sessionId);
-      const no = spec && d.refuse?.(spec.key, what);
-      if (no) return { error: apiError('unavailable', no, 503) };
       const forkPath = spec && (d.forkPath?.(spec.key) ?? spec.forkPath);
       const owner = spec?.owner.userId;
+      if (d.sandbox) {
+        const sandbox = spec && (await d.sandbox(spec));
+        return sandbox && owner ? { forkPath: sandbox.workspace, owner, sandbox } : undefined;
+      }
       return forkPath && owner ? { forkPath, owner } : undefined;
     },
     async record(sessionId, type, data, actor) {
-      const w = await writer(sessionId, false);
+      // With no runner the host's own writer records it, opened as for any call: an upload to a stopped session is in its log.
+      const w = await writer(sessionId, true);
       const r = await w?.call(RECORD_METHOD, { sessionId, type, data }, { actor, member: actor.id });
       if (r?.error) log.warn(`${type} not recorded in ${sessionId}: ${r.error.code}`);
       return (r?.result as { seq?: number } | undefined)?.seq;

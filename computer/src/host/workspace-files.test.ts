@@ -1,11 +1,11 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { contentType, createWorkspaceFiles, type Workspace, type WorkspaceFiles } from './workspace-files.js';
+import { contentType, createWorkspaceFiles, parseListing, type Workspace, type WorkspaceFiles } from './workspace-files.js';
 
 let root: string;
 let ws: Workspace;
@@ -127,6 +127,16 @@ describe('upload', () => {
     expect(list.entries.find((e) => e.path === 'repo')).toMatchObject({ pushedAt: null });
   });
 
+  it('takes an archive whose unpacking ends before its last bytes are written', async () => {
+    // tar stops at the end-of-archive mark and exits; what follows (padding) is then written to nobody.
+    const padded = Buffer.concat([tarOf(srcDir('v1')), Buffer.alloc(8 * 2 ** 20)]);
+    for (let i = 0; i < 5; i++) {
+      const r = await files.upload(ws, 'padded', 'tar', actor, Readable.from([padded.subarray(0, 4096), padded.subarray(4096)]));
+      if ('error' in r) throw new Error(r.error.message);
+      expect(readFileSync(path.join(ws.forkPath, 'padded/lib/x.txt'), 'utf8')).toBe('v1');
+    }
+  });
+
   it('never overwrites what was not uploaded', async () => {
     const r = await files.upload(ws, 'repo', 'tar', actor, body(tarOf(srcDir('x'))));
     expect('error' in r && r.error.code).toBe('path_exists');
@@ -140,5 +150,203 @@ describe('upload', () => {
     expect('error' in z && z.error.code).toBe('invalid_archive');
     expect(existsSync(path.join(ws.forkPath, 'junk'))).toBe(false);
     expect(readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'))).toEqual([]);
+  });
+});
+
+describe('an upload that is cut (work 103, C13)', () => {
+  const opc = () => readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'));
+  const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** A place whose `mkdir` takes `ms`: a machine under load, where the script has not made its directory when its upload fails. */
+  function slowMkdir(ms: number) {
+    const bin = path.join(root, 'slow-bin');
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, 'mkdir'), `#!/bin/sh\nsleep ${ms / 1000}\nexec /bin/mkdir "$@"\n`, { mode: 0o755 });
+    return createWorkspaceFiles({
+      dir: path.join(root, 'scratch-slow'),
+      place: (w) => ({
+        root: w.forkPath,
+        spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }),
+      }),
+    });
+  }
+
+  it('leaves no directory when the body fails before the script made its own', async () => {
+    const f = slowMkdir(300);
+    const r = await f.upload(ws, 'junk', 'tar', actor, body(Buffer.from('nope'.repeat(300))));
+    expect('error' in r && r.error.code).toBe('invalid_archive');
+    await settle(600);
+    expect(opc()).toEqual([]);
+  });
+
+  it('leaves none when the body stops halfway, and the next upload removes what an earlier one could not', async () => {
+    const big = path.join(root, 'big');
+    mkdirSync(big);
+    writeFileSync(path.join(big, 'a.bin'), Buffer.alloc(300_000, 7));
+    const tar = tarOf(big);
+    const cut = new Readable({ read() {} });
+    cut.push(tar.subarray(0, 100_000));
+    const up = files.upload(ws, 'half', 'tar', actor, cut);
+    await settle(200);
+    cut.destroy(new Error('the request ended'));
+    expect(await up).toMatchObject({ error: { code: 'invalid_archive' } });
+    expect(opc()).toEqual([]);
+    // What a script that was killed outright left (the container stopped, the machine went down).
+    mkdirSync(path.join(ws.forkPath, '.opc-upload-half-0000'));
+    mkdirSync(path.join(ws.forkPath, '.opc-replaced-half-0000'));
+    expect(await files.upload(ws, 'half', 'tar', actor, body(tar))).toMatchObject({ upload: { path: 'half', bytes: 300_000 } });
+    expect(opc()).toEqual([]);
+  });
+});
+
+describe('a script that is ended before it is done (work 103, "Timeouts and failures")', () => {
+  /**
+   * A place as a `podman` host's is: the script under timeout(1), under a stand-in for sudo that does with signals what
+   * sudo does (SIGTERM goes on to the command, SIGKILL ends sudo alone). `slow` are commands that never finish there.
+   * `alive()`: something of the script still runs (timeout(1) leads its process group).
+   */
+  function underSudo(slow: string[], o: { scriptWaitMs?: number } = {}) {
+    const bin = path.join(root, 'stuck-bin');
+    mkdirSync(bin);
+    for (const name of slow) writeFileSync(path.join(bin, name), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    const pidFile = path.join(root, 'pid');
+    const sudo = path.join(root, 'sudo');
+    writeFileSync(sudo, `#!/bin/sh\n"$@" <&0 &\npid=$!\ntrap 'kill -TERM "$pid" 2>/dev/null' TERM\necho "$pid" > ${pidFile}\nwhile :; do wait "$pid"; rc=$?; kill -0 "$pid" 2>/dev/null || exit "$rc"; done\n`, { mode: 0o755 });
+    const f = createWorkspaceFiles({
+      dir: path.join(root, 'scratch-sudo'),
+      ...o,
+      place: (w) => ({
+        root: w.forkPath,
+        spawn: (argv) => spawn(sudo, ['/usr/bin/timeout', '--kill-after=2', '60', ...argv], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }),
+      }),
+    });
+    const group = () => -Number(readFileSync(pidFile, 'utf8'));
+    const alive = () => {
+      try {
+        return process.kill(group(), 0);
+      } catch {
+        return false;
+      }
+    };
+    const gone = async () => {
+      for (const end = Date.now() + 1500; alive() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+      if (!alive()) return true;
+      process.kill(group(), 'SIGKILL');
+      return false;
+    };
+    return { f, gone, alive };
+  }
+
+  it('one that runs over its time is ended with all it started', async () => {
+    const t = underSudo(['find'], { scriptWaitMs: 200 });
+    await expect(t.f.list(ws, { path: 'repo' })).rejects.toThrow('ran over 200 ms');
+    expect(await t.gone()).toBe(true);
+  });
+
+  it('a download whose reader goes away is ended', async () => {
+    const t = underSudo(['cat']);
+    const file = await t.f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    const r = file.read();
+    await new Promise((res) => setTimeout(res, 100));
+    expect(t.alive()).toBe(true);
+    r.stream.destroy();
+    await expect(r.done).rejects.toThrow();
+    expect(await t.gone()).toBe(true);
+  });
+
+  it('a download read to its end is not', async () => {
+    const t = underSudo([]);
+    const file = await t.f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    const r = file.read();
+    expect((await collect(r.stream)).toString()).toBe('# hi\n');
+    await r.done;
+  });
+
+  it('an upload whose body stops is ended, and leaves no directory', async () => {
+    const t = underSudo(['tar']);
+    const cut = new Readable({ read() {} });
+    cut.push(Buffer.alloc(512));
+    const up = t.f.upload(ws, 'half', 'tar', actor, cut);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'))).toHaveLength(1);
+    cut.destroy(new Error('the request ended'));
+    expect(await up).toMatchObject({ error: { code: 'invalid_archive' } });
+    expect(await t.gone()).toBe(true);
+    expect(readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'))).toEqual([]);
+  });
+});
+
+describe('where the scripts run (work 103, C13)', () => {
+  /** A place whose root is the fork under another name: what a container's /workspace is to the host's path. */
+  function elsewhere() {
+    const started: { script: string; args: string[]; write?: boolean; stdin?: boolean }[] = [];
+    const inside = path.join(root, 'inside');
+    symlinkSync(ws.forkPath, inside);
+    const f = createWorkspaceFiles({
+      dir: path.join(root, 'scratch2'),
+      place: () => ({
+        root: inside,
+        spawn(argv, mode) {
+          started.push({ script: argv[2], args: argv.slice(3), ...mode });
+          return spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+        },
+      }),
+    });
+    return { f, started, nowhere: { sessionId: 'cs_t', forkPath: '/nonexistent/on/this/host' } };
+  }
+
+  it('reaches every file through the place, never through the host path, and nothing chosen by the caller is script text', async () => {
+    const { f, started, nowhere } = elsewhere();
+    const l = await f.list(nowhere, { path: 'repo', depth: 2 });
+    expect('entries' in l && l.entries.map((e) => e.path)).toEqual(['repo/.git', 'repo/README.md', 'repo/bin.dat', 'repo/src', 'repo/src/a.ts']);
+    const one = await f.file(nowhere, 'repo/README.md');
+    if ('error' in one) throw new Error(one.error.code);
+    expect((await collect(one.read().stream)).toString()).toBe('# hi\n');
+    const a = await f.archive(nowhere, 'repo/src');
+    expect(a).toMatchObject({ files: 2, bytes: 20 });
+    const up = await f.upload(nowhere, 'pushed', 'tar', actor, body(tarOf(path.join(ws.forkPath, 'repo/src'))));
+    expect(up).toMatchObject({ upload: { path: 'pushed', files: 2 } });
+    expect(readFileSync(path.join(ws.forkPath, 'pushed/a.ts'), 'utf8')).toContain('export const a');
+    for (const s of started) {
+      expect(s.args[0]).toBe('sh');
+      expect(s.args[1]).toBe(path.join(root, 'inside'));
+      for (const word of ['repo', 'README', 'pushed']) expect(s.script.includes(word), word).toBe(false);
+    }
+    // Only an upload's scripts may change the workspace, and only its unpacking reads standard input.
+    const writers = started.filter((s) => s.write);
+    expect(writers.map((s) => s.args[2].replace(/-[0-9a-f]{12}$/, ''))).toEqual(['.opc-upload-pushed', '.opc-upload-pushed']);
+    expect(started.filter((s) => s.stdin)).toHaveLength(1);
+    expect(started.filter((s) => !s.write).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('holds a symlink to the place it is resolved in: outside is invalid_path for every read', async () => {
+    const { f, nowhere } = elsewhere();
+    symlinkSync('/etc/hostname', path.join(ws.forkPath, 'repo/leak'));
+    symlinkSync('README.md', path.join(ws.forkPath, 'repo/alias'));
+    for (const p of ['escape', 'repo/leak', 'escape/hostname']) {
+      expect(await f.file(nowhere, p), p).toMatchObject({ error: { code: 'invalid_path' } });
+      expect(await f.archive(nowhere, p), p).toMatchObject({ error: { code: 'invalid_path' } });
+    }
+    expect(await f.file(nowhere, 'repo/alias')).toMatchObject({ size: 5 });
+    expect(await f.file(nowhere, 'repo/src')).toMatchObject({ error: { code: 'path_not_found' } });
+    expect(await f.file(nowhere, 'repo/nope')).toMatchObject({ error: { code: 'path_not_found' } });
+    expect(await f.canUpload(nowhere, '../x')).toMatchObject({ error: { code: 'invalid_path' } });
+    expect(await f.canUpload(nowhere, '.hidden')).toMatchObject({ error: { code: 'invalid_path' } });
+  });
+
+  it('fails, and reads nothing on the host, when a workspace has no place', async () => {
+    const f = createWorkspaceFiles({ dir: path.join(root, 'scratch3'), place: () => { throw new Error('session cs_t has no sandbox'); } });
+    await expect(f.list(ws, { path: '' })).rejects.toThrow('no sandbox');
+    await expect(f.file(ws, 'repo/README.md')).rejects.toThrow('no sandbox');
+    await expect(f.canUpload(ws, 'x')).rejects.toThrow('no sandbox');
+  });
+
+  it('orders a listing by path components, whatever order find printed it in', () => {
+    const rec = (y: string, p: string) => `${y}\t3\t1700000000.5000000000\t${p}\0`;
+    const out = Buffer.from(rec('f', 'b') + rec('f', 'a/z') + rec('d', 'a') + rec('f', 'a.txt') + rec('l', 'a/b c\nd') + rec('f', 'B'));
+    expect(parseListing(out).map((e) => `${e.type}:${e.rel}`)).toEqual(['file:B', 'dir:a', 'symlink:a/b c\nd', 'file:a/z', 'file:a.txt', 'file:b']);
+    expect(parseListing(out)[0].modifiedAt).toBe('2023-11-14T22:13:20.500Z');
   });
 });

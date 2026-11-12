@@ -69,7 +69,6 @@ import { send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
 import { closed, rediscover, retire } from './runner-sockets.js';
 import { checkedDial } from './remote-port.js';
-import { notYet } from './sandbox/not-yet.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
 import { credentialFingerprint } from '../credential-fingerprint.js';
@@ -155,8 +154,6 @@ const sandbox = LAUNCH === 'podman'
       mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
       serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => [...runners.values()].some((r) => r.id === id) })
   : undefined;
-/** Whether `key`'s session runs in a container: on a `podman` host every one does, but one whose live runner is from before (no record). */
-const sandboxed = (key: string) => !!sandbox && (!runners.has(key) || !!runners.get(key)?.sandbox);
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
@@ -220,12 +217,8 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       setTimeout(() => spawning.delete(m.id), 60_000).unref();
       return toGateway({ ...m, from: r.key });
     }
-    case 'preview': { // the host probes the port between the gateway's answer and the runner's (previews.ts)
-      const no = notYet('preview', !!r.sandbox); // the port is in its container, not on the host
-      if (no) return send(r.sock, { t: 'previewed', id: m.id, error: no } satisfies HostToRunner);
-      return previews.request(r.key, m).then((a) => send(r.sock, a satisfies HostToRunner));
-    }
-    case 'unpreview': return previews.request(r.key, m).then((a) => send(r.sock, a satisfies HostToRunner));
+    case 'preview': // the host probes the port between the gateway's answer and the runner's (previews.ts)
+    case 'unpreview': return previews.request(r.key, m, r.sandbox?.record.id).then((a) => send(r.sock, a satisfies HostToRunner));
     case 'out-of-credits': return runners.get(r.key) === r && toGateway({ t: 'out-of-credits', sessionKey: r.key });
     case 'model-denied': return toGateway({ t: 'model-denied', sessionKey: r.key, model: m.model, fallbackTo: m.fallbackTo });
     case 'checkout': {
@@ -282,11 +275,11 @@ function toGateway(m: HostToGateway) {
   link.send(m);
 }
 const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-api'), runDir: path.join(HOST_RUN, 'host-api'),
-  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner, refuse: (key, what) => notYet(what, sandboxed(key)),
+  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner,
   dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
   forkPath: (key) => runners.get(key)?.report?.forkPath,
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
-    stateDir: path.join(HOST_DATA, 'state', 'uploads') }), telemetry: tm });
+    stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
   if (disk) toGateway(disk);
@@ -453,7 +446,7 @@ function housekeeping() {
 
 freshTokenDir(HOST_RUN); // no runner's token socket outlives the host that served it
 const tokens = tokenRelay(link.ask, tm);
-const previews = hostPreviews({ ask: link.ask });
+const previews = hostPreviews({ ask: link.ask, sandbox: sandbox?.previews });
 
 // ---------------------------------------------------------------- start
 
