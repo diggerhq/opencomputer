@@ -23,10 +23,11 @@
 //   (`timeout`), so nothing of it is left running there when its time is up.
 // - A `/files` script whose command on the host ended any other way than by
 //   the script's own exit (its reader went away, its time was up, the host
-//   ended it) is ended where it runs as well: ending `podman exec` or
-//   `podman run` leaves a process that neither reads nor writes running in
-//   the container (measured, Podman 4.9.3). So the host signals the script's
-//   `timeout` in the session's container, and stops the helper by its name.
+//   ended it: the child's `kill`) is ended where it runs as well: ending
+//   `podman exec` or `podman run` leaves a process that neither reads nor
+//   writes running in the container (measured, Podman 4.9.3). So the host
+//   signals the script's `timeout` in the session's container, and stops the
+//   helper by its name.
 // - Failures of a ScriptRunner are ScriptError, as from the host's runner, so
 //   callers are the same. A `/files` script's exit code is its caller's to read.
 // - `running` in a SandboxPlace is what the host knew when the request came
@@ -175,10 +176,18 @@ export function sandboxScripts(d: ScriptsDeps) {
         const span = sb.running ? undefined : d.tm.start('sandbox.helper', { data: { script: 'files' } });
         const t0 = Date.now();
         p.once('error', () => span?.end({ outcome: 'failed', error_type: 'unknown' }));
+        // Whoever tells the command to end is noted: `podman exec` that was told exits 0, as if its script had (measured, Podman 4.9.3).
+        let told = false;
+        const kill = p.kill.bind(p);
+        p.kill = (signal) => {
+          told = true;
+          return kill(signal);
+        };
         p.once('close', (code: number | null) => {
           // The script's own exits (a path that is not there, or leaves the workspace) are answers, not failures of the helper.
-          if (code !== null && code < 124) return span?.end({ outcome: 'completed' });
-          span?.end({ outcome: 'failed', error_type: Date.now() - t0 >= seconds * 1000 ? 'timeout' : 'unknown' });
+          const own = code !== null && code < 124;
+          span?.end(own ? { outcome: 'completed' } : { outcome: 'failed', error_type: Date.now() - t0 >= seconds * 1000 ? 'timeout' : 'unknown' });
+          if (own && !told) return;
           // Ended, not over: what it ran may still be there. Nothing to end is the usual answer, and a failure here has nobody to tell.
           d.as.podman(sb.running ? filesEndArgs(sb.id, tag) : helperStopArgs(`sp-files-${tag}`), { timeoutMs: LEFT_MS }).catch(() => {});
         });

@@ -29,7 +29,7 @@ function rig(answer: () => string | Error = () => 'out') {
     execIn: (id, argv, o) => (execs.push({ id, argv, o }), reply()),
     spawn: (cmd, args) => {
       started.push([cmd, ...args]);
-      const child = new EventEmitter();
+      const child = Object.assign(new EventEmitter(), { kill: () => true });
       children.push(child);
       return child as ChildProcess;
     },
@@ -152,7 +152,7 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     it('a running thread: a script whose command was ended, not over by itself, is ended in the container too', async () => {
       const t = rig();
       const place = t.s.filesPlace(sb);
-      for (let i = 0; i < 4; i++) place.spawn(['/bin/sh', '-c', 'x'], {});
+      const ps = [0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
       const tags = t.started.map((a) => a.at(-4)?.slice('OPC_FILES='.length));
       // The script's own exits: nothing of it is left. Ended by a signal, by timeout(1), or never started: its timeout in the container is told to end it.
       t.children[0].emit('close', 0);
@@ -160,7 +160,10 @@ describe('workspace scripts in containers (work 103, C12)', () => {
       t.children[2].emit('close', null);
       t.children[2].emit('close', null);
       t.children[3].emit('close', 124);
-      expect(t.podmans).toEqual([2, 3].map((i) => ['exec', '--user', '1500:1500', `sp-runner-${ID}`, 'pkill', '-TERM', '-f', `^/usr/bin/timeout .* OPC_FILES=${tags[i]} `]));
+      // `podman exec` that is told to end exits 0 (measured, Podman 4.9.3): being told is what counts, not the code.
+      expect(ps[4].kill('SIGTERM')).toBe(true);
+      t.children[4].emit('close', 0);
+      expect(t.podmans).toEqual([2, 3, 4].map((i) => ['exec', '--user', '1500:1500', `sp-runner-${ID}`, 'pkill', '-TERM', '-f', `^/usr/bin/timeout .* OPC_FILES=${tags[i]} `]));
       const pattern = new RegExp(t.podmans[0].at(-1) as string);
       expect(pattern.test(t.started[2].slice(-8).join(' '))).toBe(true);
       expect(pattern.test(t.started[3].slice(-8).join(' '))).toBe(false);
@@ -171,14 +174,16 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     it('a stopped thread: a helper whose command was ended, not over by itself, is stopped', async () => {
       const t = rig();
       const place = t.s.filesPlace({ ...sb, running: false });
-      for (let i = 0; i < 3; i++) place.spawn(['/bin/sh', '-c', 'x'], {});
+      const ps = [0, 1, 2, 3].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
       const names = t.started.map((a) => a[a.indexOf('--name') + 1]);
       expect(names[0]).toMatch(/^sp-files-[0-9a-f]{16}$/);
-      expect(new Set(names).size).toBe(3);
+      expect(new Set(names).size).toBe(4);
       t.children[0].emit('close', 1);
       t.children[1].emit('close', null);
       t.children[2].emit('close', 143);
-      expect(t.podmans).toEqual([1, 2].map((i) => ['stop', '--ignore', '--time', '2', names[i]]));
+      ps[3].kill();
+      t.children[3].emit('close', 0);
+      expect(t.podmans).toEqual([1, 2, 3].map((i) => ['stop', '--ignore', '--time', '2', names[i]]));
     });
 
     it('a place that fails to end what is left says so and goes on', async () => {

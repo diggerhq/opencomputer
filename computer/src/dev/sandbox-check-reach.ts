@@ -126,7 +126,7 @@ function tarOf(files: Record<string, string>): Buffer {
   const dir = mkdtempSync(path.join(tmpdir(), 'sandbox-check-'));
   try {
     for (const [name, text] of Object.entries(files)) writeFileSync(path.join(dir, name), text);
-    return execFileSync('/usr/bin/tar', ['-cf', '-', '-C', dir, ...Object.keys(files)]);
+    return execFileSync('/usr/bin/tar', ['-cf', '-', '-C', dir, ...Object.keys(files)], { maxBuffer: 64 << 20 });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -175,14 +175,14 @@ async function filesEnded(k: Kit, t: Thread, running: boolean) {
   p.kill('SIGTERM');
   const ended = await closed;
   const l2 = await nothingLeft(k, t, running);
-  check(ended !== 0 && l2 === 'nothing', `one that writes nothing and whose command the host ends (exit ${ended}) leaves ${l2}`);
+  check(l2 === 'nothing', `one that writes nothing and whose command the host ends (exit ${ended}) leaves ${l2}`);
   const big = tarOf({ 'big.bin': 'x'.repeat(24 << 20) });
   const cut = await k.wire.putCut(t.sessionId, t.member, 's9-cut', big, big.length >> 1);
   const l3 = await nothingLeft(k, t, running);
   check(!!cut.error && l3 === 'nothing' && !(await list(k, t)).some((x) => x.startsWith('s9-cut')), `an upload whose body stops halfway is ${cut.error?.code}, and leaves ${l3} and no s9-cut`);
   const part = await k.wire.getCut(t.sessionId, t.member, 's9-big', true);
   const l4 = await nothingLeft(k, t, running);
-  check('got' in part && part.got > 0 && l4 === 'nothing', `a download of 300 MB whose reader hangs up after ${'got' in part ? part.got : JSON.stringify(part.error)} bytes leaves ${l4}`);
+  check('got' in part && part.got > 0 && l4 === 'nothing', `a download of 90 MB whose reader hangs up after ${'got' in part ? part.got : JSON.stringify(part.error)} bytes leaves ${l4}`);
 }
 
 /**
@@ -288,7 +288,7 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
     check(onHost.split('\n').join(' ') === 'pushed to A agent', `the upload to running A is in A's workspace on the host (${a.workspace}), the runners' user's: ${JSON.stringify(onHost)}`);
 
     // ---- /files scripts that do not run to their end
-    await k.inside(a.id, 'truncate -s 300M /workspace/s9-big');
+    await k.inside(a.id, 'truncate -s 90M /workspace/s9-big');
     await filesEnded(k, a, true);
 
     // ---- a terminal in a worktree
