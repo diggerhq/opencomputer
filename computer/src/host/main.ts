@@ -131,7 +131,7 @@ const pool = new Pool<Runner>({
   failed: () => tm.emit('pool.spare_failed', {}),
   evict: (r, reason) => {
     tm.emit('pool.spare_evicted', { data: { reason } });
-    exitRunner(r.sock);
+    starts.evict(r);
   },
 });
 /** Every connected runner: the sessions' and the spares. */
@@ -500,8 +500,9 @@ const shutdown = async () => {
   stopping = true;
   // Runners keep going; the next host finds them by their sockets.
   log.info('host stopping');
-  // A spare's container serves nobody and no host finds it again: it is told to go (its container stops with it).
-  for (const r of allRunners()) sandbox && !r.key ? exitRunner(r.sock) : r.sock.destroy();
+  for (const r of allRunners()) r.sock.destroy();
+  // A spare's container serves nobody and no host finds it again: each is stopped and Removed, within what the unit's stop allows (15 s in all).
+  const spares = sandbox && Promise.race([sandbox.spares.close(), new Promise((r) => setTimeout(r, 8000).unref())]);
   tokenServer.close();
   helperTokens?.close();
   previews.stop();
@@ -509,6 +510,7 @@ const shutdown = async () => {
   await api.stop();
   // One last send within 5 s; what is left stays in the spool for the next start.
   await telemetry.close(5000);
+  await spares;
   process.exit(0);
 };
 process.on('SIGTERM', () => void shutdown());

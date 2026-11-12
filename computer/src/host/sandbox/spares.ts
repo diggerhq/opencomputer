@@ -25,8 +25,13 @@
 // - A spare that leaves is Removed, container and home, and its run directory
 //   goes with it; one whose record was written keeps the record and the run
 //   directory, and the thread's next start creates a container under the same
-//   id (start.ts, the resume). One that could not be Removed is stopped with
-//   no grace: nothing of a spare that left keeps running.
+//   id (start.ts, the resume).
+// - A spare leaves by container, never by its own doing: it is stopped with
+//   no grace, then Removed, whether or not it was told to `exit` and whatever
+//   it did about it. That holds for one the pool evicts, one whose claim
+//   failed, one whose connection closed, and every spare when the host stops
+//   (`close`), the one being made included; after `close` none is made. One
+//   that could not be Removed is therefore not running.
 // - The record `bind` writes says `unclaimed` until the claim was answered
 //   (`claimed`) or the spare was Removed. A container whose record says so is half-bound: it has the
 //   thread's files mounted and a runner that may or may not have taken the
@@ -125,6 +130,12 @@ export function sandboxSpares(d: SpareDeps) {
   let lastStart = 0;
   const waiting: (() => void)[] = [];
   let queue: Promise<unknown> = Promise.resolve();
+  /** The spare being made, if any; and whether the host is stopping. */
+  let making: string | undefined;
+  let closed = false;
+  const open = () => {
+    if (closed) throw new Error('the host is stopping');
+  };
 
   /** A thread's start: no spare is made while one is in flight. */
   async function during<T>(fn: () => Promise<T>): Promise<T> {
@@ -138,6 +149,7 @@ export function sandboxSpares(d: SpareDeps) {
   }
   const quiet = async () => {
     for (;;) {
+      if (closed) return;
       if (starts) await new Promise<void>((r) => waiting.push(r));
       const left = lastStart + settleMs - Date.now();
       if (!starts && left <= 0) return;
@@ -145,15 +157,15 @@ export function sandboxSpares(d: SpareDeps) {
     }
   };
 
-  /** Remove (container and home), or stop what stayed; the run directory too unless a record says the id is a thread's. Once per id at a time; never rejects. */
+  /** Stop with no grace, Remove (container and home); the run directory too unless a record says the id is a thread's. Once per id at a time; never rejects. */
   function drop(id: string): Promise<void> {
     mine.delete(id);
     let p = leaving.get(id);
     if (!p) {
       p = (async () => {
-        // What Podman would not remove does not keep running; the sweep removes it later, or the thread's next start (start.ts).
+        // Stopped first: what Podman then would not remove does not keep running; the sweep removes it later, or the thread's next start (start.ts).
+        await c.stop(id, 0).catch((e) => log.warn(`spare ${id} not stopped: ${e?.message ?? e}`));
         if (await c.remove(id)) d.records.get(id)?.unclaimed && claimed(id); // nothing half-bound is left under the id
-        else await c.stop(id, 0).catch((e) => log.warn(`spare ${id} neither removed nor stopped: ${e?.message ?? e}`));
         if (!d.records.get(id)) await d.deleteRun(id);
       })().finally(() => leaving.delete(id));
       leaving.set(id, p);
@@ -170,21 +182,27 @@ export function sandboxSpares(d: SpareDeps) {
 
   async function one(): Promise<Spare> {
     await quiet();
+    open();
     const id = randomBytes(8).toString('hex');
     const run = d.runRoot(id);
     mine.add(id);
+    making = id;
     try {
       const createMs = await c.create(id);
+      open();
       // No session and no API: the runner parks, and knows nobody.
       const rs: RunnerSpec = { id, socket: socketFor(run, id), version: d.version };
       const t0 = Date.now();
       const up = await c.up(id, rs);
       try {
+        open();
         const sock = await awaitRunner(rs, {
           tm, t0,
           dial: () => dial(rs.socket),
           late: async () => log.warn(`spare ${id} never listened:\n${(await c.diagnose(id)).slice(-4000)}`),
         });
+        if (closed) sock.destroy();
+        open();
         return { id, run, sock, createMs, startMs: up.startMs };
       } catch (e) {
         up.tokens.close();
@@ -193,6 +211,8 @@ export function sandboxSpares(d: SpareDeps) {
     } catch (e) {
       await drop(id);
       throw e;
+    } finally {
+      making = undefined;
     }
   }
 
@@ -239,6 +259,12 @@ export function sandboxSpares(d: SpareDeps) {
     launch,
     bind,
     claimed,
+    /** The host stops: every spare leaves, the one being made once its step in flight ended, and none is made after. Never rejects. */
+    async close(): Promise<void> {
+      closed = true;
+      for (const go of waiting.splice(0)) go();
+      await Promise.all([queue, ...[...mine].filter((id) => id !== making).map(drop), ...leaving.values()]);
+    },
     during,
     /** `fn` in the thread's turn: a claim, from the look for its record to the spare claimed or discarded. */
     turn: <T>(spec: SessionSpec, fn: () => Promise<T>): Promise<T> => d.locks.run(spec.owner.dir, spec.key, fn),

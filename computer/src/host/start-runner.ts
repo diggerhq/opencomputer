@@ -30,6 +30,8 @@
 //   the two are set together when a spare is bound, before `claim` is sent.
 //   Until then nothing it asks for is handled (spare-frames.ts); after, it is
 //   asked for the record's thread, whether or not the claim was answered yet.
+// - A spare in a container that leaves is never only asked to: one the pool
+//   evicts has its socket destroyed and is stopped and Removed by container.
 // - A spare taken and not claimed, for whatever reason, is told to exit and
 //   Removed, and the delivery starts cold under the record's id: a failed
 //   claim loses no delivery.
@@ -385,5 +387,12 @@ export function runnerStarts(d: StartDeps) {
     tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode } });
   }
 
-  return { adopt, startRunner, launchSpare };
+  /** The pool lets a spare go (pool.ts). A container's is not asked, which it could ignore: its socket is destroyed and it is Removed (sandbox/spares.ts). */
+  function evict(r: Runner) {
+    if (!d.spares) return d.exit(r.sock);
+    r.sock.destroy();
+    void d.spares.gone(r.id);
+  }
+
+  return { adopt, startRunner, launchSpare, evict };
 }

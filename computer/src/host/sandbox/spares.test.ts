@@ -14,7 +14,7 @@ import { threadLocks } from './thread-lock.js';
 
 const owner = { dir: 'pat', gitName: 'Pat', gitEmail: 'pat@example.com' };
 const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mode: 'default', sdkSessionId: 'old', forkPath: '/data/people/pat/sessions/C1-1.1' };
-const sock = { destroyed: false } as net.Socket;
+const sock = { destroyed: false, destroy: () => {} } as unknown as net.Socket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
 function rig(o: { settleMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean } = {}) {
@@ -156,19 +156,19 @@ describe('a spare container', () => {
     await expect(t.bind(id, spec, {})).rejects.toThrow('no worktree');
     t.log.length = 0;
     await t.discard(id);
-    expect(t.log).toEqual([`remove ${id}`]);
+    expect(t.log).toEqual([`stop ${id} 0`, `remove ${id}`]);
     expect(t.records.find('pat', 'C1:1.1')?.id).toBe(id);
     expect(t.records.get(id)).not.toHaveProperty('unclaimed'); // nothing half-bound is left under the id
     expect(existsSync(t.runRoot(id))).toBe(true);
   });
 
-  it('that could not be removed is stopped with no grace: nothing of a half-bound spare keeps running, and its record says it was never claimed', async () => {
+  it('that could not be removed was stopped with no grace before: nothing of a half-bound spare keeps running, and its record says it was never claimed', async () => {
     const t = rig({ fail: { prepare: new Error('no worktree') }, stays: true });
     const { id } = await t.launch();
     await expect(t.bind(id, spec, {})).rejects.toThrow('no worktree');
     t.log.length = 0;
     await t.discard(id);
-    expect(t.log).toEqual([`remove ${id}`, `stop ${id} 0`]);
+    expect(t.log).toEqual([`stop ${id} 0`, `remove ${id}`]);
     expect(t.records.get(id)).toMatchObject({ key: 'C1:1.1', unclaimed: true });
   });
 
@@ -179,9 +179,32 @@ describe('a spare container', () => {
     await t.bind(b.id, spec, {});
     t.log.length = 0;
     await Promise.all([t.gone(a.id), t.gone(a.id), t.gone(b.id)]);
-    expect(t.log).toEqual([`remove ${a.id}`, `deleteRun ${a.id}`]); // once
+    // By container, with no grace: a spare is never waited for, whether or not it heard an `exit`.
+    expect(t.log).toEqual([`stop ${a.id} 0`, `remove ${a.id}`, `deleteRun ${a.id}`]); // once
     expect(existsSync(t.runRoot(a.id))).toBe(false);
     expect(existsSync(t.runRoot(b.id))).toBe(true);
+  });
+
+  it('the host stops: every spare is stopped and removed by container, the one being made too, and none is made after', async () => {
+    let up!: () => void;
+    const t = rig({ dial: () => new Promise((r) => (up = () => r(sock))) });
+    const a = t.launch();
+    await vi.waitFor(() => expect(up).toBeDefined());
+    up();
+    const { id } = await a;
+    const b = t.launch(); // in flight when the host stops
+    await vi.waitFor(() => expect(t.ids().length).toBe(2));
+    const other = t.ids().find((x) => x !== id)!;
+    t.log.length = 0;
+    const closed = t.close();
+    up();
+    await expect(b).rejects.toThrow('the host is stopping');
+    await closed;
+    expect(t.log.filter((l) => l.startsWith('remove')).sort()).toEqual([`remove ${id}`, `remove ${other}`].sort());
+    expect(t.log.filter((l) => l.startsWith('stop')).sort()).toEqual([`stop ${id} 0`, `stop ${other} 0`].sort());
+    expect(t.ids()).toEqual([]);
+    await expect(t.launch()).rejects.toThrow('the host is stopping');
+    expect(t.log.filter((l) => l.startsWith('create'))).toEqual([]);
   });
 
   it('is not made while a thread starts, and one at a time', async () => {

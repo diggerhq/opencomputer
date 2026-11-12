@@ -63,6 +63,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: P
       return { record, run: `/run/sp/sandbox/${ID}`, session, api: undefined, readyMs: 2, mountMs: 3, addMs: 4 };
     },
     discard: async (id) => void log.push(`removed ${id}`),
+    gone: async (id) => void log.push(`gone ${id}`),
     during: (fn) => fn(),
     claimed: (id) => (log.push(`claimed ${id}`), record),
     turn: (_s, fn) => fn(),
@@ -146,6 +147,17 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     await t.starts.startRunner(spec, {}, creds);
     expect(t.log[0]).toBe('cold start');
+  });
+
+  it('a spare the pool evicts is not asked to go, which it could ignore: its socket is destroyed and it is removed by container', async () => {
+    const t = await rig();
+    t.log.length = 0;
+    const [r] = [...t.pool];
+    t.starts.evict(r);
+    expect(r.sock.destroyed).toBe(true);
+    expect(t.log).toEqual([`gone ${ID}`]);
+    await new Promise((x) => setTimeout(x, 20));
+    expect(t.spare.got).toEqual([]);
   });
 
   it('a spare that reports a session while it is nobody\'s is stopped', async () => {
