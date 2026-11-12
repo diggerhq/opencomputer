@@ -34,25 +34,20 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, PROTOCOL_VERSION, RUNNER_TOKEN_DIR } from '../protocol.js';
 import { codexBin } from '../runner-env.js';
 import { prereadCodex } from './codex-preread.js';
 import type {
   Delivery,
   GatewayToHost,
-  HarnessName,
   HostCredentials,
   HostToGateway,
   ModelRoute,
   HostToRunner,
-  Person,
   RunnerToHost,
-  SessionReport,
   SessionSecret,
   SessionSpec,
-  SpareReport,
   TraceContext,
 } from '../protocol.js';
 import {
@@ -60,30 +55,24 @@ import {
   checkoutRepos,
   configureAsRunner,
   fetchRepo,
-  forkDir,
-  forkInfo,
-  mkdirAsRunner,
   prepareInBackground,
   observeWorkspaces,
   oldestFetchAgeS,
   startHousekeeping,
   touchFork,
-  workspacePrepared,
   workspacesEnabled,
 } from '../workspaces/index.js';
-import { lines, send, socketFor } from '../ipc.js';
+import { send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
-import { coldStart, forkFor } from './cold-start.js';
-import { closed, launchRunner, rediscover, retire } from './runner-sockets.js';
-import { adoption, type First } from './adoption.js';
+import { closed, rediscover, retire } from './runner-sockets.js';
+import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
-import { claimSpare } from './claim.js';
 import { credentialFingerprint } from '../credential-fingerprint.js';
 import { tokenRelay } from './tokens.js';
 import { hostPreviews } from './previews.js';
 import { startHostTelemetry, workspaceTelemetry } from './telemetry.js';
 import { diskReport, hostSampler } from './sample.js';
-import { type ColdStart, decidePath, type Forwarded, forwardTrace, loadForwarded, runnerGone, saveForwarded, traceFields } from './trace.js';
+import { decidePath, forwardTrace, loadForwarded, runnerGone, saveForwarded, traceFields } from './trace.js';
 import type { Dimensions } from '../telemetry/envelope.js';
 import { assignedIdentity, codeVersion, identityFile, loadIdentity, saveIdentity } from './identity.js';
 import { createHostModelAccess } from './model-access-impl.js';
@@ -126,32 +115,11 @@ const subs = createHostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefi
 
 // ---------------------------------------------------------------- runners
 
-interface Runner {
-  /** Its socket's name: an id (work 069), or its session key's for runners from before. */
-  id: string;
-  /** The session it serves; '' while it is a spare. */
-  key: string;
-  sock: net.Socket;
-  spare?: SpareReport;
-  /** The session's owner as last sent, so a `people` update reaches its commits. */
-  owner?: Person;
-  report?: SessionReport;
-  /** Work 082: what it runs, from its launch's spec or its first report; absent = claude. */
-  harness?: HarnessName;
-  lastDelivery: number;
-  connectedAt: number;
-  exiting?: boolean;
-  /** Set by a launch, taken by the delivery that caused it: the path is not `warm`. */
-  cold?: ColdStart;
-  /** The last trace forwarded (also in `<key>.trace.json`), for `turn.abandoned`. */
-  forwarded?: Forwarded;
-  calls: Map<string, (r: { ok: boolean; error?: string }) => void>;
-}
 const runners = new Map<string, Runner>();
 const pool = new Pool<Runner>({
   size: POOL_SIZE,
   version: VERSION,
-  launch: launchSpare,
+  launch: () => starts.launchSpare(),
   failed: () => tm.emit('pool.spare_failed', {}),
   evict: (r, reason) => {
     tm.emit('pool.spare_evicted', { data: { reason } });
@@ -168,47 +136,20 @@ function exitRunner(sock: net.Socket) {
 /** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s. */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
   r && ((r.exiting = true), retire(r.sock, socketFor(r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {})));
-const newRunnerId = () => randomBytes(8).toString('hex');
-const launchOpts = { tm, mode: LAUNCH, env, root: ROOT };
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
 const starting = new Map<string, Promise<Runner>>();
 /** Set on SIGTERM: runner sockets closing then are the host leaving, not the runners. */
 let stopping = false;
 
-/** A workspace fork is complete once .fork.json is written (the last step of forkSession). */
-const forkComplete = (forkPath: string | undefined) => !workspacesEnabled() || !forkPath || !!forkInfo(forkPath);
-
-/** Take a connected runner on (adoption.ts): register it as its session's, or as a spare, follow its messages, send it `credentials`.
- * `key`: the session it was launched for; a verified runner names it in its first report, and one with no session is a spare.
- * `first`: the delivery's credentials, sent instead of the welcome ones, since the runner starts its harness with the first it gets. */
-function adopt(id: string, sock: net.Socket, o: { key?: string; verify?: boolean; first?: HostCredentials; harness?: HarnessName } = {}): Promise<Runner> {
-  const r: Runner = { id, key: o.key ?? '', sock, lastDelivery: Date.now(), connectedAt: Date.now(), calls: new Map(), harness: o.harness };
-  tokens.serveRunner(id, sock, () => r.key); // its own token socket names the session it serves now (work 080)
-  return new Promise((resolve, reject) => {
-    const take = (m?: First) => {
-      if (m?.t === 'report') (r.key = m.report.key), (r.harness ??= m.report.harness);
-      if (m?.t === 'spare') r.spare = m.spare;
-      if (r.key) register(r);
-      else {
-        pool.add(r);
-        pool.changed(r);
-      }
-      sock.on('close', () => runnerClosed(r));
-      const c = o.first ?? subs.forRunner(r.key, org.creds, r.harness);
-      if (c) send(sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-      resolve(r);
-    };
-    const stop = (why: string) => {
-      log.warn(`runner ${id}: ${why}; stopping it`);
-      exitRunner(sock);
-      reject(new Error(why));
-    };
-    const a = adoption({ verify: !!o.verify, complete: forkComplete, take, stop, gone: () => reject(new Error('runner gone')) });
-    lines(sock, (m: RunnerToHost) => a.message(m) && void onRunner(r, m));
-    sock.once('close', () => a.closed());
-  });
-}
+/** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
+const starts = runnerStarts({
+  tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, version: VERSION, pool,
+  creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
+  mint: (spec, id) => api.mint(spec, id), serveTokens: (id, sock, session) => tokens.serveRunner(id, sock, session),
+  fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
+  register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
+});
 
 /** The runner serves its session from now on; one already there for it (found twice after a restart) is told to go. */
 function register(r: Runner) {
@@ -288,72 +229,10 @@ function ensureRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Pr
   if (live) return Promise.resolve(live);
   let p = starting.get(spec.key);
   if (!p) {
-    p = startRunner(spec, f, first).finally(() => starting.delete(spec.key));
+    p = starts.startRunner(spec, f, first).finally(() => starting.delete(spec.key));
     starting.set(spec.key, p);
   }
   return p;
-}
-
-async function startRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Promise<Runner> {
-  let existing = spec.forkPath && existsSync(spec.forkPath) && forkComplete(spec.forkPath) ? spec.forkPath : undefined;
-  // A new session in a prepared workspace may take a spare (work 069); a resumed one starts cold, to resume.
-  // Claude takes one on the managed route, whose credential spares park with; Codex (work 082) on its ChatGPT subscription.
-  const codex = spec.harness === 'codex';
-  if (pool.enabled && !spec.sdkSessionId && workspacesEnabled() && workspacePrepared(spec.owner)
-    && subs.routes.mode(spec.key) === (codex ? 'subscription' : 'managed')) {
-    const t0 = Date.now();
-    const got = await claimSpare<Runner>({
-      // Refill as soon as the spare is ours: the fork and the claim take seconds, in which another session may arrive.
-      take: () => { const t = pool.take(credentialFingerprint(first) ?? credentialFingerprint(org.creds), codex); fillPool(); return t; },
-      fork: async () => existing ?? forkContext.run(f, () => forkFor(tm, spec, f)),
-      claim: async (r, forkPath) => {
-        // Claude's credential goes first, as its parked Claude Code has it; a Codex claim drops the spare's, so the session's follow.
-        const c = codex ? (first ?? subs.forRunner(spec.key, org.creds, 'codex')) : first;
-        if (c && !codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-        await call(r, { t: 'claim', session: { ...spec, forkPath }, api: await api.mint(spec, r.id) }, 5000);
-        if (c && codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-      },
-      discard: (r) => exitRunner(r.sock),
-      release: (r) => r.sock.destroyed || pool.add(r),
-    });
-    if ('runner' in got) {
-      const r = got.runner;
-      r.key = spec.key;
-      r.harness = spec.harness;
-      r.lastDelivery = Date.now();
-      register(r);
-      if (r.report) toGateway({ t: 'session', report: r.report });
-      r.cold = { resumed: false, prewarmed: true };
-      tm.emit('runner.claimed', { ...f, duration_ms: Date.now() - t0 });
-      log.info(`runner ${r.id} claimed for ${spec.key} in ${Date.now() - t0} ms`);
-      return r;
-    }
-    tm.emit('pool.spare_missed', { ...f, data: { reason: got.missed } });
-    existing ??= got.forkPath;
-  }
-  // A workspace fork's directory is known before forking: the runner boots in it while the worktrees are added.
-  const dir = existing ?? (workspacesEnabled() ? forkDir(spec.owner, spec.key) : undefined);
-  if (dir && !existing) await mkdirAsRunner(dir);
-  const id = newRunnerId();
-  const runnerApi = await api.mint(spec, id); // work 084: the session's journal, socket and token; undefined off the API
-  const { ready: sock } = await coldStart({
-    dir,
-    fork: existing ? undefined : () => forkContext.run(f, () => forkFor(tm, spec, f)),
-    start: (cwd) => launchRunner({ id, session: { ...spec, forkPath: cwd }, socket: socketFor(id), api: runnerApi && { ...runnerApi, token: '' }, version: VERSION }, { ...launchOpts, f }),
-    abandon: exitRunner,
-  });
-  if (sock.destroyed) throw new Error('runner exited while its fork was made');
-  const r = await adopt(id, sock, { key: spec.key, first, harness: spec.harness });
-  if (runnerApi) send(sock, { t: 'api', api: runnerApi } satisfies HostToRunner); // the token stays out of argv and env
-  r.cold = { resumed: !!spec.sdkSessionId };
-  return r;
-}
-
-/** Start a spare for the pool: a runner with no session, which parks a Claude Code once it has credentials (a Codex claim replaces it). */
-async function launchSpare() {
-  const id = newRunnerId();
-  await adopt(id, await launchRunner({ id, socket: socketFor(id), version: VERSION }, launchOpts));
-  tm.emit('pool.spare_started', { data: { launch_mode: LAUNCH } });
 }
 
 setInterval(() => {
@@ -554,7 +433,7 @@ const previews = hostPreviews({ ask: link.ask });
 mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
-api.rediscovered(await rediscover((id, sock) => adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+api.rediscovered(await rediscover((id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();

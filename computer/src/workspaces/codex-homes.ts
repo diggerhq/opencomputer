@@ -1,6 +1,6 @@
 // A session's Codex home goes with its fork (work 082, #129 round 2). Codex
 // writes its threads' rollouts under CODEX_HOME/sessions, which grow with
-// every turn; nothing else removes them. pruneFork (index.ts) calls this
+// every turn; nothing else removes them. pruneFork (prune.ts) calls this
 // once it removed a fork, the point where Calvin decides a session is done.
 //
 // Invariants: it removes only the home named by the session's key

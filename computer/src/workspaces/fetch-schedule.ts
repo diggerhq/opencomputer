@@ -7,7 +7,7 @@
 //   window ago. A push that lands while a fetch runs therefore never counts as
 //   fetched, and a clone never fetched by this process is never fresh.
 // - Fetches of one clone run one at a time in their own lane, apart from the
-//   clone's worktree lock (workspaces/index.ts `serial`): a fork's worktree add
+//   clone's worktree lock (workspaces/clones.ts `serial`): a fork's worktree add
 //   never waits behind a housekeeping fetch, and a fork that needs a fetch
 //   joins the lane and re-checks freshness when its turn comes.
 // - `limit(n)` bounds how many housekeeping fetches run at once on the host;
