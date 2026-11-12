@@ -496,6 +496,7 @@ export default defineConfig({
             "test/computer-connections.test.ts",
             "test/computer-model-subscriptions.test.ts",
             "test/computer-codex-subscriptions.test.ts",
+            "test/computer-subscription-profiles.test.ts",
             "test/computer-agent-connect.test.ts",
             "test/computer-connect-codes.test.ts",
             "test/computer-units.test.ts",
