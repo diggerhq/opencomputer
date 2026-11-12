@@ -68,7 +68,8 @@ listen_was="$(sed -n 's/^ListenStream=//p' "$api_unit" 2>/dev/null || true)"
 # Only callers of the runners' uid are sessions (in a container, every other
 # uid is one of its subordinate ids). A binary from before the option runs without it.
 caller_uid=""
-if "$BIN" --help 2>&1 | grep -q -- '-caller-uid'; then caller_uid=" --caller-uid=$(id -u "$AGENT_USER")"; fi
+help="$("$BIN" --help 2>&1 || true)" # not a pipe: under pipefail, grep -q closing early would fail it
+if grep -q -- '-caller-uid' <<<"$help"; then caller_uid=" --caller-uid=$(id -u "$AGENT_USER")"; fi
 
 cat > /etc/systemd/system/oc-modelproxy-api.socket <<EOF
 # Written by deploy/vm/modelproxy.sh install.
