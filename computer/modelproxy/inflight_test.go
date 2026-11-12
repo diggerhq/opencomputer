@@ -9,17 +9,17 @@ import (
 	"time"
 )
 
-// One unit at its in-flight cap gets 429 with Retry-After: 1 (never
+// One caller at its in-flight cap gets 429 with Retry-After: 1 (never
 // touching upstream or the hold); when a stream ends the slot is free again,
-// and another unit is unaffected.
-func TestInflightCapPerUnit(t *testing.T) {
-	const other = "sp-runner-other.service"
+// and another caller is unaffected.
+func TestInflightCapPerCaller(t *testing.T) {
+	const other = "other"
 	g := &gatedUpstream{started: make(chan string, 8), release: make(chan struct{})}
-	h := newHarness(t, g, harnessOpts{perUnit: 2})
+	h := newHarness(t, g, harnessOpts{perCaller: 2})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tokA", "fpA")
+	h.bindReady(k, testCaller, "s1", "tokA", "fpA")
 	h.bindReady(k, other, "s2", "tokB", "fpB")
-	c := h.client(testUnit)
+	c := h.client(testCaller)
 
 	var wg sync.WaitGroup
 	stream := func(c *http.Client) {
@@ -29,8 +29,11 @@ func TestInflightCapPerUnit(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		io.Copy(io.Discard, res.Body)
+		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Errorf("stream: %d %s", res.StatusCode, b)
+		}
 	}
 	wg.Add(2)
 	go stream(c)
@@ -38,42 +41,42 @@ func TestInflightCapPerUnit(t *testing.T) {
 	<-g.started
 	<-g.started
 
-	res := do(t, h, testUnit)
+	res := do(t, h, testCaller)
 	if res.StatusCode != 429 || res.Header.Get("Retry-After") != "1" || res.Header.Get("X-Should-Retry") != "true" {
 		t.Fatalf("status %d retry-after %q", res.StatusCode, res.Header.Get("Retry-After"))
 	}
 	if e := decodeAPIError(t, res); e.Error.Type != "rate_limit_error" {
 		t.Fatalf("error %+v", e)
 	}
-	if ev := k.waitFor(isEvent("model.denied")); ev["data"].(map[string]any)["reason"] != "inflight_cap" {
+	if ev := k.waitFor(isEvent("model.denied")); ev["data"].(map[string]any)["reason"] != "caller_cap" {
 		t.Fatalf("event %v", ev)
 	}
-	// Another unit has its own cap.
+	// Another caller has its own cap.
 	wg.Add(1)
 	go stream(h.client(other))
 	if b := <-g.started; b != "Bearer tokB" {
-		t.Fatalf("other unit %q", b)
+		t.Fatalf("other caller %q", b)
 	}
 
 	close(g.release)
 	wg.Wait()
 	g.release = make(chan struct{})
 	close(g.release)
-	if res := do(t, h, testUnit); res.StatusCode != 200 {
+	if res := do(t, h, testCaller); res.StatusCode != 200 {
 		t.Fatalf("after the streams ended: %d", res.StatusCode)
 	}
 }
 
-// Held requests count toward the cap: a unit with no credential yet cannot
+// Held requests count toward the cap: a caller with no credential yet cannot
 // queue more than the cap waiting for its bind; the extra one gets 429 at
 // once, not after the hold.
 func TestInflightCapCountsHeld(t *testing.T) {
 	up, hits := okUpstream()
-	h := newHarness(t, up, harnessOpts{perUnit: 2, hold: time.Second,
-		restore: []persisted{{Unit: testUnit, SessionKey: "s1", Profile: mainProfile, Key: "fp1"}}})
+	h := newHarness(t, up, harnessOpts{perCaller: 2, hold: time.Second,
+		restore: []bindingInfo{{Caller: testCaller, SessionKey: "s1", Mode: modeProfile, Profile: mainProfile, Key: "fp1"}}})
 	k := h.dialControl()
 	k.waitFor(isT("hello"))
-	c := h.client(testUnit)
+	c := h.client(testCaller)
 
 	results := make(chan int, 2)
 	for range 2 {
@@ -91,7 +94,7 @@ func TestInflightCapCountsHeld(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond) // both held
 	start := time.Now()
-	res := do(t, h, testUnit)
+	res := do(t, h, testCaller)
 	if res.StatusCode != 429 || time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("third: %d after %v", res.StatusCode, time.Since(start))
 	}
@@ -99,13 +102,13 @@ func TestInflightCapCountsHeld(t *testing.T) {
 		t.Fatal("upstream contacted")
 	}
 	// The bind arrives: the two held ones are served.
-	k.bind(testUnit, "s1", "tok", "fp1")
+	k.bind(testCaller, "s1", "tok", "fp1")
 	for range 2 {
 		if s := <-results; s != 200 {
 			t.Fatalf("held request: %d", s)
 		}
 	}
-	if res := do(t, h, testUnit); res.StatusCode != 200 {
+	if res := do(t, h, testCaller); res.StatusCode != 200 {
 		t.Fatalf("after the hold: %d", res.StatusCode)
 	}
 }

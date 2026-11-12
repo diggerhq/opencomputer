@@ -14,7 +14,7 @@ func (k *ctl) request(m map[string]any) map[string]any {
 	return k.waitFor(func(r map[string]any) bool { return r["t"] == "response" && r["id"] == m["id"] })
 }
 
-// A host `request` is made on the profile with the variables it carries:
+// A binder `request` is made on the profile with the variables it carries:
 // the route's `to`, `set` and `default` apply, `require` does not, and the
 // answer has the status, the reported headers and the body. Nothing is bound.
 func TestRequest(t *testing.T) {
@@ -44,7 +44,7 @@ func TestRequest(t *testing.T) {
 		t.Fatalf("bindings %d, other upstream hits %d", h.srv.bindings.Len(), hits.Load())
 	}
 
-	// `require` is a check on sessions: the host's request passes without it.
+	// `require` is a check on sessions: the binder's request passes without it.
 	r = k.request(map[string]any{"id": "r2", "profile": altProfile, "method": "POST", "path": "/v1/responses", "body": "{}",
 		"vars": map[string]string{"token": "tok", "accountId": altAccount}})
 	if s := <-got; r["status"] != float64(202) || s.uri != "/base/x/responses" {
@@ -61,14 +61,14 @@ func TestRequestErrors(t *testing.T) {
 		want string
 		m    map[string]any
 	}{
-		{"unknown_profile", map[string]any{"profile": "nope", "method": "GET", "path": "/v1/models", "vars": vars}},
-		{"not_allowed", map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/other", "vars": vars}},
-		{"not_allowed", map[string]any{"profile": altProfile, "method": "DELETE", "path": "/v1/models", "vars": vars}},
-		{"not_allowed", map[string]any{"profile": altProfile, "method": "WS", "path": "/v1/responses", "vars": vars}},
-		{"missing_var", map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": map[string]string{"token": "tok"}}},
-		{"invalid_var", map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": map[string]string{"token": "a\r\nX: y", "accountId": "a"}}},
-		{"request", map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars, "headers": map[string]string{"Bad Name": "v"}}},
-		{"request", map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars, "headers": map[string]string{"X-A": "v\nw"}}},
+		{responseUnknownProfile, map[string]any{"profile": "nope", "method": "GET", "path": "/v1/models", "vars": vars}},
+		{responseUnknownRoute, map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/other", "vars": vars}},
+		{responseUnknownRoute, map[string]any{"profile": altProfile, "method": "DELETE", "path": "/v1/models", "vars": vars}},
+		{responseUnknownRoute, map[string]any{"profile": altProfile, "method": "WS", "path": "/v1/responses", "vars": vars}},
+		{responseMissingVar, map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": map[string]string{"token": "tok"}}},
+		{responseMissingVar, map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": map[string]string{"token": "a\r\nX: y", "accountId": "a"}}},
+		{responseBadRequest, map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars, "headers": map[string]string{"Bad Name": "v"}}},
+		{responseBadRequest, map[string]any{"profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars, "headers": map[string]string{"X-A": "v\nw"}}},
 	} {
 		c.m["id"] = string(rune('a' + i))
 		if r := k.request(c.m); r["error"] != c.want || r["status"] != nil {
@@ -79,7 +79,7 @@ func TestRequestErrors(t *testing.T) {
 		t.Fatalf("upstream contacted %d times", hits.Load())
 	}
 	h.alt.Close()
-	if r := k.request(map[string]any{"id": "z", "profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars}); r["error"] != "connect" {
+	if r := k.request(map[string]any{"id": "z", "profile": altProfile, "method": "GET", "path": "/v1/models", "vars": vars}); r["error"] != responseUnreachable {
 		t.Fatalf("response %v", r)
 	}
 }

@@ -15,16 +15,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-const benchConcurrency = 64
+const (
+	benchConcurrency = 64
+	overheadMedianMs = 0.1
+	allocsPerRequest = 250
+)
 
 // BenchmarkProxyOverhead streams SSE through the proxy at 64 concurrent
 // streams from a local TLS fake upstream, and reports the proxy's own time
@@ -32,13 +36,16 @@ const benchConcurrency = 64
 // leaves out the upstream's time and the client's. The upstream and the
 // clients run in a child process, as they do on a real host, so their
 // allocations and goroutines do not land in the proxy's heap and scheduler.
-// The proxy runs at the binary's GC setting (-gc-percent's default).
-// With MODELPROXY_OVERHEAD_P99_MS set (CI: 2) it fails when p99 exceeds it
-// in each of three rounds.
+// The proxy runs at the binary's GC setting (defaultGCPercent).
 //
-//	MODELPROXY_OVERHEAD_P99_MS=2 go test -run '^$' -bench ProxyOverhead -benchtime 5000x
+// With MODELPROXY_OVERHEAD_GATE=1 (CI) it fails when, in each of three
+// rounds, the median overhead exceeds overheadMedianMs or the proxy
+// allocates more than allocsPerRequest per request. p99 is reported, not
+// gated: on a shared runner it measures the neighbours.
+//
+//	MODELPROXY_OVERHEAD_GATE=1 go test -run '^$' -bench ProxyOverhead -benchtime 5000x
 func BenchmarkProxyOverhead(b *testing.B) {
-	setGCPercent(defaultGCPercent)
+	setGCPercent()
 	b.Cleanup(func() { debug.SetGCPercent(100) })
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLoadGenChild$", "-test.count=1", "-test.v=false")
 	cmd.Env = append(os.Environ(), "MP_LOADGEN_CHILD=1")
@@ -78,8 +85,8 @@ func BenchmarkProxyOverhead(b *testing.B) {
 	}
 	b.Cleanup(func() { os.RemoveAll(dir) })
 	cfg := config{hold: 2 * time.Second, bindingsFile: filepath.Join(dir, "bindings.json"), placeholder: testPlaceholder, rootCAs: roots,
-		maxIdlePerHost: 96, maxConnsPerHost: 256, idleConnTimeout: time.Minute, warmMax: 4}
-	srv, err := newServer(cfg, ps, func(net.Conn) string { return testUnit })
+		maxIdlePerHost: 96, maxConnsPerHost: 256, idleConnTimeout: time.Minute}
+	srv, err := newServer(cfg, ps, func(net.Conn) string { return testCaller })
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -99,7 +106,7 @@ func BenchmarkProxyOverhead(b *testing.B) {
 		srv.shutdown(ctx)
 	})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
 	go func() { // keep the control queue empty
 		for range k.msgs {
 		}
@@ -128,11 +135,11 @@ func BenchmarkProxyOverhead(b *testing.B) {
 	totals, pres, fbs = nil, nil, nil
 	mu.Unlock()
 
-	// Three rounds of b.N requests each; the gate takes the best round's
-	// p99, so a burst from another process on a shared runner fails one
-	// round, not the build. A real regression fails all three.
+	// Three rounds of b.N requests each; the gate takes the best round, so a
+	// burst from another process on a shared runner fails one round, not
+	// the build. A real regression fails all three.
 	const rounds = 3
-	type result struct{ p50, p99, pre99, fb99 float64 }
+	type result struct{ p50, p99, pre99, fb99, allocs float64 }
 	p := func(xs []time.Duration, q float64) float64 {
 		s := slices.Clone(xs)
 		slices.Sort(s)
@@ -140,32 +147,39 @@ func BenchmarkProxyOverhead(b *testing.B) {
 	}
 	var results []result
 	b.ResetTimer()
+	var mem runtime.MemStats
 	for range rounds {
+		runtime.ReadMemStats(&mem)
+		mallocs := mem.Mallocs
 		load(b.N)
+		runtime.ReadMemStats(&mem)
+		allocs := float64(mem.Mallocs-mallocs) / float64(b.N)
 		mu.Lock()
 		if len(totals) < b.N {
 			mu.Unlock()
 			b.Fatalf("%d measurements for %d requests", len(totals), b.N)
 		}
-		results = append(results, result{p(totals, 0.50), p(totals, 0.99), p(pres, 0.99), p(fbs, 0.99)})
+		results = append(results, result{p(totals, 0.50), p(totals, 0.99), p(pres, 0.99), p(fbs, 0.99), allocs})
 		totals, pres, fbs = nil, nil, nil
 		mu.Unlock()
 	}
 	b.StopTimer()
 	best := slices.MinFunc(results, func(x, y result) int { return cmp.Compare(x.p99, y.p99) })
 	worst := slices.MaxFunc(results, func(x, y result) int { return cmp.Compare(x.p99, y.p99) })
-	b.ReportMetric(best.p50, "p50-overhead-ms")
+	p50 := slices.MinFunc(results, func(x, y result) int { return cmp.Compare(x.p50, y.p50) }).p50
+	allocs := slices.MinFunc(results, func(x, y result) int { return cmp.Compare(x.allocs, y.allocs) }).allocs
+	b.ReportMetric(p50, "p50-overhead-ms")
+	b.ReportMetric(allocs, "proxy-allocs/req")
 	b.ReportMetric(best.p99, "p99-overhead-ms")
 	b.ReportMetric(worst.p99, "worst-round-p99-ms")
 	b.ReportMetric(best.pre99, "p99-pre-ms")
 	b.ReportMetric(best.fb99, "p99-first-byte-ms")
-	if gate := os.Getenv("MODELPROXY_OVERHEAD_P99_MS"); gate != "" && b.N >= 100 {
-		limit, err := strconv.ParseFloat(gate, 64)
-		if err != nil {
-			b.Fatalf("MODELPROXY_OVERHEAD_P99_MS: %v", err)
+	if os.Getenv("MODELPROXY_OVERHEAD_GATE") != "" && b.N >= 100 {
+		if p50 > overheadMedianMs {
+			b.Fatalf("proxy overhead median %.3f ms > %.3f ms in every round (%+v)", p50, overheadMedianMs, results)
 		}
-		if best.p99 > limit {
-			b.Fatalf("proxy overhead p99 %.3f ms > %.3f ms in every round (%+v)", best.p99, limit, results)
+		if allocs > allocsPerRequest {
+			b.Fatalf("%.0f allocations per request > %d in every round (%+v)", allocs, allocsPerRequest, results)
 		}
 	}
 }

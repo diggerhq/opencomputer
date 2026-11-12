@@ -15,12 +15,12 @@ func TestPathAsMatched(t *testing.T) {
 		cookies <- r.Header.Get("Cookie")
 	}), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
 	req, _ := http.NewRequest(http.MethodGet, h.apiURL+"/api/claude_code/policy_limits", nil)
 	req.Host = "localhost"
 	req.URL.RawPath = "/api/claude_code/policy%5Flimits"
 	req.Header.Set("Cookie", "a=b")
-	res, err := h.client(testUnit).Do(req)
+	res, err := h.client(testCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

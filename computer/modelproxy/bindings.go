@@ -1,59 +1,48 @@
-// Bindings: which runner unit serves which session with which credential.
-// The proxy is the source of truth for this table; the host feeds it over
-// the control socket.
+// Bindings: which caller serves which session with which credential. The
+// binder is the source of truth; this table is the proxy's copy of it, fed
+// over the control socket (frames.go).
 //
 // A credential is a profile (profile.go) and the values of its variables.
-// `bind` names them as {profile, vars, key}: the key is the host's own name
-// for the credential (a fingerprint, never the secret), echoed on `bound`,
-// `observed` and telemetry. A bind with mode "refuse" makes the proxy answer
-// the unit's requests with 401 and the bind's reason.
-//
-// Hosts from before profiles send {mode, provider, token, accountId,
-// fingerprint}: read as profile = provider (or -default-profile), vars
-// token and accountId, key = fingerprint, and answered in the same terms.
+// `bind` names them as {profile, vars, key}: the key is the binder's own name
+// for the credential (never the secret), echoed on `bound`, `observed` and
+// telemetry. A bind with mode "refuse" makes the proxy answer the caller's
+// requests with 401 and the bind's reason.
 //
 // Invariants:
-//   - A unit serves one sessionKey for its life; a bind naming another
-//     sessionKey is refused, never applied.
-//   - A new credential for a bound unit takes effect only while no stream is
-//     in flight for that unit (at bind time, or when its last stream ends),
-//     never mid-stream; `bound` is sent when it takes effect.
+//   - A caller serves one sessionKey from its bind to its release; a bind
+//     naming another sessionKey is refused, never applied.
+//   - A bind applies to the caller's next request. Streams in flight finish
+//     on the credential they started with (lease.go).
+//   - The same bind twice changes nothing and is answered `bound` again.
 //   - Variables live only in memory; the persisted table (persist.go) has none.
 //   - Entries restored from disk are "known, not credentialed": requests for
 //     them are held until their bind arrives or the hold cap (then 503).
-//   - Only `release` removes a binding. A closed control connection (host
-//     restart) keeps every binding and its variables; serving continues.
-//   - The profile is part of the credential: a bind that changes it is a
-//     swap like any other, and a binding always has every variable its
-//     profile uses.
+//   - Only `release` removes a binding. A closed control connection keeps
+//     every binding and its variables; serving continues.
+//   - A binding always has every variable its profile uses.
+//   - Nothing is sent or logged while mu is held.
 package main
 
 import (
-	"context"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	modeRefuse = "refuse"
-	// modeLegacy is what a host from before profiles calls a binding that
-	// carries a credential.
-	modeLegacy = "subscription"
+	modeProfile = "profile"
+	modeRefuse  = "refuse"
 )
 
 type credential struct {
 	refuse bool
-	prof   *profile // nil: a refuse bind that names none
+	prof   *profile // nil for a refuse
 	vars   map[string]string
 	key    string
 	reason string
-	// legacy: bound in the pre-profile terms; `bound` answers in them.
-	legacy         bool
-	legacyProvider string
 }
 
-// equal: the same credential (how it was bound aside).
 func (c *credential) equal(o *credential) bool {
 	return c.refuse == o.refuse && c.prof == o.prof && c.key == o.key && c.reason == o.reason && maps.Equal(c.vars, o.vars)
 }
@@ -69,53 +58,43 @@ func (c *credential) mode() string {
 	if c.refuse {
 		return modeRefuse
 	}
-	return ""
+	return modeProfile
 }
 
 type binding struct {
-	unit         string
+	caller       string
 	sessionKey   string
 	cred         credential
 	credentialed bool
-	pending      *credential
-	inflight     int
 	swapped      bool // credential changed; not yet used by a request
 }
 
-// persisted is a binding as written to disk and listed in `hello`: no
-// variables. Fingerprint and Provider are how files from before profiles
-// name Key and Profile; they are read, never written (persist.go).
-type persisted struct {
-	Unit        string `json:"unit"`
-	SessionKey  string `json:"sessionKey"`
-	Profile     string `json:"profile,omitempty"`
-	Key         string `json:"key,omitempty"`
-	Mode        string `json:"mode,omitempty"` // "refuse", or absent
-	Fingerprint string `json:"fingerprint,omitempty"`
-	Provider    string `json:"provider,omitempty"`
+func (b *binding) info() bindingInfo {
+	return bindingInfo{Caller: b.caller, SessionKey: b.sessionKey, Mode: b.cred.mode(), Profile: b.cred.profileName(), Key: b.cred.key}
 }
 
-// sender delivers proxy→host messages without blocking (control.go).
+// sender delivers proxy → binder frames without blocking (control.go).
 type sender interface{ send(v any) }
 
 type Bindings struct {
-	profiles       *profiles
-	defaultProfile string // -default-profile: a bind or file entry that names none
+	profiles *profiles
+	out      sender
+	dirty    func() // the table's persisted shape changed
+	now      func() time.Time
+	// synced: the binder has re-sent every bind since this start. Until then
+	// a caller without a binding may only be one whose bind is on its way.
+	synced atomic.Bool
 
 	mu      sync.Mutex
 	m       map[string]*binding
 	changed chan struct{} // closed and replaced on every change: wakes held requests
-	out     sender
-	dirty   func()         // the table's persisted shape changed
-	prewarm func(*profile) // a unit was bound: pre-dial its upstream
-	now     func() time.Time
 }
 
-func NewBindings(ps *profiles, defaultProfile string, out sender, dirty func()) *Bindings {
+func NewBindings(ps *profiles, out sender, dirty func()) *Bindings {
 	if dirty == nil {
 		dirty = func() {}
 	}
-	return &Bindings{profiles: ps, defaultProfile: defaultProfile, m: map[string]*binding{}, changed: make(chan struct{}), out: out, dirty: dirty, now: time.Now}
+	return &Bindings{profiles: ps, m: map[string]*binding{}, changed: make(chan struct{}), out: out, dirty: dirty, now: time.Now}
 }
 
 // broadcastLocked wakes every held request; callers hold mu.
@@ -124,39 +103,27 @@ func (s *Bindings) broadcastLocked() {
 	s.changed = make(chan struct{})
 }
 
-// changes is closed at the table's next change.
-func (s *Bindings) changes() <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.changed
-}
-
 // Restore loads the persisted table at start: every entry known, none credentialed.
-func (s *Bindings) Restore(entries []persisted) {
+func (s *Bindings) Restore(entries []bindingInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, e := range entries {
-		if !isRunnerUnit(e.Unit) || e.SessionKey == "" {
-			continue
-		}
-		name := firstNonEmpty(e.Profile, e.Provider, s.defaultProfile)
-		prof := s.profiles.get(name)
 		refuse := e.Mode == modeRefuse
-		if prof == nil && !(refuse && name == "") {
-			logWarn("bindings file: unknown profile; entry dropped", "unit", e.Unit, "profile", truncate(name, 40))
-			continue
+		prof := s.profiles.get(e.Profile)
+		if !isID(e.Caller) || e.SessionKey == "" || (prof == nil) != refuse {
+			continue // a profile that is gone: the binder binds the caller again, or not
 		}
-		s.m[e.Unit] = &binding{unit: e.Unit, sessionKey: e.SessionKey, cred: credential{refuse: refuse, prof: prof, key: firstNonEmpty(e.Key, e.Fingerprint)}}
+		s.m[e.Caller] = &binding{caller: e.Caller, sessionKey: e.SessionKey, cred: credential{refuse: refuse, prof: prof, key: e.Key}}
 	}
 }
 
-// Snapshot is the persisted shape of the table, sorted by nothing in particular.
-func (s *Bindings) Snapshot() []persisted {
+// Snapshot is the table without variables, in no particular order.
+func (s *Bindings) Snapshot() []bindingInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]persisted, 0, len(s.m))
+	out := make([]bindingInfo, 0, len(s.m))
 	for _, b := range s.m {
-		out = append(out, persisted{Unit: b.unit, SessionKey: b.sessionKey, Profile: b.cred.profileName(), Key: b.cred.key, Mode: b.cred.mode()})
+		out = append(out, b.info())
 	}
 	return out
 }
@@ -167,173 +134,128 @@ func (s *Bindings) Len() int {
 	return len(s.m)
 }
 
-// bindMsg is a host `bind`. Provider, Token, AccountID and Fingerprint are
-// the pre-profile names (see the top of this file).
-type bindMsg struct {
-	Unit       string            `json:"unit"`
-	SessionKey string            `json:"sessionKey"`
-	Profile    string            `json:"profile,omitempty"`
-	Vars       map[string]string `json:"vars,omitempty"`
-	Key        string            `json:"key,omitempty"`
-	Mode       string            `json:"mode,omitempty"` // "refuse", or absent
-	Reason     string            `json:"reason,omitempty"`
-
-	Provider    string `json:"provider,omitempty"`
-	Token       string `json:"token,omitempty"`
-	AccountID   string `json:"accountId,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-}
-
-// Bind applies a host `bind`. Returns false when refused.
+// Bind applies a `bind` and answers it: `bound`, or `refused` with why.
 func (s *Bindings) Bind(m bindMsg) bool {
-	c, bad := s.credentialOf(m)
-	if bad != "" {
-		s.refuse(m, c.profileName(), bad)
+	c, code, msg := s.credentialOf(m)
+	if code != "" {
+		s.refuse(m, code, msg)
 		return false
 	}
 	s.mu.Lock()
-	b := s.m[m.Unit]
+	b := s.m[m.Caller]
 	if b != nil && b.sessionKey != m.SessionKey {
 		s.mu.Unlock()
-		s.refuse(m, c.profileName(), "unit bound to another session")
+		s.refuse(m, refuseCallerInUse, "the caller is bound to another session")
 		return false
 	}
-	if b == nil {
-		b = &binding{unit: m.Unit, sessionKey: m.SessionKey}
-		s.m[m.Unit] = b
+	action := "bind"
+	switch {
+	case b == nil:
+		b = &binding{caller: m.Caller, sessionKey: m.SessionKey}
+		s.m[m.Caller] = b
+	case b.credentialed && b.cred.equal(&c):
+		action = "" // the same bind again
+	case b.credentialed:
+		action = "swap"
+		b.swapped = true // the next request is the first on the new credential
 	}
-	if b.credentialed && b.inflight > 0 && !b.cred.equal(&c) {
-		b.pending = &c      // applied when the unit's last stream ends
-		s.broadcastLocked() // a WebSocket on the old credential closes between responses (websocket.go)
-		s.mu.Unlock()
-		logInfo("bind pending until idle", "unit", m.Unit, "session_key", m.SessionKey, "mode", c.mode(), "profile", c.profileName(), "key", c.key)
-		return true
+	if action != "" {
+		reshaped := !b.credentialed || b.cred.refuse != c.refuse || b.cred.key != c.key || b.cred.prof != c.prof
+		b.cred, b.credentialed = c, true
+		s.broadcastLocked()
+		if reshaped {
+			s.dirty()
+		}
 	}
-	reason := "bind"
-	if b.credentialed && !b.cred.equal(&c) {
-		reason = "swap"
-	}
-	s.applyLocked(b, c, reason)
 	s.mu.Unlock()
+
+	s.out.send(boundMsg{T: "bound", ID: m.ID, Caller: m.Caller, SessionKey: m.SessionKey, Key: c.key})
+	if action != "" {
+		s.out.send(s.bindingEvent(action, m.Caller, m.SessionKey, &c))
+		logInfo("bound", "caller", m.Caller, "session_key", m.SessionKey, "mode", c.mode(), "profile", c.profileName(), "key", c.key, "action", action)
+	}
 	return true
 }
 
-// credentialOf checks a bind and reads its credential; bad is why it is
-// refused ("" = it is not).
-func (s *Bindings) credentialOf(m bindMsg) (c credential, bad string) {
-	c = credential{refuse: m.Mode == modeRefuse, key: firstNonEmpty(m.Key, m.Fingerprint), reason: m.Reason,
-		legacy: m.Profile == "", legacyProvider: m.Provider}
-	name := firstNonEmpty(m.Profile, m.Provider, s.defaultProfile)
-	c.prof = s.profiles.get(name)
+// credentialOf checks a bind and reads its credential. A refusal's message
+// may name a variable, never its value.
+func (s *Bindings) credentialOf(m bindMsg) (c credential, code, msg string) {
 	switch {
-	case !isRunnerUnit(m.Unit):
-		return c, "invalid unit"
+	case !isID(m.Caller):
+		return c, refuseBadFrame, "caller must be 1 to 64 of A-Z a-z 0-9 . _ : -"
 	case m.SessionKey == "":
-		return c, "missing sessionKey"
-	case c.prof == nil && !(c.refuse && name == ""):
-		return c, "unknown profile"
-	case m.Mode != "" && m.Mode != modeRefuse && m.Mode != modeLegacy:
-		return c, "unknown mode"
+		return c, refuseBadFrame, "missing sessionKey"
+	case m.Mode == modeRefuse:
+		return credential{refuse: true, reason: m.Reason}, "", ""
+	case m.Mode != "":
+		return c, refuseBadFrame, "unknown mode"
 	}
-	if c.refuse {
-		c.key = ""
-		return c, ""
+	c = credential{prof: s.profiles.get(m.Profile), key: m.Key}
+	switch {
+	case c.prof == nil:
+		return c, refuseUnknownProfile, "no such profile"
+	case !isID(m.Key):
+		return c, refuseBadKey, "key must be 1 to 64 of A-Z a-z 0-9 . _ : -"
 	}
 	c.vars = make(map[string]string, len(c.prof.vars))
 	for _, v := range c.prof.vars { // only what the profile uses is kept
 		val := m.Vars[v]
-		if val == "" && v == "token" {
-			val = m.Token
-		}
-		if val == "" && v == "accountId" {
-			val = m.AccountID
-		}
 		switch {
 		case val == "":
-			return c, "missing " + v
+			return c, refuseMissingVar, "missing " + v
 		case !validHeaderValue(val):
-			return c, "invalid " + v
+			return c, refuseMissingVar, v + " is not a header value"
 		}
 		c.vars[v] = val
 	}
-	return c, ""
+	return c, "", ""
 }
 
-func (s *Bindings) refuse(m bindMsg, profile, reason string) {
-	logWarn("bind refused", "unit", m.Unit, "session_key", m.SessionKey, "profile", truncate(firstNonEmpty(m.Profile, m.Provider), 40), "reason", reason)
-	s.out.send(refusedMsg{T: "refused", Unit: m.Unit, SessionKey: m.SessionKey, Reason: reason})
-	// An unknown profile is not a dimension value: profile is "" then.
-	e := s.bindingEvent("refused", m.Unit, m.SessionKey, m.Mode, "", profile)
-	e.Outcome = "failed"
+func (s *Bindings) refuse(m bindMsg, code, msg string) {
+	caller := truncate(m.Caller, 64)
+	logWarn("bind refused", "caller", caller, "session_key", m.SessionKey, "code", code, "message", msg)
+	s.out.send(refusedMsg{T: "refused", ID: m.ID, Caller: caller, Code: code, Message: msg})
+	e := newEvent(s.now(), "model.binding")
+	e.SessionKey, e.Outcome = m.SessionKey, "failed"
+	e.Data = map[string]any{"action": "refused", "caller": caller, "code": code}
 	s.out.send(e)
 }
 
-// bindingEvent is the model.binding telemetry event: the action (bind, swap,
-// release, refused), unit, mode and key, and the profile as the envelope's
-// `provider` dimension; never a variable.
-func (s *Bindings) bindingEvent(action, unit, sessionKey, mode, key, profile string) eventMsg {
+// bindingEvent is the model.binding telemetry event for a bind, swap or release.
+func (s *Bindings) bindingEvent(action, caller, sessionKey string, c *credential) eventMsg {
 	e := newEvent(s.now(), "model.binding")
-	e.SessionKey = sessionKey
-	e.Provider = profile
-	e.Outcome = "completed"
-	e.Data = map[string]any{"action": action, "unit": unit}
-	if mode != "" {
-		e.Data["mode"] = mode
-	}
-	if key != "" {
-		e.Data["fingerprint"] = key
+	e.SessionKey, e.Profile, e.Outcome = sessionKey, c.profileName(), "completed"
+	e.Data = map[string]any{"action": action, "caller": caller, "mode": c.mode()}
+	if c.key != "" {
+		e.Data["key"] = c.key
 	}
 	return e
 }
 
-// applyLocked makes c the unit's effective credential and reports it.
-func (s *Bindings) applyLocked(b *binding, c credential, reason string) {
-	shapeChanged := !b.credentialed || b.cred.refuse != c.refuse || b.cred.key != c.key || b.cred.prof != c.prof
-	b.cred, b.credentialed, b.pending = c, true, nil
-	s.broadcastLocked()
-	if shapeChanged {
-		s.dirty()
-	}
-	bound := boundMsg{T: "bound", Unit: b.unit, SessionKey: b.sessionKey, Profile: c.profileName(), Key: c.key, Mode: c.mode()}
-	if c.legacy {
-		bound.Fingerprint, bound.Provider = c.key, c.legacyProvider
-		if !c.refuse {
-			bound.Mode = modeLegacy
-		}
-	}
-	s.out.send(bound)
-	s.out.send(s.bindingEvent(reason, b.unit, b.sessionKey, c.mode(), c.key, c.profileName()))
-	if reason == "swap" {
-		b.swapped = true // the next request is the first on the new credential
-	}
-	if reason == "bind" && !c.refuse && s.prewarm != nil {
-		s.prewarm(c.prof)
-	}
-	logInfo("bound", "unit", b.unit, "session_key", b.sessionKey, "mode", c.mode(), "profile", c.profileName(), "key", c.key, "reason", reason)
-}
-
-// Release drops a unit's binding. Streams already in flight finish on the
+// Release drops a caller's binding. Streams already in flight finish on the
 // credential they started with.
-func (s *Bindings) Release(unit string) {
+func (s *Bindings) Release(caller string) {
 	s.mu.Lock()
-	b := s.m[unit]
+	b := s.m[caller]
 	if b == nil {
 		s.mu.Unlock()
 		return
 	}
-	delete(s.m, unit)
+	delete(s.m, caller)
 	s.broadcastLocked()
 	s.mu.Unlock()
 	s.dirty()
-	s.out.send(s.bindingEvent("release", unit, b.sessionKey, b.cred.mode(), b.cred.key, b.cred.profileName()))
-	logInfo("released", "unit", unit, "session_key", b.sessionKey)
+	s.out.send(s.bindingEvent("release", caller, b.sessionKey, &b.cred))
+	logInfo("released", "caller", caller, "session_key", b.sessionKey)
 }
 
-// Waiting is how many units still have no credential. The host's `synced`
-// (every live bind re-sent) only logs it: nothing is dropped (only `release`
-// removes a binding) and nothing stops holding, since a unit's bind may
-// still come a moment later; a held request waits up to the cap regardless.
-func (s *Bindings) Waiting() (waiting int) {
+// Synced notes the binder's `synced`: every bind it has is here. Nothing is
+// dropped (only `release` removes a binding) and nothing stops holding (a
+// bind may still come a moment later); from now on a caller that stays
+// without a binding is unknown (401), not early (503). Returns how many
+// known callers still have no credential.
+func (s *Bindings) Synced() (waiting int) {
+	s.synced.Store(true)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, b := range s.m {
@@ -344,117 +266,5 @@ func (s *Bindings) Waiting() (waiting int) {
 	return waiting
 }
 
-// holdResult says why Acquire returned without a lease.
-type holdResult int
-
-const (
-	holdOK             holdResult = iota
-	holdTimeoutKnown              // known unit, credential never arrived → 503
-	holdTimeoutUnknown            // unit never bound → 401
-	holdCanceled                  // the client went away
-)
-
-// lease is one request's hold on a unit's credential.
-type lease struct {
-	s          *Bindings
-	b          *binding
-	sessionKey string
-	cred       credential
-	counted    bool
-	swapped    bool // first request on a credential that replaced another
-	waited     bool // the request was held at least once
-	// pending is the profile of a credential waiting for the unit to go
-	// idle (a rebind mid-stream), read under the same lock as cred; nil when
-	// there is none, or it names no profile (a refuse).
-	pending *profile
-}
-
-// Acquire waits (up to hold) until unit has a credential, then returns it.
-// A lease on a credential (not a refuse) counts as an in-flight stream until Done.
-func (s *Bindings) Acquire(ctx context.Context, unit string, hold time.Duration) (*lease, holdResult) {
-	var timer *time.Timer
-	for {
-		s.mu.Lock()
-		b := s.m[unit]
-		if b != nil && b.credentialed {
-			l := &lease{s: s, b: b, sessionKey: b.sessionKey, cred: b.cred, swapped: b.swapped, waited: timer != nil}
-			b.swapped = false
-			if b.pending != nil {
-				l.pending = b.pending.prof
-			}
-			if !b.cred.refuse {
-				b.inflight++
-				l.counted = true
-			}
-			s.mu.Unlock()
-			if timer != nil {
-				timer.Stop()
-			}
-			return l, holdOK
-		}
-		ch := s.changed
-		s.mu.Unlock()
-		if timer == nil {
-			timer = time.NewTimer(hold)
-		}
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, holdCanceled
-		case <-timer.C:
-			s.mu.Lock()
-			known := s.m[unit] != nil
-			s.mu.Unlock()
-			if known {
-				return nil, holdTimeoutKnown
-			}
-			return nil, holdTimeoutUnknown
-		}
-	}
-}
-
-// knownProfile is a known unit's profile (bound, or restored from disk; nil
-// if it has none): the not-ready text is its own. Cold path: only after a
-// hold timed out.
-func (s *Bindings) knownProfile(unit string) *profile {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if b := s.m[unit]; b != nil {
-		return b.cred.prof
-	}
-	return nil
-}
-
-// Done ends the lease; the unit's pending credential applies if this was its
-// last stream.
-func (l *lease) Done() {
-	if !l.counted {
-		return
-	}
-	s := l.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	l.b.inflight--
-	if l.b.inflight == 0 && l.b.pending != nil && s.m[l.b.unit] == l.b {
-		s.applyLocked(l.b, *l.b.pending, "swap")
-	}
-}
-
-// current: the unit is still bound to the lease's credential, with no other
-// waiting for it to go idle. A WebSocket closes once it is not (websocket.go).
-func (l *lease) current() bool {
-	s := l.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.m[l.b.unit] == l.b && l.b.pending == nil && l.b.cred.equal(&l.cred)
-}
-
-func firstNonEmpty(v ...string) string {
-	for _, s := range v {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}
+// isID: a caller or a key, 1 to 64 of A-Z a-z 0-9 . _ : -
+func isID(s string) bool { return isName(s, "._:-") }

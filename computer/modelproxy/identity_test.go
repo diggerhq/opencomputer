@@ -10,38 +10,40 @@ import (
 	"testing"
 )
 
-func TestUnitFromCgroup(t *testing.T) {
+func TestCallerFromCgroup(t *testing.T) {
 	cases := map[string]string{
-		"0::/user.slice/user-1500.slice/user@1500.service/app.slice/sp-runner-abc123.service\n": "sp-runner-abc123.service",
+		"0::/user.slice/user-1500.slice/user@1500.service/app.slice/sp-runner-abc123.service\n": "abc123",
 		// a child cgroup below the unit
-		"0::/user.slice/user-1500.slice/user@1500.service/app.slice/sp-runner-abc123.service/tasks\n": "sp-runner-abc123.service",
-		// the last matching element wins
-		"0::/system.slice/sp-runner-outer.service/sp-runner-inner.service\n": "sp-runner-inner.service",
+		"0::/user.slice/user-1500.slice/user@1500.service/app.slice/sp-runner-abc123.service/tasks\n": "abc123",
+		// the first matching element wins: a process can create a cgroup
+		// below its own unit and name it like another, not one above it
+		"0::/user.slice/user@1500.service/app.slice/sp-runner-outer.service/sp-runner-inner.service\n": "outer",
 		// hybrid hierarchy: the v2 line wins over v1 lines
-		"12:pids:/user.slice/sp-runner-v1.service\n0::/user.slice/user@1500.service/app.slice/sp-runner-v2.service\n": "sp-runner-v2.service",
-		"12:pids:/user.slice/sp-runner-v1.service\n0::/user.slice\n":                                                  "sp-runner-v1.service",
+		"12:pids:/user.slice/sp-runner-v1.service\n0::/user.slice/user@1500.service/app.slice/sp-runner-v2.service\n": "v2",
+		"12:pids:/user.slice/sp-runner-v1.service\n0::/user.slice\n":                                                  "v1",
 		"0::/user.slice/user-1500.slice/session-3.scope\n":                                                            "",
 		"0::/user.slice/user@1500.service/app.slice/sp-runner-.service\n":                                             "",
+		"0::/user.slice/user@1500.service/app.slice/sp-runner-a b.service\n":                                          "",
 		"0::/user.slice/user@1500.service/app.slice/sp-runner-x.scope\n":                                              "",
 		"0::/user.slice/user@1500.service/app.slice/oc-sp-runner-x.service\n":                                         "",
 		"garbage": "",
 		"":        "",
 	}
 	for in, want := range cases {
-		if got := unitFromCgroup(strings.NewReader(in)); got != want {
+		if got := callerFromCgroup(strings.NewReader(in)); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
 	}
 }
 
-func TestUnitOfPidFromProcRoot(t *testing.T) {
+func TestCallerOfPidFromProcRoot(t *testing.T) {
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "4242"), 0o755)
 	os.WriteFile(filepath.Join(root, "4242", "cgroup"), []byte("0::/user.slice/user-1500.slice/user@1500.service/app.slice/sp-runner-abc123.service\n"), 0o644)
-	if u := unitOfPid(root, 4242); u != "sp-runner-abc123.service" {
+	if u := callerOfPid(root, 4242); u != "abc123" {
 		t.Fatalf("got %q", u)
 	}
-	if u := unitOfPid(root, 1); u != "" {
+	if u := callerOfPid(root, 1); u != "" {
 		t.Fatalf("missing pid: %q", u)
 	}
 }
@@ -75,7 +77,7 @@ func TestPeerResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if u := peerResolver(root)(c); u != "sp-runner-me.service" {
+	if u := peerResolver(root)(c); u != "me" {
 		t.Fatalf("got %q", u)
 	}
 	if u := peerResolver(root)(&net.TCPConn{}); u != "" {

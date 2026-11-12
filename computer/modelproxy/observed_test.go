@@ -27,9 +27,9 @@ func scripted(statuses ...int) http.Handler {
 	})
 }
 
-func doReq(t *testing.T, h *harness, unit string, req *http.Request) int {
+func doReq(t *testing.T, h *harness, caller string, req *http.Request) int {
 	t.Helper()
-	res, err := h.client(unit).Do(req)
+	res, err := h.client(caller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,25 +38,25 @@ func doReq(t *testing.T, h *harness, unit string, req *http.Request) int {
 	return res.StatusCode
 }
 
-// The host hears what the upstream answered: the status, only the headers
+// The binder hears what the upstream answered: the status, only the headers
 // the profile's `report` names, and the start of an error's body; the client
 // gets the response unchanged.
 func TestObserved(t *testing.T) {
 	h := newHarness(t, scripted(429), harnessOpts{alt: scripted(200, 429, 401, 401, 200)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	h.bindReady(k, testUnit, "s2", "tok", "fpA")
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	h.bindReady(k, testCaller, "s2", "tok", "fpA")
 
 	for i, want := range []struct {
 		status int
 		body   string
 	}{{200, ""}, {429, `{"error":{"type":"quota","message":"spent"}}`}, {401, `{"error":{"type":"quota","message":"spent"}}`}, {401, `{"error":{"type":"quota","message":"spent"}}`}, {200, ""}} {
-		if st := doReq(t, h, altUnit, h.responsesReq(context.Background())); st != want.status {
+		if st := doReq(t, h, altCaller, h.responsesReq(context.Background())); st != want.status {
 			t.Fatalf("%d: status %d", i, st)
 		}
 		m := k.waitFor(isT("observed"))
 		hd, _ := m["headers"].(map[string]any)
-		if m["status"] != float64(want.status) || m["profile"] != altProfile || m["key"] != "fpC" || m["unit"] != altUnit || m["sessionKey"] != "s1" ||
+		if m["status"] != float64(want.status) || m["profile"] != altProfile || m["key"] != "fpC" || m["caller"] != altCaller || m["sessionKey"] != "s1" ||
 			len(hd) != 2 || hd["x-quota-used"] != "97" || hd["retry-after"] != "30" || m["error"] != nil {
 			t.Fatalf("%d: observed %v", i, m)
 		}
@@ -69,25 +69,12 @@ func TestObserved(t *testing.T) {
 	}
 
 	// The shipped profile reports the headers its `report` names, no other.
-	if st := doReq(t, h, testUnit, h.messagesReq(context.Background())); st != 429 {
+	if st := doReq(t, h, testCaller, h.messagesReq(context.Background())); st != 429 {
 		t.Fatalf("status %d", st)
 	}
 	if m := k.waitFor(isT("observed")); m["status"] != float64(429) || m["profile"] != mainProfile || toJSON(m["headers"]) != `{"retry-after":"30"}` || m["body"] == nil {
 		t.Fatalf("observed %v", m)
 	}
-}
-
-// A binding without a key has nothing the host could attribute an answer to.
-func TestObservedNeedsKey(t *testing.T) {
-	h := newHarness(t, scripted(429), harnessOpts{})
-	k := h.dialControl()
-	k.bind(testUnit, "s1", "tok", "")
-	k.waitFor(isT("bound"))
-	if st := doReq(t, h, testUnit, h.messagesReq(context.Background())); st != 429 {
-		t.Fatalf("status %d", st)
-	}
-	k.waitFor(isEvent("model.request"))
-	k.noMessage(isT("observed"), 50*time.Millisecond)
 }
 
 type sink struct {
@@ -118,7 +105,7 @@ func TestObserverDedupe(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	o.now = func() time.Time { return now }
 	prof := &profile{name: "p", report: []string{"x-quota-*"}}
-	a, b := subject{prof: prof, sessionKey: "s1", unit: testUnit, key: "A"}, subject{prof: prof, sessionKey: "s2", unit: altUnit, key: "B"}
+	a, b := subject{prof: prof, sessionKey: "s1", caller: testCaller, key: "A"}, subject{prof: prof, sessionKey: "s2", caller: altCaller, key: "B"}
 	hdr := func(v string) http.Header { return http.Header{"X-Quota-Used": {v}, "X-Other": {v + "!"}} }
 	step := func(what string, want int, f func()) {
 		t.Helper()

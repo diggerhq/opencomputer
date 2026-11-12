@@ -18,8 +18,8 @@ func TestAltRewrite(t *testing.T) {
 	got := make(chan seen, 1)
 	h := newHarness(t, recordingUpstream(&mHits, make(chan seen, 1)), harnessOpts{alt: recordingUpstream(&aHits, got)})
 	k := h.dialControl()
-	b := h.bindAltReady(k, altUnit, "s1", "secret-token", "fpC", altAccount)
-	if b["profile"] != altProfile || b["mode"] != nil || b["fingerprint"] != nil || b["provider"] != nil {
+	b := h.bindAltReady(k, altCaller, "s1", "secret-token", "fpC", altAccount)
+	if b["caller"] != altCaller || b["sessionKey"] != "s1" || b["key"] != "fpC" || b["profile"] != nil || b["vars"] != nil {
 		t.Fatalf("bound %v", b)
 	}
 
@@ -32,7 +32,7 @@ func TestAltRewrite(t *testing.T) {
 	} {
 		req.Header.Set(kv[0], kv[1])
 	}
-	res, err := h.client(altUnit).Do(req)
+	res, err := h.client(altCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestAltRewrite(t *testing.T) {
 	}
 	e := k.waitFor(isEvent("model.request"))
 	d := evData(e)
-	if e["provider"] != altProfile || d["route"] != "responses" || d["status"] != float64(200) || d["fingerprint"] != "fpC" {
+	if e["profile"] != altProfile || d["route"] != "responses" || d["status"] != float64(200) || d["key"] != "fpC" {
 		t.Fatalf("event %v", e)
 	}
 	if strings.Contains(toJSON(e), "secret-token") || strings.Contains(toJSON(e), altAccount) {
@@ -86,7 +86,7 @@ func TestAltQueryAndDefault(t *testing.T) {
 	got := make(chan seen, 1)
 	h := newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: recordingUpstream(&hits, got)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
 	for _, accept := range []string{"", "text/plain"} {
 		req, _ := http.NewRequest(http.MethodGet, h.apiURL+"/v1/models?client_version=1.2.3", nil)
 		req.Header.Set("Authorization", placeholderAuth)
@@ -95,7 +95,7 @@ func TestAltQueryAndDefault(t *testing.T) {
 			req.Header.Set("Accept", accept)
 			want = accept
 		}
-		res, err := h.client(altUnit).Do(req)
+		res, err := h.client(altCaller).Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -112,27 +112,27 @@ func TestOtherProfilesRoute(t *testing.T) {
 	var mHits, aHits atomic.Int64
 	h := newHarness(t, recordingUpstream(&mHits, nil), harnessOpts{alt: recordingUpstream(&aHits, nil)})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fpA")
-	h.bindAltReady(k, altUnit, "s2", "tok", "fpC", altAccount)
+	h.bindReady(k, testCaller, "s1", "tok", "fpA")
+	h.bindAltReady(k, altCaller, "s2", "tok", "fpC", altAccount)
 	for _, c := range []struct {
-		unit, prof string
-		req        *http.Request
+		caller, prof string
+		req          *http.Request
 	}{
-		{testUnit, mainProfile, h.responsesReq(context.Background())},
-		{altUnit, altProfile, h.messagesReq(context.Background())},
+		{testCaller, mainProfile, h.responsesReq(context.Background())},
+		{altCaller, altProfile, h.messagesReq(context.Background())},
 	} {
-		res, err := h.client(c.unit).Do(c.req)
+		res, err := h.client(c.caller).Do(c.req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		e := decodeAPIError(t, res)
 		res.Body.Close()
 		if res.StatusCode != 404 || e.Error.Type != "not_found_error" {
-			t.Fatalf("%s: %d %+v", c.unit, res.StatusCode, e)
+			t.Fatalf("%s: %d %+v", c.caller, res.StatusCode, e)
 		}
 		ev := k.waitFor(isEvent("model.denied"))
-		if d := evData(ev); ev["provider"] != c.prof || d["reason"] != "route" || d["route"] != "other" || ev["session_key"] == nil || ev["error_type"] != nil {
-			t.Fatalf("%s: event %v", c.unit, ev)
+		if d := evData(ev); ev["profile"] != c.prof || d["reason"] != "route" || d["route"] != "other" || ev["session_key"] == nil || ev["error_type"] != nil {
+			t.Fatalf("%s: event %v", c.caller, ev)
 		}
 	}
 	if mHits.Load() != 0 || aHits.Load() != 0 {
@@ -146,7 +146,7 @@ func TestAltRequire(t *testing.T) {
 	var hits atomic.Int64
 	h := newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: recordingUpstream(&hits, nil)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
 	for _, mut := range []func(*http.Request){
 		func(r *http.Request) { r.Header.Del("Accept") },
 		func(r *http.Request) { r.Header.Set("Accept", "application/json") },
@@ -154,7 +154,7 @@ func TestAltRequire(t *testing.T) {
 	} {
 		req := h.responsesReq(context.Background())
 		mut(req)
-		res, err := h.client(altUnit).Do(req)
+		res, err := h.client(altCaller).Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -163,7 +163,7 @@ func TestAltRequire(t *testing.T) {
 		if res.StatusCode != 403 || e.Error.Message != altShape {
 			t.Fatalf("%d %+v", res.StatusCode, e)
 		}
-		if ev := k.waitFor(isEvent("model.denied")); ev["provider"] != altProfile || evData(ev)["reason"] != "shape" {
+		if ev := k.waitFor(isEvent("model.denied")); ev["profile"] != altProfile || evData(ev)["reason"] != "require" {
 			t.Fatalf("event %v", ev)
 		}
 	}
@@ -173,7 +173,7 @@ func TestAltRequire(t *testing.T) {
 	req := h.responsesReq(context.Background())
 	req.Header.Set("Accept", "application/json, Text/Event-Stream;q=0.9")
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	res, err := h.client(altUnit).Do(req)
+	res, err := h.client(altCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,8 +191,8 @@ func TestUpgradeRefused(t *testing.T) {
 	var hits atomic.Int64
 	h := newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: recordingUpstream(&hits, nil)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	h.bindReady(k, testUnit, "s2", "tokA", "fpA")
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	h.bindReady(k, testCaller, "s2", "tokA", "fpA")
 	upgrade := func(r *http.Request, conn string) *http.Request {
 		r.Header.Set("Connection", conn)
 		r.Header.Set("Upgrade", "websocket")
@@ -202,18 +202,18 @@ func TestUpgradeRefused(t *testing.T) {
 	get.Header.Set("Sec-Websocket-Version", "13")
 	get.Header.Set("Sec-Websocket-Key", wsNonce)
 	for _, c := range []struct {
-		unit    string
+		caller  string
 		req     *http.Request
 		prof    string
 		status  int
 		reason  string
 		errType any
 	}{
-		{altUnit, upgrade(h.responsesReq(context.Background()), "keep-alive, Upgrade"), altProfile, 426, "websocket", "websocket"},
-		{altUnit, upgrade(get, "Upgrade"), altProfile, 426, "shape", nil},
-		{testUnit, upgrade(h.messagesReq(context.Background()), "Upgrade"), mainProfile, 426, "websocket", "websocket"},
+		{altCaller, upgrade(h.responsesReq(context.Background()), "keep-alive, Upgrade"), altProfile, 426, "websocket", "websocket"},
+		{altCaller, upgrade(get, "Upgrade"), altProfile, 426, "require", nil},
+		{testCaller, upgrade(h.messagesReq(context.Background()), "Upgrade"), mainProfile, 426, "websocket", "websocket"},
 	} {
-		res, err := h.client(c.unit).Do(c.req)
+		res, err := h.client(c.caller).Do(c.req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +223,7 @@ func TestUpgradeRefused(t *testing.T) {
 			t.Fatalf("%s %s: %d %v %+v", c.req.Method, c.req.URL.Path, res.StatusCode, res.Header, e)
 		}
 		ev := k.waitFor(isEvent("model.denied"))
-		if ev["error_type"] != c.errType || ev["provider"] != c.prof || evData(ev)["reason"] != c.reason {
+		if ev["error_type"] != c.errType || ev["profile"] != c.prof || evData(ev)["reason"] != c.reason {
 			t.Fatalf("%s: event %v", c.req.URL.Path, ev)
 		}
 	}
@@ -238,10 +238,10 @@ func TestBareUpgradeHeader(t *testing.T) {
 	got := make(chan seen, 1)
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), got), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tokA", "fpA")
+	h.bindReady(k, testCaller, "s1", "tokA", "fpA")
 	req := h.messagesReq(context.Background())
 	req.Header.Set("Upgrade", "websocket")
-	res, err := h.client(testUnit).Do(req)
+	res, err := h.client(testCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,20 +252,20 @@ func TestBareUpgradeHeader(t *testing.T) {
 	}
 }
 
-// `concurrency` is shared by every unit whose binding expands the key
+// `concurrency` is shared by every caller whose binding expands the key
 // alike; another value, and other profiles, are not counted against it.
 func TestConcurrencyCap(t *testing.T) {
-	const unit2, unit3 = "sp-runner-alt002.service", "sp-runner-alt003.service"
+	const caller2, caller3 = "alt002", "alt003"
 	g := &gatedUpstream{started: make(chan string, 8), release: make(chan struct{})}
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: g, perKey: 1})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tokA", "fpA", altAccount)
-	h.bindAltReady(k, unit2, "s2", "tokA", "fpA", altAccount)
-	h.bindAltReady(k, unit3, "s3", "tokB", "fpB", "acct-other")
+	h.bindAltReady(k, altCaller, "s1", "tokA", "fpA", altAccount)
+	h.bindAltReady(k, caller2, "s2", "tokA", "fpA", altAccount)
+	h.bindAltReady(k, caller3, "s3", "tokB", "fpB", "acct-other")
 
 	done := make(chan int, 2)
-	stream := func(unit string) {
-		res, err := h.client(unit).Do(h.responsesReq(context.Background()))
+	stream := func(caller string) {
+		res, err := h.client(caller).Do(h.responsesReq(context.Background()))
 		if err != nil {
 			t.Error(err)
 			done <- 0
@@ -275,9 +275,9 @@ func TestConcurrencyCap(t *testing.T) {
 		res.Body.Close()
 		done <- res.StatusCode
 	}
-	go stream(altUnit)
+	go stream(altCaller)
 	<-g.started
-	res, err := h.client(unit2).Do(h.responsesReq(context.Background()))
+	res, err := h.client(caller2).Do(h.responsesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,13 +287,13 @@ func TestConcurrencyCap(t *testing.T) {
 		t.Fatalf("second stream on the key: %d %+v", res.StatusCode, e)
 	}
 	ev := k.waitFor(isEvent("model.denied"))
-	if ev["error_type"] != "account_inflight" || ev["provider"] != altProfile || evData(ev)["reason"] != "account_inflight_cap" {
+	if ev["error_type"] != "concurrency" || ev["profile"] != altProfile || evData(ev)["reason"] != "concurrency_cap" {
 		t.Fatalf("event %v", ev)
 	}
 	if strings.Contains(toJSON(ev), altAccount) {
 		t.Fatalf("a variable in an event: %v", ev)
 	}
-	go stream(unit3) // another value of the key: not counted
+	go stream(caller3) // another value of the key: not counted
 	<-g.started
 	close(g.release)
 	for range 2 {
@@ -302,7 +302,7 @@ func TestConcurrencyCap(t *testing.T) {
 		}
 	}
 	// The slot is free again once the stream ended.
-	go stream(unit2)
+	go stream(caller2)
 	if st := <-done; st != 200 {
 		t.Fatalf("after release: %d", st)
 	}
@@ -312,85 +312,68 @@ func TestConcurrencyCap(t *testing.T) {
 func TestBindNeedsEveryVariable(t *testing.T) {
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{})
 	k := h.dialControl()
-	k.bindAlt(altUnit, "s1", "tok", "fp", "")
-	if m := k.waitFor(isT("refused")); m["reason"] != "missing accountId" {
+	k.bindAlt(altCaller, "s1", "tok", "fp", "")
+	if m := k.waitFor(isT("refused")); m["code"] != refuseMissingVar || m["message"] != "missing accountId" {
 		t.Fatalf("refused %v", m)
 	}
-	if ev := k.waitFor(isEvent("model.binding")); ev["provider"] != altProfile || ev["outcome"] != "failed" {
+	if ev := k.waitFor(isEvent("model.binding")); ev["outcome"] != "failed" || evData(ev)["code"] != refuseMissingVar || ev["profile"] != nil {
 		t.Fatalf("event %v", ev)
 	}
-	k.send(map[string]any{"t": "bind", "unit": altUnit, "sessionKey": "s1", "profile": "nope", "vars": map[string]string{"token": "t"}, "key": "f"})
-	if m := k.waitFor(isT("refused")); m["reason"] != "unknown profile" {
+	k.send(map[string]any{"t": "bind", "caller": altCaller, "sessionKey": "s1", "profile": "nope", "vars": map[string]string{"token": "t"}, "key": "f"})
+	if m := k.waitFor(isT("refused")); m["code"] != refuseUnknownProfile {
 		t.Fatalf("refused %v", m)
 	}
-	if ev := k.waitFor(isEvent("model.binding")); ev["provider"] != nil {
-		t.Fatalf("unknown profile as a dimension: %v", ev)
+	if ev := k.waitFor(isEvent("model.binding")); ev["profile"] != nil || evData(ev)["code"] != refuseUnknownProfile {
+		t.Fatalf("event %v", ev)
 	}
 }
 
-// A rebind to another profile waits for the unit's streams to end. A
-// request meanwhile, on either profile's route, is not ready yet (503,
-// retryable, reason swap_pending), so the unit goes idle; then the swap
-// applies and the request reaches the new profile's upstream. A rebind
-// within a profile keeps admitting (TestSwapOnlyBetweenStreams).
-func TestProfileSwapPending(t *testing.T) {
+// A rebind to another profile applies at once: the stream in flight ends
+// on the upstream and credential it started with, and the caller's next
+// request reaches the new profile's upstream.
+func TestRebindToAnotherProfile(t *testing.T) {
 	g := &gatedUpstream{started: make(chan string, 4), release: make(chan struct{})}
 	var aHits atomic.Int64
 	h := newHarness(t, g, harnessOpts{alt: recordingUpstream(&aHits, nil)})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fpA")
+	h.bindReady(k, testCaller, "s1", "tok", "fpA")
 
-	done := make(chan struct{})
+	done := make(chan int, 1)
 	go func() {
-		defer close(done)
-		res, err := h.client(testUnit).Do(h.messagesReq(context.Background()))
+		res, err := h.client(testCaller).Do(h.messagesReq(context.Background()))
 		if err != nil {
 			t.Error(err)
+			done <- 0
 			return
 		}
 		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
+		done <- res.StatusCode
 	}()
 	<-g.started
-	k.bindAlt(testUnit, "s1", "tokC", "fpC", altAccount)
-	k.noMessage(isT("bound"), 100*time.Millisecond) // pending: the stream is in flight
+	h.bindAltReady(k, testCaller, "s1", "tokC", "fpC", altAccount) // `bound` under the live stream
 
-	for _, req := range []*http.Request{h.responsesReq(context.Background()), h.messagesReq(context.Background())} {
-		res, err := h.client(testUnit).Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e := decodeAPIError(t, res)
-		res.Body.Close()
-		if res.StatusCode != http.StatusServiceUnavailable || res.Header.Get("X-Should-Retry") != "true" || e.Error.Message != defaultTexts.notReady {
-			t.Fatalf("pending: %d %v %+v", res.StatusCode, res.Header, e)
-		}
-		ev := k.waitFor(isEvent("model.denied"))
-		if evData(ev)["reason"] != "swap_pending" || ev["provider"] != mainProfile || ev["error_type"] != nil {
-			t.Fatalf("event %v", ev)
-		}
-	}
-
-	close(g.release)
-	<-done
-	k.waitFor(isBound(testUnit, "fpC"))
-	res, err := h.client(testUnit).Do(h.responsesReq(context.Background()))
+	res, err := h.client(testCaller).Do(h.responsesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	io.Copy(io.Discard, res.Body)
 	res.Body.Close()
-	if res.StatusCode != 200 || aHits.Load() != 1 || len(g.bearers) != 1 {
-		t.Fatalf("after swap: %d, alt hits %d, main hits %d", res.StatusCode, aHits.Load(), len(g.bearers))
+	if res.StatusCode != 200 || aHits.Load() != 1 {
+		t.Fatalf("after the rebind: %d, alt hits %d", res.StatusCode, aHits.Load())
+	}
+	close(g.release)
+	if code := <-done; code != 200 || len(g.bearers) != 1 {
+		t.Fatalf("the stream in flight: %d, main hits %d", code, len(g.bearers))
 	}
 }
 
-// A known unit whose bind has not arrived gets the not-ready text of the
+// A known caller whose bind has not arrived gets the not-ready text of the
 // profile it waits for (the restored one).
 func TestNotReadyNamesBoundProfile(t *testing.T) {
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{hold: 50 * time.Millisecond,
-		restore: []persisted{{Unit: altUnit, SessionKey: "s1", Profile: altProfile, Key: "fpC"}}})
-	res, err := h.client(altUnit).Do(h.messagesReq(context.Background()))
+		restore: []bindingInfo{{Caller: altCaller, SessionKey: "s1", Mode: modeProfile, Profile: altProfile, Key: "fpC"}}})
+	res, err := h.client(altCaller).Do(h.messagesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}

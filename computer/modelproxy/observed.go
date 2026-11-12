@@ -1,5 +1,5 @@
-// What upstreams answer, reported to the host as `observed`: the proxy says
-// what it saw and the host decides what it means (a spent quota, a revoked
+// What upstreams answer, reported to the binder as `observed`: the proxy says
+// what it saw and the binder decides what it means (a spent quota, a revoked
 // credential, an outage). For a binding with a key, each upstream answer is
 // a candidate:
 //
@@ -70,12 +70,12 @@ func NewObserver(out sender) *Observer {
 
 // subject is whose answer it is.
 type subject struct {
-	prof                  *profile
-	sessionKey, unit, key string
+	prof                    *profile
+	sessionKey, caller, key string
 }
 
 func (st *reqState) subject() subject {
-	return subject{prof: st.prof, sessionKey: st.sessionKey, unit: st.unit, key: st.key}
+	return subject{prof: st.prof, sessionKey: st.sessionKey, caller: st.caller, key: st.key}
 }
 
 // response reports an upstream response; body is the start of its body, if kept.
@@ -83,7 +83,7 @@ func (o *Observer) response(s subject, status int, hdr http.Header, body []byte)
 	if s.key == "" {
 		return
 	}
-	msg := observedMsg{T: "observed", SessionKey: s.sessionKey, Unit: s.unit, Key: s.key, Profile: s.prof.name,
+	msg := observedMsg{T: "observed", SessionKey: s.sessionKey, Caller: s.caller, Key: s.key, Profile: s.prof.name,
 		Status: status, Headers: reported(s.prof.report, hdr), Body: string(body[:min(len(body), observedBody)])}
 	class := "ok"
 	if status >= statusFirstError {
@@ -97,7 +97,7 @@ func (o *Observer) transport(s subject, class string) {
 	if s.key == "" || class == "canceled" {
 		return
 	}
-	o.report(observedMsg{T: "observed", SessionKey: s.sessionKey, Unit: s.unit, Key: s.key, Profile: s.prof.name, Error: class}, class, false)
+	o.report(observedMsg{T: "observed", SessionKey: s.sessionKey, Caller: s.caller, Key: s.key, Profile: s.prof.name, Error: class}, class, false)
 }
 
 func (o *Observer) report(msg observedMsg, class string, always bool) {

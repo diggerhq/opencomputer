@@ -1,16 +1,13 @@
-// The bindings table on disk (-bindings-file, /run/oc-modelproxy/bindings.json;
-// the directory is a tmpfiles.d one, not RuntimeDirectory=, which would go
-// when the service stops and take the activated sockets with it: see
-// deploy/vm/modelproxy.sh): unit → sessionKey, profile, key, mode. Never a
-// binding's variables. Read once at start so a restarted proxy holds known
-// callers instead of answering 401; written atomically (temp file, fsync,
-// rename) by one goroutine that coalesces bursts of changes.
+// The bindings table on disk (-bindings-file; its directory is a tmpfiles.d
+// one, not RuntimeDirectory=, which would go when the service stops and take
+// the activated sockets with it): caller → sessionKey, mode, profile, key.
+// Never a binding's variables. Read once at start so a restarted proxy holds
+// known callers' requests until the binder re-binds them; written atomically
+// (temp file, fsync, rename) by one goroutine that coalesces bursts of
+// changes.
 //
-// Versions: 3 writes `profile` and `key`. 1 and 2, from before profiles,
-// have `provider` (2 only) and `fingerprint` instead: both load, an entry
-// without a provider as -default-profile (bindings.go Restore), so a proxy
-// upgraded under live sessions keeps them. A newer version is read the same
-// way, best effort, rather than dropping every session.
+// The file is a cache of what the binder knows: one of another version, or
+// unreadable, is ignored and the proxy starts empty.
 package main
 
 import (
@@ -22,15 +19,15 @@ import (
 	"sync"
 )
 
-// persistVersion is what writeBindings writes.
-const persistVersion = 3
+// persistVersion is what writeBindings writes and the only one loadBindings reads.
+const persistVersion = 1
 
 type persistFile struct {
-	Version  int         `json:"version"`
-	Bindings []persisted `json:"bindings"`
+	Version  int           `json:"version"`
+	Bindings []bindingInfo `json:"bindings"`
 }
 
-func loadBindings(path string) ([]persisted, error) {
+func loadBindings(path string) ([]bindingInfo, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -45,13 +42,14 @@ func loadBindings(path string) ([]persisted, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, err
 	}
-	if f.Version > persistVersion {
-		logWarn("bindings file is newer than this proxy; reading it as version 3", "version", f.Version)
+	if f.Version != persistVersion {
+		logWarn("bindings file is of another version; starting empty", "version", f.Version)
+		return nil, nil
 	}
 	return f.Bindings, nil
 }
 
-func writeBindings(path string, entries []persisted) error {
+func writeBindings(path string, entries []bindingInfo) error {
 	b, err := json.Marshal(persistFile{Version: persistVersion, Bindings: entries})
 	if err != nil {
 		return err
@@ -82,14 +80,14 @@ func writeBindings(path string, entries []persisted) error {
 // persister writes the table whenever it is marked dirty, off the request path.
 type persister struct {
 	path     string
-	snapshot func() []persisted
+	snapshot func() []bindingInfo
 	kick     chan struct{}
 	stop     chan struct{}
 	done     chan struct{}
 	once     sync.Once
 }
 
-func newPersister(path string, snapshot func() []persisted) *persister {
+func newPersister(path string, snapshot func() []bindingInfo) *persister {
 	return &persister{path: path, snapshot: snapshot, kick: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
 }
 

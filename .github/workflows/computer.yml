@@ -99,10 +99,10 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race -count=1 ./...
-      # Did the proxy get slower: what it adds to a request, p99, against a local upstream.
+      # Did the proxy get slower: its median overhead and allocations per request, against a local upstream.
       - run: go test -run '^$' -bench ProxyOverhead -benchtime 5000x ./...
         env:
-          MODELPROXY_OVERHEAD_P99_MS: 2
+          MODELPROXY_OVERHEAD_GATE: 1
       - run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/oc-modelproxy" .
 
   secrets:

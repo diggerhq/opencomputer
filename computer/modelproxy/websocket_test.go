@@ -108,9 +108,9 @@ func (h *harness) wsHandshake() *http.Request {
 }
 
 // openWS opens the client's end, failing unless it switched.
-func (h *harness) openWS(unit string) *wsPeer {
+func (h *harness) openWS(caller string) *wsPeer {
 	h.t.Helper()
-	res, err := h.client(unit).Do(h.wsHandshake())
+	res, err := h.client(caller).Do(h.wsHandshake())
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -131,8 +131,8 @@ func TestWSTunnel(t *testing.T) {
 	reqs, conns := make(chan *http.Request, 1), make(chan *wsPeer, 1)
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", reqs, conns)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	c := h.openWS(altUnit)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
 	up, r := <-conns, <-reqs
 	if r.URL.Path != "/base/x/responses" || r.Header.Get("Authorization") != "Bearer tok" || r.Header.Get("X-Account") != altAccount ||
 		r.Header.Get("Sec-Websocket-Extensions") != "" || r.Header.Get("X-Proto") != "ws=1" || r.Header.Get("Upgrade") != "websocket" ||
@@ -153,7 +153,7 @@ func TestWSTunnel(t *testing.T) {
 	}
 	e := k.waitFor(isRoute("responses"))
 	if d := evData(e); e["outcome"] != "completed" || d["transport"] != "websocket" || d["prewarm"] != true || d["service_tier"] != "default" ||
-		d["ttfb_ms"] == nil || d["fingerprint"] != "fpC" || e["session_key"] != "s1" || e["provider"] != altProfile {
+		d["ttfb_ms"] == nil || d["key"] != "fpC" || e["session_key"] != "s1" || e["profile"] != altProfile {
 		t.Fatalf("prewarm event %v", e)
 	}
 
@@ -189,26 +189,24 @@ func TestWSTunnel(t *testing.T) {
 	up.closed()
 }
 
-// A rebind waits for the response in flight, then the proxy closes the
-// tunnel (it carried the old variables) and the new ones apply.
+// A rebind applies at once; the response in flight on a tunnel ends, then
+// the proxy closes the tunnel (it carried the old variables).
 func TestWSRebindClosesBetweenResponses(t *testing.T) {
 	conns := make(chan *wsPeer, 1)
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	c := h.openWS(altUnit)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
 	up := <-conns
 	c.send(`{"type":"response.create","input":[]}`)
 	up.recv()
 	up.send(`{"type":"response.created"}`)
 	c.recv()
 
-	k.bindAlt(altUnit, "s1", "tok2", "fp2", altAccount)
-	k.noMessage(func(m map[string]any) bool { return m["t"] == "bound" }, 200*time.Millisecond)
+	h.bindAltReady(k, altCaller, "s1", "tok2", "fp2", altAccount)
 	up.send(`{"type":"response.completed","response":{}}`)
 	c.recv()
 	c.closed()
-	k.waitFor(isBound(altUnit, "fp2"))
 	if e := k.waitFor(isRoute("responses_ws")); evData(e)["closed"] != "rebind" {
 		t.Fatalf("connection event %v", e)
 	}
@@ -219,15 +217,15 @@ func TestWSIdleAndDrain(t *testing.T) {
 	conns := make(chan *wsPeer, 2)
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns), wsIdle: 150 * time.Millisecond})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	c := h.openWS(altUnit)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
 	c.closed()
 	if e := k.waitFor(isRoute("responses_ws")); evData(e)["closed"] != "idle" {
 		t.Fatalf("connection event %v", e)
 	}
 
 	h.srv.proxy.wsIdle = 0
-	c = h.openWS(altUnit)
+	c = h.openWS(altCaller)
 	<-conns
 	<-conns
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -241,11 +239,11 @@ func TestWSIdleAndDrain(t *testing.T) {
 
 // Every refusal on the route is a 426, so the client goes on over HTTP at
 // once: a profile without a WS route, the proxy's own (the concurrency cap
-// here), the upstream's (its 429 is still reported to the host).
+// here), the upstream's (its 429 is still reported to the binder).
 func TestWSRefusals(t *testing.T) {
 	expect426 := func(h *harness, k *ctl) {
 		t.Helper()
-		res, err := h.client(altUnit).Do(h.wsHandshake())
+		res, err := h.client(altCaller).Do(h.wsHandshake())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +257,7 @@ func TestWSRefusals(t *testing.T) {
 	var hits atomic.Int64
 	h := newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: recordingUpstream(&hits, nil), noWS: true})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
 	expect426(h, k)
 	if e := k.waitFor(isEvent("model.denied")); evData(e)["reason"] != "websocket" || hits.Load() != 0 {
 		t.Fatalf("no WS route: %v, %d hits", e, hits.Load())
@@ -270,27 +268,27 @@ func TestWSRefusals(t *testing.T) {
 	conns := make(chan *wsPeer, 3)
 	h = newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns), perKey: 1})
 	k = h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	c := h.openWS(altUnit)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
 	up := <-conns
-	h.openWS(altUnit).c.Close()
+	h.openWS(altCaller).c.Close()
 	<-conns
 	c.send(`{"type":"response.create","input":[]}`)
 	up.recv()
 	expect426(h, k)
-	if e := k.waitFor(isEvent("model.denied")); evData(e)["reason"] != "account_inflight_cap" {
+	if e := k.waitFor(isEvent("model.denied")); evData(e)["reason"] != "concurrency_cap" {
 		t.Fatalf("cap: %v", e)
 	}
 	up.send(`{"type":"response.completed","response":{"id":"r1"}}`)
 	c.recv()
 	k.waitFor(isRoute("responses"))
-	h.openWS(altUnit).c.Close()
+	h.openWS(altCaller).c.Close()
 	<-conns
 
 	limit := http.Header{"Content-Type": {"application/json"}, "X-Quota-Kind": {"primary"}, "X-Other": {"no"}}
 	h = newHarness(t, recordingUpstream(&hits, nil), harnessOpts{alt: wsUpstream(t, 429, limit, `{"error":{"type":"quota","resets_at":1792513800}}`, nil, nil)})
 	k = h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
 	expect426(h, k)
 	m := k.waitFor(isT("observed"))
 	if hd, _ := m["headers"].(map[string]any); m["status"] != float64(429) || m["profile"] != altProfile || m["key"] != "fpC" ||
@@ -303,13 +301,13 @@ func TestWSRefusals(t *testing.T) {
 }
 
 // An `error` event is an HTTP error's WebSocket form: its status and
-// headers are reported to the host, and it ends the response in flight.
+// headers are reported to the binder, and it ends the response in flight.
 func TestWSErrorEvent(t *testing.T) {
 	conns := make(chan *wsPeer, 1)
 	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
-	c := h.openWS(altUnit)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
 	up := <-conns
 	if m := k.waitFor(isT("observed")); m["status"] != float64(101) || m["headers"].(map[string]any)["x-quota-used"] != "12" {
 		t.Fatalf("observed %v", m)

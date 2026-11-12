@@ -1,1 +1,1 @@
-{"t":"observed","sessionKey":"T0/C0/1700000000.000100","unit":"sp-runner-abc123.service","key":"k1","profile":"openai-key","error":"connect"}
+{"t":"observed","sessionKey":"T0/C0/1700000000.000100","caller":"abc123","key":"k1","profile":"openai-key","error":"connect"}

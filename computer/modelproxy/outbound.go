@@ -24,6 +24,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -120,7 +121,7 @@ func (o *outbound) modifyResponse(res *http.Response) error {
 	return nil
 }
 
-// observe reports the response to the host (observed.go). An error's body
+// observe reports the response to the binder (observed.go). An error's body
 // may say what its headers do not: that report waits for the body's start
 // as the client reads it, bounded in time, so nothing is read ahead of the
 // client. Not for an event stream or a compressed body.
@@ -138,7 +139,7 @@ func (o *outbound) observe(st *reqState, res *http.Response) {
 }
 
 // switchWS takes the WebSocket handshake's response: a 101 becomes a
-// tunnel (websocket.go); any other status is reported to the host with its
+// tunnel (websocket.go); any other status is reported to the binder with its
 // body's start and reaches the client as a 426, so it goes on over HTTP. The
 // refused handshake's body is read here, bounded in size and time: it never
 // reaches the client.
@@ -167,20 +168,22 @@ func (o *outbound) switchWS(st *reqState, res *http.Response) error {
 }
 
 func (o *outbound) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	st, _ := r.Context().Value(stateKey).(*reqState)
+	st := r.Context().Value(stateKey).(*reqState)
+	if context.Cause(r.Context()) == errConnWait {
+		// It never reached the upstream: a refusal, not a failed request.
+		st.proxied = false
+		st.denyAs(w, "upstream_busy", "timeout", http.StatusServiceUnavailable, "api_error", textBusy)
+		return
+	}
 	if r.Context().Err() != nil {
-		if st != nil {
-			st.cancelled.Store(true)
-		}
+		st.cancelled.Store(true)
 		return
 	}
 	class := errorClass(err)
-	if st != nil {
-		st.transportErr = class
-		logWarn("upstream request failed", "profile", o.prof.name, "route", st.route, "session_key", st.sessionKey, "error_type", class)
-		o.p.observer.transport(st.subject(), class)
-	}
-	if st != nil && st.rs.ws {
+	st.transportErr = class
+	logWarn("upstream request failed", "profile", o.prof.name, "route", st.route, "session_key", st.sessionKey, "error_type", class)
+	o.p.observer.transport(st.subject(), class)
+	if st.rs.ws {
 		// The client goes on over HTTP, where an unreachable upstream is reported as usual.
 		writeAPIError(w, http.StatusUpgradeRequired, "invalid_request_error", wsUseHTTP+o.prof.text.unreachable)
 		return

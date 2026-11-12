@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type seen struct {
@@ -36,7 +37,7 @@ func TestRewrite(t *testing.T) {
 	got := make(chan seen, 1)
 	h := newHarness(t, recordingUpstream(&hits, got), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "secret-token", "fp1")
+	h.bindReady(k, testCaller, "s1", "secret-token", "fp1")
 
 	req := h.messagesReq(context.Background())
 	req.Header.Set("X-Forwarded-For", "10.0.0.9")
@@ -51,7 +52,7 @@ func TestRewrite(t *testing.T) {
 	req.Header.Set("Accept-Encoding", "gzip, br")
 	req.Header.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
 	req.Header.Set("X-Stainless-Retry-Count", "0")
-	res, err := h.client(testUnit).Do(req)
+	res, err := h.client(testCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestRewrite(t *testing.T) {
 		t.Fatalf("event %v", ev)
 	}
 	d := ev["data"].(map[string]any)
-	if ev["provider"] != mainProfile || d["route"] != "messages" || d["status"] != float64(200) || d["fingerprint"] != "fp1" || d["swapped"] != false {
+	if ev["profile"] != mainProfile || d["route"] != "messages" || d["status"] != float64(200) || d["key"] != "fp1" || d["swapped"] != false {
 		t.Fatalf("event data %v", d)
 	}
 	if _, ok := d["overhead_us"]; !ok {
@@ -119,11 +120,11 @@ func TestPolicyLimitsForwardedWithToken(t *testing.T) {
 	got := make(chan seen, 1)
 	h := newHarness(t, recordingUpstream(&hits, got), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
 	req, _ := http.NewRequest(http.MethodGet, h.apiURL+"/api/claude_code/policy_limits", nil)
 	req.Host = "localhost"
 	req.Header.Set("User-Agent", "claude-code/2.1.301")
-	res, err := h.client(testUnit).Do(req)
+	res, err := h.client(testCaller).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +142,8 @@ func TestDenials(t *testing.T) {
 	var hits atomic.Int64
 	h := newHarness(t, recordingUpstream(&hits, make(chan seen, 1)), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
-	c := h.client(testUnit)
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	c := h.client(testCaller)
 
 	cases := []struct {
 		name    string
@@ -165,13 +166,13 @@ func TestDenials(t *testing.T) {
 		}, 404, "not_found_error", "route"},
 		{"GET messages", func(r *http.Request) { r.Method = http.MethodGet; r.Body = nil; r.ContentLength = 0 }, 404, "not_found_error", "route"},
 		{"path trick", func(r *http.Request) { r.URL.Path = "/v1/messages/../models" }, 404, "not_found_error", "route"},
-		{"curl user-agent", func(r *http.Request) { r.Header.Set("User-Agent", "curl/8") }, 403, "permission_error", "shape"},
-		{"no x-app", func(r *http.Request) { r.Header.Del("X-App") }, 403, "permission_error", "shape"},
-		{"no oauth beta", func(r *http.Request) { r.Header.Set("Anthropic-Beta", "claude-code-20250219") }, 403, "permission_error", "shape"},
-		{"count_tokens shape", func(r *http.Request) { r.URL.Path = "/v1/messages/count_tokens"; r.Header.Del("X-App") }, 403, "permission_error", "shape"},
-		{"other bearer", func(r *http.Request) { r.Header.Set("Authorization", "Bearer its-own") }, 401, "authentication_error", "refused"},
-		{"other x-api-key", func(r *http.Request) { r.Header.Set("X-Api-Key", "its-own") }, 401, "authentication_error", "refused"},
-		{"two bearers", func(r *http.Request) { r.Header.Add("Authorization", placeholderAuth) }, 401, "authentication_error", "refused"},
+		{"curl user-agent", func(r *http.Request) { r.Header.Set("User-Agent", "curl/8") }, 403, "permission_error", "require"},
+		{"no x-app", func(r *http.Request) { r.Header.Del("X-App") }, 403, "permission_error", "require"},
+		{"no oauth beta", func(r *http.Request) { r.Header.Set("Anthropic-Beta", "claude-code-20250219") }, 403, "permission_error", "require"},
+		{"count_tokens shape", func(r *http.Request) { r.URL.Path = "/v1/messages/count_tokens"; r.Header.Del("X-App") }, 403, "permission_error", "require"},
+		{"other bearer", func(r *http.Request) { r.Header.Set("Authorization", "Bearer its-own") }, 401, "authentication_error", "credentials"},
+		{"other x-api-key", func(r *http.Request) { r.Header.Set("X-Api-Key", "its-own") }, 401, "authentication_error", "credentials"},
+		{"two bearers", func(r *http.Request) { r.Header.Add("Authorization", placeholderAuth) }, 401, "authentication_error", "credentials"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -198,13 +199,13 @@ func TestDenials(t *testing.T) {
 		t.Fatalf("upstream contacted %d times", n)
 	}
 
-	// A caller that is no runner unit: 401 at once, upstream untouched.
+	// A caller that is no runner: 401 at once, upstream untouched.
 	res, err := h.client("").Do(h.messagesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.StatusCode != 401 || decodeAPIError(t, res).Error.Type != "authentication_error" || hits.Load() != 0 {
-		t.Fatalf("no-unit status %d", res.StatusCode)
+		t.Fatalf("no-caller status %d", res.StatusCode)
 	}
 	res.Body.Close()
 }
@@ -213,9 +214,9 @@ func TestUpstreamUnreachable502(t *testing.T) {
 	var hits atomic.Int64
 	h := newHarness(t, recordingUpstream(&hits, make(chan seen, 1)), harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
 	h.upstream.Close()
-	res, err := h.client(testUnit).Do(h.messagesReq(context.Background()))
+	res, err := h.client(testCaller).Do(h.messagesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,9 +224,9 @@ func TestUpstreamUnreachable502(t *testing.T) {
 	if res.StatusCode != 502 || decodeAPIError(t, res).Error.Type != "api_error" {
 		t.Fatalf("status %d", res.StatusCode)
 	}
-	// The host hears of it (before the request event).
+	// The binder hears of it (before the request event).
 	om := k.waitFor(isT("observed"))
-	if om["error"] != "connect" || om["key"] != "fp1" || om["profile"] != mainProfile || om["unit"] != testUnit || om["sessionKey"] != "s1" || om["status"] != nil {
+	if om["error"] != "connect" || om["key"] != "fp1" || om["profile"] != mainProfile || om["caller"] != testCaller || om["sessionKey"] != "s1" || om["status"] != nil {
 		t.Fatalf("observed %v", om)
 	}
 	ev := k.waitFor(isEvent("model.request"))
@@ -246,5 +247,41 @@ func TestIsEventStream(t *testing.T) {
 		if got := isEventStream(ct); got != want {
 			t.Errorf("%q: %v", ct, got)
 		}
+	}
+}
+
+// A request that gets no upstream connection within the hold timeout is
+// refused, retryable; it never reached the upstream.
+func TestUpstreamBusy(t *testing.T) {
+	g := &gatedUpstream{started: make(chan string, 4), release: make(chan struct{})}
+	h := newHarness(t, g, harnessOpts{hold: 100 * time.Millisecond, maxConns: 1})
+	k := h.dialControl()
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	done := make(chan int, 1)
+	go func() {
+		res, err := h.client(testCaller).Do(h.messagesReq(context.Background()))
+		if err != nil {
+			t.Error(err)
+			done <- 0
+			return
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		done <- res.StatusCode
+	}()
+	<-g.started // holds the upstream's only connection
+
+	res := do(t, h, testCaller)
+	e := decodeAPIError(t, res)
+	if res.StatusCode != 503 || res.Header.Get("Retry-After") != "1" || res.Header.Get("X-Should-Retry") != "true" || e.Error.Message != textBusy {
+		t.Fatalf("busy: %d %v %+v", res.StatusCode, res.Header, e)
+	}
+	ev := k.waitFor(isEvent("model.denied"))
+	if evData(ev)["reason"] != "upstream_busy" || ev["error_type"] != "timeout" || ev["profile"] != mainProfile {
+		t.Fatalf("event %v", ev)
+	}
+	close(g.release)
+	if st := <-done; st != 200 || len(g.bearers) != 1 {
+		t.Fatalf("the stream: %d, upstream hits %d", st, len(g.bearers))
 	}
 }

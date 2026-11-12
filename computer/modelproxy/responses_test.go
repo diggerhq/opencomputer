@@ -60,10 +60,10 @@ func TestResponsesCompletedThenHangUp(t *testing.T) {
 	})
 	h := newHarness(t, http.NotFoundHandler(), harnessOpts{alt: up})
 	k := h.dialControl()
-	h.bindAltReady(k, altUnit, "s1", "tok", "fpC", altAccount)
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	res, err := h.client(altUnit).Do(h.responsesReq(ctx))
+	res, err := h.client(altCaller).Do(h.responsesReq(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}

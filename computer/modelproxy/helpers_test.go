@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	testUnit        = "sp-runner-abc123.service"
+	testCaller      = "abc123"
 	testPlaceholder = "ssh-placeholder"
 	placeholderAuth = "Bearer " + testPlaceholder
 	wsNonce         = "dGhlIHNhbXBsZSBub25jZQ==" // RFC 6455's sample nonce
@@ -30,7 +30,7 @@ const (
 const (
 	mainProfile = "claude-oauth"
 	altProfile  = "alt"
-	altUnit     = "sp-runner-alt001.service"
+	altCaller   = "alt001"
 	altAccount  = "acct-123"
 	altShape    = "alt: not this client's request"
 	altNotReady = "alt: not ready"
@@ -40,7 +40,7 @@ func altProfileJSON(upstream string, limit int, ws bool) profileJSON {
 	return profileJSON{
 		Upstream: upstream + "/base",
 		Routes: map[string]routeJSON{
-			"POST /v1/responses": {To: "/x/responses", Require: map[string]string{"Accept": "text/event-stream", "Content-Type": "application/json"}},
+			"POST /v1/responses": {To: "/x/responses", Format: "responses", Require: map[string]string{"Accept": "text/event-stream", "Content-Type": "application/json"}},
 			"WS /v1/responses":   {To: "/x/responses", Require: map[string]string{"X-Proto": "ws=*"}},
 			"GET /v1/models":     {To: "/x/models", Default: map[string]string{"Accept": "application/json"}},
 		},
@@ -49,8 +49,7 @@ func altProfileJSON(upstream string, limit int, ws bool) profileJSON {
 		Report:      []string{"x-quota-*", "retry-after"},
 		Concurrency: &concurrencyJSON{Key: "{accountId}", Limit: limit},
 		WebSocket:   &ws,
-		Client:      map[string]string{"codex": "api-key"},
-		Runner:      map[string]any{"promptCacheTtl": "1h"},
+		Harness:     map[string]any{"codex": map[string]any{"cache": "1h"}},
 		Errors:      map[string]string{"require": altShape, "notReady": altNotReady},
 	}
 }
@@ -65,19 +64,18 @@ type harness struct {
 	apiURL   string
 	ctlPath  string
 	dir      string
-	callers  sync.Map // client local addr → unit
+	callers  sync.Map // client local addr → caller
 }
 
 type harnessOpts struct {
-	hold           time.Duration
-	restore        []persisted
-	warm           int
-	perUnit        int           // -max-inflight-per-unit; 0 = the default of 32
-	alt            http.Handler  // the alt profile's upstream; nil = one that answers 500
-	perKey         int           // alt's concurrency limit; 0 = 8
-	noWS           bool          // alt's `websocket: false`
-	wsIdle         time.Duration // -ws-idle-timeout; 0 = never
-	defaultProfile string        // -default-profile
+	hold      time.Duration
+	restore   []bindingInfo
+	perCaller int           // -max-inflight-per-caller; 0 = the default of 32
+	alt       http.Handler  // the alt profile's upstream; nil = one that answers 500
+	perKey    int           // alt's concurrency limit; 0 = 8
+	noWS      bool          // alt's `websocket: false`
+	wsIdle    time.Duration // -ws-idle-timeout; 0 = never
+	maxConns  int           // -max-conns-per-host; 0 = 256
 }
 
 func fakeUpstream(t testing.TB, h http.Handler, roots *x509.CertPool) *httptest.Server {
@@ -105,8 +103,11 @@ func newHarness(t testing.TB, h http.Handler, o harnessOpts) *harness {
 	if o.hold == 0 {
 		o.hold = 2 * time.Second
 	}
-	if o.perUnit == 0 {
-		o.perUnit = 32
+	if o.perCaller == 0 {
+		o.perCaller = 32
+	}
+	if o.maxConns == 0 {
+		o.maxConns = 256
 	}
 	if o.perKey == 0 {
 		o.perKey = 8
@@ -129,19 +130,25 @@ func newHarness(t testing.TB, h http.Handler, o harnessOpts) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{hold: o.hold, bindingsFile: filepath.Join(dir, "bindings.json"), maxInflightPerUnit: o.perUnit, wsIdle: o.wsIdle,
-		placeholder: testPlaceholder, defaultProfile: o.defaultProfile, rootCAs: roots,
-		maxIdlePerHost: 128, maxConnsPerHost: 256, idleConnTimeout: time.Minute, warmMax: o.warm}
+	cfg := config{hold: o.hold, bindingsFile: filepath.Join(dir, "bindings.json"), maxInflightPerCaller: o.perCaller, wsIdle: o.wsIdle,
+		placeholder: testPlaceholder, rootCAs: roots,
+		maxIdlePerHost: 128, maxConnsPerHost: o.maxConns, idleConnTimeout: time.Minute}
 	if o.restore != nil {
 		if err := writeBindings(cfg.bindingsFile, o.restore); err != nil {
 			t.Fatal(err)
 		}
 	}
 	hs := &harness{t: t, upstream: up, alt: alt, dir: dir, ctlPath: filepath.Join(dir, "c.sock")}
+	// The proxy names a connection as it accepts it, which may be before the
+	// client's dial has returned and stored its name: wait for it.
 	resolve := func(c net.Conn) string {
-		v, _ := hs.callers.Load(c.RemoteAddr().String())
-		s, _ := v.(string)
-		return s
+		for range 2000 {
+			if v, ok := hs.callers.Load(c.RemoteAddr().String()); ok {
+				return v.(string)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return ""
 	}
 	srv, err := newServer(cfg, ps, resolve)
 	if err != nil {
@@ -166,13 +173,13 @@ func newHarness(t testing.TB, h http.Handler, o harnessOpts) *harness {
 	return hs
 }
 
-// client returns an HTTP client whose connections the proxy sees as unit.
-func (h *harness) client(unit string) *http.Client {
+// client returns an HTTP client whose connections the proxy sees as caller.
+func (h *harness) client(caller string) *http.Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 			if err == nil {
-				h.callers.Store(c.LocalAddr().String(), unit)
+				h.callers.Store(c.LocalAddr().String(), caller)
 			}
 			return c, err
 		},
@@ -196,7 +203,7 @@ func (h *harness) messagesReq(ctx context.Context) *http.Request {
 	return req
 }
 
-// ctl is a fake host on the control socket.
+// ctl is a fake binder on the control socket.
 type ctl struct {
 	t    testing.TB
 	c    net.Conn
@@ -233,13 +240,13 @@ func (k *ctl) send(v any) {
 	}
 }
 
-// bind binds unit to the main profile.
-func (k *ctl) bind(unit, session, token, key string) {
-	k.send(map[string]any{"t": "bind", "unit": unit, "sessionKey": session, "profile": mainProfile, "vars": map[string]string{"token": token}, "key": key})
+// bind binds caller to the main profile.
+func (k *ctl) bind(caller, session, token, key string) {
+	k.send(map[string]any{"t": "bind", "caller": caller, "sessionKey": session, "profile": mainProfile, "vars": map[string]string{"token": token}, "key": key})
 }
 
-func (k *ctl) bindAlt(unit, session, token, key, account string) {
-	k.send(map[string]any{"t": "bind", "unit": unit, "sessionKey": session, "profile": altProfile,
+func (k *ctl) bindAlt(caller, session, token, key, account string) {
+	k.send(map[string]any{"t": "bind", "caller": caller, "sessionKey": session, "profile": altProfile,
 		"vars": map[string]string{"token": token, "accountId": account}, "key": key})
 }
 
@@ -289,21 +296,21 @@ func (k *ctl) noMessage(pred func(map[string]any) bool, d time.Duration) {
 	}
 }
 
-func isBound(unit, key string) func(map[string]any) bool {
-	return func(m map[string]any) bool { return m["t"] == "bound" && m["unit"] == unit && m["key"] == key }
+func isBound(caller, key string) func(map[string]any) bool {
+	return func(m map[string]any) bool { return m["t"] == "bound" && m["caller"] == caller && m["key"] == key }
 }
 
-// bindReady binds unit and waits for `bound`.
-func (h *harness) bindReady(k *ctl, unit, session, token, key string) {
+// bindReady binds caller and waits for `bound`.
+func (h *harness) bindReady(k *ctl, caller, session, token, key string) {
 	h.t.Helper()
-	k.bind(unit, session, token, key)
-	k.waitFor(isBound(unit, key))
+	k.bind(caller, session, token, key)
+	k.waitFor(isBound(caller, key))
 }
 
-func (h *harness) bindAltReady(k *ctl, unit, session, token, key, account string) map[string]any {
+func (h *harness) bindAltReady(k *ctl, caller, session, token, key, account string) map[string]any {
 	h.t.Helper()
-	k.bindAlt(unit, session, token, key, account)
-	return k.waitFor(isBound(unit, key))
+	k.bindAlt(caller, session, token, key, account)
+	return k.waitFor(isBound(caller, key))
 }
 
 // responsesReq is a /v1/responses request that passes alt's `require`.

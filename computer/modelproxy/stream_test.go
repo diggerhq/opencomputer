@@ -37,8 +37,8 @@ func TestStreamingChunkByChunk(t *testing.T) {
 	})
 	h := newHarness(t, up, harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tok", "fp1")
-	res, err := h.client(testUnit).Do(h.messagesReq(context.Background()))
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	res, err := h.client(testCaller).Do(h.messagesReq(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,16 +91,16 @@ func (g *gatedUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "event: message_stop\ndata: {}\n\n")
 }
 
-// TestSwapOnlyBetweenStreams: a new token for a unit with a stream in flight
-// waits; a request starting meanwhile still uses the old token; once the
-// unit is idle the new token applies, `bound` is sent, and the next request
-// uses it and is marked swapped.
-func TestSwapOnlyBetweenStreams(t *testing.T) {
+// TestRebindUnderStream: a new token for a caller with a stream in flight
+// applies at once. The stream ends on the token it started with; the next
+// request uses the new one and is marked swapped. A refuse bind does the
+// same: the stream ends, the next request is refused.
+func TestRebindUnderStream(t *testing.T) {
 	g := &gatedUpstream{started: make(chan string, 4), release: make(chan struct{})}
 	h := newHarness(t, g, harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tokA", "fpA")
-	c := h.client(testUnit)
+	h.bindReady(k, testCaller, "s1", "tokA", "fpA")
+	c := h.client(testCaller)
 
 	var wg sync.WaitGroup
 	stream := func() {
@@ -112,56 +112,56 @@ func TestSwapOnlyBetweenStreams(t *testing.T) {
 		}
 		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Errorf("stream: %d", res.StatusCode)
+		}
 	}
 	wg.Add(1)
 	go stream()
 	if b := <-g.started; b != "Bearer tokA" {
 		t.Fatalf("first stream %q", b)
 	}
-	k.bind(testUnit, "s1", "tokB", "fpB")
-	k.noMessage(isT("bound"), 200*time.Millisecond)
-
-	wg.Add(1)
-	go stream() // starts while the first is in flight: still tokA
-	if b := <-g.started; b != "Bearer tokA" {
-		t.Fatalf("concurrent stream %q, want the old token", b)
-	}
-	close(g.release)
-	wg.Wait()
-	m := k.waitFor(isT("bound"))
-	if m["key"] != "fpB" || m["sessionKey"] != "s1" {
+	k.bind(testCaller, "s1", "tokB", "fpB")
+	if m := k.waitFor(isT("bound")); m["key"] != "fpB" || m["sessionKey"] != "s1" {
 		t.Fatalf("bound %v", m)
 	}
-	if ev := k.waitFor(isEvent("model.binding")); ev["data"].(map[string]any)["action"] != "swap" || ev["data"].(map[string]any)["fingerprint"] != "fpB" {
+	if ev := k.waitFor(isEvent("model.binding")); evData(ev)["action"] != "swap" || evData(ev)["key"] != "fpB" {
 		t.Fatalf("binding event %v", ev)
 	}
 
-	g.release = make(chan struct{})
-	close(g.release)
 	wg.Add(1)
-	go stream()
+	go stream() // starts while the first is in flight: tokB already
 	if b := <-g.started; b != "Bearer tokB" {
-		t.Fatalf("after idle %q, want the new token", b)
+		t.Fatalf("concurrent stream %q, want the new token", b)
 	}
-	wg.Wait()
-	ev := k.waitFor(func(m map[string]any) bool {
-		return m["name"] == "model.request" && m["data"].(map[string]any)["fingerprint"] == "fpB"
-	})
-	if ev["data"].(map[string]any)["swapped"] != true {
+	k.send(map[string]any{"t": "bind", "caller": testCaller, "sessionKey": "s1", "mode": "refuse", "reason": "paused"})
+	k.waitFor(func(m map[string]any) bool { return m["t"] == "bound" && m["key"] == nil })
+	res, err := c.Do(h.messagesReq(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after a refuse bind under live streams: %d", res.StatusCode)
+	}
+	close(g.release)
+	wg.Wait() // both streams end 200
+	ev := k.waitFor(func(m map[string]any) bool { return m["name"] == "model.request" && evData(m)["key"] == "fpB" })
+	if evData(ev)["swapped"] != true {
 		t.Fatalf("event %v", ev)
 	}
 }
 
 // TestClientAbortMidStream: the client goes away; the event says cancelled
-// and the unit's in-flight count returns to zero (a later swap applies).
+// and the caller's in-flight count returns to zero.
 func TestClientAbortMidStream(t *testing.T) {
 	g := &gatedUpstream{started: make(chan string, 4), release: make(chan struct{})}
 	defer close(g.release)
 	h := newHarness(t, g, harnessOpts{})
 	k := h.dialControl()
-	h.bindReady(k, testUnit, "s1", "tokA", "fpA")
+	h.bindReady(k, testCaller, "s1", "tokA", "fpA")
 	ctx, cancel := context.WithCancel(context.Background())
-	res, err := h.client(testUnit).Do(h.messagesReq(ctx))
+	res, err := h.client(testCaller).Do(h.messagesReq(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,5 +172,5 @@ func TestClientAbortMidStream(t *testing.T) {
 	if ev["outcome"] != "cancelled" {
 		t.Fatalf("event %v", ev)
 	}
-	h.bindReady(k, testUnit, "s1", "tokB", "fpB") // applies at once: nothing in flight
+	h.bindReady(k, testCaller, "s1", "tokB", "fpB")
 }

@@ -5,7 +5,7 @@
 // (`previous_response_id`); over HTTP every request carries the whole
 // context again.
 //
-// The handshake is admitted like any request (proxy.go: placeholder, unit,
+// The handshake is admitted like any request (proxy.go: placeholder, caller,
 // caps, hold, lease, the route's `require`) and rewritten like one
 // (outbound.go), minus Sec-WebSocket-Extensions, so no compression is
 // negotiated and frames stay readable. Every refusal of an upgrade, the
@@ -23,14 +23,14 @@
 //     response.completed as an HTTP 200 and each `error` event's status and
 //     headers as an HTTP error's;
 //   - when to close: with no response in flight, once the lease is no longer
-//     current (a rebind, refuse or release waits for the unit to be idle,
-//     and the handshake carried the old variables), or after
+//     current (a rebind, refuse or release applies to new requests at
+//     once, and the handshake carried the old variables), or after
 //     -ws-idle-timeout, or once the proxy is draining (http.Server.Shutdown
 //     does not wait for a hijacked connection; shutdown waits for tunnels
 //     itself, up to -drain-timeout). The client reconnects on its next
 //     request and sends it whole.
 //
-// Invariants: a tunnel is one request for the unit's cap and the lease,
+// Invariants: a tunnel is one request for the caller's cap and the lease,
 // held for its whole life, and each response on it one for the profile's
 // concurrency cap (the handshake is refused at the cap; a response.create on
 // an open tunnel cannot be, so it counts past it); frames are never altered,
@@ -312,7 +312,7 @@ func (t *wsTunnel) summary(data map[string]any) {
 func (t *wsTunnel) responseEvent(r *wsResponse, now time.Time, outcome, errType string, status int) eventMsg {
 	e := newEvent(now, "model.request")
 	e.SessionKey = t.st.sessionKey
-	e.Provider = t.st.prof.name
+	e.Profile = t.st.prof.name
 	e.DurationMs = msPtr(now.Sub(r.start))
 	e.Outcome, e.ErrorType = outcome, errType
 	data := map[string]any{"route": t.st.rs.respName, "transport": "websocket", "stream": true}
@@ -320,7 +320,7 @@ func (t *wsTunnel) responseEvent(r *wsResponse, now time.Time, outcome, errType 
 		data["status"] = status
 	}
 	if t.st.key != "" {
-		data["fingerprint"] = t.st.key
+		data["key"] = t.st.key
 	}
 	if !r.firstEvent.IsZero() {
 		data["ttfb_ms"] = ms(r.firstEvent.Sub(r.start))

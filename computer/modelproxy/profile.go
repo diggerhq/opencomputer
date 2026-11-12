@@ -1,7 +1,7 @@
 // Profiles: everything the proxy knows about an upstream is configuration.
 // A profile names an upstream, the routes a bound runner may call on it, the
 // headers that carry the binding's variables, and what to report back to the
-// host. The files are JSON objects of name → profile in -profiles
+// binder. The files are JSON objects of name → profile in -profiles
 // (/etc/oc-modelproxy/profiles.d/*.json), read once at start.
 //
 //	{
@@ -16,7 +16,7 @@
 //	    "remove": [ "X-Forwarded-*", "Cookie" ],
 //	    "report": [ "x-ratelimit-*", "retry-after" ],
 //	    "concurrency": { "key": "{account}", "limit": 8 },
-//	    "client": { "claude": "ANTHROPIC_AUTH_TOKEN" }
+//	    "harness": { "claude": { "tokenEnv": "ANTHROPIC_AUTH_TOKEN" } }
 //	  }
 //	}
 //
@@ -24,21 +24,24 @@
 //   - upstream: an https base URL; its path, if any, prefixes every route's.
 //   - routes: the allowlist, `METHOD path` or `WS path` (a WebSocket). Each
 //     may set `to` (the upstream path), `name` (its telemetry name), `format`
-//     (messages | responses), `require` (header globs that must match, else
-//     403), and `set` / `default` headers for that route.
+//     (`responses`: its stream is read for telemetry, responses.go),
+//     `require` (header globs that must match, else 403), and `set` /
+//     `default` headers for that route.
 //   - set / remove: request headers. Values may use {var} from the binding.
-//   - report: response header globs sent to the host with each `observed`.
-//   - concurrency: a cap across units whose bindings expand `key` alike.
+//   - report: response header globs sent to the binder with each `observed`.
+//   - concurrency: a cap across callers whose bindings expand `key` alike.
 //   - websocket: false refuses WS routes with 426.
-//   - client, runner: passed to the host in `hello`, not read here.
-//   - errors: texts replacing the proxy's own (routes.go).
+//   - harness: per harness name, an object passed to the binder in `hello`
+//     and not read here.
+//   - errors: texts replacing the proxy's own (refuse.go).
 //
 // Invariants:
 //   - A profile's requests only ever go to its own upstream, through its own
 //     transport and ReverseProxy.
 //   - Every variable a profile uses must be in a binding to it (bindings.go).
 //   - A file with an unknown field, or a profile that fails a check, stops
-//     the proxy at start: nothing is half-loaded.
+//     the proxy at start: nothing is half-loaded. `-check` runs the same
+//     load and nothing else.
 package main
 
 import (
@@ -64,8 +67,7 @@ type profileJSON struct {
 	Report      []string             `json:"report"`
 	Concurrency *concurrencyJSON     `json:"concurrency"`
 	WebSocket   *bool                `json:"websocket"`
-	Client      map[string]string    `json:"client"`
-	Runner      map[string]any       `json:"runner"`
+	Harness     map[string]any       `json:"harness"`
 	Errors      map[string]string    `json:"errors"`
 }
 
@@ -94,9 +96,8 @@ type profile struct {
 	report  []string
 	concKey *template
 	ws      bool
-	vars    []string // every variable the profile uses, sorted
-	client  map[string]string
-	runner  map[string]any
+	vars    []string       // every variable the profile uses, sorted
+	harness map[string]any // as written; never read here
 	text    texts
 
 	up     *upstream
@@ -130,14 +131,6 @@ type profiles struct {
 }
 
 func (ps *profiles) get(name string) *profile { return ps.byName[name] }
-
-func (ps *profiles) names() []string {
-	out := make([]string, len(ps.sorted))
-	for i, p := range ps.sorted {
-		out[i] = p.name
-	}
-	return out
-}
 
 // loadProfiles reads every *.json in dir. A name defined twice is an error.
 func loadProfiles(dir string) (*profiles, error) {
@@ -203,7 +196,15 @@ func compileProfile(name string, j profileJSON) (*profile, error) {
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	p := &profile{name: name, url: u, routes: map[string]*routeSpec{}, ws: j.WebSocket == nil || *j.WebSocket,
-		client: j.Client, runner: j.Runner, text: defaultTexts}
+		harness: j.Harness, text: defaultTexts}
+	if p.harness == nil {
+		p.harness = map[string]any{}
+	}
+	for h, v := range p.harness {
+		if _, ok := v.(map[string]any); !ok || !isName(h, "-_") {
+			return nil, fmt.Errorf("harness: %q must be a name with an object", h)
+		}
+	}
 	used := map[string]bool{}
 	if p.set, err = headerTemplates(j.Set, used); err != nil {
 		return nil, fmt.Errorf("set: %w", err)
@@ -245,6 +246,7 @@ func compileProfile(name string, j profileJSON) (*profile, error) {
 	if err := p.text.override(j.Errors); err != nil {
 		return nil, err
 	}
+	p.vars = make([]string, 0, len(used))
 	for v := range used {
 		p.vars = append(p.vars, v)
 	}
@@ -275,17 +277,11 @@ func compileRoute(key string, j routeJSON, used map[string]bool) (*routeSpec, er
 	if !isName(rs.name, "_") {
 		return nil, fmt.Errorf("name must be letters, digits or _")
 	}
-	switch j.Format {
-	case "responses":
+	switch {
+	case j.Format == "responses", j.Format == "" && rs.ws: // a tunnel reads Responses events (websocket.go)
 		rs.responses = true
-	case "messages":
-	case "":
-		rs.responses = strings.HasSuffix(path, "/responses")
-	default:
-		return nil, fmt.Errorf("format must be messages or responses")
-	}
-	if rs.ws {
-		rs.responses = true // the tunnel reads Responses events (websocket.go)
+	case j.Format != "":
+		return nil, fmt.Errorf("format: the only one is responses")
 	}
 	for name, glob := range j.Require {
 		if !validHeaderName(name) || glob == "" {
@@ -337,169 +333,6 @@ func (p *profile) route(r *http.Request, upgrade bool) *routeSpec {
 func (rs *routeSpec) requireOK(h http.Header) bool {
 	for _, req := range rs.require {
 		if !headerMatches(h[req.name], req.value.parts[0]) {
-			return false
-		}
-	}
-	return true
-}
-
-func headerMatches(values []string, glob string) bool {
-	for _, v := range values {
-		if globMatch(glob, strings.TrimSpace(v)) {
-			return true
-		}
-		for item := range strings.SplitSeq(v, ",") {
-			item, _, _ = strings.Cut(item, ";")
-			if globMatch(glob, strings.TrimSpace(item)) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// globMatch: pattern (lower case, `*` matches any run) against s, ASCII
-// case-insensitive.
-func globMatch(pattern, s string) bool {
-	for {
-		star := strings.IndexByte(pattern, '*')
-		if star < 0 {
-			return strings.EqualFold(pattern, s)
-		}
-		if len(s) < star || !strings.EqualFold(pattern[:star], s[:star]) {
-			return false
-		}
-		pattern, s = pattern[star+1:], s[star:]
-		if pattern == "" {
-			return true
-		}
-		next := strings.IndexByte(pattern, '*')
-		if next < 0 {
-			return len(s) >= len(pattern) && strings.EqualFold(pattern, s[len(s)-len(pattern):])
-		}
-		i := indexFold(s, pattern[:next])
-		if i < 0 {
-			return false
-		}
-		s = s[i:]
-	}
-}
-
-func indexFold(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if strings.EqualFold(s[i:i+len(sub)], sub) {
-			return i
-		}
-	}
-	return -1
-}
-
-// matchesAny: one of the lower-case header-name globs matches name.
-func matchesAny(globs []string, name string) bool {
-	for _, g := range globs {
-		if globMatch(g, name) {
-			return true
-		}
-	}
-	return false
-}
-
-func headerGlobs(in []string) ([]string, error) {
-	out := make([]string, 0, len(in))
-	for _, g := range in {
-		if !validHeaderName(strings.ReplaceAll(g, "*", "x")) {
-			return nil, fmt.Errorf("bad header glob %q", g)
-		}
-		out = append(out, strings.ToLower(g))
-	}
-	return out, nil
-}
-
-func headerTemplates(in map[string]string, used map[string]bool) ([]headerValue, error) {
-	out := make([]headerValue, 0, len(in))
-	for name, v := range in {
-		if !validHeaderName(name) {
-			return nil, fmt.Errorf("bad header %q", name)
-		}
-		t, err := parseTemplate(v, used)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		out = append(out, headerValue{name: textproto.CanonicalMIMEHeaderKey(name), value: t})
-	}
-	sortHeaders(out)
-	return out, nil
-}
-
-func sortHeaders(h []headerValue) {
-	slices.SortFunc(h, func(a, b headerValue) int { return strings.Compare(a.name, b.name) })
-}
-
-// template is a header value with {variables}: literal parts alternate with
-// variable names, starting with a literal.
-type template struct {
-	parts []string // parts[0], vars[0], parts[1], vars[1], ..., parts[n]
-	vars  []string
-}
-
-func parseTemplate(s string, used map[string]bool) (*template, error) {
-	if !validHeaderValue(s) {
-		return nil, fmt.Errorf("not a header value")
-	}
-	t := &template{}
-	for {
-		open := strings.IndexByte(s, '{')
-		if open < 0 {
-			if strings.IndexByte(s, '}') >= 0 {
-				return nil, fmt.Errorf("unmatched }")
-			}
-			t.parts = append(t.parts, s)
-			return t, nil
-		}
-		end := strings.IndexByte(s, '}')
-		if end < open || !isName(s[open+1:end], "_") {
-			return nil, fmt.Errorf("write variables as {name}")
-		}
-		t.parts = append(t.parts, s[:open])
-		t.vars = append(t.vars, s[open+1:end])
-		used[s[open+1:end]] = true
-		s = s[end+1:]
-	}
-}
-
-func (t *template) expand(vars map[string]string) string {
-	if len(t.vars) == 0 {
-		return t.parts[0]
-	}
-	var b strings.Builder
-	for i, v := range t.vars {
-		b.WriteString(t.parts[i])
-		b.WriteString(vars[v])
-	}
-	b.WriteString(t.parts[len(t.vars)])
-	return b.String()
-}
-
-// isName: non-empty, ASCII letters and digits plus the bytes in extra.
-func isName(s, extra string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte(extra, c) >= 0) {
-			return false
-		}
-	}
-	return true
-}
-
-func validHeaderName(s string) bool { return isName(s, "-_") }
-
-// validHeaderValue: printable, so it can neither end a header nor start one.
-func validHeaderValue(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c < 0x20 && c != '\t' || c == 0x7f {
 			return false
 		}
 	}

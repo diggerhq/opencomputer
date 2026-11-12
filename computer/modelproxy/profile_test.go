@@ -14,13 +14,15 @@ func TestShippedProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(ps.names(), " "); got != "anthropic-key claude-oauth openai-key openrouter" {
-		t.Fatalf("profiles %q", got)
-	}
+	var names []string
 	for _, p := range ps.sorted {
-		if len(p.vars) != 1 || p.vars[0] != "token" || p.perKey != nil || len(p.client) != 1 {
-			t.Errorf("%s: vars %v client %v", p.name, p.vars, p.client)
+		names = append(names, p.name)
+		if len(p.vars) != 1 || p.vars[0] != "token" || p.perKey != nil || len(p.harness) != 1 {
+			t.Errorf("%s: vars %v harness %v", p.name, p.vars, p.harness)
 		}
+	}
+	if got := strings.Join(names, " "); got != "anthropic-key claude-oauth openai-key openrouter" {
+		t.Fatalf("profiles %q", got)
 	}
 	or := ps.get("openrouter")
 	if or.url.Host != "openrouter.ai" || or.url.Path != "/api" {
@@ -100,6 +102,7 @@ func TestCompileProfileErrors(t *testing.T) {
 		{"concurrency without a limit", "limit must be positive", base(func(p *profileJSON) { p.Concurrency = &concurrencyJSON{Key: "{a}"} })},
 		{"concurrency on a constant", "key must name a {variable}", base(func(p *profileJSON) { p.Concurrency = &concurrencyJSON{Key: "all", Limit: 2} })},
 		{"an unknown error text", `errors: unknown key "nope"`, base(func(p *profileJSON) { p.Errors = map[string]string{"nope": "x"} })},
+		{"a harness that is no object", "harness:", base(func(p *profileJSON) { p.Harness = map[string]any{"claude": "x"} })},
 		{"a route without a method", "METHOD /path", route("/v1/messages", routeJSON{})},
 		{"a relative route", "METHOD /path", route("POST v1/messages", routeJSON{})},
 		{"a route with a query", "METHOD /path", route("POST /v1/messages?x=1", routeJSON{})},
@@ -107,7 +110,7 @@ func TestCompileProfileErrors(t *testing.T) {
 		{"a relative to", "`to` must be a path", route("POST /a", routeJSON{To: "b"})},
 		{"a to with a query", "`to` must be a path", route("POST /a", routeJSON{To: "/b?x=1"})},
 		{"a bad name", "name must be", route("POST /a", routeJSON{Name: "a-b"})},
-		{"a bad format", "format must be", route("POST /a", routeJSON{Format: "chat"})},
+		{"a bad format", "format: the only one is responses", route("POST /a", routeJSON{Format: "chat"})},
 		{"an empty require", "require: bad header", route("POST /a", routeJSON{Require: map[string]string{"X-A": ""}})},
 		{"a bad default", "default: bad header", route("POST /a", routeJSON{Default: map[string]string{"": "v"}})},
 	} {

@@ -1,1 +1,1 @@
-{"t":"bind","unit":"sp-runner-abc123.service","sessionKey":"T0/C0/1700000000.000100","profile":"openai-key","vars":{"token":"sk-example"},"key":"k1"}
+{"t":"bind","id":"b1","caller":"abc123","sessionKey":"T0/C0/1700000000.000100","profile":"openai-key","vars":{"token":"sk-example"},"key":"k1"}

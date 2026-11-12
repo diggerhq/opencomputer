@@ -1,7 +1,7 @@
 // Concurrency caps, both counted between admission and the request's end:
-//   - per runner unit (-max-inflight-per-unit, held requests included): one
+//   - per caller (-max-inflight-per-caller, held requests included): one
 //     session cannot queue enough hanging requests to starve the others;
-//   - per profile `concurrency` key (profile.go): every unit whose binding
+//   - per profile `concurrency` key (profile.go): every caller whose binding
 //     expands the key alike shares it, so one upstream credential is never
 //     driven harder than its limit however many sessions use it. A
 //     WebSocket counts each response it carries, not the connection

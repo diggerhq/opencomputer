@@ -1,14 +1,18 @@
-// The control socket: the host's one connection to the proxy. JSON lines both
-// ways (messages.go). The proxy speaks first (`hello` with its profiles and
-// the persisted bindings), the host re-sends every live bind and then
+// The control socket: the binder's one connection to the proxy. JSON lines
+// both ways (frames.go). The proxy speaks first (`hello` with its profiles
+// and the bindings it holds), the binder re-sends every live bind and then
 // `synced`.
 //
 // Invariants:
 //   - At most one control connection is live; a new one replaces the old.
-//   - Sending never blocks a caller: messages go through a bounded queue and
-//     are dropped (counted) when it is full or no host is connected.
+//   - Sending never blocks: messages go through a bounded queue and are
+//     dropped (counted, reported in model.pool) when it is full or no binder
+//     is connected.
 //     Lifecycle events from before the first connection are kept (a few) and
 //     sent after `hello`.
+//   - A failed accept is retried with a backoff; only closing the listener
+//     ends Serve.
+//   - A line that carries variables (`bind`, `request`) is never logged.
 package main
 
 import (
@@ -27,14 +31,16 @@ const (
 	maxPending     = 32
 	maxControlLine = 1 << 20
 	writeTimeout   = 5 * time.Second
-	requestTimeout = 15 * time.Second // a host `request` (request.go)
-	maxRequests    = 16               // host requests in flight; past it: error "busy"
+	requestTimeout = 15 * time.Second // a binder's `request` (request.go)
+	maxRequests    = 16               // such requests in flight; past it: error "busy"
+	acceptBackoff  = time.Second      // the longest wait between failed accepts
 )
 
 type Control struct {
-	version  string
-	bindings *Bindings
-	profiles *profiles
+	version     string
+	placeholder string
+	bindings    *Bindings
+	profiles    *profiles
 
 	mu      sync.Mutex
 	cur     *ctrlConn
@@ -61,32 +67,21 @@ func (cc *ctrlConn) close() {
 	})
 }
 
-func NewControl(version string, ps *profiles) *Control {
-	return &Control{version: version, profiles: ps, now: time.Now, reqs: make(chan struct{}, maxRequests)}
+func NewControl(version, placeholder string, ps *profiles) *Control {
+	return &Control{version: version, placeholder: placeholder, profiles: ps, now: time.Now, reqs: make(chan struct{}, maxRequests)}
 }
 
-// hello is the first line of a connection (messages.go).
-func (c *Control) hello(snap []persisted) helloMsg {
-	h := helloMsg{T: "hello", Version: c.version, Profiles: map[string]helloProfile{}, Providers: c.profiles.names(),
-		Bindings: make([]helloBinding, 0, len(snap))}
+// hello is the first line of a connection (frames.go).
+func (c *Control) hello(bindings []bindingInfo) helloMsg {
+	h := helloMsg{T: "hello", Version: c.version, Protocol: controlProtocol, Placeholder: c.placeholder,
+		Profiles: make([]helloProfile, 0, len(c.profiles.sorted)), Bindings: bindings}
 	for _, p := range c.profiles.sorted {
-		h.Profiles[p.name] = helloProfile{Client: p.client, Runner: p.runner}
-	}
-	def := c.bindings.defaultProfile
-	for _, p := range snap {
-		b := helloBinding{Unit: p.Unit, SessionKey: p.SessionKey, Profile: p.Profile, Key: p.Key}
-		if def != "" {
-			b.Fingerprint = p.Key
-			if p.Profile != def {
-				b.Provider = p.Profile
-			}
-		}
-		h.Bindings = append(h.Bindings, b)
+		h.Profiles = append(h.Profiles, helloProfile{Name: p.name, Vars: p.vars, Harness: p.harness})
 	}
 	return h
 }
 
-// send queues v for the host; dropped when no host or the queue is full.
+// send queues v for the binder; dropped when there is none or the queue is full.
 func (c *Control) send(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -107,8 +102,8 @@ func (c *Control) send(v any) {
 	}
 }
 
-// reply answers a host `request` on the connection that asked: a host that
-// has reconnected since never gets an answer to an id it did not send.
+// reply answers a `request` on the connection that asked: a binder that has
+// reconnected since never gets an answer to an id it did not send.
 func (c *Control) reply(cc *ctrlConn, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -121,7 +116,7 @@ func (c *Control) reply(cc *ctrlConn, v any) {
 	}
 }
 
-// sendKept is send, but kept for the first host when none is connected yet.
+// sendKept is send, but kept for the first binder when none is connected yet.
 func (c *Control) sendKept(v any) {
 	c.mu.Lock()
 	if c.cur == nil && !c.closed {
@@ -138,23 +133,24 @@ func (c *Control) sendKept(v any) {
 	c.send(v)
 }
 
-// Dropped is how many messages never reached a host.
+// Dropped is how many messages never reached a binder.
 func (c *Control) Dropped() int64 { return c.dropped.Load() }
 
 // Serve accepts control connections until l is closed.
-func (c *Control) Serve(l net.Listener) error {
+func (c *Control) Serve(l net.Listener) {
+	var wait time.Duration
 	for {
 		conn, err := l.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				continue
-			}
-			return err
+		if errors.Is(err, net.ErrClosed) {
+			return
 		}
+		if err != nil {
+			wait = min(max(2*wait, 5*time.Millisecond), acceptBackoff)
+			logWarn("control accept failed; retrying", "error", err.Error(), "wait_ms", ms(wait))
+			time.Sleep(wait)
+			continue
+		}
+		wait = 0
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
@@ -165,7 +161,7 @@ func (c *Control) Serve(l net.Listener) error {
 
 func (c *Control) handle(conn net.Conn) {
 	cc := &ctrlConn{c: conn, out: make(chan []byte, controlQueue), done: make(chan struct{}), helloAt: c.now()}
-	snap := c.bindings.Snapshot() // before c.mu: Bindings sends under its own lock
+	snap := c.bindings.Snapshot()
 	hb, _ := json.Marshal(c.hello(snap))
 	cc.out <- append(hb, '\n')
 
@@ -235,16 +231,18 @@ func (c *Control) reader(cc *ctrlConn) {
 		switch head.T {
 		case "bind":
 			var m bindMsg
-			if json.Unmarshal(line, &m) == nil {
-				c.bindings.Bind(m)
+			if json.Unmarshal(line, &m) != nil {
+				c.reply(cc, refusedMsg{T: "refused", Code: refuseBadFrame, Message: "bind is not a JSON object of the documented shape"})
+				continue
 			}
+			c.bindings.Bind(m)
 		case "release":
 			var m releaseMsg
 			if json.Unmarshal(line, &m) == nil {
-				c.bindings.Release(m.Unit)
+				c.bindings.Release(m.Caller)
 			}
 		case "synced":
-			waiting := c.bindings.Waiting()
+			waiting := c.bindings.Synced()
 			logInfo("synced", "bindings", c.bindings.Len(), "waiting", waiting, "since_hello_ms", ms(c.now().Sub(cc.helloAt)))
 		case "request":
 			var m requestMsg
@@ -254,7 +252,7 @@ func (c *Control) reader(cc *ctrlConn) {
 			select {
 			case c.reqs <- struct{}{}:
 			default:
-				c.reply(cc, responseMsg{T: "response", ID: m.ID, Error: "busy"})
+				c.reply(cc, responseMsg{T: "response", ID: m.ID, Error: responseBusy})
 				continue
 			}
 			c.wg.Add(1)
@@ -271,7 +269,7 @@ func (c *Control) reader(cc *ctrlConn) {
 	}
 }
 
-// Close drops the host's connection (so it reconnects to the next instance at
+// Close drops the binder's connection (so it reconnects to the next instance at
 // once) and refuses new ones.
 func (c *Control) Close() {
 	c.mu.Lock()
