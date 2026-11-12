@@ -27,6 +27,9 @@
 //   there: never under a start, which mounts it. Nothing else the sweep
 //   removes can be a starting thread's: a start writes its record first, and
 //   what has a record is not removed here.
+// - An id whose record file is there but did not load (records.ts `unread`)
+//   has a record, for all of the above: nothing of it is removed, at the
+//   start or by a sweep. Running, it is stopped: nobody can say whose it is.
 // - Records are never deleted here (prune.ts does, last).
 
 import type net from 'node:net';
@@ -50,7 +53,7 @@ const ID = /^[0-9a-f]{16}$/;
 export interface SweepDeps {
   as: AsRunner;
   tm: Telemetry;
-  records: Pick<Records, 'all' | 'get'>;
+  records: Pick<Records, 'all' | 'get' | 'unread'>;
   /** The threads' turns, shared with the starts. */
   locks: ThreadLocks;
   containers: Pick<Containers, 'inventory' | 'stop' | 'remove'>;
@@ -94,6 +97,8 @@ export function sandboxSweep(d: SweepDeps) {
   const now = d.now ?? Date.now;
   const age = d.ageMs ?? SWEEP_AGE_MS;
   let health: SandboxHealth | undefined;
+  /** True when the id has a record, loaded or not. */
+  const known = (id: string) => !!d.records.get(id) || d.records.unread().includes(id);
 
   /** Delete a run directory: what the session wrote goes inside Podman's user namespace, the rest is the host's. Never rejects; true when it is gone. */
   async function deleteRun(id: string): Promise<boolean> {
@@ -123,6 +128,11 @@ export function sandboxSweep(d: SweepDeps) {
     }
     await Promise.all(inventory.containers.map(async ({ id, state }) => {
       const record = d.records.get(id);
+      if (!record && known(id)) {
+        log.warn(`sandbox ${id}: its record did not load; kept${state === 'running' ? ', stopped' : ''}`);
+        if (state === 'running') await c.stop(id).catch((x) => log.warn(`sandbox ${id} not stopped: ${msg(x)}`));
+        return;
+      }
       if (!record) return void (await c.remove(id), log.info(`sandbox ${id}: a container without a record, removed`));
       if (state !== 'running') return; // the next message resumes it (start.ts)
       const run = d.runRoot(id);
@@ -151,7 +161,7 @@ export function sandboxSweep(d: SweepDeps) {
     const out = await as.run([SYSTEMCTL, '--user', 'list-units', '--state=failed', '--plain', '--no-legend', 'sp-runner-*.service'], { timeoutMs: TIMEOUTS.unit });
     const units = out.split('\n').map((l) => l.trim().split(/\s+/)[0]).filter((u) => {
       const id = /^sp-runner-([0-9a-f]{16})\.service$/.exec(u)?.[1];
-      return !!id && (!!d.records.get(id) || mine.has(id));
+      return !!id && (known(id) || mine.has(id));
     });
     if (units.length) await as.run([SYSTEMCTL, '--user', 'reset-failed', ...units], { timeoutMs: TIMEOUTS.unit });
     return units.length;
@@ -202,7 +212,7 @@ export function sandboxSweep(d: SweepDeps) {
     const swept: Swept = { containers: 0, volumes: 0, run_dirs: 0, units: 0 };
     try {
       const old = (at: number) => now() - at >= age;
-      const idle = (id: string) => !d.records.get(id) && !d.running(id);
+      const idle = (id: string) => !known(id) && !d.running(id);
       const has = new Set([...inventory.containers.map((x) => x.id), ...inventory.foreign]);
       const homes = new Set(inventory.volumes.map((v) => v.id));
       for (const x of inventory.containers) {
@@ -220,7 +230,7 @@ export function sandboxSweep(d: SweepDeps) {
       }
       const dirs = runDirs();
       for (const id of dirs) {
-        if (has.has(id) || homes.has(id) || d.running(id)) continue;
+        if (has.has(id) || homes.has(id) || d.running(id) || d.records.unread().includes(id)) continue;
         const unused = () => {
           const st = lstatSync(path.join(d.runDir, id), { throwIfNoEntry: false });
           const used = Date.parse(d.records.get(id)?.usedAt ?? '') || 0;

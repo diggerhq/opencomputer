@@ -1,5 +1,5 @@
 import type net from 'node:net';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,12 +19,14 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 
 function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory' | 'mount' | 'prepare', Error>>; stale?: boolean;
-  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean } = {}) {
+  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean } = {}) {
   const log: string[] = [];
   const ups: RunnerSpec[] = [];
   const sent: TelemetryEvent[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(...b.events) });
-  const records = sandboxRecords(mkdtempSync(path.join(tmpdir(), 'records-')));
+  const dir = mkdtempSync(path.join(tmpdir(), 'records-'));
+  if (o.unread) writeFileSync(path.join(dir, `${o.unread}.json`), '{"id":');
+  const records = sandboxRecords(dir);
   const locks = threadLocks();
   const step = async <T>(name: string, v: T): Promise<T> => {
     log.push(name);
@@ -55,6 +57,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     workspaces: () => !!o.definition,
     workspace: {
       repos: (r) => (r.repos ? Object.keys(r.repos) : (o.clones ?? [])),
+      there: () => !!o.there,
       dirs: async (r, names) => void log.push(`dirs ${r.key} ${names.join(',')}`),
       binds: (r, names, journal) => [{ src: `ws:${r.key}`, dst: '/workspace' }, ...names.map((n) => ({ src: n, dst: `/clones/${n}` })), ...(journal ? [{ src: journal, dst: journal }] : [])],
       mount: (id, pid, person, b) => step(`mount ${id} ${pid} ${person} ${b.map((x) => x.dst).join(' ')}`, undefined),
@@ -134,6 +137,16 @@ describe('sandbox start', () => {
     const s = await t.start({ ...spec, ...sent }, {});
     return { t, s, id };
   };
+
+  it('a thread with files but no record, while a record file did not load, is not started: nothing is made over what may be its', async () => {
+    const t = rig({ unread: 'abababababababab', there: true });
+    await expect(t.start(spec, {})).rejects.toThrow("this thread has files but no sandbox record, and the record abababababababab.json did not load; nothing was started. Repair that file in the host's state/sandboxes, or remove it for a new sandbox");
+    expect(t.log).toEqual([]);
+    expect(t.records.all()).toEqual([]);
+    // A thread with no files is new whatever did not load, and so is every thread once all records load.
+    expect((await rig({ unread: 'abababababababab' }).start(spec, {})).resumed).toBe(false);
+    expect((await rig({ there: true }).start(spec, {})).resumed).toBe(false);
+  });
 
   it('a resume keeps the transcript only when the home was there before this start', async () => {
     const id = 'aaaaaaaaaaaaaaaa';

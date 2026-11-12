@@ -11,6 +11,10 @@
 //   the record until it is connected or failed: whatever removes a thread's
 //   things (prune.ts) waits for it, and a start that waited for a prune finds
 //   no record and starts a new thread, cold, with its workspace prepared.
+// - A thread without a record that has files, while some record's file did
+//   not load (records.ts `unread`), may be that record's: it is not started,
+//   and the error names the files. A new sandbox over it would prepare a
+//   workspace that has work in it and leave its home behind.
 // - The runner's view of its workspace is `/workspace`, in the spec it boots
 //   from; the host path never goes in.
 // - A start that fails leaves no container running and no token socket open;
@@ -70,7 +74,7 @@ export interface SandboxStartDeps {
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
   /** The thread's files: directories, mounts, worktrees (workspace.ts). */
-  workspace: Pick<SandboxWorkspace, 'repos' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
+  workspace: Pick<SandboxWorkspace, 'repos' | 'there' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
   /** True when a workspace definition is in effect (`workspacesEnabled`). */
   workspaces(): boolean;
   /** Connect to a runner's socket; undefined when nothing answers. */
@@ -117,6 +121,9 @@ export function sandboxStarts(d: SandboxStartDeps) {
   async function startNow(spec: SessionSpec, f: Dimensions): Promise<Started> {
     const now = new Date().toISOString();
     const found = d.records.find(spec.owner.dir, spec.key);
+    const unread = found ? [] : d.records.unread();
+    if (unread.length && d.workspace.there(spec.owner.dir, spec.key))
+      throw new Error(`this thread has files but no sandbox record, and the record ${unread.map((id) => `${id}.json`).join(', ')} did not load; nothing was started. Repair that file in the host's state/sandboxes, or remove it for a new sandbox`);
     const { sdkSessionId, forkPath: _fork, ...fresh } = spec;
     let record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
     d.records.write(record);

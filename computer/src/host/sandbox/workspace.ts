@@ -22,7 +22,7 @@
 //   a thread's clones held for the one run that adds its worktrees.
 // - A repository that cannot be added is left out with a warning, not fatal.
 
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 import { log } from '../../log.js';
 import type { CheckoutResult, Person } from '../../protocol.js';
 import {
@@ -98,6 +98,15 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
     const names = r.repos ? Object.keys(r.repos) : workspacesEnabled() ? loadDefinition().repos.filter((x) => !x.unpublished).map((x) => x.name) : [];
     return names.filter((name) => cloned(r.person, name));
   }
+
+  /** True when the thread has a workspace on this host, whatever its record says. */
+  const there = (person: string, key: string) => {
+    try {
+      return !!lstatSync(m.workspace({ person, key }), { throwIfNoEntry: false });
+    } catch {
+      return true; // not to be looked at: not known to be absent
+    }
+  };
 
   /**
    * The thread's workspace, the person's clones (which every helper container mounts, also one that only reads the
@@ -233,5 +242,5 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
     if (r) d.records.write({ ...r, usedAt: new Date().toISOString() });
   }
 
-  return { repos, dirs, binds, mount, prepare, checkout, touch };
+  return { repos, there, dirs, binds, mount, prepare, checkout, touch };
 }

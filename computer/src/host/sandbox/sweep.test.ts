@@ -18,7 +18,7 @@ const OLD = NOW - 11 * 60_000;
 const record = (id: string, usedAt = OLD): SandboxRecord => ({ id, person: 'p', key: `C1:${id}`, createdAt: '', usedAt: new Date(usedAt).toISOString() });
 const box = (id: string, state = 'running', createdAt = OLD): ContainerInfo => ({ id, state, abi: '1', image: 'img', createdAt });
 
-function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecord[]; running?: string[]; sockets?: string[]; adopt?: (r: SandboxRecord) => Promise<unknown>;
+function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecord[]; running?: string[]; sockets?: string[]; adopt?: (r: SandboxRecord) => Promise<unknown>; unread?: string[];
   answer?: (argv: string[]) => string | Error; remove?: boolean; over?: Partial<SweepDeps> } = {}) {
   const runDir = mkdtempSync(path.join(tmpdir(), 'sweep-'));
   const log: string[] = [];
@@ -34,7 +34,7 @@ function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecor
   const s = sandboxSweep({
     as: { run, podman: (args) => run(['podman', ...args]) },
     tm: { emit: (name: string, f: { data: unknown }) => void events.push({ name, data: f.data }) } as never,
-    records: { all: () => [...records.values()], get: (id) => records.get(id) },
+    records: { all: () => [...records.values()], get: (id) => records.get(id), unread: () => o.unread ?? [] },
     locks: threadLocks(),
     containers: {
       inventory: async () => {
@@ -101,6 +101,17 @@ describe('sweep', () => {
     expect(existsSync(t.runRoot(A))).toBe(true);
   });
 
+  it('an id whose record file did not load has a record: its container, its home and its run directory stay, at the start and at every sweep', async () => {
+    const t = rig({ inventory: { containers: [box(A), box(B, 'exited')], volumes: [{ id: A, createdAt: OLD }, { id: B, createdAt: OLD }, { id: C, createdAt: OLD }] }, unread: [A, B, C] });
+    for (const id of [A, B, C]) t.dir(id);
+    expect((await t.s.reconcile()).size).toBe(0);
+    expect(t.log).toEqual(['inventory', `stop ${A}`]); // running with nobody who could take it back: stopped, as any other
+    expect(await t.s.sweep()).toMatchObject({ containers: 0, volumes: 0, run_dirs: 0 });
+    expect(t.ran('remove')).toEqual([]);
+    expect(t.ran('volume rm')).toEqual([]);
+    for (const id of [A, B, C]) expect(existsSync(t.runRoot(id))).toBe(true);
+  });
+
   it('removes an old container with no record and no runner; never one with a record, a runner, or younger than 10 minutes', async () => {
     const D = 'dddddddddddddddd';
     const t = rig({ inventory: { containers: [box(A), box(B), box(C), box(D, 'exited', NOW - 9 * 60_000)] }, records: [record(B)], running: [C] });
@@ -133,7 +144,7 @@ describe('sweep', () => {
   it('a run directory of a thread that is starting is left: the sweep waits for the thread\'s turn, then looks again', async () => {
     const locks = threadLocks();
     let rec = record(A);
-    const t = rig({ over: { locks, records: { all: () => [rec], get: () => rec } } });
+    const t = rig({ over: { locks, records: { all: () => [rec], get: () => rec, unread: () => [] } } });
     t.dir(A);
     let end!: () => void;
     // A start: it has the turn, writes its record, and makes its container on this directory.
