@@ -1,10 +1,3 @@
-<!--
-README outline for the @computer OSS launch. Headings and a one-line goal per
-section only; copy to be written once the shape is agreed.
-Scope: @computer only. Serverless Agents and the sandbox platform get at most a
-link in "Docs".
--->
-
 <p align="center">
   <img src="docs/images/readme-banner.svg" alt="OpenComputer" width="100%">
 </p>
@@ -14,7 +7,7 @@ link in "Docs".
 </p>
 
 <p align="center">
-  <a href="#">Cloud</a> | <a href="#">Self-hosting</a> | <a href="#">Docs</a> | <a href="#">Website</a> | <a href="#">Benchmark</a> | <a href="https://join.slack.com/t/opencomputercommunity/shared_invite/zt-4gtztz4io-~LZMreyHyTryoEVhs2hUPA">Community</a> | <a href="#">X</a>
+  <a href="https://app.opencomputer.dev">Cloud</a> | <a href="https://docs.opencomputer.dev">Self-hosting</a> | <a href="https://docs.opencomputer.dev">Docs</a> | <a href="https://opencomputer.dev">Website</a> | <a href="https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/">Benchmark</a> | <a href="https://join.slack.com/t/opencomputercommunity/shared_invite/zt-4gtztz4io-~LZMreyHyTryoEVhs2hUPA">Community</a> | <a href="https://x.com/opencomputerHQ">X</a>
 </p>
 
 <p align="center">
@@ -26,11 +19,9 @@ link in "Docs".
   <a href="https://app.opencomputer.dev"><img alt="Try OpenComputer in Slack" src="https://img.shields.io/badge/Try_OpenComputer_in_Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white"></a>
 </p>
 
-TODO: replace the dummy `#` links. Benchmark → https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/; X still to decide; Self-hosting once the docs in #1024 have content.
-
 ## Introduction
 
-OpenComputer is the open source, self hostable alternative to Devin. Mention `@computer` in a Slack thread with a task, it works on its own computer, you & your team can watch and steer it as it goes, and the result lands as a pull request.
+OpenComputer is the open source, self hostable alternative to Devin. Mention `@Computer` in a Slack thread with a task, it works on its own computer, you & your team can watch and steer it as it goes, and the result lands as a pull request.
 
 It is open source from the compute layer up, so you can run all of it in your own cloud account, or start on OpenComputer Cloud in two minutes.
 
@@ -45,7 +36,7 @@ We built it to feel as fast as Claude Code on your laptop: in our benchmark it o
 ## As fast as local
 
 <p align="center">
-  <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @computer in the cloud; @computer finishes in 32.0s, local in 36.2s" width="70%">
+  <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @Computer in the cloud; @Computer finishes in 32.0s, local in 36.2s" width="70%">
 </p>
 
 ## How it works
@@ -59,10 +50,6 @@ The rest of the stack runs on Cloudflare Workers and Durable Objects. Support fo
 <p align="center">
   <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
 </p>
-
-TODO: link to Architecture docs. Diagram source: `scripts/readme-architecture.html`.
-
-From launch post: it wants the same two visuals: (1) VM per session vs one VM per team with isolated sessions on top; (2) the gateway spawning sessions and worktrees, backing them up after each turn, scaling out. Draw once, use in both.
 
 ## Try it in Cloud
 
@@ -79,11 +66,12 @@ The fastest way to experience `@Computer` is to install the Slack app from the c
 
 ## Self-host
 
-_Goal: the reader knows self-hosting is real and supported, what it needs, and where the guide is, without the README becoming the guide._
-
-TODO: requirements in one line (Slack app, GitHub App, model key, domain, one VM), a short install snippet, links to the quickstart and AWS / Azure / GCP / VPS guides.
-
-From launch post: AWS, Azure, GCP and OCI, Kubernetes soon; the whole stack can run on a single VM. (Docs nav lists AWS / Azure / GCP / VPS, no OCI yet.)
+<!-- TODO: point each button at its guide once the self-hosting docs are live. -->
+<p align="center">
+  <a href="https://docs.opencomputer.dev"><img alt="Self-host on AWS" src="https://img.shields.io/badge/Self--host_on_AWS-232F3E?style=for-the-badge"></a>
+  <a href="https://docs.opencomputer.dev"><img alt="Self-host on GCP" src="https://img.shields.io/badge/Self--host_on_GCP-4285F4?style=for-the-badge"></a>
+  <a href="https://docs.opencomputer.dev"><img alt="Self-host on Azure" src="https://img.shields.io/badge/Self--host_on_Azure-0078D4?style=for-the-badge"></a>
+</p>
 
 ## License
 
