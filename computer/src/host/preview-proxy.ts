@@ -4,7 +4,8 @@
 // (SSE) included.
 //
 // Invariants: it dials only through its Dialer (preview-dial.ts; loopback
-// unless another is passed), only a port in the config's allow-list
+// unless another is passed; the connections are kept alive by an agent of
+// its own, which ends with it), only a port in the config's allow-list
 // that is not one of the host's own, and only for a request whose
 // X-Preview-Auth verifies (src/signed-header.ts). Every response it produces,
 // proxied ones too, carries `X-Preview-Origin: computer`, the one signal the
@@ -77,13 +78,24 @@ const head = (status: number | undefined, message: string | undefined, raw: stri
   return `${s}\r\n`;
 };
 
-/** The proxy; `config` is read per request, so a `previews` frame applies at once. */
+/**
+ * The connections to the apps, as http's own agent keeps them (kept alive between requests, an idle one closed
+ * after 5 s), dialed through `dial`: http.request without an agent would open one per request and close it.
+ */
+function dialAgent(dial: Dialer): http.Agent {
+  const agent = new http.Agent({ keepAlive: true, scheduling: 'lifo', timeout: 5000 });
+  agent.createConnection = (o) => dial(Number(o.port));
+  return agent;
+}
+
+/** The proxy; `config` is read per request, so a `previews` frame applies at once. Closing it closes its idle connections to the apps. */
 export function previewProxy(config: () => PreviewConfig | undefined, refused = HOST_PORTS, dial: Dialer = loopbackDialer): http.Server {
+  const agent = dialAgent(dial);
   const server = http.createServer((req, res) => {
     const c = checkRequest(req, config(), refused);
     if ('status' in c) return refuse(res, c);
     for (const k of HOP) delete c.headers[k];
-    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, createConnection: () => dial(c.port) }, (ures) => {
+    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, agent }, (ures) => {
       res.writeHead(ures.statusCode ?? 502, ures.statusMessage, marked(ures.rawHeaders, (k) => HOP.has(k)));
       res.flushHeaders(); // an SSE stream's headers leave before its first event
       ures.pipe(res);
@@ -98,7 +110,7 @@ export function previewProxy(config: () => PreviewConfig | undefined, refused = 
     socket.on('error', () => {});
     const c = checkRequest(req, config(), refused);
     if ('status' in c) return refuseSocket(socket, c);
-    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, createConnection: () => dial(c.port) });
+    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, agent });
     up.on('upgrade', (ures, usock, uhead) => {
       socket.write(head(ures.statusCode, ures.statusMessage, marked(ures.rawHeaders)));
       if (uhead.length) socket.write(uhead);
@@ -117,5 +129,6 @@ export function previewProxy(config: () => PreviewConfig | undefined, refused = 
     socket.on('close', () => up.destroy());
     up.end();
   });
+  server.on('close', () => agent.destroy());
   return server;
 }

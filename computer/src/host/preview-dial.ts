@@ -2,7 +2,10 @@
 // 103, seam S3). Both take a Dialer, so where the port lives is decided in one
 // place: today it is this machine's loopback. Invariants: a Dialer returns its
 // connection at once and never throws; the connection emits `connect`, or
-// `error` with code ECONNREFUSED when nothing listens on the port.
+// `error` with code ECONNREFUSED when nothing listens on the port. The proxy
+// keeps connections alive through an http.Agent, which calls a socket's
+// setKeepAlive, setTimeout, ref and unref on them: a Dialer whose connection
+// is not a net.Socket has to provide those.
 
 import net from 'node:net';
 import type { Duplex } from 'node:stream';

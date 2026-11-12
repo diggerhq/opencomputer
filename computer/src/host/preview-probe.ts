@@ -39,8 +39,8 @@ type Attempt = { status: number; body: string; next: boolean } | 'refused' | 'co
 function attempt(dial: Dialer, port: number, host: string, waitMs: number, path = '/', extra: http.OutgoingHttpHeaders = {}): Promise<Attempt> {
   return new Promise((resolve) => {
     let connected = false;
-    const req = http.get({ host: '127.0.0.1', port, path, createConnection: () => dial(port), headers: { host, 'x-forwarded-host': host, 'x-forwarded-proto': 'https', ...extra },
-      agent: false }, (res) => {
+    // No `agent` option: with one, false included, http.get ignores createConnection. Without, each attempt has its own connection, closed after it.
+    const req = http.get({ host: '127.0.0.1', port, path, createConnection: () => dial(port), headers: { host, 'x-forwarded-host': host, 'x-forwarded-proto': 'https', ...extra } }, (res) => {
       let body = '';
       const done = () => resolve({ status: res.statusCode ?? 0, body, next: /next\.js/i.test(String(res.headers['x-powered-by'] ?? '')) });
       res.setEncoding('utf8');
