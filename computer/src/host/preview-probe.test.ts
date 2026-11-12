@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loopbackDialer } from './preview-dial.js';
 import { frameworkHint, probePort } from './preview-probe.js';
 
 const servers: http.Server[] = [];
@@ -44,6 +45,18 @@ describe('probePort', () => {
     expect(await probePort(port, 'demo.opencomputer.app', 5000)).toEqual({ listening: true });
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(host).toBe('demo.opencomputer.app');
+  });
+
+  it('reaches the port only through the dialer it is given', async () => {
+    const port = await freePort();
+    await serve(port, (_req, res) => (res.setHeader('x-powered-by', 'Next.js'), res.end('ok')));
+    const dialed: number[] = [];
+    const dial = (p: number) => (dialed.push(p), loopbackDialer(p));
+    expect(await probePort(port, 'demo.opencomputer.app', 2000, dial)).toEqual({ listening: true });
+    expect(dialed).toEqual([port, port]); // the page, then Next's HMR endpoint
+    // A dialer that reaches nothing: the port is not listening, though this machine's loopback has it.
+    const nowhere = await freePort();
+    expect(await probePort(port, 'demo.opencomputer.app', 600, () => loopbackDialer(nowhere))).toEqual({ listening: false });
   });
 
   it('gives up after the wait when nothing listens', async () => {

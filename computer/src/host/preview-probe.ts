@@ -12,6 +12,7 @@
 // when the wait ends counts as listening too: it is up, only slow.
 
 import http from 'node:http';
+import { type Dialer, loopbackDialer } from './preview-dial.js';
 
 export const PROBE_WAIT_MS = 10_000;
 const RETRY_MS = 250;
@@ -35,11 +36,11 @@ const NEXT_CHECK_WAIT_MS = 2_000;
 
 type Attempt = { status: number; body: string; next: boolean } | 'refused' | 'connected';
 
-function attempt(port: number, host: string, waitMs: number, path = '/', extra: http.OutgoingHttpHeaders = {}): Promise<Attempt> {
+function attempt(dial: Dialer, port: number, host: string, waitMs: number, path = '/', extra: http.OutgoingHttpHeaders = {}): Promise<Attempt> {
   return new Promise((resolve) => {
     let connected = false;
-    const req = http.get({ host: '127.0.0.1', port, path, headers: { host, 'x-forwarded-host': host, 'x-forwarded-proto': 'https', ...extra },
-      agent: false }, (res) => {
+    // No `agent` option: with one, false included, http.get ignores createConnection. Without, each attempt has its own connection, closed after it.
+    const req = http.get({ host: '127.0.0.1', port, path, createConnection: () => dial(port), headers: { host, 'x-forwarded-host': host, 'x-forwarded-proto': 'https', ...extra } }, (res) => {
       let body = '';
       const done = () => resolve({ status: res.statusCode ?? 0, body, next: /next\.js/i.test(String(res.headers['x-powered-by'] ?? '')) });
       res.setEncoding('utf8');
@@ -59,13 +60,13 @@ function attempt(port: number, host: string, waitMs: number, path = '/', extra: 
 }
 
 /** Wait for `port` to answer `GET /` with `Host: host`; at most `waitMs`. */
-export async function probePort(port: number, host: string, waitMs = PROBE_WAIT_MS): Promise<{ listening: boolean; hint?: string }> {
+export async function probePort(port: number, host: string, waitMs = PROBE_WAIT_MS, dial: Dialer = loopbackDialer): Promise<{ listening: boolean; hint?: string }> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const left = deadline - Date.now();
-    const a = await attempt(port, host, Math.max(1, left));
+    const a = await attempt(dial, port, host, Math.max(1, left));
     if (typeof a === 'object') {
-      const hint = frameworkHint(a.status, a.body) ?? (a.next && a.status !== 403 ? await nextHint(port, host) : undefined);
+      const hint = frameworkHint(a.status, a.body) ?? (a.next && a.status !== 403 ? await nextHint(dial, port, host) : undefined);
       return { listening: true, ...(hint && { hint }) };
     }
     if (a === 'connected') return { listening: true };
@@ -75,7 +76,7 @@ export async function probePort(port: number, host: string, waitMs = PROBE_WAIT_
 }
 
 /** Whether a Next dev server refuses its HMR to the preview's origin; the page itself loads either way. */
-async function nextHint(port: number, host: string): Promise<string | undefined> {
-  const a = await attempt(port, host, NEXT_CHECK_WAIT_MS, NEXT_HMR_PATH, { origin: `https://${host}` });
+async function nextHint(dial: Dialer, port: number, host: string): Promise<string | undefined> {
+  const a = await attempt(dial, port, host, NEXT_CHECK_WAIT_MS, NEXT_HMR_PATH, { origin: `https://${host}` });
   return typeof a === 'object' && a.status === 403 ? frameworkHint(403, 'allowedDevOrigins') : undefined;
 }
