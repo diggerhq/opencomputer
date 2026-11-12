@@ -124,6 +124,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
     await serve(k, b, APP_PORT);
     await serve(k, a, APP_PORT + 1);
     const gb = await until(async () => (said(await viaProxy(k, port('s9-b')), 'inside B') ? true : undefined), 15_000);
+    await until(async () => (said(await viaProxy(k, port('s9-none')), 'inside A') ? true : undefined), 15_000);
     const ga = await viaProxy(k, port('s9-none'));
     check(!!gb && said(ga, 'inside A') && k.asked.length === asked,
       `after a stop and a resume the previews answer again, B's ${port('s9-b')} and A's ${port('s9-none')} (${show(ga)}), and no runner asked for a preview again`);
@@ -230,7 +231,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
       await until(() => (C.record() ? undefined : true), 10_000);
     }
     check(!C.record() && !(await has('container', containerName(cid))) && !(await has('volume', volumeName(cid))) && !existsSync(C.workspace) && !existsSync(path.dirname(C.registry('x'))) && !existsSync(crun),
-      `a thread idle beyond retention with nothing unsaved is pruned (${Date.now() - pruneAt} ms after it stopped): container, home, workspace, registries, run directory, record`);
+      `a thread idle beyond retention with nothing unsaved is pruned (${Date.now() - pruneAt} ms after it was seen stopped; retention ${Math.round(RETENTION_DAYS * 86_400)} s): container, home, workspace, registries, run directory, record`);
     const branch = await x.as.run(['/usr/bin/git', '-C', x.clone(C.owner.dir, 'hello'), 'branch', '--list', C.branch], { timeoutMs: 10_000 }).catch((e) => `error: ${e.message}`);
     check(branch.trim() === '', `its branch is forgotten in the person's clone (${JSON.stringify(branch.trim())})`);
     check(!!(await until(() => (!x.names.has('s8-c') && x.unpreviewed.some((u) => u.name === 's8-c' && u.from === C.key) ? true : undefined), 10_000)) && !table().some((e) => e.id === cid),
