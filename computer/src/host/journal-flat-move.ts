@@ -31,18 +31,25 @@
 // - Nothing of a journal is deleted. Where a session already has a nested
 //   journal and a flat one appears (a release rolled back and forward), the
 //   one further on by (epoch, last seq) is the journal and the other is kept
-//   beside it as `<id>.jsonl.superseded`, which nothing reads.
+//   beside it as `<id>.jsonl.superseded` (`.superseded.2`, … when that is
+//   taken: one set aside earlier is never replaced), which nothing reads.
 // - A flat name that is a link the host did not make, or not the kind of file
-//   its name says, is left where it is and never followed.
+//   its name says, is left where it is and never followed. The same holds for
+//   the nested `.results`, which the session can write: where it is not a
+//   real directory nothing is moved into it, no link points at it and its
+//   mode is not touched. Into one that exists go only regular files named as
+//   a subagent (all that subagent-results.ts writes there).
+// - The lock is probed (a process each time) only for a journal written in
+//   the last `RECENT_MS`, so host start does not run one per old journal.
 // - One session failing does not stop the others.
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, lstatSync, mkdirSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
-import { ensureSessionJournalDir, journalPath, OPEN, openRegular } from '../api/journal-dir.js';
+import { ensureRealDir, ensureSessionJournalDir, journalPath, OPEN, openRegular } from '../api/journal-dir.js';
 import { forgetJournalFile, readJournalFile } from '../api/journal.js';
 import { log } from '../log.js';
-import { isSessionId } from '../session-ids.js';
+import { isId, isSessionId } from '../session-ids.js';
 
 const FLAT = /^(.+)\.jsonl(|\.ckpt|\.ckpt\.tmp|\.results)$/;
 
@@ -51,7 +58,17 @@ const kindOf = (file: string) => {
   return !st ? undefined : st.isFile() ? 'file' : st.isDirectory() ? 'dir' : st.isSymbolicLink() ? 'link' : 'other';
 };
 
-/** Whether a writer holds the journal's lock (journal-lock.ts). Unsure counts as held: the link then stays a pass longer. */
+/**
+ * How lately a journal must have been written for its lock to be probed. A runner appends on every delivery and is
+ * told to exit after SP_IDLE_MS without one (two hours unless set), so a day covers any that still writes. One missed
+ * (idle longer, kept by an open terminal) loses nothing: what it then saves flat is moved on the next pass.
+ */
+const RECENT_MS = 24 * 3600_000;
+
+/**
+ * Whether a writer holds the journal's lock (journal-lock.ts). Unsure (the probe did not run) counts as held: the link
+ * then stays a pass longer. A journal not written within `RECENT_MS` is not probed and counts as free.
+ */
 function held(journal: string): boolean {
   let fd: number;
   try {
@@ -60,6 +77,7 @@ function held(journal: string): boolean {
     return false; // no journal: no writer
   }
   try {
+    if (Date.now() - fstatSync(fd).mtimeMs > RECENT_MS) return false;
     return spawnSync('/usr/bin/flock', ['-x', '-n', '-E', '75', '/dev/fd/3', 'true'], { stdio: ['ignore', 'ignore', 'ignore', fd] }).status !== 0;
   } finally {
     closeSync(fd);
@@ -74,25 +92,54 @@ function ahead(a: string, b: string): boolean {
   return x.epoch !== y.epoch ? x.epoch > y.epoch : x.lastSeq > y.lastSeq;
 }
 
+/** A name beside the journal that nothing has: `.superseded`, then `.superseded.2`, … */
+function asideOf(nested: string): string {
+  for (let n = 1; ; n++) {
+    const name = `${nested}.superseded${n > 1 ? `.${n}` : ''}`;
+    if (kindOf(name) === undefined) return name;
+  }
+}
+
 function moveJournal(flat: string, nested: string): void {
-  const aside = `${nested}.superseded`;
   if (kindOf(nested) !== undefined) {
     if (!ahead(flat, nested)) {
-      renameSync(flat, aside);
+      renameSync(flat, asideOf(nested));
       return;
     }
-    renameSync(nested, aside);
+    renameSync(nested, asideOf(nested));
   }
   renameSync(flat, nested);
 }
 
-function moveResults(flat: string, nested: string): void {
-  if (kindOf(nested) === undefined) {
+/**
+ * Returns false when nothing could be moved (the nested name is not a directory). Into nested results that exist go
+ * the regular files named as a subagent; a write that never finished (`<sa_…>.tmp`) is dropped once no writer lives;
+ * anything else stays flat, and the flat directory with it.
+ */
+function moveResults(flat: string, nested: string, writerLives: () => boolean): boolean {
+  const have = kindOf(nested);
+  if (have === undefined) {
     renameSync(flat, nested);
-    return;
+    return true;
   }
-  for (const n of readdirSync(flat)) renameSync(path.join(flat, n), path.join(nested, n));
-  rmdirSync(flat);
+  if (have !== 'dir') {
+    log.warn(`journal move: ${nested} is not a directory, ${flat} left in place`);
+    return false;
+  }
+  for (const n of readdirSync(flat)) {
+    const from = path.join(flat, n);
+    if (kindOf(from) !== 'file') continue;
+    const torn = n.endsWith('.tmp') && isId('sa', n.slice(0, -4));
+    if (isId('sa', n)) renameSync(from, path.join(nested, n));
+    else if (torn && !writerLives()) rmSync(from, { force: true });
+  }
+  try {
+    rmdirSync(flat);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw e;
+    log.warn(`journal move: ${flat} holds what is not a subagent's result, left in place`);
+  }
+  return true;
 }
 
 /** The newer checkpoint stays: a flat one written before the nested one (by a runner as it exited) is dropped. */
@@ -131,13 +178,17 @@ export function moveFlatSession(dataDir: string, sessionId: string): number {
       if (!writerLives()) rmSync(from, { force: true }); // a checkpoint write that never finished (a live runner's may be under way)
       continue;
     } else if (part === '.ckpt') moveCheckpoint(from, nested + part);
-    else moveResults(from, nested + part);
+    else if (!moveResults(from, nested + part, writerLives)) continue;
     moved++;
   }
   // A runner from before the move still writes: its results go through the flat name into the nested directory.
   if (moved && kindOf(`${flat}.results`) === undefined && writerLives()) {
-    mkdirSync(`${nested}.results`, { recursive: true, mode: 0o770 });
-    chmodSync(`${nested}.results`, 0o770); // as subagent-results.ts makes it: the runner is another uid of the group
+    try {
+      ensureRealDir(`${nested}.results`, 0o770); // as subagent-results.ts makes it: the runner is another uid of the group
+    } catch (e) {
+      log.warn(`journal move: no link for ${flat}.results: ${(e as Error).message}`); // what the session put there is not a directory
+      return moved;
+    }
     symlinkSync(linkTo, `${flat}.results`);
   }
   return moved;

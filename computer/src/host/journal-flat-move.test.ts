@@ -1,16 +1,31 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { journalPath, readJournalFile } from '../api/journal.js';
 import { loadResult } from '../api/subagent-results.js';
 import { openLog, turn } from '../api/testing.js';
 import { mintId } from '../session-ids.js';
 import { moveFlatJournals, moveFlatSession } from './journal-flat-move.js';
 
+// A directory another uid owns (the host is sp-host, the runner agent): chmod fails with EPERM while `uids.other` is set.
+const uids = vi.hoisted(() => ({ other: false }));
+vi.mock('node:fs', async (original) => {
+  const real = await original<typeof import('node:fs')>();
+  const eperm =
+    <A extends unknown[]>(fn: (...a: A) => void) =>
+    (...a: A) => {
+      if (uids.other) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      fn(...a);
+    };
+  const patched = { ...real, chmodSync: eperm(real.chmodSync), fchmodSync: eperm(real.fchmodSync) };
+  return { ...patched, default: patched };
+});
+
 let data: string;
 let journals: string;
 beforeEach(() => {
+  uids.other = false;
   data = fs.mkdtempSync(path.join(os.tmpdir(), 'flatmove-'));
   journals = path.join(data, 'journals');
   fs.mkdirSync(journals);
@@ -125,6 +140,68 @@ describe('moveFlatJournals (work 103 C8)', () => {
     expect(readJournalFile(s.nested, 0).lastSeq).toBe(3);
   });
 
+  it('a second journal set aside does not replace the first (a release rolled back and forward twice)', () => {
+    const s = flat(1, 2);
+    fs.mkdirSync(path.dirname(s.nested));
+    fs.writeFileSync(s.nested, text(s.id, 2, 5));
+    moveFlatSession(data, s.id);
+    fs.writeFileSync(s.file, text(s.id, 2, 4));
+    moveFlatSession(data, s.id);
+    fs.writeFileSync(s.file, text(s.id, 3, 1));
+    moveFlatSession(data, s.id);
+    expect(fs.readFileSync(s.nested, 'utf8')).toBe(text(s.id, 3, 1));
+    const asides = fs.readdirSync(path.dirname(s.nested)).filter((n) => n.includes('.superseded'));
+    expect(asides.map((n) => fs.readFileSync(path.join(path.dirname(s.nested), n), 'utf8')).sort()).toEqual([text(s.id, 1, 2), text(s.id, 2, 4), text(s.id, 2, 5)].sort());
+  });
+
+  describe('a nested .results the session planted (it can write its own directory)', () => {
+    /** A flat session whose nested directory already has `.results` as a link to a directory only the host may write. */
+    const planted = () => {
+      const s = flat();
+      const hostOnly = path.join(data, 'host-only');
+      fs.mkdirSync(hostOnly, { mode: 0o700 });
+      fs.mkdirSync(path.dirname(s.nested));
+      fs.symlinkSync(hostOnly, `${s.nested}.results`);
+      return { ...s, hostOnly };
+    };
+
+    it('is not written through: the flat results stay where they are, the rest moves', () => {
+      const s = planted();
+      expect(moveFlatJournals(data)).toBe(2);
+      expect(fs.readdirSync(s.hostOnly)).toEqual([]);
+      expect(fs.readFileSync(path.join(`${s.file}.results`, s.sa), 'utf8')).toBe('whole result');
+      expect(fs.lstatSync(`${s.nested}.results`).isSymbolicLink()).toBe(true);
+      expect(readJournalFile(s.nested, 0).lastSeq).toBe(3);
+    });
+
+    it('is not chmodded, and gets no link from the flat name, when a runner still writes', async () => {
+      const s = planted();
+      fs.rmSync(`${s.file}.results`, { recursive: true });
+      const runner = await openLog(s.file, s.id);
+      expect(moveFlatJournals(data)).toBe(2);
+      expect(fs.statSync(s.hostOnly).mode & 0o7777).toBe(0o700);
+      expect(fs.existsSync(`${s.file}.results`)).toBe(false);
+      await runner.release();
+    });
+  });
+
+  it('moves only regular files named as a subagent into existing nested results; a torn write goes, the rest stays flat', () => {
+    const s = flat();
+    moveFlatJournals(data);
+    const sa2 = mintId('sa');
+    const dir = `${s.file}.results`;
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, sa2), 'second');
+    fs.writeFileSync(path.join(dir, `${mintId('sa')}.tmp`), 'torn');
+    fs.writeFileSync(path.join(dir, 'other'), 'x');
+    fs.symlinkSync(path.join(data, 'secret'), path.join(dir, mintId('sa')));
+    moveFlatJournals(data);
+    expect(loadResult(s.nested, sa2)).toBe('second');
+    expect(fs.readdirSync(`${s.nested}.results`).sort()).toEqual([s.sa, sa2].sort());
+    expect(fs.readdirSync(dir).length).toBe(2); // the link and the unknown name
+    fs.rmSync(dir, { recursive: true });
+  });
+
   describe('a runner that outlived the host (the previous release: it writes beside the flat name it was given)', () => {
     /** saveResult as the release before work 103 wrote it: no link check, the directory made on the way. */
     const oldSaveResult = (journal: string, sa: string, body: string) => {
@@ -178,6 +255,30 @@ describe('moveFlatJournals (work 103 C8)', () => {
       expect(loadResult(nested, sa2)).toBe('after');
       await next.release();
       expect(moveFlatSession(data, id)).toBe(0);
+    });
+
+    it('gets its link where the nested results are another uid\'s (the chmod is refused)', async () => {
+      const id = mintId('cs');
+      const file = path.join(journals, `${id}.jsonl`);
+      const runner = await openLog(file, id);
+      fs.mkdirSync(path.join(journals, id));
+      fs.mkdirSync(`${journalPath(data, id)}.results`); // made by the runner's uid
+      uids.other = true;
+      expect(moveFlatSession(data, id)).toBe(1);
+      uids.other = false;
+      expect(fs.readlinkSync(`${file}.results`)).toBe(path.join(id, `${id}.jsonl.results`));
+      await runner.release();
+    });
+
+    it('is not looked for behind a journal nobody wrote for a day: host start runs no lock probe per old journal', async () => {
+      const id = mintId('cs');
+      const file = path.join(journals, `${id}.jsonl`);
+      const holder = await openLog(file, id); // the lock is held, so a probe would say a writer lives and leave a link
+      const old = Date.now() / 1000 - 2 * 86400;
+      fs.utimesSync(file, old, old);
+      expect(moveFlatJournals(data)).toBe(1);
+      expect(fs.readdirSync(journals)).toEqual([id]);
+      await holder.release();
     });
 
     it('a nested checkpoint newer than the flat one is kept, and no link is left for a session nobody writes', async () => {

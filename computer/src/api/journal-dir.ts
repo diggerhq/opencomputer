@@ -1,7 +1,7 @@
 // Where journals live, and how a file there is opened (work 084; one
 // directory per session since work 103, C8):
 //
-//   <dataDir>/journals/                 02750, the host's
+//   <dataDir>/journals/                 provisioning's (02750 where the host makes it)
 //     <cs_…>/                           02770, made by the host (ensureSessionJournalDir)
 //       <cs_…>.jsonl                    the journal (journal.ts)
 //       <cs_…>.jsonl.ckpt               its checkpoint (journal-checkpoint.ts)
@@ -16,7 +16,8 @@
 //   group-writable and files are 0660, so the host (sp-host, in group agent)
 //   and the runner (agent) open each other's files. Modes are set outright,
 //   because mkdir's is masked by the umask and drops setgid; a chmod of a
-//   directory another uid owns fails and is ignored.
+//   directory another uid owns fails and is ignored. A mode is only ever set
+//   on a directory opened without following a link (`ensureRealDir`).
 // - What a session can write is never trusted to be what its name says
 //   (103, trust rule 4): every open here is O_NOFOLLOW and the result must be
 //   a regular file (`openRegular`; O_NONBLOCK so a planted FIFO cannot hold
@@ -24,7 +25,7 @@
 // - Readers list sessions by directory name (`listJournals`): a file directly
 //   in `journals/` is not a journal (journal-flat-move.ts moves the old ones).
 
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isSessionId } from '../session-ids.js';
 
@@ -48,17 +49,40 @@ export function journalPath(dataDir: string, sessionId: string): string {
   return journalIn(path.join(dataDir, JOURNALS_DIR), sessionId);
 }
 
-function ensureDir(dir: string, mode: number): void {
-  mkdirSync(dir, { recursive: true, mode });
+/**
+ * Make `dir` when it is missing (its parent exists) and set its mode, never through a link: the mode goes on the
+ * directory this opened (O_NOFOLLOW), so a link put at the name, before or meanwhile, is refused and its target untouched.
+ */
+export function ensureRealDir(dir: string, mode: number): void {
   try {
-    chmodSync(dir, mode);
-  } catch {}
+    mkdirSync(dir, { mode });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  }
+  let fd: number;
+  try {
+    fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP' || code === 'ENOTDIR') throw new JournalError('not_regular', `not a directory: ${dir}`);
+    throw e;
+  }
+  try {
+    fchmodSync(fd, mode);
+  } catch {
+    // another uid owns it (made by the other writer): its mode is that one's to set
+  } finally {
+    closeSync(fd);
+  }
 }
 
-/** Create `<dataDir>/journals` (02750: only the host makes sessions' directories in it). Returns it. */
+/**
+ * Create `<dataDir>/journals` when it is missing (02750: only the host makes sessions' directories in it). One that
+ * exists keeps its owner and mode: those are provisioning's (deploy/vm/provision.sh). Returns it.
+ */
 export function ensureJournalDir(dataDir: string): string {
   const dir = path.join(dataDir, JOURNALS_DIR);
-  ensureDir(dir, 0o2750);
+  if (mkdirSync(dir, { recursive: true, mode: 0o2750 }) !== undefined) chmodSync(dir, 0o2750); // made here: mkdir's mode is masked
   return dir;
 }
 
@@ -66,8 +90,7 @@ export function ensureJournalDir(dataDir: string): string {
 export function ensureSessionJournalDir(dataDir: string, sessionId: string): string {
   const dir = path.dirname(journalPath(dataDir, sessionId));
   ensureJournalDir(dataDir);
-  ensureDir(dir, 0o2770);
-  if (!lstatSync(dir).isDirectory()) throw new JournalError('not_regular', `not a directory: ${dir}`);
+  ensureRealDir(dir, 0o2770);
   return dir;
 }
 

@@ -13,21 +13,17 @@
 //   the journal, as the runner and the host's writer run as different users.
 // - Never in memory past the call that reads it; never deleted (journals are not).
 
-import { chmodSync, closeSync, fchmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, fchmodSync, renameSync, rmSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { isId } from '../session-ids.js';
-import { OPEN, openRegular, readRegular } from './journal-dir.js';
+import { ensureRealDir, OPEN, openRegular, readRegular } from './journal-dir.js';
 
 const dirOf = (journal: string) => `${journal}.results`;
 
 export function saveResult(journal: string, subagentId: string, text: string): void {
   if (!isId('sa', subagentId)) throw new Error(`not a subagent id: ${subagentId}`);
   const dir = dirOf(journal);
-  mkdirSync(dir, { recursive: true, mode: 0o770 });
-  try {
-    chmodSync(dir, 0o770); // the umask may have masked the group bits
-  } catch {} // made by the other writer, who owns it
-  if (!lstatSync(dir).isDirectory()) throw new Error(`not a directory: ${dir}`); // a link planted in the session's directory (journal-dir.ts)
+  ensureRealDir(dir, 0o770); // refuses a link planted in the session's directory; the umask may have masked the group bits
   const file = path.join(dir, subagentId);
   const tmp = `${file}.tmp`;
   rmSync(tmp, { force: true });
