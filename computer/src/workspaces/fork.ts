@@ -174,7 +174,8 @@ export async function checkoutRepos(forkPath: string, wanted: string[]): Promise
   return results;
 }
 
-function findRepo(repos: RepoDef[], want: string): RepoDef | undefined {
+/** The definition's repository for a name or `owner/name`, as a session wrote it. */
+export function findRepo(repos: RepoDef[], want: string): RepoDef | undefined {
   const w = want.replace(/\.git$/, '').toLowerCase();
   return repos.find((r) => r.name.toLowerCase() === w) ?? repos.find((r) => repoSlug(r.remote).toLowerCase() === w);
 }

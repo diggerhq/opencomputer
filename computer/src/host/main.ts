@@ -152,7 +152,8 @@ let stopping = false;
 /** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
 const sandbox = LAUNCH === 'podman'
   ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, spares: POOL_SIZE, tm,
-      mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session) })
+      mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+      serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => [...runners.values()].some((r) => r.id === id) })
   : undefined;
 /** Whether `key`'s session runs in a container: on a `podman` host every one does, but one whose live runner is from before (no record). */
 const sandboxed = (key: string) => !!sandbox && (!runners.has(key) || !!runners.get(key)?.sandbox);
@@ -230,11 +231,10 @@ async function onRunner(r: Runner, m: RunnerToHost) {
     case 'checkout': {
       const forkPath = r.report?.forkPath;
       const fail = (error: string) => send(r.sock, { t: 'checked-out', id: m.id, error } satisfies HostToRunner);
-      const no = notYet('checkout', !!r.sandbox); // its worktrees would be added by host paths, outside its container
-      if (no) return fail(no);
       if (!workspacesEnabled()) return fail('this host has no workspace definition; there is nothing to check out');
-      if (!forkPath) return fail('the session has not reported its fork yet');
-      return checkoutRepos(forkPath, m.repos).then(
+      if (!r.sandbox && !forkPath) return fail('the session has not reported its fork yet');
+      // A container's worktrees are added inside it, from its record (sandbox/workspace.ts); the reported path is never used.
+      return (r.sandbox ? sandbox!.checkout(r.id, m.repos) : checkoutRepos(forkPath!, m.repos)).then(
         (result) => send(r.sock, { t: 'checked-out', id: m.id, result } satisfies HostToRunner),
         (e) => fail(String(e?.message ?? e)),
       );
@@ -303,7 +303,7 @@ async function onGateway(m: GatewayToHost) {
   switch (m.t) {
     case 'welcome':
       org.welcome(m);
-      if (m.definition !== undefined && applyGatewayDefinition(m.definition)) housekeeper?.now();
+      if (m.definition !== undefined && applyGatewayDefinition(m.definition)) (sandbox?.definitionChanged([...runners.values()].flatMap((r) => (r.sandbox ? r.id : []))), housekeeper?.now());
       if (m.telemetryCredential) telemetry.renew(m.telemetryCredential, m.telemetryUrl);
       previews.configure(m.preview);
       return housekeeping();
@@ -406,7 +406,8 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
     r.owner = spec.owner;
     // Retention counts from the latest use; never awaited, so delivery doesn't wait on the disk.
     const forkPath = r.report?.forkPath ?? spec.forkPath;
-    if (forkPath && workspacesEnabled()) void touchFork(forkPath);
+    if (r.sandbox) sandbox!.touch(r.id); // its record is its fork record
+    else if (forkPath && workspacesEnabled()) void touchFork(forkPath);
     const wasExiting = r.exiting;
     r.exiting = false;
     const trace = rx.trace && forwardTrace(rx.trace, cold);
@@ -458,6 +459,7 @@ const previews = hostPreviews({ ask: link.ask });
 
 mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
+const helperTokens = sandbox?.serveHelpers(); // workspace scripts in helper containers (sandbox/scripts.ts)
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
 api.rediscovered(await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
@@ -493,6 +495,7 @@ const shutdown = async () => {
   log.info('host stopping');
   for (const r of allRunners()) r.sock.destroy();
   tokenServer.close();
+  helperTokens?.close();
   previews.stop();
   subs.stop(); // tokenServer.close() unlinked the socket; the next host replaces it anyway
   await api.stop();

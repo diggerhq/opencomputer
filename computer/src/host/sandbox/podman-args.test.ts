@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createArgs, emptyRunArgs, execArgs, inventoryArgs, logsArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs, unshareRmArgs,
+  createArgs, emptyRunArgs, execArgs, HELPER_SCOPE, helperArgs, inventoryArgs, logsArgs, mountArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs,
+  unshareRmArgs,
 } from './podman-args.js';
 
 const id = '0123456789abcdef';
@@ -87,6 +88,30 @@ ghcr.io/diggerhq/computer-session:abc`);
       containers: ['ps', '--all', '--filter', 'label=sp.runner', '--format', 'json'],
       volumes: ['volume', 'ls', '--filter', 'name=sp-home-', '--format', 'json'],
     });
+  });
+
+  it('the mount helper runs inside the user namespace, isolated, with the pid, the runner, the person and the pairs in order', () => {
+    expect(mountArgs('/opt/slack-presence/releases/r1', 4242, id, 'pat', [{ src: '/data/people/pat/sessions/k', dst: '/workspace' }, { src: '/data/people/pat/ws/a', dst: '/clones/a' }])).toEqual([
+      'unshare', 'python3', '-I', '/opt/slack-presence/releases/r1/bin/sandbox-mount.py', '4242', id, 'pat',
+      '/data/people/pat/sessions/k:/workspace', '/data/people/pat/ws/a:/clones/a',
+    ]);
+  });
+
+  it('a helper container sees one person\'s clones, no home, a network only when asked, and is ended by Podman', () => {
+    const h = { person: 'pat', people: '/data/people', run: '/run/sp/helper', image: 'img:1', network: false, timeoutS: 60, script: '/opt/slack-presence/releases/r1/bin/ws-inspect.sh', args: ['--only=state', '/clones', '/workspace', 'a'] };
+    const a = helperArgs({ ...h, binds: [{ src: '/data/people/pat/sessions/k', dst: '/workspace', ro: true }, { src: '/data/people/pat/wt/k/a', dst: '/clones/a/.git/worktrees' }] });
+    expect(a.slice(0, 2)).toEqual(['run', '--rm']);
+    expect(a).toEqual(expect.arrayContaining(['--label', 'sp.helper=pat', '--user', '1500:1500', '--network=none', '--timeout', '60', '--env', 'SP_TOKEN_SOCKET=/run/sp/helper/token.sock', '--env', 'HOME=/tmp']));
+    expect(a.filter((x, i) => a[i - 1] === '-v')).toEqual([
+      '/data/people/pat/ws:/clones', '/run/sp/helper:/run/sp/helper', '/opt/slack-presence:/opt/slack-presence:ro',
+      '/data/people/pat/sessions/k:/workspace:ro', '/data/people/pat/wt/k/a:/clones/a/.git/worktrees',
+    ]);
+    expect(a.slice(-8)).toEqual(['--entrypoint', '/bin/sh', 'img:1', h.script, '--only=state', '/clones', '/workspace', 'a']);
+    expect(a).not.toContain('--interactive');
+    const net = helperArgs({ ...h, network: true, stdin: true });
+    expect(net).toContain('--network=pasta');
+    expect(net[2]).toBe('--interactive');
+    expect(HELPER_SCOPE.slice(0, 3)).toEqual(['/usr/bin/systemd-run', '--user', '--scope']);
   });
 
   it('session-made files are removed inside the user namespace', () => {

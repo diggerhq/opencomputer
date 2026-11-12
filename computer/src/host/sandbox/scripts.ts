@@ -93,7 +93,7 @@ export function sandboxScripts(d: ScriptsDeps) {
           return out;
         } catch (e) {
           const err = failed(script, e, seconds);
-          span.end({ outcome: 'failed', error_type: (err as ScriptError).killed ? 'timeout' : 'launch' });
+          span.end({ outcome: 'failed', error_type: (err as ScriptError).killed ? 'timeout' : 'unknown' });
           throw err;
         }
       },
