@@ -23,13 +23,14 @@
 //   to a stopped thread is in the thread's workspace, which sandbox-check.ts
 //   removes with the person's directory.
 
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync } from 'node:child_process';
 import { lstatSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { sandboxDialer } from '../host/preview-dial.js';
 import { PREVIEW_PROXY_PORT } from '../host/preview-proxy.js';
+import type { Place } from '../host/workspace-files.js';
 import { VIRTUAL_PORTS } from '../host/sandbox/preview-ports.js';
 import { type RunRoot, previewSocketFor } from '../ipc.js';
 import type { PreviewRequest, SessionSpec } from '../protocol.js';
@@ -77,6 +78,8 @@ export interface Kit {
   /** The `preview` requests the gateway got, with who asked. */
   asked: { from: string; req: PreviewRequest }[];
   wire: WireClient;
+  /** Where a `/files` script of a thread runs (sandbox/scripts.ts), as the host would be given it: `running` or stopped. */
+  filesPlace(t: Thread, running: boolean): Place;
 }
 
 type Got = { status: number; body: string; headers: http.IncomingHttpHeaders } | { refused: string };
@@ -137,6 +140,50 @@ const kept = (r: object) => ['invalid_path', 'path_not_found'].includes(code(r)?
 /** What `/files` answers for each of these names of `t`, as an archive and as a file. */
 const reads = async (k: Kit, t: Thread, names: string[]) => (await Promise.all(names.flatMap((n) => [k.wire.get(t.sessionId, t.member, n, false), k.wire.get(t.sessionId, t.member, `${n}/marker-q`, true)])));
 const codes = (rs: object[]) => rs.map((r) => code(r)?.code ?? 'READ').join(' ');
+
+const exit = (p: ChildProcess) => new Promise<number | null>((resolve) => p.once('close', (c) => resolve(c)).once('error', () => resolve(null)));
+/** Nothing of a `/files` script is left where `t`'s scripts run, and no upload's directory in its workspace. Waits: the host ends what is left after its own command ended. */
+async function nothingLeft(k: Kit, t: Thread, running: boolean): Promise<string> {
+  let left = '';
+  await k.until(async () => {
+    const procs = running
+      ? await k.inside(t.id, 'pgrep -af "[O]PC_FILES=|[s]leep 30[0-9]|[s]9-big" || true')
+      : (await k.asRunner(['/usr/bin/podman', 'ps', '--all', '--filter', 'name=sp-files-', '--format', '{{.Names}} {{.Status}}'])).trim();
+    const dirs = (await k.asRunner(['/bin/sh', '-c', 'ls -A "$1" | grep "^\\.opc-" || true', 'sh', t.workspace])).trim();
+    left = [procs, dirs].filter(Boolean).join('; ');
+    return left ? undefined : true;
+  }, 20_000);
+  return left || 'nothing';
+}
+/**
+ * `/files` scripts of `t` that do not run to their end (the spec's "Timeouts and failures"): one that reaches its
+ * limit, one whose command the host ends, an upload whose body stops, a download nobody reads on.
+ */
+async function filesEnded(k: Kit, t: Thread, running: boolean) {
+  const { check } = k;
+  const where = running ? "running A's container" : 'a helper of stopped A';
+  const place = k.filesPlace(t, running);
+  const t0 = Date.now();
+  const limit = await exit(place.spawn(['/bin/sh', '-c', 'sleep 300 & sleep 301', 'sh'], { seconds: 2 }));
+  const ms = Date.now() - t0;
+  // In the container timeout(1) ends it (124); a helper is ended by Podman, which says 255.
+  const l1 = await nothingLeft(k, t, running);
+  check(limit === (running ? 124 : 255) && l1 === 'nothing', `a /files script in ${where} that reaches its limit of 2 s exits ${limit} after ${ms} ms and leaves ${l1}`);
+  const p = place.spawn(['/bin/sh', '-c', 'sleep 302', 'sh'], { seconds: 120 });
+  const closed = exit(p);
+  await new Promise((r) => setTimeout(r, 3000));
+  p.kill('SIGTERM');
+  const ended = await closed;
+  const l2 = await nothingLeft(k, t, running);
+  check(ended !== 0 && l2 === 'nothing', `one that writes nothing and whose command the host ends (exit ${ended}) leaves ${l2}`);
+  const big = tarOf({ 'big.bin': 'x'.repeat(24 << 20) });
+  const cut = await k.wire.putCut(t.sessionId, t.member, 's9-cut', big, big.length >> 1);
+  const l3 = await nothingLeft(k, t, running);
+  check(!!cut.error && l3 === 'nothing' && !(await list(k, t)).some((x) => x.startsWith('s9-cut')), `an upload whose body stops halfway is ${cut.error?.code}, and leaves ${l3} and no s9-cut`);
+  const part = await k.wire.getCut(t.sessionId, t.member, 's9-big', true);
+  const l4 = await nothingLeft(k, t, running);
+  check('got' in part && part.got > 0 && l4 === 'nothing', `a download of 300 MB whose reader hangs up after ${'got' in part ? part.got : JSON.stringify(part.error)} bytes leaves ${l4}`);
+}
 
 /**
  * All three threads run: `a` and `b` of one person, `q` of another, with a journal. Starts the fake model in `a` and
@@ -240,6 +287,10 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
     const onHost = (await k.asRunner(['/bin/sh', '-c', 'cat "$1/s9-notes/a.txt"; stat -c %U "$1/s9-notes/a.txt"', 'sh', a.workspace]).catch((e) => String(e.message))).trim();
     check(onHost.split('\n').join(' ') === 'pushed to A agent', `the upload to running A is in A's workspace on the host (${a.workspace}), the runners' user's: ${JSON.stringify(onHost)}`);
 
+    // ---- /files scripts that do not run to their end
+    await k.inside(a.id, 'truncate -s 300M /workspace/s9-big');
+    await filesEnded(k, a, true);
+
     // ---- a terminal in a worktree
     const tg = await k.wire.terminal(a.sessionId, a.member, 'cd hello && pwd && git rev-parse --show-toplevel && git status --porcelain --branch | head -n 1 && git log -1 --format=%s && echo from-terminal > s9-term && git add s9-term && git -c user.name=check -c user.email=check@example.com commit -qm "from the terminal" && git log -1 --format=%s 2>&1');
     check('out' in tg && tg.exitCode === 0 && /^\/workspace\/hello\n\/workspace\/hello\n## sp\/\S+\nsandbox check\nfrom the terminal$/.test(tg.out.trim()),
@@ -314,6 +365,7 @@ export async function reachStopped(k: Kit, a: Thread, b: Thread, q: Thread) {
   const qa = await k.wire.get(a.sessionId, k.member, 's9-q-stopped/q.txt', true);
   check(pq.result?.upload.files === 1 && lq.includes('s9-q-stopped/q.txt') && lq.includes('s9-q/q.txt') && code(qa)?.code === 'path_not_found',
     `an upload to the other person's stopped session is in their listing, beside the one made while it ran, and from A it is ${code(qa)?.code}: ${JSON.stringify(pq.result ?? pq.error)}`);
+  await filesEnded(k, a, false);
   check((await k.status(a.id)) === 'exited' && (await k.status(b.id)) === 'exited' && (await k.status(q.id)) === 'exited', 'none of it started a container');
 }
 

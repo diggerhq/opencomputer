@@ -1,6 +1,7 @@
 // The relay's side of the host's wire socket, for dev checks (the real one is
 // src/wire/host-link.ts): `hello`, calls answered by `result`, a terminal run
-// to its exit, and `/files` list, get and put with their one-shot sockets.
+// to its exit, and `/files` list, get and put with their one-shot sockets,
+// also cut short.
 //
 // Invariants: it checks nothing a relay would (no member, key or scope): it
 // is the trusted peer the host takes a relay for, so what it is refused, the
@@ -21,6 +22,10 @@ export interface WireClient {
   put(sessionId: string, member: string, path: string, tar: Buffer): Promise<Outcome<{ upload: { path: string; files: number; bytes: number } }>>;
   /** One file's bytes (`file`), or a directory's tar. */
   get(sessionId: string, member: string, path: string, file: boolean): Promise<{ body: Buffer } | { error: ApiError }>;
+  /** An upload that says `tar.length` bytes come and hangs up after `sent` of them: how the host ended it. */
+  putCut(sessionId: string, member: string, path: string, tar: Buffer, sent: number): Promise<Outcome<unknown>>;
+  /** A download whose reader hangs up at its first bytes: how many came. */
+  getCut(sessionId: string, member: string, path: string, file: boolean): Promise<{ got: number } | { error: ApiError }>;
   close(): void;
 }
 
@@ -79,6 +84,21 @@ export async function wireClient(socket: string): Promise<WireClient> {
       const body = await drain(r.result.socket);
       const d = await end;
       return d.error ? { error: d.error } : { body };
+    },
+    async putCut(sessionId, member, path, tar, sent) {
+      const id = randomUUID();
+      const end = finished(id);
+      const r = await ask<{ socket: string }>({ t: 'files.put', sessionId, member, path, format: 'tar', bytes: tar.length }, id);
+      if (!r.result) return { error: r.error };
+      const c = net.connect(r.result.socket, () => c.write(tar.subarray(0, sent), () => setTimeout(() => c.destroy(), 1000)));
+      c.on('error', () => {});
+      return end;
+    },
+    async getCut(sessionId, member, path, file) {
+      const r = await ask<{ socket: string }>({ t: 'files.get', sessionId, member, path, file });
+      if (!r.result) return { error: r.error as ApiError };
+      const c = net.connect(r.result.socket);
+      return new Promise((resolve) => c.once('data', (d: Buffer) => (c.destroy(), resolve({ got: d.length }))).once('error', () => resolve({ got: 0 })).once('end', () => resolve({ got: 0 })));
     },
     close: () => sock.destroy(),
   };
