@@ -129,6 +129,12 @@ describe('sandboxDialer', () => {
     const [e2] = await once(sandboxDialer(run, 'file')(80), 'error');
     expect((e2 as NodeJS.ErrnoException).code).toBe('ECONNREFUSED');
   });
+
+  it("refuses a socket that is not the named user's", async () => {
+    const { run } = await runnerEnd([80]);
+    const [e] = await once(sandboxDialer(run, 'r1', { uid: process.getuid!() + 1 })(80), 'error');
+    expect((e as NodeJS.ErrnoException).code).toBe('ECONNREFUSED');
+  });
 });
 
 describe('nothingListens', () => {

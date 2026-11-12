@@ -11,15 +11,15 @@
 // - The proxy keeps connections alive through an http.Agent, which calls a
 //   socket's setKeepAlive, setTimeout, ref and unref on them: a Dialer whose
 //   connection is not a net.Socket provides those.
-// - The preview socket is in a directory its session can write: it is
-//   connected to only when `lstat` says it is a socket, and what it answers is
-//   believed only as far as `ok`: every other answer, or none, is "nothing
-//   listens".
+// - The preview socket is in a directory its session can write: the host
+//   connects to the socket it checked (checked-socket.ts: a socket, the
+//   runners' user's, never through a link), and what it answers is believed
+//   only as far as `ok`: every other answer, or none, is "nothing listens".
 
 import net from 'node:net';
-import { lstatSync } from 'node:fs';
 import { Duplex } from 'node:stream';
 import { type RunRoot, previewSocketFor } from '../ipc.js';
+import { type SocketCheck, connectChecked } from './checked-socket.js';
 
 /** A connection to this port for http.request's `createConnection`: returned at once, emits `connect` or `error` (code ECONNREFUSED when nothing listens). */
 export type Dialer = (port: number) => Duplex;
@@ -40,9 +40,9 @@ const OK = 'ok\n';
 /**
  * The port inside the container of sandbox `id`, through its runner's preview socket below `run`. The runner
  * connects to its own loopback and answers `ok`; a port it never previewed, a closed one and a runner that is not
- * there are all ECONNREFUSED.
+ * there are all ECONNREFUSED. `check`: the user the socket must belong to.
  */
-export function sandboxDialer(run: RunRoot, id: string): Dialer {
+export function sandboxDialer(run: RunRoot, id: string, check: SocketCheck = {}): Dialer {
   const socketPath = previewSocketFor(run, id);
   return (port) => {
     let sock: net.Socket | undefined;
@@ -59,8 +59,7 @@ export function sandboxDialer(run: RunRoot, id: string): Dialer {
     out.connecting = true;
     const fail = (why: string) => out.destroyed || out.destroy(refused(why));
     try {
-      if (!lstatSync(socketPath).isSocket()) throw new Error('not a socket');
-      sock = net.connect(socketPath);
+      sock = connectChecked(socketPath, check);
     } catch {
       process.nextTick(fail, `${socketPath} (no preview socket)`);
     }

@@ -47,8 +47,8 @@ export interface HostPreviews {
 /** `ask` sends to the gateway and returns false when it is not connected. */
 export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview' | 'unpreview' }>) => boolean; tunnel?: Cloudflared;
   probe?: typeof probePort; proxyPort?: number;
-  /** Set on a host whose sessions run in containers: the virtual port table and each sandbox's run root. */
-  sandbox?: { ports: PreviewPorts; run(id: string): RunRoot } }): HostPreviews {
+  /** Set on a host whose sessions run in containers: the virtual port table, each sandbox's run root, and the user its preview socket must belong to. */
+  sandbox?: { ports: PreviewPorts; run(id: string): RunRoot; uid?: number } }): HostPreviews {
   let config: PreviewConfig | undefined;
   let proxy: http.Server | undefined;
   const tunnel = o.tunnel ?? cloudflared();
@@ -58,7 +58,7 @@ export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview'
   /** A virtual port's session, through its runner; a number the table lost meanwhile is a closed port. */
   const dialVirtual: Dialer = (virtual) => {
     const e = sb?.ports.get(virtual);
-    return sb && e ? sandboxDialer(sb.run(e.id), e.id)(e.port) : nothingListens(virtual);
+    return sb && e ? sandboxDialer(sb.run(e.id), e.id, { uid: sb.uid })(e.port) : nothingListens(virtual);
   };
 
   /** `preview` and `unpreview` of a runner in a container. */

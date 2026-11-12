@@ -43,7 +43,10 @@ export interface WireLinkHooks {
   where(sessionId: string): WhereResult | undefined | Promise<WhereResult | undefined>;
   /** Start the session's runner if it is suspended (attach with resume=1). */
   resume(sessionId: string, actor: ApiActor): Promise<{ status: ApiSessionStatus } | { error: ApiError }>;
-  /** The session's fork and owner (`usr_…`); undefined: not a session this host runs, or no fork yet. */
+  /**
+   * The session's fork and owner (`usr_…`), asked before a terminal or `/files` acts in it; undefined: not a session
+   * this host runs, or no fork yet.
+   */
   workspace(sessionId: string): Workspace | undefined | Promise<Workspace | undefined>;
   /** Record an event in the session's log through its writer; resolves with its seq. */
   record?(sessionId: string, type: 'terminal.opened' | 'terminal.closed' | 'files.pushed', data: unknown, actor: ApiActor): Promise<number | undefined>;

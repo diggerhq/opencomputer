@@ -13,7 +13,11 @@
 //   payload, and Podman then says `running` for ever): past its timeout it
 //   kills the payload's cgroup.
 // - A container whose unit is not active is not running, whatever Podman says:
-//   `stale` is how callers ask, and they recreate it.
+//   `stale` is how callers ask, and they recreate it. Recreating costs the
+//   container what it installed, so `stale` is never said of one that only
+//   ended between two looks.
+// - `stop` resolves only for a container that is down: one that outlived
+//   Podman's stop and the kill of its cgroup rejects.
 
 import path from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -167,23 +171,29 @@ export function containers(d: ContainersDeps) {
     }
   }
 
-  /** Kill the payload's cgroup, as the runners' user, and wait for the unit to go (5 s). */
-  async function killPayload(id: string) {
+  /** Kill the payload's cgroup, as the runners' user, and wait for the unit to go (5 s). True when nothing runs in the unit any more. */
+  async function killPayload(id: string): Promise<boolean> {
     const cgroup = (await as.run([SYSTEMCTL, '--user', 'show', '-p', 'ControlGroup', '--value', unitName(id)], { timeoutMs: TIMEOUTS.unit })).trim();
-    if (!cgroup.startsWith('/') || !cgroup.endsWith(`/${unitName(id)}`)) return; // no such unit: nothing is running in it
+    if (!cgroup.startsWith('/') || !cgroup.endsWith(`/${unitName(id)}`)) return true; // no such unit: nothing is running in it
     await as.run(['/bin/sh', '-c', 'for d in "$1"/libpod-payload-*; do [ -e "$d/cgroup.kill" ] && echo 1 > "$d/cgroup.kill"; done; true', 'sh', `/sys/fs/cgroup${cgroup}`],
       { timeoutMs: TIMEOUTS.unit });
-    for (const end = Date.now() + TIMEOUTS.unit; Date.now() < end && (await unitActive(id)); ) await sleep(100);
+    for (const end = Date.now() + TIMEOUTS.unit; ; await sleep(100)) {
+      if (!(await unitActive(id))) return true;
+      if (Date.now() >= end) return false;
+    }
   }
 
-  /** Stop the container: SIGTERM, SIGKILL after `seconds` (15 s in all), then the payload's cgroup if Podman did not manage. Resolves when it is down or was never there. */
+  /**
+   * Stop the container: SIGTERM, SIGKILL after `seconds` (15 s in all), then the payload's cgroup if Podman did not manage.
+   * Resolves when it is down or was never there; rejects, in one line, when its unit is still active after all that.
+   */
   async function stop(id: string, seconds = 10): Promise<void> {
     try {
       await as.podman(stopArgs(id, seconds), { timeoutMs: TIMEOUTS.stop });
     } catch (e) {
       if (absent(e)) return;
       log.warn(`podman stop ${containerName(id)} failed (${(e as Error)?.message ?? e}); killing its cgroup`);
-      await killPayload(id);
+      if (!(await killPayload(id))) throw new Error(`container ${containerName(id)} did not stop: its unit is still active after its cgroup was killed`);
     }
   }
 
@@ -230,8 +240,24 @@ export function containers(d: ContainersDeps) {
     };
   }
 
-  /** Podman says it runs, its unit says nothing does: the unit was killed from outside. `podman start` does nothing to it and `podman stop` never ends. */
-  const stale = async (c: ContainerInfo) => (c.state === 'running' || c.state === 'stopping') && !(await unitActive(c.id));
+  const runs = (state: string | undefined) => state === 'running' || state === 'stopping';
+
+  /**
+   * Podman says it runs, its unit says nothing does: the unit was killed from outside. `podman start` does nothing to it and `podman stop` never ends.
+   * `c` is a moment old, and a container that ends by itself is `exited` to Podman before its unit is gone: so Podman is asked again once the unit
+   * is seen inactive, and only one it still calls running is stale. A unit whose state could not be read (no answer) rejects: that is not "inactive".
+   */
+  async function stale(c: ContainerInfo): Promise<boolean> {
+    if (!runs(c.state)) return false;
+    const inactive = await as.run([SYSTEMCTL, '--user', 'is-active', '--quiet', unitName(c.id)], { timeoutMs: TIMEOUTS.unit }).then(
+      () => false,
+      (e) => {
+        if ((e as { timedOut?: boolean })?.timedOut) throw e;
+        return true;
+      },
+    );
+    return inactive && runs((await inventory()).containers.find((x) => x.id === c.id)?.state);
+  }
 
   /** A command in the running container, as the session's user: its stdout. */
   const execIn = (id: string, argv: string[], o: { dir: string; timeoutMs: number; stdin?: string }) =>

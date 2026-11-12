@@ -120,6 +120,21 @@ describe('containers', () => {
     expect(t.find('is-active').length).toBeGreaterThan(1); // waited for the unit to go
   });
 
+  it('stop: rejects, in one line, when the unit is still active after its cgroup was killed', async () => {
+    const cg = `/user.slice/user-1500.slice/user@1500.service/sp-runner-${ID}.service`;
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => (now += 1000);
+    try {
+      const t = rig((a) => (a[1] === 'stop' ? fail('', true) : a.includes('show') ? `${cg}\n` : ''));
+      const e = await t.c.stop(ID).catch((e) => e);
+      expect(e).toBeInstanceOf(Error);
+      expect(e.message).toBe(`container sp-runner-${ID} did not stop: its unit is still active after its cgroup was killed`);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it('stop: with no unit there is no cgroup to kill', async () => {
     const t = rig((a) => (a[1] === 'stop' ? fail('', true) : ''));
     await t.c.stop(ID);
@@ -165,11 +180,24 @@ describe('containers', () => {
     await expect(rig(() => fail('', true)).c.inventory()).rejects.toThrow();
   });
 
-  it('stale: Podman says running while the unit is not active', async () => {
-    const info = { id: ID, state: 'running', abi: '1', image: '', createdAt: 0 };
-    expect(await rig((a) => (a.includes('is-active') ? fail('') : '')).c.stale(info)).toBe(true);
+  const info = { id: ID, state: 'running', abi: '1', image: '', createdAt: 0 };
+  const ps = (state: string) => JSON.stringify([{ Names: [`sp-runner-${ID}`], State: state, Labels: { 'sp.runner': ID, 'sp.abi': '1' } }]);
+
+  it('stale: Podman says running while the unit is not active, and still says so when asked again', async () => {
+    const inactive = (state: string) => rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps(state) : ''));
+    expect(await inactive('running').c.stale(info)).toBe(true);
+    expect(await inactive('stopping').c.stale(info)).toBe(true);
     expect(await rig().c.stale(info)).toBe(false);
-    expect(await rig((a) => (a.includes('is-active') ? fail('') : '')).c.stale({ ...info, state: 'exited' })).toBe(false);
+    expect(await inactive('running').c.stale({ ...info, state: 'exited' })).toBe(false);
+  });
+
+  it('stale: not a container that ended by itself since the inventory, nor one whose unit gave no answer', async () => {
+    // Listed as running, then it exited (its idle exit, say): the unit is inactive and Podman says exited by now.
+    const ended = rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? ps('exited') : ''));
+    expect(await ended.c.stale(info)).toBe(false);
+    const gone = rig((a) => (a.includes('is-active') ? fail('') : a[1] === 'ps' ? '[]' : ''));
+    expect(await gone.c.stale(info)).toBe(false);
+    await expect(rig((a) => (a.includes('is-active') ? fail('', true) : '')).c.stale(info)).rejects.toMatchObject({ timedOut: true });
   });
 
   it('execIn: as the session, in a directory, with stdin only when given', async () => {
