@@ -87,7 +87,8 @@ export function sandboxPrune(d: PruneDeps) {
     names.forEach((name, i) => {
       // Answered by position, from 1.
       const [dirty, unpushed] = row(out, String(i + 1));
-      const n = Number(unpushed);
+      // Only digits are a count: anything else (`-1`, nothing, a field the script did not print) is not zero.
+      const n = /^\d+$/.test(unpushed ?? '') ? Number(unpushed) : -1;
       if (dirty !== 'clean') reasons.push(`${name} has uncommitted changes`);
       else if (n) reasons.push(n > 0 ? `${name} has ${n} unpushed commit${n > 1 ? 's' : ''}` : `${name}: cannot count unpushed commits`);
     });

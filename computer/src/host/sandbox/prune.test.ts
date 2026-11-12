@@ -85,6 +85,14 @@ describe('pruning a sandboxed thread (work 103, Prune)', () => {
   it('a count git could not make keeps the thread too', async () => {
     const t = rig({ state: '1\tok\tclean\t-1\tsp/C1-1-1\t/x\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n' });
     expect((await t.p.pruneIdle('pat'))[0].problem).toContain('alpha: cannot count unpushed commits');
+    // Only a number of digits is a count: a field that is empty, missing, or anything else keeps the thread.
+    for (const field of ['', 'NaN', 'none', '1e2', ' 0', '0x0']) {
+      const odd = rig({ state: `1\tok\tclean\t${field}\tsp/C1-1-1\t/x\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n` });
+      expect((await odd.p.pruneIdle('pat'))[0]?.problem, JSON.stringify(field)).toContain('alpha: cannot count unpushed commits');
+      expect(odd.records.get(ID)).toBeDefined();
+    }
+    const short = rig({ state: '1\tok\tclean\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n' });
+    expect((await short.p.pruneIdle('pat'))[0]?.problem).toContain('alpha: cannot count unpushed commits');
   });
 
   it('a kept thread is reported at every pass, and asked about again only after an hour or a use', async () => {
