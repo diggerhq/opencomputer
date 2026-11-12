@@ -19,8 +19,12 @@
 //   earlier. Paths and names reach a script as arguments, never as its text.
 // - An upload is checked as it streams (tar-check.ts), unpacked into a hidden
 //   directory beside its target, and renamed into place only when complete;
-//   a failure removes it and changes nothing. A name that exists and was not
-//   uploaded is `path_exists`; uploads in one session are serialized.
+//   a failure removes it and changes nothing. The script that unpacks removes
+//   its own directory when it does not finish, and the next upload of the
+//   session removes what a killed one left: the host's own removal is not
+//   relied on, since the script may outlive the process the host started. A
+//   name that exists and was not uploaded is `path_exists`; uploads in one
+//   session are serialized.
 // - Which top-level names were uploaded, when and by whom, is kept in
 //   `<stateDir>/<sessionId>.json` (0600, the host's); losing it fails safe
 //   (a re-push of that name is refused until it is removed).
@@ -47,6 +51,8 @@ const SCRIPT_WAIT_MS = 30_000;
 /** Seconds a script that carries a file, an archive or an upload may take. */
 const STREAM_WAIT_S = 3600;
 const OUTPUT_MAX = 64 * 2 ** 20;
+/** How long a script that was told to end has before its process is killed: past timeout(1)'s own 2 s (sandbox/podman.ts). */
+const LAST_RESORT_MS = 5_000;
 
 export interface Workspace {
   sessionId: string;
@@ -165,6 +171,20 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
     },
   });
   const placeOf = o.place ?? onHost;
+
+  /**
+   * End a script before its time: SIGTERM, which sudo passes on and timeout(1) turns into the end of the command and
+   * all it started (sandbox/podman.ts), and which a script that cleans up after itself acts on. SIGKILL would stop at
+   * sudo, or at the shell, and leave the rest running. `LAST_RESORT_MS` later the child itself is killed, so that
+   * whoever waits for its exit never waits for good.
+   */
+  function end(p: ChildProcess) {
+    if (p.exitCode !== null || p.signalCode !== null) return;
+    p.kill('SIGTERM');
+    const last = setTimeout(() => p.kill('SIGKILL'), LAST_RESORT_MS);
+    last.unref();
+    p.once('exit', () => clearTimeout(last));
+  }
 
   /** Start `script` with the workspace's root as `$1` and `args` after it. */
   function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): ChildProcess {
@@ -341,7 +361,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
           await (z ? pipeline(body, z, check, sink) : pipeline(body, check, sink));
         } catch (e) {
           failure = e instanceof TarError ? e.error : apiError('invalid_archive', `The body could not be read as ${format}.`, 400);
-          tar.kill('SIGKILL');
+          end(tar);
         }
         const code = await exited;
         // tar quitting first breaks the pipe: its own message says why, the pipe's does not.

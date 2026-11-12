@@ -143,6 +143,52 @@ describe('upload', () => {
   });
 });
 
+describe('an upload that is cut (work 103, C13)', () => {
+  const opc = () => readdirSync(ws.forkPath).filter((n) => n.startsWith('.opc-'));
+  const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** A place whose `mkdir` takes `ms`: a machine under load, where the script has not made its directory when its upload fails. */
+  function slowMkdir(ms: number) {
+    const bin = path.join(root, 'slow-bin');
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, 'mkdir'), `#!/bin/sh\nsleep ${ms / 1000}\nexec /bin/mkdir "$@"\n`, { mode: 0o755 });
+    return createWorkspaceFiles({
+      dir: path.join(root, 'scratch-slow'),
+      place: (w) => ({
+        root: w.forkPath,
+        spawn: (argv) => spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }),
+      }),
+    });
+  }
+
+  it('leaves no directory when the body fails before the script made its own', async () => {
+    const f = slowMkdir(300);
+    const r = await f.upload(ws, 'junk', 'tar', actor, body(Buffer.from('nope'.repeat(300))));
+    expect('error' in r && r.error.code).toBe('invalid_archive');
+    await settle(600);
+    expect(opc()).toEqual([]);
+  });
+
+  it('leaves none when the body stops halfway, and the next upload removes what an earlier one could not', async () => {
+    const big = path.join(root, 'big');
+    mkdirSync(big);
+    writeFileSync(path.join(big, 'a.bin'), Buffer.alloc(300_000, 7));
+    const tar = tarOf(big);
+    const cut = new Readable({ read() {} });
+    cut.push(tar.subarray(0, 100_000));
+    const up = files.upload(ws, 'half', 'tar', actor, cut);
+    await settle(200);
+    cut.destroy(new Error('the request ended'));
+    expect(await up).toMatchObject({ error: { code: 'invalid_archive' } });
+    expect(opc()).toEqual([]);
+    // What a script that was killed outright left (the container stopped, the machine went down).
+    mkdirSync(path.join(ws.forkPath, '.opc-upload-half-0000'));
+    mkdirSync(path.join(ws.forkPath, '.opc-replaced-half-0000'));
+    expect(await files.upload(ws, 'half', 'tar', actor, body(tar))).toMatchObject({ upload: { path: 'half', bytes: 300_000 } });
+    expect(opc()).toEqual([]);
+  });
+});
+
 describe('where the scripts run (work 103, C13)', () => {
   /** A place whose root is the fork under another name: what a container's /workspace is to the host's path. */
   function elsewhere() {
