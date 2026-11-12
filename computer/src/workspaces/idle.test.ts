@@ -1,12 +1,12 @@
 // pruneArtifacts and pruneFork against real git in a temp dir: names with a
 // tab or a newline, which the scripts' line protocol cannot carry.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, lutimesSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { configureAsRunner } from './as-runner.js';
-import { pruneArtifacts } from './idle.js';
+import { allWorktrees, artifactQuestion, lastUsed, pruneArtifacts, stillInside, worktrees } from './idle.js';
 import { pruneFork } from './prune.js';
 
 const tmp = mkdtempSync(path.join(tmpdir(), 'ws-idle-'));
@@ -66,6 +66,72 @@ describe('pruneArtifacts', () => {
     const rel = (await pruneArtifacts(fork)).map((d) => path.relative(fork, d)).sort();
     expect(rel).toEqual(['.wt/a\tb/node_modules', '.wt/c\nd/node_modules', 'alpha/node_modules']);
     expect(existsSync(path.join(fork, '.wt', 'a\tb', 'venv'))).toBe(true);
+  });
+});
+
+describe('links a session left in a fork (work 103 step 7 review)', () => {
+  /** Another person's fork: a worktree `alpha` with an ignored node_modules. */
+  const victim = () => {
+    const other = path.join(tmp, 'other', `v${++forks}`);
+    repo(path.join(other, 'alpha'), 'node_modules/\n', ['node_modules']);
+    return other;
+  };
+
+  it('a .wt that links to another directory: nothing there is listed, asked about or removed', async () => {
+    const fork = newFork();
+    const other = victim();
+    repo(path.join(fork, 'mine'), 'node_modules/\n', ['node_modules']);
+    symlinkSync(other, path.join(fork, '.wt'));
+    expect(await allWorktrees(fork)).toEqual([path.join(fork, 'mine')]);
+    expect((await artifactQuestion(fork)).names).toEqual(['mine']);
+    expect(await pruneArtifacts(fork)).toEqual([path.join(fork, 'mine', 'node_modules')]);
+    expect(existsSync(path.join(other, 'alpha', 'node_modules'))).toBe(true);
+  });
+
+  it('a fork that is itself a link: nothing is listed or removed, and its target\'s use is not its own', async () => {
+    const other = victim();
+    const fork = path.join(tmp, 'sessions', `link${++forks}`);
+    symlinkSync(other, fork);
+    expect(await worktrees(fork)).toEqual([]);
+    expect(await allWorktrees(fork)).toEqual([]);
+    expect(await pruneArtifacts(fork)).toEqual([]);
+    expect(existsSync(path.join(other, 'alpha', 'node_modules'))).toBe(true);
+    expect(await pruneFork(fork)).toBeUndefined(); // only the link goes
+    expect(existsSync(path.join(other, 'alpha', 'node_modules'))).toBe(true);
+    const again = path.join(tmp, 'sessions', `link${++forks}`);
+    symlinkSync(other, again);
+    const old = new Date(Date.now() - 96 * 3600e3);
+    lutimesSync(again, old, old);
+    expect(await lastUsed(again)).toBe(old.getTime()); // the link's own time
+  });
+
+  it('a worktree or a directory in it that is a link is not walked into', async () => {
+    const fork = newFork();
+    const other = victim();
+    repo(path.join(fork, 'mine'), 'node_modules/\n', []);
+    symlinkSync(path.join(other, 'alpha'), path.join(fork, 'linked'));
+    symlinkSync(path.join(other, 'alpha'), path.join(fork, 'mine', 'pkg'));
+    symlinkSync(path.join(other, 'alpha', 'node_modules'), path.join(fork, 'mine', 'node_modules'));
+    expect(await allWorktrees(fork)).toEqual([path.join(fork, 'mine')]);
+    expect((await artifactQuestion(fork)).asked).toEqual([]);
+    expect(await pruneArtifacts(fork)).toEqual([]);
+  });
+
+  it('stillInside: a directory found and then replaced by a link, or below one, is dropped before removal', async () => {
+    const fork = newFork();
+    const other = victim();
+    repo(path.join(fork, 'mine'), 'node_modules/\n', ['node_modules', 'pkg/node_modules']);
+    repo(path.join(fork, '.wt', 'beta'), 'node_modules/\n', ['node_modules']);
+    const q = await artifactQuestion(fork);
+    expect(await stillInside(fork, q.asked)).toEqual(q.asked);
+    // Between the listing and the removal: .wt becomes a link, and so does a directory above an artifact.
+    renameSync(path.join(fork, '.wt'), path.join(fork, 'was-wt'));
+    symlinkSync(path.join(other), path.join(fork, '.wt'));
+    mkdirSync(path.join(other, 'beta', 'node_modules'), { recursive: true });
+    renameSync(path.join(fork, 'mine', 'pkg'), path.join(fork, 'mine', 'was-pkg'));
+    symlinkSync(path.join(other, 'alpha'), path.join(fork, 'mine', 'pkg'));
+    expect(await stillInside(fork, q.asked)).toEqual([path.join(fork, 'mine', 'node_modules')]);
+    expect(await stillInside(path.join(fork, '.wt'), [path.join(fork, '.wt', 'beta', 'node_modules')])).toEqual([]);
   });
 });
 

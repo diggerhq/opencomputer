@@ -81,6 +81,33 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     expect(t.log).toEqual(['podman unshare rm -rf -- /people/pat/sessions/C1-1-1/alpha/node_modules']);
   });
 
+  it('a .wt that links to another workspace: nothing there is listed, asked about or removed', async () => {
+    const t = rig();
+    const other = path.join(t.data, 'people/quinn/sessions/C2-2-2');
+    mkdirSync(path.join(other, 'theirs', 'node_modules'), { recursive: true });
+    writeFileSync(path.join(other, 'theirs', '.git'), 'gitdir: /clones/theirs/.git/worktrees/theirs\n');
+    symlinkSync(other, path.join(path.dirname(t.wt), '.wt'));
+    expect(await t.a.pruneArtifacts(t.record)).toEqual([path.join(t.wt, 'node_modules')]);
+    expect(t.helped[0].args).toEqual(['ws-inspect.sh', '--only=ignored', '/clones', '/workspace', 'alpha']);
+    expect(t.log).toEqual(['podman unshare rm -rf -- /people/pat/sessions/C1-1-1/alpha/node_modules']);
+  });
+
+  it('a directory that became a link while git was asked is not removed', async () => {
+    const t = rig();
+    const other = path.join(t.data, 'people/quinn/sessions/C2-2-2/theirs');
+    mkdirSync(path.join(other, 'node_modules'), { recursive: true });
+    const a = sandboxArtifacts({
+      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
+      helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async (_s, _a, r) => {
+        rmSync(t.wt, { recursive: true });
+        symlinkSync(other, t.wt);
+        return `1\tok\t-\t-\t-\t-\t${ignoredLine(String(r.stdin))}\n`;
+      } }), running: () => false,
+    });
+    expect(await a.pruneArtifacts(t.record)).toEqual([]);
+    expect(t.log).toEqual([]);
+  });
+
   it('nothing is removed when git ignores nothing, or when the thread got a runner while git was asked', async () => {
     const none = rig({ answer: '1\tok\t-\t-\t-\t-\n' });
     expect(await none.a.pruneArtifacts(none.record)).toEqual([]);
