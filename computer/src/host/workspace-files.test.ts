@@ -127,6 +127,16 @@ describe('upload', () => {
     expect(list.entries.find((e) => e.path === 'repo')).toMatchObject({ pushedAt: null });
   });
 
+  it('takes an archive whose unpacking ends before its last bytes are written', async () => {
+    // tar stops at the end-of-archive mark and exits; what follows (padding) is then written to nobody.
+    const padded = Buffer.concat([tarOf(srcDir('v1')), Buffer.alloc(8 * 2 ** 20)]);
+    for (let i = 0; i < 5; i++) {
+      const r = await files.upload(ws, 'padded', 'tar', actor, Readable.from([padded.subarray(0, 4096), padded.subarray(4096)]));
+      if ('error' in r) throw new Error(r.error.message);
+      expect(readFileSync(path.join(ws.forkPath, 'padded/lib/x.txt'), 'utf8')).toBe('v1');
+    }
+  });
+
   it('never overwrites what was not uploaded', async () => {
     const r = await files.upload(ws, 'repo', 'tar', actor, body(tarOf(srcDir('x'))));
     expect('error' in r && r.error.code).toBe('path_exists');

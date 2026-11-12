@@ -33,7 +33,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Readable, Writable } from 'node:stream';
+import { type Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import type { ApiActor, ApiError } from '../protocol.js';
@@ -354,11 +354,22 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
           tar.once('exit', resolve);
           tar.once('error', () => resolve(-1));
         });
+        // tar stops reading at the end-of-archive mark and may exit before the body's last bytes (padding) are written:
+        // its closed input is then no failure of the body, so the rest is checked and written to nobody. A tar that
+        // failed ends the transfer at once.
         const sink = tar.stdin as Writable;
+        let closed = false;
+        sink.once('close', () => (closed = true));
+        const toTar = new Writable({
+          write: (chunk, _enc, cb) => (closed ? cb() : void sink.write(chunk, () => cb())),
+          final: (cb) => (closed ? cb() : void sink.end(() => cb())),
+          destroy: (err, cb) => (sink.destroy(), cb(err)),
+        });
+        tar.once('exit', (code) => code !== 0 && toTar.destroy(new Error('tar failed')));
         const z = format === 'tar+gzip' ? zlib.createGunzip() : format === 'tar+zstd' ? zlib.createZstdDecompress() : undefined;
         let failure: ApiError | undefined;
         try {
-          await (z ? pipeline(body, z, check, sink) : pipeline(body, check, sink));
+          await (z ? pipeline(body, z, check, toTar) : pipeline(body, check, toTar));
         } catch (e) {
           failure = e instanceof TarError ? e.error : apiError('invalid_archive', `The body could not be read as ${format}.`, 400);
           end(tar);
