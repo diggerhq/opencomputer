@@ -11,8 +11,11 @@
 // `user@<uid>.service` may come before the slice.
 //
 // With -caller-uid, a peer of any other uid is no caller: in a session's
-// container every other uid is one of its subordinate ids (its root, and
-// whatever a nested container runs as), and those are not the session.
+// container every other uid is one of its subordinate ids (its root, for
+// one), and those are not the session. The root of a container the session
+// nests as itself is that uid again, the session's own (1500), and is the
+// session: the uid tells a session's user from the rest, never one session
+// from another, which is the cgroup's part.
 //
 // Where sessions run as plain units of one user (no containers), this is
 // routing, not isolation: they share a systemd user manager, and a process
