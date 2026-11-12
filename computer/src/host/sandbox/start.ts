@@ -11,7 +11,15 @@
 //   from; the host path never goes in.
 // - A start that fails leaves no container running and no token socket open;
 //   the record stays, so the next message resumes under the same id (and
-//   creates the container it does not find).
+//   creates the container it does not find). That holds for whoever takes the
+//   started runner on, too: `Started.abandon` is theirs to call.
+// - A transcript lives in the thread's home: `sdkSessionId` goes in only when
+//   the home volume was there before this start. A record alone (a first
+//   start whose Create failed, a volume removed) is a new home.
+// - The thread's workspace directory is made at every start: a first start
+//   may have failed before it was.
+// - A start's error is one line. Why a runner never listened goes to the
+//   host's log, never into the error (it reaches the gateway's reply).
 // - The runner's socket is in a directory the session can write: it is
 //   connected to only when it is a socket, and to the file that was checked
 //   (runner-sockets.ts `dialSocket`, checked-socket.ts).
@@ -26,7 +34,7 @@ import type { Telemetry } from '../../telemetry/emitter.js';
 import type { Dimensions } from '../../telemetry/envelope.js';
 import { coldStart } from '../cold-start.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
-import type { Containers } from './containers.js';
+import type { Containers, Inventory } from './containers.js';
 import type { Records, SandboxRecord } from './records.js';
 
 /** The session's fork, as its runner sees it. */
@@ -60,6 +68,8 @@ export interface Started {
   /** With its token, for the `api` frame. */
   api?: RunnerApi;
   resumed: boolean;
+  /** The runner is not taken on after all: stop its container and close its token socket. Never rejects. */
+  abandon(): Promise<void>;
 }
 
 export type SandboxStarts = ReturnType<typeof sandboxStarts>;
@@ -72,8 +82,8 @@ export function sandboxStarts(d: SandboxStartDeps) {
   const dial = d.dial ?? dialSocket;
 
   /** The container for a thread that has a record: there, of this ABI and not left running by anything; made again otherwise. */
-  async function ready(id: string): Promise<{ recreated: boolean; ms?: number }> {
-    const found = (await c.inventory()).containers.find((x) => x.id === id);
+  async function ready(id: string, inventory: Inventory): Promise<{ recreated: boolean; ms?: number }> {
+    const found = inventory.containers.find((x) => x.id === id);
     if (!found || found.abi !== d.abi || (await c.stale(found))) {
       log.info(`sandbox ${id}: ${!found ? 'no container' : found.abi !== d.abi ? `ABI ${found.abi}, now ${d.abi}` : 'stale'}; creating it again`);
       return { recreated: true, ms: await c.recreate(id) };
@@ -87,27 +97,36 @@ export function sandboxStarts(d: SandboxStartDeps) {
   async function start(spec: SessionSpec, f: Dimensions): Promise<Started> {
     const now = new Date().toISOString();
     const found = d.records.find(spec.owner.dir, spec.key);
-    const { sdkSessionId: _transcript, forkPath: _fork, ...fresh } = spec;
-    const session: SessionSpec = found ? spec : fresh; // a new home has no transcript
+    const { sdkSessionId, forkPath: _fork, ...fresh } = spec;
     const record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
     d.records.write(record);
     const { id } = record;
     const run = d.runRoot(id);
-    const api = await d.mint(session, id, run);
-    const rs: RunnerSpec = { id, session: { ...session, forkPath: WORKSPACE }, socket: socketFor(run, id), api: api && { ...api, token: '' }, version: d.version };
+    let rs: RunnerSpec = { id, socket: socketFor(run, id), version: d.version };
     const data: Record<string, string | number | boolean> = { launch_mode: 'podman', image: imageTag(d.image) };
     const t0 = Date.now();
+    let session: SessionSpec = fresh; // a new home has no transcript
+    let api: RunnerApi | undefined;
     let tokens: { close(): void } | undefined;
+    const abandon = async () => {
+      await c.stop(id).catch((e) => log.warn(`sandbox ${id} not stopped after a failed start: ${e?.message ?? e}`));
+      tokens?.close();
+    };
     const sock = await coldStart({
       up: async () => {
         const launched = tm.start('runner.launched', { ...f, data });
         try {
-          if (found) {
-            const r = await ready(id);
+          await d.mkdir(d.workspace(record));
+          const inventory = found && (await c.inventory());
+          // The transcript is in the home: resumed only into one that was there before this start.
+          if (sdkSessionId && inventory && inventory.volumes.some((v) => v.id === id)) session = { ...fresh, sdkSessionId };
+          api = await d.mint(session, id, run);
+          rs = { ...rs, session: { ...session, forkPath: WORKSPACE }, api: api && { ...api, token: '' } };
+          if (inventory) {
+            const r = await ready(id, inventory);
             data['container.recreated'] = r.recreated;
             if (r.ms !== undefined) data['container.create_ms'] = r.ms;
           } else {
-            await d.mkdir(d.workspace(record));
             data['container.create_ms'] = await c.create(id).catch(async (e) => {
               await c.remove(id); // whatever a failed Create left; the record stays
               throw e;
@@ -126,18 +145,11 @@ export function sandboxStarts(d: SandboxStartDeps) {
         awaitRunner(rs, {
           tm, f, t0,
           dial: () => dial(rs.socket),
-          why: async () => {
-            const why = await c.diagnose(id);
-            log.warn(`sandbox ${id} never listened:\n${why}`);
-            return why.slice(-4000);
-          },
+          late: async () => log.warn(`sandbox ${id} never listened:\n${(await c.diagnose(id)).slice(-4000)}`),
         }),
-      abandon: async () => {
-        await c.stop(id).catch((e) => log.warn(`sandbox ${id} not stopped after a failed start: ${e?.message ?? e}`));
-        tokens?.close();
-      },
+      abandon,
     });
-    return { record, run, sock, session, api, resumed: !!found };
+    return { record, run, sock, session, api, resumed: !!found, abandon };
   }
 
   return { start };

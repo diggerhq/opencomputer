@@ -72,18 +72,19 @@ export async function launchProcess(rs: RunnerSpec, o: LaunchOptions): Promise<n
 
 /**
  * Connect to a launched runner once it listens (`runner.ready`), 30 s at most. `t0`: when its launch began.
- * `dial`: how its socket is reached, when not plainly; `why`: more for the error of one that never listened.
+ * `dial`: how its socket is reached, when not plainly; `late`: called for one that never listened, before the
+ * error, which is always the same one line (it reaches the gateway's reply; a diagnosis belongs in the host's log).
  */
 export async function awaitRunner(
   rs: RunnerSpec,
-  o: { tm: Telemetry; f?: Dimensions; t0: number; dial?: () => Promise<net.Socket | undefined>; why?: () => Promise<string> },
+  o: { tm: Telemetry; f?: Dimensions; t0: number; dial?: () => Promise<net.Socket | undefined>; late?: () => Promise<unknown> },
 ): Promise<net.Socket> {
   const { tm, f = {}, t0 } = o;
   const { value: sock, polls } = await pollReady(o.dial ?? (() => dialRunner(rs.socket).catch(() => undefined)));
   if (!sock) {
     tm.emit('runner.ready', { ...f, outcome: 'timed_out', error_type: 'launch', duration_ms: Date.now() - t0, data: { polls } });
-    const why = await o.why?.();
-    throw new Error(`runner did not start within 30 s${why ? `\n${why}` : ''}`);
+    await o.late?.().catch((e) => log.warn(`runner ${rs.id} never listened, and no diagnosis: ${e?.message ?? e}`));
+    throw new Error('runner did not start within 30 s');
   }
   const launchMs = Date.now() - t0;
   log.info(`runner ${rs.id} up for ${rs.session?.key ?? 'the pool'} in ${launchMs} ms`);
