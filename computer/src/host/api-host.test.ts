@@ -161,13 +161,23 @@ describe('apiHost', () => {
     t.a.onGateway(welcome(4));
     t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0 });
     let ws: unknown = 'pending';
-    void Promise.resolve(t.a.hooks.workspace(S)).then((w) => (ws = w));
+    void Promise.resolve(t.a.hooks.workspace(S, 'files')).then((w) => (ws = w));
     await tick(5);
     expect(ws).toBe('pending');
     forkDone();
     await tick(5);
     expect(ws).toEqual({ forkPath: '/forks/s1', owner: 'usr_1' });
-    expect(await t.a.hooks.workspace('cs_unknown0000000')).toBeUndefined();
+    expect(await t.a.hooks.workspace('cs_unknown0000000', 'files')).toBeUndefined();
+    await t.a.stop();
+  });
+
+  it('a session the host refuses a terminal or files for gets the refusal, not its fork (work 103)', async () => {
+    const t = setup({ start: async () => 'idle', forkPath: () => '/forks/s1', refuse: (key, what) => (what === 'terminal' ? `no terminal for ${key}` : undefined) });
+    t.a.onGateway(welcome(4));
+    t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0 });
+    await tick(5);
+    expect(await t.a.hooks.workspace(S, 'terminal')).toEqual({ error: expect.objectContaining({ code: 'unavailable', message: `no terminal for ${spec.key}`, status: 503 }) });
+    expect(await t.a.hooks.workspace(S, 'files')).toEqual({ forkPath: '/forks/s1', owner: 'usr_1' });
     await t.a.stop();
   });
 

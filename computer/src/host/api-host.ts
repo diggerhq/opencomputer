@@ -77,6 +77,8 @@ export interface ApiHostDeps {
   buffered?(): number;
   /** Stop runner `runnerId` now (its session's epoch moved on): interrupt it, tell it to exit within 8 s, kill it after 10 s. */
   retire?(runnerId: string): Promise<unknown>;
+  /** Why this host opens no terminal, or serves no `/files`, for the session `key`; undefined when it does (sandbox/not-yet.ts). */
+  refuse?(key: string, what: 'terminal' | 'files'): string | undefined;
   /** Start the session's runner (or find it running), then deliver `msg`; resolves with its status. */
   start(spec: SessionSpec, o: StartOptions): Promise<SessionStatus | undefined>;
   /** The fork of the session's runner, if it reported one. */
@@ -267,9 +269,11 @@ export function apiHost(d: ApiHostDeps) {
         (e) => ({ error: apiError('internal', String(e?.message ?? e), 500, { retryable: true }) }),
       );
     },
-    async workspace(sessionId) {
+    async workspace(sessionId, what) {
       await forking.get(sessionId); // a push right after the create: the fork it goes to is being made
       const spec = specs.get(sessionId);
+      const no = spec && d.refuse?.(spec.key, what);
+      if (no) return { error: apiError('unavailable', no, 503) };
       const forkPath = spec && (d.forkPath?.(spec.key) ?? spec.forkPath);
       const owner = spec?.owner.userId;
       return forkPath && owner ? { forkPath, owner } : undefined;

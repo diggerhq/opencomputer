@@ -35,14 +35,18 @@ import type { WorkspaceFiles } from './workspace-files.js';
 export const WIRE_DIR = path.join(HOST_RUN, 'wire');
 
 type Workspace = { forkPath: string; owner: string };
+type Refusable = Workspace | { error: ApiError } | undefined;
 
 export interface WireLinkHooks {
   /** The session's writer, if this host runs the session. */
   where(sessionId: string): WhereResult | undefined | Promise<WhereResult | undefined>;
   /** Start the session's runner if it is suspended (attach with resume=1). */
   resume(sessionId: string, actor: ApiActor): Promise<{ status: ApiSessionStatus } | { error: ApiError }>;
-  /** The session's fork and owner (`usr_…`); undefined: not a session this host runs, or no fork yet. */
-  workspace(sessionId: string): Workspace | undefined | Promise<Workspace | undefined>;
+  /**
+   * The session's fork and owner (`usr_…`), asked before a terminal or `/files` acts in it; undefined: not a session
+   * this host runs, or no fork yet; an error: the host refuses that there (work 103: a session in a container).
+   */
+  workspace(sessionId: string, what: 'terminal' | 'files'): Refusable | Promise<Refusable>;
   /** Record an event in the session's log through its writer; resolves with its seq. */
   record?(sessionId: string, type: 'terminal.opened' | 'terminal.closed' | 'files.pushed', data: unknown, actor: ApiActor): Promise<number | undefined>;
   /** One relay telemetry event (`wire.*`, or an opc `cli.*` event), checked and emitted by api-meter.ts. */
@@ -106,8 +110,9 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         return 'error' in r ? { error: r.error } : { result: r };
       }
       case 'terminal.open': {
-        const ws = await hooks.workspace(m.sessionId);
+        const ws = await hooks.workspace(m.sessionId, 'terminal');
         if (!ws) return { error: sessionNotFound() };
+        if ('error' in ws) return { error: ws.error };
         if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         const r = await o.terminals.open(
           { sessionId: m.sessionId, cwd: ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
@@ -136,8 +141,9 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         if (terms.get(m.terminalId)?.peer !== peer) return { error: terminalNotFound() };
         return o.terminals.close(m.terminalId) ? { result: {} } : { error: terminalNotFound() };
       case 'files.list': {
-        const ws = await hooks.workspace(m.sessionId);
+        const ws = await hooks.workspace(m.sessionId, 'files');
         if (!ws) return { error: sessionNotFound() };
+        if ('error' in ws) return { error: ws.error };
         const r = await o.files.list({ sessionId: m.sessionId, forkPath: ws.forkPath }, m);
         return 'error' in r ? { error: r.error } : { result: r };
       }
@@ -156,8 +162,9 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
   /** `/files` get and put: `result {socket…}` now, `files.done` when the bytes have moved. */
   async function transfer(peer: net.Socket, m: Extract<WireToHost, { t: 'files.get' | 'files.put' }>) {
     const fail = (error: ApiError) => send(peer, { t: 'result', id: m.id, error } satisfies HostToWire);
-    const ws = await hooks.workspace(m.sessionId);
+    const ws = await hooks.workspace(m.sessionId, 'files');
     if (!ws) return fail(sessionNotFound());
+    if ('error' in ws) return fail(ws.error);
     const where = { sessionId: m.sessionId, forkPath: ws.forkPath };
     let out: (() => { stream: Readable; done: Promise<void> }) | undefined;
     let extra: Record<string, unknown> = {};
