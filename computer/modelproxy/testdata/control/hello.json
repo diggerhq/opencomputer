@@ -1,0 +1,1 @@
+{"t":"hello","version":"3b8618e","profiles":{"openai-key":{"client":{"codex":"api-key"}},"plain":{}},"providers":["openai-key","plain"],"bindings":[{"unit":"sp-runner-abc123.service","sessionKey":"T0/C0/1700000000.000100","profile":"openai-key","key":"k1"},{"unit":"sp-runner-def456.service","sessionKey":"T0/C0/1700000000.000200"}]}
