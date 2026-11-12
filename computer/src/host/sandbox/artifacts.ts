@@ -5,7 +5,9 @@
 //
 // Invariants:
 // - The host only lists (readdir) and looks (lstat) in a workspace and a
-//   registry, and follows no link there. Git is asked in a helper container
+//   registry, and follows no link there: idle.ts walks only directories that
+//   lstat says are no links, and `stillInside` resolves what is to be removed
+//   once more after git answered. Git is asked in a helper container
 //   that sees the workspace read-only, with no network.
 // - Directories are removed inside Podman's user namespace (`podman unshare
 //   rm -rf`): what a session made as root belongs to subordinate uids.
@@ -17,7 +19,7 @@
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '../../log.js';
-import { artifactQuestion, artifactsIdle, ignoredArtifacts } from '../../workspaces/idle.js';
+import { artifactQuestion, artifactsIdle, ignoredArtifacts, stillInside } from '../../workspaces/idle.js';
 import type { ScriptRunner } from '../../workspaces/script-runner.js';
 import { CLONES, type Mounts, WORKSPACE } from './mounts.js';
 import type { AsRunner } from './podman.js';
@@ -66,8 +68,10 @@ export function sandboxArtifacts(d: ArtifactsDeps) {
       ...Object.keys(r.repos ?? {}).map((name) => ({ src: m.registry(r, name), dst: `${CLONES}/${name}/.git/worktrees` })),
     ];
     const out = await d.helper(r.person, binds).run('ws-inspect.sh', ['--only=ignored', CLONES, WORKSPACE, ...q.names], { stdin: q.lines, timeoutMs: INSPECT_TIMEOUT_MS });
-    const ignored = ignoredArtifacts(q, out);
-    if (!ignored.length || d.running(r.id)) return [];
+    // No runner first, then the paths: a thread that is not running cannot move them after they were resolved.
+    if (d.running(r.id)) return [];
+    const ignored = await stillInside(ws, ignoredArtifacts(q, out));
+    if (!ignored.length) return [];
     await d.as.podman(unshareRmArgs(ignored), { timeoutMs: REMOVE_TIMEOUT_MS });
     return ignored;
   }

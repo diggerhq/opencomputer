@@ -3,14 +3,29 @@
 // 1 GiB, the bulk of a fork on disk, and an install or build brings each back.
 // prune.ts prunes whole forks.
 //
-// Invariant: what is looked for in a fork (worktrees, artifact directories) is
-// found with readdir and lstat alone and no link is followed: a session wrote
-// everything there. host/sandbox/artifacts.ts does the same pruning for a
-// thread that runs in a container, with these same lists.
+// Invariants (a session wrote everything in a fork, and can leave a link
+// anywhere in it, to another person's tree for one):
+// - What is looked for in a fork (worktrees, artifact directories) is found
+//   with readdir and lstat alone, and a directory is listed only after lstat
+//   said it is a directory and not a link, at every hop from the fork down:
+//   the fork itself, its `.wt`, each worktree, each directory below one (the
+//   last two by the type readdir gives, which is the entry's own). A link is
+//   never listed, walked into or timed through.
+// - That look and the listing after it are two calls: a live session can swap
+//   a directory for a link in between. So nothing is removed on the walk's
+//   word alone: just before removal `stillInside` resolves every directory
+//   again and drops one whose real path is no longer the same path below the
+//   fork. What is left is the time between that check and the removal itself,
+//   and only for a session that runs then: pruneIdleArtifacts skips the forks
+//   with a runner when the pass began, the sandbox asks again right before it
+//   removes (host/sandbox/artifacts.ts). On the host path the removal runs as
+//   the runners' user, which a session there already is.
+// host/sandbox/artifacts.ts does the same pruning for a thread that runs in a
+// container, with these same lists and the same check.
 
 import { execFile } from 'node:child_process';
 import { lstatSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { log } from '../log.js';
@@ -45,21 +60,29 @@ const git = async (cwd: string, args: string[]) => {
   return (await exec(c.cmd, c.args, { cwd, env: c.env })).stdout.trim();
 };
 
-const mtime = async (p: string) => (await stat(p).catch(() => undefined))?.mtimeMs ?? 0;
+/** The entry's own time: a link's, not its target's. */
+const mtime = async (p: string) => (await lstat(p).catch(() => undefined))?.mtimeMs ?? 0;
 
+/** True for a directory that is not a link. The last name only: the caller has looked at the ones above. */
+export const realDir = async (p: string) => (await lstat(p).catch(() => undefined))?.isDirectory() ?? false;
+
+/** The worktrees directly in `fork`, which is a fork or its `.wt`; none when it is a link or no directory. */
 export async function worktrees(fork: string) {
+  if (!(await realDir(fork))) return [];
   const entries = await readdir(fork, { withFileTypes: true }).catch(() => []);
   return entries.filter((d) => d.isDirectory() && there(path.join(fork, d.name, '.git'))).map((d) => path.join(fork, d.name));
 }
 
 /** A fork's worktrees, and those agents add under its `.wt/` (git worktree add .wt/<name>). */
 export async function allWorktrees(fork: string) {
+  if (!(await realDir(fork))) return []; // `.wt` below a link is somewhere else
   return [...(await worktrees(fork)), ...(await worktrees(path.join(fork, '.wt')))];
 }
 
 /** Latest use: the fork record (touchFork) and each worktree's index and HEAD log (git activity). */
 export async function lastUsed(fork: string) {
-  const times = [await mtime(fork), await mtime(path.join(fork, FORK_FILE))];
+  const times = [await mtime(fork)];
+  if (await realDir(fork)) times.push(await mtime(path.join(fork, FORK_FILE)));
   for (const wt of await allWorktrees(fork)) {
     for (const f of ['index', 'logs/HEAD']) {
       const p = await git(wt, ['rev-parse', '--git-path', f]).catch(() => '');
@@ -69,10 +92,23 @@ export async function lastUsed(fork: string) {
   return Math.max(...times);
 }
 
+/**
+ * Of `dirs`, found below `fork` by the walk, those still where they were found: the fork is a directory and no
+ * link, and the real path of each is the same path below the fork's, so no name from the fork down is a link now.
+ * Asked just before removal (the header says what that leaves).
+ */
+export async function stillInside(fork: string, dirs: string[]): Promise<string[]> {
+  const root = (await realDir(fork)) ? await realpath(fork).catch(() => undefined) : undefined;
+  if (!root) return [];
+  const real = await Promise.all(dirs.map((dir) => realpath(dir).catch(() => undefined)));
+  return dirs.filter((dir, i) => real[i] === path.join(root, path.relative(fork, dir)));
+}
+
 /** The artifact directories under `dir` (not below one another, not in .git), at most `depth` levels down. */
 async function findArtifacts(dir: string, depth = ARTIFACT_DEPTH): Promise<string[]> {
   const found: string[] = [];
   for (const d of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    // isDirectory is the entry's own type: false for a link to a directory, so `p` is walked into only as a real one.
     if (!d.isDirectory() || d.name === '.git') continue;
     const p = path.join(dir, d.name);
     if (isArtifact(dir, d.name)) found.push(p);
@@ -134,7 +170,7 @@ export async function pruneArtifacts(forkPath: string): Promise<string[]> {
   const s = hostScripts(clonesOf(forkPath));
   const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...q.names], { stdin: q.lines, timeoutMs: 0 });
   const removed: string[] = [];
-  for (const dir of ignoredArtifacts(q, out)) {
+  for (const dir of await stillInside(forkPath, ignoredArtifacts(q, out))) {
     await rm(dir);
     removed.push(dir);
   }
