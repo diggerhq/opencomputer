@@ -1,6 +1,6 @@
 // bin/ws-*.sh against real git in a temp dir: the line each prints, and that a second run gives the same.
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -73,6 +73,25 @@ describe('workspace scripts', () => {
     expect(existsSync(path.join(clones, 'beta', '.not-reached'))).toBe(false);
   });
 
+  it('ws-clone.sh renames over an empty directory and never moves the clone into one that is not', async () => {
+    // As rename(2) did before the script: an empty directory is replaced.
+    mkdirSync(path.join(clones, 'empty'));
+    expect(await run('ws-clone.sh', [clones, 'empty', remote, '', ''])).toBe('empty\tok\tcloned\n');
+    expect(existsSync(path.join(clones, 'empty', '.git'))).toBe(true);
+    // One with something in it fails the rename, with mv's message, and is left as it was.
+    mkdirSync(path.join(clones, 'full'));
+    writeFileSync(path.join(clones, 'full', 'mine.txt'), 'x');
+    const [status, why] = rows(await run('ws-clone.sh', [clones, 'full', remote, '', '', 'touch .not-reached'])).get('full')!;
+    expect([status, why]).toEqual(['failed', expect.stringMatching(/^mv: .*full/)]);
+    expect(execFileSync('ls', ['-A', path.join(clones, 'full')], { encoding: 'utf8' })).toBe('mine.txt\n');
+  });
+
+  it('ws-clone.sh runs setup commands without GIT_TERMINAL_PROMPT, as before the script', async () => {
+    const args = [clones, 'gamma', remote, '', '', 'echo "${GIT_TERMINAL_PROMPT-unset}" >.git/prompt'];
+    expect(await run('ws-clone.sh', args)).toBe('gamma\tok\tcloned\n');
+    expect(readFileSync(path.join(clones, 'gamma', '.git', 'prompt'), 'utf8')).toBe('unset\n');
+  });
+
   it('ws-sync.sh names the base, fetches, and only ever fast-forwards the checkout', async () => {
     expect(await run('ws-sync.sh', ['--only=base', clones, 'alpha'])).toBe('alpha\tok\tmain\n');
     expect(await run('ws-sync.sh', ['--only=forward', clones, 'alpha', 'main'])).toMatch(/^alpha\tok\tcurrent\t[0-9a-f]{7,}\t\n$/);
@@ -141,20 +160,21 @@ describe('workspace scripts', () => {
     const wt = path.join(workspace, 'alpha');
     const common = git(wt, 'rev-parse', '--git-common-dir');
     const state = () => run('ws-inspect.sh', ['--only=state', clones, workspace, 'alpha']);
-    expect(await state()).toBe(`alpha\tok\tclean\t0\tsp/k1\t${common}\n`);
-    expect(await state()).toBe(`alpha\tok\tclean\t0\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t0\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t0\tsp/k1\t${common}\n`);
     writeFileSync(path.join(wt, 'new.txt'), 'n');
-    expect(await state()).toBe(`alpha\tok\tdirty\t-\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tdirty\t-\tsp/k1\t${common}\n`);
     git(wt, 'add', '-A');
     git(wt, 'commit', '--quiet', '-m', 'local');
-    expect(await state()).toBe(`alpha\tok\tclean\t1\tsp/k1\t${common}\n`);
+    expect(await state()).toBe(`1\tok\tclean\t1\tsp/k1\t${common}\n`);
     mkdirSync(path.join(wt, 'node_modules'));
     mkdirSync(path.join(wt, 'pkg', 'node_modules'), { recursive: true });
     mkdirSync(path.join(wt, 'venv'));
-    const asked = 'alpha\tnode_modules\nalpha\tvenv\nother\tnode_modules\nalpha\tpkg/node_modules\n';
-    expect(await run('ws-inspect.sh', ['--only=ignored', clones, workspace, 'alpha'], asked)).toBe('alpha\tok\t-\t-\t-\t-\tnode_modules\tpkg/node_modules\n');
+    // Answered by position: the worktree's among the arguments, the directory's line on stdin.
+    const asked = '1\tnode_modules\n1\tvenv\n2\tnode_modules\n1\tpkg/node_modules\n';
+    expect(await run('ws-inspect.sh', ['--only=ignored', clones, workspace, 'alpha'], asked)).toBe('1\tok\t-\t-\t-\t-\t1\t4\n');
     expect(await run('ws-inspect.sh', [clones, workspace, 'alpha', 'missing'], asked)).toBe(
-      `alpha\tok\tclean\t1\tsp/k1\t${common}\tnode_modules\tpkg/node_modules\nmissing\tok\tdirty\t-\t\t\n`,
+      `1\tok\tclean\t1\tsp/k1\t${common}\t1\t4\n2\tok\tdirty\t-\t\t\n`,
     );
   });
 
@@ -173,6 +193,23 @@ describe('workspace scripts', () => {
     expect(e.killed).toBe(true);
     expect(Date.now() - started).toBeLessThan(10_000);
   });
+
+  it('a script signalled while it starts a command leaves none running', async () => {
+    // The signal is sent as soon as the script says it is about to start one: it lands around the fork.
+    const script = path.join(tmp, 'starting.sh');
+    writeFileSync(script, '. "$1/ws-lib.sh"\necho ready\nwhile :; do ws_in / sleep 30; done\n');
+    const bin = path.resolve(import.meta.dirname, '..', '..', 'bin');
+    const started = Date.now();
+    for (let n = 0; n < 20; n++) {
+      const code = await new Promise((resolve) => {
+        const p = spawn('sh', [script, bin], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+        p.stdout.once('data', () => p.kill('SIGTERM'));
+        p.on('close', resolve); // not before the sleep, which holds stdout, is gone too
+      });
+      expect(code).toBe(143);
+    }
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 20_000);
 
   it('a wrong call is a ScriptError with the exit code and stderr', async () => {
     const e = await run('ws-fetch.sh', []).catch((e) => e);

@@ -81,22 +81,31 @@ async function findArtifacts(dir: string, depth = ARTIFACT_DEPTH): Promise<strin
  * ones are kept. Returns the directories removed.
  */
 export async function pruneArtifacts(forkPath: string): Promise<string[]> {
-  const found: { wt: string; dirs: string[] }[] = [];
+  const wts: string[] = [];
+  /** The directories asked about, in the order of the lines on stdin. */
+  const asked: string[] = [];
+  let lines = '';
   for (const wt of await allWorktrees(forkPath)) {
-    const dirs = await findArtifacts(wt);
-    if (dirs.length) found.push({ wt, dirs });
-  }
-  if (!found.length) return [];
-  // ws-inspect.sh says which git ignores; tracked files are never ignored.
-  const s = hostScripts(clonesOf(forkPath));
-  const name = (wt: string) => path.relative(forkPath, wt);
-  const asked = found.flatMap(({ wt, dirs }) => dirs.map((dir) => `${name(wt)}\t${path.relative(wt, dir)}\n`)).join('');
-  const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...found.map(({ wt }) => name(wt))], { stdin: asked, timeoutMs: 0 });
-  const removed: string[] = [];
-  for (const { wt, dirs } of found) {
-    const ignored = new Set(row(out, name(wt)).slice(4));
+    // A path with a tab or a newline does not fit a line of the script's input: not asked about, so kept.
+    const dirs = (await findArtifacts(wt)).filter((dir) => !/[\t\n]/.test(path.relative(wt, dir)));
+    if (!dirs.length) continue;
+    wts.push(wt);
     for (const dir of dirs) {
-      if (!ignored.has(path.relative(wt, dir))) continue;
+      asked.push(dir);
+      lines += `${wts.length}\t${path.relative(wt, dir)}\n`;
+    }
+  }
+  if (!asked.length) return [];
+  // ws-inspect.sh says which git ignores; tracked files are never ignored. It answers a worktree by its
+  // position and a directory by its line, both from 1: a name with a tab would not survive being printed.
+  const s = hostScripts(clonesOf(forkPath));
+  const names = wts.map((wt) => path.relative(forkPath, wt));
+  const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...names], { stdin: lines, timeoutMs: 0 });
+  const removed: string[] = [];
+  for (const n of wts.keys()) {
+    for (const line of row(out, String(n + 1)).slice(4)) {
+      const dir = asked[Number(line) - 1];
+      if (!dir) continue;
       await rm(dir);
       removed.push(dir);
     }
