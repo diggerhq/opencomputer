@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { launchCommand, runnerCommand } from './launch.js';
+import { launchCommand, runnerCommand, unitFailure } from './launch.js';
 import { RUNNER_ENV, dropEmpty } from '../runner-env.js';
 
 describe('runnerCommand', () => {
@@ -88,5 +88,14 @@ describe('dropEmpty', () => {
     const env: NodeJS.ProcessEnv = { SP_CODEX_BIN: '', SP_MODEL_SOCKET: '/m', OTHER: '' };
     dropEmpty(env);
     expect(env).toEqual({ SP_MODEL_SOCKET: '/m', OTHER: '' });
+  });
+});
+
+describe('unitFailure', () => {
+  it('says the time only when the time ran out, else what systemd-run said last', () => {
+    expect(unitFailure({ timedOut: true, stderr: '' }, 20_000)).toBe('no answer in 20000 ms');
+    expect(unitFailure({ timedOut: false, stderr: 'a\nFailed to start transient service unit: no\n', code: 1 }, 20_000)).toBe('Failed to start transient service unit: no');
+    expect(unitFailure({ timedOut: false, stderr: '', code: 3 }, 20_000)).toBe('exit 3');
+    expect(unitFailure({ timedOut: false, stderr: '' }, 20_000)).toBe('exit by a signal');
   });
 });

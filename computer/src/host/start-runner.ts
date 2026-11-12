@@ -15,6 +15,8 @@
 //   argv or the environment.
 // - A sandboxed runner serves the thread of its record (work 103): the key is
 //   the record's, and a report naming another stops the runner.
+// - A sandboxed runner that started and was not adopted (it exited meanwhile,
+//   or adoption refused it) leaves no container running and no token socket.
 
 import type net from 'node:net';
 import { randomBytes } from 'node:crypto';
@@ -159,11 +161,18 @@ export function runnerStarts(d: StartDeps) {
   /** Work 103: the thread's runner in its container; a new thread and a resume alike. Never the pool (until spares are containers). */
   async function startSandboxed(sandbox: SandboxStarts, spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
     const s = await sandbox.start(spec, f);
-    if (s.sock.destroyed) throw new Error('runner exited while it started');
-    const r = await adopt(s.record.id, s.sock, { first, harness: spec.harness, sandbox: { record: s.record, run: s.run } });
-    if (s.api) send(s.sock, { t: 'api', api: s.api } satisfies HostToRunner); // the token stays out of boot.env
-    r.cold = { resumed: !!s.session.sdkSessionId };
-    return r;
+    try {
+      if (s.sock.destroyed) throw new Error('runner exited while it started');
+      const r = await adopt(s.record.id, s.sock, { first, harness: spec.harness, sandbox: { record: s.record, run: s.run } });
+      if (s.api) send(s.sock, { t: 'api', api: s.api } satisfies HostToRunner); // the token stays out of boot.env
+      r.cold = { resumed: !!s.session.sdkSessionId };
+      return r;
+    } catch (e) {
+      // Not taken on: nothing of the start stays (its container may still run, its token socket is open).
+      s.sock.destroy();
+      await s.abandon();
+      throw e;
+    }
   }
 
   async function startRunner(spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
