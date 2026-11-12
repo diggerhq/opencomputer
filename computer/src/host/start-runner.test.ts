@@ -23,7 +23,8 @@ function rig(sock: net.Socket) {
     sandbox,
     serveTokens: () => ({ close: () => void log.push('tokens closed') }),
     creds: () => undefined, forRunner: () => undefined,
-    register: () => void log.push('registered'), closed: () => {}, message: () => {}, exit: () => void log.push('exit sent'),
+    register: () => void log.push('registered'), closed: () => void log.push('closed'), message: (_r: unknown, m: { t: string }) => void log.push(`message ${m.t}`), exit: () => void log.push('exit sent'),
+    stopSandbox: async (id: string) => void log.push(`stopped ${id}`),
   } as unknown as StartDeps;
   return { log, start: () => runnerStarts(d).startRunner(spec, {}),
     /** Host restart: the runner found in the record's container (sandbox/sweep.ts). */
@@ -57,6 +58,20 @@ describe('a sandboxed start that is not taken on', () => {
     expect(t.log).toEqual(['registered']);
     sock.destroy();
   });
+
+  it('a runner that reports another thread once it was taken on is not asked to go: its socket is destroyed and its container stopped', async () => {
+    const p = await pair();
+    const t = rig(p.host);
+    await t.start();
+    send(p.runner, { t: 'report', report: { key: 'C1:1.1', status: 'idle', forkPath: '/workspace' } });
+    send(p.runner, { t: 'report', report: { key: 'C1:9.9', status: 'idle', forkPath: '/workspace' } });
+    send(p.runner, { t: 'token', id: 'x' }); // what it sends after is never read
+    await new Promise((r) => p.host.once('close', r));
+    await new Promise((r) => setImmediate(r));
+    expect(p.host.destroyed).toBe(true);
+    expect(t.log).toEqual(['registered', 'message report', `stopped ${record.id}`, 'tokens closed', 'closed']);
+    p.close();
+  });
 });
 
 describe('a container found running after a host restart', () => {
@@ -67,7 +82,7 @@ describe('a container found running after a host restart', () => {
     const t = rig(p.host);
     send(p.runner, report('C1:1.1'));
     expect(await t.takeBack(p.host)).toMatchObject({ id: record.id, key: 'C1:1.1' });
-    expect(t.log).toEqual(['registered']);
+    expect(t.log).toEqual(['registered', 'message report']);
     p.close();
   });
 
@@ -78,7 +93,7 @@ describe('a container found running after a host restart', () => {
       send(p.runner, first);
       await expect(t.takeBack(p.host)).rejects.toThrow(/it reports C1:9.9, not its record's C1:1.1|it says it is a spare/); // at once, not at the adoption timeout
       await new Promise((r) => p.host.once('close', r));
-      expect(t.log).toEqual(['exit sent', 'tokens closed']);
+      expect(t.log).toEqual([`stopped ${record.id}`, 'tokens closed']);
       p.close();
     }
   });
