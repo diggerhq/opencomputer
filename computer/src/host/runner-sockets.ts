@@ -10,7 +10,7 @@
 
 import net from 'node:net';
 import path from 'node:path';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import type { HostToRunner, RunnerSpec } from '../protocol.js';
 import { type RunRoot, pidFileFor, runnersDir, secretsFor, send } from '../ipc.js';
 import { log } from '../log.js';
@@ -20,6 +20,7 @@ import { launch } from './launch.js';
 import { pollReady } from './cold-start.js';
 import { rm } from '../workspaces/as-runner.js';
 import { API_SOCK } from './runner-api.js';
+import { type SocketCheck, connectChecked } from './checked-socket.js';
 
 /** Open a connection to a runner's socket; rejects if nothing listens there. */
 export function dialRunner(socket: string): Promise<net.Socket> {
@@ -35,16 +36,24 @@ export function dialRunner(socket: string): Promise<net.Socket> {
 }
 
 /**
- * `dialRunner` for a socket in a directory a session can write (work 103): connected to only when it is a socket,
- * never through a link the session put there. Undefined when nothing is there or nothing answers.
+ * `dialRunner` for a socket in a directory a session can write (work 103): connected to only when it is a socket
+ * (of `check.uid`, when given), never through a link the session put there, and to the very file that was checked
+ * (checked-socket.ts). Undefined when nothing is there or nothing answers.
  */
-export async function dialSocket(socket: string): Promise<net.Socket | undefined> {
-  try {
-    if (!lstatSync(socket).isSocket()) return undefined;
-  } catch {
-    return undefined;
-  }
-  return dialRunner(socket).catch(() => undefined);
+export function dialSocket(socket: string, check: SocketCheck = {}): Promise<net.Socket | undefined> {
+  return new Promise((resolve) => {
+    let sock: net.Socket;
+    try {
+      sock = connectChecked(socket, check);
+    } catch {
+      return resolve(undefined);
+    }
+    sock.once('error', () => resolve(undefined));
+    sock.once('connect', () => {
+      sock.on('error', (e) => log.warn('runner socket', path.basename(socket), e.message));
+      resolve(sock);
+    });
+  });
 }
 
 export interface LaunchOptions { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; f?: Dimensions }

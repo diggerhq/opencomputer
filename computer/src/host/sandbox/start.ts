@@ -13,7 +13,8 @@
 //   the record stays, so the next message resumes under the same id (and
 //   creates the container it does not find).
 // - The runner's socket is in a directory the session can write: it is
-//   connected to only when it is a socket (runner-sockets.ts `dialSocket`).
+//   connected to only when it is a socket, and to the file that was checked
+//   (runner-sockets.ts `dialSocket`, checked-socket.ts).
 
 import type net from 'node:net';
 import { randomBytes } from 'node:crypto';

@@ -71,7 +71,8 @@ import {
 } from '../workspaces/index.js';
 import { sandboxRunFor, send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
-import { closed, rediscover, retire } from './runner-sockets.js';
+import { closed, dialSocket, rediscover, retire } from './runner-sockets.js';
+import { checkedDial } from './remote-port.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
 import { credentialFingerprint } from '../credential-fingerprint.js';
@@ -171,7 +172,7 @@ function sandboxHost() {
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
   });
   return sandboxStarts({ tm, records, containers: all, runRoot, image, abi, version: VERSION,
-    mint: (spec, id, run) => api.mint(spec, id, run), workspace: sandboxWorkspace, mkdir: mkdirAsRunner });
+    mint: (spec, id, run) => api.mint(spec, id, run), workspace: sandboxWorkspace, mkdir: mkdirAsRunner, dial: (socket) => dialSocket(socket, { uid: user.uid }) });
 }
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
@@ -293,7 +294,9 @@ function toGateway(m: HostToGateway) {
   link.send(m);
 }
 const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-api'), runDir: path.join(HOST_RUN, 'host-api'),
-  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner, forkPath: (key) => runners.get(key)?.report?.forkPath,
+  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner,
+  dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
+  forkPath: (key) => runners.get(key)?.report?.forkPath,
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
     stateDir: path.join(HOST_DATA, 'state', 'uploads') }), telemetry: tm });
 setInterval(() => {
