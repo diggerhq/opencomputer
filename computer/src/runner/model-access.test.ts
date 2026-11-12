@@ -54,7 +54,7 @@ describe('noRunnerModelAccess (work 097): the public build, managed credentials 
   });
 
   it('exports what public code shares with the hosted build', () => {
-    expect(MODEL_SOCKET).toBe('/run/oc-modelproxy/api.sock');
+    expect(MODEL_SOCKET).toBe('/run/oc-modelproxy/api/api.sock');
     expect(routeOf(managed)).toBe('managed');
     expect(routeOf(metered)).toBe('managed');
     expect(routeOf(slack)).toBeUndefined();

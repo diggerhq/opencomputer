@@ -25,7 +25,7 @@ import type { HarnessEvent } from './harness/types.js';
 import type { Session } from './session.js';
 
 /** oc-modelproxy's API socket, where a hosted computer's Codex (through its loopback) and subscription Claude Code reach the model. */
-export const MODEL_SOCKET = '/run/oc-modelproxy/api.sock';
+export const MODEL_SOCKET = '/run/oc-modelproxy/api/api.sock';
 
 export type Route = 'managed' | 'subscription';
 
