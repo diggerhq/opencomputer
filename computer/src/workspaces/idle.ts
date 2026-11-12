@@ -2,9 +2,14 @@
 // directories of idle ones (work 071): a Node worktree's node_modules is about
 // 1 GiB, the bulk of a fork on disk, and an install or build brings each back.
 // prune.ts prunes whole forks.
+//
+// Invariant: what is looked for in a fork (worktrees, artifact directories) is
+// found with readdir and lstat alone and no link is followed: a session wrote
+// everything there. host/sandbox/artifacts.ts does the same pruning for a
+// thread that runs in a container, with these same lists.
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -17,7 +22,7 @@ const exec = promisify(execFile);
 export const FORK_FILE = '.fork.json';
 
 /** A fork idle this long loses its ignored build and dependency directories (work 071). */
-const artifactsIdle = () => Number(process.env.SP_ARTIFACTS_IDLE_HOURS || 24) * 3600e3;
+export const artifactsIdle = () => Number(process.env.SP_ARTIFACTS_IDLE_HOURS || 24) * 3600e3;
 /** How deep below a worktree's root to look (packages/<name>/node_modules is 2). */
 const ARTIFACT_DEPTH = 3;
 /**
@@ -27,7 +32,8 @@ const ARTIFACT_DEPTH = 3;
 const ARTIFACTS = new Set(['node_modules', '.next', '.nuxt', '.svelte-kit', '.turbo', '.parcel-cache', '.wrangler',
   '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.gradle']);
 const isArtifact = (dir: string, name: string) =>
-  ARTIFACTS.has(name) || (name === 'target' && existsSync(path.join(dir, 'Cargo.toml')));
+  ARTIFACTS.has(name) || (name === 'target' && there(path.join(dir, 'Cargo.toml')));
+const there = (p: string) => !!lstatSync(p, { throwIfNoEntry: false });
 
 /** A person's clones directory, from one of their forks: <root>/sessions/<key> and <root>/ws (clones.ts). */
 export const clonesOf = (fork: string) => path.join(path.dirname(path.dirname(path.resolve(fork))), 'ws');
@@ -43,11 +49,11 @@ const mtime = async (p: string) => (await stat(p).catch(() => undefined))?.mtime
 
 export async function worktrees(fork: string) {
   const entries = await readdir(fork, { withFileTypes: true }).catch(() => []);
-  return entries.filter((d) => d.isDirectory() && existsSync(path.join(fork, d.name, '.git'))).map((d) => path.join(fork, d.name));
+  return entries.filter((d) => d.isDirectory() && there(path.join(fork, d.name, '.git'))).map((d) => path.join(fork, d.name));
 }
 
 /** A fork's worktrees, and those agents add under its `.wt/` (git worktree add .wt/<name>). */
-async function allWorktrees(fork: string) {
+export async function allWorktrees(fork: string) {
   return [...(await worktrees(fork)), ...(await worktrees(path.join(fork, '.wt')))];
 }
 
@@ -75,40 +81,62 @@ async function findArtifacts(dir: string, depth = ARTIFACT_DEPTH): Promise<strin
   return found;
 }
 
-/**
- * Remove the git-ignored build and dependency directories of a fork's
- * worktrees: the bulk of a fork on disk and regenerable. Tracked or unignored
- * ones are kept. Returns the directories removed.
- */
-export async function pruneArtifacts(forkPath: string): Promise<string[]> {
-  const wts: string[] = [];
-  /** The directories asked about, in the order of the lines on stdin. */
+/** What ws-inspect.sh `--only=ignored` is asked about a fork: its worktrees by name, and one line of stdin per artifact directory. */
+export interface ArtifactQuestion {
+  /** The worktrees with artifact directories, relative to the fork: the script's arguments. */
+  names: string[];
+  /** The directories asked about, in the order of the lines. */
+  asked: string[];
+  /** `<worktree, from 1>\t<path in it>` per directory. */
+  lines: string;
+}
+
+/** The artifact directories of a fork's worktrees, as the question for ws-inspect.sh. */
+export async function artifactQuestion(forkPath: string): Promise<ArtifactQuestion> {
+  const names: string[] = [];
   const asked: string[] = [];
   let lines = '';
   for (const wt of await allWorktrees(forkPath)) {
     // A path with a tab or a newline does not fit a line of the script's input: not asked about, so kept.
     const dirs = (await findArtifacts(wt)).filter((dir) => !/[\t\n]/.test(path.relative(wt, dir)));
     if (!dirs.length) continue;
-    wts.push(wt);
+    names.push(path.relative(forkPath, wt));
     for (const dir of dirs) {
       asked.push(dir);
-      lines += `${wts.length}\t${path.relative(wt, dir)}\n`;
+      lines += `${names.length}\t${path.relative(wt, dir)}\n`;
     }
   }
-  if (!asked.length) return [];
-  // ws-inspect.sh says which git ignores; tracked files are never ignored. It answers a worktree by its
-  // position and a directory by its line, both from 1: a name with a tab would not survive being printed.
-  const s = hostScripts(clonesOf(forkPath));
-  const names = wts.map((wt) => path.relative(forkPath, wt));
-  const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...names], { stdin: lines, timeoutMs: 0 });
-  const removed: string[] = [];
-  for (const n of wts.keys()) {
+  return { names, asked, lines };
+}
+
+/**
+ * The directories git ignores, from the script's answer: tracked files are never ignored. It answers a worktree by
+ * its position and a directory by its line, both from 1: a name with a tab would not survive being printed.
+ */
+export function ignoredArtifacts(q: ArtifactQuestion, out: string): string[] {
+  const ignored: string[] = [];
+  for (const n of q.names.keys())
     for (const line of row(out, String(n + 1)).slice(4)) {
-      const dir = asked[Number(line) - 1];
-      if (!dir) continue;
-      await rm(dir);
-      removed.push(dir);
+      const dir = q.asked[Number(line) - 1];
+      if (dir) ignored.push(dir);
     }
+  return ignored;
+}
+
+/**
+ * Remove the git-ignored build and dependency directories of a fork's
+ * worktrees: the bulk of a fork on disk and regenerable. Tracked or unignored
+ * ones are kept. Returns the directories removed.
+ */
+export async function pruneArtifacts(forkPath: string): Promise<string[]> {
+  const q = await artifactQuestion(forkPath);
+  if (!q.asked.length) return [];
+  const s = hostScripts(clonesOf(forkPath));
+  const out = await s.run('ws-inspect.sh', ['--only=ignored', s.clones, s.workspace(forkPath), ...q.names], { stdin: q.lines, timeoutMs: 0 });
+  const removed: string[] = [];
+  for (const dir of ignoredArtifacts(q, out)) {
+    await rm(dir);
+    removed.push(dir);
   }
   return removed;
 }

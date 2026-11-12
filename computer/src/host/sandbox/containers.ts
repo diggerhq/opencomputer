@@ -8,7 +8,10 @@
 //   (sessions can write neither), by temporary file and rename; what a session
 //   may write (`runners/`, `secrets/`) is emptied before every start.
 // - A start that fails after Start leaves no container running: `up` stops it
-//   and closes its token socket before it rejects.
+//   and closes its token socket before it rejects. Its mounts are part of the
+//   start: a container that could not be given them does not stay up.
+// - `definition.json` in a run directory is the definition in effect: written
+//   at every start, and again for a running container when it changes.
 // - Stop never signals the unit (`systemctl --user kill` takes conmon with the
 //   payload, and Podman then says `running` for ever): past its timeout it
 //   kills the payload's cgroup.
@@ -83,6 +86,8 @@ export interface Up {
   tokens: { close(): void };
   /** Start until Pid. */
   startMs: number;
+  /** The mounts, when `up` was given any. */
+  mountMs?: number;
 }
 
 export type Containers = ReturnType<typeof containers>;
@@ -119,6 +124,14 @@ export function containers(d: ContainersDeps) {
   const unitActive = (id: string) =>
     as.run([SYSTEMCTL, '--user', 'is-active', '--quiet', unitName(id)], { timeoutMs: TIMEOUTS.unit }).then(() => true, () => false);
 
+  /** The definition in effect, into the run directory (its root is the host's alone to write). The runner reads it at every use. */
+  function rewriteDefinition(id: string) {
+    const file = path.join(d.runRoot(id), 'definition.json');
+    const def = d.definition();
+    if (def) writeWhole(file, readFileSync(def, 'utf8'), 0o640);
+    else rmSync(file, { force: true });
+  }
+
   /** The run directory as a start needs it: what the session wrote gone, the host's files current. */
   async function prepareRun(id: string, spec: RunnerSpec) {
     const run = d.runRoot(id);
@@ -130,9 +143,7 @@ export function containers(d: ContainersDeps) {
     dir(runnersDir(run), 0o2770);
     dir(path.dirname(secretsFor(run, id)), 0o2770);
     dir(path.dirname(tokenSocketFor(run, id)), 0o2750);
-    const def = d.definition();
-    if (def) writeWhole(path.join(run, 'definition.json'), readFileSync(def, 'utf8'), 0o640);
-    else rmSync(path.join(run, 'definition.json'), { force: true });
+    rewriteDefinition(id);
     writeWhole(path.join(run, 'boot.env'), bootEnv({ root: d.root, spec, vars: d.vars() }), 0o640);
     return run;
   }
@@ -153,8 +164,9 @@ export function containers(d: ContainersDeps) {
   /**
    * Bring the created container up for `spec`: its run directory, its token socket, Start, then Pid.
    * `record`: the thread it serves; none for a container that serves no thread yet.
+   * `mount`: what gives the running container its mounts (mounts.ts), from its first process; part of the start.
    */
-  async function up(id: string, spec: RunnerSpec, record?: SandboxRecord): Promise<Up> {
+  async function up(id: string, spec: RunnerSpec, record?: SandboxRecord, mount?: (pid: number) => Promise<void>): Promise<Up> {
     const run = await prepareRun(id, spec);
     const tokens = d.serveTokens(run, id, () => record?.key);
     const t0 = Date.now();
@@ -163,7 +175,10 @@ export function containers(d: ContainersDeps) {
       const p = await pid(id);
       // Podman's pid is the previous run's when the unit never came up: never trusted while the unit is inactive.
       if (!(await unitActive(id))) throw new Error(`unit ${unitName(id)} is not active after its start`);
-      return { pid: p, tokens, startMs: Date.now() - t0 };
+      const startMs = Date.now() - t0;
+      if (!mount) return { pid: p, tokens, startMs };
+      await mount(p);
+      return { pid: p, tokens, startMs, mountMs: Date.now() - t0 - startMs };
     } catch (e) {
       await stop(id).catch((x) => log.warn(`container ${id} not stopped after a failed start: ${x?.message ?? x}`));
       tokens.close();
@@ -260,7 +275,7 @@ export function containers(d: ContainersDeps) {
   }
 
   /** A command in the running container, as the session's user: its stdout. */
-  const execIn = (id: string, argv: string[], o: { dir: string; timeoutMs: number; stdin?: string }) =>
+  const execIn = (id: string, argv: string[], o: { dir: string; timeoutMs: number; stdin?: string | Buffer }) =>
     as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin });
 
   /** For the error of a start that never became ready: the unit's status and the last 50 lines the container wrote. */
@@ -268,5 +283,5 @@ export function containers(d: ContainersDeps) {
     as.run(['/bin/sh', '-c', `${SYSTEMCTL} --user status --no-pager --lines=0 "$1" 2>&1 | cut -c1-200; echo '--- podman logs'; /usr/bin/podman ${logsArgs(id).slice(0, -1).join(' ')} "$2" 2>&1; true`,
       'sh', unitName(id), containerName(id)], { timeoutMs: TIMEOUTS.inventory }).then((s) => s.trim(), (e) => `no diagnosis: ${e?.message ?? e}`);
 
-  return { create, up, stop, remove, recreate, inventory, execIn, stale, unitActive, diagnose };
+  return { create, up, pid, rewriteDefinition, stop, remove, recreate, inventory, execIn, stale, unitActive, diagnose };
 }

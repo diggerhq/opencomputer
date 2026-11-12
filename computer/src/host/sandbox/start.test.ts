@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { log as hostLog } from '../../log.js';
 import type { RunnerSpec, SessionSpec } from '../../protocol.js';
+import type { RunnerApi } from '../../protocol-api.js';
 import { createTelemetry } from '../../telemetry/emitter.js';
 import type { TelemetryEvent } from '../../telemetry/envelope.js';
 import type { ContainerInfo } from './containers.js';
@@ -16,7 +17,8 @@ const owner = { dir: 'pat', gitName: 'Pat', gitEmail: 'pat@example.com' };
 const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mode: 'default' };
 const sock = { destroyed: false } as net.Socket;
 
-function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory', Error>>; stale?: boolean; dial?: () => Promise<net.Socket | undefined> } = {}) {
+function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory' | 'mount' | 'prepare', Error>>; stale?: boolean;
+  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean } = {}) {
   const log: string[] = [];
   const ups: RunnerSpec[] = [];
   const sent: TelemetryEvent[] = [];
@@ -34,7 +36,12 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
     containers: {
       create: (id) => step(`create ${id}`, 11),
       recreate: (id) => step(`recreate ${id}`, 22),
-      up: (id, rs, record) => (ups.push(rs), step(`up ${id} ${record?.key}`, { pid: 5, startMs: 33, tokens: { close: () => void log.push('tokens closed') } })),
+      up: async (id, rs, record, mount) => {
+        ups.push(rs);
+        const up = await step(`up ${id} ${record?.key}`, { pid: 5, startMs: 33, tokens: { close: () => void log.push('tokens closed') } });
+        await mount?.(5);
+        return { ...up, mountMs: 4 };
+      },
       stop: (id) => step(`stop ${id}`, undefined),
       remove: (id) => step(`remove ${id}`, true),
       inventory: () => step('inventory', { containers: o.have ?? [], volumes: (o.homes ?? []).map((id) => ({ id, createdAt: 0 })) }),
@@ -42,9 +49,20 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
       unitActive: async () => true,
       diagnose: async () => 'Active: inactive (dead)\n--- podman logs\nboom',
     },
-    mint: async (s, id, run) => (log.push(`mint ${id} ${run} sdk=${s.sdkSessionId ?? '-'}`), undefined),
-    workspace: (r) => `/data/people/${r.person}/sessions/${r.key}`,
-    mkdir: async (dir) => void log.push(`mkdir ${dir}`),
+    mint: async (s, id, run) => (log.push(`mint ${id} ${run} sdk=${s.sdkSessionId ?? '-'}`), o.api ? ({ journal: '/data/journals/s1/journal.jsonl' } as RunnerApi) : undefined),
+    workspaces: () => !!o.definition,
+    workspace: {
+      repos: (r) => (r.repos ? Object.keys(r.repos) : (o.clones ?? [])),
+      dirs: async (r, names) => void log.push(`dirs ${r.key} ${names.join(',')}`),
+      binds: (r, names, journal) => [{ src: `ws:${r.key}`, dst: '/workspace' }, ...names.map((n) => ({ src: n, dst: `/clones/${n}` })), ...(journal ? [{ src: journal, dst: journal }] : [])],
+      mount: (id, pid, person, b) => step(`mount ${id} ${pid} ${person} ${b.map((x) => x.dst).join(' ')}`, undefined),
+      prepare: async (id, names) => {
+        await step(`prepare ${id} ${names.join(',')}`, undefined);
+        const record = { ...records.get(id)!, repos: Object.fromEntries(names.map((n) => [n, { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' }])) };
+        records.write(record);
+        return { record, addMs: 7 };
+      },
+    },
     dial: o.dial ?? (async () => sock),
   };
   const events = async () => (await tm.flush(), sent);
@@ -61,14 +79,14 @@ describe('sandbox start', () => {
     const id = s.record.id;
     expect(id).toMatch(/^[0-9a-f]{16}$/);
     expect(t.records.find('pat', 'C1:1.1')).toMatchObject({ id, person: 'pat', key: 'C1:1.1' });
-    expect(t.log).toEqual(['mkdir /data/people/pat/sessions/C1:1.1', `mint ${id} /run/sp/sandbox/${id} sdk=-`, `create ${id}`, `up ${id} C1:1.1`]);
+    expect(t.log).toEqual(['dirs C1:1.1 ', `mint ${id} /run/sp/sandbox/${id} sdk=-`, `create ${id}`, `up ${id} C1:1.1`, `mount ${id} 5 pat /workspace`]);
     expect(t.ups[0]).toMatchObject({ id, socket: `/run/sp/sandbox/${id}/runners/${id}.sock`, version: 'v9', session: { key: 'C1:1.1', forkPath: '/workspace' } });
     expect(t.ups[0].session).not.toHaveProperty('sdkSessionId');
     expect(s).toMatchObject({ sock, resumed: false, run: `/run/sp/sandbox/${id}` });
     expect(s.session.sdkSessionId).toBeUndefined();
     const ev = await t.events();
     expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({
-      outcome: 'completed', data: { launch_mode: 'podman', image: '64a672bb773b', 'container.create_ms': 11, 'container.start_ms': 33 },
+      outcome: 'completed', data: { launch_mode: 'podman', image: '64a672bb773b', 'container.create_ms': 11, 'container.start_ms': 33, 'container.mount_ms': 4 },
     });
     expect(ev.some((e) => e.event_name === 'runner.ready')).toBe(true);
     expect(t.tm.dropped).toEqual({}); // every key is in the catalog
@@ -84,7 +102,7 @@ describe('sandbox start', () => {
     expect(s.record.id).toBe(id);
     expect(s.resumed).toBe(true);
     // The workspace directory is made again: the first start may have failed before it was.
-    expect(again.log).toEqual(['mkdir /data/people/pat/sessions/C1:1.1', 'inventory', `mint ${id} /run/sp/sandbox/${id} sdk=sdk1`, `up ${id} C1:1.1`]);
+    expect(again.log).toEqual(['dirs C1:1.1 ', 'inventory', `mint ${id} /run/sp/sandbox/${id} sdk=sdk1`, `up ${id} C1:1.1`, `mount ${id} 5 pat /workspace`]);
     expect(again.ups[0].session).toMatchObject({ sdkSessionId: 'sdk1', forkPath: '/workspace' });
     expect((await again.events()).find((e) => e.event_name === 'runner.launched')?.data).toMatchObject({ 'container.recreated': false });
   });
@@ -117,14 +135,14 @@ describe('sandbox start', () => {
   it('a resume recreates the container when there is none, when its ABI differs, and when it is stale', async () => {
     for (const have of [[], [container('aaaaaaaaaaaaaaaa', { abi: '1' })], [container('aaaaaaaaaaaaaaaa', { state: 'running' })]]) {
       const { t, id } = await resume({ have, stale: have[0]?.state === 'running' });
-      expect(t.log.filter((l) => !/^(mint|mkdir)/.test(l))).toEqual(['inventory', `recreate ${id}`, `up ${id} C1:1.1`]);
+      expect(t.log.filter((l) => !/^(mint|dirs|mount)/.test(l))).toEqual(['inventory', `recreate ${id}`, `up ${id} C1:1.1`]);
       expect((await t.events()).find((e) => e.event_name === 'runner.launched')?.data).toMatchObject({ 'container.recreated': true, 'container.create_ms': 22 });
     }
   });
 
   it('a resume stops a container that runs with nobody connected, then starts it', async () => {
     const { t, id } = await resume({ have: [container('aaaaaaaaaaaaaaaa', { state: 'running' })] });
-    expect(t.log.filter((l) => !/^(mint|mkdir)/.test(l))).toEqual(['inventory', `stop ${id}`, `up ${id} C1:1.1`]);
+    expect(t.log.filter((l) => !/^(mint|dirs|mount)/.test(l))).toEqual(['inventory', `stop ${id}`, `up ${id} C1:1.1`]);
   });
 
   it('a resume marks the record used and keeps what else it says', async () => {
@@ -168,6 +186,55 @@ describe('sandbox start', () => {
     const s = await t.start(spec, {});
     await s.abandon();
     expect(t.log.slice(-2)).toEqual([`stop ${s.record.id}`, 'tokens closed']);
+  });
+
+  it('a new thread under a definition: its clones and journal mounted, its workspace prepared while the runner boots, the record given its repos', async () => {
+    const t = rig({ definition: true, clones: ['alpha', 'beta'], api: true });
+    const s = await t.start(spec, { trace_id: 'a'.repeat(32) });
+    const id = s.record.id;
+    expect(t.log.slice(0, 1)).toEqual(['dirs C1:1.1 alpha,beta']);
+    expect(t.log.slice(-2)).toEqual([`mount ${id} 5 pat /workspace /clones/alpha /clones/beta /data/journals/s1`, `prepare ${id} alpha,beta`]);
+    expect(Object.keys(s.record.repos ?? {})).toEqual(['alpha', 'beta']);
+    expect(t.records.get(id)?.repos).toEqual(s.record.repos);
+    const ev = await t.events();
+    expect(ev.filter((e) => e.event_name === 'runner.launched')).toHaveLength(1);
+    expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({ outcome: 'completed', data: { 'container.mount_ms': 4, 'container.add_ms': 7 } });
+    expect(ev.find((e) => e.event_name === 'fork.done')).toMatchObject({ outcome: 'completed', data: { repos: 2 } });
+    expect(t.tm.dropped).toEqual({});
+  });
+
+  it('a thread whose record has repos is not prepared again, and mounts what its record names', async () => {
+    const t = rig({ definition: true, clones: ['alpha', 'beta'], have: [container('aaaaaaaaaaaaaaaa')] });
+    t.records.write({ id: 'aaaaaaaaaaaaaaaa', person: 'pat', key: 'C1:1.1', createdAt: 'then', usedAt: 'then', repos: { beta: { branch: 'b', from: 'origin/main', base: 'abc' } } });
+    await t.start(spec, {});
+    expect(t.log.some((l) => l.startsWith('prepare'))).toBe(false);
+    expect(t.log.at(-1)).toBe('mount aaaaaaaaaaaaaaaa 5 pat /workspace /clones/beta');
+    expect((await t.events()).some((e) => e.event_name === 'fork.done')).toBe(false);
+  });
+
+  it('a record without repos is prepared at its next start: the one before failed', async () => {
+    const t = rig({ definition: true, clones: ['alpha'], have: [container('aaaaaaaaaaaaaaaa')] });
+    t.records.write({ id: 'aaaaaaaaaaaaaaaa', person: 'pat', key: 'C1:1.1', createdAt: 'then', usedAt: 'then' });
+    const s = await t.start(spec, {});
+    expect(t.log.at(-1)).toBe('prepare aaaaaaaaaaaaaaaa alpha');
+    expect(s.record.repos).toHaveProperty('alpha');
+  });
+
+  it('a workspace that could not be prepared fails the start: the container stops, the record keeps no repos', async () => {
+    const t = rig({ definition: true, clones: ['alpha'], fail: { prepare: new Error('tar: cannot unpack') } });
+    await expect(t.start(spec, {})).rejects.toThrow('tar: cannot unpack');
+    const id = t.records.find('pat', 'C1:1.1')!.id;
+    expect(t.log.slice(-2)).toEqual([`stop ${id}`, 'tokens closed']);
+    expect(t.records.get(id)?.repos).toBeUndefined();
+    const ev = await t.events();
+    expect(ev.find((e) => e.event_name === 'fork.done')).toMatchObject({ outcome: 'failed', error_type: 'git_worktree' });
+    expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({ outcome: 'completed' });
+  });
+
+  it('mounts that fail fail the launch', async () => {
+    const t = rig({ fail: { mount: new Error('sandbox-mount: refused') } });
+    await expect(t.start(spec, {})).rejects.toThrow('sandbox-mount: refused');
+    expect((await t.events()).find((e) => e.event_name === 'runner.launched')).toMatchObject({ outcome: 'failed', error_type: 'launch' });
   });
 
   it('shortens the image to its tag', () => {

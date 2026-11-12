@@ -4,27 +4,42 @@
 // the host's environment. host/main.ts makes one when SP_LAUNCH=podman and
 // asks it for nothing else.
 //
+// It also turns the workspaces' two seams its way, once, when it is made: the
+// scripts that work on a person's clones with no session run in a helper
+// container (scripts.ts), and housekeeping prunes a thread's build
+// directories without host git (artifacts.ts). Idle threads themselves are
+// not pruned yet (step 8).
+//
 // Invariant: a `podman` host that cannot sandbox every session does not start.
 // Without a runners' user it would run sessions as itself, without SP_IMAGE
 // and SP_IMAGE_ABI it has nothing to run them in, and a spare is not a
 // container yet; each of these throws here, at boot, never at a first message.
+//
+// Invariant: the helpers' token socket gives GitHub tokens for the
+// definition's repositories only, for no session (tokens.ts `serveHelper`).
 
+import type net from 'node:net';
 import path from 'node:path';
 import type { Person, SessionSpec } from '../../protocol.js';
 import type { RunnerApi } from '../../protocol-api.js';
 import { type RunRoot, sandboxRunFor, socketFor } from '../../ipc.js';
+import { log } from '../../log.js';
 import { runnerVars } from '../../runner-env.js';
 import type { Telemetry } from '../../telemetry/emitter.js';
-import { definitionFile, forkDir, mkdirAsRunner } from '../../workspaces/index.js';
+import { definitionFile, forkDir, loadDefinition, repoSlug, useForkKeeper, useScripts, workspacesEnabled } from '../../workspaces/index.js';
 import { launch } from '../launch.js';
 import { dialSocket } from '../runner-sockets.js';
 import { runnerUser } from '../runner-user.js';
+import { sandboxArtifacts } from './artifacts.js';
 import { containers } from './containers.js';
+import { mounts } from './mounts.js';
 import { asRunner } from './podman.js';
 import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
+import { sandboxScripts } from './scripts.js';
 import { sandboxStarts } from './start.js';
 import type { SandboxPlace } from './workspace-exec.js';
+import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
   env: NodeJS.ProcessEnv;
@@ -40,6 +55,10 @@ export interface SandboxHostDeps {
   /** Both are asked for at a start, not here: the host builds what answers them after this. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
   serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /** `tokens.serveHelper`. */
+  serveHelper(socket: string, allowed: () => string[]): net.Server;
+  /** True while the runner with this id is connected. */
+  running(id: string): boolean;
 }
 
 /** A sandboxed thread's workspace on the host, from its record: the runner itself knows it as `/workspace`. */
@@ -56,19 +75,47 @@ export function sandboxHost(d: SandboxHostDeps) {
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
+  const as = asRunner(user.sudo);
   const all = containers({
-    as: asRunner(user.sudo), runRoot, dataDir: d.data, root: d.root, image, abi,
+    as, runRoot, dataDir: d.data, root: d.root, image, abi,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: d.serveTokens,
     removed: (id) => ports.releaseAll(id),
   });
-  const starts = sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version,
-    mint: d.mint, workspace: sandboxWorkspace, mkdir: mkdirAsRunner, dial: (socket) => dialSocket(socket, { uid: user.uid }) });
-  /** Where a session's terminal and files are (api-host `sandbox`): from its record, never from what a runner said. */
-  const place = async (spec: SessionSpec): Promise<SandboxPlace | undefined> => {
-    const r = records.find(spec.owner.dir, spec.key);
-    return r && { id: r.id, person: r.person, workspace: sandboxWorkspace(r), running: await all.unitActive(r.id) };
+  const helperRun = path.join(d.run, 'helper');
+  const mnt = mounts({ as, root: d.root, dataDir: d.data });
+  const scripts = sandboxScripts({ as, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
+  const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
+  const artifacts = sandboxArtifacts({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running });
+  // A clones directory is `<people>/<person>/ws`: the helper is that person's.
+  useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
+  useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), []));
+  return {
+    stop: all.stop,
+    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled,
+      dial: (socket) => dialSocket(socket, { uid: user.uid }) }),
+    /** Where a session's terminal and files are (api-host `sandbox`): from its record, never from what a runner said. */
+    async place(spec: SessionSpec): Promise<SandboxPlace | undefined> {
+      const r = records.find(spec.owner.dir, spec.key);
+      return r && { id: r.id, person: r.person, workspace: mnt.workspace(r), running: await all.unitActive(r.id) };
+    },
+    image,
+    /** The virtual ports, and how a container's preview socket is reached (previews.ts). */
+    previews: { ports, run: runRoot, uid: user.uid },
+    /** `checkout_repo` of a sandboxed session, by its runner id. */
+    checkout: workspace.checkout,
+    /** A delivery to a sandboxed session: its record is used now. */
+    touch: workspace.touch,
+    /** The definition in effect changed: every running container reads the new one. `ids`: the runners connected. */
+    definitionChanged(ids: string[]) {
+      for (const id of ids)
+        try {
+          all.rewriteDefinition(id);
+        } catch (e) {
+          log.warn(`sandbox ${id}: definition not rewritten: ${(e as Error)?.message ?? e}`);
+        }
+    },
+    /** Open the helpers' token socket; the caller closes it when the host stops. */
+    serveHelpers: () => d.serveHelper(path.join(helperRun, 'token.sock'), () => (workspacesEnabled() ? loadDefinition().repos.map((r) => repoSlug(r.remote)) : [])),
   };
-  /** `previews`: the virtual ports, and how a container's preview socket is reached (previews.ts). */
-  return { stop: all.stop, starts, place, image, previews: { ports, run: runRoot, uid: user.uid } };
 }

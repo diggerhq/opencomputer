@@ -77,7 +77,9 @@ export const CATALOG = {
   // `fetch_skipped`: the clone's refs were fresh (workspaces/fetch-schedule.ts), no fetch on the fork's path.
   'fork.repo': host('repo', 'fetch_ms', 'worktree_ms', 'lock_wait_ms', 'fetch_error_type', 'fetch_skipped'),
   'fork.done': host('repos', 'fork_error_type'),
-  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated'),
+  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms'),
+  // One workspace script in a helper container (work 103): `script` is its file name.
+  'sandbox.helper': host('script'),
   'runner.ready': host('polls'),
   'deliver.forwarded': host('credentials_sent', 'secrets_count'),
   'runner.exited': host('busy', 'exit_reason', 'last_status'),

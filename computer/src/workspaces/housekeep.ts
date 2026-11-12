@@ -76,6 +76,16 @@ async function syncRepo(person: Person, repo: RepoDef, trigger: FetchTrigger): P
   }
 }
 
+/** What a pass does about a person's forks: the rows of those it kept from pruning. */
+export type ForkKeeper = (person: Person, active: Set<string>) => Promise<RepoStatus[]>;
+let keepForks: ForkKeeper = async (person, active) => {
+  const kept = await pruneForks(person);
+  await pruneIdleArtifacts(path.join(personRoot(person), 'sessions'), active);
+  return kept;
+};
+/** A `podman` host keeps forks its own way (host/sandbox/artifacts.ts): nothing here may run git or remove files in one. */
+export const useForkKeeper = (f: ForkKeeper) => void (keepForks = f);
+
 /**
  * One housekeeping pass for a person: root files, clone new repositories, fetch and
  * fast-forward the rest, report repositories removed from the definition, prune idle forks
@@ -91,8 +101,7 @@ export async function housekeep(person: Person, active: Set<string> = new Set())
   for (const name of (await readdir(ws)).sort()) {
     if (!defined.has(name) && isClone(path.join(ws, name))) repos.push({ name, problem: 'removed from the definition; clone kept' });
   }
-  repos.push(...(await pruneForks(person)));
-  await pruneIdleArtifacts(path.join(personRoot(person), 'sessions'), active);
+  repos.push(...(await keepForks(person, active)));
   const status = { person: person.dir, repos };
   lastStatus.set(person.dir, status);
   return status;

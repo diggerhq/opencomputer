@@ -7,8 +7,12 @@
 //   these through podman.ts, as the runners' user.
 // - Create is the same for a spare, a new thread and a recreation: what a
 //   start may change goes through boot.env (boot-env.ts), never through argv.
-// - The paths are the same inside and outside the container; the workspace is
-//   the one exception and is not mounted here.
+// - The paths are the same inside and outside the container; the workspace,
+//   the clones and their worktree registries are the exceptions, and Create
+//   mounts none of them: the mount helper does, after every start (mounts.ts).
+// - A helper container sees one person's clones, the helpers' run directory
+//   and the releases, and whatever its caller binds besides; never another
+//   person's files.
 
 import path from 'node:path';
 import { type RunRoot, previewSocketFor, tokenSocketFor } from '../../ipc.js';
@@ -83,9 +87,6 @@ export const terminalArgs = (id: string, dir: string, term: string, helper: stri
 export const terminalHangUpArgs = (id: string, unit: string) =>
   ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-HUP', '-f', `terminal-pty\\.py ${unit}$`];
 
-/** The scope a helper container runs in: Podman needs a delegated cgroup of the runners' user, and the host's own is not one. */
-export const HELPER_SCOPE = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--'];
-
 export interface FilesHelper {
   /** `person.dir`, the helper's label. */
   person: string;
@@ -135,3 +136,54 @@ export const emptyRunArgs = (run: RunRoot) => ['unshare', 'find', path.join(run,
 
 /** The end of what the container wrote to its output, for a start that never became ready. */
 export const logsArgs = (id: string, lines = 50) => ['logs', '--tail', String(lines), containerName(id)];
+
+/** A directory of the host at a path in a container. */
+export interface Bind {
+  src: string;
+  dst: string;
+  ro?: boolean;
+}
+
+/** The mount helper, inside Podman's user namespace; SP_DATA reaches it through the sudo prefix (podman.ts `env`). */
+export const mountArgs = (root: string, pid: number, id: string, person: string, binds: Bind[]) =>
+  ['unshare', 'python3', '-I', path.join(root, 'bin', 'sandbox-mount.py'), String(pid), id, person, ...binds.map((b) => `${b.src}:${b.dst}`)];
+
+/** What a helper container's `podman run` is wrapped in: Podman needs a delegated cgroup of the runners' user (the host's own is not one), and it lands in the runners' slice. */
+export const HELPER_SCOPE = ['/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--'];
+
+export interface HelperSpec {
+  /** The person whose clones it sees, as `/clones`. */
+  person: string;
+  /** `<SP_DATA>/people`. */
+  people: string;
+  /** The helpers' run directory, `$SP_RUN/helper`: its token socket. */
+  run: string;
+  image: string;
+  /** With a network (a script that fetches), or none. */
+  network: boolean;
+  /** Seconds after which Podman kills it. */
+  timeoutS: number;
+  /** Whether the script reads its stdin. */
+  stdin?: boolean;
+  /** What a script on a stopped thread's files needs besides: its workspace, its worktree registries. */
+  binds?: Bind[];
+  /** The script, by its path in the release, and its arguments. */
+  script: string;
+  args: string[];
+}
+
+/** One run of a workspace script on one person's clones, with no session. */
+export function helperArgs(h: HelperSpec): string[] {
+  return [
+    'run', '--rm', ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
+    '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER, `--network=${h.network ? 'pasta' : 'none'}`, '--pids-limit=1024',
+    // The script is the container's first process, which ignores a signal it has no handler for: Podman ends it.
+    '--timeout', String(h.timeoutS),
+    '--env', `SP_RUN=${h.run}`, '--env', `SP_TOKEN_SOCKET=${path.join(h.run, 'token.sock')}`, '--env', 'HOME=/tmp',
+    '-v', `${path.join(h.people, h.person, 'ws')}:/clones`,
+    '-v', `${h.run}:${h.run}`,
+    '-v', `${RELEASES_DIR}:${RELEASES_DIR}:ro`,
+    ...(h.binds ?? []).flatMap((b) => ['-v', `${b.src}:${b.dst}${b.ro ? ':ro' : ''}`]),
+    '--entrypoint', '/bin/sh', h.image, h.script, ...h.args,
+  ];
+}

@@ -19,8 +19,11 @@
 //   past the limit or a command something else killed.
 // - A call that timed out rejects once its command is gone (SIGTERM, SIGKILL
 //   2 s later), or 3 s after the timeout at the latest.
+// - `env` goes into the sudo prefix, the only way a variable reaches the
+//   command: sudo resets the rest. Only the mount helper is given one.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import { imageSettled } from './image-lock.js';
 
 export const PODMAN = '/usr/bin/podman';
 
@@ -40,7 +43,9 @@ export class PodmanError extends Error {
 
 export interface RunOptions {
   timeoutMs: number;
-  stdin?: string;
+  stdin?: string | Buffer;
+  /** Variables for the command, added to the sudo prefix. */
+  env?: Record<string, string>;
 }
 
 /** `execFile` as this file uses it; tests pass their own. No `timeout` of its: its signal would stop at sudo. */
@@ -49,7 +54,7 @@ export type Exec = (
   args: string[],
   o: { cwd: string; maxBuffer: number; encoding: 'utf8' },
   done: (err: (Error & { code?: number | string | null }) | null, stdout: string, stderr: string) => void,
-) => { stdin?: { end(data?: string): void } | null; kill?(signal: 'SIGTERM' | 'SIGKILL'): unknown };
+) => { stdin?: { end(data?: string | Buffer): void } | null; kill?(signal: 'SIGTERM' | 'SIGKILL'): unknown };
 
 export interface AsRunner {
   /** `podman <args>` as the runners' user: its stdout. */
@@ -70,7 +75,7 @@ export const bounded = (argv: string[], timeoutMs: number) => [TIMEOUT, `--kill-
 /** `argv` as the runners' user, bounded as above: its stdout. `asRunner` for a command that is not Podman's and may be found on sudo's PATH (launch.ts). */
 export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: Exec = nodeExecFile as unknown as Exec): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const [cmd, ...args] = [...sudo, '--', ...bounded(argv, o.timeoutMs)];
+    const [cmd, ...args] = [...sudo, ...Object.entries(o.env ?? {}).map(([k, v]) => `${k}=${v}`), '--', ...bounded(argv, o.timeoutMs)];
     // Only this timer says "timed out": a command killed for its output, or by anyone else, did not.
     let timedOut = false;
     const late = () => new PodmanError(`${words(argv)}: timed out after ${o.timeoutMs} ms`, undefined, '', true);
@@ -97,8 +102,9 @@ export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: 
 }
 
 /** `sudo`: `runnerUser(env).sudo`, the prefix that makes a command the runners' user's. */
-export function asRunner(sudo: string[], exec?: Exec): AsRunner {
+export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<void> = imageSettled): AsRunner {
   const run = (argv: string[], o: RunOptions) =>
     argv[0]?.startsWith('/') ? runBounded(sudo, argv, o, exec) : Promise.reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
-  return { run, podman: (args, o) => run([PODMAN, ...args], o) };
+  // A Podman call's time starts once provisioning is not holding the storage (image-lock.ts).
+  return { run, podman: (args, o) => settled().then(() => run([PODMAN, ...args], o)) };
 }

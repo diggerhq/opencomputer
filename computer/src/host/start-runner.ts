@@ -148,7 +148,9 @@ export function runnerStarts(d: StartDeps) {
         stopped(why);
         reject(new Error(why));
       };
-      const a = adoption({ verify: !!o.verify, complete: forkComplete, take, stop, gone: () => reject(new Error('runner gone')) });
+      // A container's fork record is its sandbox record: complete once it has `repos`.
+      const complete = o.sandbox ? () => !workspacesEnabled() || !!o.sandbox!.record.repos : forkComplete;
+      const a = adoption({ verify: !!o.verify, complete, take, stop, gone: () => reject(new Error('runner gone')) });
       lines(sock, (m: RunnerToHost) => {
         // Which thread a container serves is the record's word, never the runner's.
         if (o.sandbox && m.t === 'report' && m.report.key !== o.sandbox.record.key) return stopped(`it reports ${m.report.key}, not its record's ${o.sandbox.record.key}`);
