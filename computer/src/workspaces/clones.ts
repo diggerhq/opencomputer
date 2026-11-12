@@ -6,7 +6,8 @@
 // Invariants:
 // - Worktree operations on one clone are serialized (`serial`), and so are its
 //   fetches, in a separate lane (`fetchLane`, fetch-schedule.ts).
-// - Git runs as the runners' user (as-runner.ts) and never prompts.
+// - Git runs in the scripts bin/ws-*.sh (script-runner.ts), as the runners'
+//   user (as-runner.ts), and never prompts.
 // - No session waits on a clone (work 056): eager repositories are cloned in
 //   the background, one preparation per person at a time.
 
@@ -17,8 +18,9 @@ import { promisify } from 'node:util';
 import { log } from '../log.js';
 import { HOST_DATA, type Person } from '../protocol.js';
 import { type Definition, isLazy, loadDefinition, type RepoDef } from './definition.js';
-import { command, copyFile, mkdir, rename, rm, writeFile } from './as-runner.js';
+import { command, copyFile, mkdir, writeFile } from './as-runner.js';
 import { Freshness, keyedQueue } from './fetch-schedule.js';
+import { hostScripts, row } from './script-runner.js';
 
 const exec = promisify(execFile);
 
@@ -56,11 +58,13 @@ export const forkDir = (person: Person, sessionKey: string) => path.join(personR
 
 // ---------------------------------------------------------------- git
 
+/** Git on the host itself: only what no script does (prune.ts removes a worktree with it). */
 export async function git(cwd: string, args: string[], timeout = 0) {
   const c = command('git', args, { GIT_TERMINAL_PROMPT: '0' });
   return (await exec(c.cmd, c.args, { cwd, timeout, env: c.env, maxBuffer: 20 << 20 })).stdout.trim();
 }
-export const ok = (p: Promise<unknown>) => p.then(() => true, () => false);
+/** The scripts (script-runner.ts) for the clones directory this clone is in, and its name there. */
+export const scriptsFor = (clone: string) => ({ s: hostScripts(path.dirname(clone)), repo: path.basename(clone) });
 export function errText(e: any): string {
   if (e?.killed) return 'timed out';
   const lines = String(e?.stderr || e?.message || e).trim().split('\n').filter(Boolean);
@@ -97,9 +101,8 @@ export async function defaultBranch(clone: string, repo: RepoDef) {
   if (repo.branch) return repo.branch;
   const cached = branches.get(clone);
   if (cached) return cached;
-  const head = () => git(clone, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-  const ref = await head().catch(async () => (await git(clone, ['remote', 'set-head', 'origin', '--auto'], fetchTimeout()), head()));
-  const b = ref.replace(/^origin\//, '');
+  const { s, repo: name } = scriptsFor(clone);
+  const [b] = row(await s.run('ws-sync.sh', ['--only=base', s.clones, name], { timeoutMs: fetchTimeout() }), name);
   branches.set(clone, b);
   return b;
 }
@@ -110,23 +113,22 @@ const PREPARED_FILE = '.workspace-prepared';
 export async function cloneRepo(clone: string, repo: RepoDef): Promise<boolean> {
   return serial(clone, async () => {
     if (isClone(clone)) return false;
-    const tmp = `${clone}.cloning`;
-    await rm(tmp);
-    await mkdir(path.dirname(clone), { recursive: true });
     const t0 = Date.now();
+    const setup = repo.setup ?? [];
+    const cloned = () => {
+      fetchedAt.set(clone, new Date().toISOString());
+      freshness.fetchedFrom(clone, t0);
+      log.info(`workspaces: cloned ${repo.name} into ${clone} in ${Date.now() - t0} ms`);
+    };
     // A lazy repository is cloned while a session waits: blobs come on demand (checkout fetches HEAD's).
-    const partial = isLazy(repo) ? ['--filter=blob:none'] : [];
-    await git(path.dirname(clone), ['clone', '--quiet', ...partial, ...(repo.branch ? ['-b', repo.branch] : []), repo.remote, tmp], CLONE_TIMEOUT);
-    await rename(tmp, clone);
-    fetchedAt.set(clone, new Date().toISOString());
-    freshness.fetchedFrom(clone, t0);
-    log.info(`workspaces: cloned ${repo.name} into ${clone} in ${Date.now() - t0} ms`);
-    for (const cmd of repo.setup ?? []) {
-      const c = command('sh', ['-c', cmd]);
-      await exec(c.cmd, c.args, { cwd: clone, env: c.env, timeout: CLONE_TIMEOUT, maxBuffer: 20 << 20 }).catch((e) => {
-        throw new Error(`setup \`${cmd}\`: ${errText(e)}`);
-      });
-    }
+    // The clone and each setup command may take CLONE_TIMEOUT.
+    const { s, repo: name } = scriptsFor(clone);
+    const args = [s.clones, name, repo.remote, isLazy(repo) ? 'blob:none' : '', repo.branch ?? '', ...setup];
+    await s.run('ws-clone.sh', args, { timeoutMs: CLONE_TIMEOUT * (1 + setup.length) }).then((out) => row(out, name)).catch((e) => {
+      if (isClone(clone)) cloned(); // a setup command failed: the clone is there, and is not made again
+      throw e;
+    });
+    cloned();
     return true;
   });
 }
