@@ -8,9 +8,10 @@
 //   C13): every operation is one `sh -c` script (GNU coreutils, findutils and
 //   tar) started by the workspace's Place, as the runners' user where the
 //   session's files are. On a host whose sessions run in containers that is
-//   inside the session's container, or a helper container that mounts only
-//   the workspace when the session is stopped (sandbox/workspace-exec.ts);
-//   there a workspace without a sandbox has no Place and the call fails.
+//   inside the session's container, or a helper container with the
+//   workspace bound when the session is stopped (sandbox/scripts.ts
+//   `filesPlace`); there a workspace without a sandbox has no Place and the
+//   call fails.
 // - Every path resolves inside the workspace (symlinks included); one that
 //   leaves it is `invalid_path` (the script's exit 45), one that does not
 //   exist `path_not_found` (44). The check and the read are the same script
@@ -34,7 +35,7 @@ import zlib from 'node:zlib';
 import type { ApiActor, ApiError } from '../protocol.js';
 import { apiError } from '../api/writer.js';
 import type { RunnerUser } from './runner-user.js';
-import type { SandboxPlace } from './sandbox/workspace-exec.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 import { TarCheck, TarError, UPLOAD_MAX_BYTES, UPLOAD_MAX_FILES } from './tar-check.js';
 import { ARCHIVE, CAN_UPLOAD, CAT, COUNT, LIST, MOVE_IN, NOT_FOUND, OUTSIDE, REMOVE, STAT, UNPACK } from './workspace-scripts.js';
 
@@ -43,6 +44,8 @@ const LIST_WALK_MAX = 200_000;
 
 /** How long a script that answers with a few lines may take (a helper container starts in well under a second). */
 const SCRIPT_WAIT_MS = 30_000;
+/** Seconds a script that carries a file, an archive or an upload may take. */
+const STREAM_WAIT_S = 3600;
 const OUTPUT_MAX = 64 * 2 ** 20;
 
 export interface Workspace {
@@ -56,8 +59,11 @@ export interface Workspace {
 /** Where a workspace's files are reached: `root` is the workspace as a process started by `spawn` sees it. */
 export interface Place {
   root: string;
-  /** `write`: the script changes the workspace; `stdin`: it reads its standard input. stdio is always three pipes. */
-  spawn(argv: string[], o: { write?: boolean; stdin?: boolean }): ChildProcess;
+  /**
+   * `argv`: `/bin/sh` and what it is given. `write`: the script changes the workspace; `stdin`: it reads its standard
+   * input; `seconds`: how long it may run, for a Place that can end it where it runs. stdio is always three pipes.
+   */
+  spawn(argv: string[], o: { write?: boolean; stdin?: boolean; seconds?: number }): ChildProcess;
 }
 
 export interface ListEntry {
@@ -161,9 +167,9 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   const placeOf = o.place ?? onHost;
 
   /** Start `script` with the workspace's root as `$1` and `args` after it. */
-  function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean } = {}): ChildProcess {
+  function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): ChildProcess {
     const place = placeOf(ws);
-    const p = place.spawn(['/bin/sh', '-c', script, 'sh', place.root, ...args], mode);
+    const p = place.spawn(['/bin/sh', '-c', script, 'sh', place.root, ...args], { seconds: STREAM_WAIT_S, ...mode });
     p.stdin?.on('error', () => {});
     if (!mode.stdin) p.stdin?.end();
     return p;
@@ -172,7 +178,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   /** Run `script` to its end: its exit code and what it printed. Rejects when it cannot start, runs too long or prints too much. */
   function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
     return new Promise((resolve, reject) => {
-      const p = start(ws, script, args, mode);
+      const p = start(ws, script, args, { ...mode, seconds: SCRIPT_WAIT_MS / 1000 });
       const out: Buffer[] = [];
       let bytes = 0;
       let err = '';

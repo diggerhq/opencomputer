@@ -13,7 +13,7 @@
 //   `sp-wire`; without that group wire-link chowns nothing and fails closed.
 // - On a `podman` host (work 103) a terminal is a shell in the session's
 //   container and `/files` run inside it, or in a helper container while it
-//   is stopped (sandbox/workspace-exec.ts); neither ever runs on the host.
+//   is stopped (sandbox/scripts.ts `filesPlace`); neither ever runs on the host.
 // - Upload records live in `stateDir` (HOST_DATA/state/uploads), so a push's
 //   per-name record survives a reboot.
 
@@ -22,11 +22,11 @@ import os from 'node:os';
 import path from 'node:path';
 import type { WireHooks, WireLinkLike } from './api-relay.js';
 import { systemdRunPrefix } from './runner-limits.js';
-import { sandboxPlaces } from './sandbox/workspace-exec.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 import type { RunnerUser } from './runner-user.js';
 import { createTerminals } from './terminal.js';
 import { serveWireLink, WIRE_DIR } from './wire-link.js';
-import { createWorkspaceFiles } from './workspace-files.js';
+import { createWorkspaceFiles, type Place } from './workspace-files.js';
 
 export interface WireOptions {
   launch: string;
@@ -38,8 +38,8 @@ export interface WireOptions {
   /** Upload records (HOST_DATA/state/uploads). */
   stateDir: string;
   dir?: string;
-  /** SP_IMAGE, on a `podman` host: what a stopped session's files are read with. */
-  image?: string;
+  /** On a `podman` host: where a session's `/files` scripts run (sandbox/host.ts `files`). */
+  files?(sandbox: SandboxPlace): Place;
 }
 
 /** The gid of `name`, or undefined where it does not exist. */
@@ -56,7 +56,7 @@ export function groupId(name: string, getent = (n: string) => execFileSync('/usr
 export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLinkLike>) | undefined {
   if (!o.user) return undefined;
   const podman = o.launch === 'podman';
-  if (podman && !o.image) throw new Error('SP_LAUNCH=podman needs SP_IMAGE');
+  if (podman && !o.files) throw new Error('SP_LAUNCH=podman: the wire socket needs the place of a session\'s files');
   const user = o.user;
   return (hooks) => {
     const dir = o.dir ?? WIRE_DIR;
@@ -69,7 +69,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       path: o.path,
       group,
     });
-    const inSandbox = podman ? sandboxPlaces({ sudo: user.sudo, image: o.image as string }) : undefined;
+    const inSandbox = podman ? o.files : undefined;
     const files = createWorkspaceFiles({
       dir: path.join(dir, 'files'), stateDir: o.stateDir, user,
       // On a podman host nothing reads a workspace outside a container: a workspace without a sandbox is an error, not the host's turn.

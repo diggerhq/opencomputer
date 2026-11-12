@@ -279,7 +279,7 @@ const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-a
   dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
   forkPath: (key) => runners.get(key)?.report?.forkPath,
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
-    stateDir: path.join(HOST_DATA, 'state', 'uploads'), image: sandbox?.image }), sandbox: sandbox?.place, telemetry: tm });
+    stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
   if (disk) toGateway(disk);

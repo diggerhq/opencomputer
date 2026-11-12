@@ -30,7 +30,8 @@ import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
 import { oneShotSocket } from './one-shot-socket.js';
 import type { Terminals } from './terminal.js';
-import { type SandboxPlace, WORKSPACE_DIR } from './sandbox/workspace-exec.js';
+import { WORKSPACE } from './sandbox/mounts.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 import type { WorkspaceFiles } from './workspace-files.js';
 
 export const WIRE_DIR = path.join(HOST_RUN, 'wire');
@@ -117,7 +118,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' }) };
         const r = await o.terminals.open(
-          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE_DIR : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
+          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
           (terminalId, exitCode, signal) => {
             const t = terms.get(terminalId);
             terms.delete(terminalId);

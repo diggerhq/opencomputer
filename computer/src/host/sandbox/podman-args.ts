@@ -87,30 +87,6 @@ export const terminalArgs = (id: string, dir: string, term: string, helper: stri
 export const terminalHangUpArgs = (id: string, unit: string) =>
   ['exec', '--user', SESSION_USER, containerName(id), 'pkill', '-HUP', '-f', `terminal-pty\\.py ${unit}$`];
 
-export interface FilesHelper {
-  /** `person.dir`, the helper's label. */
-  person: string;
-  /** The thread's workspace on the host. */
-  workspace: string;
-  image: string;
-  /** Mount the workspace writable; without it nothing the command does can change a file. */
-  write?: boolean;
-  /** Keep standard input open. */
-  interactive?: boolean;
-}
-
-/**
- * A command over the workspace of a thread whose container is not running (workspace-exec.ts): a container that
- * lives as long as the command, with the workspace at `dir` and nothing else of the host's, and no network.
- */
-export const filesHelperArgs = (h: FilesHelper, dir: string, argv: string[]) => [
-  'run', '--rm', ...(h.interactive ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`,
-  '--cgroups=split', '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER,
-  '--network=none', '--pids-limit=1024', '--log-driver=none', '--env', 'HOME=/tmp', '--workdir', dir,
-  '-v', `${h.workspace}:${dir}${h.write ? '' : ':ro'}`,
-  '--entrypoint', argv[0], h.image, ...argv.slice(1),
-];
-
 /** `seconds`: how long the runner gets after SIGTERM before SIGKILL. */
 export const stopArgs = (id: string, seconds: number) => ['stop', '--time', String(seconds), containerName(id)];
 
@@ -167,23 +143,24 @@ export interface HelperSpec {
   stdin?: boolean;
   /** What a script on a stopped thread's files needs besides: its workspace, its worktree registries. */
   binds?: Bind[];
-  /** The script, by its path in the release, and its arguments. */
-  script: string;
-  args: string[];
+  /** What `/bin/sh` is given: a script by its path in the release and its arguments, or `-c`, a script's text and its arguments. */
+  sh: string[];
 }
 
-/** One run of a workspace script on one person's clones, with no session. */
+/** One run of a script on one person's clones, with no session. */
 export function helperArgs(h: HelperSpec): string[] {
   return [
     'run', '--rm', ...(h.stdin ? ['--interactive'] : []), '--label', `sp.helper=${h.person}`, '--cgroups=split',
     '--userns=keep-id:uid=1500,gid=1500', '--user', SESSION_USER, `--network=${h.network ? 'pasta' : 'none'}`, '--pids-limit=1024',
     // The script is the container's first process, which ignores a signal it has no handler for: Podman ends it.
     '--timeout', String(h.timeoutS),
+    // What it prints goes to whoever started it and nowhere else: a workspace's archive is not kept in a log.
+    '--log-driver=none',
     '--env', `SP_RUN=${h.run}`, '--env', `SP_TOKEN_SOCKET=${path.join(h.run, 'token.sock')}`, '--env', 'HOME=/tmp',
     '-v', `${path.join(h.people, h.person, 'ws')}:/clones`,
     '-v', `${h.run}:${h.run}`,
     '-v', `${RELEASES_DIR}:${RELEASES_DIR}:ro`,
     ...(h.binds ?? []).flatMap((b) => ['-v', `${b.src}:${b.dst}${b.ro ? ':ro' : ''}`]),
-    '--entrypoint', '/bin/sh', h.image, h.script, ...h.args,
+    '--entrypoint', '/bin/sh', h.image, ...h.sh,
   ];
 }

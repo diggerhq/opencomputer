@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { createTelemetry } from '../../telemetry/emitter.js';
 import type { TelemetryEvent } from '../../telemetry/envelope.js';
@@ -19,11 +21,19 @@ function rig(answer: () => string | Error = () => 'out') {
     return a;
   };
   const as: AsRunner = { run: (argv, o) => (runs.push({ argv, o }), reply()), podman: () => reply() };
+  const started: string[][] = [];
+  const children: EventEmitter[] = [];
   const s = sandboxScripts({
-    as, tm, root: '/opt/slack-presence/releases/r1', dataDir: '/data', helperRun: '/run/sp/helper', image: 'img:1',
+    as, sudo: ['/usr/bin/sudo', '-n', '-u', 'agent'], tm, root: '/opt/slack-presence/releases/r1', dataDir: '/data', helperRun: '/run/sp/helper', image: 'img:1',
     execIn: (id, argv, o) => (execs.push({ id, argv, o }), reply()),
+    spawn: (cmd, args) => {
+      started.push([cmd, ...args]);
+      const child = new EventEmitter();
+      children.push(child);
+      return child as ChildProcess;
+    },
   });
-  return { s, execs, runs, tm, events: async () => (await tm.flush(), sent) };
+  return { s, execs, runs, started, children, tm, events: async () => (await tm.flush(), sent) };
 }
 
 describe('workspace scripts in containers (work 103, C12)', () => {
@@ -92,5 +102,50 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     } finally {
       now.mockRestore();
     }
+  });
+
+  describe('where the /files scripts of a thread run (C13)', () => {
+    const sb = { id: ID, person: 'pat', workspace: '/data/people/pat/sessions/k', running: true };
+    const AS = ['/usr/bin/sudo', '-n', '-u', 'agent', '--', '/usr/bin/timeout', '--kill-after=2'];
+
+    it('a running thread: podman exec in its container, as the session, in /workspace, ended there by timeout', () => {
+      const t = rig();
+      const place = t.s.filesPlace(sb);
+      expect(place.root).toBe('/workspace');
+      place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
+      place.spawn(['/bin/sh', '-c', 'x'], { stdin: true, write: true });
+      expect(t.started[0]).toEqual([
+        ...AS, '45.000', '/usr/bin/podman', 'exec', '--user', '1500:1500', '--workdir', '/workspace', `sp-runner-${ID}`,
+        '/usr/bin/timeout', '--kill-after=5', '30', '/bin/sh', '-c', 'x', 'sh', '/workspace',
+      ]);
+      expect(t.started[1].slice(7, 11)).toEqual(['3615.000', '/usr/bin/podman', 'exec', '--interactive']);
+      expect(t.started[1].slice(-6)).toEqual(['/usr/bin/timeout', '--kill-after=5', '3600', '/bin/sh', '-c', 'x']);
+      expect([t.execs, t.runs]).toEqual([[], []]);
+    });
+
+    it('a stopped thread: the same helper as a workspace script, its workspace bound read-only unless the script writes, never a network', async () => {
+      const t = rig();
+      const place = t.s.filesPlace({ ...sb, running: false });
+      place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
+      place.spawn(['/bin/sh', '-c', 'x'], { write: true, stdin: true });
+      const [read, write] = t.started;
+      expect(read.slice(0, 18)).toEqual([...AS, '45.000', '/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--', '/usr/bin/podman', 'run']);
+      expect(read).toEqual(expect.arrayContaining(['--network=none', '--timeout', '30', '--log-driver=none', '/data/people/pat/ws:/clones', `${sb.workspace}:/workspace:ro`]));
+      expect(read).not.toContain('--interactive');
+      expect(read).not.toContain(`sp-runner-${ID}`);
+      expect(read.slice(-7)).toEqual(['--entrypoint', '/bin/sh', 'img:1', '-c', 'x', 'sh', '/workspace']);
+      expect(write).toEqual(expect.arrayContaining(['--network=none', '--interactive', '--timeout', '3600', `${sb.workspace}:/workspace`]));
+      // A script's own exit is an answer; an exit of timeout(1) or of Podman is the helper's failure.
+      t.children[0].emit('close', 3);
+      t.children[1].emit('close', 125);
+      expect((await t.events()).filter((e) => e.event_name === 'sandbox.helper').map((e) => [e.data?.script, e.outcome])).toEqual([['files', 'completed'], ['files', 'failed']]);
+      expect(t.tm.dropped).toEqual({});
+    });
+
+    it('only a shell script is started', () => {
+      const t = rig();
+      expect(() => t.s.filesPlace(sb).spawn(['/usr/bin/git', 'status'], {})).toThrow('not a shell script');
+      expect(t.started).toEqual([]);
+    });
   });
 });

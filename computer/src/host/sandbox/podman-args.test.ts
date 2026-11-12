@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createArgs, emptyRunArgs, execArgs, filesHelperArgs, HELPER_SCOPE, helperArgs, inventoryArgs, logsArgs, mountArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs,
+  createArgs, emptyRunArgs, execArgs, HELPER_SCOPE, helperArgs, inventoryArgs, logsArgs, mountArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs,
   terminalArgs, terminalHangUpArgs, unshareRmArgs,
 } from './podman-args.js';
 
@@ -98,15 +98,15 @@ ghcr.io/diggerhq/computer-session:abc`);
   });
 
   it('a helper container sees one person\'s clones, no home, a network only when asked, and is ended by Podman', () => {
-    const h = { person: 'pat', people: '/data/people', run: '/run/sp/helper', image: 'img:1', network: false, timeoutS: 60, script: '/opt/slack-presence/releases/r1/bin/ws-inspect.sh', args: ['--only=state', '/clones', '/workspace', 'a'] };
+    const h = { person: 'pat', people: '/data/people', run: '/run/sp/helper', image: 'img:1', network: false, timeoutS: 60, sh: ['/opt/slack-presence/releases/r1/bin/ws-inspect.sh', '--only=state', '/clones', '/workspace', 'a'] };
     const a = helperArgs({ ...h, binds: [{ src: '/data/people/pat/sessions/k', dst: '/workspace', ro: true }, { src: '/data/people/pat/wt/k/a', dst: '/clones/a/.git/worktrees' }] });
     expect(a.slice(0, 2)).toEqual(['run', '--rm']);
-    expect(a).toEqual(expect.arrayContaining(['--label', 'sp.helper=pat', '--user', '1500:1500', '--network=none', '--timeout', '60', '--env', 'SP_TOKEN_SOCKET=/run/sp/helper/token.sock', '--env', 'HOME=/tmp']));
+    expect(a).toEqual(expect.arrayContaining(['--label', 'sp.helper=pat', '--user', '1500:1500', '--network=none', '--timeout', '60', '--log-driver=none', '--env', 'SP_TOKEN_SOCKET=/run/sp/helper/token.sock', '--env', 'HOME=/tmp']));
     expect(a.filter((x, i) => a[i - 1] === '-v')).toEqual([
       '/data/people/pat/ws:/clones', '/run/sp/helper:/run/sp/helper', '/opt/slack-presence:/opt/slack-presence:ro',
       '/data/people/pat/sessions/k:/workspace:ro', '/data/people/pat/wt/k/a:/clones/a/.git/worktrees',
     ]);
-    expect(a.slice(-8)).toEqual(['--entrypoint', '/bin/sh', 'img:1', h.script, '--only=state', '/clones', '/workspace', 'a']);
+    expect(a.slice(-8)).toEqual(['--entrypoint', '/bin/sh', 'img:1', ...h.sh]);
     expect(a).not.toContain('--interactive');
     const net = helperArgs({ ...h, network: true, stdin: true });
     expect(net).toContain('--network=pasta');
@@ -133,18 +133,5 @@ ghcr.io/diggerhq/computer-session:abc`);
     const pattern = new RegExp(args.at(-1) as string);
     expect(pattern.test('python3 /opt/slack-presence/releases/r1/src/host/terminal-pty.py sp-term-ab12')).toBe(true);
     expect(pattern.test('python3 /opt/slack-presence/releases/r1/src/host/terminal-pty.py sp-term-ab123')).toBe(false);
-  });
-
-  it('a files helper mounts the workspace and nothing else, read-only unless it writes, without a network', () => {
-    const h = { person: 'U1', workspace: '/data/people/U1/sessions/C1-1-2', image: 'img:tag' };
-    expect(filesHelperArgs(h, '/workspace', ['/bin/sh', '-c', 'cat -- "$1"', 'sh', 'a b'])).toEqual([
-      'run', '--rm', '--label', 'sp.helper=U1', '--cgroups=split', '--userns=keep-id:uid=1500,gid=1500', '--user', '1500:1500',
-      '--network=none', '--pids-limit=1024', '--log-driver=none', '--env', 'HOME=/tmp', '--workdir', '/workspace',
-      '-v', '/data/people/U1/sessions/C1-1-2:/workspace:ro', '--entrypoint', '/bin/sh', 'img:tag', '-c', 'cat -- "$1"', 'sh', 'a b',
-    ]);
-    const w = filesHelperArgs({ ...h, write: true, interactive: true }, '/workspace', ['/bin/sh']);
-    expect(w).toContain('--interactive');
-    expect(w).toContain('/data/people/U1/sessions/C1-1-2:/workspace');
-    expect(w.filter((a) => a === '-v')).toHaveLength(1);
   });
 });

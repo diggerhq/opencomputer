@@ -343,7 +343,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
 
   // ---- checkout, by the host's own parts in this process
   const tm = createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} });
-  const scripts = sandboxScripts({ as, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
+  const scripts = sandboxScripts({ as, sudo: user.sudo, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
     execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }) });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);

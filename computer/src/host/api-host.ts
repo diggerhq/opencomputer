@@ -50,7 +50,7 @@ import { apiWake } from './api-wake.js';
 import { apiRelay, type WireHooks, type WireLinkLike } from './api-relay.js';
 import { type ApiMeter, apiMeter } from './api-meter.js';
 import type { Telemetry } from '../telemetry/emitter.js';
-import type { SandboxPlace } from './sandbox/workspace-exec.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
   /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
