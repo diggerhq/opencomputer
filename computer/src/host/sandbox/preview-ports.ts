@@ -6,6 +6,9 @@
 //
 // Invariants:
 // - One number per `(id, port)`, and one entry per number.
+// - One entry per name: giving an entry a name frees the entry that had it
+//   (the gateway points a name at one number). Whether a sandbox may ask for
+//   a name is previews.ts's to decide, before the gateway is asked.
 // - A new number is the next free one after the last handed out, wrapping
 //   round: never the lowest free, so a number just freed is not given to
 //   another session while a public name may still point at it. The place in
@@ -43,6 +46,7 @@ export interface PreviewPorts {
   assign(id: string, port: number): { entry: PreviewEntry; fresh: boolean };
   get(virtual: number): PreviewEntry | undefined;
   byName(name: string): PreviewEntry | undefined;
+  /** `name` is this entry's from now on; an entry that held it is freed. */
   setName(virtual: number, name: string): void;
   release(virtual: number): void;
   /** Free every entry of a sandbox (Remove); how many there were. */
@@ -113,6 +117,8 @@ export function previewPorts(file: string, range: { first: number; last: number 
     setName(virtual, name) {
       const e = byVirtual.get(virtual);
       if (!e || e.name === name) return;
+      // The gateway points a name at one number: whatever held it before points nowhere now.
+      for (const x of [...byVirtual.values()]) if (x.name === name) byVirtual.delete(x.virtual);
       e.name = name;
       save();
     },

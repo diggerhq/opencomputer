@@ -19,7 +19,9 @@
 // refused, and a port outside the table is "port not previewed". A name is
 // its sandbox's: `unpreview` is answered only for a name the table holds under
 // the caller's id, and a sandbox that is removed has its names unpreviewed at
-// the gateway by the host (`forget`).
+// the gateway by the host (`forget`). A `preview` that asks for a name another
+// sandbox holds, or asked for first and is not answered yet, is refused before
+// the gateway hears of it: the gateway would point the name at the caller.
 
 import { randomUUID } from 'node:crypto';
 import type http from 'node:http';
@@ -29,7 +31,7 @@ import { type Cloudflared, cloudflared } from './cloudflared.js';
 import type { RunRoot } from '../ipc.js';
 import { type Dialer, nothingListens, sandboxDialer } from './preview-dial.js';
 import { HOST_PORTS, PREVIEW_PROXY_PORT, previewProxy } from './preview-proxy.js';
-import type { PreviewPorts } from './sandbox/preview-ports.js';
+import type { PreviewEntry, PreviewPorts } from './sandbox/preview-ports.js';
 import { probePort } from './preview-probe.js';
 
 type Ask = Extract<RunnerToHost, { t: 'preview' | 'unpreview' }>;
@@ -60,6 +62,8 @@ export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview'
   const probe = o.probe ?? probePort;
   const waiters = new Map<string, (m: { result?: PreviewResult; error?: string }) => void>();
   const sb = o.sandbox;
+  /** Names asked of the gateway and not answered yet: the sandbox that asked first. */
+  const asking = new Map<string, string>();
   /** A virtual port's session, through its runner; a number the table lost meanwhile is a closed port. */
   const dialVirtual: Dialer = (virtual) => {
     const e = sb?.ports.get(virtual);
@@ -76,13 +80,22 @@ export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview'
       ports.release(e.virtual);
       return { ...result, listening: false };
     }
-    const { entry, fresh } = ports.assign(id, m.req.port);
+    // A name another sandbox holds, or was the first to ask for, is not asked of the gateway: it would point the name here.
+    const name = m.req.name;
+    if (name !== undefined && (ports.byName(name) ?? { id: asking.get(name) ?? id }).id !== id) throw new Error(`another session has a preview named ${name}; choose another name`);
+    const mine = name !== undefined && !asking.has(name);
+    if (mine) asking.set(name, id);
+    let entry: PreviewEntry | undefined;
+    let fresh = false;
     let result: PreviewResult;
     try {
+      ({ entry, fresh } = ports.assign(id, m.req.port));
       result = await gateway(from, { ...m, req: { ...m.req, port: entry.virtual } });
     } catch (e) {
-      if (fresh) ports.release(entry.virtual); // the gateway never heard of it, or refused it
+      if (entry && fresh) ports.release(entry.virtual); // the gateway never heard of it, or refused it
       throw e;
+    } finally {
+      if (mine) asking.delete(name);
     }
     ports.setName(entry.virtual, result.name);
     return { ...result, port: m.req.port, ...(await probe(entry.virtual, new URL(result.url).host, undefined, dialVirtual)) };

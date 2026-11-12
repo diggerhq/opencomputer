@@ -36,6 +36,20 @@ describe('virtual preview ports', () => {
     expect(t.assign('c', 1).entry.virtual).toBe(101);
   });
 
+  it('setName: a name is one entry\'s; an entry that held it is freed, on disk too', () => {
+    const f = file();
+    const t = previewPorts(f);
+    const a = t.assign('aaaa', 5173).entry;
+    const b = t.assign('bbbb', 3000).entry;
+    t.setName(a.virtual, 'demo');
+    t.setName(b.virtual, 'demo');
+    expect(t.all()).toEqual([{ virtual: b.virtual, id: 'bbbb', port: 3000, name: 'demo' }]);
+    expect(t.byName('demo')?.id).toBe('bbbb');
+    expect(previewPorts(f).all()).toEqual(t.all());
+    t.setName(b.virtual, 'demo'); // its own again: nothing changes
+    expect(t.all()).toHaveLength(1);
+  });
+
   it('gives one sandbox at most PREVIEWS_PER_SANDBOX numbers, whatever the others hold', () => {
     const t = previewPorts(file());
     expect(PREVIEWS_PER_SANDBOX).toBe(32);

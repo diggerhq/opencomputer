@@ -67,7 +67,8 @@ describe('host previews', () => {
     const named = (m: HostToGateway) => (m.t === 'preview' ? { result: { url: 'https://demo.opencomputer.app', name: 'demo', port: m.req.port } } : { result: { url: '', name: 'demo', port: 0 } });
 
     it('gives the gateway a virtual port, probes that, and answers the runner with its own', async () => {
-      const { p, asked, probed, ports } = rig(named);
+      // A gateway gives each thread a name of its own.
+      const { p, asked, probed, ports } = rig((m) => (m.t === 'preview' && m.from !== 'C1:1.2' ? { result: { url: 'https://other.opencomputer.app', name: 'other', port: m.req.port } } : named(m)));
       const a = await p.request('C1:1.2', { t: 'preview', id: 'r1', req: { port: 5173 } }, 'aaaa');
       expect(asked).toMatchObject([{ t: 'preview', from: 'C1:1.2', req: { port: 30000 } }]);
       expect(probed).toEqual([[30000, 'demo.opencomputer.app']]);
@@ -107,6 +108,29 @@ describe('host previews', () => {
       const away = hostPreviews({ ask: () => false, tunnel: tunnel() });
       expect(() => away.forget('demo', '')).not.toThrow();
       await new Promise((r) => setImmediate(r));
+    });
+
+    it('preview: a name another sandbox holds, or is being given, is refused before the gateway is asked; its own name it may ask for again', async () => {
+      const { p, asked, ports } = rig((m) => (m.t === 'preview' ? { result: { url: `https://${m.req.name ?? 'demo'}.opencomputer.app`, name: m.req.name ?? 'demo', port: m.req.port } } : { result: { url: '', name: 'demo', port: 0 } }));
+      await p.request('C1:1.2', { t: 'preview', id: 'r1', req: { port: 5173 } }, 'aaaa');
+      expect(await p.request('C1:3.4', { t: 'preview', id: 'r2', req: { port: 3000, name: 'demo' } }, 'bbbb')).toEqual({ t: 'previewed', id: 'r2', error: 'another session has a preview named demo; choose another name' });
+      expect(asked).toHaveLength(1);
+      expect(ports.all()).toEqual([{ virtual: 30000, id: 'aaaa', port: 5173, name: 'demo' }]);
+      // Two sessions ask for one free name at once: the first to ask has it, whatever order the gateway would answer in.
+      const [a, b] = await Promise.all([
+        p.request('C1:1.2', { t: 'preview', id: 'r3', req: { port: 8000, name: 'shop' } }, 'aaaa'),
+        p.request('C1:3.4', { t: 'preview', id: 'r4', req: { port: 8000, name: 'shop' } }, 'bbbb'),
+      ]);
+      expect(a).toMatchObject({ result: { name: 'shop' } });
+      expect(b).toEqual({ t: 'previewed', id: 'r4', error: 'another session has a preview named shop; choose another name' });
+      expect(asked).toHaveLength(2);
+      // Its own name, on another port: the gateway is asked, and the name is the new port's alone.
+      expect(await p.request('C1:1.2', { t: 'preview', id: 'r5', req: { port: 9000, name: 'demo' } }, 'aaaa')).toMatchObject({ result: { name: 'demo', port: 9000 } });
+      expect(ports.all().filter((e) => e.name === 'demo')).toEqual([{ virtual: 30002, id: 'aaaa', port: 9000, name: 'demo' }]);
+      // A request that failed holds no name.
+      const refused = rig(() => ({ error: 'no' }));
+      await refused.p.request('k', { t: 'preview', id: 'r1', req: { port: 1, name: 'x' } }, 'aaaa');
+      expect(await refused.p.request('k', { t: 'preview', id: 'r2', req: { port: 1, name: 'x' } }, 'bbbb')).toEqual({ t: 'previewed', id: 'r2', error: 'no' });
     });
 
     it('a session that has as many previews as it may is told so, and the gateway is not asked', async () => {
