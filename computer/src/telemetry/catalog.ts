@@ -80,6 +80,8 @@ export const CATALOG = {
   'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms'),
   // One script in a helper container (work 103): `script` is a workspace script's file name, or `files` for a `/files` script on a stopped thread.
   'sandbox.helper': host('script'),
+  // What one sweep of a `podman` host removed, by kind (work 103); emitted only when it removed something.
+  'sandbox.swept': host('containers', 'volumes', 'run_dirs', 'units'),
   'runner.ready': host('polls'),
   'deliver.forwarded': host('credentials_sent', 'secrets_count'),
   'runner.exited': host('busy', 'exit_reason', 'last_status'),
@@ -134,6 +136,13 @@ export const CATALOG = {
     'since_gateway_message_s',
     'telemetry_spooled_bytes',
     'telemetry_dropped',
+    // A `podman` host (work 103), as of its last sweep: its containers by Podman's state, the use of its data volume, `podman system df`'s total.
+    'containers_running',
+    'containers_exited',
+    'containers_created',
+    'containers_other',
+    'data_used_pct',
+    'podman_bytes',
   ),
   // ---------------------------------------------------------------- host: the computer API (work 084 instrumentation)
   // /tmp/build084/instrumentation-catalog.md (v2) is the contract (blue mirrors it). One event per unit of work, never a

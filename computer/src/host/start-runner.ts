@@ -153,7 +153,9 @@ export function runnerStarts(d: StartDeps) {
       const a = adoption({ verify: !!o.verify, complete, take, stop, gone: () => reject(new Error('runner gone')) });
       lines(sock, (m: RunnerToHost) => {
         // Which thread a container serves is the record's word, never the runner's.
-        if (o.sandbox && m.t === 'report' && m.report.key !== o.sandbox.record.key) return stopped(`it reports ${m.report.key}, not its record's ${o.sandbox.record.key}`);
+        if (o.sandbox && m.t === 'report' && m.report.key !== o.sandbox.record.key) return stop(`it reports ${m.report.key}, not its record's ${o.sandbox.record.key}`);
+        // Found running after a restart, a record's container serves its thread or nothing: never taken on as a spare.
+        if (o.sandbox && o.verify && m.t === 'spare' && a.state === 'pending') return stop(`it says it is a spare, not ${o.sandbox.record.key}'s runner`);
         return a.message(m) && void d.message(r, m);
       });
       sock.once('close', () => a.closed());

@@ -16,7 +16,10 @@
 // reach the session through its runner's preview socket (preview-dial.ts
 // `sandboxDialer`), and the runner is answered with its own port. There the
 // host's loopback is never dialed: a request that names no sandbox is
-// refused, and a port outside the table is "port not previewed".
+// refused, and a port outside the table is "port not previewed". A name is
+// its sandbox's: `unpreview` is answered only for a name the table holds under
+// the caller's id, and a sandbox that is removed has its names unpreviewed at
+// the gateway by the host (`forget`).
 
 import { randomUUID } from 'node:crypto';
 import type http from 'node:http';
@@ -39,6 +42,8 @@ export interface HostPreviews {
   configure(config: PreviewConfig | undefined): void;
   /** A runner's `preview` or `unpreview`; resolves with the frame to send back, never rejects. `sandboxId`: the runner's, when it runs in a container. */
   request(from: string, m: Ask, sandboxId?: string): Promise<Answer>;
+  /** Work 103: a sandbox was removed and `name` was its preview: tell the gateway, so the public name does not outlive the container. Never throws; a failure is logged. */
+  forget(name: string, from: string): void;
   /** The gateway's `previewed`. */
   answer(m: { id: string; result?: PreviewResult; error?: string }): void;
   stop(): void;
@@ -64,9 +69,11 @@ export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview'
   /** `preview` and `unpreview` of a runner in a container. */
   async function sandboxed(ports: PreviewPorts, from: string, m: Ask, id: string): Promise<Answer['result']> {
     if (m.t === 'unpreview') {
-      const result = await gateway(from, m);
+      // A name is its sandbox's: another session's, or nobody's, is not asked of the gateway.
       const e = ports.byName(m.req.name);
-      if (e) ports.release(e.virtual);
+      if (e?.id !== id) throw new Error(`no preview named ${m.req.name} in this session`);
+      const result = await gateway(from, m);
+      ports.release(e.virtual);
       return { ...result, listening: false };
     }
     const { entry, fresh } = ports.assign(id, m.req.port);
@@ -119,6 +126,7 @@ export function hostPreviews(o: { ask: (m: Extract<HostToGateway, { t: 'preview'
         return { t: 'previewed', id: m.id, error: e instanceof Error ? e.message : String(e) };
       }
     },
+    forget: (name, from) => void gateway(from, { t: 'unpreview', id: '', req: { name } }).catch((e) => log.warn(`preview ${name} of a removed sandbox not unpreviewed: ${e?.message ?? e}`)),
     answer: (m) => waiters.get(m.id)?.(m),
     stop() {
       tunnel.stop();

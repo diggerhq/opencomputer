@@ -14,7 +14,10 @@
 // - Every command runs in `/`: Podman refuses to start in a directory its
 //   user cannot enter, and the host's own may be one.
 // - A call that fails or runs out of time rejects with PodmanError, which
-//   carries the exit code and stderr; nothing is retried here.
+//   carries the exit code and stderr. Nothing is retried here but a Podman
+//   call that ran out of time while provisioning holds the image lock: it was
+//   waiting inside Podman for the storage, so it is made once more after the
+//   wait (image-lock.ts).
 // - `timedOut` is true only when the caller's time ran out: never for output
 //   past the limit or a command something else killed.
 // - A call that timed out rejects once its command is gone (SIGTERM, SIGKILL
@@ -23,7 +26,8 @@
 //   command: sudo resets the rest. Only the mount helper is given one.
 
 import { execFile as nodeExecFile } from 'node:child_process';
-import { imageSettled } from './image-lock.js';
+import { log } from '../../log.js';
+import { imageBusy, imageSettled } from './image-lock.js';
 
 export const PODMAN = '/usr/bin/podman';
 
@@ -102,9 +106,17 @@ export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: 
 }
 
 /** `sudo`: `runnerUser(env).sudo`, the prefix that makes a command the runners' user's. */
-export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<void> = imageSettled): AsRunner {
+export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<void> = imageSettled, busy: () => Promise<boolean> = imageBusy): AsRunner {
   const run = (argv: string[], o: RunOptions) =>
     argv[0]?.startsWith('/') ? runBounded(sudo, argv, o, exec) : Promise.reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
   // A Podman call's time starts once provisioning is not holding the storage (image-lock.ts).
-  return { run, podman: (args, o) => settled().then(() => run([PODMAN, ...args], o)) };
+  const podman = (args: string[], o: RunOptions) => settled().then(() => run([PODMAN, ...args], o));
+  return {
+    run,
+    podman: (args, o) => podman(args, o).catch(async (e) => {
+      if (!(e instanceof PodmanError && e.timedOut) || !(await busy())) throw e;
+      log.info(`podman ${words(args)}: ran out of time while provisioning holds the storage; once more after it`);
+      return podman(args, o);
+    }),
+  };
 }

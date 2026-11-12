@@ -21,6 +21,11 @@
 //   ended between two looks.
 // - `stop` resolves only for a container that is down: one that outlived
 //   Podman's stop and the kill of its cgroup rejects.
+// - A container is this host's only when it is mounted on this host's run
+//   directory for its id (Create mounts it at its own path). The runners'
+//   user's Podman is one per computer, and another host of the computer (other
+//   SP_RUN) has its containers there too: the Inventory names those `foreign`
+//   and nothing here, the restart or the sweep ever touches them.
 
 import path from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,6 +60,8 @@ export interface Inventory {
   containers: ContainerInfo[];
   /** Home volumes, by runner id. */
   volumes: { id: string; createdAt: number }[];
+  /** Runner ids of sandbox containers of the same Podman that are another host's (not on this host's run directories). */
+  foreign: string[];
 }
 
 export interface ContainersDeps {
@@ -236,22 +243,25 @@ export function containers(d: ContainersDeps) {
   async function inventory(): Promise<Inventory> {
     const args = inventoryArgs();
     const [cs, vs] = await Promise.all([as.podman(args.containers, { timeoutMs: TIMEOUTS.inventory }), as.podman(args.volumes, { timeoutMs: TIMEOUTS.inventory })]);
-    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string }[] => {
+    const list = (text: string): { Labels?: Record<string, string>; Names?: string[]; Name?: string; State?: string; Image?: string; Created?: number; CreatedAt?: string; Mounts?: string[] }[] => {
       const v = JSON.parse(text.trim() || '[]');
       if (!Array.isArray(v)) throw new Error('podman: not a list');
       return v;
     };
+    const foreign: string[] = [];
     return {
       containers: list(cs).flatMap((c) => {
         const id = c?.Labels?.['sp.runner'];
         // The label and the name agree for every container the host made; anything else is not ours to touch.
         if (typeof id !== 'string' || !c.Names?.includes?.(containerName(id))) return [];
+        if (!Array.isArray(c.Mounts) || !c.Mounts.includes(d.runRoot(id))) return (foreign.push(id), []);
         return [{ id, state: String(c.State ?? ''), abi: String(c.Labels?.['sp.abi'] ?? ''), image: String(c.Image ?? ''), createdAt: Number(c.Created ?? 0) * 1000 }];
       }),
       volumes: list(vs).flatMap((v) => {
         const m = /^sp-home-(.+)$/.exec(String(v?.Name ?? ''));
         return m ? [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0 }] : [];
       }),
+      foreign,
     };
   }
 

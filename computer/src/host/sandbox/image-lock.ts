@@ -20,7 +20,15 @@
 //   only the file. sandbox.sh removes the file as it finishes, so a call
 //   normally pays one stat; with a file left behind, one flock(1) (7 ms
 //   measured) until the next run.
-// - Not covered: a call already running when provisioning takes the lock.
+// - A provisioning run queued behind another takes a new file once the first
+//   removed its own (sandbox.sh). So after a wait that was a real one the host
+//   looks at the path again, NEXT_MS later, and waits for that run too; all
+//   within the one bound.
+// - A call already running when provisioning takes the lock waits inside
+//   Podman and may run out of its time: podman.ts asks `imageBusy` then, and
+//   tries the call once more after the wait.
+// - Not covered: what the host spawns outside `podman()` (a terminal's
+//   `podman exec`, the `/files` scripts).
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -31,6 +39,10 @@ export const IMAGE_LOCK = '/run/slack-presence-image.lock';
 const FLOCK = '/usr/bin/flock';
 /** Longer than a pull and a warm-up take (181 to 214 s measured for both, work 103 "Provisioning"). */
 export const WAIT_S = 300;
+/** A wait this long was for a holder (a free lock answers in 7 ms). */
+const HELD_MS = 500;
+/** How long a provisioning run that waited for another needs to take its own lock: it wakes, makes the file and locks it. */
+const NEXT_MS = 200;
 
 export interface ImageLockDeps {
   lock?: string;
@@ -39,20 +51,35 @@ export interface ImageLockDeps {
   /** Runs flock(1); resolves with its exit code, or undefined when it could not run. */
   flock?: (args: string[]) => Promise<number | undefined>;
   now?: () => number;
+  nextMs?: number;
 }
 
 const run = (args: string[]) =>
   new Promise<number | undefined>((resolve) => execFile(FLOCK, args, (e) => resolve(!e ? 0 : typeof e.code === 'number' ? e.code : undefined)));
 
 /** Resolves once provisioning is not pulling or warming an image, or after `waitS`. Without the file, nobody is. */
-export function imageSettled(d: ImageLockDeps = {}): Promise<void> {
-  const { lock = IMAGE_LOCK, waitS = WAIT_S, exists = existsSync, flock = run, now = Date.now } = d;
-  if (!exists(lock)) return Promise.resolve();
+export async function imageSettled(d: ImageLockDeps = {}): Promise<void> {
+  const { lock = IMAGE_LOCK, waitS = WAIT_S, exists = existsSync, flock = run, now = Date.now, nextMs = NEXT_MS } = d;
+  if (!exists(lock)) return;
   const t0 = now();
-  // Exit 1 is flock's "still held"; anything else that is not 0 (a file it may not open) is nobody holding it.
-  return flock(['--shared', '--timeout', String(waitS), lock, '/usr/bin/true']).then((code) => {
-    const ms = now() - t0;
-    if (code === 1) log.warn(`podman: provisioning still holds ${lock} after ${waitS} s; going on`);
-    else if (ms >= 1000) log.info(`podman: waited ${ms} ms for provisioning to finish with an image`);
-  });
+  for (;;) {
+    const left = Math.ceil(waitS - (now() - t0) / 1000);
+    if (left <= 0) break;
+    const r0 = now();
+    // Exit 1 is flock's "still held"; anything else that is not 0 (a file it may not open) is nobody holding it.
+    const code = await flock(['--shared', '--timeout', String(left), lock, '/usr/bin/true']);
+    if (code === 1) return log.warn(`podman: provisioning still holds ${lock} after ${waitS} s; going on`);
+    if (code !== 0 || now() - r0 < HELD_MS) break;
+    // It was held, and is free: a run queued behind that one takes its own file now.
+    await new Promise((r) => setTimeout(r, nextMs));
+    if (!exists(lock)) break;
+  }
+  const ms = now() - t0;
+  if (ms >= 1000) log.info(`podman: waited ${ms} ms for provisioning to finish with an image`);
+}
+
+/** True while provisioning holds the lock at this moment. */
+export async function imageBusy(d: Pick<ImageLockDeps, 'lock' | 'exists' | 'flock'> = {}): Promise<boolean> {
+  const { lock = IMAGE_LOCK, exists = existsSync, flock = run } = d;
+  return exists(lock) && (await flock(['--shared', '--nonblock', lock, '/usr/bin/true'])) === 1;
 }

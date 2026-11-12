@@ -7,8 +7,11 @@
 // It also turns the workspaces' two seams its way, once, when it is made: the
 // scripts that work on a person's clones with no session run in a helper
 // container (scripts.ts), and housekeeping prunes a thread's build
-// directories without host git (artifacts.ts). Idle threads themselves are
-// not pruned yet (step 8).
+// directories without host git (artifacts.ts), then prunes the threads idle
+// beyond retention (prune.ts).
+//
+// Invariant: a sandbox that is removed, by whichever path, has its named
+// previews unpreviewed at the gateway before its virtual ports are freed.
 //
 // Invariant: a `podman` host that cannot sandbox every session does not start.
 // Without a runners' user it would run sessions as itself, without SP_IMAGE
@@ -37,7 +40,9 @@ import { asRunner } from './podman.js';
 import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { type SandboxPlace, sandboxScripts } from './scripts.js';
+import { sandboxPrune } from './prune.js';
 import { sandboxStarts } from './start.js';
+import { SWEEP_AGE_MS, sandboxSweep } from './sweep.js';
 import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
@@ -58,6 +63,12 @@ export interface SandboxHostDeps {
   serveHelper(socket: string, allowed: () => string[]): net.Server;
   /** True while the runner with this id is connected. */
   running(id: string): boolean;
+  /** Take a runner found running at the host's start on as its record's (start-runner.ts `adopt`, verified). */
+  adopt(record: SandboxRecord, run: RunRoot, sock: net.Socket): Promise<unknown>;
+  /** A removed sandbox's preview name: tell the gateway (previews.ts `forget`). `from`: its thread, '' when it had no record. */
+  unpreview(name: string, from: string): void;
+  /** SP_SWEEP_AGE_MS: how old an object without a thread must be for the sweep (10 minutes). */
+  sweepAgeMs?: number;
 }
 
 /** A sandboxed thread's workspace on the host, from its record: the runner itself knows it as `/workspace`. */
@@ -79,7 +90,10 @@ export function sandboxHost(d: SandboxHostDeps) {
     as, runRoot, dataDir: d.data, root: d.root, image, abi,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: d.serveTokens,
-    removed: (id) => ports.releaseAll(id),
+    removed: (id) => {
+      for (const e of ports.all()) if (e.id === id && e.name) d.unpreview(e.name, records.get(id)?.key ?? '');
+      ports.releaseAll(id);
+    },
   });
   const helperRun = path.join(d.run, 'helper');
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
@@ -88,11 +102,28 @@ export function sandboxHost(d: SandboxHostDeps) {
   const artifacts = sandboxArtifacts({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
-  useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), []));
+  const dial = (socket: string) => dialSocket(socket, { uid: user.uid });
+  const sweep = sandboxSweep({ as, tm: d.tm, records, containers: all, runDir: path.join(d.run, 'sandbox'), runRoot, dataDir: d.data,
+    serveTokens: d.serveTokens, dial, adopt: d.adopt, running: d.running, ageMs: d.sweepAgeMs });
+  const prune = sandboxPrune({ as, records, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
+    remove: all.remove, deleteRun: sweep.deleteRun });
+  useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));
   return {
     stop: all.stop,
-    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled,
-      dial: (socket) => dialSocket(socket, { uid: user.uid }) }),
+    starts: sandboxStarts({ tm: d.tm, records, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
+    /** Host restart: the running containers taken back, by id (sweep.ts). */
+    reconcile: sweep.reconcile,
+    /** One sweep of what belongs to no thread; never rejects. */
+    sweep: sweep.sweep,
+    /** Containers by state and the disk, as of the last sweep (`host.sample`). */
+    health: sweep.health,
+    /** Sweep now and from then on, one pass at a time: every half of the age an object must have, at most every 5 minutes. */
+    sweeping() {
+      let busy = false;
+      const pass = () => !busy && ((busy = true), void sweep.sweep().finally(() => (busy = false)));
+      pass();
+      return setInterval(pass, Math.min(5 * 60_000, Math.max(1000, (d.sweepAgeMs ?? SWEEP_AGE_MS) / 2))).unref();
+    },
     /** Where a session's terminal and files are (api-host `sandbox`): from its record, never from what a runner said. */
     async place(spec: SessionSpec): Promise<SandboxPlace | undefined> {
       const r = records.find(spec.owner.dir, spec.key);
