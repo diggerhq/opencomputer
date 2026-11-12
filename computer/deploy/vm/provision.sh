@@ -736,7 +736,7 @@ EOF
 # from rules that sit above the REJECT. If the REJECT is missing, the ACCEPTs
 # are taken out first and inserted again after it: every rule goes in at the
 # top, and an ACCEPT left below the REJECT would cut the sessions' DNS.
-wire="-d 168.63.129.16 -m owner --uid-owner $AGENT_UID"
+wire="-d 168.63.129.16"; owner="-m owner --uid-owner $AGENT_UID"
 cat > /etc/systemd/system/slack-presence-imds-block.service <<EOF
 [Unit]
 Description=Block the cloud instance metadata service (EC2 and Azure IMDS) for the $AGENT_USER user
@@ -749,9 +749,9 @@ RemainAfterExit=yes
 ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner $AGENT_UID -j REJECT'
 ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner $AGENT_UID -j REJECT'
 ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd20:ce::254 -m owner --uid-owner $AGENT_UID -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd20:ce::254 -m owner --uid-owner $AGENT_UID -j REJECT'
-ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -j REJECT 2>/dev/null || { iptables -D OUTPUT $wire -p udp --dport 53 -j ACCEPT 2>/dev/null; iptables -D OUTPUT $wire -p tcp --dport 53 -j ACCEPT 2>/dev/null; iptables -I OUTPUT $wire -j REJECT; }'
-ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p udp --dport 53 -j ACCEPT'
-ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p tcp --dport 53 -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p tcp --dport 53 -j ACCEPT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire $owner -j REJECT 2>/dev/null || { iptables -D OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT 2>/dev/null; iptables -D OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT 2>/dev/null; iptables -I OUTPUT $wire $owner -j REJECT; }'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p udp --dport 53 $owner -j ACCEPT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT 2>/dev/null || iptables -I OUTPUT $wire -p tcp --dport 53 $owner -j ACCEPT'
 
 [Install]
 WantedBy=multi-user.target

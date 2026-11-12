@@ -159,7 +159,7 @@ image() {
   if ! pm image exists "$ref"; then
     log "pulling $ref"
     for try in 1 2 3; do
-      pm pull -q "$ref" && break
+      pm pull -q "$ref" >/dev/null && break
       [[ $try != 3 ]] || die "could not pull $ref"
       sleep $(( try * 5 ))
     done
