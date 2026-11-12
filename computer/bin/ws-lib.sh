@@ -17,14 +17,22 @@
 export GIT_TERMINAL_PROMPT=0
 ws_tab=$(printf '\t')
 ws_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ws.XXXXXX")
-ws_pid=
+# Set while ws_in has a command in the background; ws_before is `$!` from before it started.
+ws_running=
+ws_before=
 # What a script leaves half done when it is stopped; scripts redefine it.
 ws_cleanup() { :; }
 trap 'rm -rf "$ws_tmp"' EXIT
 ws_stop() {
   trap - TERM INT HUP
-  if [ -n "$ws_pid" ]; then
-    kill "$ws_pid" 2>/dev/null || :
+  # `$!` and not a variable set after the `&`: a signal that arrives while the
+  # shell starts the command runs this before any next assignment. `$!` is the
+  # command's as soon as it exists; until then it is still ws_before.
+  if [ -n "$ws_running" ] && [ "${!:-}" != "$ws_before" ]; then
+    ws_pid=$!
+    # Again every second until it is gone: a command this young may still be
+    # the shell's own copy, which drops a signal on its way to becoming it.
+    (while kill "$ws_pid" 2>/dev/null; do sleep 1; done) </dev/null >/dev/null 2>&1 &
     wait "$ws_pid" 2>/dev/null || :
   fi
   ws_cleanup || :
@@ -38,11 +46,12 @@ trap ws_stop TERM INT HUP
 ws_in() {
   ws_dir=$1
   shift
+  ws_before=${!:-}
+  ws_running=1
   (cd "$ws_dir" && exec "$@") 2>"$ws_tmp/err" </dev/null &
-  ws_pid=$!
   ws_rc=0
-  wait "$ws_pid" || ws_rc=$?
-  ws_pid=
+  wait "$!" || ws_rc=$?
+  ws_running=
   return "$ws_rc"
 }
 

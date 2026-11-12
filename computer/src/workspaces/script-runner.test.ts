@@ -1,5 +1,5 @@
 // bin/ws-*.sh against real git in a temp dir: the line each prints, and that a second run gives the same.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -193,6 +193,23 @@ describe('workspace scripts', () => {
     expect(e.killed).toBe(true);
     expect(Date.now() - started).toBeLessThan(10_000);
   });
+
+  it('a script signalled while it starts a command leaves none running', async () => {
+    // The signal is sent as soon as the script says it is about to start one: it lands around the fork.
+    const script = path.join(tmp, 'starting.sh');
+    writeFileSync(script, '. "$1/ws-lib.sh"\necho ready\nwhile :; do ws_in / sleep 30; done\n');
+    const bin = path.resolve(import.meta.dirname, '..', '..', 'bin');
+    const started = Date.now();
+    for (let n = 0; n < 20; n++) {
+      const code = await new Promise((resolve) => {
+        const p = spawn('sh', [script, bin], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+        p.stdout.once('data', () => p.kill('SIGTERM'));
+        p.on('close', resolve); // not before the sleep, which holds stdout, is gone too
+      });
+      expect(code).toBe(143);
+    }
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 20_000);
 
   it('a wrong call is a ScriptError with the exit code and stderr', async () => {
     const e = await run('ws-fetch.sh', []).catch((e) => e);
