@@ -3,7 +3,8 @@
 // 127.0.0.1:<X-Preview-Port>, WebSocket upgrades (HMR) and streamed bodies
 // (SSE) included.
 //
-// Invariants: it dials only loopback, only a port in the config's allow-list
+// Invariants: it dials only through its Dialer (preview-dial.ts; loopback
+// unless another is passed), only a port in the config's allow-list
 // that is not one of the host's own, and only for a request whose
 // X-Preview-Auth verifies (src/signed-header.ts). Every response it produces,
 // proxied ones too, carries `X-Preview-Origin: computer`, the one signal the
@@ -16,6 +17,7 @@ import type { Duplex } from 'node:stream';
 import type { PreviewConfig } from '../protocol.js';
 import { log } from '../log.js';
 import { verifyPreview } from '../signed-header.js';
+import { type Dialer, loopbackDialer } from './preview-dial.js';
 
 export const PREVIEW_PROXY_PORT = 7070;
 /** The proxy itself, and cloudflared's default metrics ports. */
@@ -76,12 +78,12 @@ const head = (status: number | undefined, message: string | undefined, raw: stri
 };
 
 /** The proxy; `config` is read per request, so a `previews` frame applies at once. */
-export function previewProxy(config: () => PreviewConfig | undefined, refused = HOST_PORTS): http.Server {
+export function previewProxy(config: () => PreviewConfig | undefined, refused = HOST_PORTS, dial: Dialer = loopbackDialer): http.Server {
   const server = http.createServer((req, res) => {
     const c = checkRequest(req, config(), refused);
     if ('status' in c) return refuse(res, c);
     for (const k of HOP) delete c.headers[k];
-    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers }, (ures) => {
+    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, createConnection: () => dial(c.port) }, (ures) => {
       res.writeHead(ures.statusCode ?? 502, ures.statusMessage, marked(ures.rawHeaders, (k) => HOP.has(k)));
       res.flushHeaders(); // an SSE stream's headers leave before its first event
       ures.pipe(res);
@@ -96,7 +98,7 @@ export function previewProxy(config: () => PreviewConfig | undefined, refused = 
     socket.on('error', () => {});
     const c = checkRequest(req, config(), refused);
     if ('status' in c) return refuseSocket(socket, c);
-    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers });
+    const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, createConnection: () => dial(c.port) });
     up.on('upgrade', (ures, usock, uhead) => {
       socket.write(head(ures.statusCode, ures.statusMessage, marked(ures.rawHeaders)));
       if (uhead.length) socket.write(uhead);
