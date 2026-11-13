@@ -18,7 +18,7 @@ import type { Tier } from './tiers.js';
 import type { Linked } from './links.js';
 import type { Batch } from './telemetry/emitter.js';
 import type { ApiDelivery, GatewayToHostV4, HostToGatewayV4, HostToRunnerV4, JournalReport, RunnerApi, WireConfig } from './protocol-api.js';
-import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel } from './protocol-model.js';
+import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel, RunnerRefused } from './protocol-model.js';
 import type { WorkspaceDefinition } from './protocol-workspace.js';
 
 export * from './protocol-api.js';
@@ -202,8 +202,11 @@ export interface HostCredentials {
   slackBotToken: string;
   slackBotUserId: string;
   teamId?: string;
-  /** Host → runner only (work 097, C4): the session's route as its runner knows it; absent while it has none. */
-  model?: RunnerModel;
+  /**
+   * Host → runner only (work 097, C4): the session's route as its runner knows it, or why there is none it can run on.
+   * Absent: no change (the host does not know the route yet, or the proxy is down).
+   */
+  model?: RunnerModel | RunnerRefused;
 }
 
 /** A session asks for a new thread to run work in parallel (work 047). */
