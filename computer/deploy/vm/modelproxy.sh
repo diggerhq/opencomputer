@@ -22,9 +22,9 @@
 #   a stop: no connection is refused and streams in flight finish. Only a
 #   changed unit file restarts the service, since a handoff keeps the old
 #   command line and limits.
-# - Files in profiles.d that the release does not ship (the deploy repo's
-#   50-hosted.json, an operator's own) are left as they are, and checked with
-#   the rest.
+# - Files in profiles.d that the release does not ship (an operator's own)
+#   are left as they are, and checked with the rest.
+# - Profiles are 0640 root:modelproxy: the proxy reads them, sessions do not.
 # - The proxy runs as its own system user with no home and no write access
 #   outside its runtime directory, so a runner (uid agent) can read neither its
 #   memory nor its credentials.
@@ -71,7 +71,7 @@ install -d -m 0755 -o root -g root "${PROFILES%/*}" "$PROFILES"
 for f in "${shipped[@]}"; do
   dst="$PROFILES/${f##*/}"
   if ! cmp -s "$f" "$dst"; then
-    install -m 0644 -o root -g root "$f" "$dst"
+    install -m 0640 -o root -g "$USER_" "$f" "$dst"
     changed=1
   fi
 done
