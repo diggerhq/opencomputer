@@ -1,32 +1,32 @@
 ---
 title: "Start here"
-description: "A self-hosted @computer is three Cloudflare Workers and one private VM per organization, created on Azure"
+description: "A self-hosted @computer is Cloudflare Workers and one VM per organization on Azure, AWS or Google Cloud"
 ---
 
 A self-hosted deployment runs the same stack as the hosted service, in your accounts:
 
 ![How a self-hosted @computer fits together](/images/self-hosting.png)
 
-The Computer VM has no public IP. It reaches the internet through a NAT gateway and connects out to the gateway Worker; nothing connects in.
+The Computer VM connects out to the gateway Worker; nothing connects in. The diagram shows Azure, where the platform Worker creates the VMs. On AWS and Google Cloud you create them and there is no platform Worker.
 
 ## What you need
 
 | Account or tool | Used for |
 | --- | --- |
 | Cloudflare account with a zone (domain) you control | Workers, D1, KV, R2 and Durable Objects. The gateway Worker needs a custom domain on the zone: Worker-to-Worker requests on `workers.dev` do not arrive. |
-| Azure subscription | The Computer VMs, their network and the bootstrap storage. You need rights to create role assignments and app registrations. |
+| Azure subscription, AWS account or Google Cloud project | The Computer VMs and the storage for the Computer release. On Azure you need rights to create role assignments and app registrations. |
 | WorkOS account | Sign-in to the dashboard |
 | Slack workspace | A Slack app you create |
 | GitHub account or organization | A GitHub App you create |
 | Anthropic API key | Model calls from every session |
-| Git, Node.js 22 or newer, npm, Go, Azure CLI, Wrangler 4 | Building and deploying |
+| Git, Node.js 22 or newer, npm, Go, Wrangler 4, and your cloud's CLI (`az`, `aws` or `gcloud`) | Building and deploying |
 
 ## Choose where the VMs run
 
-| Cloud | Status |
+| Cloud | Who creates the VMs |
 | --- | --- |
-| [Azure](/self-hosting/azure) | Supported |
-| [AWS](/self-hosting/aws) | Not supported yet |
-| [Google Cloud](/self-hosting/gcp) | Not supported yet |
+| [Azure](/self-hosting/azure) | The platform Worker, when an organization adds the Slack app. It also stops a VM that is idle, starts it on the next message, and resizes it. |
+| [AWS](/self-hosting/aws) | You, one EC2 instance per organization. You stop, start and resize it. |
+| [Google Cloud](/self-hosting/gcp) | You, one Compute Engine instance per organization. You stop, start and resize it. |
 
-{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/scripts/computers-infra.sh (NAT, private subnet); services/managed-agents/src/platform/computers/resources.ts (no public IP, cloud-init); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS) */}
+{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/scripts/computers-infra.sh (NAT, private subnet); services/managed-agents/src/platform/computers/resources.ts (no public IP, cloud-init); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS); services/managed-agents/src/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/computer/lifecycle.ts (park, wake, resize; createSelfManaged) */}
