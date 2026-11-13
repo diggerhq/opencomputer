@@ -7,14 +7,14 @@ A self-hosted deployment runs the same stack as the hosted service, in your acco
 
 ![How a self-hosted @computer fits together](/images/self-hosting.png)
 
-The Computer VM connects out to the gateway Worker; nothing connects in. The diagram shows Azure, where the platform Worker creates the VMs. On AWS and Google Cloud you create them and there is no platform Worker.
+The Computer VM connects out to the gateway Worker; nothing connects in. You create one VM per organization in your cloud account, and the gateway shows it as `Online` while it is connected.
 
 ## What you need
 
 | Account or tool | Used for |
 | --- | --- |
 | Cloudflare account with a zone (domain) you control | Workers, D1, KV, R2 and Durable Objects. The gateway Worker needs a custom domain on the zone: Worker-to-Worker requests on `workers.dev` do not arrive. |
-| Azure subscription, AWS account or Google Cloud project | The Computer VMs and the storage for the Computer release. On Azure you need rights to create role assignments and app registrations. |
+| Azure subscription, AWS account or Google Cloud project | The Computer VMs and the storage for the Computer release. |
 | WorkOS account | Sign-in to the dashboard |
 | Slack workspace | A Slack app you create |
 | GitHub account or organization | A GitHub App you create |
@@ -23,10 +23,12 @@ The Computer VM connects out to the gateway Worker; nothing connects in. The dia
 
 ## Choose where the VMs run
 
-| Cloud | Who creates the VMs |
-| --- | --- |
-| [Azure](/self-hosting/azure) | The platform Worker, when an organization adds the Slack app. It also stops a VM that is idle, starts it on the next message, and resizes it. |
-| [AWS](/self-hosting/aws) | You, one EC2 instance per organization. You stop, start and resize it. |
-| [Google Cloud](/self-hosting/gcp) | You, one Compute Engine instance per organization. You stop, start and resize it. |
+| Cloud | The VM | The release is stored in |
+| --- | --- | --- |
+| [Azure](/self-hosting/azure) | An Azure VM, created with `az` | A private blob container |
+| [AWS](/self-hosting/aws) | An EC2 instance, created with `aws` | A private S3 bucket |
+| [Google Cloud](/self-hosting/gcp) | A Compute Engine instance, created with `gcloud` | A private Cloud Storage bucket |
 
-{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/scripts/computers-infra.sh (NAT, private subnet); services/managed-agents/src/platform/computers/resources.ts (no public IP, cloud-init); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS); services/managed-agents/src/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/computer/lifecycle.ts (park, wake, resize; createSelfManaged) */}
+The steps for Cloudflare, WorkOS, Slack and GitHub are the same for all three and are written out in full on the Azure page. You stop, start and resize the VMs with your cloud's tools; a Slack message that arrives while a VM is stopped waits until it is back.
+
+{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/src/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged); services/managed-agents/src/computer/durable-object.ts (offline notice); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS); computer/deploy/vm/self-managed-user-data.sh */}

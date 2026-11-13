@@ -1,9 +1,14 @@
 ---
 title: "On Azure"
-description: "Deploy the app, gateway and platform Workers on Cloudflare, with Computer VMs in a private Azure subnet"
+description: "Deploy the app and gateway Workers on Cloudflare, and create each organization's Computer VM in Azure yourself"
 ---
 
-This page deploys the stack described in [Start here](/self-hosting/overview). The platform Worker creates each organization's Computer VM in your subscription when the organization adds the Slack app.
+This page deploys the stack described in [Start here](/self-hosting/overview). The gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs. You create one Azure VM per organization, and the VM connects out to the gateway with that organization's host token.
+
+| The gateway | You |
+| --- | --- |
+| Shows the Computer as `Online` while its VM is connected and `Offline` otherwise | Create, size, stop, start and delete the VM |
+| Holds a Slack message that arrives while the VM is offline, says so once in the thread, and runs it when the VM connects | Start the VM again |
 
 The examples use two hostnames on your Cloudflare zone:
 
@@ -22,68 +27,7 @@ cd opencomputer
 (cd web && npm ci)
 ```
 
-## 2. Create the bootstrap storage
-
-New VMs download the Computer release from a private blob container named `bootstrap`. Choose a region that has availability zone 1 and Premium SSD v2 disks; the VMs are placed in zone 1.
-
-```bash
-az login
-az account set --subscription '<SUBSCRIPTION>'
-
-export REGION=eastus
-export STORAGE_RG=computers-bootstrap
-export STORAGE_ACCOUNT=<globally unique, lowercase>
-
-az group create -n "$STORAGE_RG" -l "$REGION"
-az storage account create -n "$STORAGE_ACCOUNT" -g "$STORAGE_RG" -l "$REGION" \
-  --sku Standard_LRS --allow-blob-public-access false
-az storage container create --account-name "$STORAGE_ACCOUNT" -n bootstrap --auth-mode login
-```
-
-## 3. Create the Azure network and identities
-
-```bash
-cd services/managed-agents
-REGION="$REGION" SUBSCRIPTION='<SUBSCRIPTION>' \
-STORAGE_ACCOUNT="$STORAGE_ACCOUNT" STORAGE_RG="$STORAGE_RG" \
-SECRET_FILE=~/.computers-azure-secret \
-bash scripts/computers-infra.sh
-```
-
-The script creates:
-
-| Resource | Name |
-| --- | --- |
-| Resource group | `computers-<region>` |
-| VNet and subnet | `computers`, `10.80.0.0/16` and `10.80.0.0/20` |
-| NAT gateway and its public IP | `computers-nat`, `computers-nat-ip` |
-| Network security group, denying inbound | `computers-nsg` |
-| Managed identity the VMs use to read the bootstrap container | `computer-bootstrap` |
-| Service principal the platform Worker uses | `managed-agents-computers`, Contributor on the resource group |
-
-It writes the service principal's secret (valid one year) to `SECRET_FILE`, then prints the platform Worker's variables and secret commands. Keep the output for step 6. A warning about a missing `calvin-deploy` identity does not apply to a self-hosted deployment.
-
-## 4. Build and upload the Computer release
-
-```bash
-cd ../../computer
-deploy/bundle.sh /tmp/calvin-latest.bundle
-```
-
-`bundle.sh` prints the release commit. The bundle holds the Computer source and the model proxy built for Linux amd64. Upload it, and a version file holding that commit:
-
-```bash
-az storage blob upload --account-name "$STORAGE_ACCOUNT" -c bootstrap \
-  -n calvin-latest.bundle -f /tmp/calvin-latest.bundle --auth-mode login --overwrite
-
-printf '%s' '<COMMIT>' > /tmp/calvin-latest.version
-az storage blob upload --account-name "$STORAGE_ACCOUNT" -c bootstrap \
-  -n calvin-latest.version -f /tmp/calvin-latest.version --auth-mode login --overwrite
-```
-
-On first boot a VM downloads the bundle with its managed identity and runs `deploy/vm/azure-computer-boot.sh`, which runs `provision.sh`. To release a new version later, upload both files again.
-
-## 5. Create the Cloudflare resources
+## 2. Create the Cloudflare resources
 
 ```bash
 npx wrangler login
@@ -96,23 +40,7 @@ npx wrangler r2 bucket create managed-agents-session-log
 
 Note each ID; the next steps put them into the Workers' configuration files.
 
-## 6. Deploy the platform Worker
-
-In `services/managed-agents/wrangler.platform.jsonc`:
-
-- Set `account_id` to your Cloudflare account.
-- Set the `AZURE_*` and `COMPUTER_BOOTSTRAP_URL` variables to the values `computers-infra.sh` printed.
-- Remove `tail_consumers`.
-
-```bash
-cd services/managed-agents
-npx wrangler deploy --config wrangler.platform.jsonc
-printf '%s' '<TENANT_ID>' | npx wrangler secret put AZURE_TENANT_ID --config wrangler.platform.jsonc
-printf '%s' '<APP_ID>' | npx wrangler secret put AZURE_CLIENT_ID --config wrangler.platform.jsonc
-npx wrangler secret put AZURE_CLIENT_SECRET --config wrangler.platform.jsonc < ~/.computers-azure-secret
-```
-
-## 7. Create the WorkOS, Slack and GitHub apps
+## 3. Create the WorkOS, Slack and GitHub apps
 
 The URLs below use `https://app.example.com`.
 
@@ -147,22 +75,20 @@ Bot events: `app_mention`, `message.im`, `message.channels`, `message.groups`, `
 
 Generate a private key. Keep the app ID, slug, client ID, client secret, webhook secret and private key.
 
-## 8. Deploy the gateway Worker
+## 4. Deploy the gateway Worker
 
 Start from `services/managed-agents/wrangler.production.jsonc` and edit:
 
 | Field | Value |
 | --- | --- |
 | `name`, `account_id`, `routes` | Your Worker name, account, and `gateway.example.com` as a custom domain |
-| `COMPUTER_HOST_GATEWAY_URL` | `wss://gateway.example.com` |
+| `COMPUTER_VMS` | Add it, with the value `self-managed` |
 | `COMPUTER_PUBLIC_ORIGIN`, `OPENCOMPUTER_APP_URL` | `https://app.example.com` |
-| `COMPUTER_DEFAULT_SIZE` | `Standard_D2as_v7` or larger |
-| `COMPUTER_POOL_SIZE` | `"0"` (no pre-started VMs) |
 | `SLACK_COMPUTER_CLIENT_ID` | Add it, with the Slack client ID |
 | `OC_GITHUB_APP_ID`, `OC_GITHUB_APP_SLUG`, `OC_GITHUB_APP_CLIENT_ID` | From the GitHub App |
-| D1, KV and R2 bindings | The `computer-gateway` database, `WIRE_KEYS` namespace and `managed-agents-session-log` bucket from step 5 |
-| `DEPLOYMENTS` and `RUNTIMES` services | Your platform Worker's name |
-| `PREVIEWS`, `WORKERD_RUNTIME`, `OPENCOMPUTER_BILLING`, `tail_consumers` | Remove |
+| D1, KV and R2 bindings | The `computer-gateway` database, `WIRE_KEYS` namespace and `managed-agents-session-log` bucket from step 2 |
+| `services`, `tail_consumers` | Remove both blocks |
+| `COMPUTER_HOST_GATEWAY_URL`, `COMPUTER_DEFAULT_SIZE`, `COMPUTER_POOL_SIZE` | Remove. They are not used. |
 
 Write the secrets to a JSON file with mode `0600`:
 
@@ -174,13 +100,16 @@ Write the secrets to a JSON file with mode `0600`:
 | `OC_GITHUB_APP_PRIVATE_KEY`, `OC_GITHUB_APP_CLIENT_SECRET`, `OC_GITHUB_APP_WEBHOOK_SECRET` | From the GitHub App |
 | `COMPUTER_ANTHROPIC_API_KEY` | Your Anthropic API key |
 
+Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 7 derives each organization's host token from it.
+
 ```bash
+cd services/managed-agents
 npx wrangler d1 migrations apply computer-gateway --remote --config wrangler.production.jsonc
 npx wrangler deploy --config wrangler.production.jsonc --secrets-file gateway-secrets.json
 curl https://gateway.example.com/health
 ```
 
-## 9. Deploy the app Worker
+## 5. Deploy the app Worker
 
 In `cloudflare-workers/api-edge/wrangler.toml`:
 
@@ -210,25 +139,117 @@ npx wrangler deploy -c wrangler.toml --secrets-file app-secrets.json
 curl https://app.example.com/health
 ```
 
-## 10. Add the Slack app and connect GitHub
+## 6. Build and upload the Computer release
+
+From the repository root:
+
+```bash
+computer/deploy/bundle.sh /tmp/calvin.bundle
+
+az login
+az account set --subscription '<SUBSCRIPTION>'
+
+export REGION=eastus
+export RG=computers
+export STORAGE_ACCOUNT=<globally unique, lowercase>
+
+az group create -n "$RG" -l "$REGION"
+az storage account create -n "$STORAGE_ACCOUNT" -g "$RG" -l "$REGION" \
+  --sku Standard_LRS --allow-blob-public-access false
+az storage container create --account-name "$STORAGE_ACCOUNT" -n bootstrap --auth-mode key
+az storage blob upload --account-name "$STORAGE_ACCOUNT" -c bootstrap \
+  -n calvin.bundle -f /tmp/calvin.bundle --auth-mode key --overwrite
+```
+
+The bundle holds the Computer source and the model proxy built for Linux amd64. The container stays private; step 8 gives the VM a URL that is valid for one hour.
+
+## 7. Get the organization ID and make the host token
 
 1. Open `https://app.example.com` and sign in.
-2. Click **Add to Slack** and approve. The platform Worker creates your organization's Computer VM: Ubuntu 24.04, a private NIC, a 64 GiB OS disk and a 128 GiB data disk. The dashboard shows its status until it is `Online`.
+2. Open **Settings** and copy the **Organization ID**.
+3. Derive the organization's host token from `COMPUTER_HOST_TOKEN_KEY`:
+
+```bash
+export ORG_ID='<ORGANIZATION_ID>'
+export COMPUTER_HOST_TOKEN_KEY='<the gateway secret>'
+
+export TOKEN="sph_$(printf 'calvin-host:%s' "$ORG_ID" \
+  | openssl dgst -sha256 -hmac "$COMPUTER_HOST_TOKEN_KEY" -binary \
+  | base64 | tr '+/' '-_' | tr -d '=')"
+```
+
+The token is valid for that organization only, and for as long as the key does not change.
+
+## 8. Create the VM
+
+The VM is Ubuntu 24.04 on amd64 with a second, blank disk for `/data`. It needs outbound internet access and no inbound access.
+
+Make a download URL for the release, then write the VM's first-boot script with `self-managed-user-data.sh`. The script it prints stores the gateway URL and the token in a root-only file on the VM, downloads the release and runs its boot script:
+
+```bash
+EXPIRY="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -v+1H +%Y-%m-%dT%H:%MZ)"
+export BUNDLE_URL="$(az storage blob generate-sas --account-name "$STORAGE_ACCOUNT" \
+  -c bootstrap -n calvin.bundle --permissions r --expiry "$EXPIRY" \
+  --https-only --full-uri --auth-mode key -o tsv)"
+
+(umask 077; GATEWAY_HOST=gateway.example.com \
+  computer/deploy/vm/self-managed-user-data.sh > computer-user-data.sh)
+```
+
+Create the VM. `az vm create` also creates a virtual network, a public IP address for outbound traffic, and a network security group; `--nsg-rule NONE` leaves that group without a rule that allows inbound traffic.
+
+```bash
+az vm create -g "$RG" -n computer-1 -l "$REGION" \
+  --image Canonical:ubuntu-24_04-lts:server:latest \
+  --size Standard_D2as_v5 \
+  --os-disk-size-gb 64 --data-disk-sizes-gb 128 \
+  --nsg-rule NONE \
+  --admin-username azureuser --generate-ssh-keys \
+  --custom-data computer-user-data.sh \
+  --tags organization="$ORG_ID"
+```
+
+Any amd64 size with 2 vCPUs and 8 GiB of memory or more works; `az vm list-skus -l "$REGION" --size Standard_D2 -o table` lists the sizes your subscription can use.
+
+The first boot installs the toolchains, formats the blank disk, mounts it at `/data` and starts the host. It takes about six minutes. The boot script formats a disk only when it is blank.
+
+The token stays in the VM's custom data. On the VM only root can read it; Azure does not return custom data once the VM exists.
+
+## 9. Add the Slack app and connect GitHub
+
+1. Open `https://app.example.com`. The Computer shows `Online` once the VM has connected.
+2. Click **Add to Slack** and approve.
 3. Connect GitHub and choose the repositories.
 4. Mention `@computer` in a channel.
 
+Repeat steps 7 and 8 for each further organization, with another VM name.
+
+## Stop, start and resize
+
+Stop the VM with `az vm deallocate`; the Computer shows `Offline` and Slack messages wait. Start it with `az vm start`; the host reconnects and the workspace is still on `/data`. To resize, run `az vm resize` with the new size.
+
+`az vm delete` does not delete the data disk.
+
 ## Check a VM
 
-The VMs have no SSH access. Find an organization's VM by its tag and run checks with Azure Run Command:
+No rule allows SSH. The boot log is `/var/log/calvin-boot.log`, and the two services are `slack-presence-host` and `oc-modelproxy`. Run checks with Azure Run Command:
 
 ```bash
-RG=computers-$REGION
-az vm list -g "$RG" --query "[?tags.organization=='<ORG_ID>'].name" -o tsv
-
-az vm run-command invoke -g "$RG" -n <VM_NAME> --command-id RunShellScript --scripts \
+az vm run-command invoke -g "$RG" -n computer-1 --command-id RunShellScript --scripts \
   "systemctl is-active slack-presence-host.service oc-modelproxy.service; tail -50 /var/log/calvin-boot.log"
 ```
 
-Restart the VM from the Azure portal or with `az vm restart`; the Computer reconnects and keeps the workspace on its data disk.
+## Update a VM
 
-{/* Sources: services/managed-agents/scripts/computers-infra.sh; services/managed-agents/scripts/stack.mjs:82-84,193-202,522-533,585-597; services/managed-agents/wrangler.platform.jsonc; services/managed-agents/wrangler.production.jsonc; services/managed-agents/README.md (Slack events); services/managed-agents/src/computer/config.ts:86-106; services/managed-agents/src/computer/routes.ts:148-155; services/managed-agents/src/computer/crypto.ts:35,46; services/managed-agents/src/computer/model-key.ts:95-103; services/managed-agents/src/computer/names.ts:25-34; services/managed-agents/src/platform/computers/resources.ts:54-63,95,186-187,317-375; computer/deploy/bundle.sh; computer/deploy/vm/self-update.sh:18-19; computer/deploy/vm/provision.sh; cloudflare-workers/api-edge/wrangler.toml; cloudflare-workers/api-edge/scripts/stack.mjs:100-150; cloudflare-workers/api-edge/src/index.ts:576-585,2242-2294 */}
+A self-managed VM does not update itself. Build and upload a new bundle (step 6), make a new `BUNDLE_URL` (step 8), and run:
+
+```bash
+az vm run-command invoke -g "$RG" -n computer-1 --command-id RunShellScript --scripts "
+set -e
+curl -fsSL --retry 5 -o /opt/bootstrap/calvin.bundle '$BUNDLE_URL'
+git -C /opt/bootstrap/calvin-src fetch -q /opt/bootstrap/calvin.bundle main
+git -C /opt/bootstrap/calvin-src checkout -q -f --detach FETCH_HEAD
+CODE_ONLY=1 BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh"
+```
+
+{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); services/managed-agents/wrangler.production.jsonc; services/managed-agents/README.md (Slack events); services/managed-agents/scripts/stack.mjs:82-84,193-202,522-533,585-597; cloudflare-workers/api-edge/wrangler.toml; cloudflare-workers/api-edge/scripts/stack.mjs:100-150; cloudflare-workers/api-edge/src/index.ts:576-585,2242-2294; web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/self-managed-user-data.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (Azure data disk at LUN 0, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). The az commands in steps 6 to 8, Check a VM, Stop and start, and Update a VM were run on 2026-11-13 in an Azure subscription against a local gateway in self-managed mode, with size Standard_D2s_v4: the VM connected about six minutes after az vm create. Steps 2 to 5 and 9 (Cloudflare deploys, Slack) were not run in that test. */}

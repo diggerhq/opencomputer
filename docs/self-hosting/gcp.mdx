@@ -3,7 +3,7 @@ title: "On Google Cloud"
 description: "Deploy the app and gateway Workers on Cloudflare, and create each organization's Computer VM on Compute Engine yourself"
 ---
 
-On Google Cloud the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs and needs no platform Worker. You create one Compute Engine instance per organization, and the instance connects out to the gateway with that organization's host token.
+On Google Cloud the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs. You create one Compute Engine instance per organization, and the instance connects out to the gateway with that organization's host token.
 
 | The gateway | You |
 | --- | --- |
@@ -26,30 +26,23 @@ cd opencomputer
 
 Follow two steps of the Azure guide unchanged:
 
-- [Create the Cloudflare resources](/self-hosting/azure#5-create-the-cloudflare-resources)
-- [Create the WorkOS, Slack and GitHub apps](/self-hosting/azure#7-create-the-workos-slack-and-github-apps)
+- [Create the Cloudflare resources](/self-hosting/azure#2-create-the-cloudflare-resources)
+- [Create the WorkOS, Slack and GitHub apps](/self-hosting/azure#3-create-the-workos-slack-and-github-apps)
 
 ## 3. Deploy the gateway Worker
 
-Follow [Deploy the gateway Worker](/self-hosting/azure#8-deploy-the-gateway-worker) with these differences in `wrangler.production.jsonc`:
-
-| Field | Value |
-| --- | --- |
-| `COMPUTER_VMS` | Add it, with the value `self-managed` |
-| `services` | Remove the whole block. There is no platform Worker. |
-| `COMPUTER_HOST_GATEWAY_URL`, `COMPUTER_DEFAULT_SIZE`, `COMPUTER_POOL_SIZE` | Remove. They are not used. |
-
-The secrets are the same. Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 6 derives each organization's host token from it.
+Follow [Deploy the gateway Worker](/self-hosting/azure#4-deploy-the-gateway-worker) unchanged. Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 6 derives each organization's host token from it.
 
 ## 4. Deploy the app Worker
 
-Follow [Deploy the app Worker](/self-hosting/azure#9-deploy-the-app-worker) unchanged.
+Follow [Deploy the app Worker](/self-hosting/azure#5-deploy-the-app-worker) unchanged.
 
 ## 5. Build and upload the Computer release
 
+From the repository root:
+
 ```bash
-cd computer
-deploy/bundle.sh /tmp/calvin.bundle
+computer/deploy/bundle.sh /tmp/calvin.bundle
 
 gcloud config set project '<PROJECT_ID>'
 export PROJECT="$(gcloud config get-value project)"
@@ -91,33 +84,11 @@ The token is valid for that organization only, and for as long as the key does n
 
 The VM is Ubuntu 24.04 on amd64 with a second, blank disk for `/data`. It needs outbound internet access and no inbound access: a new VPC network has no firewall rule that allows inbound traffic.
 
-Write the first-boot script. It stores the gateway URL and the token in a root-only file, downloads the release with the VM's service account and runs its boot script:
+Write the VM's first-boot script with `self-managed-user-data.sh`. The script it prints stores the gateway URL and the token in a root-only file on the VM, downloads the release with the VM's service account and runs its boot script:
 
 ```bash
-cat > computer-user-data.sh <<EOF
-#!/bin/bash
-set -euo pipefail
-umask 077
-cat > /root/calvin-computer.env <<ENV
-SP_GATEWAY_URL=wss://gateway.example.com/v1/computer/host?organizationId=$ORG_ID
-SP_HOST_TOKEN=$TOKEN
-SP_HOST_ID=$ORG_ID
-DATA_DEVICE=/dev/disk/by-id/google-computer-data
-ENV
-umask 022
-apt-get update -q
-apt-get install -y -q git curl
-install -d -m 0755 /opt/bootstrap
-metadata=http://metadata.google.internal/computeMetadata/v1
-access_token=\$(curl -fsS -H 'Metadata-Flavor: Google' "\$metadata/instance/service-accounts/default/token" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-curl -fsSL --retry 5 -H "Authorization: Bearer \$access_token" -o /opt/bootstrap/calvin.bundle \
-  'https://storage.googleapis.com/storage/v1/b/$BUCKET/o/calvin.bundle?alt=media'
-rm -rf /opt/bootstrap/calvin-src
-git clone -q --branch main /opt/bootstrap/calvin.bundle /opt/bootstrap/calvin-src
-BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
-EOF
-chmod 600 computer-user-data.sh
+(umask 077; GATEWAY_HOST=gateway.example.com BUNDLE_URL="gs://$BUCKET/calvin.bundle" \
+  computer/deploy/vm/self-managed-user-data.sh > computer-user-data.sh)
 ```
 
 Create the network and the instance. cloud-init runs the script in the `user-data` metadata key once, on the first boot:
@@ -130,7 +101,7 @@ gcloud compute instances create computer-1 --zone="$ZONE" \
   --network=computer \
   --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
   --boot-disk-size=64GB \
-  --create-disk=name=computer-1-data,device-name=computer-data,size=128GB,type=pd-balanced,auto-delete=no \
+  --create-disk=name=computer-1-data,size=128GB,type=pd-balanced,auto-delete=no \
   --service-account="$SA" --scopes=storage-ro \
   --metadata-from-file=user-data=computer-user-data.sh
 ```
@@ -176,4 +147,4 @@ git -C /opt/bootstrap/calvin-src checkout -q -f --detach FETCH_HEAD
 CODE_ONLY=1 BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
 ```
 
-{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (DATA_DEVICE, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). Run on 2026-11-13 against a local gateway with a hand-made Ubuntu 24.04 VM: boot, connect, offline and reconnect. The gcloud commands have not been run. */}
+{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/self-managed-user-data.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (DATA_DEVICE, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). Run on 2026-11-13 against a local gateway with an Ubuntu 24.04 VM on Azure made with self-managed-user-data.sh: boot, connect, offline, reconnect and update. The gcloud commands have not been run. */}

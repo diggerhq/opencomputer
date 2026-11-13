@@ -3,7 +3,7 @@ title: "On AWS"
 description: "Deploy the app and gateway Workers on Cloudflare, and create each organization's Computer VM on EC2 yourself"
 ---
 
-On AWS the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs and needs no platform Worker. You create one EC2 instance per organization, and the instance connects out to the gateway with that organization's host token.
+On AWS the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs. You create one EC2 instance per organization, and the instance connects out to the gateway with that organization's host token.
 
 | The gateway | You |
 | --- | --- |
@@ -26,30 +26,23 @@ cd opencomputer
 
 Follow two steps of the Azure guide unchanged:
 
-- [Create the Cloudflare resources](/self-hosting/azure#5-create-the-cloudflare-resources)
-- [Create the WorkOS, Slack and GitHub apps](/self-hosting/azure#7-create-the-workos-slack-and-github-apps)
+- [Create the Cloudflare resources](/self-hosting/azure#2-create-the-cloudflare-resources)
+- [Create the WorkOS, Slack and GitHub apps](/self-hosting/azure#3-create-the-workos-slack-and-github-apps)
 
 ## 3. Deploy the gateway Worker
 
-Follow [Deploy the gateway Worker](/self-hosting/azure#8-deploy-the-gateway-worker) with these differences in `wrangler.production.jsonc`:
-
-| Field | Value |
-| --- | --- |
-| `COMPUTER_VMS` | Add it, with the value `self-managed` |
-| `services` | Remove the whole block. There is no platform Worker. |
-| `COMPUTER_HOST_GATEWAY_URL`, `COMPUTER_DEFAULT_SIZE`, `COMPUTER_POOL_SIZE` | Remove. They are not used. |
-
-The secrets are the same. Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 6 derives each organization's host token from it.
+Follow [Deploy the gateway Worker](/self-hosting/azure#4-deploy-the-gateway-worker) unchanged. Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 6 derives each organization's host token from it.
 
 ## 4. Deploy the app Worker
 
-Follow [Deploy the app Worker](/self-hosting/azure#9-deploy-the-app-worker) unchanged.
+Follow [Deploy the app Worker](/self-hosting/azure#5-deploy-the-app-worker) unchanged.
 
 ## 5. Build and upload the Computer release
 
+From the repository root:
+
 ```bash
-cd computer
-deploy/bundle.sh /tmp/calvin.bundle
+computer/deploy/bundle.sh /tmp/calvin.bundle
 
 export AWS_REGION=us-east-1
 export BUCKET=<globally unique>
@@ -80,33 +73,13 @@ The token is valid for that organization only, and for as long as the key does n
 
 The VM is Ubuntu 24.04 on amd64 with a second, blank EBS volume for `/data`. It needs outbound internet access and no inbound access: a new security group has no inbound rules.
 
-Write the first-boot script. It stores the gateway URL and the token in a root-only file, downloads the release and runs its boot script:
+Make a download URL for the release, then write the VM's first-boot script with `self-managed-user-data.sh`. The script it prints stores the gateway URL and the token in a root-only file on the VM, downloads the release and runs its boot script:
 
 ```bash
-BUNDLE_URL="$(aws s3 presign "s3://$BUCKET/calvin.bundle" --expires-in 3600 --region "$AWS_REGION")"
+export BUNDLE_URL="$(aws s3 presign "s3://$BUCKET/calvin.bundle" --expires-in 3600 --region "$AWS_REGION")"
 
-cat > computer-user-data.sh <<EOF
-#!/bin/bash
-set -euo pipefail
-root_disk=\$(lsblk -no PKNAME "\$(findmnt -no SOURCE /)")
-data_disk=\$(lsblk -dno NAME,TYPE | awk -v r="\$root_disk" '\$2 == "disk" && \$1 != r { print \$1; exit }')
-umask 077
-cat > /root/calvin-computer.env <<ENV
-SP_GATEWAY_URL=wss://gateway.example.com/v1/computer/host?organizationId=$ORG_ID
-SP_HOST_TOKEN=$TOKEN
-SP_HOST_ID=$ORG_ID
-DATA_DEVICE=/dev/\$data_disk
-ENV
-umask 022
-apt-get update -q
-apt-get install -y -q git curl
-install -d -m 0755 /opt/bootstrap
-curl -fsSL --retry 5 '$BUNDLE_URL' -o /opt/bootstrap/calvin.bundle
-rm -rf /opt/bootstrap/calvin-src
-git clone -q --branch main /opt/bootstrap/calvin.bundle /opt/bootstrap/calvin-src
-BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
-EOF
-chmod 600 computer-user-data.sh
+(umask 077; GATEWAY_HOST=gateway.example.com \
+  computer/deploy/vm/self-managed-user-data.sh > computer-user-data.sh)
 ```
 
 Create the security group and the instance in the default VPC:
@@ -168,4 +141,4 @@ git -C /opt/bootstrap/calvin-src checkout -q -f --detach FETCH_HEAD
 CODE_ONLY=1 BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
 ```
 
-{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (DATA_DEVICE, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). Run on 2026-11-13 against a local gateway with a hand-made Ubuntu 24.04 VM: boot, connect, offline and reconnect. The aws commands have not been run. */}
+{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/self-managed-user-data.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (DATA_DEVICE, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). Run on 2026-11-13 against a local gateway with an Ubuntu 24.04 VM on Azure made with self-managed-user-data.sh: boot, connect, offline, reconnect and update. The aws commands have not been run. */}
