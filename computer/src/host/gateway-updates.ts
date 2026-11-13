@@ -5,8 +5,8 @@
 //
 // Invariants:
 // - Credentials live in memory only and reach runners over their sockets,
-//   shaped per session by `forRunner` (subscriptions.ts); spares take them as
-//   they are, since they serve no session yet.
+//   shaped per session by `forRunner` (model-access.ts: Slack's, plus the
+//   session's model, never a model credential); a spare's as key ''.
 // - A multi-workspace gateway's welcome has only the shared agent credentials
 //   (each delivery brings its workspace's Slack installation): its empty Slack
 //   values must not replace live runners' after a host reconnect.
@@ -25,7 +25,7 @@ export interface UpdateTargets {
   spares(): Iterable<{ sock: net.Socket }>;
   /** Credentials as `key`'s runner gets them. */
   forRunner(key: string, c: HostCredentials): HostCredentials | undefined;
-  /** Spares start once there is a Claude credential to park with. */
+  /** Spares start once there is a model route to park with. */
   fillPool(): void;
   /** A member the gateway just learned: prepare their workspace (a no-op without workspaces). */
   prepare(p: Person): void;
@@ -52,7 +52,7 @@ export function gatewayUpdates(o: UpdateTargets) {
       creds = m.credentials;
       people = m.people;
       if (creds.slackBotToken) for (const r of o.runners()) push(r, creds);
-      for (const r of o.spares()) send(r.sock, { t: 'credentials', credentials: creds } satisfies HostToRunner);
+      for (const r of o.spares()) push({ key: '', sock: r.sock }, creds);
       o.fillPool();
     },
     credentials(m: Credentials) {
