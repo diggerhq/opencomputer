@@ -43,6 +43,16 @@ describe('containers', () => {
     expect(create.argv).toEqual(expect.arrayContaining(['--name', `sp-runner-${ID}`, '--label', 'sp.abi=1', 'img:tag']));
   });
 
+  it('create: the home is made first, labelled with this host\'s run directory for the id (Podman labels no volume a container names)', async () => {
+    const t = rig();
+    await t.c.create(ID);
+    expect(t.calls.map((x) => x.argv.slice(1, 3).join(' '))).toEqual(['volume create', 'create --name']);
+    expect(t.calls[0]).toEqual({ argv: ['podman', 'volume', 'create', '--ignore', '--label', `sp.run=${t.run}`, `sp-home-${ID}`], timeoutMs: TIMEOUTS.create, repeatable: true });
+    const bad = rig((a) => (a[1] === 'volume' ? fail('no space') : ''));
+    await expect(bad.c.create(ID)).rejects.toThrow();
+    expect(bad.find('podman create')).toEqual([]);
+  });
+
   it('up: empties what the session wrote, writes the run directory, serves tokens, starts, then asks the pid', async () => {
     const def = path.join(mkdtempSync(path.join(tmpdir(), 'def-')), 'definition.json');
     writeFileSync(def, '{"name":"d"}');
@@ -207,7 +217,7 @@ describe('containers', () => {
   it('recreate: the container alone goes; its home stays for the new one', async () => {
     const t = rig();
     await t.c.recreate(ID);
-    expect(t.calls.map((x) => x.argv.slice(1, 3).join(' '))).toEqual(['rm --force', 'create --name']);
+    expect(t.calls.map((x) => x.argv.slice(1, 3).join(' '))).toEqual(['rm --force', 'volume create', 'create --name']);
     expect(t.calls[0].argv).not.toContain('--volumes');
   });
 
@@ -220,10 +230,18 @@ describe('containers', () => {
       // Another host of this computer (another SP_RUN) made this one under the same Podman user: seen, never ours.
       { Names: [`sp-runner-${OTHER}`], State: 'running', Labels: { 'sp.runner': OTHER, 'sp.abi': '1' }, Mounts: ['/home/agent', `/run/elsewhere/sandbox/${OTHER}`] },
     ]);
-    const vols = JSON.stringify([{ Name: `sp-home-${ID}`, CreatedAt: '2026-11-12T10:00:00Z' }, { Name: 'unrelated' }]);
+    const [V1, V2, V3] = ['1111111111111111', '2222222222222222', '3333333333333333'];
+    const at = '2026-11-12T10:00:00Z';
+    const vols = JSON.stringify([
+      { Name: `sp-home-${ID}`, CreatedAt: at, Labels: { 'sp.run': t.run } },
+      { Name: `sp-home-${V1}`, CreatedAt: at, Labels: { 'sp.run': `/run/elsewhere/sandbox/${V1}` } }, // another host's
+      { Name: `sp-home-${V2}`, CreatedAt: at, Labels: { 'sp.run': t.run } }, // another id's directory: not this host's for this id
+      { Name: `sp-home-${V3}`, CreatedAt: at, Labels: {} }, // made before homes had the label
+      { Name: 'unrelated' },
+    ]);
     expect(await t.c.inventory()).toEqual({
       containers: [{ id: ID, state: 'running', abi: '1', image: 'img:tag', createdAt: 1_700_000_000_000 }],
-      volumes: [{ id: ID, createdAt: Date.parse('2026-11-12T10:00:00Z') }],
+      volumes: [{ id: ID, createdAt: Date.parse(at), mine: true }, { id: V1, createdAt: Date.parse(at), mine: false }, { id: V2, createdAt: Date.parse(at), mine: false }, { id: V3, createdAt: Date.parse(at) }],
       foreign: [OTHER],
     });
     expect(t.calls.every((x) => x.timeoutMs === TIMEOUTS.inventory)).toBe(true);

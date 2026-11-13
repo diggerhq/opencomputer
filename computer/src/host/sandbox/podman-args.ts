@@ -66,6 +66,15 @@ export function createArgs(c: CreateSpec): string[] {
   ];
 }
 
+/** The label of a home volume: the run root of its id on the host that made it, which is what says whose it is once that directory is gone (`/run` is emptied by a reboot). */
+export const HOME_LABEL = 'sp.run';
+
+/**
+ * A thread's home, before its container (Create): Podman 4.9.3 gives a volume that `create --volume` names no label (measured).
+ * `--ignore`: one that exists stays as it is, labels and all, so this is made at every Create and may be made twice.
+ */
+export const homeArgs = (id: string, run: RunRoot) => ['volume', 'create', '--ignore', '--label', `${HOME_LABEL}=${run}`, volumeName(id)];
+
 /** What the container's unit runs (launch.ts): attached, so the unit lives as long as the container. */
 export const startArgs = (id: string) => ['start', '--attach', containerName(id)];
 

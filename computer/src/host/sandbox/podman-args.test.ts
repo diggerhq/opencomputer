@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createArgs, emptyRunArgs, execArgs, HELPER_SCOPE, helperArgs, inventoryArgs, logsArgs, mountArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs,
+  createArgs, emptyRunArgs, execArgs, HELPER_SCOPE, helperArgs, homeArgs, inventoryArgs, logsArgs, mountArgs, pidArgs, recreateRemoveArgs, removeArgs, startArgs, stopArgs,
   terminalArgs, terminalHangUpArgs, unshareRmArgs,
 } from './podman-args.js';
 
@@ -81,6 +81,10 @@ ghcr.io/diggerhq/computer-session:abc`);
   it('remove takes the home volume, recreate keeps it', () => {
     expect(removeArgs(id)).toEqual([['rm', '--force', '--volumes', `sp-runner-${id}`], ['volume', 'rm', '--force', `sp-home-${id}`]]);
     expect(recreateRemoveArgs(id)).toEqual(['rm', '--force', `sp-runner-${id}`]);
+  });
+
+  it('a home is made before its container, with a label that names its host by the run directory; made twice it is the one home', () => {
+    expect(homeArgs(id, `/run/slack-presence/sandbox/${id}`)).toEqual(['volume', 'create', '--ignore', '--label', `sp.run=/run/slack-presence/sandbox/${id}`, `sp-home-${id}`]);
   });
 
   it('inventory lists by label and by volume name', () => {

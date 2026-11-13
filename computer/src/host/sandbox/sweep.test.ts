@@ -138,6 +138,15 @@ describe('sweep', () => {
     expect(t.ran('volume rm')).toEqual([`podman volume rm sp-home-${A}`]);
   });
 
+  it('a home labelled as this host\'s goes without its run directory (a reboot empties /run); one labelled as another host\'s never; one without the label only with the directory', async () => {
+    const [D, E, F, G] = ['dddddddddddddddd', 'eeeeeeeeeeeeeeee', 'ffffffffffffffff', '0000000000000000'];
+    const vol = (id: string, mine?: boolean, createdAt = OLD) => ({ id, createdAt, ...(mine !== undefined && { mine }) });
+    const t = rig({ inventory: { containers: [box(D, 'exited')], volumes: [vol(A, true), vol(B, false), vol(C), vol(D, true), vol(E, true), vol(F, true, NOW), vol(G, true)], foreign: [G] }, records: [record(D), record(E)] });
+    t.dir(B); // even with a directory here, the label says whose it is
+    expect(await t.s.sweep()).toMatchObject({ volumes: 1, containers: 0 });
+    expect(t.ran('volume rm')).toEqual([`podman volume rm sp-home-${A}`]);
+  });
+
   it('deletes an old run directory with no container, home or runner: the session\'s part inside the user namespace, then the rest', async () => {
     const [D, E] = ['dddddddddddddddd', 'eeeeeeeeeeeeeeee'];
     const t = rig({ inventory: { containers: [box(B, 'exited')], volumes: [{ id: C, createdAt: NOW }] }, records: [record(B), record(E, NOW)], running: [D] });

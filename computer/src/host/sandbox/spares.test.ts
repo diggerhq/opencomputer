@@ -284,7 +284,7 @@ describe('a spare container', () => {
     }
   });
 
-  it('waits for the image lock before Create', async () => {
+  it('waits for the image lock before the first call of a Create', async () => {
     let settle!: () => void;
     const settled = new Promise<void>((r) => (settle = r));
     const calls: string[] = [];
@@ -304,6 +304,6 @@ describe('a spare container', () => {
     expect(calls).toEqual([]); // provisioning holds the storage: nothing ran
     settle();
     expect(String(await p)).toMatch(/no podman here/);
-    expect(calls[0]).toBe('create');
+    expect(calls[0]).toBe('volume'); // the home, the first call of a Create
   });
 });
