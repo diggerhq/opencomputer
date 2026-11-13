@@ -28,11 +28,18 @@
 //   past the limit or a command something else killed.
 // - A call that timed out rejects once its command is gone (SIGTERM, SIGKILL
 //   2 s later), or 3 s after the timeout at the latest.
+// - Whatever of the host runs Podman waits for the image lock first, by
+//   `settled` here and nowhere else: `podman()` by itself, and before their
+//   own command a container's Start (containers.ts `up`), its diagnosis
+//   (`diagnose`), a helper container (scripts.ts), a `/files` script and a
+//   terminal's `podman exec` (use.ts). The last two name a bound, since a
+//   person waits for them, and are refused with Unavailable past it.
 // - `env` goes into the sudo prefix, the only way a variable reaches the
 //   command: sudo resets the rest. Only the mount helper is given one.
 
 import { execFile as nodeExecFile } from 'node:child_process';
 import { log } from '../../log.js';
+import { Unavailable, UPDATING } from '../unavailable.js';
 import { imageBusy, imageSettled } from './image-lock.js';
 
 export const PODMAN = '/usr/bin/podman';
@@ -73,6 +80,12 @@ export interface AsRunner {
   podman(args: string[], o: RunOptions): Promise<string>;
   /** Any other command, by absolute path, as the runners' user. */
   run(argv: string[], o: RunOptions): Promise<string>;
+  /**
+   * Wait until provisioning is not holding Podman's storage (image-lock.ts): before a command that runs Podman and is
+   * not `podman()`'s. Without `withinMs` it waits as `podman()` does and never rejects; with it, it rejects with
+   * Unavailable when the storage is still held then.
+   */
+  settled(withinMs?: number): Promise<void>;
 }
 
 const words = (argv: string[]) => argv.slice(0, 3).join(' ');
@@ -114,13 +127,17 @@ export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: 
 }
 
 /** `sudo`: `runnerUser(env).sudo`, the prefix that makes a command the runners' user's. */
-export function asRunner(sudo: string[], exec?: Exec, settled: () => Promise<void> = imageSettled, busy: () => Promise<boolean> = imageBusy): AsRunner {
+export function asRunner(sudo: string[], exec?: Exec, settled: (d?: { waitS?: number }) => Promise<boolean | void> = imageSettled, busy: () => Promise<boolean> = imageBusy): AsRunner {
   const run = (argv: string[], o: RunOptions) =>
     argv[0]?.startsWith('/') ? runBounded(sudo, argv, o, exec) : Promise.reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
   // A Podman call's time starts once provisioning is not holding the storage (image-lock.ts).
   const podman = (args: string[], o: RunOptions) => settled().then(() => run([PODMAN, ...args], o));
   return {
     run,
+    async settled(withinMs) {
+      const free = await settled(withinMs === undefined ? undefined : { waitS: withinMs / 1000 });
+      if (withinMs !== undefined && free === false) throw new Unavailable(UPDATING);
+    },
     podman: (args, o) => podman(args, o).catch(async (e) => {
       if (!o.repeatable || !(e instanceof PodmanError && e.timedOut) || !(await busy())) throw e;
       log.info(`podman ${words(args)}: ran out of time while provisioning holds the storage; once more after it`);

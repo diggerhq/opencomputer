@@ -23,7 +23,7 @@ function rig(o: { usedDaysAgo?: number; state?: string | Error; running?: () => 
   const log: string[] = [];
   const helped: { person: string; binds?: Bind[]; args: string[] }[] = [];
   const locks = threadLocks();
-  const as: AsRunner = { run: async () => '', podman: async (args) => {
+  const as: AsRunner = { settled: async () => {}, run: async () => '', podman: async (args) => {
     log.push(`podman ${args.join(' ').replaceAll(data, '')}`);
     await o.at?.(args[0]);
     if (o.rm && args[0] === 'unshare') throw o.rm;

@@ -30,9 +30,14 @@
 //   helper by its name.
 // - Failures of a ScriptRunner are ScriptError, as from the host's runner, so
 //   callers are the same. A `/files` script's exit code is its caller's to read.
-// - `running` in a SandboxPlace is what the host knew when the request came
-//   in. A container that stopped since makes `podman exec` fail, and the
-//   request with it; nothing falls back to the host.
+// - A helper container and a `/files` script start only once provisioning is
+//   not holding Podman's storage (image-lock.ts): a helper waits as any
+//   Podman call does, a `/files` script as long as a person may be kept
+//   waiting, and is refused past that (use.ts).
+// - Where a `/files` script runs is decided when it starts, from what the
+//   thread is then (use.ts `enter`), not from the SandboxPlace its caller
+//   holds. A container that stops after that makes `podman exec` fail, and
+//   the script with it; nothing falls back to the host.
 
 import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -42,6 +47,7 @@ import type { Telemetry } from '../../telemetry/emitter.js';
 import type { Place } from '../workspace-files.js';
 import { CLONES, WORKSPACE } from './mounts.js';
 import { type AsRunner, bounded, PODMAN, PodmanError, TIMEOUT } from './podman.js';
+import type { Use } from './use.js';
 import { type Bind, execArgs, filesEndArgs, filesTagged, HELPER_SCOPE, helperArgs, helperStopArgs } from './podman-args.js';
 
 /**
@@ -87,6 +93,8 @@ export interface ScriptsDeps {
   /** The helpers' run directory, `$SP_RUN/helper`. */
   helperRun: string;
   image: string;
+  /** `sandboxUses.enter`: before a `/files` script starts. */
+  enter(id: string): Promise<Use>;
   /** `containers.execIn`. */
   execIn(id: string, argv: string[], o: { dir: string; timeoutMs: number; stdin?: string | Buffer }): Promise<string>;
 }
@@ -144,6 +152,7 @@ export function sandboxScripts(d: ScriptsDeps) {
         const span = d.tm.start('sandbox.helper', { data: { script } });
         const t0 = Date.now();
         try {
+          await d.as.settled();
           const out = await d.as.run(argv, { timeoutMs: seconds * 1000 + GRACE_MS, stdin: o.stdin });
           span.end({ outcome: 'completed' });
           return out;
@@ -159,12 +168,15 @@ export function sandboxScripts(d: ScriptsDeps) {
   const start = d.spawn ?? ((cmd, args) => nodeSpawn(cmd, args, { cwd: '/', stdio: ['pipe', 'pipe', 'pipe'] }));
 
   /** Where the `/files` scripts of a thread run: started, not waited for; what the process prints and how it exits is the caller's. */
-  function filesPlace(sb: SandboxPlace): Place {
+  function filesPlace(place: SandboxPlace): Place {
     return {
       root: WORKSPACE,
-      spawn(argv, mode) {
+      async spawn(argv, mode) {
         const [shell, ...sh] = argv;
         if (shell !== '/bin/sh') throw new Error(`not a shell script: ${shell}`);
+        const use = await d.enter(place.id);
+        // What the thread is now: it may have stopped, or started, since the request came in.
+        const sb = use.place;
         const seconds = Math.min(FILES_SECONDS, Math.max(1, Math.ceil(mode.seconds ?? FILES_SECONDS)));
         const tag = randomBytes(8).toString('hex');
         const command = sb.running
@@ -172,10 +184,16 @@ export function sandboxScripts(d: ScriptsDeps) {
           : inHelper(sb.person, sh, { name: `sp-files-${tag}`, network: false, seconds, stdin: !!mode.stdin, binds: [{ src: sb.workspace, dst: WORKSPACE, ro: !mode.write }] });
         // The same bound as `as.run` puts on a command (podman.ts): past it timeout(1) ends what sudo started.
         const [cmd, ...args] = [...d.sudo, '--', ...bounded(command, seconds * 1000 + GRACE_MS)];
-        const p = start(cmd, args);
+        let p: ChildProcess;
+        try {
+          p = start(cmd, args);
+        } catch (e) {
+          use.leave();
+          throw e;
+        }
         const span = sb.running ? undefined : d.tm.start('sandbox.helper', { data: { script: 'files' } });
         const t0 = Date.now();
-        p.once('error', () => span?.end({ outcome: 'failed', error_type: 'unknown' }));
+        p.once('error', () => (use.leave(), span?.end({ outcome: 'failed', error_type: 'unknown' })));
         // Whoever tells the command to end is noted: `podman exec` that was told exits 0, as if its script had (measured, Podman 4.9.3).
         let told = false;
         const kill = p.kill.bind(p);
@@ -184,6 +202,7 @@ export function sandboxScripts(d: ScriptsDeps) {
           return kill(signal);
         };
         p.once('close', (code: number | null) => {
+          use.leave();
           // The script's own exits (a path that is not there, or leaves the workspace) are answers, not failures of the helper.
           const own = code !== null && code < 124;
           span?.end(own ? { outcome: 'completed' } : { outcome: 'failed', error_type: Date.now() - t0 >= seconds * 1000 ? 'timeout' : 'unknown' });

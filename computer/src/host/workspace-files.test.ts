@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Unavailable } from './unavailable.js';
 import { contentType, createWorkspaceFiles, parseListing, type Workspace, type WorkspaceFiles } from './workspace-files.js';
 
 let root: string;
@@ -341,6 +342,30 @@ describe('where the scripts run (work 103, C13)', () => {
     await expect(f.list(ws, { path: '' })).rejects.toThrow('no sandbox');
     await expect(f.file(ws, 'repo/README.md')).rejects.toThrow('no sandbox');
     await expect(f.canUpload(ws, 'x')).rejects.toThrow('no sandbox');
+  });
+
+  it('a place that starts its scripts later, or cannot now: the caller gets the place\'s own refusal, and a download ends with it', async () => {
+    let refuse = false;
+    const f = createWorkspaceFiles({
+      dir: path.join(root, 'scratch4'),
+      place: () => ({
+        root: ws.forkPath,
+        spawn: async (argv) => {
+          await new Promise((r) => setTimeout(r, 20));
+          if (refuse) throw new Unavailable('The computer is updating, try again.');
+          return spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+        },
+      }),
+    });
+    const file = await f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    expect((await collect(file.read().stream)).toString()).toBe('# hi\n');
+    refuse = true;
+    await expect(f.list(ws, { path: '' })).rejects.toBeInstanceOf(Unavailable);
+    const r = file.read();
+    expect((await collect(r.stream)).length).toBe(0);
+    await expect(r.done).rejects.toThrow('The computer is updating');
+    await expect(f.upload(ws, 'x', 'tar', actor, body(tarOf(path.join(ws.forkPath, 'repo/src'))))).rejects.toBeInstanceOf(Unavailable);
   });
 
   it('orders a listing by path components, whatever order find printed it in', () => {

@@ -22,7 +22,7 @@ function rig(o: { usedHoursAgo?: number; answer?: string; running?: () => boolea
   const data = mkdtempSync(path.join(os.tmpdir(), 'sp-art-'));
   const log: string[] = [];
   const helped: { person: string; binds: Bind[]; args: string[]; stdin?: string | Buffer }[] = [];
-  const as: AsRunner = { run: async () => '', podman: async (args) => (log.push(`podman ${args.join(' ').replaceAll(data, '')}`), '') };
+  const as: AsRunner = { settled: async () => {}, run: async () => '', podman: async (args) => (log.push(`podman ${args.join(' ').replaceAll(data, '')}`), '') };
   const m = mounts({ as, root: '/opt/r1', dataDir: data });
   const records = sandboxRecords(path.join(data, 'records'));
   const record: SandboxRecord = { id: '00aa11bb22cc33dd', person: 'pat', key: 'C1:1.1', createdAt: '', usedAt: ago((o.usedHoursAgo ?? 48) * HOUR).toISOString(), repos };
@@ -99,7 +99,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     const other = path.join(t.data, 'people/quinn/sessions/C2-2-2/theirs');
     mkdirSync(path.join(other, 'node_modules'), { recursive: true });
     const a = sandboxArtifacts({
-      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
+      as: { settled: async () => {}, run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { settled: async () => {}, run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
       helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async (_s, _a, r) => {
         rmSync(t.wt, { recursive: true });
         symlinkSync(other, t.wt);
@@ -152,7 +152,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
   it('a helper that fails removes nothing and does not stop the others', async () => {
     const t = rig();
     const a = sandboxArtifacts({
-      as: { run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
+      as: { settled: async () => {}, run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { settled: async () => {}, run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
       helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async () => Promise.reject(new Error('ws-inspect.sh: timed out')) }), running: () => false,
     });
     await a.pruneIdle('pat');

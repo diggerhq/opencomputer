@@ -38,11 +38,12 @@
 //   thread's files mounted and a runner that may or may not have taken the
 //   claim. It is never used: the thread's next start removes it and its home
 //   and creates anew (start.ts), a host restart stops it (sweep.ts).
-// - Every Podman call here goes through containers.ts and so `as.podman`
-//   (podman.ts), which waits for the image lock: no spare is created while
-//   provisioning holds it. None of what makes or binds a spare is
-//   `repeatable` there: a Create, the mount helper or the worktrees' exec
-//   that ran out of time behind the lock fails, and the spare is discarded.
+// - Every Podman call here is made by containers.ts, mounts.ts or scripts.ts,
+//   each of which waits for the image lock (podman.ts lists how): no spare is
+//   created or started while provisioning holds it. None of what makes or
+//   binds a spare is `repeatable` there: a Create, the mount helper or the
+//   worktrees' exec that ran out of time behind the lock fails, and the spare
+//   is discarded.
 // - Topping up does not compete with a delivery it can wait for: one spare is
 //   made at a time, none while a thread's start is in flight (`during`), and,
 //   while the pool still has a spare, none until SETTLE_MS after the last one

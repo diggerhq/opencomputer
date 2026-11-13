@@ -38,7 +38,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { type Readable, Writable } from 'node:stream';
+import { PassThrough, type Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
 import type { ApiActor, ApiError } from '../protocol.js';
@@ -73,8 +73,9 @@ export interface Place {
   /**
    * `argv`: `/bin/sh` and what it is given. `write`: the script changes the workspace; `stdin`: it reads its standard
    * input; `seconds`: how long it may run, for a Place that can end it where it runs. stdio is always three pipes.
+   * A Place that cannot start anything now rejects with Unavailable (unavailable.ts), which the caller is told.
    */
-  spawn(argv: string[], o: { write?: boolean; stdin?: boolean; seconds?: number }): ChildProcess;
+  spawn(argv: string[], o: { write?: boolean; stdin?: boolean; seconds?: number }): ChildProcess | Promise<ChildProcess>;
 }
 
 export interface ListEntry {
@@ -195,18 +196,18 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   }
 
   /** Start `script` with the workspace's root as `$1` and `args` after it. */
-  function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): ChildProcess {
+  async function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): Promise<ChildProcess> {
     const place = placeOf(ws);
-    const p = place.spawn(['/bin/sh', '-c', script, 'sh', place.root, ...args], { seconds: STREAM_WAIT_S, ...mode });
+    const p = await place.spawn(['/bin/sh', '-c', script, 'sh', place.root, ...args], { seconds: STREAM_WAIT_S, ...mode });
     p.stdin?.on('error', () => {});
     if (!mode.stdin) p.stdin?.end();
     return p;
   }
 
   /** Run `script` to its end: its exit code and what it printed. Rejects when it cannot start, runs too long or prints too much. */
-  function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
+  async function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
+    const p = await start(ws, script, args, { ...mode, seconds: waitMs / 1000 });
     return new Promise((resolve, reject) => {
-      const p = start(ws, script, args, { ...mode, seconds: waitMs / 1000 });
       const out: Buffer[] = [];
       let bytes = 0;
       let err = '';
@@ -230,18 +231,26 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   }
   const refusedPath = (rel: string) => rel.startsWith('/') || rel.split('/').includes('..') || rel.includes('\0');
 
+  /** A script whose output is the answer's body. The stream is there at once; the script starts when its place lets it, and `done` says how it went. */
   const streamed = (ws: Workspace, script: string, args: string[]): Streamed => {
-    const p = start(ws, script, args);
-    let err = '';
-    p.stderr?.on('data', (d: Buffer) => (err = (err + d.toString('utf8')).slice(-2000)));
-    const done = new Promise<void>((resolve, reject) => {
-      p.once('error', reject);
-      p.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(err.trim() || `workspace script exited ${code}`))));
-    });
-    done.catch(() => {});
-    // Whoever read it went away before its end (the request was cut): nobody is left to end the script by closing it.
-    const stream = p.stdout as Readable;
-    stream.once('close', () => stream.readableEnded || end(p));
+    const stream = new PassThrough();
+    const done = (async () => {
+      const p = await start(ws, script, args);
+      let err = '';
+      p.stderr?.on('data', (d: Buffer) => (err = (err + d.toString('utf8')).slice(-2000)));
+      const exited = new Promise<number | null>((resolve, reject) => {
+        p.once('error', reject);
+        p.once('exit', resolve);
+      });
+      // Whoever read it went away before its end (the request was cut): nobody is left to end the script by closing it.
+      if (stream.destroyed) end(p);
+      else stream.once('close', () => stream.readableEnded || end(p));
+      (p.stdout as Readable).pipe(stream);
+      const code = await exited;
+      if (code !== 0) throw new Error(err.trim() || `workspace script exited ${code}`);
+    })();
+    // A script that never started has nothing to say: the body ends, and `done` tells why.
+    done.catch(() => stream.end());
     return { stream, done };
   };
 
@@ -357,7 +366,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
         const trash = `.opc-replaced-${name}-${tag}`;
         const remove = () => run(ws, REMOVE, [tmp], { write: true }).catch(() => {});
         const check = new TarCheck();
-        const tar = start(ws, UNPACK, [tmp], { write: true, stdin: true });
+        const tar = await start(ws, UNPACK, [tmp], { write: true, stdin: true });
         tar.stdout?.resume();
         let tarErr = '';
         tar.stderr?.on('data', (d: Buffer) => (tarErr = (tarErr + d.toString('utf8')).slice(-1000)));

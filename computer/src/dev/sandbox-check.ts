@@ -64,7 +64,7 @@ import { mounts } from '../host/sandbox/mounts.js';
 import { asRunner, type PodmanError } from '../host/sandbox/podman.js';
 import { containerName, execArgs, mountArgs, pidArgs, unitName, unshareRmArgs, volumeName } from '../host/sandbox/podman-args.js';
 import { sandboxRecords } from '../host/sandbox/records.js';
-import { sandboxScripts } from '../host/sandbox/scripts.js';
+import { type SandboxPlace, sandboxScripts } from '../host/sandbox/scripts.js';
 import { sandboxWorkspaces } from '../host/sandbox/workspace.js';
 import { runnersDir, sandboxRunFor, secretsFor, socketFor, tokenSocketFor } from '../ipc.js';
 import type { GatewayToHost, HostToGateway, Person, PreviewConfig, PreviewRequest, SessionSpec, TraceContext, WorkspaceDefinition } from '../protocol.js';
@@ -365,7 +365,8 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   // ---- checkout, by the host's own parts in this process
   const tm = createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
-    execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }) });
+    execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }),
+    enter: () => Promise.reject(new Error('not used')) });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);
   await a2.deliver(); // the host writes the record at a delivery: the last one before the checkout, which the host does not know of
@@ -470,8 +471,9 @@ try {
   wire = await wireClient(wireSocket);
   const byId = (cid: string) => all.find((t) => t.id() === cid) ?? refuse(`no thread ${cid}`);
   // Started here as the host starts them; nothing in this process runs a workspace script through it, so it is given no way to.
-  const files = sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
-    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')) });
+  // Where a script runs is what the check says the thread is (the host asks its record and its unit, sandbox/use.ts).
+  const files = (place: SandboxPlace) => sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
+    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')), enter: async () => ({ place, leave() {} }) }).filesPlace(place);
   const kit: Kit = {
     root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
     inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),
@@ -479,7 +481,7 @@ try {
     asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
     status: (cid) => byId(cid).inspect('{{.State.Status}}'),
     tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
-    filesPlace: (t, running) => files.filesPlace({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
+    filesPlace: (t, running) => files({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
   };
   await reachRunning(kit, a, b, q);
 

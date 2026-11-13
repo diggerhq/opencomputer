@@ -48,7 +48,7 @@ const tarText = (tar: Buffer, name: string) => {
 function rig(answer: (args: string[]) => string | Error = (args) => args.slice(4).map((a) => `${a.split('=')[0]}\tok\tsp/C1-1-1\t${a.split('=')[1] ?? 'main'}\tabc123\t\n`).join('')) {
   const log: string[] = [];
   const runs: { args: string[]; stdin?: Buffer; timeoutMs: number }[] = [];
-  const as: AsRunner = { run: async (argv) => (log.push(argv.join(' ').replaceAll(data, '')), ''), podman: async (args) => (log.push(`podman ${args.slice(0, 7).join(' ').replaceAll(data, '')}`), '') };
+  const as: AsRunner = { settled: async () => {}, run: async (argv) => (log.push(argv.join(' ').replaceAll(data, '')), ''), podman: async (args) => (log.push(`podman ${args.slice(0, 7).join(' ').replaceAll(data, '')}`), '') };
   const records = sandboxRecords(mkdtempSync(path.join(data, 'records-')));
   const record: SandboxRecord = { id: ID, person: 'pat', key: 'C1:1.1', createdAt: '2026-11-12T00:00:00.000Z', usedAt: '2026-11-12T00:00:00.000Z' };
   records.write(record);
@@ -128,7 +128,7 @@ describe('a sandboxed thread\'s workspace (work 103, "Sequences")', () => {
     const t = rig();
     const scripts = t.runs;
     const w = sandboxWorkspaces({
-      as: { run: async () => '', podman: async () => '' }, records: t.records, mounts: mounts({ as: { run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: data }), pid: async () => 1,
+      as: { settled: async () => {}, run: async () => '', podman: async () => '' }, records: t.records, mounts: mounts({ as: { settled: async () => {}, run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: data }), pid: async () => 1,
       scripts: () => ({ clones: '/clones', workspace: () => '/workspace', run: async (_s, args, o) => {
         scripts.push({ args, timeoutMs: o.timeoutMs });
         if (o.stdin) throw new Error('ws-add.sh: tar: write error');

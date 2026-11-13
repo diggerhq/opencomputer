@@ -32,7 +32,7 @@ function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecor
   const records = new Map((o.records ?? []).map((r) => [r.id, r]));
   const runRoot = (id: string) => path.join(runDir, id);
   const s = sandboxSweep({
-    as: { run, podman: (args) => run(['podman', ...args]) },
+    as: { settled: async () => {}, run, podman: (args) => run(['podman', ...args]) },
     tm: { emit: (name: string, f: { data: unknown }) => void events.push({ name, data: f.data }) } as never,
     records: { all: () => [...records.values()], get: (id) => records.get(id), unread: () => o.unread ?? [] },
     locks: threadLocks(),

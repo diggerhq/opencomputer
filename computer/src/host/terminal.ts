@@ -25,6 +25,11 @@
 //   refused there; no shell ever starts outside a container. Stopping the
 //   unit ends only the `podman exec` client, so a helper that outlives it is
 //   hung up inside the container (terminal-pty.py takes SIGHUP as a hang-up).
+// - There a terminal enters its sandbox before anything starts (`inside`,
+//   sandbox/use.ts) and leaves it when its helper has exited: an open while
+//   the computer pulls an image is refused within seconds with words for the
+//   person, and one whose container is not running then is refused
+//   (`session_not_running`), whatever its caller knew a moment before.
 
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -37,7 +42,8 @@ import { mintId } from '../session-ids.js';
 import { log } from '../log.js';
 import type { RunnerUser } from './runner-user.js';
 import { PODMAN } from './sandbox/podman.js';
-import { terminalArgs, terminalHangUpArgs } from './sandbox/podman-args.js';
+import { terminalArgs } from './sandbox/podman-args.js';
+import { unavailable } from './unavailable.js';
 
 export const TERMINALS_PER_SESSION = 8;
 const PENDING_MAX = 1 << 20;
@@ -82,7 +88,17 @@ export interface TerminalsOptions {
   /** gid that may connect to the sockets (sp-wire). */
   group?: number;
   python?: string;
+  /** On a `podman` host (sandbox/host.ts `terminal`); without it no terminal opens there. */
+  inside?: {
+    /** Before a terminal starts in this sandbox: waits as long as a person may be kept waiting, rejects with Unavailable; `leave` once the terminal is over. */
+    enter(sandbox: string): Promise<{ running: boolean; leave(): void }>;
+    /** Hang up the helper `unit` inside the sandbox's container. */
+    hangUp(sandbox: string, unit: string): void;
+  };
 }
+
+/** A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (work 103, C13). */
+export const sessionNotRunning = () => apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' });
 
 interface Helper {
   proc: ChildProcess;
@@ -235,7 +251,7 @@ export function createTerminals(o: TerminalsOptions): Terminals {
         const [cmd, ...pre] = [...(o.user?.sudo ?? []), 'systemctl', '--user', 'stop', t.helper.unit];
         execFile(cmd, pre, { env: { ...process.env, ...o.user?.env } }, () => {});
         // The unit held the `podman exec` client only: the helper itself is in the container.
-        if (t.helper.sandbox && o.user) execFile(o.user.sudo[0], [...o.user.sudo.slice(1), '--', PODMAN, ...terminalHangUpArgs(t.helper.sandbox, t.helper.unit)], { cwd: '/' }, () => {});
+        if (t.helper.sandbox) o.inside?.hangUp(t.helper.sandbox, t.helper.unit);
       }
       t.helper.proc.kill('SIGKILL');
     }, STOP_AFTER_MS);
@@ -260,16 +276,30 @@ export function createTerminals(o: TerminalsOptions): Terminals {
 
   const self: Terminals = {
     async open(req, onExit) {
-      if (self.count(req.sessionId) >= TERMINALS_PER_SESSION) {
-        return { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
-      }
-      if (o.launch === 'podman' && !req.sandbox) {
+      const full = () => self.count(req.sessionId) >= TERMINALS_PER_SESSION && { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
+      const many = full();
+      if (many) return many;
+      if (o.launch === 'podman' && !(req.sandbox && o.inside)) {
         log.warn(`terminal for ${req.sessionId} refused: no sandbox named on a podman host`);
         return { error: apiError('unavailable', 'The terminal could not start.', 503, { retryable: false }) };
       }
-      const id = mintId('tm');
       const inside = o.launch === 'podman' && req.sandbox ? { sandbox: req.sandbox, cwd: req.cwd, term: req.term } : undefined;
+      let use: { running: boolean; leave(): void } | undefined;
+      if (inside) {
+        try {
+          use = await o.inside?.enter(inside.sandbox);
+        } catch (e) {
+          const told = unavailable(e);
+          if (!told) log.warn(`terminal for ${req.sessionId}: cannot enter its sandbox: ${(e as Error)?.message ?? e}`);
+          return { error: told ?? apiError('unavailable', 'The terminal could not start.', 503, { retryable: true }) };
+        }
+        // Others may have opened while this one waited; and the container is asked about now, not when the call came in.
+        const refused = full() || (!use?.running && { error: sessionNotRunning() });
+        if (refused) return use?.leave(), refused;
+      }
+      const id = mintId('tm');
       const helper = takeHelper(inside);
+      if (use) void helper.exited.then(use.leave);
       const t: Term = {
         id, sessionId: req.sessionId, helper, servers: [], onExit, done: false,
         out: { pending: [], pendingBytes: 0, ended: false },

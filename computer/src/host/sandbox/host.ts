@@ -44,6 +44,7 @@ import { sandboxArtifacts } from './artifacts.js';
 import { containers } from './containers.js';
 import { mounts } from './mounts.js';
 import { asRunner } from './podman.js';
+import { terminalHangUpArgs } from './podman-args.js';
 import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { type SandboxPlace, sandboxScripts } from './scripts.js';
@@ -52,6 +53,7 @@ import { sandboxPrune } from './prune.js';
 import { sandboxStarts } from './start.js';
 import { SWEEP_AGE_MS, sandboxSweep } from './sweep.js';
 import { threadLocks } from './thread-lock.js';
+import { sandboxUses } from './use.js';
 import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
@@ -111,7 +113,8 @@ export function sandboxHost(d: SandboxHostDeps) {
   });
   const helperRun = path.join(d.run, 'helper');
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
-  const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn });
+  const uses = sandboxUses({ as, records, workspace: mnt.workspace, unitActive: all.unitActive });
+  const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn, enter: uses.enter });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
   const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
@@ -150,6 +153,11 @@ export function sandboxHost(d: SandboxHostDeps) {
     },
     /** Where the `/files` scripts of a place run (api-wire.ts). */
     files: scripts.filesPlace,
+    /** How a terminal enters a session's sandbox, and hangs up a helper its unit left there (terminal.ts `inside`). */
+    terminal: {
+      enter: (id: string) => uses.enter(id).then((u) => ({ running: u.place.running, leave: u.leave })),
+      hangUp: (id: string, unit: string) => void as.podman(terminalHangUpArgs(id, unit), { timeoutMs: 20_000 }).catch(() => {}),
+    },
     /** The virtual ports, and how a container's preview socket is reached (previews.ts). */
     previews: { ports, run: runRoot, uid: user.uid },
     /** `checkout_repo` of a sandboxed session, by its runner id. */

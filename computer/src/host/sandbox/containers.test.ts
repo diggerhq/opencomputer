@@ -21,7 +21,7 @@ function rig(answer: (argv: string[]) => string | Error = () => '', over: Partia
     if (a instanceof Error) throw a;
     return a;
   };
-  const as: AsRunner = { run, podman: (args, o) => run(['podman', ...args], o) };
+  const as: AsRunner = { settled: async (ms) => void log.push(`settled ${ms ?? ''}`.trim()), run, podman: (args, o) => run(['podman', ...args], o) };
   const c = containers({
     as, runRoot: (id) => path.join(root, id), dataDir: '/data', root: '/opt/slack-presence/releases/r1', image: 'img:tag', abi: '1',
     start: async () => void log.push('start'), vars: () => ({ SP_VERSION: 'v1', PATH: '/host/bin' }), definition: () => undefined,
@@ -59,7 +59,8 @@ describe('containers', () => {
     const t = rig((a) => (a[1] === 'inspect' ? '4242\n' : ''), { definition: () => def });
     const up = await t.c.up(ID, rs, record);
     expect(up.pid).toBe(4242);
-    expect(t.log).toEqual(['podman unshare find', 'tokens 00aa11bb22cc33dd C1:1.1', 'start', 'podman inspect --format', '/usr/bin/systemctl --user is-active']);
+    // Its unit's `podman start` is no `as.podman` call: the image lock is waited for before it, with no bound of a person's.
+    expect(t.log).toEqual(['podman unshare find', 'tokens 00aa11bb22cc33dd C1:1.1', 'settled', 'start', 'podman inspect --format', '/usr/bin/systemctl --user is-active']);
     expect(t.calls[0].argv).toEqual(['podman', 'unshare', 'find', `${t.run}/runners`, `${t.run}/secrets`, '-mindepth', '1', '-delete']);
     expect([t.run, `${t.run}/runners`, `${t.run}/secrets`, `${t.run}/tokens`].map(mode)).toEqual([0o2750, 0o2770, 0o2770, 0o2750]);
     expect(readFileSync(`${t.run}/definition.json`, 'utf8')).toBe('{"name":"d"}');
@@ -69,6 +70,12 @@ describe('containers', () => {
     expect(boot).toContain("SP_VERSION='v1'");
     expect(boot).not.toContain('PATH='); // a host path: the image's own stands
     expect(mode(`${t.run}/boot.env`)).toBe(0o640);
+  });
+
+  it('diagnose: waits for the image lock before the shell that runs podman logs', async () => {
+    const t = rig(() => ' unit failed \n');
+    expect(await t.c.diagnose(ID)).toBe('unit failed');
+    expect(t.log).toEqual(['settled', '/bin/sh -c /usr/bin/systemctl --user status --no-pager --lines=0 "$1" 2>&1 | cut -c1-200; echo \'--- podman logs\'; /usr/bin/podman logs --tail 50 "$2" 2>&1; true']);
   });
 
   it('up: a first start has nothing to empty; any other failure to empty stops it', async () => {

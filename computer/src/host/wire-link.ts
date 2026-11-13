@@ -29,7 +29,8 @@ import { lines, send } from '../ipc.js';
 import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
 import { oneShotSocket } from './one-shot-socket.js';
-import type { Terminals } from './terminal.js';
+import { sessionNotRunning, type Terminals } from './terminal.js';
+import { unavailable } from './unavailable.js';
 import { WORKSPACE } from './sandbox/mounts.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 import type { WorkspaceFiles } from './workspace-files.js';
@@ -116,7 +117,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         if (!ws) return { error: sessionNotFound() };
         if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
-        if (ws.sandbox && !ws.sandbox.running) return { error: apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' }) };
+        if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(
           { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
           (terminalId, exitCode, signal) => {
@@ -194,15 +195,21 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         () => true,
         () => false,
       );
-      const ended = await r.done.then(
-        () => true,
-        (e) => (log.warn('wire: files.get', e?.message ?? e), false),
+      const cut = () => apiError('internal', 'The transfer failed.', 500, { retryable: true });
+      // What the host has words for (the computer is updating, the session stopped) is said; anything else is a transfer that failed.
+      const failed = await r.done.then(
+        () => (ok ? undefined : cut()),
+        (e) => (log.warn('wire: files.get', e?.message ?? e), unavailable(e) ?? cut()),
       );
-      return done(ok && ended ? { result: {} } : { error: apiError('internal', 'The transfer failed.', 500, { retryable: true }) });
+      return done(failed ? { error: failed } : { result: {} });
     }
     if (m.t !== 'files.put') return;
     const actor = memberActor(m.member);
-    const r = await o.files.upload(where, m.path, m.format, actor, conn);
+    // The relay has its socket and waits for `files.done`: a failure from here on is said there.
+    const r = await o.files.upload(where, m.path, m.format, actor, conn).catch((e) => {
+      log.warn('wire: files.put', e?.message ?? e);
+      return { error: unavailable(e) ?? apiError('internal', 'The transfer failed.', 500, { retryable: true }) };
+    });
     conn.destroy();
     if ('error' in r) return done({ error: r.error });
     const u = r.upload;
@@ -234,7 +241,8 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         if (r && id !== undefined) send(peer, { t: 'result', id, ...r } satisfies HostToWire);
       } catch (e) {
         log.warn(`wire: ${m.t} failed`, e);
-        if (id !== undefined) send(peer, { t: 'result', id, error: apiError('internal', 'The host failed this call.', 500, { retryable: true }) } satisfies HostToWire);
+        // What the host has words for (the computer is updating) is said; anything else is the host's own failure.
+        if (id !== undefined) send(peer, { t: 'result', id, error: unavailable(e) ?? apiError('internal', 'The host failed this call.', 500, { retryable: true }) } satisfies HostToWire);
       }
     });
   });
