@@ -269,7 +269,7 @@ export default defineConfig({
         ],
         test: {
           name: "computer",
-          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-hosted-do.test.ts"],
+          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts"],
         },
       },
       {
@@ -424,6 +424,7 @@ export default defineConfig({
             "test/auth.test.ts",
             "test/computer-grants.test.ts",
             "test/computer-model-access.test.ts",
+            "test/computer-model-profiles.test.ts",
             "test/computer-disk-growth.test.ts",
             "test/deployment-region.test.ts",
             "test/session-runtime-selection.test.ts",
@@ -495,6 +496,7 @@ export default defineConfig({
             "test/computer-connections.test.ts",
             "test/computer-model-subscriptions.test.ts",
             "test/computer-codex-subscriptions.test.ts",
+            "test/computer-subscription-profiles.test.ts",
             "test/computer-agent-connect.test.ts",
             "test/computer-connect-codes.test.ts",
             "test/computer-units.test.ts",

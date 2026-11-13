@@ -13,7 +13,7 @@
 // before #272 reads rows by owner alone, so a rollback must find none for a
 // harness it does not know.
 
-import type { CalvinHarness, ModelProvider } from "./protocol.js";
+import type { CalvinHarness, ModelProfile, ModelProvider } from "./protocol.js";
 
 /** The feature a host's hello lists when ChatGPT routes may go to it (with protocol 3). */
 export const MODEL_PROXY_CHATGPT_FEATURE = "model-proxy/chatgpt";
@@ -70,6 +70,36 @@ export function computerHarnesses(features: readonly string[] | undefined): Calv
     const needs = HARNESS_REQUIRES[h];
     return needs === null || features.includes(needs);
   });
+}
+
+// Protocol 5 (work 097): a host's hello lists its model proxy's profiles, and
+// a profile says which harnesses it serves. They replace the features above,
+// which go with protocol 4.
+
+/** The `profiles` of a hello, as far as they are well formed (at most 32); undefined when the hello lists none. */
+export function helloProfiles(value: unknown): ModelProfile[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  return value
+    .filter((p): p is ModelProfile => isRecord(p) && typeof p.name === "string" && Array.isArray(p.vars) && p.vars.every((v) => typeof v === "string") && isRecord(p.harness))
+    .slice(0, 32)
+    .map(({ name, vars, harness }) => ({ name, vars, harness }));
+}
+
+/** The harnesses this computer can run: the default one, and those a profile of the host's latest hello serves. */
+export function profileHarnesses(profiles: readonly ModelProfile[]): CalvinHarness[] {
+  return HARNESSES.filter((h) => h === DEFAULT_HARNESS || profiles.some((p) => h in p.harness));
+}
+
+/**
+ * The harness a session on `profile` runs: the one it wants when the profile
+ * serves it, else one the profile serves (a Codex session on a profile for
+ * Claude Code runs Claude Code). A profile the host did not list: the wanted.
+ */
+export function harnessOnProfile(profiles: readonly ModelProfile[] | undefined, profile: string, wanted: CalvinHarness): CalvinHarness {
+  const serves = profiles?.find((p) => p.name === profile)?.harness;
+  if (!serves || wanted in serves) return wanted;
+  return HARNESSES.find((h) => h in serves) ?? wanted;
 }
 
 export const HARNESS_UNAVAILABLE_CODE = "computer_harness_unavailable";

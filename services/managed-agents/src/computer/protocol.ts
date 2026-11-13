@@ -16,9 +16,19 @@ import type { Linked } from "./threads.js";
 // thread (`kind: "api"`, the `cs_` id as its key) and carries its `sessionId`; a person may have
 // no Slack id. Every field is optional: a v3 frame reads unchanged, and v4 frames go only to a
 // host that says 4 (`hostSpeaksV4`).
+// 5 (work 097, design C2): every session's model traffic goes through the host's model proxy, by
+// profile. The hello lists the proxy's `profiles`; `welcome` and `credentials` carry `models`;
+// routes are `profile` or `refuse`; `model-observed`, `model-request` and `model-response` exist.
+// `managed` and `subscription` routes, the `model-proxy` features, `probe`/`probed`,
+// `model-health` and the model key in `credentials` do not exist at 5. A host that says 5 gets
+// only protocol 5's shapes, a host below it exactly what it got before: this gateway speaks both
+// until no host says 4, then everything marked protocol 4 here goes and
+// CALVIN_PROTOCOL_VERSION becomes 5.
 export const CALVIN_PROTOCOL_VERSION = 4;
 /** The first host protocol that has the session API (work 084). */
 export const CALVIN_API_PROTOCOL = 4;
+/** The first host protocol whose model routes are profiles (work 097); a `welcome` says it only to such a host. */
+export const CALVIN_MODEL_PROTOCOL = 5;
 
 export type SecretScope = "session" | "user" | "workspace";
 
@@ -152,6 +162,7 @@ export interface CalvinHostCredentials {
   slackBotUserId: string;
   teamId?: string;
   claudeOAuthToken?: string;
+  /** Protocol 4 only, with `anthropicBaseUrl`: at 5 the key travels in a route's `vars` (`models`). */
   anthropicApiKey?: string;
   /**
    * Where `anthropicApiKey` is spent, when not Anthropic: the organization's
@@ -235,11 +246,14 @@ export type CalvinGatewayToHost =
       preview?: CalvinPreviewConfig;
       /** Work 084: the relay's edge key. Absent: the wire is off on this computer. */
       wire?: CalvinWireConfig;
+      /** Protocol 5: the route of a session whose own delivery carries none, by harness. */
+      models?: Partial<Record<CalvinHarness, ModelRoute>>;
     }
   /** Work 074: the previews config changed (tunnel provisioned, a port registered or released). Sent before the `previewed` it causes. */
   | { t: "previews"; preview: CalvinPreviewConfig }
   | { t: "people"; people: CalvinPerson[] }
-  | { t: "credentials"; credentials: CalvinHostCredentials }
+  /** Protocol 5: `models` replaces the whole map of the `welcome`. */
+  | { t: "credentials"; credentials: CalvinHostCredentials; models?: Partial<Record<CalvinHarness, ModelRoute>> }
   | {
       t: "deliver";
       id: string;
@@ -248,7 +262,10 @@ export type CalvinGatewayToHost =
       credentials?: CalvinHostCredentials;
       secrets?: SessionSecret[];
       trace?: CalvinTraceContext;
-      /** Work 077: the session's model route. Absent = managed (older gateways); never `refuse` (a refused delivery is not sent). */
+      /**
+       * Work 077: the session's model route. Absent = managed (older gateways); never `refuse` (a refused delivery is not sent).
+       * Protocol 5: absent = `models[harness]`.
+       */
       model?: ModelRoute;
       /** Work 084: the log's epoch and the last seq the SessionLog holds; the writer continues at lastSeq + 1. */
       epoch?: number;
@@ -281,12 +298,23 @@ export type CalvinGatewayToHost =
    * arrives at the organization's object.
    */
   | { t: "assign"; organizationId: string; hostToken: string; gatewayUrl: string }
-  | CalvinGatewayToHostV4;
+  | CalvinGatewayToHostV4
+  | CalvinGatewayToHostV5;
 
 export type CalvinHostToGateway =
   /** `features`: what this host can do; `model-proxy` (work 077) means subscription routes may go to it. */
   /** `journals` (work 084): every session journal on the host's disk, so the gateway sends `epoch` for the ones it is ahead on. */
-  | { t: "hello"; protocol: number; hostId: string; version: string; sessions: CalvinSessionReport[]; features?: string[]; journals?: CalvinJournalReport[] }
+  /** `profiles` (protocol 5): the model proxy's, while the host is connected to it; a change re-sends the hello. */
+  | {
+      t: "hello";
+      protocol: number;
+      hostId: string;
+      version: string;
+      sessions: CalvinSessionReport[];
+      features?: string[];
+      journals?: CalvinJournalReport[];
+      profiles?: ModelProfile[];
+    }
   | { t: "session"; report: CalvinSessionReport }
   | { t: "workspace"; status: unknown }
   /** `/data`'s size and free space, every 5 minutes (work 071): the disk grows near capacity (disk-growth.ts). */
@@ -317,7 +345,8 @@ export type CalvinHostToGateway =
   | { t: "reply"; id: string; ok: boolean; error?: string }
   /** Work 077: the model proxy's answers and reports, relayed by the host. */
   | { t: "probed"; id: string; result?: { status: number; usage?: ModelUsage }; error?: string }
-  | { t: "model-bound"; sessionKey: string; mode: "subscription" | "managed" | "refuse"; fingerprint?: string }
+  /** Protocol 4: `subscription` or `managed`, with `fingerprint`. Protocol 5: `profile`, with `profile` and `key`. `refuse` in both. */
+  | { t: "model-bound"; sessionKey: string; mode: "subscription" | "managed" | "profile" | "refuse"; fingerprint?: string; profile?: string; key?: string }
   | {
       t: "model-health";
       sessionKey: string;
@@ -331,7 +360,8 @@ export type CalvinHostToGateway =
       usage?: ModelUsage;
     }
   | { t: "model-denied"; sessionKey: string; model: string; fallbackTo: string }
-  | CalvinHostToGatewayV4;
+  | CalvinHostToGatewayV4
+  | CalvinHostToGatewayV5;
 
 /** Work 082: whose subscription a route spends. */
 export type ModelProvider = "anthropic" | "chatgpt";
@@ -345,6 +375,12 @@ export type ModelProvider = "anthropic" | "chatgpt";
  * token replaces the old one in place); `managed` means the deliver's
  * `credentials`, as before; `refuse` is only ever pushed (`model`), with a
  * sentence for the thread.
+ *
+ * Protocol 5 (work 097): `profile` or `refuse`, nothing else. `profile` names
+ * one of the profiles the host's hello lists and carries the values of its
+ * variables. `subscription` is protocol 4's and goes with it. `managed` is
+ * never sent at 5: here it still means a session with no route of its own,
+ * which the host runs on `models[harness]`.
  */
 export type ModelRoute =
   | {
@@ -359,6 +395,16 @@ export type ModelRoute =
       maxModel?: string;
     }
   | { mode: "managed" }
+  | {
+      mode: "profile";
+      profile: string;
+      /** The profile's variables by name. Credential values: a frame that carries them is never logged. */
+      vars: Record<string, string>;
+      /** Names the credential without revealing it (model-key.ts `modelKey`, or its author's own name): `[A-Za-z0-9._:-]{1,64}`. */
+      key: string;
+      owner?: string;
+      maxModel?: string;
+    }
   | { mode: "refuse"; reason: string };
 
 /** A subscription's usage windows, as the proxy last saw them: percentages, resets in epoch ms. */
@@ -544,6 +590,64 @@ export type CalvinHostToGatewayV4 =
    * answered with `start`, as for a session created without a message. Ignored for an unknown session.
    */
   | { t: "wake"; sessionId: string };
+
+// ---------------------------------------------------------------- v5 (work 097)
+// Mirrors calvin src/protocol.ts at 5 (design C2). The gateway knows a profile by its name and
+// the harnesses it serves; everything else about it is the proxy's configuration.
+
+/** A profile as the proxy's hello lists it; the host forwards it unread. */
+export interface ModelProfile {
+  name: string;
+  /** Names of the variables a route must carry. */
+  vars: string[];
+  /** harness → what that harness's adapter needs. Opaque here: only the harness names are read. */
+  harness: Partial<Record<CalvinHarness, unknown>>;
+}
+
+/**
+ * The proxy's report of what an upstream answered on a credential, relayed by the host unread: a
+ * status with the headers the profile reports and the start of an error body, or a transport
+ * error's class. The proxy limits how often it arrives. `body` is upstream text: parsed, never
+ * logged, never shown.
+ */
+export interface ModelObserved {
+  sessionKey: string;
+  key: string;
+  profile: string;
+  status?: number;
+  /** Lower-case name → value. */
+  headers?: Record<string, string>;
+  body?: string;
+  error?: string;
+}
+
+/** A request of the gateway's own through a profile, with the credential in `vars`; answered by `model-response`. */
+export interface ModelRequest {
+  id: string;
+  profile: string;
+  vars: Record<string, string>;
+  method: string;
+  /** One of the profile's routes. */
+  path: string;
+  /** The raw query string, without the `?`. */
+  query?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/** `error`: the proxy's own code, `proxy_unavailable`, or `timeout` when the host gave up waiting. */
+export interface ModelResponse {
+  id: string;
+  status?: number;
+  /** Lower-case name → value. */
+  headers?: Record<string, string>;
+  body?: string;
+  error?: string;
+}
+
+export type CalvinGatewayToHostV5 = { t: "model-request" } & ModelRequest;
+
+export type CalvinHostToGatewayV5 = ({ t: "model-observed" } & ModelObserved) | ({ t: "model-response" } & ModelResponse);
 
 /** The app's name in git, the author until a person's name is known. */
 export const COMPUTER_GIT_NAME = "Computer";
