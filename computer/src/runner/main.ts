@@ -9,18 +9,20 @@
 // (spare.ts) and reports `spare` until the host `claim`s it for a session,
 // whose fork is complete by then; from there it is that session's runner.
 // Its socket, unit and secrets are named by its id, not the session.
+// A spare's kind (model-key.ts `spareKind`) is the route it parked on's.
 //
 // The session's harness is its spec's (work 082): Claude Code, or Codex for
 // `harness: 'codex'`. harness/codex/ is imported only then, so a Claude
 // runner neither loads nor parses it. A spare parks Claude Code; claimed for
-// a Codex session it closes it, drops the managed Claude credential it parked
-// with, and starts Codex as a cold runner would, minus the runner's launch.
+// a Codex session it closes it, drops the model route it parked with, and
+// starts Codex as a cold runner would, minus the runner's launch.
 //
 //   RUNNER_SPEC='<RunnerSpec JSON>' node --import tsx src/runner/main.ts
 //
-// Credentials arrive as a `credentials` message (or SLACK_BOT_TOKEN /
-// CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY in the environment) and are kept
-// in memory and in this process's environment only. Secrets people give the
+// Credentials arrive as a `credentials` message (or SLACK_BOT_TOKEN in the
+// environment) and are kept in memory only. The model's never reach a runner:
+// the message's `model` names the session's route through the host's model
+// proxy (model-access.ts, work 097). Secrets people give the
 // session (work 046) arrive as `secrets` before deliveries and on change; see
 // session-secrets.ts for how they reach commands and stay out of Slack.
 // Work 084: with RunnerSpec.api or claim.api it is the session's API writer too (api/attach.ts).
@@ -74,16 +76,14 @@ import { serveFiles } from './send-file-socket.js';
 import { Waiters } from './waiters.js';
 import { TurnEvents } from './turn-events.js';
 import { sampleLoopLag } from './loop-lag.js';
-import { applyPromptCacheTtl, presetTtls } from './cache-ttl.js';
+import { presetTtls } from './cache-ttl.js';
 import { configureCompaction } from './harness/claude/shadow.js';
 import { Ordered } from './ordered.js';
 import { Spare } from './harness/claude/spare.js';
 import { claudeSpare } from './harness/claude/harness.js';
 import { effortOf, speedOf } from './model-switch.js';
 import { ensureSkills } from './skills.js';
-import { credentialFingerprint } from '../credential-fingerprint.js';
-import { MODEL_SOCKET } from './model-access.js';
-import { createRunnerModelAccess } from './model-access-impl.js';
+import { runnerModelAccess } from './model-access.js';
 import type { Harness, HarnessKind } from './harness/types.js';
 import { nameSession } from './harness/claude/title.js';
 
@@ -111,12 +111,6 @@ Object.assign(env, {
   // Sourced by Claude Code before Bash commands: the session's secrets, current at each command.
   CLAUDE_ENV_FILE: secrets.envFile,
 });
-// Prompt cache TTL (cache-ttl.ts): 1 hour on Anthropic's own API, set again
-// whenever the credentials change the endpoint.
-const CACHE_TTL = env.SP_PROMPT_CACHE_TTL;
-const presetCacheTtl = presetTtls(env);
-const applyCacheTtl = () => applyPromptCacheTtl(env, CACHE_TTL, presetCacheTtl);
-applyCacheTtl();
 configureCompaction(env); // between turns in a fork (shadow.ts), Claude Code's own as the backstop
 // The gh shim (this release's bin/) goes first on PATH: gh gets a GitHub App
 // token from the host's token socket, or runs as is when there is none. With a
@@ -159,15 +153,13 @@ setInterval(flushTelemetry, 2000).unref();
 const turns = new TurnEvents(telemetry, {
   model: () => s?.info.model,
   tierOf, apiClients: () => api?.api.log.hub.clients, // Q1: turn.started splits by protocol and clients
-  provider: () =>
-    ss?.harness === 'codex' ? 'chatgpt-subscription'
-    : sub.route() === 'subscription' ? 'anthropic-subscription' : env.ANTHROPIC_BASE_URL ? 'anthropic-compatible' : 'anthropic',
+  provider: () => sub.profile(),
 });
 sampleLoopLag((l) => turns.loopLag(l));
-// Work 097: the model access behind one seam (model-access.ts); hosted builds run the owner's Claude subscription
-// through oc-modelproxy (work 077; SP_MODEL_SOCKET: its socket, for tests).
-const sub = createRunnerModelAccess({ env, socket: env.SP_MODEL_SOCKET || undefined, hooks: {
+// Work 097: the session's route through the host's model proxy; the prompt cache TTL (cache-ttl.ts) comes with it.
+const sub = runnerModelAccess({ env, cacheTtl: { explicit: env.SP_PROMPT_CACHE_TTL, preset: presetTtls(env) }, hooks: {
   session: () => s,
+  harness: () => ss?.harness ?? 'claude',
   out: (m) => out(m),
   downgraded: (from, to) => telemetry.emit('model.downgraded', { data: { from, to } }),
 } });
@@ -185,52 +177,19 @@ const makeClient = (token?: string) =>
   );
 let botToken = env.SLACK_BOT_TOKEN;
 
-/** The Claude credential in this process's environment, as the harness copies it at spawn. */
-const claudeCredential = () =>
-  [env.CLAUDE_CODE_OAUTH_TOKEN, env.ANTHROPIC_API_KEY, env.ANTHROPIC_AUTH_TOKEN, env.ANTHROPIC_BASE_URL].map((v) => v ?? '').join('\n');
-const hasClaudeCredential = () => !!(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-/** The fingerprint of that credential, as the host computes it from the credentials it sends. */
-const claudeFingerprint = () =>
-  credentialFingerprint({ claudeOAuthToken: env.CLAUDE_CODE_OAUTH_TOKEN, anthropicApiKey: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY,
-    anthropicBaseUrl: env.ANTHROPIC_BASE_URL });
-
 function applyCredentials(c: HostCredentials) {
-  const before = claudeCredential();
-  const route = sub.apply(c);
-  if (route === 'switch') s && hooks.restart?.(); // a new route is a new harness environment: finish the turn, exit
-  else if (c.claudeOAuthToken) {
-    env.CLAUDE_CODE_OAUTH_TOKEN = c.claudeOAuthToken;
-    delete env.ANTHROPIC_API_KEY;
-  } else if (c.anthropicApiKey && c.anthropicBaseUrl) {
-    // Another Anthropic-compatible endpoint (an organization's metered key,
-    // work 052): bearer auth, and an empty API key so it is not sent instead.
-    env.ANTHROPIC_BASE_URL = c.anthropicBaseUrl;
-    env.ANTHROPIC_AUTH_TOKEN = c.anthropicApiKey;
-    env.ANTHROPIC_API_KEY = '';
-    delete env.CLAUDE_CODE_OAUTH_TOKEN;
-  } else if (c.anthropicApiKey) {
-    env.ANTHROPIC_API_KEY = c.anthropicApiKey;
-    delete env.CLAUDE_CODE_OAUTH_TOKEN;
-  }
-  // A Claude credential without an endpoint means Anthropic's own: drop a
-  // previous endpoint. Updates carrying no Claude credential change nothing.
-  if (route === 'managed' && !c.anthropicBaseUrl) {
-    delete env.ANTHROPIC_BASE_URL;
-    delete env.ANTHROPIC_AUTH_TOKEN;
-  }
-  applyCacheTtl();
+  const route = sub.apply(c.model);
+  if (route === 'switch') hooks.restart?.(); // another harness environment: finish the turn, exit
   if (c.slackBotToken && c.slackBotToken !== botToken) {
     botToken = c.slackBotToken;
     if (s?.thread.slack) s.client = makeClient(botToken);
   }
-  // The host sends credentials on connect, so the harness starts before the
-  // first message; one no message went into yet restarts on a new credential
-  // (a delivery's own, work 052). A harness in use keeps its own until `!restart`.
-  // A spare parks one with them, and starts again on another.
-  if (!hasClaudeCredential() || route === 'switch') return;
-  // A Claude credential change replaces an unused Claude Code; Codex never reads one (it is on the proxy).
-  if (s) s.prewarm(s.kind.id === 'claude' && claudeCredential() !== before);
-  else spare?.warm(claudeFingerprint()!);
+  // The host sends credentials on connect, so Claude Code starts before the first
+  // message, replacing one no message went into yet. A spare parks one with them,
+  // and parks again on another kind. Codex starts at its first message.
+  if (route !== 'set') return;
+  if (s) s.kind.id === 'claude' && s.prewarm(true);
+  else spare?.warm(sub.kind()!);
 }
 
 // ---- the session
@@ -255,7 +214,7 @@ const report = (status: SessionReport['status'] = s!.isBusy ? 'busy' : 'idle'): 
   ...(ss!.harness === 'codex' && { harness: 'codex' as const }), // absent for Claude: its report is unchanged
   ...(tasks.size > 0 && { subagents: tasks.size }), // absent: none (work 084)
 });
-const sendSpare = () => spare && out({ t: 'spare', spare: { id: spec.id!, ready: spare.ready, version: spec.version, credential: spare.credential } });
+const sendSpare = () => spare && out({ t: 'spare', spare: { id: spec.id!, ready: spare.ready, version: spec.version, kind: spare.kind } });
 
 const hooks: SessionHooks = {
   busy: (busy) => {
@@ -311,7 +270,7 @@ async function codexFor(b: Bound): Promise<HarnessKind | undefined> {
   return codexKind(
     {
       bin: codexBin(env),
-      socket: env.SP_MODEL_SOCKET || MODEL_SOCKET,
+      endpoint: sub.endpoint,
       // Under the runner user's own home: /data is root's, and $SP_DATA/state is the host's after sp-host.sh's migration.
       root: codexRoot(env.HOME || os.homedir()),
       peerCheck: env.SP_CODEX_PEER_CHECK !== 'off',
@@ -356,6 +315,7 @@ function bind(b: Bound, kind?: HarnessKind) {
     kind,
   );
   files = serveFiles(env.SP_FILES_SOCKET!, s.sendFile);
+  sub.cap(); // a claimed spare's route arrived before its session
   if (b.kind === 'channel') void s.updateContextBar();
   return s;
 }
@@ -407,9 +367,8 @@ async function claimForCodex(b: Bound, a?: RunnerApi) {
   if (!spare || s) throw new Error(s ? 'already claimed' : 'no spare is parked');
   const kind = await codexFor(b);
   spare.close();
-  // A Codex runner holds no Claude credential (host model-routes.ts forRunner): it gets only the session's.
-  for (const k of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']) delete env[k];
-  sub.reset();
+  sub.reset(); // the session's route comes next; the proxy's endpoint stays
+
   const session = bind(b, kind);
   session.prewarm();
   await link(b, a);
@@ -419,8 +378,6 @@ async function claimForCodex(b: Bound, a?: RunnerApi) {
 }
 
 if (ss) bind(ss, ss.harness === 'codex' ? await codexFor(ss) : undefined), await link(ss);
-// Credentials in the environment (dev); otherwise they come with the host.
-if (hasClaudeCredential()) s ? s.prewarm() : spare?.warm(claudeFingerprint()!);
 
 // The gateway acknowledges a message on receipt with 👀 (or the assistant
 // thread status, which Slack clears when we post). Once output starts, the 👀
@@ -446,6 +403,9 @@ async function handle(m: Delivery, trace?: TraceContext) {
   // A re-sent dispatch (the gateway re-flushes after a reconnect) was handled already.
   if (!turns.delivered(trace)) return;
   exiting = false; // new work cancels a pending idle exit
+  // No route this harness can run on (model-access.ts): the turn is refused; commands still run.
+  const refused = !m.text.startsWith('!') && sub.refusal();
+  if (refused && m.api) throw new Error(refused);
   if (m.api) {
     if (!api) throw new Error('this runner is not the session API writer');
     return void (await api.api.deliver(m.text, m.api));
@@ -454,6 +414,7 @@ async function handle(m: Delivery, trace?: TraceContext) {
     await s.command(m.text, m.userId);
     return clearFeedback(m.ts);
   }
+  if (refused) return void (await s.say(refused), clearFeedback(m.ts));
   if (!s.isBusy) awaitingOutput.push(m.ts);
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
   const fetching = fetchAttachments(m.files, botToken, ss.key);

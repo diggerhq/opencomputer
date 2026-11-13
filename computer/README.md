@@ -258,6 +258,9 @@ Start any message with `+smart` or `+fast` (or `+default`) to switch the
 thread's model and send the rest, e.g. `@Computer +smart redesign the router`
 or `@Computer +fast ch bump the deps`. People pick a tier, not a model: the tiers
 map to ids in `src/tiers.ts` (smart → Fable, fast → Sonnet, default → `MODEL`).
+On a computer, a new thread's first message may start with `+codex` to run the
+thread on Codex instead of Claude Code (or `+claude`, the default); with no
+OpenAI credential configured the bot says so and starts nothing.
 A new session's first reply is a small header with the thread's id
 (the fork directory and `sp/<id>` branch suffix, in a copyable form) and a
 pointer to `!help`; `!status` repeats the id.
@@ -343,7 +346,27 @@ In production the gateway is the backend, managed-agents
 run on Azure VMs provisioned by `deploy/vm/provision.sh` (Ubuntu 24.04; EC2
 also works), one per organization, sized to its plan. Runners are `systemd --user` units, and the runner user cannot
 reach the cloud metadata server. Hosts take new code as a release bundle
-(`deploy/bundle.sh`) and update themselves (`deploy/vm/self-update.sh`).
+(`deploy/bundle.sh <out.bundle>`: the committed `computer/` tree, with
+oc-modelproxy built from it) and update themselves (`deploy/vm/self-update.sh`).
+
+No model credential is in a session's environment, files or logs (work 097).
+Every model request goes through oc-modelproxy (`modelproxy/`), which
+`deploy/vm/modelproxy.sh` installs on each provision from the release: the
+binary as `/usr/local/libexec/oc-modelproxy`, the shipped profiles into
+`/etc/oc-modelproxy/profiles.d/`, and its socket-activated units. A session's
+model client holds only a placeholder; the host binds each runner to its
+session's profile and credential, which the gateway sends as `models`. The
+self-hosted gateway takes them from `MODEL_PROFILE` + `MODEL_TOKEN` (any
+profile in `profiles.d`), else `CLAUDE_CODE_OAUTH_TOKEN` (`claude-oauth`),
+else `ANTHROPIC_API_KEY` (`anthropic-key`), and `OPENAI_API_KEY` for `+codex`
+threads (`openai-key`). A host whose runners are not systemd units (a laptop)
+uses the proxy with `-identity=single`, one session at a time:
+
+```sh
+cd modelproxy && go build -o /tmp/mp/oc-modelproxy . && /tmp/mp/oc-modelproxy -identity=single -profiles ./profiles \
+  -api-socket /tmp/mp/api.sock -control-socket /tmp/mp/control.sock -bindings-file ""
+# the host: SP_MODEL_PROXY=/tmp/mp/control.sock SP_MODEL_SOCKET=/tmp/mp/api.sock
+```
 
 The Node gateway in `src/gateway/` is the self-hosted alternative and what the
 laptop and the e2e checks use; the `Dockerfile` packages it as a container.
@@ -398,7 +421,7 @@ credentials are written there for you.
 | `MODEL` | `claude-opus-5-5` | the `default` tier; per thread: `+smart`/`+fast`, `!model <tier|id>` |
 | `STREAMING` | on | `off` forces the `chat.update` renderer |
 | `FLUSH_MS` | `600` | minimum interval between timed native stream flushes; the first update after an idle gap flushes immediately |
-| `SP_PROMPT_CACHE_TTL` | `1h` on Anthropic's API; Claude Code's default (`5m` on a key) through `anthropicBaseUrl` | Claude Code's prompt cache TTL, main conversation and subagents (`5m` or `1h`; sets `CLAUDE_CODE_PROMPT_CACHE_TTL` and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`); also passed from a host to its runners. Through an Anthropic-compatible endpoint (an organization's OpenRouter key) OpenRouter documents `cache_control.ttl: "1h"` on its Messages API, but it is untested with Claude Code (which also sends the `extended-cache-ttl-2025-04-11` beta), so it is opt-in there |
+| `SP_PROMPT_CACHE_TTL` | the model profile's Claude Code `promptCacheTtl` (`1h` on the shipped Anthropic profiles), else Claude Code's default | Claude Code's prompt cache TTL, main conversation and subagents (`5m` or `1h`; sets `CLAUDE_CODE_PROMPT_CACHE_TTL` and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`); also passed from a host to its runners, and over any profile's. Through an Anthropic-compatible endpoint (an organization's OpenRouter key) OpenRouter documents `cache_control.ttl: "1h"` on its Messages API, but it is untested with Claude Code (which also sends the `extended-cache-ttl-2025-04-11` beta), so its profile does not ask for it |
 | `SP_PROMPT_GUARD` | on | `off` stops withholding copies of Calvin's own prompt from what it posts (`runner/prompt-guard.ts`), for a deployment that works on Calvin itself; also passed from a host to its runners |
 | `SP_COMPACT_AT` | `120000` | after a turn whose last request carried more than this many tokens (or after 40 min idle above 60k), the conversation is compacted between turns in a fork that is swapped in only if no message arrived meanwhile (`runner/harness/claude/shadow.ts`, work 068 1c); `0` turns it off. Also passed from a host to its runners |
 | `SP_CONTEXT_WINDOW` | `183000` | Claude Code's own auto-compact window in tokens, the backstop for a single turn that grows past the fork compaction (sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; `0` leaves Claude Code's default, the model's window, 1M for Opus here). Claude Code compacts inside the turn, which waits, once a request would carry about the window minus 33k (150k at the default; the window is floored at 100k). Also passed from a host to its runners |
@@ -420,9 +443,9 @@ environment, which any session can change.
 | `SP_FORK_RETENTION_DAYS` | `14` | idle forks with nothing unpushed are removed after this |
 | `SP_ARTIFACTS_IDLE_HOURS` | `24` | forks idle this long (no live runner) lose their git-ignored build and dependency directories (`node_modules`, Rust `target`, `.venv`, `.next`, caches; `src/workspaces/idle.ts`); an install or build restores them |
 | `SP_POOL_SIZE` | `2` | spare runners a host keeps with Claude Code parked, so a new session's first message skips the runner's launch and Claude Code's start (`host/pool.ts`, work 069). A spare is claimed into the session's fork; resumed sessions, and hosts without a prepared workspace for the owner, start cold. `0` turns the pool off |
-| `SP_MODEL_PROXY` | unset (every session on the organization's credentials) | oc-modelproxy's control socket (`/run/oc-modelproxy/control.sock`): sessions may run on their owner's Claude subscription (work 077); set only on a host running as `sp-host` |
+| `SP_MODEL_PROXY` | unset (the model proxy is down: no session starts, logged as an error) | oc-modelproxy's control socket (`/run/oc-modelproxy/control.sock`); the host binds every runner there to its session's model profile (work 097, `host/model-access.ts`). Required |
 | `SP_RUNNER_USER` | unset (runners run as the host's user) | start runners as this user through `sudo -n -u` (work 077, `host/runner-user.ts`), for a host running as `sp-host` |
-| `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | the proxy's socket a subscription session's Claude Code uses (`ANTHROPIC_UNIX_SOCKET`); passed to runners |
+| `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | the proxy's API socket, which runners' model clients connect to; sent to runners in their credentials' `model.endpoint` |
 | `SP_CODEX_BIN` | `/usr/local/lib/codex/bin/codex` | the pinned Codex CLI a `harness: 'codex'` session runs as `codex app-server` (work 082); passed to runners |
 | `SP_CODEX_PEER_CHECK` | on | `off` lets any local process use a Codex session's model loopback; only where runners are not systemd units (a laptop). On, a connection is forwarded only when a process in the runner's own cgroup holds it, and refused if the cgroup cannot be read. Read from the host's own environment only: runners always get `on` unless the host runs with `off` |
 
@@ -445,7 +468,7 @@ environment, which any session can change.
 | `SP_VERSION` | `dev` | the release's commit, in `ready.server.version` (the unit reads it from `.sp-version.env`) |
 | `SP_REGION` | unset (`null`) | `ready.server.region` |
 
-Gateway variables are documented at the top of `src/gateway/main.ts`.
+Gateway variables, the model credentials among them, are documented at the top of `src/gateway/main.ts`.
 
 ## Development
 
@@ -462,7 +485,7 @@ of them need a real Slack workspace.
 |---|---|
 | `npx tsx src/dev/fake-run.ts "<prompt>" ["<steer sent 8s later>"]` | A real agent session against a fake Slack client. Prints every Slack API call with a timestamp and approves prompts automatically. The fast loop for event mapping, batching and steering. |
 | `npx tsx src/dev/e2e-check.ts [--keep]` | The whole split deployment on one machine, with fake Slack and GitHub APIs served by the check itself: `/setup`, mention → fork → runner → turn, thread replies, mid-turn messages, a permission button, host and gateway restarts under a live runner, GitHub tokens through the credential helper and `gh` shim, a push webhook. Prints the latency rows it can measure. Scratch space is `/tmp/spe2e`. |
-| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway: spawn, forwarding, token relay, restart with rediscovery, idle exit. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn, before and after a host restart. |
+| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway, with oc-modelproxy built from `modelproxy/` (needs Go and openssl; Linux) and run with `-identity=single`: spawn, forwarding, token relay, restart with rediscovery, idle exit. `--claude` makes the first turn real, on `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` as the gateway routes them. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn (its request held by a profile whose upstream never answers), before and after a host restart. |
 | `npx tsx src/dev/workspaces-check.ts [--real]` | Clones, forks, housekeeping and git auth against local bare repositories. |
 | `npx tsx src/dev/gateway-check.ts`, `setup-check.ts` | Gateway routing and `/setup`. |
 | `npx tsx src/dev/links-check.ts` | Linked threads against a fake workspace: public, private, DM, guest and Slack Connect cases, other workspaces, caps, and injected instructions in linked text. |

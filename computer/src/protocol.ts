@@ -18,9 +18,11 @@ import type { Tier } from './tiers.js';
 import type { Linked } from './links.js';
 import type { Batch } from './telemetry/emitter.js';
 import type { ApiDelivery, GatewayToHostV4, HostToGatewayV4, HostToRunnerV4, JournalReport, RunnerApi, WireConfig } from './protocol-api.js';
+import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel, RunnerRefused } from './protocol-model.js';
 import type { WorkspaceDefinition } from './protocol-workspace.js';
 
 export * from './protocol-api.js';
+export * from './protocol-model.js';
 export * from './protocol-workspace.js';
 
 // 2 (work 077): the hello carries `features`; `deliver.model`, `model`, `probe`/`probed`,
@@ -33,10 +35,10 @@ export * from './protocol-workspace.js';
 // 4 (work 084): the streaming session API (protocol-api.ts); a session may have no Slack thread and
 // carries its `cs_` id; a person may have no Slack id. All optional: a v3 frame reads unchanged, and
 // the gateway sends v4 frames only to a host that says 4.
-export const PROTOCOL_VERSION = 4;
-
-/** Whose subscription a route spends (work 082). Absent wherever it is optional: anthropic. */
-export type ModelProvider = 'anthropic' | 'chatgpt';
+// 5 (work 097): model routes are profiles of the host's model proxy (protocol-model.ts). The hello
+// lists `profiles` in place of `features`; the earlier route modes, `probe`/`probed` and
+// `model-health` are gone. A host at 5 speaks nothing older about models.
+export const PROTOCOL_VERSION = 5;
 
 /** Which agent runs a session's turns (work 082). Absent: claude. */
 export type HarnessName = 'claude' | 'codex';
@@ -108,7 +110,7 @@ export interface SessionSpec {
   sdkSessionId?: string;
   /** Set once the host forked; present means the fork exists. */
   forkPath?: string;
-  /** Work 082: the agent that runs its turns; absent = claude. `codex` comes only with a chatgpt subscription route. */
+  /** Work 082: the agent that runs its turns; absent = claude. `codex` needs a route whose profile serves Codex. */
   harness?: HarnessName;
 }
 
@@ -200,59 +202,11 @@ export interface HostCredentials {
   slackBotToken: string;
   slackBotUserId: string;
   teamId?: string;
-  /** Exactly one of these. */
-  claudeOAuthToken?: string;
-  anthropicApiKey?: string;
   /**
-   * With anthropicApiKey: an Anthropic-compatible endpoint the key belongs to
-   * (work 052: the organization's metered model key, https://openrouter.ai/api).
-   * The runner sets ANTHROPIC_BASE_URL and passes the key as ANTHROPIC_AUTH_TOKEN.
+   * Host → runner only (work 097, C4): the session's route as its runner knows it, or why there is none it can run on.
+   * Absent: no change (the host does not know the route yet, or the proxy is down).
    */
-  anthropicBaseUrl?: string;
-  /** Work 077: the session runs on its owner's subscription through the proxy; set only with no Claude fields. */
-  claudeSubscription?: ClaudeSubscription;
-}
-
-/**
- * Which model credential a session runs on (work 077). `subscription`: its
- * owner's Claude Pro/Max seat, or (work 082, `provider: 'chatgpt'`) their
- * ChatGPT plan, through the VM's oc-modelproxy; the token goes to the proxy
- * only, never to a runner. A chatgpt route's `fingerprint` names the owner
- * and account, not the token (credential-fingerprint.ts), so a refreshed
- * token is the same credential and the proxy swaps it in place.
- * `managed`: the delivery's (or the welcome's) `credentials`, as before 077.
- * `refuse`: only on `model` pushes.
- */
-export type ModelRoute =
-  | {
-      mode: 'subscription';
-      /** Absent: anthropic. */
-      provider?: ModelProvider;
-      owner: string;
-      token: string;
-      fingerprint: string;
-      /** chatgpt: required (the proxy sends it upstream as `chatgpt-account-id`). */
-      accountId?: string;
-      maxModel?: string;
-    }
-  | { mode: 'managed' }
-  | { mode: 'refuse'; reason: string };
-
-/** A subscription's usage windows, as Anthropic's rate-limit headers and /api/oauth/usage give them. */
-export interface ModelUsage {
-  fiveHourPct?: number;
-  fiveHourReset?: number;
-  sevenDayPct?: number;
-  sevenDayReset?: number;
-}
-
-/** What a runner on a subscription knows of it: never the token. */
-export interface ClaudeSubscription {
-  owner: string;
-  fingerprint: string;
-  maxModel?: string;
-  /** Work 082: whose subscription the fingerprint is (absent: anthropic). The field keeps its v2 name for wire compatibility. */
-  provider?: ModelProvider;
+  model?: RunnerModel | RunnerRefused;
 }
 
 /** A session asks for a new thread to run work in parallel (work 047). */
@@ -365,11 +319,8 @@ export type TokenKind = 'github' | 'opencomputer' | 'automation-repo';
 
 /** Sent by the host. The host authenticates with `Authorization: Bearer <host token>` on the upgrade. */
 export type HostToGateway =
-  /**
-   * `features`: `model-proxy` once this host runs as sp-host with oc-modelproxy's control socket up (work 077);
-   * `model-proxy/chatgpt` too when that proxy's own hello lists `chatgpt` among its providers (work 082).
-   */
-  | { t: 'hello'; protocol: number; hostId: string; version: string; sessions: SessionReport[]; features?: string[]; journals?: JournalReport[] }
+  /** `profiles` (work 097): the model proxy's, while the host is connected to it; a change re-sends the hello. */
+  | { t: 'hello'; protocol: number; hostId: string; version: string; sessions: SessionReport[]; profiles?: ModelProfile[]; journals?: JournalReport[] }
   | { t: 'session'; report: SessionReport }
   | { t: 'workspace'; status: WorkspaceStatus }
   /**
@@ -392,17 +343,8 @@ export type HostToGateway =
   | { t: 'unpreview'; id: string; from: string; req: { name: string } }
   /** The model provider refused session `sessionKey`'s turn for credits (a 402): the gateway tells the thread how to get more. */
   | { t: 'out-of-credits'; sessionKey: string }
-  /** Work 077: answers `probe`. `error` is a class only ('timeout' | 'proxy_unavailable' | 'error'), never an error's text. */
-  | { t: 'probed'; id: string; result?: { status: number; usage?: ModelUsage }; error?: string }
-  /** A session's route took effect at the proxy (subscription, refuse) or at a runner start (managed). */
-  | { t: 'model-bound'; sessionKey: string; mode: ModelRoute['mode']; fingerprint?: string }
-  /** A subscription's health, on change and at most once a minute otherwise; `unauthorized` is one upstream 401. */
-  /** Work 082: `provider` is whose upstream answered (absent: anthropic); a chatgpt `unauthorized` asks the gateway for a refreshed token. */
-  | { t: 'model-health'; sessionKey: string; fingerprint: string; provider?: ModelProvider; status: 'ok' | 'limited' | 'unauthorized' | 'error';
-      limitedUntil?: number; errorClass?: string; usage?: ModelUsage }
-  /** The seat refused `model`; the session now runs on `fallbackTo`. */
-  | { t: 'model-denied'; sessionKey: string; model: string; fallbackTo: string }
   | { t: 'reply'; id: string; ok: boolean; error?: string }
+  | HostToGatewayModel
   | HostToGatewayV4;
 
 export type GatewayToHost =
@@ -415,6 +357,8 @@ export type GatewayToHost =
       t: 'welcome';
       protocol: number;
       credentials: HostCredentials;
+      /** Work 097: the route of a session whose own delivery carries none, by harness. */
+      models?: ModelRoutes;
       people: Person[];
       definition?: WorkspaceDefinition;
       telemetryCredential?: string;
@@ -433,21 +377,14 @@ export type GatewayToHost =
    * keep this identity and reconnect as it. Refused by any other host.
    */
   | { t: 'assign'; organizationId: string; hostToken: string; gatewayUrl: string }
-  /** Credentials changed (fresh Slack install, new Claude token): replaces the welcome's; the host forwards to runners. */
-  | { t: 'credentials'; credentials: HostCredentials }
+  /** Credentials changed (fresh Slack install, a new model credential): replaces the welcome's; the host forwards the Slack ones to runners and rebinds sessions on changed `models`. */
+  | { t: 'credentials'; credentials: HostCredentials; models?: ModelRoutes }
   /** Start the runner if needed (fork if no forkPath, resume if sdkSessionId), then deliver. */
   /** Per-delivery credentials let a multi-tenant gateway keep workspace tokens scoped to one session. */
-  /** `model` (work 077): the session's route; absent means managed (gateways before 077). */
+  /** `model` (work 097): the session's route; absent: the one it had, else `models[harness]`. */
   /** Work 084: `epoch` and `lastSeq` seed the session's journal as on `start` (absent: 1 and 0, or the local journal's). */
   | { t: 'deliver'; id: string; session: SessionSpec; msg: Delivery; credentials?: HostCredentials; secrets?: SessionSecret[]; trace?: TraceContext;
       model?: ModelRoute; epoch?: number; lastSeq?: number }
-  /** Work 077: a session's route changed (pause, limit, revoke, policy); applied by the proxy or at the runner's next start. */
-  | { t: 'model'; sessionKey: string; model: ModelRoute }
-  /**
-   * Work 077: validate a Claude token (GET /api/oauth/usage through the proxy); answered by `probed`.
-   * Work 082: `provider`/`accountId` for a ChatGPT token (absent: anthropic).
-   */
-  | { t: 'probe'; id: string; token: string; provider?: ModelProvider; accountId?: string }
   /** A session's secrets changed: the host passes them to its runner, if one is running. */
   | { t: 'secrets'; sessionKey: string; secrets: SessionSecret[] }
   /** A button click on a prompt the session's runner posted. */
@@ -464,6 +401,7 @@ export type GatewayToHost =
   | { t: 'previewed'; id: string; result?: PreviewResult; error?: string }
   | { t: 'secret-asked'; id: string; error?: string }
   | { t: 'reply'; id: string; ok: boolean; error?: string }
+  | GatewayToHostModel
   | GatewayToHostV4;
 
 // ---------------------------------------------------------------- host ⇄ runner
@@ -492,8 +430,8 @@ export interface SpareReport {
   /** Parked and claimable; false while (re)starting its Claude Code. */
   ready: boolean;
   version: string;
-  /** Fingerprint of the Claude credential it was started with (credential-fingerprint.ts). */
-  credential?: string;
+  /** What its harness was started for (model-key.ts `spareKind`, design C6): a session with the same kind may claim it. */
+  kind?: string;
 }
 
 export type HostToRunner =

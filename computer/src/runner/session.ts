@@ -148,7 +148,7 @@ export class Session {
   private addressed = true;
   /** The prompt a typed reply answers (prompts.ts), by prompt id. */
   openPrompt?: string;
-  maxModel?: string; // a Claude subscription's ceiling (work 077, subscription.ts): `!model` stays at or below it
+  maxModel?: string; // the route's model ceiling (model-access.ts): `!model` stays at or below it
   private costUsd = 0;
   private ctxTokens = 0;
   /** Whether the current model message already arrived as deltas. */
@@ -271,8 +271,8 @@ export class Session {
   /**
    * Start the harness before the first message, so its start-up (230–450 ms)
    * is off the turn. It copies the environment at spawn, so call it once the
-   * Claude credentials are in place; `renew` replaces a harness no message
-   * went into yet (the credentials changed since it started).
+   * model environment is set (runner/model-access.ts); `renew` replaces a
+   * harness no message went into yet (that environment changed since it started).
    */
   prewarm(renew = false) {
     if (renew) this.shadow.cancel();

@@ -18,6 +18,8 @@ export interface HostFigures {
   since_gateway_message_s?: number;
   telemetry_spooled_bytes: number;
   telemetry_dropped: number;
+  /** Seconds the model proxy's control socket has been down (work 097); 0 while up. A host's health fails past 30. */
+  model_proxy_down_s?: number;
 }
 
 interface CpuTimes {

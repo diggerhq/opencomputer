@@ -33,8 +33,8 @@ const env = process.env;
 const STATE = path.resolve(import.meta.dirname, '..', 'state.json');
 const DEFAULT_MODE = (env.PERMISSION_MODE ?? 'bypassPermissions') as PermissionMode;
 const PORT = Number(env.PORT ?? 3170);
-// Prompt cache TTL for Claude Code: 1 hour on Anthropic's own API (runner/cache-ttl.ts).
-applyPromptCacheTtl(env, env.SP_PROMPT_CACHE_TTL, presetTtls(env));
+// Prompt cache TTL for Claude Code: SP_PROMPT_CACHE_TTL, else Claude Code's default (no model profile here; runner/cache-ttl.ts).
+applyPromptCacheTtl(env, { explicit: env.SP_PROMPT_CACHE_TTL, preset: presetTtls(env) }, undefined);
 // Compaction: between turns in a fork (runner/harness/claude/shadow.ts), Claude Code's own as the backstop.
 configureCompaction(env);
 

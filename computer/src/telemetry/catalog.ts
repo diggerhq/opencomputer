@@ -87,28 +87,23 @@ export const CATALOG = {
   'pool.spare_evicted': host('reason'),
   // A spare that exited before it was ever ready (its Claude Code did not start).
   'pool.spare_failed': host(),
-  // A delivery that could have taken a spare and started cold. `reason`: none, credential, refused, timeout, gone (the spare exited first).
+  // A delivery that could have taken a spare and started cold. `reason`: none, kind (none of the session's spare kind), refused, timeout, gone (the spare exited first).
   'pool.spare_missed': host('reason'),
-  // Claude subscriptions (work 077): oc-modelproxy's events, relayed by the host from its control socket.
-  // A ChatGPT Responses request adds `first_output_ms` (headers written → its first output item; `ttfb_ms` ends at
-  // response.created) and the `service_tier` it was served on, both read from its stream (modelproxy/responses.go).
-  // Over Codex's WebSocket each response is one (route responses, `transport` websocket, `prewarm` for its warm-up) and the
-  // connection one more (route responses_ws, `responses` it carried, `closed`: idle | rebind | drain) (modelproxy/websocket.go).
-  'model.request': host('status', 'route', 'stream', 'overhead_us', 'ttfb_ms', 'first_output_ms', 'service_tier', 'fingerprint', 'swapped', 'limit_type',
-    'transport', 'prewarm', 'responses', 'closed'),
+  // The model proxy's events (work 097, computer/modelproxy/README.md), relayed by the host from its control socket;
+  // the envelope's `provider` dimension is the event's profile. A Responses request adds `first_output_ms` (headers
+  // written → its first output item) and the `service_tier` it was served on. Over a WebSocket each response is one
+  // (`transport` websocket, `prewarm` for its warm-up) and the connection one more (`responses` it carried, `closed`).
+  'model.request': host('status', 'route', 'stream', 'overhead_us', 'ttfb_ms', 'first_output_ms', 'service_tier', 'key', 'swapped',
+    'conn_wait_ms', 'conn_reused', 'transport', 'prewarm', 'responses', 'closed'),
   'model.held': host('held_ms', 'released'),
-  'model.denied': host('reason', 'route', 'bound_provider'),
+  'model.denied': host('reason', 'route', 'suppressed'),
   'model.proxy_started': host('version', 'bindings'),
-  // A unit's credential bound, swapped, released or refused; `mode`, `fingerprint` as the seat's.
-  'model.binding': host('action', 'unit', 'mode', 'fingerprint'),
-  // Work 082: a session's route was for a provider the connected proxy does not list (a proxy before 082 would have
-  // read it as anthropic); the host refused it instead of binding. The `provider` dimension is the route's.
-  'model.provider_refused': host('unit'),
-  // Work 082: a session's live runner runs another harness than its route (`at: 'route'`) or delivery (`at: 'delivery'`)
-  // needs; the host refuses the route to it and restarts the session on `to`. The `harness` dimension is the runner's.
-  'model.harness_switch': host('to', 'at'),
+  // A caller's credential bound, released or refused (`code`); `key` names the credential, never its value.
+  'model.binding': host('action', 'caller', 'mode', 'key', 'code'),
+  // Work 097: the proxy refused a session's bind (`code`); the host bound the caller as refuse instead. `provider` is the profile.
+  'model.profile_refused': host('caller', 'code'),
   // Upstream pool gauges every minute, counters since the previous one.
-  'model.pool': host('open_conns', 'idle_conns', 'active_streams', 'warm_conns', 'idle_pool_miss', 'warm_hits', 'warm_failed', 'dials', 'bindings', 'dropped_messages'),
+  'model.pool': host('open_conns', 'idle_conns', 'active_streams', 'idle_pool_miss', 'dials', 'bindings', 'dropped_messages'),
   // The runner stepped a subscription session's model down after the seat refused it.
   'model.downgraded': runner('from', 'to'),
   // A spare became this session's runner; `duration_ms` is the claim's round trip.
@@ -132,6 +127,7 @@ export const CATALOG = {
     'since_gateway_message_s',
     'telemetry_spooled_bytes',
     'telemetry_dropped',
+    'model_proxy_down_s',
   ),
   // ---------------------------------------------------------------- host: the computer API (work 084 instrumentation)
   // /tmp/build084/instrumentation-catalog.md (v2) is the contract (blue mirrors it). One event per unit of work, never a

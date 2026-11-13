@@ -649,11 +649,13 @@ bash "$SP_CURRENT/deploy/vm/grow-data.sh" install
 # (deploy/vm/self-update.sh). A no-op on hosts without /root/calvin-computer.env.
 bash "$SP_CURRENT/deploy/vm/self-update.sh" install
 
-# oc-modelproxy (work 077): runners reach their owner's Claude subscription
-# through it. Installed from this release (CI built it; deploy/bundle.sh ships it); inert until the host runs as sp-host
-# (deploy/vm/sp-host.sh migrate). Never fails the provision.
+# oc-modelproxy (work 097): every session reaches its model through it, and no
+# session starts without it. Installed from this release (deploy/bundle.sh
+# builds the binary) after a check of the profiles it would serve; a release
+# that fails it leaves the installed proxy serving, and a computer without one
+# starts no session until a release passes.
 AGENT_USER="$AGENT_USER" SP_CURRENT="$SP_CURRENT" bash "$SP_CURRENT/deploy/vm/modelproxy.sh" install \
-  || warn "oc-modelproxy not installed; sessions stay on the organization's credentials"
+  || warn "oc-modelproxy not updated: the installed one, if any, keeps serving; without one no session starts"
 
 # The host agent: a system service running as the agent user. KillMode is the
 # default (control-group) on purpose: runners are NOT in this unit's cgroup

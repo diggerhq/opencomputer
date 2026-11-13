@@ -26,10 +26,9 @@ export const ERROR_TYPES = [
   'launch',
   'socket',
   'invalid_message',
-  // oc-modelproxy denials (work 082): a WebSocket upgrade, a ChatGPT seat at its in-flight cap, a binding used on another provider's route
+  // the model proxy's (computer/modelproxy): a WebSocket upgrade, a credential at its concurrency cap
   'websocket',
-  'account_inflight',
-  'provider_mismatch',
+  'concurrency',
   'unknown',
 ] as const;
 export const PATHS = ['warm', 'new', 'resume', 'prewarmed'] as const;

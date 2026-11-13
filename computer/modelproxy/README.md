@@ -57,7 +57,7 @@ Any Anthropic-compatible or Responses-compatible API is one more entry:
 | `report` | Globs of response header names sent to the binder with each `observed`. |
 | `concurrency` | `{ "key": "{variable}", "limit": n }`: a cap on requests in flight across every caller whose binding expands `key` alike. Over it: 429, `Retry-After: 1`. |
 | `websocket` | `false` refuses the profile's WS routes with 426, so clients go on over HTTP. |
-| `harness` | Per harness name, an object passed to the binder in `hello`; the proxy does not read it. It is where a profile says how each model client is configured for it. |
+| `harness` | Per harness name, an object passed to the binder in `hello`; the proxy does not read it. It is where a profile says how each model client is configured for it: Claude Code reads `{ "tokenEnv": "ANTHROPIC_API_KEY" \| "ANTHROPIC_AUTH_TOKEN" \| "CLAUDE_CODE_OAUTH_TOKEN", "promptCacheTtl"?: "1h", "downgradeOnModelRefusal"?: true }` (the variable it sends the placeholder in, its prompt cache TTL, and whether a refused model steps down a family), Codex `{}`; anything else in them is malformed, and a computer's runner refuses the turn. |
 | `errors` | Texts replacing the proxy's own: `require`, `notReady`, `refused`, `refusedPrefix`, `unreachable`, `concurrency`. |
 
 Per route:

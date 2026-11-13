@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 import { encodeActionId, type GatewayToHost, type HostToGateway, type SlackPerson } from '../protocol.js';
+import type { ModelRoutes } from '../protocol-model.js';
 import { Store } from '../gateway/db.js';
 import { Hub } from '../gateway/hosts.js';
 import { createRouter, type Msg } from '../gateway/routing.js';
@@ -48,16 +49,19 @@ store.putPerson(owner);
 store.putHost('vm-1', 'issued-token');
 const setupToken = issueHostToken(store.db, 'vm-2');
 let botToken = 'xoxb-fake';
+const claudeRoute = { mode: 'profile', profile: 'anthropic-key', vars: { token: 'fake-key' }, key: 'k-claude' } as const;
+const models: ModelRoutes = { claude: claudeRoute };
 const hub = new Hub({
   store,
   tokens: ['static-token'],
   checkToken: (t) => checkHostToken(store.db, t),
-  credentials: () => ({ slackBotToken: botToken, slackBotUserId: BOT, claudeOAuthToken: 'sk-fake' }),
+  credentials: () => ({ slackBotToken: botToken, slackBotUserId: BOT }),
+  models: () => models,
   mintToken: async () => {
     throw new Error('GitHub App not configured');
   },
 });
-const router = createRouter({ store, hub, mode: 'bypassPermissions' });
+const router = createRouter({ store, hub, mode: 'bypassPermissions', models: () => models });
 const server = createServer((_, res) => res.writeHead(404).end());
 hub.attach(server);
 await new Promise<void>((ok) => server.listen(0, ok));
@@ -114,12 +118,14 @@ check('issued token accepted', await host.opened());
 host.hello();
 const welcome = await host.next('welcome');
 check('welcome carries credentials and people', welcome?.credentials.slackBotToken === 'xoxb-fake' && welcome.people[0]?.dir === 'owner', welcome);
+check('welcome carries the model routes', JSON.stringify(welcome?.models) === JSON.stringify({ claude: claudeRoute }), welcome?.models);
 
 // 1b. A fresh install pushes credentials instead of dropping the host
 botToken = 'xoxb-new';
 hub.refreshCredentials();
 const cr = await host.next('credentials');
 check('credentials pushed after an install, host stays connected', cr?.credentials.slackBotToken === 'xoxb-new' && host.ws.readyState === WebSocket.OPEN, cr);
+check('credentials carry the model routes', JSON.stringify(cr?.models) === JSON.stringify({ claude: claudeRoute }), cr?.models);
 
 // 2. Allowlist
 calls.length = 0;
@@ -201,6 +207,7 @@ check('DM starts a session', dm?.session.channel === 'D1' && dm.session.kind ===
 await route(msg({ text: `<@${BOT}> ch build a thing` }), true);
 const cc = await host.next('deliver');
 check('ch → code channel session', cc?.session.key === 'C_CODE' && cc.session.kind === 'channel' && cc.msg.text === 'build a thing', cc?.session);
+
 
 // 9. Button click routed by decodeActionId; stop button
 await router.action(encodeActionId(`C1:${first.ts}`, 'pr7', 'allow'), owner.slackUserId, client, 'C1');
