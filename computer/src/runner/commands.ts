@@ -86,7 +86,7 @@ export async function runCommand(s: CommandHost, cmd: string | undefined, arg: s
 async function restart(s: CommandHost) {
   if (!s.hooks.restart) return s.say('`!restart` works on a hosted runner; here, restart the process');
   const latest = latestRelease();
-  // Restart even on the newest version: a new agent process also picks up rotated Claude credentials.
+  // Restart even on the newest version: a new agent process also starts from a clean environment.
   const to = latest && latest !== bootCommit ? ` → \`${latest}\`` : '';
   await s.say(
     s.isBusy

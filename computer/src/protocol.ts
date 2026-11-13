@@ -377,7 +377,7 @@ export type GatewayToHost =
    * keep this identity and reconnect as it. Refused by any other host.
    */
   | { t: 'assign'; organizationId: string; hostToken: string; gatewayUrl: string }
-  /** Credentials changed (fresh Slack install, new Claude token): replaces the welcome's; the host forwards to runners. */
+  /** Credentials changed (fresh Slack install, a new model credential): replaces the welcome's; the host forwards the Slack ones to runners and rebinds sessions on changed `models`. */
   | { t: 'credentials'; credentials: HostCredentials; models?: ModelRoutes }
   /** Start the runner if needed (fork if no forkPath, resume if sdkSessionId), then deliver. */
   /** Per-delivery credentials let a multi-tenant gateway keep workspace tokens scoped to one session. */
