@@ -24,14 +24,12 @@ import { log } from '../log.js';
 import type { HarnessEvent } from './harness/types.js';
 import type { Session } from './session.js';
 
-/** oc-modelproxy's API socket, where a hosted computer's Codex (through its loopback) and subscription Claude Code reach the model. */
-export const MODEL_SOCKET = '/run/oc-modelproxy/api.sock';
+export { MODEL_SOCKET } from '../protocol.js';
 
 export type Route = 'managed' | 'subscription';
 
 /** The route `c` carries; undefined for an update with no Claude part (Slack only). */
-export const routeOf = (c: HostCredentials): Route | undefined =>
-  c.claudeSubscription ? 'subscription' : c.claudeOAuthToken || c.anthropicApiKey ? 'managed' : undefined;
+export const routeOf = (c: HostCredentials): Route | undefined => (c.claudeOAuthToken || c.anthropicApiKey ? 'managed' : undefined);
 
 /** What runner/main.ts hands the model access. */
 export interface RunnerModelAccessDeps {

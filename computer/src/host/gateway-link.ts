@@ -9,7 +9,7 @@
 //   gateway's to retry, and a reply to a gone gateway is moot.
 // - `redial` drops the link now rather than waiting for a close handshake
 //   (~11 s on the preview) and dials again within 200 ms: for a new identity
-//   (`assign`) or a changed hello (subscriptions.ts).
+//   (`assign`) or a changed hello (model-access.ts).
 // - `url` and `token` are asked at every dial, so an `assign` saved before a
 //   redial is what the next dial uses.
 

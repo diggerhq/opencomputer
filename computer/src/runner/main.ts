@@ -81,7 +81,7 @@ import { Spare } from './harness/claude/spare.js';
 import { claudeSpare } from './harness/claude/harness.js';
 import { effortOf, speedOf } from './model-switch.js';
 import { ensureSkills } from './skills.js';
-import { credentialFingerprint } from '../credential-fingerprint.js';
+import { modelKey } from '../model-key.js';
 import { MODEL_SOCKET } from './model-access.js';
 import { createRunnerModelAccess } from './model-access-impl.js';
 import type { Harness, HarnessKind } from './harness/types.js';
@@ -189,10 +189,8 @@ let botToken = env.SLACK_BOT_TOKEN;
 const claudeCredential = () =>
   [env.CLAUDE_CODE_OAUTH_TOKEN, env.ANTHROPIC_API_KEY, env.ANTHROPIC_AUTH_TOKEN, env.ANTHROPIC_BASE_URL].map((v) => v ?? '').join('\n');
 const hasClaudeCredential = () => !!(env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
-/** The fingerprint of that credential, as the host computes it from the credentials it sends. */
-const claudeFingerprint = () =>
-  credentialFingerprint({ claudeOAuthToken: env.CLAUDE_CODE_OAUTH_TOKEN, anthropicApiKey: env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY,
-    anthropicBaseUrl: env.ANTHROPIC_BASE_URL });
+/** A short hash of that credential for the spare (never the credential). Work 097 step 5b replaces it with the C4 `kind`. */
+const claudeFingerprint = () => modelKey('env', { claude: claudeCredential() });
 
 function applyCredentials(c: HostCredentials) {
   const before = claudeCredential();
@@ -255,7 +253,7 @@ const report = (status: SessionReport['status'] = s!.isBusy ? 'busy' : 'idle'): 
   ...(ss!.harness === 'codex' && { harness: 'codex' as const }), // absent for Claude: its report is unchanged
   ...(tasks.size > 0 && { subagents: tasks.size }), // absent: none (work 084)
 });
-const sendSpare = () => spare && out({ t: 'spare', spare: { id: spec.id!, ready: spare.ready, version: spec.version, credential: spare.credential } });
+const sendSpare = () => spare && out({ t: 'spare', spare: { id: spec.id!, ready: spare.ready, version: spec.version, kind: spare.credential } });
 
 const hooks: SessionHooks = {
   busy: (busy) => {

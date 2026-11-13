@@ -10,7 +10,6 @@ import { createRunnerModelAccess } from './model-access-impl.js';
 const slack = { slackBotToken: 'xoxb', slackBotUserId: 'B1' };
 const managed: HostCredentials = { ...slack, claudeOAuthToken: 'org' };
 const metered: HostCredentials = { ...slack, anthropicApiKey: 'k', anthropicBaseUrl: 'https://x' };
-const onSub: HostCredentials = { ...slack, claudeSubscription: { owner: 'U1', fingerprint: 'fp', maxModel: 'claude-sonnet-5-5' } };
 const denied: HarnessEvent = { t: 'error', kind: 'model', code: 'model_not_found', message: '' };
 
 function setup() {
@@ -40,25 +39,11 @@ describe('noRunnerModelAccess (work 097): the public build, managed credentials 
     expect(env).toEqual(before);
   });
 
-  it('a subscription credential is no Claude part: nothing tunnelled, no switch, the runner keeps what it has', () => {
-    const { env, s, hooks } = setup();
-    const before = { ...env };
-    const a = noRunnerModelAccess({ env, socket: undefined, hooks });
-    expect(a.apply(managed)).toBe('managed');
-    expect(a.apply(onSub)).toBeUndefined();
-    expect(a.route()).toBe('managed');
-    expect(env).toEqual(before);
-    expect(env.ANTHROPIC_UNIX_SOCKET).toBeUndefined();
-    expect(s.maxModel).toBeUndefined();
-    expect(s.info.model).toBe('claude-fable-5-1');
-  });
-
   it('exports what public code shares with the hosted build', () => {
     expect(MODEL_SOCKET).toBe('/run/oc-modelproxy/api.sock');
     expect(routeOf(managed)).toBe('managed');
     expect(routeOf(metered)).toBe('managed');
     expect(routeOf(slack)).toBeUndefined();
-    expect(routeOf(onSub)).toBe('subscription');
   });
 });
 
