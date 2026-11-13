@@ -18,9 +18,11 @@
 //      and the check may read it, not before the lock it holds for LOCK_S is
 //      free, nor is a spare made), a thread's container is left alone, the new
 //      spare is from the new release and image, and it stays through the idle
-//      time that stops the thread it sits beside. Stopped with SIGTERM: the
-//      spare is told to go.
-//   D  SP_POOL_SIZE=0: removes what C's spare left.
+//      time that stops the thread it sits beside. Stopped with SIGTERM while
+//      the spare's runner is frozen (SIGSTOP), so it can heed no request: the
+//      host removes the spare's container, home and run directory itself,
+//      and ends within its stop time.
+//   D  SP_POOL_SIZE=0: finds nothing left of C's spare, and makes none.
 //
 // Invariants:
 // - A first reply is measured only while nothing else starts: the pool is
@@ -378,11 +380,17 @@ export async function spareChecks(k: SpareKit) {
     check(!!(await until(async () => ((await status(g.id())) === 'exited' ? true : undefined), k.idleMs + 40_000)), `idle for ${k.idleMs} ms: the claimed thread's container exited (${Date.now() - idleAt} ms)`);
     await sleep(3000);
     check(stay.length === 1 && (await status(stay[0])) === 'running' && (await parked(stay[0])) && (await spares()).join() === stay[0], `the spare ${stay[0]} outlived the idle time and is still parked, the only one`);
-    // ---- the host stops
+    // ---- the host stops, and its spare's runner answers nothing
+    await podman(['exec', '--user', '0:0', containerName(stay[0]), 'pkill', '-STOP', '-f', '[r]unner-boot']).catch((e) => say(`pkill: ${e.message}`));
+    const frozen = (await podman(['top', containerName(stay[0]), 'stat', 'args'])).split('\n').filter((l) => /runner-boot/.test(l));
+    const stopAt = Date.now();
     await halt('SIGTERM');
-    check(!!(await until(async () => ((await status(stay[0])) !== 'running' ? true : undefined), 20_000)), `host C stopped: its spare was told to go (${await status(stay[0])})`);
+    const stopMs = Date.now() - stopAt;
+    const left = `container ${await status(stay[0])}, home ${(await podman(['volume', 'exists', volumeName(stay[0])]).then(() => 'there', () => 'gone'))}, run directory ${existsSync(sandboxRunFor(k.run, stay[0])) ? 'there' : 'gone'}`;
+    check(frozen.length > 0 && frozen.every((l) => /^T/.test(l.trim())) && host?.signalCode !== 'SIGKILL' && left === 'container none, home gone, run directory gone',
+      `host C stopped in ${stopMs} ms while its spare's runner was frozen (${frozen.map((l) => l.trim().slice(0, 40)).join(' | ')}): the spare left by its container (${left})`);
     await boot('D', { SP_POOL_SIZE: '0', SP_VERSION: NEXT_VERSION, SP_IMAGE: NEXT_IMAGE, SP_IDLE_MS: String(k.idleMs) });
-    check(!!(await until(async () => ((await status(stay[0])) === 'none' && !existsSync(sandboxRunFor(k.run, stay[0])) ? true : undefined), 30_000)), 'the next host removed what was left of it');
+    check((await status(stay[0])) === 'none' && !existsSync(sandboxRunFor(k.run, stay[0])), 'the next host finds nothing of it');
     await sleep(3000);
     check((await spares()).length === 0, 'and with SP_POOL_SIZE=0 it makes none');
     await halt('SIGTERM');

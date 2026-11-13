@@ -249,7 +249,8 @@ const A2 = thread(PAT, 2);
 const B = thread(QUINN, 3, SESSION_ID);
 /** Started by the step 8 checks only. */
 const C = thread(PAT, 4);
-const all = [A1, A2, B, C];
+const E = thread(PAT, 5);
+const all = [A1, A2, B, C, E];
 /** The `cs_` ids the host was told for the Slack threads. */
 const sessions: string[] = [];
 let wire: WireClient | undefined;
@@ -533,7 +534,7 @@ try {
       host = startHost(env);
       return (await until(() => events.slice(n).find((e) => e.t === 'hello'), 90_000)) ? Date.now() - at : undefined;
     },
-  }, A1, A2, B, C);
+  }, A1, A2, B, C, E);
   say(`timings: ${JSON.stringify(times)}`);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
