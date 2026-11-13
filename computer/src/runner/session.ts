@@ -148,7 +148,7 @@ export class Session {
   private addressed = true;
   /** The prompt a typed reply answers (prompts.ts), by prompt id. */
   openPrompt?: string;
-  maxModel?: string; // a Claude subscription's ceiling (work 077, subscription.ts): `!model` stays at or below it
+  maxModel?: string; // the route's model ceiling (model-access.ts): `!model` stays at or below it
   private costUsd = 0;
   private ctxTokens = 0;
   /** Whether the current model message already arrived as deltas. */
