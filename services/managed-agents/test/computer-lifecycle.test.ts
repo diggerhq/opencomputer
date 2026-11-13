@@ -112,6 +112,7 @@ let connected: boolean;
 let readyCalls: number;
 let missingEdge: string[];
 let lifecycle: ComputerLifecycle;
+let selfManaged: boolean;
 
 beforeEach(() => {
   cloud = new FakeCloud();
@@ -120,7 +121,9 @@ beforeEach(() => {
   connected = false;
   readyCalls = 0;
   missingEdge = [];
+  selfManaged = false;
   lifecycle = new ComputerLifecycle({
+    selfManaged: () => selfManaged,
     sql: sqlStorage(),
     cloud: () => cloud,
     missingConfig: () => missingEdge,
@@ -405,5 +408,75 @@ describe("computer lifecycle", () => {
     expect(await lifecycle.park()).toBe(true);
     await settle();
     expect(lifecycle.row()?.state).toBe("parked");
+  });
+});
+
+// Work 105: the operator runs the VM; the lifecycle never calls the cloud.
+describe("self-managed VMs", () => {
+  beforeEach(() => {
+    selfManaged = true;
+  });
+
+  it("is ready at once without a cloud call or an alarm, and is offline until its host connects", async () => {
+    expect(await lifecycle.create(ORG, OPTIONS)).toEqual({ status: 200 });
+    expect(lifecycle.view()).toMatchObject({ state: "ready", connected: false, lastError: null });
+    expect(readyCalls).toBe(1);
+    connected = true;
+    expect(lifecycle.view()).toMatchObject({ state: "ready", connected: true });
+    // Idempotent: a second create changes nothing.
+    expect(await lifecycle.create(ORG, OPTIONS)).toEqual({ status: 200 });
+    expect(readyCalls).toBe(1);
+    expect(cloud.calls).toEqual([]);
+    expect(alarms).toEqual([]);
+  });
+
+  it("needs no platform, only the edge's own settings", async () => {
+    cloud.missingNames = ["AZURE_SUBSCRIPTION_ID"];
+    expect(await lifecycle.missingConfig()).toEqual([]);
+    missingEdge = ["COMPUTER_HOST_TOKEN_KEY"];
+    expect(await lifecycle.create(ORG, OPTIONS)).toMatchObject({ status: 503 });
+    expect(lifecycle.row()).toBeUndefined();
+  });
+
+  it("never parks, wakes, resizes or grows a disk", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    expect(await lifecycle.park()).toBe(false);
+    expect(await lifecycle.wake()).toBe(false);
+    expect(await lifecycle.resize("Standard_D8as_v7")).toMatchObject({ status: 409 });
+    expect(await lifecycle.growDisk(256)).toMatchObject({ status: 409 });
+    await lifecycle.tick();
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: OPTIONS.size, diskGiB: 128 });
+    expect(cloud.calls).toEqual([]);
+    expect(alarms).toEqual([]);
+  });
+
+  it("forgets the computer on delete and leaves the VM alone; create brings it back", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    expect(await lifecycle.delete({ deleteDisk: true })).toEqual({ status: 200 });
+    expect(lifecycle.view()).toBeNull();
+    expect(await lifecycle.create(ORG, OPTIONS)).toEqual({ status: 200 });
+    expect(lifecycle.row()?.state).toBe("ready");
+    expect(cloud.calls).toEqual([]);
+  });
+
+  it("takes over a row the gateway managed before: parked or failed becomes ready, with no step left to run", async () => {
+    selfManaged = false;
+    await lifecycle.create(ORG, OPTIONS);
+    await settle();
+    await lifecycle.park();
+    await settle();
+    expect(lifecycle.row()?.state).toBe("parked");
+    selfManaged = true;
+    cloud.calls = [];
+    alarms = [];
+    expect(await lifecycle.create(ORG, OPTIONS)).toEqual({ status: 200 });
+    expect(lifecycle.row()?.state).toBe("ready");
+    expect(cloud.calls).toEqual([]);
+    expect(alarms).toEqual([]);
+  });
+
+  it("still refuses another organization's computer", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    expect(await lifecycle.create("org_other", OPTIONS)).toMatchObject({ status: 409 });
   });
 });

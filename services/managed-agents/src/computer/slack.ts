@@ -408,4 +408,6 @@ export function joinRequestMessages(input: {
 
 export const WAKING_NOTICE = "Waking your computer, this takes a minute or two; your message is queued.";
 export const RESIZING_NOTICE = "Upgrading your computer to its bigger size — back in a couple of minutes; your message is queued.";
+/** Self-managed VMs (work 105): the gateway cannot start the VM, so it says whose move it is. */
+export const OFFLINE_NOTICE = "Your computer is offline, so this message is waiting. It runs as soon as the computer's VM is started and connects again.";
 export const STARTING_NOTICE = "Setting up your computer. This takes a few minutes the first time; your message is queued.";

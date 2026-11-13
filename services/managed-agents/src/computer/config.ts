@@ -20,6 +20,14 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
   BLUE_ENVIRONMENT?: string;
   COMPUTER_HOST_TOKEN_KEY?: string;
+  /**
+   * Who runs the computers' VMs (work 105). Unset: this gateway, through the
+   * platform Worker (RUNTIMES). "self-managed": the operator creates, sizes
+   * and deletes each organization's VM, and the gateway only accepts its
+   * host's connection: it never creates, parks, wakes, resizes or deletes a
+   * VM, grows no disk and keeps no warm pool.
+   */
+  COMPUTER_VMS?: string;
   /** wss origin the VM dials, e.g. wss://managedagents.opencomputer.dev. */
   COMPUTER_HOST_GATEWAY_URL?: string;
   COMPUTER_DEFAULT_SIZE?: string;
@@ -96,13 +104,24 @@ export class ComputersNotConfigured extends Error {
   }
 }
 
-/** Edge settings a computer needs before it can be created, by name. */
+/** COMPUTER_VMS is "self-managed": the operator runs the VMs, the gateway only accepts their hosts. */
+export function selfManagedVms(env: ComputerEdgeEnv): boolean {
+  return env.COMPUTER_VMS === "self-managed";
+}
+
+/**
+ * Edge settings a computer needs before it can be created, by name. With
+ * self-managed VMs nothing is created: the platform Worker and the URL
+ * written into a new VM are not needed, only what checks a host's token.
+ */
 export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
   const missing: string[] = [];
   if (!env.COMPUTERS) missing.push("COMPUTERS");
-  if (!env.RUNTIMES) missing.push("RUNTIMES");
+  if (!selfManagedVms(env)) {
+    if (!env.RUNTIMES) missing.push("RUNTIMES");
+    if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
+  }
   if (!env.COMPUTER_HOST_TOKEN_KEY) missing.push("COMPUTER_HOST_TOKEN_KEY");
-  if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
   return missing;
 }
 
