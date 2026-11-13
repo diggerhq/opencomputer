@@ -9,16 +9,10 @@ are never applied by Wrangler migrations.
 ## Existing databases
 
 Do not apply `../schema-snapshots/current_schema.sql` to the existing prod database.
-For prod, use the Wrangler migration ledger:
-
-```bash
-cd cloudflare-workers/api-edge
-npx wrangler d1 migrations list opencomputer-prod --remote -c wrangler.prod.toml
-npx wrangler d1 migrations apply opencomputer-prod --remote -c wrangler.prod.toml
-```
-
-The API edge deploy workflow applies pending prod migrations before deploying
-the prod Worker.
+Prod migrations are listed and applied from the private deploy repository
+(`diggerhq/opencomputer-deploy`, `d1-migrations.yml`), which holds the prod
+config. A prod deploy there fails while a migration is pending, except purely
+additive ones, which it applies first.
 
 ## Fresh databases
 
