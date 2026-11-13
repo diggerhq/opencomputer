@@ -75,10 +75,9 @@ export interface HostModelAccessDeps {
 
 export type HostModelAccess = ReturnType<typeof hostModelAccess>;
 
-/** `c` without the Claude fields of protocol 4: no runner gets a credential's value. */
-export function withoutClaude(c: HostCredentials): HostCredentials {
-  const { claudeOAuthToken: _o, anthropicApiKey: _k, anthropicBaseUrl: _u, model: _m, ...slack } = c;
-  return slack;
+/** Only `c`'s Slack fields, whatever else a gateway sent: no runner gets a model credential's value. */
+export function slackOnly({ slackBotToken, slackBotUserId, teamId }: HostCredentials): HostCredentials {
+  return { slackBotToken, slackBotUserId, ...(teamId !== undefined && { teamId }) };
 }
 
 interface Held {
@@ -193,7 +192,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
 
   function forRunner(key: string, c: HostCredentials | undefined, harness = o.runner(key)?.harness ?? 'claude'): HostCredentials | undefined {
     if (!c) return undefined;
-    const slack = withoutClaude(c);
+    const slack = slackOnly(c);
     const route = unknown.has(key) ? undefined : routeOf(key, harness);
     const h = harnessOf(route, harness);
     if (route?.mode !== 'profile' || h === undefined || !proxy.hello) return slack;

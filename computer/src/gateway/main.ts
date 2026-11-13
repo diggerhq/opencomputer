@@ -86,15 +86,11 @@ const purge = () => {
 purge();
 setInterval(purge, 24 * 3600_000).unref();
 
-const credentials = (): HostCredentials => {
-  const claude = get('CLAUDE_CODE_OAUTH_TOKEN');
-  return {
-    slackBotToken: get('SLACK_BOT_TOKEN') ?? '',
-    slackBotUserId: get('SLACK_BOT_USER_ID') ?? '',
-    teamId: get('SLACK_TEAM_ID'),
-    ...(claude ? { claudeOAuthToken: claude } : { anthropicApiKey: get('ANTHROPIC_API_KEY') }),
-  };
-};
+const credentials = (): HostCredentials => ({
+  slackBotToken: get('SLACK_BOT_TOKEN') ?? '',
+  slackBotUserId: get('SLACK_BOT_USER_ID') ?? '',
+  teamId: get('SLACK_TEAM_ID'),
+});
 
 const hub = new Hub({
   store,

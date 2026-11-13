@@ -73,9 +73,6 @@ const collector = http.createServer((req, res) => {
 });
 await new Promise<void>((r) => collector.listen(0, '127.0.0.1', r));
 const COLLECTOR = `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`;
-const hang = http.createServer(() => {});
-await new Promise<void>((r) => hang.listen(0, '127.0.0.1', r));
-const HANG_URL = `http://127.0.0.1:${(hang.address() as net.AddressInfo).port}`;
 const tel = () => batches.flatMap((b) => b.events);
 const telOf = (trace: TraceContext, name: string) => tel().filter((e) => e.trace_id === trace.id && e.event_name === name);
 function mkTrace(): TraceContext {
@@ -107,8 +104,6 @@ wss.on('connection', (c) => {
     if (m.t === 'hello')
       toHost({ t: 'welcome', protocol: 1, credentials: {
         slackBotToken: '', slackBotUserId: '',
-        ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { claudeOAuthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN } : {}),
-        ...(process.env.ANTHROPIC_API_KEY ? { anthropicApiKey: process.env.ANTHROPIC_API_KEY } : {}),
       }, people: [owner] });
     if (m.t === 'token') {
       tokenRequests++;
@@ -131,8 +126,6 @@ const spec: SessionSpec = { key: KEY, kind: 'thread', channel: 'C_CHECK', thread
 const scopedCredentials = {
   slackBotToken: 'xoxb-fake',
   slackBotUserId: 'U_BOT',
-  ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { claudeOAuthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN } : {}),
-  ...(process.env.ANTHROPIC_API_KEY ? { anthropicApiKey: process.env.ANTHROPIC_API_KEY } : {}),
 };
 function startHost(idleMs: number): ChildProcess {
   const { SP_DEFINITION, WORKDIR, SLACK_BOT_TOKEN, ...rest } = process.env;
@@ -259,7 +252,8 @@ try {
   pid = pid5;
 
   // Mid-turn: a model that never answers keeps the runner busy.
-  const hanging = { ...scopedCredentials, claudeOAuthToken: undefined, anthropicApiKey: 'sk-check', anthropicBaseUrl: HANG_URL };
+  // The model proxy's profile, not the credentials, now says where a turn goes: a model that never answers needs one (work 097).
+  const hanging = scopedCredentials;
   const busy = () => reports().at(-1)?.status === 'busy' || undefined;
   const tr6 = mkTrace();
   check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello', ts: '2.6' }, credentials: hanging, trace: tr6 }))?.ok
@@ -315,7 +309,6 @@ try {
   rmSync(path.join(ROOT, 'workspaces', KEY.replace(/[^a-zA-Z0-9]+/g, '-')), { recursive: true, force: true });
   wss.close();
   collector.close();
-  hang.close();
   say(failed ? `${failed} check(s) failed` : 'all checks passed');
   process.exit(failed ? 1 : 0);
 }

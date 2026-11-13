@@ -52,7 +52,7 @@ const hub = new Hub({
   store,
   tokens: ['static-token'],
   checkToken: (t) => checkHostToken(store.db, t),
-  credentials: () => ({ slackBotToken: botToken, slackBotUserId: BOT, claudeOAuthToken: 'sk-fake' }),
+  credentials: () => ({ slackBotToken: botToken, slackBotUserId: BOT }),
   mintToken: async () => {
     throw new Error('GitHub App not configured');
   },

@@ -202,14 +202,6 @@ export interface HostCredentials {
   slackBotToken: string;
   slackBotUserId: string;
   teamId?: string;
-  /**
-   * Protocol 4's Claude credential, which the host never forwards at 5: only the
-   * runner's environment (until work 097 step 5b) and the local gateway (until 5c)
-   * still read these three, and they go with those steps.
-   */
-  claudeOAuthToken?: string;
-  anthropicApiKey?: string;
-  anthropicBaseUrl?: string;
   /** Host → runner only (work 097, C4): the session's route as its runner knows it; absent while it has none. */
   model?: RunnerModel;
 }

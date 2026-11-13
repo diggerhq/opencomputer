@@ -35,7 +35,8 @@ const PROFILES = {
   'codex-only': profile({ codex: {} }),
 };
 const route = (p: string, token = 'sk-test-1', key = `${p}-key`): ModelRoute => ({ mode: 'profile', profile: p, vars: { token }, key });
-const creds: HostCredentials = { slackBotToken: 'xoxb', slackBotUserId: 'B', claudeOAuthToken: 'never-forwarded' };
+// A field no runner may get (protocol 4's Claude credential), as an older gateway would still send it.
+const creds = { slackBotToken: 'xoxb', slackBotUserId: 'B', claudeOAuthToken: 'never-forwarded' } as HostCredentials;
 const welcome = (models: Record<string, ModelRoute>) => ({ t: 'welcome', protocol: 5, credentials: creds, people: [], models }) as unknown as GatewayToHost;
 
 let dir: string;

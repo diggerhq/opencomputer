@@ -273,7 +273,7 @@ const vault = new Vault(store.db, KEY);
 const hub: Hub = new Hub({
   store,
   tokens: [],
-  credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT, claudeOAuthToken: 'x' }),
+  credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT }),
   mintToken: async () => ({ token: 't', expiresAt: new Date().toISOString() }),
   secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
   requestSecret: (from, req) => ui.request(from, req, client),
