@@ -26,6 +26,12 @@
 // each call: a computer can change hands and keep its name. Rows from
 // before the column existed have it NULL and use the derived name, which is
 // what they were created with.
+//
+// Self-managed VMs (work 105, `selfManaged`): the operator runs the VM and
+// this machine never calls the cloud. `create` writes the row `ready` and it
+// stays there: no park, wake, resize, disk growth or alarm step; `delete`
+// only forgets the row. Whether the computer is usable is whether its host
+// is connected (`view().connected`).
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "./cloud-contract.js";
 import { CloudError, type ComputerCloud } from "./cloud.js";
@@ -56,6 +62,8 @@ export interface LifecycleDeps {
   gatewayUrl(organizationId: string): string;
   setAlarm(at: number): Promise<void>;
   hostConnected(): boolean;
+  /** The operator runs the VMs (COMPUTER_VMS=self-managed): the cloud is never called. */
+  selfManaged?(): boolean;
   /** The computer became ready (created or woken): counts as activity, so it is not parked at once. */
   onReady?(): void;
   now?: () => number;
@@ -124,6 +132,7 @@ const MAX_ATTEMPTS = 10;
 const BACKOFF_BASE_MS = 10_000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 const MAX_DISK_GIB = 65_536;
+const SELF_MANAGED = "this gateway does not manage the computer's VM";
 
 export function backoffMs(attempts: number): number {
   return Math.min(BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), BACKOFF_MAX_MS);
@@ -221,6 +230,7 @@ export class ComputerLifecycle {
   /** Every setting still missing, edge and platform; empty when computers can be created. */
   async missingConfig(): Promise<string[]> {
     const missing = this.deps.missingConfig();
+    if (this.selfManaged()) return missing;
     if (missing.includes("RUNTIMES") || missing.includes("COMPUTERS")) return missing;
     try {
       return [...missing, ...(await this.deps.cloud().missing())];
@@ -239,6 +249,7 @@ export class ComputerLifecycle {
       return { status: 409, error: "this computer belongs to another organization" };
     }
     if (existing?.state === "transferred") return { status: 409, error: "this computer was handed to an organization" };
+    if (this.selfManaged()) return this.createSelfManaged(organizationId, options);
     if (existing?.state === "parked" || existing?.state === "parking") {
       await this.wake();
       return { status: 202 };
@@ -292,6 +303,45 @@ export class ComputerLifecycle {
   }
 
   /**
+   * Self-managed: there is nothing to build, so the row is `ready` at once,
+   * whatever it was (a row from before the gateway was switched to
+   * self-managed included). The size and disk are the configured ones, kept
+   * for the row's shape only: the gateway does not know the operator's VM.
+   */
+  private async createSelfManaged(organizationId: string, options: CreateOptions): Promise<LifecycleReply> {
+    const missing = this.deps.missingConfig();
+    if (missing.length) return { status: 503, error: new ComputersNotConfigured(missing).message };
+    const row = this.row();
+    if (row?.state === "ready") return { status: 200 };
+    const now = this.now();
+    if (row) {
+      this.deps.sql.exec(
+        `UPDATE computer SET state = 'ready', attempts = 0, last_error = NULL, wake_after_park = 0, delete_disk = 0,
+           replace_failed_vm = 0, tags_pending = 0, updated_at = ? WHERE id = 1`,
+        now,
+      );
+    } else {
+      this.deps.sql.exec(
+        `INSERT INTO computer (id, organization_id, state, size, disk_gib, zone, ssh_public_key, resource_prefix, created_at, updated_at)
+         VALUES (1, ?, 'ready', ?, ?, ?, '', ?, ?, ?)`,
+        organizationId,
+        options.size,
+        options.diskGiB,
+        options.zone,
+        options.prefix ?? computerName(organizationId),
+        now,
+        now,
+      );
+    }
+    this.deps.onReady?.();
+    return { status: 200 };
+  }
+
+  private selfManaged(): boolean {
+    return this.deps.selfManaged?.() ?? false;
+  }
+
+  /**
    * Wakes a parked computer (or one being parked, once it is). True if it is
    * now waking or will be. With `size`, the VM comes back on that size (the
    * organization's plan's: a downsize happens here, never on a running
@@ -323,6 +373,7 @@ export class ComputerLifecycle {
 
   /** Starts parking a ready computer: its VM and NIC go, its disks stay. */
   async park(): Promise<boolean> {
+    if (this.selfManaged()) return false;
     const row = this.row();
     if (row?.state !== "ready") return false;
     this.transition("ready", "parking", null);
@@ -387,6 +438,7 @@ export class ComputerLifecycle {
   async resize(size: string): Promise<LifecycleReply> {
     const row = this.row();
     if (!row || row.state === "deleted" || row.state === "transferred") return { status: 404, error: "no computer" };
+    if (this.selfManaged()) return { status: 409, error: SELF_MANAGED };
     if (!validSize(size)) return { status: 400, error: `invalid size ${size}` };
     if (size === row.size) return { status: 200 };
     // The OS finds its disks by controller: NVMe (v6/v7) and SCSI sizes do not mix.
@@ -414,6 +466,7 @@ export class ComputerLifecycle {
   async growDisk(diskGiB: number): Promise<LifecycleReply> {
     const row = this.row();
     if (!row || row.state === "deleted" || row.state === "transferred") return { status: 404, error: "no computer" };
+    if (this.selfManaged()) return { status: 409, error: SELF_MANAGED };
     if (!Number.isInteger(diskGiB) || diskGiB > MAX_DISK_GIB) return { status: 400, error: `invalid disk size ${diskGiB}` };
     if (diskGiB < row.diskGiB) return { status: 400, error: `disks cannot shrink: ${row.diskGiB} GiB now, ${diskGiB} GiB asked` };
     if (!["ready", "resizing", "parked"].includes(row.state)) return { status: 409, error: `the computer is ${row.state}` };
@@ -431,6 +484,11 @@ export class ComputerLifecycle {
   async delete(options: { deleteDisk?: boolean } = {}): Promise<LifecycleReply> {
     const row = this.row();
     if (!row || row.state === "deleted" || row.state === "transferred") return { status: 404, error: "no computer" };
+    if (this.selfManaged()) {
+      // The VM is the operator's to delete: the gateway only forgets the computer.
+      this.transition(row.state, "deleted", null);
+      return { status: 200 };
+    }
     this.deps.sql.exec(
       "UPDATE computer SET state = 'deleting', delete_disk = ?, attempts = 0, last_error = NULL, updated_at = ? WHERE id = 1",
       options.deleteDisk ? 1 : 0,
@@ -443,7 +501,7 @@ export class ComputerLifecycle {
   /** One step of whatever the computer is doing; the Durable Object's alarm calls it. */
   async tick(): Promise<void> {
     const row = this.row();
-    if (!row) return;
+    if (!row || this.selfManaged()) return;
     if (row.state === "ready" && row.tagsPending) return this.moveTags(row);
     let next: number | null;
     try {

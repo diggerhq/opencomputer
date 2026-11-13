@@ -85,6 +85,7 @@ import {
   gatewayUrl,
   maxDiskGiB,
   missingEdgeConfig,
+  selfManagedVms,
   publicOrigin,
   sizeFor,
   sizeShape,
@@ -178,6 +179,7 @@ import { type Acknowledgement, ComputerTelemetry, type HostAttachment } from "./
 import type { GatewayTelemetry } from "./telemetry/gateway.js";
 import { SLACK_QUEUE_STATE_INDEX, slackQueueNow } from "./slack-queue-gauge.js";
 import {
+  OFFLINE_NOTICE,
   RESIZING_NOTICE,
   STARTING_NOTICE,
   type SlackInteraction,
@@ -525,6 +527,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       },
       setAlarm: (at) => this.schedule("lifecycle", at),
       hostConnected: () => this.socket() !== undefined,
+      selfManaged: () => selfManagedVms(env),
       onReady: () => {
         this.noteActivity();
         sql.exec("DELETE FROM notices");
@@ -563,7 +566,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         const teamName = this.setting("slackTeamName");
         return { installed, ...(teamName ? { teamName } : {}) };
       },
-      poolProbe: (token, user) => (this.env.COMPUTERS && poolSize(this.env.COMPUTER_POOL_SIZE) > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
+      poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
       slackUserName: async (userId) => {
@@ -837,6 +840,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return accountId;
   }
 
+  /** Warm pool computers to keep; none when the operator runs the VMs (work 105). */
+  private poolTarget(): number {
+    return selfManagedVms(this.env) ? 0 : poolSize(this.env.COMPUTER_POOL_SIZE);
+  }
+
   private noteActivity(): void {
     this.put("lastActivityAt", String(Date.now()));
   }
@@ -914,7 +922,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (due.includes("size")) this.ctx.waitUntil(this.reconcileSize().catch(failed("size")));
     // A ready computer is always being watched for idleness (pool computers never park).
     const row = this.lifecycle.row();
-    if (row?.state === "ready" && !isPoolId(row.organizationId) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
+    if (row?.state === "ready" && !isPoolId(row.organizationId) && !selfManagedVms(this.env) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
       this.ctx.storage.sql.exec("INSERT INTO alarms (purpose, at) VALUES ('idle', ?)", Date.now() + 15 * 60_000);
     }
     const next = [...this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM alarms")][0]?.at;
@@ -1009,7 +1017,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   private async reconcileSizeOnce(): Promise<void> {
     const row = this.lifecycle.row();
-    if (!row || isPoolId(row.organizationId) || row.state !== "ready") return;
+    // Self-managed VMs (work 105): the operator sizes them.
+    if (!row || isPoolId(row.organizationId) || row.state !== "ready" || selfManagedVms(this.env)) return;
     const desired = await this.desiredSize();
     if (!desired || desired === row.size) return;
     if (sizeShape(desired).vcpus <= sizeShape(row.size).vcpus) return;
@@ -1033,7 +1042,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   private async idleCheck(): Promise<void> {
     const row = this.lifecycle.row();
-    if (!row) return;
+    // Self-managed VMs (work 105) never park: the operator stops and starts them.
+    if (!row || selfManagedVms(this.env)) return;
     await this.reconcileSize();
     const pool = isPoolId(row.organizationId);
     const plan = pool ? "free" : await this.plan();
@@ -1372,7 +1382,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   /** Reminds the pool to look at itself, at most every few minutes, off the request's path. */
   private kickPool(): void {
-    if (!this.env.COMPUTERS || poolSize(this.env.COMPUTER_POOL_SIZE) === 0) return;
+    if (!this.env.COMPUTERS || this.poolTarget() === 0) return;
     const last = Number(this.setting("poolKickedAt") ?? 0);
     if (Date.now() - last < POOL_KICK_INTERVAL_MS) return;
     this.put("poolKickedAt", String(Date.now()));
@@ -1391,7 +1401,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * usual way. The steps are in this file's header.
    */
   private async claimFromPool(accountId: string): Promise<LifecycleReply | null> {
-    if (!this.env.COMPUTERS || poolSize(this.env.COMPUTER_POOL_SIZE) === 0) return null;
+    if (!this.env.COMPUTERS || this.poolTarget() === 0) return null;
     if (this.lifecycle.row() || isPoolId(accountId)) return null;
     if (missingEdgeConfig(this.env).length) return null;
     const started = Date.now();
@@ -1463,7 +1473,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.bind(POOL_OBJECT);
     this.pool ??= new ComputerPool({
       sql: this.ctx.storage.sql,
-      target: () => poolSize(this.env.COMPUTER_POOL_SIZE),
+      target: () => this.poolTarget(),
       slot: (poolId) => {
         const stub = this.poolSlotObject(poolId);
         return {
@@ -1733,7 +1743,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   /** The host's `/data` usage (work 071): grow the data disk near capacity, up to COMPUTER_MAX_DISK_GIB. */
   private async diskReported(report: DiskReport): Promise<void> {
     const row = this.lifecycle.row();
-    if (row?.state !== "ready") return;
+    // Self-managed VMs (work 105): the operator grows the disk.
+    if (row?.state !== "ready" || selfManagedVms(this.env)) return;
     const now = Date.now();
     const decision = diskDecision(report, { diskGiB: row.diskGiB, maxGiB: maxDiskGiB(this.env), grownAt: Number(this.setting("diskGrownAt") ?? 0) }, now);
     if (decision.action === "none") return;
@@ -2794,6 +2805,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       notice = WAKING_NOTICE;
     } else if (row.state === "provisioning") {
       notice = STARTING_NOTICE;
+    } else if (row.state === "ready" && selfManagedVms(this.env) && !this.socket()) {
+      // Work 105: nothing here can start the operator's VM; the message waits for its host.
+      notice = OFFLINE_NOTICE;
     } else if (row.state === "failed") {
       notice = "Your computer could not start, so this message is waiting. Open the Computer page on app.opencomputer.dev to try again.";
     }
@@ -2801,7 +2815,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const inserted = this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO notices (thread_key, kind) VALUES (?, ?)",
       threadKey,
-      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : "failed",
+      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : notice === OFFLINE_NOTICE ? "offline" : "failed",
     );
     // Off the chain (work 068 §3b): the notice is claimed above, synchronously, so it posts once.
     if (inserted.rowsWritten > 0) {
@@ -3131,6 +3145,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
     const accountId = this.setting("accountId") ?? "";
     if (isPoolId(accountId)) return this.poolHello(ws, accountId);
+    if (selfManagedVms(this.env)) {
+      // Work 105: the operator's VM connecting is what makes the computer: its row is `ready` from here,
+      // whether or not Slack was installed first, and threads told it was offline may be told again next time.
+      await this.lifecycle.create(accountId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env), zone: DEFAULT_ZONE });
+      this.ctx.storage.sql.exec("DELETE FROM notices WHERE kind = 'offline'");
+    }
     this.lifecycle.noteHostSeen();
     const assignedAt = this.setting("assignPendingSince");
     if (assignedAt) {
