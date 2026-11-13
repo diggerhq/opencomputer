@@ -75,7 +75,8 @@ import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
 import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
 import { spareChecks } from './sandbox-check-spares.js';
-import { restarts } from './sandbox-check-restart.js';
+import { type Rig, restarts } from './sandbox-check-restart.js';
+import { waits } from './sandbox-check-waits.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -528,7 +529,7 @@ try {
   await reachResumed(kit, a, b);
 
   // ---- the host killed and started again; the sweep; Prune (step 8)
-  const times = await restarts({
+  const rig: Rig = {
     kit, as, run: RUN, data: DATA, image: IMAGE, events, tel, names, unpreviewed, welcome, clone: mnt.clone, lines: hostLines,
     kill: () => new Promise<void>((r) => (host.once('exit', () => r()), host.kill('SIGKILL'))),
     async start(env) {
@@ -536,8 +537,12 @@ try {
       host = startHost(env);
       return (await until(() => events.slice(n).find((e) => e.t === 'hello'), 90_000)) ? Date.now() - at : undefined;
     },
-  }, A1, A2, B, C, E);
+    known,
+  };
+  const times = await restarts(rig, A1, A2, B, C, E);
   say(`timings: ${JSON.stringify(times)}`);
+  // ---- what waits for what: the image lock, a prune and a /files script, a session stopped under a download, a home after a reboot
+  await waits(rig, A2, E);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
 }

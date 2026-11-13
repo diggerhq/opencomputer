@@ -79,6 +79,8 @@ export interface Rig {
   welcome(about: string): void;
   /** A person's clone of a repository, on the host. */
   clone(person: string, repo: string): string;
+  /** Tell the host a thread's `cs_` id, as a gateway does; the id. */
+  known(spec: SessionSpec): Promise<string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

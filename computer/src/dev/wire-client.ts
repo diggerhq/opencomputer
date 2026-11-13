@@ -26,6 +26,10 @@ export interface WireClient {
   putCut(sessionId: string, member: string, path: string, tar: Buffer, sent: number): Promise<Outcome<unknown>>;
   /** A download whose reader hangs up at its first bytes: how many came. */
   getCut(sessionId: string, member: string, path: string, file: boolean): Promise<{ got: number } | { error: ApiError }>;
+  /** An upload whose first `sent` bytes are written and whose connection stays open: `finish` sends the rest. */
+  putHeld(sessionId: string, member: string, path: string, tar: Buffer, sent: number): Promise<{ finish(): Promise<Outcome<{ upload: { files: number } }>> } | { error: ApiError }>;
+  /** A download whose reader stops reading at its first bytes: `rest` reads on, to how the host ended it. */
+  getPaused(sessionId: string, member: string, path: string, file: boolean): Promise<{ rest(): Promise<{ got: number; error?: ApiError }> } | { error: ApiError }>;
   close(): void;
 }
 
@@ -99,6 +103,34 @@ export async function wireClient(socket: string): Promise<WireClient> {
       if (!r.result) return { error: r.error as ApiError };
       const c = net.connect(r.result.socket);
       return new Promise((resolve) => c.once('data', (d: Buffer) => (c.destroy(), resolve({ got: d.length }))).once('error', () => resolve({ got: 0 })).once('end', () => resolve({ got: 0 })));
+    },
+    async putHeld(sessionId, member, path, tar, sent) {
+      const id = randomUUID();
+      const end = finished(id);
+      const r = await ask<{ socket: string }>({ t: 'files.put', sessionId, member, path, format: 'tar', bytes: tar.length }, id);
+      if (!r.result) return { error: r.error as ApiError };
+      const c = net.connect(r.result.socket);
+      c.on('error', () => {});
+      await new Promise<void>((resolve) => c.once('connect', () => c.write(tar.subarray(0, sent), () => resolve())));
+      return { finish: () => (c.end(tar.subarray(sent)), end as Promise<Outcome<{ upload: { files: number } }>>) };
+    },
+    async getPaused(sessionId, member, path, file) {
+      const id = randomUUID();
+      const end = finished(id);
+      const r = await ask<{ socket: string }>({ t: 'files.get', sessionId, member, path, file }, id);
+      if (!r.result) return { error: r.error as ApiError };
+      const c = net.connect(r.result.socket);
+      c.on('error', () => {});
+      let got = 0;
+      await new Promise<void>((resolve) => c.once('data', (d: Buffer) => ((got += d.length), c.pause(), resolve())).once('close', () => resolve()));
+      return {
+        async rest() {
+          c.on('data', (d: Buffer) => (got += d.length)).resume();
+          const d = await end;
+          c.destroy();
+          return { got, error: d.error };
+        },
+      };
     },
     close: () => sock.destroy(),
   };
