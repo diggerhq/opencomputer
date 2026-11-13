@@ -1,0 +1,218 @@
+---
+title: "API schema"
+description: "Every method, event, object and error code of the Computer API, version 1"
+---
+
+| Item | Value |
+| --- | --- |
+| Schema file | `computer/schema/computer-api.v1.json`, generated from `computer/src/api/schema.ts` |
+| Print it | `opc schema`, from the copy built into the CLI. `opc schema <object>` prints one object |
+| `field?` | Optional |
+| `\| null` | Always present, may be null |
+
+## Operations
+
+On an HTTP route, path parameters replace `sessionId`, `turnId`, `askId` and `subagentId`. A `GET` takes the other fields as query parameters, other verbs as a JSON body. Unknown fields are refused with `invalid_request`.
+
+| Method | HTTP route | Params | Result |
+| --- | --- | --- | --- |
+| `sessions.attach` | WebSocket only | `sessionId`, `after?`, `tailTurns?` (1 to 50), `deltas?`, `resume?`, `readOnly?` | `session`, `logEpoch`, `epochStartSeq`, `capabilities`, `earlierTurns \| null`, `timing.serverUs` |
+| `sessions.detach` | WebSocket only | `sessionId` | empty |
+| `sessions.get` | `GET /sessions/{id}` | `sessionId`, `minSeq?` | `session` |
+| `sessions.update` | `PATCH /sessions/{id}` | `sessionId`, `idempotencyKey?`, `title?` (1 to 200 characters), `model?`, `effort?`, `speed?` (`fast`, `standard`), `mode?`, `archived?`, `metadata?` | `session`, `seq` |
+| `sessions.interrupt` | `POST /sessions/{id}/interrupt` | `sessionId`, `idempotencyKey?`, `turnId?` | `session`, `seq` |
+| `sessions.compact` | `POST /sessions/{id}/compact` | `sessionId`, `idempotencyKey?`, `instructions?` (up to 10,000 characters) | `turn`, `delivery`, `duplicate`, `seq`, `timing?` |
+| `sessions.suspend` | `POST /sessions/{id}/suspend` | `sessionId`, `idempotencyKey?`, `ifIdle?` | `session`, `seq` |
+| `sessions.resume` | `POST /sessions/{id}/resume` | `sessionId`, `idempotencyKey?` | `session`, `seq` |
+| `turns.send` | `POST /sessions/{id}/turns` | `sessionId`, `idempotencyKey?`, `input` (1 to 100,000 characters), `ifBusy?` (`queue`, `steer`, `interrupt`) | `turn`, `delivery` (`started`, `queued`, `steered`), `duplicate`, `seq`, `timing?` |
+| `turns.get` | `GET /sessions/{id}/turns/{turnId}` | `sessionId`, `turnId`, `waitMs?` (0 to 60,000), `status?`, `minSeq?` | `turn` |
+| `turns.cancel` | `POST /sessions/{id}/turns/{turnId}/cancel` | `sessionId`, `turnId`, `idempotencyKey?` | `turn`, `seq` |
+| `asks.list` | `GET /sessions/{id}/asks` | `sessionId`, `status?`, `limit?` (1 to 100), `cursor?` | `asks`, `nextCursor \| null` |
+| `asks.get` | `GET /sessions/{id}/asks/{askId}` | `sessionId`, `askId` | `ask` |
+| `asks.answer` | `POST /sessions/{id}/asks/{askId}/answer` (the body is the answer) | `sessionId`, `askId`, `idempotencyKey?`, `answer` | `ask`, `seq` |
+| `asks.dismiss` | `POST /sessions/{id}/asks/{askId}/dismiss` | `sessionId`, `askId`, `idempotencyKey?`, `message?` (up to 2,000 characters) | `ask`, `seq` |
+| `subagents.list` | `GET /sessions/{id}/subagents` | `sessionId`, `status?` (`running`, `all`), `limit?` (1 to 100), `cursor?` | `subagents`, `nextCursor \| null` |
+| `subagents.get` | `GET /sessions/{id}/subagents/{subagentId}` | `sessionId`, `subagentId` | `subagent` |
+| `subagents.stop` | `POST /sessions/{id}/subagents/{subagentId}/stop` | `sessionId`, `subagentId`, `idempotencyKey?` | `subagent`, `seq` |
+| `events.list` | `GET /sessions/{id}/events` | `sessionId`, `after?`, `limit?` (1 to 500, default 100), `waitMs?` (0 to 60,000), `tailTurns?` (1 to 50), `turnId?`, `types?` | `events`, `earlierTurns \| null`, `lastSeq`, `hasMore` |
+| `terminals.open` | WebSocket only | `sessionId`, `cols?`, `rows?` (1 to 1,000 each), `command?` (up to 10,000 characters), `tty?`, `term?` (up to 64 characters) | `terminal.id`, `terminal.channel`, `terminal.stderrChannel \| null` |
+| `terminals.resize` | WebSocket only | `terminalId`, `cols`, `rows` | empty |
+| `terminals.eof` | WebSocket only | `terminalId` | empty |
+| `terminals.close` | WebSocket only | `terminalId` | empty |
+| `ping` | WebSocket only | none | `timing.serverUs` |
+
+Creating a session is HTTP only: `POST /sessions` with `CreateSessionBody`: `id?`, `input?`, `title?` (up to 200 characters), `model?`, `effort?`, `speed?`, `mode?`, `metadata?`.
+
+### Routes outside the schema
+
+The relay (`computer/src/wire/`) serves these. The API routes for workspace files are `/sessions/{id}/workspace/files`, `/file` and `/archive`; `opc push` and `opc pull` call `/archive`. See [Files](/api/files).
+
+| Relay route | Purpose |
+| --- | --- |
+| `GET /files/{id}/files` | List a directory: `path`, `depth` (1 to 10), `limit` (1 to 100), `cursor` |
+| `GET /files/{id}/file` | Read one file: `path` |
+| `GET /files/{id}/archive` | Download a directory or file as a tar stream: `path` |
+| `PUT /files/{id}/archive` | Upload a tar stream as one top-level directory: `path` |
+| `GET /connect` | WebSocket upgrade |
+| `GET /health` | Relay health |
+
+## WebSocket notifications
+
+Server to client:
+
+| Method | Params |
+| --- | --- |
+| `ready` | `connectionId`, `server.version`, `server.region \| null`, `protocol.features[]`, `limits.maxAttached`, `limits.maxMessageBytes`, `limits.maxRequestsPerSecond`, `expiresAt \| null`, `expiresInMs \| null` |
+| `sessions.attached` | `sessionId`, `error \| null`, `session \| null`, `logEpoch \| null`, `epochStartSeq \| null`, `capabilities \| null`, `earlierTurns \| null`, `timing \| null` (answers an attach named in the connection URL) |
+| `event` | One [event](#events) |
+| `delta` | One [delta](#deltas) |
+| `session.detached` | `sessionId`, `reason` (`too_far_behind`, `access_lost`, `epoch_changed`, `unavailable`), `logEpoch?`, `epochStartSeq?` |
+| `terminal.exited` | `terminalId`, `exitCode \| null`, `signal \| null` |
+
+Client to server:
+
+| Method | Params |
+| --- | --- |
+| `sessions.ack` | `sessionId`, `seq` |
+| `telemetry` | `v` (1), `client.name` (`opc`), `client.version`, `client.os?`, `client.arch?`, `events` (1 to 20) |
+
+## Events
+
+Envelope:
+
+| Field | Type |
+| --- | --- |
+| `id` | `ev_` and 16 characters |
+| `seq` | Integer from 1, increasing by one per session |
+| `createdAt` | Timestamp |
+| `sessionId` | `cs_` and 16 characters |
+| `turnId` | Turn id or null |
+| `actor` | Actor or null |
+| `type` | One of the types below |
+| `data` | Per type |
+
+| Type | `data` fields |
+| --- | --- |
+| `session.created` | `title`, `origin`, `settings` |
+| `session.status_changed` | `from \| null`, `to` |
+| `session.updated` | `changes`: a map of field name to `{from, to}` |
+| `session.compacted` | `beforeTokens`, `afterTokens`, `auto` |
+| `message.received` | `input`, `ifBusy`, `delivery`, `interruptedTurnIds[]`, `declinedAskIds[]` |
+| `turn.queued` | `position`, `trigger`, `subagentId` |
+| `turn.steered` | `messageSeq` |
+| `turn.started` | `model`, `effort`, `mode`, `trigger`, `subagentId` |
+| `turn.status_changed` | `from`, `to` |
+| `turn.completed` | `text`, `durationMs`, `silent` |
+| `turn.failed` | `error` (`code`, `message`) |
+| `turn.cancelled` | `reason`, `forced`, `input` |
+| `message.completed` | `blockId`, `parentCallId`, `text` |
+| `reasoning.completed` | `blockId`, `parentCallId`, `text`, `redacted`, `durationMs` |
+| `tool.started` | `subagentId`, `toolName`, `callId`, `parentCallId`, `title`, `input`, `inputTruncated` |
+| `tool.completed` | `subagentId`, `toolName`, `callId`, `parentCallId`, `title`, `output`, `outputTruncated`, `fileChanges \| null` (each `path`, `status` of `added`, `modified` or `deleted`, `added`, `removed`), `durationMs` |
+| `tool.failed` | `subagentId`, `toolName`, `callId`, `parentCallId`, `title`, `message`, `settledBy` |
+| `subagent.started` | `subagent` |
+| `subagent.ended` | `subagent` |
+| `ask.opened` | `ask` |
+| `ask.closed` | `ask` |
+| `usage.recorded` | `model`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedTokens`, `cacheWriteTokens`, `costUsd`, `firstTokenMs`, `durationMs`, `usedTokens`, `windowTokens` |
+| `model.rate_limited` | `model`, `retryAfterMs`, `attempt` |
+| `runtime.starting` | `phase` (`computer`, `agent`) |
+| `runtime.connected` | `warm`, `resumed`, `durationMs` |
+| `runtime.suspended` | `reason` (`idle`, `requested`, `lost`) |
+| `files.pushed` | `path`, `files`, `bytes`, `replaced` |
+| `terminal.opened` | `terminalId`, `command` |
+| `terminal.closed` | `terminalId`, `exitCode` |
+
+A client must ignore event types it does not know (`Event.other`: any other `type`, open `data`).
+
+## Deltas
+
+Sent only on a WebSocket attached with `deltas: true`; see [Events](/api/events#deltas). Each has `type`, `sessionId`, `turnId` and `data`.
+
+| Type | `data` fields |
+| --- | --- |
+| `message.delta` | `blockId`, `parentCallId`, `text` |
+| `reasoning.delta` | `blockId`, `parentCallId`, `text` |
+| `tool.preparing` | `subagentId`, `callId`, `toolName`, `path`, `description`, `lines` |
+| `tool.delta` | `callId`, `text` |
+| `session.compacting` | none |
+| `subagent.progress` | `subagentId`, `activity`, `toolCalls`, `tokens` |
+
+## Objects
+
+| Object | Fields |
+| --- | --- |
+| Session | `id` (`cs_` and 16 characters), `title`, `status` (`starting`, `running`, `waiting`, `idle`, `suspended`), `archived`, `owner` (Person), `origin` (Origin), `settings` (`model`, `effort`, `mode`, `speed`), `metadata`, `activeTurnId`, `queued` (Turn list), `asks` (Ask list), `subagents` (Subagent list), `lastTurn` (TurnSummary or null), `lastText`, `context` (`usedTokens`, `windowTokens`), `lastSeq`, `logEpoch`, `epochStartSeq`, `createdAt`, `lastActiveAt`, `syncedAt`, `urls.dashboard` |
+| Person | `id`, `name`, `email` |
+| Origin | `type` (`slack`, `opc`, `dashboard`, `api`), `client`, `slack` (`teamId`, `channelId`, `channelName`, `threadTs`, `url`) or null |
+| Actor | `id`, `name`, `via` (`slack`, `opc`, `dashboard`, `api`), `client` |
+| Turn | `id` (`tn_` and 12 characters), `sessionId`, `status` (`queued`, `running`, `cancelling`, `completed`, `failed`, `cancelled`), `trigger` (`message`, `subagent`), `subagentId`, `ifBusy`, `input`, `author` (Actor or null), `steering` (list of `input`, `author`, `createdAt`), `createdAt`, `startedAt`, `endedAt`, `text`, `error` (TurnError or null), `reason` (`interrupted`, `withdrawn` or null), `forced`, `usage` (Usage or null) |
+| TurnError | `code` (`model_rejected`, `model_unavailable`, `model_stream_failed`, `context_too_long`, `runtime_lost`, `runtime_failed`, `tool_failed`, `agent_failed`), `message` |
+| Usage | `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedTokens`, `cacheWriteTokens`, `costUsd` |
+| Ask | `id` (`ak_` and 12 characters), `sessionId`, `turnId`, `kind` (`approval`, `question`, `secret`), `status` (`open`, `answered`, `dismissed`, `declined`, `interrupted`), `createdAt`, `closedAt`, `closedBy`, `answer`, `approval` (`toolName`, `callId`, `input`, `title`, `alwaysAllows`) or null, `question` (`questions`: each `id`, `header`, `text`, `multiSelect`, `options` of `label` and `description`) or null, `secret` (`name`, `purpose`, `file`) or null |
+| ApprovalAnswer | `decision` (`allow`, `deny`, `always`), `message?` (up to 2,000 characters), `mode?` |
+| QuestionAnswer | `answers`: each `questionId`, `choices[]`, `text \| null` |
+| DeclineAnswer | `message`, `messageSeq` |
+| Subagent | `id` (`sa_` and 12 characters), `sessionId`, `turnId`, `callId`, `name`, `agentType`, `background`, `status` (`running`, `completed`, `failed`, `stopped`), `activity`, `toolCalls`, `tokens`, `createdAt`, `endedAt`, `durationMs`, `result`, `resultTruncated`, `error` (`code`, `message`) or null, `stoppedBy` (Actor or null) |
+| Capabilities | `models` (each `id`, `name`, `efforts[]`, `contextWindow`, `default`), `modes[]`, `features` (`steer`, `compact`, `terminal`, `workspace`, `reasoning`, `subagents`) |
+| Secret | `name`, `scope` (`session`, `me`, `organization`), `sessionId`, `file`, `effective`, `setBy`, `updatedAt` |
+| Result | `type` (`result`), `subtype` (`success`, `error`, `cancelled`, `waiting`), `isError`, `sessionId`, `turnId`, `status`, `result`, `error`, `reason`, `ask`, `url`, `durationMs`, `usage`, `subagents` (SubagentSummary list), `turn` |
+
+`Result` is what `opc -p --output-format json` prints for a turn. No operation reads or writes `Secret`.
+
+## Errors
+
+An error body is `code`, `message`, and optionally `status`, `retryable`, `requestId`, `field`, `reason` and `retryAfterMs`. HTTP wraps it as `{"error": {...}}`; WebSocket sends it as the `data` of a JSON-RPC error.
+
+| JSON-RPC code | Meaning |
+| --- | --- |
+| `-32700` | The message is not JSON |
+| `-32600` | Not a JSON-RPC request. Batches are not supported |
+| `-32601` | Unknown method |
+| `-32602` | Invalid params: `data` is `code: "invalid_request"`, `status: 400` and the `field` |
+| `-32000` | An API error: `data` is the error body |
+
+| Group | `code` values |
+| --- | --- |
+| Request | `invalid_request`, `unsupported_model`, `unsupported_effort`, `unsupported_mode`, `invalid_answer`, `answer_with_secret`, `invalid_path`, `invalid_archive`, `invalid_cursor`, `too_large`, `upgrade_required` |
+| Credential and access | `unauthenticated`, `forbidden`, `admin_required`, `insufficient_credits` |
+| Not found | `not_found`, `session_not_found`, `turn_not_found`, `ask_not_found`, `subagent_not_found`, `terminal_not_found`, `path_not_found`, `secret_not_found` |
+| Conflict | `id_conflict`, `idempotency_conflict`, `ask_closed`, `session_busy`, `turn_not_cancellable`, `queue_full`, `cursor_ahead`, `path_exists`, `subagent_ended`, `too_far_behind`, `too_many_attached`, `too_many_terminals`, `feature_unavailable`, `computer_not_set_up` |
+| Retry later | `rate_limited`, `unavailable`, `computer_unavailable`, `internal` |
+
+`forbidden` carries a `reason`: `missing_scope`, `read_only` or `terminal_owner_only`.
+
+## Relay limits
+
+Other limits are in [Limits and defaults](/reference/limits#api).
+
+| Limit | Value |
+| --- | --- |
+| Sessions attached per connection | 20 |
+| Message size | 1 MiB |
+| Requests per connection | 100 per second, burst 100 |
+| Connections per member | 50 |
+| Unsent data per connection before close `4008` | 16 MiB |
+| Unacknowledged backlog per attached session before `too_far_behind` | 8 MiB or 10,000 events |
+| Terminals per session | 8 |
+| Terminal input | 1 MiB per second |
+| Terminal output frame | 64 KiB |
+| Queued turns per session | 20 |
+| Upload or download archive | 1 GiB unpacked, 100,000 entries |
+| Single file read | 100 MiB |
+| Idempotency key | 1 to 255 characters, kept 24 hours |
+
+## WebSocket close codes
+
+| Code | Cause |
+| --- | --- |
+| `1001` | Two pings missed. The relay pings every 30 seconds |
+| `1009` | A message over 1 MiB |
+| `1012` | The relay is restarting |
+| `4001` | The credential expired or was revoked |
+| `4008` | More than 16 MiB unsent |
+| `4029` | More than 50 connections for one member |
+| `4400` | The `opc.v1` subprotocol was not offered |
+| `4503` | The relay has no signing key from the host yet. The reason is `{"retryAfterMs":2000}` |
+
+{/* Sources: computer/schema/computer-api.v1.json (x-methods, x-eventTypes, $defs); computer/src/api/schema-methods.ts; computer/src/api/read-methods.ts (events.list default limit, idempotency 24 h); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/relay.ts; computer/src/wire/files.ts; computer/src/wire/attachment.ts (detach reasons); computer/src/host/session-writer.ts and computer/src/runner/api/api.ts (QUEUE_MAX); computer/src/host/terminal.ts; computer/src/host/workspace-files.ts; opc/src/cli.rs (schema subcommand) */}

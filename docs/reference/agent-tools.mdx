@@ -1,0 +1,152 @@
+---
+title: "Agent tools"
+description: "Every tool Computer adds to the harness, with parameters and per-runner limits"
+---
+
+Under Claude Code these tools are one MCP server named `calvin`; approval prompts show the full id, `mcp__calvin__<name>`.
+
+## Availability
+
+| Tool | One-machine mode (`npm start`) | Self-hosted gateway and host | Hosted |
+| --- | --- | --- | --- |
+| `send_file` | yes | yes | yes |
+| `post_card` | yes | yes | yes |
+| `checkout_repo` | no | when the host has a workspace definition | yes |
+| `spawn_thread` | no | yes | yes |
+| `read_thread` | no | yes | yes |
+| `post_thread` | no | yes | yes |
+| `request_secret` | no | yes; fails unless the gateway has `SP_STORE_KEY` | yes |
+| `preview`, `unpreview` | no | offered, but the gateway refuses the call (see [preview](#preview)) | yes |
+
+"Per runner" counts reset when the session's runner restarts.
+
+## send_file
+
+Posts a file into the session's Slack thread. PNG, JPEG, GIF and WebP images render inline.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `path` | string | yes | Absolute, or relative to the session directory. |
+| `comment` | string, up to 3,000 characters | no | Message posted with the file. |
+| `title` | string, up to 200 characters | no | Defaults to the file name. |
+| `alt_text` | string, up to 1,000 characters | no | Image description for screen readers. |
+
+| Rule | Value |
+| --- | --- |
+| File | Regular, non-empty, at most 100 MiB, inside the session directory or the system temp directory |
+| Count | 50 files per runner |
+| Secrets | A file that contains the value of one of the session's secrets is refused |
+| Slack scope | `files:write` |
+| From a script | `calvin-send-file <path> [comment]`, on the runner's `PATH`, same limits |
+
+## post_card
+
+Posts a card (key facts, a table, charts, link buttons) into the session's thread as Slack blocks.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `spec` | object | yes | The card. |
+| `spec.root` | string | yes | Id of the root element, a Card. |
+| `spec.elements` | map | yes | Id to `{type, props, children}`. |
+| `spec.state` | object | no | |
+
+| Rule | Value |
+| --- | --- |
+| Table | One; 100 rows, 20 columns |
+| Charts | Two; title up to 50 characters, 12 series, 20 points, labels up to 20 characters |
+| Fields | 10 |
+| Slack blocks | 50 |
+| Buttons | Links only |
+| Invalid spec | Refused with the list of problems |
+| Count | 50 cards per runner |
+| Secrets | As for `send_file` |
+
+## checkout_repo
+
+Adds workspace repositories to the session directory, each as a git worktree on the session's branch, cloning first if needed. A repository already checked out is returned as it is. See Repositories.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `repos` | array of 1 to 10 strings | yes | Repository names from the definition, or `owner/name` (case-insensitive). |
+
+| Error | Cause |
+| --- | --- |
+| `no repository <x> in this workspace; the list is in AGENTS.md` | Not in the definition |
+| `<x> is not published yet` | The repository is marked `unpublished` |
+
+## spawn_thread
+
+Starts a session in a new Slack thread, with the same owner and permission mode. The gateway posts the task and a link to the brief as a top-level message in the parent's channel, or in the owner's direct messages when the parent is a code channel. See [Linked and spawned threads](/slack/linked-and-spawned-threads).
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `task` | string, 3 to 150 characters, one line | yes | What the new thread should do. |
+| `brief` | string | yes | Path of a `.md` file inside the session directory, relative to it, with an optional `#anchor`. Must be on the fetched default branch of its repository. |
+| `model` | `smart`, `fast` or `default` | no | Model tier. Omitted: the parent's model. |
+
+Limit: 8 per runner.
+
+## read_thread
+
+Returns a Slack thread's first message, its latest replies (at most 40, 16,000 characters in all, 4,000 per message) and how many were left out, marked as data, not instructions. See [Linked and spawned threads](/slack/linked-and-spawned-threads).
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `url` | string | `url`, or `channel` with `ts` | The thread's Slack link. |
+| `channel` | string | | Channel id (`C…` or `G…`). |
+| `ts` | string | | Timestamp of a message in the thread, for example `1700000000.000100`. |
+
+| Rule | Value |
+| --- | --- |
+| Count | 40 per runner |
+| Approval | Never asked |
+| Readable conversations | The bot is in it, and the session's owner and everyone who can read the session's own conversation can see it. Otherwise the tool returns the reason. |
+
+## post_thread
+
+Posts a reply inside another Slack thread, never at the channel's top level.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `url`, or `channel` with `ts` | as for `read_thread` | yes | The thread to post into. |
+| `text` | string, 1 to 4,000 characters | yes | Slack mrkdwn. |
+
+| Rule | Value |
+| --- | --- |
+| Count | 20 per runner |
+| Approval | Asked outside `bypassPermissions` mode (see [Permission modes](/slack/permission-modes)) |
+| Channel-wide mentions (`@channel`, `@here`, `@everyone`, user groups) | Become plain text |
+| Attribution | The gateway appends a `Posted for` line naming the session's owner and linking the session's thread |
+
+## request_secret
+
+Posts a button; the person types the secret into a private Slack form. The agent ends its turn and is told when the secret is set; the value is then in the environment of the session's next shell commands. See [Secrets and variables](/slack/secrets-and-variables).
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `name` | string, an environment variable name | yes | For example `STRIPE_API_KEY`. |
+| `reason` | string, 3 to 200 characters | yes | One line shown to the person. |
+| `file` | boolean | no | Store the secret as a file; `$NAME` holds its path. |
+
+Limit: 10 per runner. Fails when a secret of that name is already set, or when a self-hosted gateway has no `SP_STORE_KEY`.
+
+## preview
+
+Gives an HTTP server listening on a port of the computer a public URL. Anyone with the URL can open it. Plain HTTP on that port only; the URL works while the server runs. See [Preview URLs](/slack/preview-urls).
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `port` | integer, 1 to 65535 | yes | The port the server listens on, on localhost. |
+| `name` | string, one DNS label (lowercase letters, digits, hyphens; up to 63 characters) | no | Omitted: a generated name, or the port's existing one. |
+
+Returns the URL, the name, and whether something was listening on the port.
+
+## unpreview
+
+Takes down a preview URL.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | yes | The preview's name, the label at the start of its URL. |
+
+{/* Sources: computer/src/runner/tools.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/harness/claude/process.ts (mcpServers, allowedTools); computer/src/host/main.ts (checkout); computer/src/workspaces/index.ts (checkoutRepos); computer/src/gateway/hosts.ts (spawn, read, post, secret-request, preview refusal); computer/src/gateway/threads.ts; computer/src/links.ts; computer/src/gateway/routing.ts (spawn); computer/src/runner/checkout.ts; computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/preview.ts; computer/src/runner/session-secrets.ts; computer/src/runner/prompts.ts; computer/src/main.ts (no hooks in one-machine mode) */}

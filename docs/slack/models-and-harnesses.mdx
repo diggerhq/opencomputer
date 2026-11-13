@@ -1,0 +1,54 @@
+---
+title: "Models and harnesses"
+description: "A session runs on Claude Code or Codex; a model, effort or speed change applies from the next model request"
+---
+
+<Frame>
+  <img src="/images/slack/model-effort.png" alt="Answers to !model smart, !effort without an argument, and !effort high" />
+</Frame>
+
+## Tiers
+
+| Tier | Claude Code | Codex |
+| --- | --- | --- |
+| `default` | `claude-opus-5-5`, or the `MODEL` environment variable when set | `gpt-6.1-sol` |
+| `smart` | `claude-fable-5-2` | `gpt-6-astra` |
+| `fast` | `claude-sonnet-5-5` | `gpt-6-luna` |
+
+A new session starts on `default`. Start a message with `+smart`, `+fast` or `+default` to switch the session's model and send the rest of the message to it:
+
+```text
+@computer +smart work out why the importer drops rows
+```
+
+A message that is only the tier switches the model and starts no turn.
+
+## Commands
+
+| Command | Argument | Default |
+| --- | --- | --- |
+| `!model` | A tier (`smart`, `fast`, `default`) or a model id | `default` |
+| `!effort` | `low`, `medium`, `high`, `xhigh`, `max`; on Codex also `ultra` | `medium` |
+| `!speed` | `fast`, `standard` | `fast` |
+
+- Without an argument, each command shows the current value and the choices. `!status` shows the model, the effort once it is set, and the speed when it is `standard`. See Slack commands.
+- If the harness refuses a model, the session answers `can't switch to <model>: <reason>; still on <current>` and nothing changes.
+- `!speed fast` on Claude Code turns on fast mode, which affects only models that have one. On Codex it is the provider's priority tier.
+- Which provider account pays: Model credentials.
+
+<Frame>
+  <img src="/images/slack/status.png" alt="Answer to !status: model, effort, context size and thread cost, then thread id, working directory, session id and bot version" />
+</Frame>
+
+## Harnesses
+
+| | Claude Code | Codex |
+| --- | --- | --- |
+| Started before the first message (faster first reply) | Yes | No |
+| [Subagents](/slack/subagents) | Yes | No |
+| [Permission modes](/slack/permission-modes) | `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions` | `default`, `bypassPermissions` |
+| Cost shown in `!status` | Yes | No |
+
+<Note>Not in the open-source code yet (model proxy). The public build runs every session on Claude Code: without the proxy a Codex session fails to start, the public gateway never asks for one, and no Slack command selects a harness.</Note>
+
+{/* Sources: computer/src/tiers.ts; computer/src/runner/model-switch.ts; computer/src/runner/help.ts; computer/src/runner/commands.ts; computer/src/runner/format.ts (fmtStatus); computer/src/runner/harness/claude/harness.ts (CLAUDE_CAPS); computer/src/runner/harness/claude/process.ts (fastMode); computer/src/runner/harness/codex/ (CODEX_CAPS, model proxy socket); computer/src/protocol.ts (SessionSpec.harness); computer/deploy/vm/provision.sh (Codex CLI) */}

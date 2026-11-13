@@ -1,0 +1,71 @@
+---
+title: "Branches and pull requests"
+description: "Each session commits on branch `sp/<thread>` in its own worktrees and pushes as the instance's GitHub App"
+---
+
+This page describes a computer with a workspace definition, which is what `provision.sh` installs. The definition lists the repositories; see Repositories.
+
+<Frame>
+  <img src="/images/slack/pull-request.png" alt="computer reports the pushed branch sp/C08EN6G4T2K-1791312345-821900 and the pull request link" />
+</Frame>
+
+## Session directory
+
+Each session has its own directory with one `git worktree` per repository, so it does not see another session's uncommitted work.
+
+| Item | Value |
+| --- | --- |
+| Session directory | `<SP_DATA>/people/<person>/sessions/<thread>/`, where `<person>` is the session's owner |
+| `<thread>` | The session key, with each run of non-alphanumeric characters replaced by `-`: thread `C0B:1791.82` becomes `C0B-1791-82` |
+| Contents | `AGENTS.md` with the workspace's instructions, and one subdirectory per repository. The directory itself is not a git repository. |
+| Branch | `sp/<thread>`, the same name in every repository of the session |
+| Starts from | `origin/<default branch>`, fetched at session start. If the fetch fails or takes over 5 seconds, the last fetched commit. |
+
+A session starts with the repositories already cloned on the computer. It checks out any other repository listed in its `AGENTS.md` with the `checkout_repo` tool, on the same branch from the latest default branch. The clones behind the worktrees: Git.
+
+## Commits
+
+| Field | Value |
+| --- | --- |
+| Author | The session's owner, by the name and email in the people list, even when another person in the thread asked for the change |
+| Committer | `Computer <computer@users.noreply.opencomputer.dev>`, or `SP_COMMITTER_NAME` and `SP_COMMITTER_EMAIL` when set |
+
+Claude Code's own attribution lines are turned off for commits and pull requests.
+
+## Push and pull request
+
+The session pushes and opens pull requests with `git` and `gh`, following the workspace instructions in `definitions/computer/AGENTS.md`:
+
+- Commit on the `sp/<thread>` branch, or on a branch with a better name.
+- Push with `git push -u origin HEAD` and open the pull request with `gh pr create`, one per repository changed.
+- Do not push to a default branch unless the person asks.
+- Say in the pull request body who asked: `Requested by @<person> in Slack`.
+
+To change this, edit the instructions.
+
+## Identity and tokens
+
+`git` and `gh` authenticate as the instance's GitHub App, so the app's bot account pushes and opens the pull request. The person appears as the commit author and in the pull request body.
+
+| Item | Value |
+| --- | --- |
+| Reachable repositories | Those granted to the app's installation; see Connect GitHub |
+| `git` token | Limited to the repository in the remote URL |
+| `gh` token | Covers every repository the installation grants |
+| Storage | No token is written to disk; the app's private key stays on the gateway. See Git. |
+| Host not connected to the gateway | The token request fails and `git` fails without prompting |
+
+## `!diff`
+
+`!diff` runs in the session directory, which is not a git repository, so it answers `no changes` whatever the worktrees contain. Ask the session for the diff of a repository.
+
+## When a session directory is deleted
+
+| What | Deleted after | Condition |
+| --- | --- | --- |
+| The session directory and its local `sp/<thread>` branches | 14 days idle (`SP_FORK_RETENTION_DAYS`) | Every worktree is clean and every commit is on a remote. Otherwise it is kept. |
+| Git-ignored build and dependency directories (`node_modules`, `.next`, `target` and similar; list in Git) | 24 hours without use (`SP_ARTIFACTS_IDLE_HOURS`) | The session has no running runner. |
+
+A message to the thread after its directory is deleted gets a new directory from the default branch. Pushed branches are still on GitHub.
+
+{/* Sources: computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/main.ts (sessionVars, committer); computer/src/runner/harness/claude/process.ts (attribution); computer/definitions/computer/AGENTS.md; computer/bin/gh; computer/bin/git-credential-slack-presence; computer/src/host/tokens.ts; computer/src/github/app.ts; computer/src/gateway/main.ts (mintToken, SP_PEOPLE, onPush); computer/src/runner/checkout.ts; computer/src/runner/commands.ts (!diff); computer/src/workspace.ts (gitDiff); computer/deploy/vm/provision.sh (credential helper configuration) */}

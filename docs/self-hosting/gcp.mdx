@@ -1,0 +1,150 @@
+---
+title: "On Google Cloud"
+description: "Deploy the app and gateway Workers on Cloudflare, and create each organization's Computer VM on Compute Engine yourself"
+---
+
+On Google Cloud the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no VMs. You create one Compute Engine instance per organization, and the instance connects out to the gateway with that organization's host token.
+
+| The gateway | You |
+| --- | --- |
+| Shows the Computer as `Online` while its VM is connected and `Offline` otherwise | Create, size, stop, start and delete the VM |
+| Holds a Slack message that arrives while the VM is offline, says so once in the thread, and runs it when the VM connects | Start the VM again |
+
+The examples use `app.example.com` and `gateway.example.com`, as in [On Azure](/self-hosting/azure).
+
+## 1. Get the code
+
+```bash
+git clone https://github.com/diggerhq/opencomputer.git
+cd opencomputer
+(cd services/managed-agents && npm ci)
+(cd cloudflare-workers/api-edge && npm ci)
+(cd web && npm ci)
+```
+
+## 2. Create the Cloudflare resources and the apps
+
+Follow two steps of the Azure guide unchanged:
+
+- [Create the Cloudflare resources](/self-hosting/azure#2-create-the-cloudflare-resources)
+- [Create the WorkOS, Slack and GitHub apps](/self-hosting/azure#3-create-the-workos-slack-and-github-apps)
+
+## 3. Deploy the gateway Worker
+
+Follow [Deploy the gateway Worker](/self-hosting/azure#4-deploy-the-gateway-worker) unchanged. Keep the value of `COMPUTER_HOST_TOKEN_KEY` at hand: step 6 derives each organization's host token from it.
+
+## 4. Deploy the app Worker
+
+Follow [Deploy the app Worker](/self-hosting/azure#5-deploy-the-app-worker) unchanged.
+
+## 5. Build and upload the Computer release
+
+From the repository root:
+
+```bash
+computer/deploy/bundle.sh /tmp/calvin.bundle
+
+gcloud config set project '<PROJECT_ID>'
+export PROJECT="$(gcloud config get-value project)"
+export REGION=us-central1
+export ZONE=us-central1-a
+export BUCKET=<globally unique>
+
+gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-bucket-level-access
+gcloud storage cp /tmp/calvin.bundle "gs://$BUCKET/calvin.bundle"
+```
+
+The bundle holds the Computer source and the model proxy built for Linux amd64. The bucket stays private. Create a service account for the VMs that can only read the bucket:
+
+```bash
+gcloud iam service-accounts create computer-vm --display-name='Computer VMs'
+export SA="computer-vm@$PROJECT.iam.gserviceaccount.com"
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+  --member="serviceAccount:$SA" --role=roles/storage.objectViewer
+```
+
+## 6. Get the organization ID and make the host token
+
+1. Open `https://app.example.com` and sign in.
+2. Open **Settings** and copy the **Organization ID**.
+3. Derive the organization's host token from `COMPUTER_HOST_TOKEN_KEY`:
+
+```bash
+export ORG_ID='<ORGANIZATION_ID>'
+export COMPUTER_HOST_TOKEN_KEY='<the gateway secret>'
+
+export TOKEN="sph_$(printf 'calvin-host:%s' "$ORG_ID" \
+  | openssl dgst -sha256 -hmac "$COMPUTER_HOST_TOKEN_KEY" -binary \
+  | base64 | tr '+/' '-_' | tr -d '=')"
+```
+
+The token is valid for that organization only, and for as long as the key does not change.
+
+## 7. Create the VM
+
+The VM is Ubuntu 24.04 on amd64 with a second, blank disk for `/data`. It needs outbound internet access and no inbound access: a new VPC network has no firewall rule that allows inbound traffic.
+
+Write the VM's first-boot script with `self-managed-user-data.sh`. The script it prints stores the gateway URL and the token in a root-only file on the VM, downloads the release with the VM's service account and runs its boot script:
+
+```bash
+(umask 077; GATEWAY_HOST=gateway.example.com BUNDLE_URL="gs://$BUCKET/calvin.bundle" \
+  computer/deploy/vm/self-managed-user-data.sh > computer-user-data.sh)
+```
+
+Create the network and the instance. cloud-init runs the script in the `user-data` metadata key once, on the first boot:
+
+```bash
+gcloud compute networks create computer --subnet-mode=auto
+
+gcloud compute instances create computer-1 --zone="$ZONE" \
+  --machine-type=e2-standard-2 \
+  --network=computer \
+  --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
+  --boot-disk-size=64GB \
+  --create-disk=name=computer-1-data,size=128GB,type=pd-balanced,auto-delete=no \
+  --service-account="$SA" --scopes=storage-ro \
+  --metadata-from-file=user-data=computer-user-data.sh
+```
+
+The first boot installs the toolchains, formats the blank disk, mounts it at `/data` and starts the host. It takes about five minutes. The boot script formats a disk only when it is blank.
+
+The token stays in the instance's metadata. On the VM only root can read it; in Google Cloud, anyone allowed to read the instance (`compute.instances.get`) can.
+
+## 8. Add the Slack app and connect GitHub
+
+1. Open `https://app.example.com`. The Computer shows `Online` once the VM has connected.
+2. Click **Add to Slack** and approve.
+3. Connect GitHub and choose the repositories.
+4. Mention `@computer` in a channel.
+
+Repeat steps 6 and 7 for each further organization, with another instance and disk name.
+
+## Stop, start and resize
+
+Stop the instance with `gcloud compute instances stop`; the Computer shows `Offline` and Slack messages wait. Start it with `gcloud compute instances start`; the host reconnects and the workspace is still on `/data`. To resize, stop the instance, change its type with `gcloud compute instances set-machine-type`, and start it.
+
+Deleting the instance does not delete the data disk.
+
+## Check a VM
+
+The boot log is `/var/log/calvin-boot.log`, and the two services are `slack-presence-host` and `oc-modelproxy`. No firewall rule allows SSH. To get a shell, allow SSH from Identity-Aware Proxy only, then connect through it:
+
+```bash
+gcloud compute firewall-rules create computer-iap-ssh --network=computer \
+  --allow=tcp:22 --source-ranges=35.235.240.0/20
+
+gcloud compute ssh computer-1 --zone="$ZONE" --tunnel-through-iap --command \
+  'sudo systemctl is-active slack-presence-host.service oc-modelproxy.service; sudo tail -50 /var/log/calvin-boot.log'
+```
+
+## Update a VM
+
+A self-managed VM does not update itself. Build and upload a new bundle (step 5), download it to `/opt/bootstrap/calvin.bundle` on the VM, and run as root:
+
+```bash
+git -C /opt/bootstrap/calvin-src fetch -q /opt/bootstrap/calvin.bundle main
+git -C /opt/bootstrap/calvin-src checkout -q -f --detach FETCH_HEAD
+CODE_ONLY=1 BOOTSTRAP_FETCH=0 bash /opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
+```
+
+{/* Sources: services/managed-agents/src/computer/config.ts (COMPUTER_VMS, selfManagedVms, missingEdgeConfig, hostUrl); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged, park, resize, delete); services/managed-agents/src/computer/durable-object.ts (hello, ensureAwake, offline notice); services/managed-agents/src/computer/host-token.ts; services/managed-agents/src/computer/routes.ts (hostRoute); web/src/pages/Settings.tsx:168 (Organization ID); web/src/managed-agents/computer-state.ts (Online, Offline); computer/deploy/bundle.sh; computer/deploy/vm/self-managed-user-data.sh; computer/deploy/vm/azure-computer-boot.sh (env file, BOOTSTRAP_FETCH, CODE_ONLY); computer/deploy/vm/provision.sh (DATA_DEVICE, format only when blank, metadata block for the agent user); computer/deploy/vm/self-update.sh (no update without a calvin-latest.bundle URL). Run on 2026-11-13 against a local gateway with an Ubuntu 24.04 VM on Azure made with self-managed-user-data.sh: boot, connect, offline, reconnect and update. The gcloud commands have not been run. */}

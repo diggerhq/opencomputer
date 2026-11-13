@@ -1,0 +1,88 @@
+---
+title: "Slack commands"
+description: "A thread message starting with `!` is a command the model does not see; `!!`, `+<tier>` and `ch` are prefixes"
+---
+
+Command words are not case-sensitive. An unknown command answers ``unknown command `!x`, try `!help` ``.
+
+## Session commands
+
+| Command | Arguments | Effect |
+| --- | --- | --- |
+| `!help` | none | Lists the commands, the current model and mode. |
+| `!stop`, `!esc` | none | Stops the current turn and cancels its open approval prompts and questions. |
+| `!mode` | a [mode name](#mode-names) | Sets the [permission mode](/slack/permission-modes). An unknown name lists the modes. |
+| `!model` | `smart`, `fast`, `default`, or a model id | Switches the model from the next model request, including mid-turn. Kept across restarts. No argument: shows the model and the choices. |
+| `!effort` | `low`, `medium`, `high`, `xhigh`, `max` | Sets reasoning effort. Default `medium`. No or invalid argument: shows the level and the choices. |
+| `!speed` | `fast`, `standard` | Sets output speed. Default `fast`: Claude's fast mode on models that have it. No argument: shows the value. |
+| `!status` | none | Shows model, effort (once set), mode (unless `bypassPermissions`), context use, cost, thread id, session directory, harness session id and Computer's commit. |
+| `!diff` | none | Shows the session directory's `git diff`. In a workspace session it answers `no changes`. |
+| `!restart` | none | After the current turn, restarts the runner on the newest deployed version. The conversation carries over. Not in one-machine mode (`npm start`). |
+| `!done` | none | Archives a code channel. In a thread it only answers that this is a thread. |
+
+### Mode names
+
+| `!mode` argument | Mode |
+| --- | --- |
+| `default`, `ask` | `default` |
+| `accept`, `acceptedits`, `edits` | `acceptEdits` |
+| `plan` | `plan` |
+| `auto` | `auto` |
+| `bypass`, `yolo` | `bypassPermissions` |
+
+A new session starts in `bypassPermissions` unless the gateway's `PERMISSION_MODE` says otherwise.
+
+## Message prefixes
+
+| Prefix | Effect | Notes |
+| --- | --- | --- |
+| `!! <text>` | Interrupts the running turn and sends `<text>` as the next message. | No turn running: an ordinary message. A tier may follow: `!! +fast summarize what you have`. |
+| `+smart`, `+fast`, `+default` | Switches the session's model and sends the rest to the agent. | A tier alone only switches. Not case-sensitive. Same mapping as `!model smart`. |
+| `@computer ch <task>`, `@computer channel <task>` | Runs the session in a new code channel. | New mention only, not in a direct message. A tier may come before or after `ch`. If the channel cannot be created, the session runs in the thread. |
+
+A message without `!!` reaches the running turn at its next tool boundary. See [Messages during a turn](/slack/mid-turn-messages).
+
+## Model tiers
+
+| Tier | Claude Code | Codex |
+| --- | --- | --- |
+| `+smart` | `claude-fable-5-2` | `gpt-6-astra` |
+| `+fast` | `claude-sonnet-5-5` | `gpt-6-luna` |
+| `+default` | The host's `MODEL` setting, else `claude-opus-5-5` | `gpt-6.1-sol` |
+
+In a Codex session `!effort` also accepts `ultra`, and `!speed fast` selects Codex's priority tier.
+
+## Secrets
+
+`!secret` and `!secrets` are the same command. The gateway handles it: the message never reaches the session, and only the sender sees the answers. Not in one-machine mode (`npm start`). See [Secrets and variables](/slack/secrets-and-variables).
+
+| Command | Effect |
+| --- | --- |
+| `!secret`, `!secret list`, `!secret ls` | Lists secret names by scope, never values. |
+| `!secret help` | Shows the usage. |
+| `!secret NAME`, `!secret set NAME`, `!secret add NAME` | Shows a button that opens a private form for the value, its scope, and whether it is a file. |
+| `!secret NAME file`, `!secret set NAME file` | The same, with the file option already chosen. |
+| `!secret rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the secret from the scope. No scope: the narrowest scope that has it. |
+
+| Scope | Covers |
+| --- | --- |
+| `session` | The session. |
+| `me`, `user` | Every session the person owns. |
+| `workspace` | The workspace. Admins only. |
+
+The narrowest scope that has the name wins.
+
+## Variables
+
+`!var`, `!vars`, `!variable` and `!variables` are the same command, handled by the gateway like `!secret`. Lists show values.
+
+| Command | Effect |
+| --- | --- |
+| `!var`, `!var list`, `!var ls` | Lists names and values, by scope. |
+| `!var help` | Shows the usage. |
+| `!var NAME value [scope]`, `!var NAME=value [scope]`, `!var set NAME value [scope]` (also `add`) | Sets a variable. The value may be wrapped in backticks or a code block. At most 3,000 characters. |
+| `!var rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the variable from the scope. |
+
+Scopes: `session` (the default in a session's thread), `me` or `user` (the default elsewhere), `workspace` or `org` (admins only). A name or value that looks like a credential asks for confirmation. A secret and a variable cannot share a name in one scope.
+
+{/* Sources: computer/src/runner/commands.ts; computer/src/runner/help.ts; computer/src/runner/session.ts; computer/src/tiers.ts; computer/src/runner/model-switch.ts; computer/src/runner/format.ts (statusLine); computer/src/runner-env.ts (MODEL); computer/src/workspace.ts (gitDiff); computer/src/gateway/routing.ts; computer/src/gateway/secrets-ui.ts; computer/src/variables.ts; computer/src/gateway/variables-ui.ts; computer/src/gateway/main.ts (PERMISSION_MODE); computer/src/main.ts */}

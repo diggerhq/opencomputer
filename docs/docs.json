@@ -22,10 +22,70 @@
   },
   "favicon": "/images/favicon.svg",
   "navigation": {
-    "tabs": [
+    "groups": [
       {
-        "tab": "Serverless Agents",
-        "groups": [
+        "group": "Getting started",
+        "pages": [
+          "getting-started/introduction",
+          "getting-started/quickstart",
+          "getting-started/architecture"
+        ]
+      },
+      {
+        "group": "Use in Slack",
+        "pages": [
+          "slack/threads",
+          "slack/shared-threads",
+          "slack/linked-and-spawned-threads",
+          "slack/mid-turn-messages",
+          "slack/permission-modes",
+          "slack/approvals-questions-plans",
+          "slack/subagents",
+          "slack/files-and-cards",
+          "slack/browser-screenshots-video",
+          "slack/branches-and-pull-requests",
+          "slack/preview-urls",
+          "slack/models-and-harnesses",
+          "slack/secrets-and-variables",
+          "slack/troubleshooting"
+        ]
+      },
+      {
+        "group": "Self-hosting",
+        "pages": [
+          "self-hosting/overview",
+          "self-hosting/azure",
+          "self-hosting/aws",
+          "self-hosting/gcp"
+        ]
+      },
+      {
+        "group": "API and CLI",
+        "pages": [
+          "api/overview",
+          "api/sessions",
+          "api/turns",
+          "api/events",
+          "api/asks",
+          "api/subagents",
+          "api/terminals",
+          "api/files",
+          "api/cli"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/slack-commands",
+          "reference/agent-tools",
+          "reference/configuration",
+          "reference/limits",
+          "reference/api-schema"
+        ]
+      },
+      {
+        "group": "Serverless Agents",
+        "pages": [
           {
             "group": "Getting started",
             "pages": [

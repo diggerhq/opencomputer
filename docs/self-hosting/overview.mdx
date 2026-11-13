@@ -1,0 +1,34 @@
+---
+title: "Start here"
+description: "A self-hosted @computer is Cloudflare Workers and one VM per organization on Azure, AWS or Google Cloud"
+---
+
+A self-hosted deployment runs the same stack as the hosted service, in your accounts:
+
+![How a self-hosted @computer fits together](/images/self-hosting.png)
+
+The Computer VM connects out to the gateway Worker; nothing connects in. You create one VM per organization in your cloud account, and the gateway shows it as `Online` while it is connected.
+
+## What you need
+
+| Account or tool | Used for |
+| --- | --- |
+| Cloudflare account with a zone (domain) you control | Workers, D1, KV, R2 and Durable Objects. The gateway Worker needs a custom domain on the zone: Worker-to-Worker requests on `workers.dev` do not arrive. |
+| Azure subscription, AWS account or Google Cloud project | The Computer VMs and the storage for the Computer release. |
+| WorkOS account | Sign-in to the dashboard |
+| Slack workspace | A Slack app you create |
+| GitHub account or organization | A GitHub App you create |
+| Anthropic API key | Model calls from every session |
+| Git, Node.js 22 or newer, npm, Go, Wrangler 4, and your cloud's CLI (`az`, `aws` or `gcloud`) | Building and deploying |
+
+## Choose where the VMs run
+
+| Cloud | The VM | The release is stored in |
+| --- | --- | --- |
+| [Azure](/self-hosting/azure) | An Azure VM, created with `az` | A private blob container |
+| [AWS](/self-hosting/aws) | An EC2 instance, created with `aws` | A private S3 bucket |
+| [Google Cloud](/self-hosting/gcp) | A Compute Engine instance, created with `gcloud` | A private Cloud Storage bucket |
+
+The steps for Cloudflare, WorkOS, Slack and GitHub are the same for all three and are written out in full on the Azure page. You stop, start and resize the VMs with your cloud's tools; a Slack message that arrives while a VM is stopped waits until it is back.
+
+{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/src/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged); services/managed-agents/src/computer/durable-object.ts (offline notice); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS); computer/deploy/vm/self-managed-user-data.sh */}

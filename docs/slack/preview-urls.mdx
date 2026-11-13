@@ -1,0 +1,39 @@
+---
+title: "Preview URLs"
+description: "A session gives an HTTP server it started on the computer a public URL that anyone with the link can open"
+---
+
+<Note>Not in the open-source code yet (preview URLs on a self-hosted instance). On the hosted service this page describes what runs today. On a self-hosted instance today, the session is offered the `preview` tool and every call fails with `preview URLs need an OpenComputer computer; this gateway does not offer them`.</Note>
+
+The session creates the URL with the `preview` tool and posts it in the thread. Ask for it in words: "start the app and give me a preview link".
+
+<Frame>
+  <img src="/images/slack/preview-url.png" alt="Sam asks for a preview link named pricing-demo and computer replies with https://pricing-demo.opencomputer.app" />
+</Frame>
+
+## URL
+
+| Deployment | URL |
+| --- | --- |
+| Hosted | `https://<name>.opencomputer.app` |
+| Self-hosted | A wildcard domain the operator points at the gateway. The session is not offered the preview tools until the domain is set; see Gateway. |
+
+| Property | Value |
+| --- | --- |
+| Name | Generated unless you ask for one. A port keeps its existing name. |
+| Access | Anyone who has the URL can open it; there is no login. A chosen name can be guessed. |
+| Traffic | Plain HTTP on that one port, including streamed responses and WebSocket upgrades. The server must not use TLS. |
+| Lifetime | While the server runs; `503` otherwise. The server stops with the session's runner, at [idle exit](/slack/threads#idle-exit). |
+| Removal | Ask the session to take the URL down. The `unpreview` tool removes it within seconds. |
+
+## Host name checks
+
+Next.js, Vite and webpack-dev-server dev servers refuse requests under a host name they do not expect, and the preview arrives under its public host name. When the tool detects the refusal, its result names the setting to add; the dev server then needs a restart.
+
+| Server | Setting |
+| --- | --- |
+| Next.js | `allowedDevOrigins` |
+| Vite | `server.allowedHosts` |
+| webpack-dev-server | `allowedHosts` |
+
+{/* Sources: computer/src/runner/preview.ts; computer/src/host/previews.ts; computer/src/host/preview-probe.ts; computer/src/host/preview-proxy.ts; computer/src/protocol.ts (PreviewRequest, PreviewToolResult); computer/src/gateway/hosts.ts (preview and unpreview refused); computer/src/host/main.ts (SP_IDLE_MS); computer/definitions/computer/AGENTS.md ("the session parks and its jobs die with it") */}

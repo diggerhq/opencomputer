@@ -1,0 +1,52 @@
+---
+title: "Permission modes"
+description: "New sessions start in `bypassPermissions`, where nothing asks for approval; `!mode` changes one session and `PERMISSION_MODE` all new ones"
+---
+
+A session's permission mode decides which tool calls the agent makes without asking. A call that needs permission appears in the thread as a prompt (see [Approvals, questions and plans](/slack/approvals-questions-plans)).
+
+<Frame>
+  <img src="/images/slack/mode.png" alt="Answer to !mode plan, and a later turn whose footer shows the plan mode" />
+</Frame>
+
+## Modes
+
+| Mode | `!mode` argument | Behaviour |
+| --- | --- | --- |
+| `bypassPermissions` | `bypass`, `yolo` | Nothing asks for approval. The default. |
+| `default` | `default`, `ask` | Tool calls that need permission ask first. |
+| `acceptEdits` | `accept`, `acceptedits`, `edits` | File edits run without asking; other tool calls that need permission ask. |
+| `plan` | `plan` | The agent investigates and presents a plan for review before changing anything. |
+| `auto` | `auto` | Claude Code's auto mode: the harness decides per call whether to ask. |
+
+These are Claude Code's permission modes: Claude Code defines which calls each one lets through.
+
+Outside `bypassPermissions`, `spawn_thread` and `post_thread` ask for approval; `read_thread` never asks.
+
+<Note>Not in the open-source code yet (model proxy, which makes Codex sessions work in the public build).</Note>
+
+The Codex harness supports `default` and `bypassPermissions` only.
+
+## Default
+
+A new session starts in `bypassPermissions`. To change that for sessions created from then on, set `PERMISSION_MODE` in the gateway's environment (in one-machine mode, the process's). See Configuration.
+
+<Note>Not in the open-source code yet (runner isolation). Until it lands, sessions on one computer share a Unix user and can read each other's files and secrets.</Note>
+
+## Changing a session's mode
+
+```text
+!mode plan
+```
+
+| Set by | Mode |
+| --- | --- |
+| `!mode <argument>` | The named mode. Applies at once, including to a running turn. |
+| "Approve · auto-accept edits" on a plan | `acceptEdits` |
+| `spawn_thread` | The new session starts in its parent's mode. |
+
+- The mode survives a runner restart and idle exit.
+- Anyone whose messages are delivered to the session can change it (see [Shared threads](/slack/shared-threads#who-can-steer)).
+- The turn footer and `!status` show the mode only when it is not `bypassPermissions`.
+
+{/* Sources: computer/src/runner/commands.ts (MODE_ALIASES, !mode); computer/src/main.ts (DEFAULT_MODE); computer/src/gateway/main.ts (PERMISSION_MODE); computer/src/runner/session.ts (setMode); computer/src/runner/format.ts; computer/src/runner/thread.ts; computer/src/runner/prompts.ts (plan approval); computer/src/gateway/routing.ts (spawn mode); computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/harness/codex/harness.ts (CODEX_CAPS.modes) */}
