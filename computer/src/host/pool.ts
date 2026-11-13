@@ -8,9 +8,9 @@
 //
 // Invariants: at most `size` spares, counting those still launching; size 0
 // is off. A spare is taken only when it is parked (`ready`), from this host's
-// release, and, for Claude, started with the Claude credential the delivery
-// carries (its fingerprint): Claude Code copied the environment when it
-// started. Codex holds no credential (the proxy does), so any will do. One taken
+// release, and, for Claude, of the session's spare kind (model-key.ts
+// `spareKind`, design C6): Claude Code read its model settings when it
+// started. Codex reads its own when it starts, so any will do. One taken
 // is the caller's, never offered again. A spare that dies before it was ever
 // ready, or within `minLifeMs` of parking, backs the pool off (doubling, up to
 // `maxBackoffMs`), so a Claude Code that cannot start or stay up is not
@@ -24,7 +24,7 @@ export interface SpareRunner {
 }
 
 export type EvictReason = 'version' | 'surplus';
-export type MissReason = 'none' | 'credential';
+export type MissReason = 'none' | 'kind';
 
 export interface PoolOptions<R> {
   size: number;
@@ -79,7 +79,7 @@ export class Pool<R extends SpareRunner> {
     this.backOff();
   }
 
-  /** Start spares up to `size`; `canStart` is false while there is no Claude credential to start them with. */
+  /** Start spares up to `size`; `canStart` is false while there is no model route to start them on. */
   fill(canStart: boolean) {
     const surplus = [...this.spares].slice(this.o.size);
     for (const r of surplus) this.evict(r, 'surplus');
@@ -96,11 +96,11 @@ export class Pool<R extends SpareRunner> {
     }
   }
 
-  /** A parked spare started with `credential` (a fingerprint; `any` for Codex), now the caller's; else why there is none. */
-  take(credential: string | undefined, any = false): R | MissReason {
+  /** A parked spare of `kind` (`any` for Codex), now the caller's; else why there is none. */
+  take(kind: string | undefined, any = false): R | MissReason {
     const ready = [...this.spares].filter((r) => r.spare?.ready && r.spare.version === this.o.version);
-    const r = any ? ready[0] : credential ? ready.find((s) => s.spare!.credential === credential) : undefined;
-    if (!r) return ready.length ? 'credential' : 'none';
+    const r = any ? ready[0] : kind ? ready.find((s) => s.spare!.kind === kind) : undefined;
+    if (!r) return ready.length ? 'kind' : 'none';
     this.spares.delete(r);
     return r;
   }
