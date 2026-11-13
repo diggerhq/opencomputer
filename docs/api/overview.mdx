@@ -3,14 +3,6 @@ title: "Overview"
 description: "The Computer API drives the same sessions as Slack threads, over WebSocket (JSON-RPC 2.0) and HTTP"
 ---
 
-<Note>
-Not in the public code yet: launch blocker 4 (API on a self-hosted instance).
-
-**Today:** the API and `opc` work against the hosted service only. The public repository has the schema, the session journal and the relay, but the relay refuses every request.
-
-**Launch design:** the gateway serves the API, `/setup` mints API keys, and `OPENCOMPUTER_API_URL` points `opc` at the self-hosted gateway (see [opc CLI](/api/cli)).
-</Note>
-
 The schema is `computer/schema/computer-api.v1.json`; [API schema](/reference/api-schema) lists its operations, objects, events and errors. The relay, a process on the computer (`SP_WIRE_LISTEN`, default `127.0.0.1:7071`), serves the WebSocket and the workspace file routes. The client is the [opc CLI](/api/cli).
 
 ## Transport

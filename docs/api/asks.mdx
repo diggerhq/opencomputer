@@ -3,8 +3,6 @@ title: "Asks"
 description: "An ask is an approval or question the agent waits on; while open it keeps the session `waiting`, and it never expires"
 ---
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
-
 The Slack side is in [Approvals, questions and plans](/slack/approvals-questions-plans). An ask's id is `ak_` followed by 12 characters.
 
 | `kind` | Body | Answer |
@@ -13,7 +11,7 @@ The Slack side is in [Approvals, questions and plans](/slack/approvals-questions
 | `question` | `question.questions` | `{"answers": [{"questionId", "choices", "text"}]}` |
 | `secret` | `secret` | None: `asks.answer` returns `400 answer_with_secret` |
 
-The runner in the public code opens `approval` and `question` asks only. Body fields: [API schema](/reference/api-schema#objects).
+The runner opens `approval` and `question` asks only. Body fields: [API schema](/reference/api-schema#objects).
 
 ## Status
 

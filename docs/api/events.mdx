@@ -3,8 +3,6 @@ title: "Events"
 description: "A session's events are numbered by `seq` from 1 with no gaps; read them over HTTP or follow them live over WebSocket"
 ---
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
-
 ```json
 {"id":"ev_0123456789abcdef","seq":412,"createdAt":"2026-01-01T12:00:00.000Z","sessionId":"cs_0123456789abcdef","turnId":"tn_0123456789ab","actor":{"id":"usr_...","name":"Ada","via":"opc","client":"opc/0.1.0"},"type":"message.received","data":{"input":"Add a test for the empty case","ifBusy":"steer","delivery":"steered","interruptedTurnIds":[],"declinedAskIds":[]}}
 ```

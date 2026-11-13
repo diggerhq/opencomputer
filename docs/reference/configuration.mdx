@@ -95,8 +95,6 @@ See [Telemetry](/self-hosting/operate).
 
 ### Model proxy
 
-<Note>Not in the public code yet: launch blocker 3 (model proxy). The host and runner read these variables; the proxy they point at is not in the public repository.</Note>
-
 | Variable | Default | Purpose |
 |---|---|---|
 | `SP_MODEL_PROXY` | unset; the `sp-host` install sets `/run/oc-modelproxy/control.sock` | The proxy's control socket. Unset: the host uses no proxy. |
@@ -131,8 +129,6 @@ The host sets each of these on every runner, to its own value or empty; a runner
 
 ## API relay
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance).</Note>
-
 Read by `slack-presence-wire.service`.
 
 | Variable | Default | Purpose |
@@ -156,8 +152,6 @@ Read by `slack-presence-wire.service`.
 The host does not pass `STREAMING` and `FLUSH_MS` to runners, so on a computer they keep their defaults.
 
 ## `provision.sh` inputs
-
-<Note>Not in the public code yet: launch blocker 6 (install path).</Note>
 
 Read from the environment of each `provision.sh` run. See [Host VM](/self-hosting/host-vm) and [Upgrade](/self-hosting/operate).
 

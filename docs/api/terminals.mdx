@@ -3,8 +3,6 @@ title: "Terminals"
 description: "A terminal is a shell or command the host starts in a session's workspace as the agent's Unix user, over WebSocket only"
 ---
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
-
 `opc shell` is a client for terminals.
 
 ## Access
@@ -14,8 +12,6 @@ description: "A terminal is a shell or command the host starts in a session's wo
 | Caller | The session's owner or an admin, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
 | Process user | The agent's Unix user |
 | Environment | `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `TERM`. No session secrets |
-
-<Note>Not in the public code yet: launch blocker 2 (runner isolation). Today every session's runner and every terminal run as the same Unix user, so a terminal can read the files of other sessions on the computer.</Note>
 
 ## Open
 

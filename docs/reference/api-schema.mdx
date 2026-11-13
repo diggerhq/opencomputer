@@ -3,8 +3,6 @@ title: "API schema"
 description: "Every method, event, object and error code of the Computer API, version 1"
 ---
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
-
 | Item | Value |
 | --- | --- |
 | Schema file | `computer/schema/computer-api.v1.json`, generated from `computer/src/api/schema.ts` |
@@ -160,7 +158,7 @@ Sent only on a WebSocket attached with `deltas: true`; see [Events](/api/events#
 | Secret | `name`, `scope` (`session`, `me`, `organization`), `sessionId`, `file`, `effective`, `setBy`, `updatedAt` |
 | Result | `type` (`result`), `subtype` (`success`, `error`, `cancelled`, `waiting`), `isError`, `sessionId`, `turnId`, `status`, `result`, `error`, `reason`, `ask`, `url`, `durationMs`, `usage`, `subagents` (SubagentSummary list), `turn` |
 
-`Result` is what `opc -p --output-format json` prints for a turn. No operation in the public code reads or writes `Secret`.
+`Result` is what `opc -p --output-format json` prints for a turn. No operation reads or writes `Secret`.
 
 ## Errors
 

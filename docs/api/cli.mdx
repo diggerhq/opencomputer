@@ -3,8 +3,6 @@ title: "opc CLI"
 description: "`opc` is the Computer API's command-line client: one Rust binary from `diggerhq/opc` (Apache-2.0)"
 ---
 
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
-
 Releases before 0.1.0 are prereleases. `opc --version` prints the protocol (`opc.v1`) and schema (`computer-api.v1`) it speaks.
 
 ## Install
@@ -49,8 +47,6 @@ cargo build --release --locked
 `OPENCOMPUTER_API_KEY` overrides the file (for scripts and CI). The key in the file is used only when the file's `apiUrl` matches the API URL in use.
 
 ## Endpoint configuration
-
-<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). Launch design: set `OPENCOMPUTER_API_URL` to the self-hosted gateway's URL and `OPENCOMPUTER_API_KEY` to a key minted in `/setup`. Today the public gateway serves none of the routes `opc` calls.</Note>
 
 | Variable | Meaning |
 | --- | --- |

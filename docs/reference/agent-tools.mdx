@@ -132,8 +132,6 @@ Limit: 10 per runner. Fails when a secret of that name is already set, or when a
 
 ## preview
 
-<Note>Not in the public code yet: launch blocker 5 (Preview URLs on a self-hosted instance). The self-hosted gateway will serve previews on a wildcard domain the operator points at it, and the runner will not offer `preview` and `unpreview` until a domain is set. Today the runner offers both tools and the self-hosted gateway refuses every call.</Note>
-
 Gives an HTTP server listening on a port of the computer a public URL. Anyone with the URL can open it. Plain HTTP on that port only; the URL works while the server runs. See [Preview URLs](/slack/preview-urls).
 
 | Parameter | Type | Required | Meaning |
