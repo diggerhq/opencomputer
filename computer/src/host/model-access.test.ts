@@ -197,7 +197,8 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     expect(r.sent.at(-1)).toMatchObject({ t: 'credentials', credentials: { model: { profile: 'claude-b' } } });
     expect(t.deps.exit).not.toHaveBeenCalled();
 
-    // The same route again changes nothing.
+    // The same route again changes nothing. (held() reconnects, and the host binds again: wait for that first.)
+    await t.a.ready('s3');
     const n = r.sent.length;
     await t.a.delivered('s3', creds, route('claude-b', 'sk-test-2'), 'claude');
     expect(r.sent.length).toBe(n);
@@ -306,7 +307,8 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
   }, 20_000);
 
   it('spares: bound as spare/<id> to models.claude, matched by kind, released and bound to the session when claimed', async () => {
-    const t = setup();
+    // No spare unit exists: a release lost with a replaced connection is made good on the next hello.
+    const t = setup({ unitExists: vi.fn(async () => false) });
     await t.up();
     expect(t.a.canSpare()).toBe(false); // no models.claude yet
     t.a.onGateway(welcome({ claude: route('claude-a') }));
@@ -325,7 +327,7 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     await t.up();
     t.a.onGateway(welcome({ claude: { mode: 'profile', profile: 'claude-a', vars: {}, key: 'k' } }));
     await expect(t.a.spare('sp2')).rejects.toThrow(/did not bind/);
-    expect(await held('sp2')).toBeUndefined();
+    await vi.waitFor(async () => expect(await held('sp2')).toBeUndefined(), { timeout: 8000 });
   });
 
   it('a profile only for Codex is advertised only when the Codex binary exists', async () => {
