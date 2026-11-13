@@ -18,7 +18,7 @@ import type { Tier } from './tiers.js';
 import type { Linked } from './links.js';
 import type { Batch } from './telemetry/emitter.js';
 import type { ApiDelivery, GatewayToHostV4, HostToGatewayV4, HostToRunnerV4, JournalReport, RunnerApi, WireConfig } from './protocol-api.js';
-import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel } from './protocol-model.js';
+import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel, RunnerRefused } from './protocol-model.js';
 import type { WorkspaceDefinition } from './protocol-workspace.js';
 
 export * from './protocol-api.js';
@@ -203,15 +203,10 @@ export interface HostCredentials {
   slackBotUserId: string;
   teamId?: string;
   /**
-   * Protocol 4's Claude credential, which the host never forwards at 5: only the
-   * runner's environment (until work 097 step 5b) and the local gateway (until 5c)
-   * still read these three, and they go with those steps.
+   * Host → runner only (work 097, C4): the session's route as its runner knows it, or why there is none it can run on.
+   * Absent: no change (the host does not know the route yet, or the proxy is down).
    */
-  claudeOAuthToken?: string;
-  anthropicApiKey?: string;
-  anthropicBaseUrl?: string;
-  /** Host → runner only (work 097, C4): the session's route as its runner knows it; absent while it has none. */
-  model?: RunnerModel;
+  model?: RunnerModel | RunnerRefused;
 }
 
 /** A session asks for a new thread to run work in parallel (work 047). */
@@ -382,7 +377,7 @@ export type GatewayToHost =
    * keep this identity and reconnect as it. Refused by any other host.
    */
   | { t: 'assign'; organizationId: string; hostToken: string; gatewayUrl: string }
-  /** Credentials changed (fresh Slack install, new Claude token): replaces the welcome's; the host forwards to runners. */
+  /** Credentials changed (fresh Slack install, a new model credential): replaces the welcome's; the host forwards the Slack ones to runners and rebinds sessions on changed `models`. */
   | { t: 'credentials'; credentials: HostCredentials; models?: ModelRoutes }
   /** Start the runner if needed (fork if no forkPath, resume if sdkSessionId), then deliver. */
   /** Per-delivery credentials let a multi-tenant gateway keep workspace tokens scoped to one session. */

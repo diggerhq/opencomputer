@@ -103,7 +103,12 @@ jobs:
       - run: go test -run '^$' -bench ProxyOverhead -benchtime 5000x ./...
         env:
           MODELPROXY_OVERHEAD_GATE: 1
-      - run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/oc-modelproxy" .
+      - run: CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$VERSION" -o "$RUNNER_TEMP/oc-modelproxy" .
+        env:
+          VERSION: ${{ github.sha }}
+      # The shipped profiles load as a computer's start would load them (deploy/vm/modelproxy.sh checks the same).
+      - run: |
+          "$RUNNER_TEMP/oc-modelproxy" -check -profiles profiles
 
   secrets:
     name: Secret scan

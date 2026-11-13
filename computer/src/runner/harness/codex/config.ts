@@ -1,7 +1,8 @@
 // Where a session's Codex keeps its state, what it is configured with, and
 // the environment it runs in (work 082, contract sections 1 and 5). Codex
 // reaches the model only through Calvin's loopback (loopback.ts) as a custom
-// provider in API-key mode, with a placeholder the proxy replaces.
+// provider in API-key mode, with the placeholder the proxy replaces (the
+// host's, in the session's route: work 097 C4).
 //
 // Invariants:
 // - one CODEX_HOME per session, named by a hash of its key, mode 0700, under
@@ -13,8 +14,8 @@
 // - no auth.json is ever written;
 // - the child's environment is an allow-list (CHILD_ENV): what launch.ts
 //   passes a runner that commands need, and what Calvin's bin/ shims read.
-//   No credential, no runner-internal socket (SP_TOKEN_SOCKET,
-//   SP_MODEL_SOCKET) and nothing that would change Codex's auth or endpoint
+//   No credential, no runner-internal socket (SP_TOKEN_SOCKET, the model
+//   proxy's) and nothing that would change Codex's auth or endpoint
 //   (`OPENAI_*`, `CODEX_*`) reaches Codex or the commands it runs;
 // - the placeholder never reaches commands Codex runs (shell policy excludes
 //   it);
@@ -24,8 +25,6 @@
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-/** What Codex sends as its key; the proxy replaces it (as for Claude, work 077). */
-export const PLACEHOLDER = 'ssh-placeholder';
 /** The variable Codex reads its provider key (the placeholder) from. */
 export const KEY_VAR = 'CALVIN_MODEL_KEY';
 export const PROVIDER = 'calvin';
@@ -108,11 +107,11 @@ export function writeHome(home: string, toml: string) {
  * placeholder, Codex's log level, and the session's secrets sourced before each
  * command Codex runs through bash (as CLAUDE_ENV_FILE does for Claude).
  */
-export function spawnEnv(base: NodeJS.ProcessEnv, o: { home: string; envFile?: string }): NodeJS.ProcessEnv {
+export function spawnEnv(base: NodeJS.ProcessEnv, o: { home: string; envFile?: string; placeholder: string }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const k of CHILD_ENV) if (base[k] !== undefined) env[k] = base[k];
   env.CODEX_HOME = o.home;
-  env[KEY_VAR] = PLACEHOLDER;
+  env[KEY_VAR] = o.placeholder;
   env.RUST_LOG = 'warn';
   if (o.envFile) env.BASH_ENV = o.envFile;
   return env;

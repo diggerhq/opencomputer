@@ -21,6 +21,9 @@
 // - A route change on a live runner: an equal `harness[h]` rebinds in place and
 //   pushes the runner its C4; any other rebinds and tells the runner to exit
 //   after its turn. A new refusal only rebinds.
+// - A runner learns why its session has no route it can run on: `model` is
+//   `{ refused }` with the text its caller is bound to (C3's), sent when it
+//   starts and again whenever a bind of its caller is answered.
 // - Proxy down (no control connection with a hello): no `profiles` in the
 //   gateway hello, `model-request` answers `proxy_unavailable`, no runner or
 //   spare starts, live runners are left alone; 30 s down is logged as an error.
@@ -75,10 +78,9 @@ export interface HostModelAccessDeps {
 
 export type HostModelAccess = ReturnType<typeof hostModelAccess>;
 
-/** `c` without the Claude fields of protocol 4: no runner gets a credential's value. */
-export function withoutClaude(c: HostCredentials): HostCredentials {
-  const { claudeOAuthToken: _o, anthropicApiKey: _k, anthropicBaseUrl: _u, model: _m, ...slack } = c;
-  return slack;
+/** Only `c`'s Slack fields, whatever else a gateway sent: no runner gets a model credential's value. */
+export function slackOnly({ slackBotToken, slackBotUserId, teamId }: HostCredentials): HostCredentials {
+  return { slackBotToken, slackBotUserId, ...(teamId !== undefined && { teamId }) };
 }
 
 interface Held {
@@ -129,6 +131,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
       if (a.bound) {
         if (!h.sessionKey.startsWith(SPARE)) {
           o.toGateway({ t: 'model-bound', sessionKey: h.sessionKey, ...('profile' in b ? { mode: 'profile', profile: b.profile, key: b.key } : { mode: 'refuse' }) });
+          tell(h.sessionKey);
         }
         return 'profile' in b;
       }
@@ -159,6 +162,13 @@ export function hostModelAccess(o: HostModelAccessDeps) {
     return caller && held.get(caller)?.sessionKey === key ? { r: r!, caller, h: held.get(caller)! } : undefined;
   }
 
+  /** Push `key`'s live runner what it knows of its route now: C4, or why it has none. */
+  function tell(key: string) {
+    const l = live(key);
+    const c = l && forRunner(key, last.get(key) ?? o.creds(), l.h.harness);
+    if (c) send(l.r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
+  }
+
   /** `key`'s route was `before`: rebind its live runner, and push it the new C4 or tell it to exit. */
   function changed(key: string, before: ModelRoute | undefined) {
     const l = live(key);
@@ -169,10 +179,8 @@ export function hostModelAccess(o: HostModelAccessDeps) {
     void bind(l.caller);
     if (!after || after.mode === 'refuse') return;
     const next = harnessOf(after, l.h.harness);
-    if (next !== undefined && isDeepStrictEqual(harnessOf(before, l.h.harness), next)) {
-      const c = forRunner(key, last.get(key) ?? o.creds(), l.h.harness);
-      if (c) send(l.r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-    } else o.exit(key);
+    if (next !== undefined && isDeepStrictEqual(harnessOf(before, l.h.harness), next)) tell(key);
+    else o.exit(key);
   }
 
   /** Apply a route change to the sessions in `keys`. */
@@ -193,11 +201,15 @@ export function hostModelAccess(o: HostModelAccessDeps) {
 
   function forRunner(key: string, c: HostCredentials | undefined, harness = o.runner(key)?.harness ?? 'claude'): HostCredentials | undefined {
     if (!c) return undefined;
-    const slack = withoutClaude(c);
-    const route = unknown.has(key) ? undefined : routeOf(key, harness);
-    const h = harnessOf(route, harness);
-    if (route?.mode !== 'profile' || h === undefined || !proxy.hello) return slack;
+    const slack = slackOnly(c);
+    if (unknown.has(key) || !proxy.hello) return slack;
+    const l = live(key);
+    const refused = l?.h.harness === harness ? l.h.refused : undefined;
+    const r = refused ? { reason: refused } : resolve(key, harness);
+    if ('reason' in r) return { ...slack, model: { refused: r.reason } };
+    const route = routeOf(key, harness) as Extract<ModelRoute, { mode: 'profile' }>;
     const { profile, key: k, owner, maxModel } = route;
+    const h = harnessOf(route, harness);
     return { ...slack, model: { profile, key: k, harness: h, owner, maxModel, endpoint: { unixSocket: o.modelSocket || MODEL_SOCKET }, placeholder: proxy.hello.placeholder } };
   }
 

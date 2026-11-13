@@ -26,6 +26,7 @@ import {
   type WorkspaceStatus,
 } from '../protocol.js';
 import type { Linked } from '../links.js';
+import type { ModelRoutes } from '../protocol-model.js';
 import type { Store, Queued } from './db.js';
 import { errorText, log } from '../log.js';
 
@@ -36,6 +37,8 @@ export interface HubDeps {
   /** Tokens issued by /setup (S3's checkHostToken): the host's label, or undefined. */
   checkToken?(token: string): string | undefined;
   credentials(): HostCredentials;
+  /** Work 097: the route of a session whose delivery carries none, by harness; sent in `welcome` and `credentials`. */
+  models(): ModelRoutes;
   mintToken(repos?: string[]): Promise<{ token: string; expiresAt: string }>;
   /** A session starts a new thread (work 047): the router posts it and creates the session. */
   spawn?(from: string, req: SpawnRequest): Promise<SpawnResult>;
@@ -148,7 +151,7 @@ export class Hub {
     this.conns.get(m.hostId)?.ws.close(4001, 'replaced');
     const conn: Conn = { ws, hostId: m.hostId, version: m.version, pending: new Map() };
     this.conns.set(m.hostId, conn);
-    this.send(conn, { t: 'welcome', protocol: PROTOCOL_VERSION, credentials: this.deps.credentials(), people: this.deps.store.people() });
+    this.send(conn, { t: 'welcome', protocol: PROTOCOL_VERSION, credentials: this.deps.credentials(), models: this.deps.models(), people: this.deps.store.people() });
     for (const r of m.sessions) this.deps.store.report(r, m.hostId);
     log.info(`host ${m.hostId} connected (${m.version}, ${m.sessions.length} sessions)`);
     void this.flush();
@@ -292,10 +295,11 @@ export class Hub {
     for (const conn of this.conns.values()) this.send(conn, m);
   }
 
-  /** Credentials changed (a fresh install, a new Claude token): push them; hosts forward them to their runners. */
+  /** Credentials changed (a fresh install, a new model credential): push them and the model routes; hosts forward them to their runners. */
   refreshCredentials() {
     const credentials = this.deps.credentials();
-    for (const conn of this.conns.values()) this.send(conn, { t: 'credentials', credentials });
+    const models = this.deps.models();
+    for (const conn of this.conns.values()) this.send(conn, { t: 'credentials', credentials, models });
     if (this.conns.size) log.info(`credentials pushed to ${this.conns.size} host(s)`);
   }
 
