@@ -1,46 +1,56 @@
 ---
 title: "Quickstart"
-description: "Run @computer on one cloud VM and talk to it in Slack"
+description: "On the hosted service, sign in, connect a coding agent, Slack and GitHub, then mention `@computer` in a channel"
 ---
 
-{/* Goal: one Ubuntu VM running gateway + host; the bot answers in Slack.
-    Open risk: single-VM gateway+host with a real domain (no ngrok) is not yet verified. */}
+The hosted service runs the gateway and the computer. To run the code yourself, see [Self-hosting](/self-hosting/overview).
 
-<Tip>
-The easiest way to get started is the cloud version:
+<Frame>
+  <img src="/images/slack/first-task.png" alt="Sam mentions @computer with a question in #eng. computer replies in the thread with the thread id, the steps it ran, the answer and a footer with model, duration and context size" />
+</Frame>
 
-1. Sign up at [app.opencomputer.dev](https://app.opencomputer.dev).
-2. Connect your repositories.
-3. Get started in Slack.
+## Before you start
 
-The rest of this page runs @computer on your own VM.
-</Tip>
+- A Slack workspace. If you are not an admin, Slack lets you request approval for the app.
+- A GitHub account that can install a GitHub App on the repositories the agent will work in.
+- A Claude Pro or Max, or ChatGPT Plus or Pro subscription, unless you pay for model usage with OpenComputer credits.
 
-## What you need
+## Set up
 
-TODO: Slack workspace, domain, model API key, VM size.
+Sign in at [app.opencomputer.dev/computer](https://app.opencomputer.dev/computer). The page walks through four steps.
 
-## Get a VM
+<Steps>
+  <Step title="Choose your coding agent">
+    Pick Claude Code or Codex and connect the subscription it runs on, or pick OpenComputer credits.
+  </Step>
+  <Step title="Add OpenComputer to Slack">
+    Click **Add to Slack** and approve the app. The service creates your organization's computer; the page shows its status until it is `Online`.
+  </Step>
+  <Step title="Connect GitHub">
+    Install the GitHub App and pick the repositories. The three most recently pushed are cloned on the computer; the others are cloned when a session first checks them out. The agent can push branches and open pull requests in all of them.
+  </Step>
+  <Step title="Give it a first task">
+    Mention `@computer` in a channel, or send it a direct message. The page shows the mention to copy.
 
-<Tabs>
-  <Tab title="AWS">TODO</Tab>
-  <Tab title="Azure">TODO</Tab>
-  <Tab title="GCP">TODO</Tab>
-  <Tab title="Any VPS">TODO</Tab>
-</Tabs>
+    ```text
+    @computer why is the checkout test flaky?
+    ```
 
-## Install @computer
+    You do not have to wait for `Online`: a message sent while the computer starts is picked up once it is on.
+  </Step>
+</Steps>
 
-TODO
+The reply streams into the thread under your message. That thread is now a session: reply in it to continue, without a mention.
 
-## Create the Slack app
+## Teammates
 
-TODO
+Anyone in the Slack workspace can mention `@computer`. A session belongs to the person who started its thread.
 
-## Say hello
+## Next
 
-TODO: invite the bot to a channel, post `@computer <task>`, what you should see.
+- [Threads](/slack/threads): what a session shows and how it ends.
+- [Branches and pull requests](/slack/branches-and-pull-requests): how work leaves the computer.
+- [Configure the computer](/self-hosting/configure): repositories, models and permissions.
+- [Self-hosting](/self-hosting/overview): run the gateway and the computer yourself.
 
-## Next steps
-
-TODO
+{/* Sources: opencomputer web/src/managed-agents/Computer.tsx, AgentStep.tsx and computer-state.ts (four steps, labels, status, first-task text); services/managed-agents/src/computer/github.ts (`EAGER_REPO_COUNT`: three clones, the rest lazy); services/managed-agents/src/computer/routes.ts (computer created in the Slack OAuth callback); services/managed-agents/src/computer/durable-object.ts (mention or DM starts a session, thread owner, `!link`) */}
