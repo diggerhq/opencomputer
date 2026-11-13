@@ -2,9 +2,10 @@ name: Computer
 
 # CI for computer: `npm run check` (typecheck, lint, unit tests, file-size
 # ratchet, boundaries, schemas, the runner bundle), the Slack-path timing
-# check, the telemetry collector and Grafana JSON, and a secret scan. The
-# integration checks in computer/src/dev/ (real processes, some need Claude
-# credentials) are run by hand. Nothing here deploys, and no job has a secret.
+# check, the telemetry collector and Grafana JSON, the model proxy (Go), and a
+# secret scan. The integration checks in computer/src/dev/ (real processes,
+# some need Claude credentials) are run by hand. Nothing here deploys, and no
+# job has a secret.
 
 on:
   pull_request:
@@ -79,6 +80,30 @@ jobs:
         with:
           node-version: 24
       - run: node telemetry/grafana/render.mjs --check
+
+  modelproxy:
+    name: Model proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: computer/modelproxy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: computer/modelproxy/go.mod
+          cache: false # standard library only: nothing to cache
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      # Did the proxy get slower: its median overhead and allocations per request, against a local upstream.
+      - run: go test -run '^$' -bench ProxyOverhead -benchtime 5000x ./...
+        env:
+          MODELPROXY_OVERHEAD_GATE: 1
+      - run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/oc-modelproxy" .
 
   secrets:
     name: Secret scan

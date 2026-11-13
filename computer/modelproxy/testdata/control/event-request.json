@@ -1,0 +1,1 @@
+{"t":"event","name":"model.request","at":1792520091000,"outcome":"completed","duration_ms":1234.5,"session_key":"T0/C0/1700000000.000100","profile":"openai-key","data":{"route":"responses","stream":true,"swapped":false,"status":200,"key":"k1","conn_wait_ms":0.01,"conn_reused":true,"overhead_us":180,"ttfb_ms":812.4}}

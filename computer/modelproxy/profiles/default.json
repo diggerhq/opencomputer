@@ -1,0 +1,53 @@
+{
+  "anthropic-key": {
+    "upstream": "https://api.anthropic.com",
+    "routes": {
+      "POST /v1/messages": {},
+      "POST /v1/messages/count_tokens": {}
+    },
+    "set": { "X-Api-Key": "{token}" },
+    "remove": ["Cookie"],
+    "report": ["retry-after", "request-id", "anthropic-ratelimit-*"],
+    "harness": { "claude": { "tokenEnv": "ANTHROPIC_API_KEY" } }
+  },
+  "claude-oauth": {
+    "upstream": "https://api.anthropic.com",
+    "routes": {
+      "POST /v1/messages": {
+        "require": { "User-Agent": "claude-cli/*", "X-App": "cli", "Anthropic-Beta": "oauth-2025-04-20" }
+      },
+      "POST /v1/messages/count_tokens": {
+        "require": { "User-Agent": "claude-cli/*", "X-App": "cli", "Anthropic-Beta": "oauth-2025-04-20" }
+      },
+      "GET /api/oauth/usage": { "default": { "Anthropic-Beta": "oauth-2025-04-20" } },
+      "GET /api/claude_code/policy_limits": { "default": { "Anthropic-Beta": "oauth-2025-04-20" } }
+    },
+    "set": { "Authorization": "Bearer {token}" },
+    "remove": ["Cookie"],
+    "report": ["retry-after", "request-id", "anthropic-ratelimit-*"],
+    "harness": { "claude": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" } }
+  },
+  "openrouter": {
+    "upstream": "https://openrouter.ai/api",
+    "routes": {
+      "POST /v1/messages": {},
+      "POST /v1/messages/count_tokens": {}
+    },
+    "set": { "Authorization": "Bearer {token}" },
+    "remove": ["Cookie"],
+    "report": ["retry-after", "x-ratelimit-*"],
+    "harness": { "claude": { "tokenEnv": "ANTHROPIC_AUTH_TOKEN" } }
+  },
+  "openai-key": {
+    "upstream": "https://api.openai.com",
+    "routes": {
+      "POST /v1/responses": { "format": "responses" },
+      "WS /v1/responses": {},
+      "GET /v1/models": {}
+    },
+    "set": { "Authorization": "Bearer {token}" },
+    "remove": ["Cookie"],
+    "report": ["retry-after", "x-request-id", "x-ratelimit-*"],
+    "harness": { "codex": {} }
+  }
+}
