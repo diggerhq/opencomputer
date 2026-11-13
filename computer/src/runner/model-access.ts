@@ -14,8 +14,11 @@
 //   changed `key` (or profile name, owner, ceiling) alone changes nothing in
 //   the environment. A spare has no turn: it applies the new one and parks
 //   again.
-// - No route, or a `harness` object its adapter does not accept: the turn is
-//   refused with NO_FIT, and nothing is set.
+// - A refused route (`{ refused }`: the host bound the session to no
+//   credential) refuses the turn with the host's reason and leaves the
+//   environment as it is; the next route clears it. No route, or a `harness`
+//   object its adapter does not accept: the turn is refused with NO_FIT, and
+//   nothing is set.
 // - A refused model steps down only when the profile says
 //   `downgradeOnModelRefusal`; `maxModel` caps the session on any route.
 // - Nothing here throws.
@@ -23,7 +26,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { Effect } from 'effect';
-import type { HarnessName, RunnerModel, RunnerToHost } from '../protocol.js';
+import type { HarnessName, RunnerModel, RunnerRefused, RunnerToHost } from '../protocol.js';
 import { log } from '../log.js';
 import { spareKind } from '../model-key.js';
 import type { CacheTtlSettings } from './cache-ttl.js';
@@ -66,6 +69,8 @@ export function runnerModelAccess({ env, cacheTtl, hooks: o }: RunnerModelAccess
   let read: z.infer<(typeof ADAPTERS)[HarnessName]> | undefined;
   /** The proxy's endpoint, kept across a reset: it is the host's, not the route's. */
   let endpoint: Endpoint | undefined;
+  /** The host's reason it binds this runner's session to no credential. */
+  let refused: string | undefined;
   let retry = false;
 
   const same = (a: RunnerModel, b: RunnerModel) =>
@@ -88,8 +93,8 @@ export function runnerModelAccess({ env, cacheTtl, hooks: o }: RunnerModelAccess
     endpoint: () => endpoint,
     /** The spare kind of the environment Claude Code is started from (model-key.ts). */
     kind: () => (cur && read ? spareKind('claude', cur.harness) : undefined),
-    /** NO_FIT while this runner has no route its harness's adapter accepts. */
-    refusal: () => (read ? undefined : NO_FIT),
+    /** The host's refusal, else NO_FIT while this runner has no route its harness's adapter accepts. */
+    refusal: () => refused ?? (read ? undefined : NO_FIT),
     /** A spare claimed for Codex: the route it parked Claude Code on is not the session's. */
     reset() {
       cur = read = undefined;
@@ -101,8 +106,13 @@ export function runnerModelAccess({ env, cacheTtl, hooks: o }: RunnerModelAccess
      * `credentials.model` from the host: 'set' once the environment is set for it (start or re-park the harness),
      * 'switch' when the session's runner should finish its turn and exit, undefined when nothing changed.
      */
-    apply(m: RunnerModel | undefined): 'set' | 'switch' | undefined {
+    apply(m: RunnerModel | RunnerRefused | undefined): 'set' | 'switch' | undefined {
       if (!m) return undefined;
+      if ('refused' in m) {
+        refused = m.refused;
+        return undefined;
+      }
+      refused = undefined;
       if (cur && !same(cur, m) && o.session()) return 'switch';
       const changed = !cur || !same(cur, m);
       cur = m;

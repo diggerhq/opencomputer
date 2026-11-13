@@ -274,13 +274,14 @@ const hub: Hub = new Hub({
   store,
   tokens: [],
   credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT }),
+  models: () => ({}),
   mintToken: async () => ({ token: 't', expiresAt: new Date().toISOString() }),
   secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
   requestSecret: (from, req) => ui.request(from, req, client),
 });
 const ui = createSecretsUi({ store, vault, hub });
 const vars = createVariablesUi({ store, vault, hub });
-const router = createRouter({ store, hub, mode: 'bypassPermissions', secrets: ui, variables: vars });
+const router = createRouter({ store, hub, mode: 'bypassPermissions', models: () => ({}), secrets: ui, variables: vars });
 const server = createServer((_, res) => res.writeHead(404).end());
 hub.attach(server);
 await new Promise<void>((ok) => server.listen(0, ok));

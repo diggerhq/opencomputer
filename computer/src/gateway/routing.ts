@@ -4,6 +4,7 @@
 //
 //   @bot <task>        in a channel    → new session in that thread
 //   @bot ch <task>     in a channel    → new session in a new Slack Code channel
+//   @bot +codex <task>                 → the new session runs Codex (when the gateway has OPENAI_API_KEY)
 //   DM the bot                         → new session in that DM thread
 //   reply in a session's thread/channel → deliver (`!` commands too: the runner handles them),
 //                                          marked mentioned or not; the agent may stay silent
@@ -16,8 +17,9 @@
 // "not enabled for you yet" and nothing else.
 
 import type { WebClient } from '@slack/web-api';
-import { decodeActionId, type Delivery, type PermissionMode, type SlackPerson, type SlackSessionSpec, type SpawnRequest, type SpawnResult } from '../protocol.js';
+import { decodeActionId, type Delivery, type HarnessName, type PermissionMode, type SlackPerson, type SlackSessionSpec, type SpawnRequest, type SpawnResult } from '../protocol.js';
 import type { SlackFile } from '../protocol.js';
+import type { ModelRoutes } from '../protocol-model.js';
 import { addressed, decodeSlack } from '../slack-text.js';
 import { findPermalinks, forwarded, linkResolver, type Linked, type SharedAttachment } from '../links.js';
 import { TIERS, takeTier } from '../tiers.js';
@@ -51,6 +53,8 @@ export interface RouterDeps {
   store: Store;
   hub: Hub;
   mode: PermissionMode;
+  /** The model routes hosts get (main.ts): a thread starts on Codex only when there is one for it. */
+  models(): ModelRoutes;
   secrets?: SecretsUi;
   variables?: VariablesUi;
 }
@@ -60,8 +64,15 @@ const NOT_ENABLED = `${APP_NAME} is not enabled for you yet. Ask the instance ow
 const OFFLINE = 'The agent host is offline; your message will be delivered when it reconnects.';
 /** Reading linked threads must not hold a message up for long. */
 const LINKS_TIMEOUT_MS = 10_000;
+const CODEX_NEEDS_KEY = 'Codex needs OPENAI_API_KEY on this computer.';
 
-export function createRouter({ store, hub, mode, secrets, variables }: RouterDeps) {
+/** `+codex fix it` → `{ harness: 'codex', text: 'fix it' }`; the first message of a thread picks its harness. */
+export function takeHarness(text: string): { harness?: HarnessName; text: string } {
+  const m = /^\+(claude|codex)(?=\s|$)\s*/i.exec(text);
+  return m ? { harness: m[1].toLowerCase() as HarnessName, text: text.slice(m[0].length) } : { text };
+}
+
+export function createRouter({ store, hub, mode, models, secrets, variables }: RouterDeps) {
   // Slack sends both `message` and `app_mention` for a mention (different
   // event ids, same channel:ts); the first one routes, the second is dropped.
   const seen = new Set<string>();
@@ -99,21 +110,26 @@ export function createRouter({ store, hub, mode, secrets, variables }: RouterDep
     // In a DM or a code channel every message is for the bot.
     if (existing) return forward(existing.spec, m, text, client, mentioned || m.channel_type === 'im' || existing.spec.kind === 'channel', a.inline);
 
-    // `+smart ch <task>` and `ch +smart <task>` both work; the tier stays on the task for the session.
-    const { tier, rest } = takeTier(text);
+    // `+codex` first; then `+smart ch <task>` and `ch +smart <task>` both work; the tier stays on the task for the session.
+    const { harness, text: asked } = takeHarness(text);
+    if (harness === 'codex' && !models().codex) return ephemeral(client, m.channel, m.user, CODEX_NEEDS_KEY, m.thread_ts);
+    const { tier, rest } = takeTier(asked);
     const wantsChannel = /^(ch|channel)\b/i.test(rest) && m.channel_type !== 'im';
-    const task = wantsChannel ? (tier ? `+${tier} ` : '') + rest.replace(/^(ch|channel)\b\s*/i, '') : text;
+    const task = wantsChannel ? (tier ? `+${tier} ` : '') + rest.replace(/^(ch|channel)\b\s*/i, '') : asked;
     const title = takeTier(task).rest.replace(/\s+/g, ' ');
     const threadTs = m.thread_ts ?? m.ts;
-    const spec: SlackSessionSpec = (wantsChannel && (await codeChannel(m, ctx, title, person))) || {
-      key: `${m.channel}:${threadTs}`,
-      kind: 'thread',
-      channel: m.channel,
-      threadTs,
-      owner: person,
-      teamId: ctx.teamId,
-      title: title.slice(0, 80),
-      mode,
+    const spec: SlackSessionSpec = {
+      ...((wantsChannel && (await codeChannel(m, ctx, title, person))) || {
+        key: `${m.channel}:${threadTs}`,
+        kind: 'thread',
+        channel: m.channel,
+        threadTs,
+        owner: person,
+        teamId: ctx.teamId,
+        title: title.slice(0, 80),
+        mode,
+      }),
+      ...(harness ? { harness } : {}),
     };
     store.putSession(spec);
     log.info(`new session ${spec.key} for ${person.dir}`);

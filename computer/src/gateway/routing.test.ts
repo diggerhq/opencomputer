@@ -4,10 +4,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { WebClient } from '@slack/web-api';
 import type { Delivery, SlackPerson, SlackSessionSpec } from '../protocol.js';
+import type { ModelRoutes } from '../protocol-model.js';
 import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
 import { withLinked } from '../links.js';
-import { type Ctx, createRouter, type Msg } from './routing.js';
+import { type Ctx, createRouter, type Msg, takeHarness } from './routing.js';
 
 const owner: SlackPerson = { slackUserId: 'U1', dir: 'owner', gitName: 'Owner', gitEmail: 'owner@example.com' };
 const BOT = 'UBOT';
@@ -62,6 +63,8 @@ let hub: ReturnType<typeof fakeHub>;
 let client: ReturnType<typeof fakeClient>;
 let router: ReturnType<typeof createRouter>;
 let n = 0;
+let models: ModelRoutes;
+const claude = { mode: 'profile', profile: 'anthropic-key', vars: { token: 'fake' }, key: 'k1' } as const;
 
 const msg = (over: Partial<Msg> = {}): Msg => ({ channel: 'C1', ts: `1.${++n}`, user: owner.slackUserId, text: `<@${BOT}> do it`, ...over });
 const ctx = (): Ctx => ({ client: client as unknown as WebClient, botUserId: BOT, teamId: 'T1', eventId: `ev-${++n}` });
@@ -70,7 +73,8 @@ beforeEach(() => {
   store = fakeStore();
   hub = fakeHub();
   client = fakeClient();
-  router = createRouter({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'bypassPermissions' });
+  models = { claude };
+  router = createRouter({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'bypassPermissions', models: () => models });
 });
 
 describe('starting sessions', () => {
@@ -274,10 +278,42 @@ describe('de-duplication', () => {
   });
 });
 
+describe('+codex', () => {
+  it('takes a leading +claude or +codex only, as a word', () => {
+    expect(takeHarness('+Codex  fix it')).toEqual({ harness: 'codex', text: 'fix it' });
+    expect(takeHarness('+claude')).toEqual({ harness: 'claude', text: '' });
+    expect(takeHarness('+codexy fix')).toEqual({ text: '+codexy fix' });
+    expect(takeHarness('fix +codex')).toEqual({ text: 'fix +codex' });
+  });
+
+  it('a first message starting with +codex starts a Codex session, without the prefix', async () => {
+    models = { claude, codex: { mode: 'profile', profile: 'openai-key', vars: { token: 'fake' }, key: 'k2' } };
+    const m = msg({ text: `<@${BOT}> +codex +smart port it` });
+    await router.route(m, ctx(), true);
+    expect(store.sessions.get(`C1:${m.ts}`)).toMatchObject({ harness: 'codex', title: 'port it' });
+    expect(hub.delivered[0].msg.text).toBe('+smart port it');
+  });
+
+  it('without a route for Codex the person is told why and no session starts', async () => {
+    await router.route(msg({ text: `<@${BOT}> +codex port it` }), ctx(), true);
+    expect(client.of('chat.postEphemeral')[0].text).toBe('Codex needs OPENAI_API_KEY on this computer.');
+    expect(store.sessions.size).toBe(0);
+    expect(hub.delivered).toHaveLength(0);
+  });
+
+  it('a session started without a prefix names no harness, and a later +codex is only text', async () => {
+    const m = msg();
+    await router.route(m, ctx(), true);
+    await router.route(msg({ thread_ts: m.ts, text: '+codex now' }), ctx(), false);
+    expect(store.sessions.get(`C1:${m.ts}`)?.harness).toBeUndefined();
+    expect(hub.delivered[1].msg.text).toBe('+codex now');
+  });
+});
+
 describe('with no host connected', () => {
   it('tells the person the message is queued', async () => {
     hub = fakeHub(false);
-    router = createRouter({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'default' });
+    router = createRouter({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'default', models: () => models });
     await router.route(msg(), ctx(), true);
     expect(client.of('chat.postEphemeral')[0].text).toMatch(/offline/);
     expect(client.of('agents.sessions.setStatus')).toHaveLength(0);

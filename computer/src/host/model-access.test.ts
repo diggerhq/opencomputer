@@ -15,7 +15,7 @@ import type { GatewayToHost, HarnessName, HostCredentials, HostToGateway, HostTo
 import type { Telemetry } from '../telemetry/emitter.js';
 import { lines } from '../ipc.js';
 import { spareKind } from '../model-key.js';
-import { hostModelAccess, NO_MODEL_CREDENTIAL, type HostModelAccessDeps } from './model-access.js';
+import { hostModelAccess, NO_MODEL_CREDENTIAL, noProfile, proxyRefused, SWITCHING, type HostModelAccessDeps } from './model-access.js';
 
 const PROXY_SRC = path.resolve(import.meta.dirname, '../../modelproxy');
 const GO = ['go', '/usr/local/go/bin/go'].find((g) => {
@@ -153,10 +153,10 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     expect(t.a.profiles()?.map((p) => p.name)).toEqual(['claude-a', 'claude-b', 'claude-c']); // codex-only: no Codex binary
   });
 
-  it('refuse: no route, an unknown profile, a profile without the harness, and a refuse route are bound as refusals', async () => {
+  it('refuse: no route, an unknown profile, a profile without the harness, and a refuse route are bound as refusals, and the runner told why', async () => {
     const t = setup();
     await t.up();
-    await t.register('none', 'r-none');
+    const none = await t.register('none', 'r-none');
     expect(t.out).toContainEqual({ t: 'model-bound', sessionKey: 'none', mode: 'refuse' });
     t.a.onGateway({ t: 'model', sessionKey: 'gone', model: route('no-such-profile') });
     await t.register('gone', 'r-gone');
@@ -166,7 +166,11 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     await t.register('paused', 'r-paused');
     const b = await peek();
     for (const caller of ['r-none', 'r-gone', 'r-codex', 'r-paused']) expect(b.find((x) => x.caller === caller)?.mode).toBe('refuse');
-    expect(t.a.forRunner('none', creds)).toEqual({ slackBotToken: 'xoxb', slackBotUserId: 'B' });
+    expect(t.a.forRunner('none', creds)).toEqual({ slackBotToken: 'xoxb', slackBotUserId: 'B', model: { refused: NO_MODEL_CREDENTIAL } });
+    expect(none.sent.at(-1)).toEqual({ t: 'credentials', credentials: { slackBotToken: 'xoxb', slackBotUserId: 'B', model: { refused: NO_MODEL_CREDENTIAL } } });
+    expect(t.a.forRunner('gone', creds)?.model).toEqual({ refused: noProfile('no-such-profile') });
+    expect(t.a.forRunner('codex', creds)?.model).toEqual({ refused: SWITCHING });
+    expect(t.a.forRunner('paused', creds)?.model).toEqual({ refused: 'paused' });
     expect(t.deps.exit).not.toHaveBeenCalled();
     expect(NO_MODEL_CREDENTIAL).toBe('No model credential is configured for this computer.');
   });
@@ -175,8 +179,9 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     const t = setup();
     await t.up();
     t.a.onGateway({ t: 'model', sessionKey: 's2', model: { mode: 'profile', profile: 'claude-a', vars: {}, key: 'k' } }); // missing_var
-    await t.register('s2', 'r2');
+    const r = await t.register('s2', 'r2');
     await vi.waitFor(async () => expect((await held('r2'))?.mode).toBe('refuse'), { timeout: 8000 });
+    await vi.waitFor(() => expect(r.sent.at(-1)).toMatchObject({ t: 'credentials', credentials: { model: { refused: proxyRefused('missing_var') } } }));
     expect(t.emit).toHaveBeenCalledWith('model.profile_refused', expect.objectContaining({ session_key: 's2', provider: 'claude-a', data: { caller: 'r2', code: 'missing_var' } }));
   });
 
@@ -192,7 +197,8 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     expect(r.sent.at(-1)).toMatchObject({ t: 'credentials', credentials: { model: { profile: 'claude-b' } } });
     expect(t.deps.exit).not.toHaveBeenCalled();
 
-    // The same route again changes nothing.
+    // The same route again changes nothing. (held() reconnects, and the host binds again: wait for that first.)
+    await t.a.ready('s3');
     const n = r.sent.length;
     await t.a.delivered('s3', creds, route('claude-b', 'sk-test-2'), 'claude');
     expect(r.sent.length).toBe(n);
@@ -258,7 +264,7 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     expect((await held('r5'))?.mode).toBe('refuse'); // the old binding, untouched by `models`
     await u.up();
     const c = await u.a.delivered('s5', creds, route('claude-b'), 'claude');
-    expect(c?.model?.profile).toBe('claude-b');
+    expect(c?.model).toMatchObject({ profile: 'claude-b' });
     expect(await held('r5')).toMatchObject({ profile: 'claude-b' });
   });
 
@@ -301,7 +307,8 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
   }, 20_000);
 
   it('spares: bound as spare/<id> to models.claude, matched by kind, released and bound to the session when claimed', async () => {
-    const t = setup();
+    // No spare unit exists: a release lost with a replaced connection is made good on the next hello.
+    const t = setup({ unitExists: vi.fn(async () => false) });
     await t.up();
     expect(t.a.canSpare()).toBe(false); // no models.claude yet
     t.a.onGateway(welcome({ claude: route('claude-a') }));
@@ -309,7 +316,7 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     await t.a.spare('sp1');
     expect(await held('sp1')).toEqual({ caller: 'sp1', sessionKey: 'spare/sp1', mode: 'profile', profile: 'claude-a', key: 'claude-a-key' });
     expect(t.out.filter((m) => m.t === 'model-bound')).toEqual([]); // a spare is no session
-    expect(t.a.forRunner('', creds)?.model?.harness).toEqual(claudeKey);
+    expect(t.a.forRunner('', creds)?.model).toMatchObject({ harness: claudeKey });
     expect(t.a.kind('s7', 'claude')).toBe(spareKind('claude', claudeKey));
     t.a.onGateway({ t: 'model', sessionKey: 's8', model: route('claude-c') });
     expect(t.a.kind('s8', 'claude')).not.toBe(t.a.kind('s7', 'claude'));
@@ -320,7 +327,7 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     await t.up();
     t.a.onGateway(welcome({ claude: { mode: 'profile', profile: 'claude-a', vars: {}, key: 'k' } }));
     await expect(t.a.spare('sp2')).rejects.toThrow(/did not bind/);
-    expect(await held('sp2')).toBeUndefined();
+    await vi.waitFor(async () => expect(await held('sp2')).toBeUndefined(), { timeout: 8000 });
   });
 
   it('a profile only for Codex is advertised only when the Codex binary exists', async () => {

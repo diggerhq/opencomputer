@@ -258,6 +258,9 @@ Start any message with `+smart` or `+fast` (or `+default`) to switch the
 thread's model and send the rest, e.g. `@Computer +smart redesign the router`
 or `@Computer +fast ch bump the deps`. People pick a tier, not a model: the tiers
 map to ids in `src/tiers.ts` (smart → Fable, fast → Sonnet, default → `MODEL`).
+On a computer, a new thread's first message may start with `+codex` to run the
+thread on Codex instead of Claude Code (or `+claude`, the default); with no
+OpenAI credential configured the bot says so and starts nothing.
 A new session's first reply is a small header with the thread's id
 (the fork directory and `sp/<id>` branch suffix, in a copyable form) and a
 pointer to `!help`; `!status` repeats the id.
@@ -343,7 +346,27 @@ In production the gateway is the backend, managed-agents
 run on Azure VMs provisioned by `deploy/vm/provision.sh` (Ubuntu 24.04; EC2
 also works), one per organization, sized to its plan. Runners are `systemd --user` units, and the runner user cannot
 reach the cloud metadata server. Hosts take new code as a release bundle
-(`deploy/bundle.sh`) and update themselves (`deploy/vm/self-update.sh`).
+(`deploy/bundle.sh <out.bundle>`: the committed `computer/` tree, with
+oc-modelproxy built from it) and update themselves (`deploy/vm/self-update.sh`).
+
+No model credential is in a session's environment, files or logs (work 097).
+Every model request goes through oc-modelproxy (`modelproxy/`), which
+`deploy/vm/modelproxy.sh` installs on each provision from the release: the
+binary as `/usr/local/libexec/oc-modelproxy`, the shipped profiles into
+`/etc/oc-modelproxy/profiles.d/`, and its socket-activated units. A session's
+model client holds only a placeholder; the host binds each runner to its
+session's profile and credential, which the gateway sends as `models`. The
+self-hosted gateway takes them from `MODEL_PROFILE` + `MODEL_TOKEN` (any
+profile in `profiles.d`), else `CLAUDE_CODE_OAUTH_TOKEN` (`claude-oauth`),
+else `ANTHROPIC_API_KEY` (`anthropic-key`), and `OPENAI_API_KEY` for `+codex`
+threads (`openai-key`). A host whose runners are not systemd units (a laptop)
+uses the proxy with `-identity=single`, one session at a time:
+
+```sh
+cd modelproxy && go build -o /tmp/mp/oc-modelproxy . && /tmp/mp/oc-modelproxy -identity=single -profiles ./profiles \
+  -api-socket /tmp/mp/api.sock -control-socket /tmp/mp/control.sock -bindings-file ""
+# the host: SP_MODEL_PROXY=/tmp/mp/control.sock SP_MODEL_SOCKET=/tmp/mp/api.sock
+```
 
 The Node gateway in `src/gateway/` is the self-hosted alternative and what the
 laptop and the e2e checks use; the `Dockerfile` packages it as a container.
@@ -445,7 +468,7 @@ environment, which any session can change.
 | `SP_VERSION` | `dev` | the release's commit, in `ready.server.version` (the unit reads it from `.sp-version.env`) |
 | `SP_REGION` | unset (`null`) | `ready.server.region` |
 
-Gateway variables are documented at the top of `src/gateway/main.ts`.
+Gateway variables, the model credentials among them, are documented at the top of `src/gateway/main.ts`.
 
 ## Development
 
@@ -462,7 +485,7 @@ of them need a real Slack workspace.
 |---|---|
 | `npx tsx src/dev/fake-run.ts "<prompt>" ["<steer sent 8s later>"]` | A real agent session against a fake Slack client. Prints every Slack API call with a timestamp and approves prompts automatically. The fast loop for event mapping, batching and steering. |
 | `npx tsx src/dev/e2e-check.ts [--keep]` | The whole split deployment on one machine, with fake Slack and GitHub APIs served by the check itself: `/setup`, mention → fork → runner → turn, thread replies, mid-turn messages, a permission button, host and gateway restarts under a live runner, GitHub tokens through the credential helper and `gh` shim, a push webhook. Prints the latency rows it can measure. Scratch space is `/tmp/spe2e`. |
-| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway: spawn, forwarding, token relay, restart with rediscovery, idle exit. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn, before and after a host restart. |
+| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway, with oc-modelproxy built from `modelproxy/` (needs Go and openssl; Linux) and run with `-identity=single`: spawn, forwarding, token relay, restart with rediscovery, idle exit. `--claude` makes the first turn real, on `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` as the gateway routes them. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn (its request held by a profile whose upstream never answers), before and after a host restart. |
 | `npx tsx src/dev/workspaces-check.ts [--real]` | Clones, forks, housekeeping and git auth against local bare repositories. |
 | `npx tsx src/dev/gateway-check.ts`, `setup-check.ts` | Gateway routing and `/setup`. |
 | `npx tsx src/dev/links-check.ts` | Linked threads against a fake workspace: public, private, DM, guest and Slack Connect cases, other workspaces, caps, and injected instructions in linked text. |

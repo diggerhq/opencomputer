@@ -89,6 +89,22 @@ describe('runnerModelAccess: the Claude adapter (work 097 C5)', () => {
     expect(a.refusal()).toBeUndefined();
   });
 
+  it("the host's refusal: the turn is refused with its reason, the environment kept, until a route clears it", () => {
+    const { a, env } = setup();
+    const untouched = { ...env };
+    expect(a.apply({ refused: 'No model credential for this session.' })).toBeUndefined();
+    expect(a.refusal()).toBe('No model credential for this session.');
+    expect(env).toEqual(untouched);
+    expect(a.apply(route({ tokenEnv: 'ANTHROPIC_API_KEY' }))).toBe('set');
+    expect(a.refusal()).toBeUndefined();
+    const before = { ...env };
+    expect(a.apply({ refused: 'paused' })).toBeUndefined();
+    expect(a.refusal()).toBe('paused');
+    expect(env).toEqual(before);
+    expect(a.apply(route({ tokenEnv: 'ANTHROPIC_API_KEY' }))).toBeUndefined();
+    expect(a.refusal()).toBeUndefined();
+  });
+
   it("the cache TTL: SP_PROMPT_CACHE_TTL over the profile's", () => {
     const own = setup();
     own.a.apply(route({ tokenEnv: 'ANTHROPIC_API_KEY', promptCacheTtl: '1h' }));

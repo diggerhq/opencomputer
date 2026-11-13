@@ -9,7 +9,7 @@
 //
 //   gateway → host    `welcome.models`, `credentials.models`, `deliver.model`, `start.model`, `model`, `model-request`
 //   host → gateway    `hello.profiles`, `model-bound`, `model-observed`, `model-response`
-//   host → runner     `credentials.credentials.model` (RunnerModel)
+//   host → runner     `credentials.credentials.model` (RunnerModel, or RunnerRefused)
 //
 // Invariants:
 // - A variable's value travels gateway → host → proxy only: never to a runner,
@@ -52,6 +52,11 @@ export interface RunnerModel {
   endpoint: { unixSocket: string };
   /** What it sends as its credential: the proxy's, from its hello. */
   placeholder: string;
+}
+
+/** Why a runner's session has no route it can run on, as the host words it (C3): the runner refuses its turns with it. */
+export interface RunnerRefused {
+  refused: string;
 }
 
 /** The proxy's report of what an upstream answered on a credential, relayed by the host unread. */
