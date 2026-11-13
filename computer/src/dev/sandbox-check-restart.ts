@@ -186,12 +186,13 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
     kept.delete(A);
     for (const id of [X, V, D, R]) mkdirSync(dir(id));
     const make = (id: string, binds: string[], argv = ['true']) =>
-      podman(['create', '--name', containerName(id), '--label', `sp.runner=${id}`, '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(id)}:/home/agent`, ...binds, x.image, ...argv], 60_000);
+      podman(['create', '--name', containerName(id), '--label', `sp.runner=${id}`, '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(id)}:/home/agent`, ...binds, '--entrypoint', JSON.stringify(argv), x.image], 60_000);
     await make(X, ['-v', `${dir(X)}:${dir(X)}`]); // this host's, by its run directory, and of no record
     await make(F, []); // another host's
     // This host's, running, and of a record whose file was cut short: nothing may remove what that record names.
     await make(R, ['-v', `${dir(R)}:${dir(R)}`], ['/bin/sh', '-c', 'echo kept > /home/agent/s8-cut; trap "exit 0" TERM; sleep 900 & wait']);
     await podman(['start', containerName(R)]);
+    check(!!(await until(async () => ((await podman(['exec', containerName(R), 'cat', '/home/agent/s8-cut']).catch(() => '')).trim() === 'kept' ? true : undefined), 10_000)), `planted: a running container ${containerName(R)} of this host, whose record's file is cut short`);
     writeFileSync(cut, `{"id":"${R}","person":"${A.owner.dir}","key":"C_SANDBOX:9`);
     for (const id of [V, W]) await podman(['volume', 'create', volumeName(id)]);
     for (const id of [V, U]) await x.as.run(['/usr/bin/systemd-run', '--user', '--quiet', '--unit', unitName(id), '/bin/false'], { timeoutMs: 10_000 }).catch(() => {});
@@ -231,7 +232,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
     const sweptAt = Date.now();
     check(!!(await until(async () => (!(await has('volume', volumeName(V))) && ![V, X, D].some((id) => existsSync(dir(id))) && !(await failedUnit(V)) ? true : undefined), 60_000)),
       `the sweep removed the home of no record, the three run directories of no container, and reset the failed unit (${Date.now() - sweptAt} ms after the start's checks; objects older than ${SWEEP_AGE_MS} ms)`);
-    const homeR = await podman(['run', '--rm', '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(R)}:/home/agent`, x.image, 'cat', '/home/agent/s8-cut'], 60_000).then((s) => s.trim(), (e) => `error: ${e.message}`);
+    const homeR = await podman(['run', '--rm', '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(R)}:/home/agent`, '--entrypoint', '/bin/cat', x.image, '/home/agent/s8-cut'], 60_000).then((s) => s.trim(), (e) => `error: ${e.message}`);
     check((await ofR()) === keptR && homeR === 'kept', `after the sweep too (${await ofR()}), and its home holds what was written in it (${JSON.stringify(homeR)})`);
     check((await has('container', containerName(F))) && (await has('volume', volumeName(F))) && (await has('volume', volumeName(W))) && (await failedUnit(U)),
       'the container, the homes and the failed unit that have no run directory of this host are untouched');
@@ -260,8 +261,8 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
       await until(() => (C.record() || !seen ? undefined : true), 10_000);
     }
     const rE2 = await raced;
-    const inE = await E.inside('git -C /workspace/hello status --porcelain --branch; LC_ALL=C ls -A /workspace; ls /clones/hello/.git/worktrees');
-    check(!!rE2?.reply?.ok && (await status(E)) === 'running' && !!E.record()?.repos?.hello && inE === [`## ${E.branch}`, '.claude', '.fork.json', 'AGENTS.md', 'hello', 'hello'].join('\n') && !(await has('container', containerName(eid))),
+    const inE = await E.inside(`git -C /workspace/hello status --porcelain --branch; node -p "require('/workspace/.fork.json').key"; ls /clones/hello/.git/worktrees`);
+    check(!!rE2?.reply?.ok && (await status(E)) === 'running' && !!E.record()?.repos?.hello && inE === [`## ${E.branch}`, E.key, 'hello'].join('\n') && !(await has('container', containerName(eid))),
       `a message that arrives while its thread is pruned (${seen || 'the prune never showed'}) is answered in ${rE2?.ms} ms by a thread that works, in a new container ${E.id()} and a prepared workspace: ${JSON.stringify(inE)} ${rE2?.reply?.error ?? ''}`);
     check(!C.record() && !(await has('container', containerName(cid))) && !(await has('volume', volumeName(cid))) && !existsSync(C.workspace) && !existsSync(path.dirname(C.registry('x'))) && !existsSync(crun),
       `a thread idle beyond retention with nothing unsaved is pruned (${Date.now() - pruneAt} ms after it was seen stopped; retention ${Math.round(RETENTION_DAYS * 86_400)} s): container, home, workspace, registries, run directory, record`);

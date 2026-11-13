@@ -382,7 +382,7 @@ export async function spareChecks(k: SpareKit) {
     check(stay.length === 1 && (await status(stay[0])) === 'running' && (await parked(stay[0])) && (await spares()).join() === stay[0], `the spare ${stay[0]} outlived the idle time and is still parked, the only one`);
     // ---- the host stops, and its spare's runner answers nothing
     await podman(['exec', '--user', '0:0', containerName(stay[0]), 'pkill', '-STOP', '-f', '[r]unner-boot']).catch((e) => say(`pkill: ${e.message}`));
-    const frozen = (await podman(['top', containerName(stay[0]), 'stat', 'args'])).split('\n').filter((l) => /runner-boot/.test(l));
+    const frozen = (await podman(['top', containerName(stay[0]), 'state', 'args'])).split('\n').filter((l) => /runner-boot/.test(l));
     const stopAt = Date.now();
     await halt('SIGTERM');
     const stopMs = Date.now() - stopAt;
