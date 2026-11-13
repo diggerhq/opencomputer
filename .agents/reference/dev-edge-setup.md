@@ -25,7 +25,7 @@ on the WorkOS cookie. Don't mix them.
 
 | Thing | Value |
 |---|---|
-| CF account | **Mo's** — `b8f23cb87a7a6c64040d3134643da448` |
+| CF account | **Mo's** (`CLOUDFLARE_ACCOUNT_ID`; not in this repository) |
 | Worker | `opencomputer-api-edge-igor-dev` (also the sandbox-webhooks e2e worker — one edge, all routes, like prod) |
 | URL | `https://opencomputer-api-edge-igor-dev.mo-b8f.workers.dev` |
 | Config | `cloudflare-workers/api-edge/wrangler.igor-dev.toml` |
@@ -84,7 +84,7 @@ pass `--config`.
    - `EVENT_SECRET`, `SVIX_API_TOKEN` — webhooks e2e only (optional).
    - The remaining Env secrets (Stripe/Autumn/etc.) are path-specific and unused
      by the dashboard/auth path — leave unset.
-3. **Build + stage the SPA** (mirrors `.github/workflows/deploy-api-edge.yml`):
+3. **Build + stage the SPA** (as the production build does):
    ```
    cd web && npm run build
    rm -rf cloudflare-workers/api-edge/assets \

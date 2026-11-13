@@ -12,7 +12,7 @@ behavior — e.g. the WorkOS hosted-logout flow, which the vite-local setup bypa
 
 ## Resources
 
-- Worker `opencomputer-api-edge-igor-dev` in **Mo's CF account** (`b8f23cb8`),
+- Worker `opencomputer-api-edge-igor-dev` in **Mo's CF account**,
   URL `https://opencomputer-api-edge-igor-dev.mo-b8f.workers.dev`.
 - D1 `opencomputer-igor-dev` (schema = `cloudflare-workers/schema.sql`).
 - Backend: GCP dev box `34.181.232.88` (`deploy/gcp/deploy-qemu-dev.sh`).
