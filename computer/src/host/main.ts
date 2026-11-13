@@ -252,7 +252,8 @@ function ensureRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Pr
   if (live) return Promise.resolve(live);
   let p = starting.get(spec.key);
   if (!p) {
-    p = starts.startRunner(spec, f, first).finally(() => starting.delete(spec.key));
+    // Until here nobody opens the session's journal beside the start (api-host.ts `mint`): its end, whichever, is what frees it.
+    p = starts.startRunner(spec, f, first).finally(() => (starting.delete(spec.key), api.startEnded(spec)));
     starting.set(spec.key, p);
   }
   return p;

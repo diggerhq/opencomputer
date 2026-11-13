@@ -267,6 +267,31 @@ describe('apiHost', () => {
     }
   });
 
+  it('opens no host writer while a start of the session is in flight, however long it takes; the start\'s end, not a timer, lets it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let hooks: WireHooks | undefined;
+      const t = setup({ wire: async (h) => ((hooks = h), { setKey() {}, setAccess() {}, setAdmins() {}, revoked() {}, moved() {}, close: async () => {} }) });
+      t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
+      await vi.advanceTimersByTimeAsync(0);
+      await t.a.mint(spec, 'aaaa');
+      let where: unknown;
+      void Promise.resolve(hooks!.where(S)).then((w) => (where = w));
+      // A start may wait 300 s for the image lock (sandbox/image-lock.ts) before its container is even started.
+      await vi.advanceTimersByTimeAsync(301_000);
+      expect(where).toBeUndefined();
+      expect(t.opened).toEqual([]);
+      t.a.startEnded(spec); // it failed: no runner registered
+      await vi.advanceTimersByTimeAsync(0);
+      expect(where).toMatchObject({ writer: 'host' });
+      t.a.startEnded(spec); // twice, or for a session with no start: nothing
+      t.a.startEnded({ ...spec, sessionId: undefined });
+      await t.a.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('mirrors the runner, then the host writer once it exits; forwards access and revocations to the relay', async () => {
     const t = setup();
     t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
