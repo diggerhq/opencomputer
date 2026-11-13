@@ -366,7 +366,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   const tm = createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
     execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }),
-    enter: () => Promise.reject(new Error('not used')) });
+    enter: () => Promise.reject(new Error('not used')), running: async () => true });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);
   await a2.deliver(); // the host writes the record at a delivery: the last one before the checkout, which the host does not know of
@@ -473,7 +473,7 @@ try {
   // Started here as the host starts them; nothing in this process runs a workspace script through it, so it is given no way to.
   // Where a script runs is what the check says the thread is (the host asks its record and its unit, sandbox/use.ts).
   const files = (place: SandboxPlace) => sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
-    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')), enter: async () => ({ place, leave() {} }) }).filesPlace(place);
+    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')), enter: async () => ({ place, leave() {} }), running: async () => place.running }).filesPlace(place);
   const kit: Kit = {
     root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
     inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),

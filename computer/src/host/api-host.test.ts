@@ -80,7 +80,7 @@ const dialTo = (w: ReturnType<typeof memWriter>, dialled: string[]) => async (p:
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 function setup(o: Partial<ApiHostDeps> = {}) {

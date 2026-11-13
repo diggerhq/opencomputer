@@ -12,6 +12,12 @@
 //   workspace bound when the session is stopped (sandbox/scripts.ts
 //   `filesPlace`); there a workspace without a sandbox has no Place and the
 //   call fails.
+// - A script that ended because the session stopped under it (the Place says
+//   so, `lost`) is run once more, where the session is then, only when it
+//   changes nothing and none of its output was passed on: a listing, a stat,
+//   a download that had sent no byte. A script that writes, and a download
+//   cut part way, fail as Unavailable, with words that say the session
+//   stopped (work 103, C13).
 // - Every path resolves inside the workspace (symlinks included); one that
 //   leaves it is `invalid_path` (the script's exit 45), one that does not
 //   exist `path_not_found` (44). The check and the read are the same script
@@ -44,6 +50,7 @@ import zlib from 'node:zlib';
 import type { ApiActor, ApiError } from '../protocol.js';
 import { apiError } from '../api/writer.js';
 import type { RunnerUser } from './runner-user.js';
+import { Unavailable, unavailable } from './unavailable.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 import { TarCheck, TarError, UPLOAD_MAX_BYTES, UPLOAD_MAX_FILES } from './tar-check.js';
 import { ARCHIVE, CAN_UPLOAD, CAT, COUNT, LIST, MOVE_IN, NOT_FOUND, OUTSIDE, REMOVE, STAT, UNPACK } from './workspace-scripts.js';
@@ -76,6 +83,8 @@ export interface Place {
    * A Place that cannot start anything now rejects with Unavailable (unavailable.ts), which the caller is told.
    */
   spawn(argv: string[], o: { write?: boolean; stdin?: boolean; seconds?: number }): ChildProcess | Promise<ChildProcess>;
+  /** A script this Place started has ended, and not by itself: the session it ran in stopped under it. */
+  lost?(p: ChildProcess): Promise<boolean>;
 }
 
 export interface ListEntry {
@@ -122,6 +131,10 @@ export interface WorkspaceFilesOptions {
   /** Where a workspace's scripts run. Default: on this machine, as `user`, at the workspace's own path. */
   place?(ws: Workspace): Place;
 }
+
+const STOPPED_WRITE = 'The session stopped while its files were being changed. Try again.';
+const STOPPED_READ = 'The session stopped while its files were being read. Try again.';
+const STOPPED_DOWNLOAD = 'The session stopped during the download. Try again.';
 
 const notFound = (): Fail => ({ error: apiError('path_not_found', 'Nothing at path.', 404) });
 const badPath = (): Fail => ({ error: apiError('invalid_path', 'path must be relative and stay inside the workspace.', 400) });
@@ -195,18 +208,31 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
     p.once('exit', () => clearTimeout(last));
   }
 
+  const places = new WeakMap<ChildProcess, Place>();
+  /** `p` failed because the session stopped under it. */
+  const lost = async (p: ChildProcess) => (await places.get(p)?.lost?.(p)) ?? false;
+
   /** Start `script` with the workspace's root as `$1` and `args` after it. */
   async function start(ws: Workspace, script: string, args: string[], mode: { write?: boolean; stdin?: boolean; seconds?: number } = {}): Promise<ChildProcess> {
     const place = placeOf(ws);
     const p = await place.spawn(['/bin/sh', '-c', script, 'sh', place.root, ...args], { seconds: STREAM_WAIT_S, ...mode });
+    places.set(p, place);
     p.stdin?.on('error', () => {});
     if (!mode.stdin) p.stdin?.end();
     return p;
   }
 
   /** Run `script` to its end: its exit code and what it printed. Rejects when it cannot start, runs too long or prints too much. */
-  async function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}): Promise<{ code: number | null; out: Buffer; err: string }> {
+  async function run(ws: Workspace, script: string, args: string[], mode: { write?: boolean } = {}, again = true): Promise<{ code: number | null; out: Buffer; err: string }> {
     const p = await start(ws, script, args, { ...mode, seconds: waitMs / 1000 });
+    const r = await once(p);
+    if (r.code === 0 || !(await lost(p))) return r;
+    // What a script that writes had done when the session stopped is not known: it is not done twice.
+    if (mode.write) throw new Unavailable(STOPPED_WRITE);
+    if (again) return run(ws, script, args, mode, false);
+    throw new Unavailable(STOPPED_READ);
+  }
+  function once(p: ChildProcess): Promise<{ code: number | null; out: Buffer; err: string }> {
     return new Promise((resolve, reject) => {
       const out: Buffer[] = [];
       let bytes = 0;
@@ -234,7 +260,7 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
   /** A script whose output is the answer's body. The stream is there at once; the script starts when its place lets it, and `done` says how it went. */
   const streamed = (ws: Workspace, script: string, args: string[]): Streamed => {
     const stream = new PassThrough();
-    const done = (async () => {
+    const attempt = async (again: boolean): Promise<void> => {
       const p = await start(ws, script, args);
       let err = '';
       p.stderr?.on('data', (d: Buffer) => (err = (err + d.toString('utf8')).slice(-2000)));
@@ -243,12 +269,27 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
         p.once('exit', resolve);
       });
       // Whoever read it went away before its end (the request was cut): nobody is left to end the script by closing it.
+      const gone = () => stream.readableEnded || end(p);
       if (stream.destroyed) end(p);
-      else stream.once('close', () => stream.readableEnded || end(p));
-      (p.stdout as Readable).pipe(stream);
+      else stream.once('close', gone);
+      // The body ends when the script is known to have ended well: one the session stopped under may start again.
+      const out = p.stdout as Readable;
+      let sent = 0;
+      out.on('data', (d: Buffer) => (sent += d.length));
+      const drained = new Promise<void>((resolve) => {
+        for (const e of ['end', 'close', 'error']) out.once(e, () => resolve());
+        stream.once('close', () => resolve());
+      });
+      out.pipe(stream, { end: false });
       const code = await exited;
-      if (code !== 0) throw new Error(err.trim() || `workspace script exited ${code}`);
-    })();
+      if (code === 0) return void (out.readableEnded ? stream.end() : out.once('end', () => stream.end()));
+      if (!stream.destroyed) await drained;
+      if (!(await lost(p))) throw new Error(err.trim() || `workspace script exited ${code}`);
+      if (sent > 0 || !again || stream.destroyed) throw new Unavailable(STOPPED_DOWNLOAD);
+      stream.off('close', gone);
+      return attempt(false);
+    };
+    const done = attempt(true);
     // A script that never started has nothing to say: the body ends, and `done` tells why.
     done.catch(() => stream.end());
     return { stream, done };
@@ -395,8 +436,9 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
           end(tar);
         }
         const code = await exited;
+        if (code !== 0 && (await lost(tar))) failure = unavailable(new Unavailable(STOPPED_WRITE));
         // tar quitting first breaks the pipe: its own message says why, the pipe's does not.
-        if (code !== 0 && tarErr.trim() && failure?.code === 'invalid_archive' && failure.message.startsWith('The body could not be read')) failure = undefined;
+        else if (code !== 0 && tarErr.trim() && failure?.code === 'invalid_archive' && failure.message.startsWith('The body could not be read')) failure = undefined;
         if (!failure && code !== 0) failure = apiError('invalid_archive', `The archive could not be unpacked: ${tarErr.trim().split('\n').pop() ?? ''}`, 400);
         if (failure) {
           await remove();
@@ -404,10 +446,11 @@ export function createWorkspaceFiles(o: WorkspaceFilesOptions): WorkspaceFiles {
         }
         const state = readState(ws.sessionId);
         const prev = state[name] ?? null;
-        const moved = await run(ws, MOVE_IN, [tmp, name, trash, prev ? '1' : ''], { write: true }).catch(() => undefined);
+        let stopped: ApiError | undefined;
+        const moved = await run(ws, MOVE_IN, [tmp, name, trash, prev ? '1' : ''], { write: true }).catch((e) => void (stopped = unavailable(e)));
         if (moved?.code !== 0) {
           await remove();
-          return { error: apiError('path_exists', `${name} changed in the workspace during the upload.`, 409) };
+          return { error: stopped ?? apiError('path_exists', `${name} changed in the workspace during the upload.`, 409) };
         }
         state[name] = { pushedAt: new Date().toISOString(), pushedBy: actor };
         writeState(ws.sessionId, state);

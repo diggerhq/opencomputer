@@ -114,7 +114,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   const helperRun = path.join(d.run, 'helper');
   const mnt = mounts({ as, root: d.root, dataDir: d.data });
   const uses = sandboxUses({ as, records, workspace: mnt.workspace, unitActive: all.unitActive });
-  const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn, enter: uses.enter });
+  const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn, enter: uses.enter, running: all.unitActive });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
   const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, claim: uses.claim });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.

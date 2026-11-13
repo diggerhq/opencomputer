@@ -34,6 +34,7 @@ function rig(answer: () => string | Error = () => 'out') {
   const s = sandboxScripts({
     as, sudo: ['/usr/bin/sudo', '-n', '-u', 'agent'], tm, root: '/opt/slack-presence/releases/r1', dataDir: '/data', helperRun: '/run/sp/helper', image: 'img:1',
     execIn: (id, argv, o) => (execs.push({ id, argv, o }), reply()),
+    running: async () => state.running, lostWaitMs: 1,
     enter: async (id) => {
       if (state.held) throw new Unavailable(UPDATING);
       state.entered += 1;
@@ -224,6 +225,28 @@ describe('workspace scripts in containers (work 103, C12)', () => {
       t.state.running = false; // idle stop
       await place.spawn(['/bin/sh', '-c', 'x'], {});
       expect(t.started.map((a) => a[a.indexOf('/usr/bin/podman') + 1])).toEqual(['exec', 'run']);
+    });
+
+    it('lost: a script in the container whose command failed, untold, and whose container is no longer running then', async () => {
+      const t = rig();
+      const place = t.s.filesPlace(sb);
+      const ps = await Promise.all([0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {})));
+      t.state.running = false; // the idle stop
+      t.children[0].emit('close', 137); // killed with its container
+      t.children[1].emit('close', 255); // `podman exec` found the container stopped
+      t.children[2].emit('close', 44); // the script's own answer
+      ps[3].kill('SIGTERM'); // the host ended it
+      t.children[3].emit('close', 137);
+      expect(await Promise.all(ps.map((p) => place.lost?.(p)))).toEqual([true, true, false, false, false]); // the last has not closed
+      // A helper is nobody's container to stop: its failure is its own.
+      const helper = await place.spawn(['/bin/sh', '-c', 'x'], {});
+      t.children[5].emit('close', 255);
+      expect(await place.lost?.(helper)).toBe(false);
+      // The container still runs: whatever ended the script, it was not the stop.
+      const up = rig();
+      const p = await up.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      up.children[0].emit('close', 137);
+      expect(await up.s.filesPlace(sb).lost?.(p)).toBe(false);
     });
 
     it('while provisioning holds the image lock nothing is started, and the caller is told the computer is updating', async () => {

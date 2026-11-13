@@ -134,9 +134,11 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
   });
 
   it('nothing is removed while a start has the thread\'s turn, nor after it: the start wrote the record', async () => {
-    let end!: () => void;
+    let end: (() => void) | undefined;
     const t = rig({ asked: () => void t.locks.run('pat', 'C1:1.1', () => new Promise<void>((r) => (end = () => (t.records.write({ ...t.record, usedAt: new Date().toISOString() }), r())))) });
     const done = t.a.pruneArtifacts(t.record);
+    // Git is asked after the worktrees were read from disk: however long that takes.
+    while (!end) await new Promise((r) => setTimeout(r, 5));
     await new Promise((r) => setTimeout(r, 20));
     expect(t.log).toEqual([]);
     end();
