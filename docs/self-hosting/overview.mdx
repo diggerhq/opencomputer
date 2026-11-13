@@ -5,23 +5,7 @@ description: "A self-hosted @computer is three Cloudflare Workers and one privat
 
 A self-hosted deployment runs the same stack as the hosted service, in your accounts:
 
-```mermaid
-flowchart TB
-  users["Browser, Slack, GitHub"]
-  subgraph cf["Cloudflare"]
-    app["<b>App Worker</b><br/>dashboard and sign-in<br/>Slack and GitHub callbacks"]
-    gw["<b>Gateway Worker</b><br/>sessions and Slack delivery<br/>host connections"]
-    plat["<b>Platform Worker</b><br/>creates VMs on Azure"]
-  end
-  subgraph az["Azure, private subnet"]
-    vm["<b>Computer VM</b><br/>one per organization<br/>host, a runner per session<br/>model proxy, data disk"]
-  end
-  users -->|HTTPS| app
-  app -->|HTTPS| gw
-  gw <--> plat
-  plat -.->|creates| vm
-  vm -->|outbound WebSocket| gw
-```
+![How a self-hosted @computer fits together](/images/self-hosting.png)
 
 The Computer VM has no public IP. It reaches the internet through a NAT gateway and connects out to the gateway Worker; nothing connects in.
 
