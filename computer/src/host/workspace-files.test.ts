@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Unavailable } from './unavailable.js';
 import { contentType, createWorkspaceFiles, parseListing, type Workspace, type WorkspaceFiles } from './workspace-files.js';
 
 let root: string;
@@ -341,6 +342,94 @@ describe('where the scripts run (work 103, C13)', () => {
     await expect(f.list(ws, { path: '' })).rejects.toThrow('no sandbox');
     await expect(f.file(ws, 'repo/README.md')).rejects.toThrow('no sandbox');
     await expect(f.canUpload(ws, 'x')).rejects.toThrow('no sandbox');
+  });
+
+  it('a place that starts its scripts later, or cannot now: the caller gets the place\'s own refusal, and a download ends with it', async () => {
+    let refuse = false;
+    const f = createWorkspaceFiles({
+      dir: path.join(root, 'scratch4'),
+      place: () => ({
+        root: ws.forkPath,
+        spawn: async (argv) => {
+          await new Promise((r) => setTimeout(r, 20));
+          if (refuse) throw new Unavailable('The computer is updating, try again.');
+          return spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+        },
+      }),
+    });
+    const file = await f.file(ws, 'repo/README.md');
+    if ('error' in file) throw new Error(file.error.code);
+    expect((await collect(file.read().stream)).toString()).toBe('# hi\n');
+    refuse = true;
+    await expect(f.list(ws, { path: '' })).rejects.toBeInstanceOf(Unavailable);
+    const r = file.read();
+    expect((await collect(r.stream)).length).toBe(0);
+    await expect(r.done).rejects.toThrow('The computer is updating');
+    await expect(f.upload(ws, 'x', 'tar', actor, body(tarOf(path.join(ws.forkPath, 'repo/src'))))).rejects.toBeInstanceOf(Unavailable);
+  });
+
+  describe('a session that stops under a script (work 103, C13)', () => {
+    /** A place whose scripts numbered in `lose` are killed as a stopped container kills them, after printing `said`. */
+    function stopping(lose: number[], said = '') {
+      const started: { write?: boolean }[] = [];
+      const lost = new Set<unknown>();
+      const f = createWorkspaceFiles({
+        dir: path.join(root, 'scratch5'),
+        place: () => ({
+          root: ws.forkPath,
+          spawn(argv, mode) {
+            started.push({ write: mode.write });
+            if (!lose.includes(started.length)) return spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+            const p = spawn('/bin/sh', ['-c', 'printf %s "$1"; kill -9 $$', 'sh', said], { stdio: ['pipe', 'pipe', 'pipe'] });
+            lost.add(p);
+            return p;
+          },
+          lost: async (p) => lost.has(p),
+        }),
+      });
+      return { f, started };
+    }
+
+    it('a script that only reads is run once more, where the session is then', async () => {
+      const t = stopping([1, 3]);
+      const l = await t.f.list(ws, { path: 'repo/src' });
+      expect('entries' in l && l.entries.map((e) => e.path)).toEqual(['repo/src/a.ts']);
+      const file = await t.f.file(ws, 'repo/README.md');
+      expect(file).toMatchObject({ size: 5 });
+      expect(t.started).toHaveLength(4);
+      // Twice in a row: said, not tried for ever.
+      await expect(stopping([1, 2]).f.list(ws, { path: '' })).rejects.toThrow(/The session stopped/);
+    });
+
+    it('a download that had sent nothing starts again; one that had sent bytes fails, and says why', async () => {
+      const t = stopping([2]);
+      const file = await t.f.file(ws, 'repo/README.md');
+      if ('error' in file) throw new Error(file.error.code);
+      const r = file.read();
+      expect((await collect(r.stream)).toString()).toBe('# hi\n');
+      await r.done;
+      expect(t.started).toHaveLength(3);
+      const cut = stopping([2], 'half');
+      const again = await cut.f.file(ws, 'repo/README.md');
+      if ('error' in again) throw new Error(again.error.code);
+      const c = again.read();
+      expect((await collect(c.stream)).toString()).toBe('half');
+      await expect(c.done).rejects.toBeInstanceOf(Unavailable);
+      expect(cut.started).toHaveLength(2);
+    });
+
+    it('a script that writes is never run twice: the upload fails with words, and nothing is in place', async () => {
+      // 1 is the name's check, 2 the unpacking, which the stop kills.
+      const t = stopping([2]);
+      const up = await t.f.upload(ws, 'pushed', 'tar', actor, body(tarOf(path.join(ws.forkPath, 'repo/src'))));
+      expect(up).toMatchObject({ error: { code: 'unavailable', status: 503, retryable: true, message: expect.stringMatching(/The session stopped while its files were being changed/) } });
+      expect(existsSync(path.join(ws.forkPath, 'pushed'))).toBe(false);
+      expect(t.started.filter((s) => s.write).length).toBe(2); // the unpacking, and the removal of what it left
+      // The move into place, killed: said too, not taken for a name that changed.
+      const moved = stopping([3]);
+      const m = await moved.f.upload(ws, 'pushed2', 'tar', actor, body(tarOf(path.join(ws.forkPath, 'repo/src'))));
+      expect(m).toMatchObject({ error: { code: 'unavailable' } });
+    });
   });
 
   it('orders a listing by path components, whatever order find printed it in', () => {

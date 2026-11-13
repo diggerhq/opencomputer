@@ -16,10 +16,14 @@
 //   (C14: no spare outlives its host). The sweep removes only what is older
 //   than `ageMs`, has no record and no connected runner.
 // - A home volume is removed only when Podman has no container for its id at
-//   all, this host's or another's, there is no record of it, and this host's
-//   run directory for the id exists: a volume has no label, and that directory
-//   is the only thing that says the id was this host's. It is removed without
-//   `--force`, which would take a container using it along.
+//   all, this host's or another's, there is no record of it, and it is this
+//   host's: by its label (containers.ts `mine`), whether or not the run
+//   directory is still there (a reboot empties `/run`, and the home of a
+//   pruned or never-recorded id would stay for ever); one labelled as another
+//   host's never goes. A home without the label (made before homes had one)
+//   is this host's only while this host's run directory for the id exists.
+//   It is removed without `--force`, which would take a container using it
+//   along.
 // - A run directory goes only when its id has no container and no volume, no
 //   runner, and nothing touched it (or its record) for `ageMs`: a start makes
 //   the directory before the container. The directory of an id that has a
@@ -133,8 +137,11 @@ export function sandboxSweep(d: SweepDeps) {
         if (state === 'running') await c.stop(id).catch((x) => log.warn(`sandbox ${id} not stopped: ${msg(x)}`));
         return;
       }
-      if (!record) return void (await c.remove(id), log.info(`sandbox ${id}: a container without a record, removed`));
+      // C14: a spare of the host before this one (or a start that never got its record); its run directory serves nobody either.
+      if (!record) return void ((await c.remove(id)) && (await deleteRun(id)), log.info(`sandbox ${id}: a container without a record, removed`));
       if (state !== 'running') return; // the next message resumes it (start.ts)
+      // A spare whose claim was not answered when the host before this one ended (spares.ts): never taken back; the next start makes it anew.
+      if (record.unclaimed) return void (await c.stop(id).catch((x) => log.warn(`sandbox ${id} not stopped: ${msg(x)}`)));
       const run = d.runRoot(id);
       const t0 = now();
       let tokens: { close(): void } | undefined;
@@ -222,7 +229,7 @@ export function sandboxSweep(d: SweepDeps) {
         if (await c.remove(x.id)) (swept.containers++, has.delete(x.id), homes.delete(x.id));
       }
       for (const v of inventory.volumes) {
-        if (has.has(v.id) || !homes.has(v.id) || !idle(v.id) || !old(v.createdAt) || !exists(d.runRoot(v.id))) continue;
+        if (has.has(v.id) || !homes.has(v.id) || !idle(v.id) || !old(v.createdAt) || !(v.mine ?? exists(d.runRoot(v.id)))) continue;
         await as.podman(volumeRmArgs(v.id), { timeoutMs: TIMEOUTS.remove }).then(
           () => (swept.volumes++, homes.delete(v.id), log.info(`sandbox ${v.id}: a home without a container or a record, removed`)),
           (e) => log.warn(`sandbox ${v.id}: home not removed: ${msg(e)}`),

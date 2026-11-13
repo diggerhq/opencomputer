@@ -31,6 +31,9 @@
 //     sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE="$SP_IMAGE" SP_IMAGE_ABI="$SP_IMAGE_ABI" \
 //       node --import tsx src/dev/sandbox-check.ts [--keep]
 //
+// With `--spares` it runs the checks and timings of step 10 instead (spare
+// containers: sandbox-check-spares.ts), on hosts it starts and stops itself.
+//
 // Invariants:
 // - It refuses to run beside a host agent: it is a host itself, on the
 //   computer's SP_RUN and SP_DATA (or the ones in its environment, set up the
@@ -46,10 +49,11 @@
 // - It removes what it made (containers, home volumes, records, run
 //   directories, the previews table, the person directories `sandbox-check`
 //   and `sandbox-check-b`, the journal directories, the upload records, the
-//   definition it saved), pass or fail, unless `--keep`.
+//   definition it saved, every container whose run directory is below its
+//   SP_RUN: the spares), pass or fail, unless `--keep`.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import type net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
@@ -60,7 +64,7 @@ import { mounts } from '../host/sandbox/mounts.js';
 import { asRunner, type PodmanError } from '../host/sandbox/podman.js';
 import { containerName, execArgs, mountArgs, pidArgs, unitName, unshareRmArgs, volumeName } from '../host/sandbox/podman-args.js';
 import { sandboxRecords } from '../host/sandbox/records.js';
-import { sandboxScripts } from '../host/sandbox/scripts.js';
+import { type SandboxPlace, sandboxScripts } from '../host/sandbox/scripts.js';
 import { sandboxWorkspaces } from '../host/sandbox/workspace.js';
 import { runnersDir, sandboxRunFor, secretsFor, socketFor, tokenSocketFor } from '../ipc.js';
 import type { GatewayToHost, HostToGateway, Person, PreviewConfig, PreviewRequest, SessionSpec, TraceContext, WorkspaceDefinition } from '../protocol.js';
@@ -70,11 +74,14 @@ import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
 import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
-import { restarts } from './sandbox-check-restart.js';
+import { spareChecks } from './sandbox-check-spares.js';
+import { type Rig, restarts } from './sandbox-check-restart.js';
+import { waits } from './sandbox-check-waits.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const KEEP = process.argv.includes('--keep');
+const SPARES = process.argv.includes('--spares');
 const RUN = process.env.SP_RUN ?? '/run/slack-presence';
 const DATA = process.env.SP_DATA ?? '/data';
 const IDLE_MS = 20_000;
@@ -82,12 +89,12 @@ const IDLE_MS = 20_000;
 const ARTIFACTS_IDLE_HOURS = 0.0025;
 const NOW = Date.now() / 1000;
 const SESSION_ID = `cs_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-const definition = (about: string): WorkspaceDefinition => ({
+const definition = (about: string, repos = true): WorkspaceDefinition => ({
   name: 'sandbox-check', about,
-  repos: [
+  repos: repos ? [
     { name: 'hello', remote: 'https://github.com/octocat/Hello-World' },
     { name: 'spoon', remote: 'https://github.com/octocat/Spoon-Knife', clone: 'lazy', description: 'checked out on demand' },
-  ],
+  ] : [],
 });
 
 const t0 = Date.now();
@@ -98,8 +105,8 @@ const check = (ok: boolean, what: string) => {
   if (!ok) failed++;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms = 30_000): Promise<T | undefined> {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) {
+async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms = 30_000, every = 100): Promise<T | undefined> {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(every)) {
     const v = await f();
     if (v) return v;
   }
@@ -157,10 +164,14 @@ const QUINN = person('sandbox-check-b', 'U_OTHER', 'usr_sandbox_check_b');
 const preview: PreviewConfig = { tunnelToken: '', key: randomBytes(32).toString('base64url'), ports: [APP_PORT] };
 const asked: { from: string; req: PreviewRequest }[] = [];
 const names = new Map<string, number>();
+/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
+const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
+/** What the gateway's welcome carries: with `--spares` the organization's Claude credential too (a spare parks a Claude Code with it), and repositories or none. */
+const gateway = { spares: SPARES, repos: true };
 const unpreviewed: { from: string; name: string }[] = [];
 /** Protocol 4: the host serves its wire socket, and a thread with a session id gets a journal (work 084), which its container must have mounted. */
 const welcome = (about: string) =>
-  toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about), preview, wire: { key: preview.key } });
+  toHost({ t: 'welcome', protocol: 4, credentials: gateway.spares ? credentials : { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about, gateway.repos), preview, wire: { key: preview.key } });
 wss.on('connection', (c) => {
   conn = c;
   c.on('message', (d) => {
@@ -188,8 +199,6 @@ wss.on('connection', (c) => {
     }
   });
 });
-/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
-const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
 let ts = 1;
 /** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
 async function known(session: SessionSpec): Promise<string> {
@@ -218,7 +227,7 @@ function thread(owner: Person, n: number, sessionId?: string) {
       const d = randomUUID();
       const at = Date.now();
       toHost({ t: 'deliver', id: d, session: spec, msg: { userId: owner.slackUserId ?? 'U_OWNER', text, ts: `3.${ts++}` }, credentials, trace });
-      const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000);
+      const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000, SPARES ? 5 : 100);
       return { reply, ms: Date.now() - at, trace };
     },
     reports: () => events.flatMap((e) => (e.t === 'session' && e.report.key === key ? [e.report] : [])),
@@ -241,7 +250,8 @@ const A2 = thread(PAT, 2);
 const B = thread(QUINN, 3, SESSION_ID);
 /** Started by the step 8 checks only. */
 const C = thread(PAT, 4);
-const all = [A1, A2, B, C];
+const E = thread(PAT, 5);
+const all = [A1, A2, B, C, E];
 /** The `cs_` ids the host was told for the Slack threads. */
 const sessions: string[] = [];
 let wire: WireClient | undefined;
@@ -270,8 +280,10 @@ async function cleanup() {
   rmSync(path.join(DATA, 'state', 'previews.json'), { force: true });
   for (const s of [...sessions, SESSION_ID]) rmSync(path.join(DATA, 'state', 'uploads', `${s}.json`), { force: true });
   for (const s of sessions) rmSync(path.join(DATA, 'journals', s), { recursive: true, force: true });
-  for (const t of all) {
-    const id = t.id();
+  // The threads', and what no record names below this check's SP_RUN: the spares.
+  const below = (() => { try { return readdirSync(path.join(RUN, 'sandbox')); } catch { return []; } })();
+  const spares = below.filter((id) => /^[0-9a-f]{16}$/.test(id) && !records().get(id));
+  for (const id of new Set([...all.map((t) => t.id()), ...spares])) {
     if (!id) continue;
     const run = sandboxRunFor(RUN, id);
     await quiet(podman(['rm', '--force', '--volumes', containerName(id)]));
@@ -354,7 +366,8 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   // ---- checkout, by the host's own parts in this process
   const tm = createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm, root: ROOT, dataDir: DATA, helperRun: path.join(RUN, 'helper'), image: IMAGE,
-    execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }) });
+    execIn: (id, argv, o) => as.podman(execArgs(id, argv, { dir: o.dir, interactive: o.stdin !== undefined }), { timeoutMs: o.timeoutMs, stdin: o.stdin }),
+    enter: () => Promise.reject(new Error('not used')), running: async () => true });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);
   await a2.deliver(); // the host writes the record at a delivery: the last one before the checkout, which the host does not know of
@@ -371,6 +384,31 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   welcome('second');
   const def = () => { try { return JSON.parse(readFileSync(path.join(a2.run, 'definition.json'), 'utf8')).about; } catch { return undefined; } };
   check(!!(await until(() => (def() === 'second' ? true : undefined), 10_000)) && /"about": ?"second"/.test(await a2.inside('cat $SP_DEFINITION')), 'a definition the gateway sends is written again for a running container, which reads it');
+}
+
+async function finish(host?: ChildProcess): Promise<never> {
+  clearInterval(keeping);
+  wire?.close();
+  host?.kill('SIGTERM');
+  await sleep(1500);
+  host?.kill('SIGKILL');
+  await cleanup();
+  wss.close();
+  collector.close();
+  say(failed ? `${failed} check(s) FAILED` : 'all checks passed');
+  process.exit(failed ? 1 : 0);
+}
+
+if (SPARES) {
+  let host: ChildProcess | undefined;
+  await spareChecks({
+    run: RUN, data: DATA, image: IMAGE, idleMs: IDLE_MS, say, check, until, sleep, podman, events, tel, tokenSessions, mkTrace, people: [PAT, QUINN],
+    records, clone: (p, name) => mnt.clone(p.dir, name),
+    thread: (owner, n) => { const t = thread(owner, n); all.push(t); return t; },
+    welcome: (about, repos) => { gateway.repos = repos; welcome(about); },
+    start: (env) => (host = startHost(env)),
+  }).catch((e) => check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`));
+  await finish(host);
 }
 
 let host = startHost();
@@ -434,8 +472,9 @@ try {
   wire = await wireClient(wireSocket);
   const byId = (cid: string) => all.find((t) => t.id() === cid) ?? refuse(`no thread ${cid}`);
   // Started here as the host starts them; nothing in this process runs a workspace script through it, so it is given no way to.
-  const files = sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
-    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')) });
+  // Where a script runs is what the check says the thread is (the host asks its record and its unit, sandbox/use.ts).
+  const files = (place: SandboxPlace) => sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
+    helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')), enter: async () => ({ place, leave() {} }), running: async () => place.running }).filesPlace(place);
   const kit: Kit = {
     root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
     inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),
@@ -443,7 +482,7 @@ try {
     asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
     status: (cid) => byId(cid).inspect('{{.State.Status}}'),
     tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
-    filesPlace: (t, running) => files.filesPlace({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
+    filesPlace: (t, running) => files({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
   };
   await reachRunning(kit, a, b, q);
 
@@ -490,7 +529,7 @@ try {
   await reachResumed(kit, a, b);
 
   // ---- the host killed and started again; the sweep; Prune (step 8)
-  const times = await restarts({
+  const rig: Rig = {
     kit, as, run: RUN, data: DATA, image: IMAGE, events, tel, names, unpreviewed, welcome, clone: mnt.clone, lines: hostLines,
     kill: () => new Promise<void>((r) => (host.once('exit', () => r()), host.kill('SIGKILL'))),
     async start(env) {
@@ -498,19 +537,13 @@ try {
       host = startHost(env);
       return (await until(() => events.slice(n).find((e) => e.t === 'hello'), 90_000)) ? Date.now() - at : undefined;
     },
-  }, A1, A2, B, C);
+    known,
+  };
+  const times = await restarts(rig, A1, A2, B, C, E);
   say(`timings: ${JSON.stringify(times)}`);
+  // ---- what waits for what: the image lock, a prune and a /files script, a session stopped under a download, a home after a reboot
+  await waits(rig, A2, E);
 } catch (e) {
   check(false, `the check itself failed: ${(e as Error)?.stack ?? e}`);
-} finally {
-  clearInterval(keeping);
-  wire?.close();
-  host.kill('SIGTERM');
-  await sleep(1500);
-  host.kill('SIGKILL');
-  await cleanup();
-  wss.close();
-  collector.close();
 }
-say(failed ? `${failed} check(s) FAILED` : 'all checks passed');
-process.exit(failed ? 1 : 0);
+await finish(host);

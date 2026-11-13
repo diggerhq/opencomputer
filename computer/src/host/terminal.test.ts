@@ -4,6 +4,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Unavailable, UPDATING } from './unavailable.js';
 import { createTerminals, frame, frames, type Terminals, TERMINALS_PER_SESSION } from './terminal.js';
 
 let dir: string;
@@ -136,6 +137,24 @@ describe('terminals in containers (work 103, C13)', () => {
     podman.prewarm(); // no helper ahead either: it would be a process outside every container
     const r = await podman.open({ sessionId: 'cs_a', cwd: dir, cols: 80, rows: 24, tty: true }, onExit);
     expect('error' in r && [r.error.code, r.error.status]).toEqual(['unavailable', 503]);
+    expect(podman.count('cs_a')).toBe(0);
+    await podman.closeAll();
+  });
+
+  it('enters the sandbox first: refused with the words of the refusal, or as not running, and nothing starts; no use is left', async () => {
+    const log: string[] = [];
+    let answer: () => Promise<{ running: boolean; leave(): void }> = async () => ({ running: false, leave: () => void log.push('left') });
+    const podman = createTerminals({ dir: path.join(dir, 'p'), launch: 'podman', inside: { enter: (id) => (log.push(`enter ${id}`), answer()), hangUp() {} } });
+    const open = () => podman.open({ sessionId: 'cs_a', sandbox: '00aa11bb22cc33dd', cwd: '/workspace', cols: 80, rows: 24, tty: true }, onExit);
+    const stopped = await open();
+    expect('error' in stopped && [stopped.error.code, stopped.error.reason]).toEqual(['conflict', 'session_not_running']);
+    answer = () => Promise.reject(new Unavailable(UPDATING));
+    const updating = await open();
+    expect('error' in updating && updating.error).toEqual({ code: 'unavailable', message: 'The computer is updating, try again in a few minutes.', status: 503, retryable: true });
+    answer = () => Promise.reject(new Error('systemctl: /run/user/1500'));
+    const other = await open();
+    expect('error' in other && [other.error.code, other.error.message]).toEqual(['unavailable', 'The terminal could not start.']);
+    expect(log).toEqual(['enter 00aa11bb22cc33dd', 'left', 'enter 00aa11bb22cc33dd', 'enter 00aa11bb22cc33dd']);
     expect(podman.count('cs_a')).toBe(0);
     await podman.closeAll();
   });

@@ -24,6 +24,11 @@
 // - A transcript lives in the thread's home: `sdkSessionId` goes in only when
 //   the home volume was there before this start. A record alone (a first
 //   start whose Create failed, a volume removed) is a new home.
+// - A record that says `unclaimed` (spares.ts) is of a spare bound to the
+//   thread whose claim failed, or was cut short by the host's end. Whatever
+//   Podman has under its id is never started: container and home are removed
+//   and created anew, with no transcript, and the record stops saying so once
+//   they are gone. When they cannot be removed the start fails.
 // - The thread's workspace directory and its registries are made at every
 //   start: a first start may have failed before they were. The mounts
 //   (workspace.ts) are part of bringing the container up.
@@ -54,6 +59,7 @@ import { coldStart } from '../cold-start.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
 import type { Containers, Inventory } from './containers.js';
 import { WORKSPACE } from './mounts.js';
+import { containerName } from './podman-args.js';
 import type { Records, SandboxRecord } from './records.js';
 import type { ThreadLocks } from './thread-lock.js';
 import type { SandboxWorkspace } from './workspace.js';
@@ -154,7 +160,7 @@ export function sandboxStarts(d: SandboxStartDeps) {
         try {
           names = d.workspace.repos(record);
           await d.workspace.dirs(record, names);
-          const inventory = found && (await c.inventory());
+          const inventory = found && !found.unclaimed && (await c.inventory());
           // The transcript is in the home: resumed only into one that was there before this start.
           if (sdkSessionId && inventory && inventory.volumes.some((v) => v.id === id)) session = { ...fresh, sdkSessionId };
           api = await d.mint(session, id, run);
@@ -164,6 +170,12 @@ export function sandboxStarts(d: SandboxStartDeps) {
             data['container.recreated'] = r.recreated;
             if (r.ms !== undefined) data['container.create_ms'] = r.ms;
           } else {
+            if (record.unclaimed) {
+              if (!(await c.remove(id))) throw new Error(`the spare this thread took was not claimed and could not be removed (${containerName(id)}); nothing was started`);
+              const { unclaimed: _, ...claimed } = record;
+              d.records.write((record = claimed));
+              data['container.recreated'] = true;
+            }
             data['container.create_ms'] = await c.create(id).catch(async (e) => {
               await c.remove(id); // whatever a failed Create left; the record stays
               throw e;

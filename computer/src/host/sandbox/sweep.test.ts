@@ -32,7 +32,7 @@ function rig(o: { inventory?: Partial<Inventory> | Error; records?: SandboxRecor
   const records = new Map((o.records ?? []).map((r) => [r.id, r]));
   const runRoot = (id: string) => path.join(runDir, id);
   const s = sandboxSweep({
-    as: { run, podman: (args) => run(['podman', ...args]) },
+    as: { settled: async () => {}, run, podman: (args) => run(['podman', ...args]) },
     tm: { emit: (name: string, f: { data: unknown }) => void events.push({ name, data: f.data }) } as never,
     records: { all: () => [...records.values()], get: (id) => records.get(id), unread: () => o.unread ?? [] },
     locks: threadLocks(),
@@ -69,6 +69,12 @@ describe('host restart', () => {
     expect(t.log).toEqual(['inventory', `tokens ${A} C1:${A}`, `dial ${A}/runners/${A}.sock`, `adopt ${A} C1:${A}`]);
   });
 
+  it('stops a running container whose record says its spare was never claimed: it is not taken back, whatever its runner would report', async () => {
+    const t = rig({ inventory: { containers: [box(A)] }, records: [{ ...record(A), unclaimed: true }], sockets: [A] });
+    expect((await t.s.reconcile()).size).toBe(0);
+    expect(t.log).toEqual(['inventory', `stop ${A}`]);
+  });
+
   it('stops a running container whose socket does not answer, or whose runner is not the record\'s; removes neither', async () => {
     const silent = rig({ inventory: { containers: [box(A)] }, records: [record(A)] });
     expect((await silent.s.reconcile()).size).toBe(0);
@@ -81,8 +87,11 @@ describe('host restart', () => {
 
   it('leaves a stopped container for its next message, and removes every container without a record whatever its age', async () => {
     const t = rig({ inventory: { containers: [box(A, 'exited'), box(B, 'created'), box(C, 'running', NOW)] }, records: [record(A), record(B)] });
+    t.dir(C, NOW);
     await t.s.reconcile();
-    expect(t.log).toEqual(['inventory', `remove ${C}`]);
+    // C14: a spare of the host before this one is never taken back, and its run directory goes with it.
+    expect(t.log).toEqual(['inventory', `remove ${C}`, expect.stringMatching(new RegExp(`^podman unshare find .*${C}/runners`))]);
+    expect(existsSync(t.runRoot(C))).toBe(false);
   });
 
   it('does nothing when the inventory fails', async () => {
@@ -125,6 +134,15 @@ describe('sweep', () => {
     const vol = (id: string, createdAt = OLD) => ({ id, createdAt });
     const t = rig({ inventory: { containers: [box(B, 'exited')], volumes: [vol(A), vol(B), vol(C), vol(D), vol(E), vol('ffffffffffffffff', NOW)], foreign: [C] }, records: [record(B), record(D)] });
     for (const id of [A, B, C, D, 'ffffffffffffffff']) t.dir(id); // none for E: nothing says it was this host's
+    expect(await t.s.sweep()).toMatchObject({ volumes: 1, containers: 0 });
+    expect(t.ran('volume rm')).toEqual([`podman volume rm sp-home-${A}`]);
+  });
+
+  it('a home labelled as this host\'s goes without its run directory (a reboot empties /run); one labelled as another host\'s never; one without the label only with the directory', async () => {
+    const [D, E, F, G] = ['dddddddddddddddd', 'eeeeeeeeeeeeeeee', 'ffffffffffffffff', '0000000000000000'];
+    const vol = (id: string, mine?: boolean, createdAt = OLD) => ({ id, createdAt, ...(mine !== undefined && { mine }) });
+    const t = rig({ inventory: { containers: [box(D, 'exited')], volumes: [vol(A, true), vol(B, false), vol(C), vol(D, true), vol(E, true), vol(F, true, NOW), vol(G, true)], foreign: [G] }, records: [record(D), record(E)] });
+    t.dir(B); // even with a directory here, the label says whose it is
     expect(await t.s.sweep()).toMatchObject({ volumes: 1, containers: 0 });
     expect(t.ran('volume rm')).toEqual([`podman volume rm sp-home-${A}`]);
   });

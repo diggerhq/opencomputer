@@ -32,6 +32,12 @@ export interface SandboxRecord {
   usedAt: string;
   /** The fork's repositories (`ForkInfo.repos`). Absent until they were first added. */
   repos?: Record<string, { branch: string; from: string; base: string; fetchError?: string }>;
+  /**
+   * Step 10: the container under this id was a spare, bound to the thread, and its claim is not known to have been answered
+   * (spares.ts). Whatever is under this id is then not the thread's runner: it is never taken back and never started again;
+   * the thread's next start removes it, home and all, and creates anew (start.ts). Gone once the claim was answered.
+   */
+  unclaimed?: true;
 }
 
 export interface Records {

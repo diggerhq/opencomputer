@@ -5,6 +5,7 @@ import { createTelemetry } from '../../telemetry/emitter.js';
 import type { TelemetryEvent } from '../../telemetry/envelope.js';
 import { ScriptError } from '../../workspaces/script-runner.js';
 import { type AsRunner, PodmanError, type RunOptions } from './podman.js';
+import { Unavailable, UPDATING } from '../unavailable.js';
 import { HELPER_SECONDS, sandboxScripts } from './scripts.js';
 
 const ID = '00aa11bb22cc33dd';
@@ -21,12 +22,25 @@ function rig(answer: () => string | Error = () => 'out') {
     return a;
   };
   const podmans: string[][] = [];
-  const as: AsRunner = { run: (argv, o) => (runs.push({ argv, o }), reply()), podman: (args) => (podmans.push(args), reply()) };
+  /** What the thread is when a `/files` script enters it, and how often one entered and left. */
+  const state = { running: true, held: false, entered: 0, left: 0, order: [] as string[] };
+  const as: AsRunner = {
+    settled: async () => void state.order.push('settled'),
+    run: (argv, o) => (state.order.push('run'), runs.push({ argv, o }), reply()),
+    podman: (args) => (podmans.push(args), reply()),
+  };
   const started: string[][] = [];
   const children: EventEmitter[] = [];
   const s = sandboxScripts({
     as, sudo: ['/usr/bin/sudo', '-n', '-u', 'agent'], tm, root: '/opt/slack-presence/releases/r1', dataDir: '/data', helperRun: '/run/sp/helper', image: 'img:1',
     execIn: (id, argv, o) => (execs.push({ id, argv, o }), reply()),
+    running: async () => state.running, lostWaitMs: 1,
+    enter: async (id) => {
+      if (state.held) throw new Unavailable(UPDATING);
+      state.entered += 1;
+      let left = false;
+      return { place: { id, person: 'pat', workspace: '/data/people/pat/sessions/k', running: state.running }, leave: () => void (left || ((left = true), (state.left += 1))) };
+    },
     spawn: (cmd, args) => {
       started.push([cmd, ...args]);
       const child = Object.assign(new EventEmitter(), { kill: () => true });
@@ -34,7 +48,7 @@ function rig(answer: () => string | Error = () => 'out') {
       return child as ChildProcess;
     },
   });
-  return { s, execs, runs, podmans, started, children, tm, events: async () => (await tm.flush(), sent) };
+  return { s, state, execs, runs, podmans, started, children, tm, events: async () => (await tm.flush(), sent) };
 }
 
 describe('workspace scripts in containers (work 103, C12)', () => {
@@ -73,6 +87,8 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     expect(HELPER_SECONDS['ws-sync.sh']).toBe(120);
     expect(inspect.argv).toEqual(expect.arrayContaining(['--network=none', '--interactive', '--timeout', '5', '/data/people/pat/sessions/k:/workspace:ro']));
     expect(inspect.o).toEqual({ timeoutMs: 20_000, stdin: '1\tx\n' });
+    // A helper is `podman run` outside `as.podman`: it waits for the image lock by itself, as long as any Podman call.
+    expect(t.state.order).toEqual(['settled', 'run', 'settled', 'run']);
     const events = (await t.events()).filter((e) => e.event_name === 'sandbox.helper');
     expect(events.map((e) => [e.data?.script, e.outcome])).toEqual([['ws-clone.sh', 'completed'], ['ws-inspect.sh', 'completed']]);
     expect(t.tm.dropped).toEqual({});
@@ -111,12 +127,12 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     const sb = { id: ID, person: 'pat', workspace: '/data/people/pat/sessions/k', running: true };
     const AS = ['/usr/bin/sudo', '-n', '-u', 'agent', '--', '/usr/bin/timeout', '--kill-after=2'];
 
-    it('a running thread: podman exec in its container, as the session, in /workspace, ended there by timeout', () => {
+    it('a running thread: podman exec in its container, as the session, in /workspace, ended there by timeout', async () => {
       const t = rig();
       const place = t.s.filesPlace(sb);
       expect(place.root).toBe('/workspace');
-      place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
-      place.spawn(['/bin/sh', '-c', 'x'], { stdin: true, write: true });
+      await place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
+      await place.spawn(['/bin/sh', '-c', 'x'], { stdin: true, write: true });
       const tag = t.started[0].at(-6)?.slice('OPC_FILES='.length);
       expect(tag).toMatch(/^[0-9a-f]{16}$/);
       expect(t.started[0]).toEqual([
@@ -132,9 +148,10 @@ describe('workspace scripts in containers (work 103, C12)', () => {
 
     it('a stopped thread: the same helper as a workspace script, its workspace bound read-only unless the script writes, never a network', async () => {
       const t = rig();
-      const place = t.s.filesPlace({ ...sb, running: false });
-      place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
-      place.spawn(['/bin/sh', '-c', 'x'], { write: true, stdin: true });
+      t.state.running = false;
+      const place = t.s.filesPlace(sb);
+      await place.spawn(['/bin/sh', '-c', 'x', 'sh', '/workspace'], { seconds: 30 });
+      await place.spawn(['/bin/sh', '-c', 'x'], { write: true, stdin: true });
       const [read, write] = t.started;
       expect(read.slice(0, 18)).toEqual([...AS, '45.000', '/usr/bin/systemd-run', '--user', '--scope', '--quiet', '--slice=slack-presence-runners.slice', '-p', 'Delegate=yes', '--', '/usr/bin/podman', 'run']);
       expect(read).toEqual(expect.arrayContaining(['--network=none', '--timeout', '30', '--log-driver=none', '/data/people/pat/ws:/clones', `${sb.workspace}:/workspace:ro`]));
@@ -152,7 +169,7 @@ describe('workspace scripts in containers (work 103, C12)', () => {
     it('a running thread: a script whose command was ended, not over by itself, is ended in the container too', async () => {
       const t = rig();
       const place = t.s.filesPlace(sb);
-      const ps = [0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
+      const ps = await Promise.all([0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {})));
       const tags = t.started.map((a) => a.at(-4)?.slice('OPC_FILES='.length));
       // The script's own exits: nothing of it is left. Ended by a signal, by timeout(1), or never started: its timeout in the container is told to end it.
       t.children[0].emit('close', 0);
@@ -173,8 +190,9 @@ describe('workspace scripts in containers (work 103, C12)', () => {
 
     it('a stopped thread: a helper whose command was ended, not over by itself, is stopped', async () => {
       const t = rig();
-      const place = t.s.filesPlace({ ...sb, running: false });
-      const ps = [0, 1, 2, 3].map(() => place.spawn(['/bin/sh', '-c', 'x'], {}));
+      t.state.running = false;
+      const place = t.s.filesPlace(sb);
+      const ps = await Promise.all([0, 1, 2, 3].map(() => place.spawn(['/bin/sh', '-c', 'x'], {})));
       const names = t.started.map((a) => a[a.indexOf('--name') + 1]);
       expect(names[0]).toMatch(/^sp-files-[0-9a-f]{16}$/);
       expect(new Set(names).size).toBe(4);
@@ -188,16 +206,66 @@ describe('workspace scripts in containers (work 103, C12)', () => {
 
     it('a place that fails to end what is left says so and goes on', async () => {
       const t = rig(() => new PodmanError('failed', 125, 'no such container', false));
-      t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      await t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
       t.children[0].emit('close', null);
       await new Promise((r) => setImmediate(r));
       expect(t.podmans.length).toBe(1);
     });
 
-    it('only a shell script is started', () => {
+    it('only a shell script is started', async () => {
       const t = rig();
-      expect(() => t.s.filesPlace(sb).spawn(['/usr/bin/git', 'status'], {})).toThrow('not a shell script');
+      await expect(t.s.filesPlace(sb).spawn(['/usr/bin/git', 'status'], {})).rejects.toThrow('not a shell script');
       expect(t.started).toEqual([]);
+    });
+
+    it('where it runs is what the thread is when the script starts, whatever its caller was told before', async () => {
+      const t = rig();
+      const place = t.s.filesPlace({ ...sb, running: false }); // what the request knew
+      await place.spawn(['/bin/sh', '-c', 'x'], {});
+      t.state.running = false; // idle stop
+      await place.spawn(['/bin/sh', '-c', 'x'], {});
+      expect(t.started.map((a) => a[a.indexOf('/usr/bin/podman') + 1])).toEqual(['exec', 'run']);
+    });
+
+    it('lost: a script in the container whose command failed, untold, and whose container is no longer running then', async () => {
+      const t = rig();
+      const place = t.s.filesPlace(sb);
+      const ps = await Promise.all([0, 1, 2, 3, 4].map(() => place.spawn(['/bin/sh', '-c', 'x'], {})));
+      t.state.running = false; // the idle stop
+      t.children[0].emit('close', 137); // killed with its container
+      t.children[1].emit('close', 255); // `podman exec` found the container stopped
+      t.children[2].emit('close', 44); // the script's own answer
+      ps[3].kill('SIGTERM'); // the host ended it
+      t.children[3].emit('close', 137);
+      expect(await Promise.all(ps.map((p) => place.lost?.(p)))).toEqual([true, true, false, false, false]); // the last has not closed
+      // A helper is nobody's container to stop: its failure is its own.
+      const helper = await place.spawn(['/bin/sh', '-c', 'x'], {});
+      t.children[5].emit('close', 255);
+      expect(await place.lost?.(helper)).toBe(false);
+      // The container still runs: whatever ended the script, it was not the stop.
+      const up = rig();
+      const p = await up.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      up.children[0].emit('close', 137);
+      expect(await up.s.filesPlace(sb).lost?.(p)).toBe(false);
+    });
+
+    it('while provisioning holds the image lock nothing is started, and the caller is told the computer is updating', async () => {
+      const t = rig();
+      t.state.held = true;
+      await expect(t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {})).rejects.toThrow(/The computer is updating, try again/);
+      expect([t.started, t.podmans]).toEqual([[], []]);
+    });
+
+    it('a script has left its sandbox once its command closed, or never started', async () => {
+      const t = rig();
+      await t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      expect([t.state.entered, t.state.left]).toEqual([1, 0]);
+      t.children[0].emit('close', 0);
+      expect(t.state.left).toBe(1);
+      await t.s.filesPlace(sb).spawn(['/bin/sh', '-c', 'x'], {});
+      t.children[1].emit('error', new Error('spawn ENOENT'));
+      t.children[1].emit('close', null);
+      expect([t.state.entered, t.state.left]).toEqual([2, 2]);
     });
   });
 });

@@ -19,7 +19,7 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 
 function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory' | 'mount' | 'prepare', Error>>; stale?: boolean;
-  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean } = {}) {
+  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean; stays?: boolean } = {}) {
   const log: string[] = [];
   const ups: RunnerSpec[] = [];
   const sent: TelemetryEvent[] = [];
@@ -47,7 +47,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
         return { ...up, mountMs: 4 };
       },
       stop: (id) => step(`stop ${id}`, undefined),
-      remove: (id) => step(`remove ${id}`, true),
+      remove: (id) => step(`remove ${id}`, !o.stays),
       inventory: () => step('inventory', { containers: o.have ?? [], volumes: (o.homes ?? []).map((id) => ({ id, createdAt: 0 })), foreign: [] }),
       stale: async () => !!o.stale,
       unitActive: async () => true,
@@ -146,6 +146,27 @@ describe('sandbox start', () => {
     // A thread with no files is new whatever did not load, and so is every thread once all records load.
     expect((await rig({ unread: 'abababababababab' }).start(spec, {})).resumed).toBe(false);
     expect((await rig({ there: true }).start(spec, {})).resumed).toBe(false);
+  });
+
+  it('a record whose spare was never claimed: its container and home are removed and made again, never used, whatever state they are in', async () => {
+    const id = 'aaaaaaaaaaaaaaaa';
+    const record = { id, person: 'pat', key: 'C1:1.1', createdAt: 'then', usedAt: 'then', repos: {}, unclaimed: true as const };
+    // The Remove after the failed claim did not go through: the container is there, of this ABI, not stale, its home too.
+    const t = rig({ have: [container(id, { state: 'running' })], homes: [id] });
+    t.records.write(record);
+    const s = await t.start({ ...spec, sdkSessionId: 'sdk1' }, {});
+    expect(t.log).toEqual(['dirs C1:1.1 ', `mint ${id} /run/sp/sandbox/${id} sdk=-`, `remove ${id}`, `create ${id}`, `up ${id} C1:1.1`, `mount ${id} 5 pat /workspace`]);
+    expect(s.session.sdkSessionId).toBeUndefined(); // a new home has no transcript
+    expect(s.record).not.toHaveProperty('unclaimed');
+    expect(t.records.get(id)).not.toHaveProperty('unclaimed');
+    expect((await t.events()).find((e) => e.event_name === 'runner.launched')).toMatchObject({ data: { 'container.recreated': true, 'container.create_ms': 11 } });
+    expect(t.tm.dropped).toEqual({});
+
+    const stuck = rig({ have: [container(id)], homes: [id], stays: true });
+    stuck.records.write(record);
+    await expect(stuck.start(spec, {})).rejects.toThrow(`the spare this thread took was not claimed and could not be removed (sp-runner-${id}); nothing was started`);
+    expect(stuck.log.filter((l) => /^(create|up|recreate)/.test(l))).toEqual([]);
+    expect(stuck.records.get(id)).toMatchObject({ unclaimed: true });
   });
 
   it('a resume keeps the transcript only when the home was there before this start', async () => {

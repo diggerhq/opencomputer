@@ -21,8 +21,8 @@
 //   ended between two looks.
 // - `stop` resolves only for a container that is down: one that outlived
 //   Podman's stop and the kill of its cgroup rejects.
-// - Stop, Remove and the lists are `repeatable` behind the image lock
-//   (podman.ts): each leaves the same behind made twice. Create, an exec, Pid
+// - Stop, Remove, a home's creation and the lists are `repeatable` behind the
+//   image lock (podman.ts): each leaves the same behind made twice. Create, an exec, Pid
 //   (polled anyway) and what empties a run directory are made once.
 // - An id the Inventory gives is sixteen hex digits: a label or a volume name
 //   that is anything else is left out, before it reaches a path or an argv.
@@ -31,6 +31,11 @@
 //   user's Podman is one per computer, and another host of the computer (other
 //   SP_RUN) has its containers there too: the Inventory names those `foreign`
 //   and nothing here, the restart or the sweep ever touches them.
+// - A home says the same of itself: Create makes it first, with the label
+//   `sp.run` holding that run directory (Podman labels no volume a container
+//   only names), and the Inventory says `mine` of it by that label. A home
+//   made before the label has none, and gets none: `volume create --ignore`
+//   leaves an existing home as it is.
 
 import path from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -40,7 +45,7 @@ import { log } from '../../log.js';
 import { bootEnv } from './boot-env.js';
 import type { AsRunner } from './podman.js';
 import {
-  containerName, createArgs, emptyRunArgs, execArgs, inventoryArgs, logsArgs, pidArgs, recreateRemoveArgs, removeArgs, stopArgs, unitName,
+  HOME_LABEL, containerName, createArgs, emptyRunArgs, execArgs, homeArgs, inventoryArgs, logsArgs, pidArgs, recreateRemoveArgs, removeArgs, stopArgs, unitName,
 } from './podman-args.js';
 import type { SandboxRecord } from './records.js';
 
@@ -63,8 +68,8 @@ export interface ContainerInfo {
 
 export interface Inventory {
   containers: ContainerInfo[];
-  /** Home volumes, by runner id. */
-  volumes: { id: string; createdAt: number }[];
+  /** Home volumes, by runner id. `mine`: what its label says (true: this host's run directory for the id; false: another's); absent for a home without the label. */
+  volumes: { id: string; createdAt: number; mine?: boolean }[];
   /** Runner ids of sandbox containers of the same Podman that are another host's (not on this host's run directories). */
   foreign: string[];
 }
@@ -125,11 +130,12 @@ export function containers(d: ContainersDeps) {
   const { as } = d;
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
-  /** Create the container (60 s). Its run directory is a mount source, so it exists first. Resolves with the time taken. */
+  /** Create the container (60 s), its home before it (60 s). Its run directory is a mount source, so it exists first. Resolves with the time taken. */
   async function create(id: string): Promise<number> {
     const t0 = Date.now();
     const run = d.runRoot(id);
     dir(run, 0o2750);
+    await as.podman(homeArgs(id, run), { timeoutMs: TIMEOUTS.create, repeatable: true });
     await as.podman(createArgs({ id, run, dataDir: d.dataDir, image: d.image, abi: d.abi }), { timeoutMs: TIMEOUTS.create });
     return Date.now() - t0;
   }
@@ -185,6 +191,8 @@ export function containers(d: ContainersDeps) {
     const tokens = d.serveTokens(run, id, () => record?.key);
     const t0 = Date.now();
     try {
+      // The unit's `podman start` is not `as.podman`'s: behind the image lock it would run out of the unit's time, not wait.
+      await as.settled();
       await d.start(id, TIMEOUTS.start);
       const p = await pid(id);
       // Podman's pid is the previous run's when the unit never came up: never trusted while the unit is inactive.
@@ -267,7 +275,9 @@ export function containers(d: ContainersDeps) {
       }),
       volumes: parse(vs).flatMap((v) => {
         const m = /^sp-home-([0-9a-f]{16})$/.exec(String(v?.Name ?? ''));
-        return m ? [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0 }] : [];
+        if (!m) return [];
+        const label = v.Labels?.[HOME_LABEL];
+        return [{ id: m[1], createdAt: Date.parse(String(v.CreatedAt ?? '')) || 0, ...(typeof label === 'string' && { mine: label === d.runRoot(m[1]) }) }];
       }),
       foreign,
     };
@@ -298,8 +308,8 @@ export function containers(d: ContainersDeps) {
 
   /** For the error of a start that never became ready: the unit's status and the last 50 lines the container wrote. */
   const diagnose = (id: string) =>
-    as.run(['/bin/sh', '-c', `${SYSTEMCTL} --user status --no-pager --lines=0 "$1" 2>&1 | cut -c1-200; echo '--- podman logs'; /usr/bin/podman ${logsArgs(id).slice(0, -1).join(' ')} "$2" 2>&1; true`,
-      'sh', unitName(id), containerName(id)], { timeoutMs: TIMEOUTS.inventory }).then((s) => s.trim(), (e) => `no diagnosis: ${e?.message ?? e}`);
+    as.settled().then(() => as.run(['/bin/sh', '-c', `${SYSTEMCTL} --user status --no-pager --lines=0 "$1" 2>&1 | cut -c1-200; echo '--- podman logs'; /usr/bin/podman ${logsArgs(id).slice(0, -1).join(' ')} "$2" 2>&1; true`,
+      'sh', unitName(id), containerName(id)], { timeoutMs: TIMEOUTS.inventory })).then((s) => s.trim(), (e) => `no diagnosis: ${e?.message ?? e}`);
 
   return { create, up, pid, rewriteDefinition, stop, remove, recreate, inventory, execIn, stale, unitActive, diagnose };
 }

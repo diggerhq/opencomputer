@@ -12,7 +12,11 @@
 //   before reaches main unchanged. Only `cs_` sessions have a writer.
 // - One writer per session: the host's session-writer is handed off (lock
 //   released) before a runner is started or claimed for its session, and is
-//   opened only when no runner serves it and none is starting.
+//   opened only when no runner serves it and none is starting. "Starting"
+//   lasts from `mint` until the runner is `up` or main says the start ended
+//   (`startEnded`, well or not), however long that takes: a start in a
+//   container may wait minutes for the image lock (work 103), and no timer
+//   stands in for its end.
 // - Calvin never writes recovery events for a lost runner (the DO does, under
 //   epoch + 1); the boot scan settles only journals no process holds.
 // - Only the gateway's `epoch` frame moves a session's epoch (recovery-fix):
@@ -168,9 +172,7 @@ export function apiHost(d: ApiHostDeps) {
     if (pending.has(sessionId)) return;
     let resolve = () => {};
     const done = new Promise<void>((r) => (resolve = r));
-    const t = setTimeout(() => settle(sessionId), 60_000); // a launch that failed before its runner registered
-    t.unref?.();
-    pending.set(sessionId, { done, resolve: () => (clearTimeout(t), resolve()) });
+    pending.set(sessionId, { done, resolve });
   }
   function settle(sessionId: string) {
     pending.get(sessionId)?.resolve();
@@ -486,6 +488,9 @@ export function apiHost(d: ApiHostDeps) {
       tokens.set(runnerId, api);
       return api;
     },
+
+    /** The start `mint` was called for is over, with a runner or without: whoever waited for it goes on (to the runner's writer, or the host's). */
+    startEnded: (spec: SessionSpec) => void (isSessionId(spec.sessionId) && settle(spec.sessionId)),
 
     /** A runner now serves its session (launched, claimed, or found after a restart). */
     up(runnerId: string) {

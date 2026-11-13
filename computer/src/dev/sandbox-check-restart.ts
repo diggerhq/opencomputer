@@ -4,7 +4,9 @@
 // a runner socket that was replaced, a container without a record and a
 // record without a container, the sweep, the image lock held across a
 // restart, and Prune. sandbox-check.ts owns the hosts, the fake gateway and
-// the threads; this file plants, restarts, and compares.
+// the threads; this file plants, restarts, and compares. And what the review
+// of step 8 found: a preview name another session holds, a record's file that
+// does not load, and a message that arrives while its thread is pruned.
 //
 // Invariants:
 // - It kills the host with SIGKILL, never asks it to stop: what is checked is
@@ -21,7 +23,7 @@
 //   throughout, and the two that are to be pruned are left to go idle.
 
 import { type ChildProcess, spawn } from 'node:child_process';
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { IMAGE_LOCK } from '../host/sandbox/image-lock.js';
@@ -77,15 +79,17 @@ export interface Rig {
   welcome(about: string): void;
   /** A person's clone of a repository, on the host. */
   clone(person: string, repo: string): string;
+  /** Tell the host a thread's `cs_` id, as a gateway does; the id. */
+  known(spec: SessionSpec): Promise<string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * `a` runs, `b` (the same person's) and `q` (another's) are stopped, `c` is a thread nobody started yet. `b` has the
+ * `a` runs, `b` (the same person's) and `q` (another's) are stopped, `c` and `e` are threads nobody started yet. `b` has the
  * preview `s9-b` of APP_PORT and `a` has `s9-none` of APP_PORT + 1, from sandbox-check-reach.ts. Returns the timings.
  */
-export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
+export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
   const { kit: k } = x;
   const { check, say, until } = k;
   const podman = (args: string[], timeoutMs = 30_000) => x.as.podman(args, { timeoutMs });
@@ -107,9 +111,11 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
     kept.clear();
     await Promise.all(last.map((t) => t.deliver()));
   };
-  const [X, F, V, W, D, U] = Array.from({ length: 6 }, () => randomBytes(8).toString('hex'));
+  const [X, F, V, W, D, U, R] = Array.from({ length: 7 }, () => randomBytes(8).toString('hex'));
   const dir = (id: string) => sandboxRunFor(x.run, id);
   const planted = path.join(x.run, 'runners', 'planted.sock');
+  /** The record of R: a file that is there and does not load. */
+  const cut = path.join(x.data, 'state', 'sandboxes', `${R}.json`);
   let holder: ChildProcess | undefined;
   const times: Record<string, number | undefined> = {};
 
@@ -139,6 +145,10 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
     const pc = await toolCall(k, c, 'preview', { port: APP_PORT, name: 's8-c' });
     check(pc.json?.listening === true && x.names.has('s8-c'), `C previews its ${APP_PORT} as s8-c (${pc.text})`);
     await C.inside('echo layer > /opt/s8-layer', '0:0');
+    const dup = await toolCall(k, a, 'preview', { port: APP_PORT + 2, name: 's8-c' });
+    check(/another session has a preview named s8-c; choose another name/.test(dup.text) && !k.asked.some((q) => q.req.name === 's8-c' && q.from !== C.key)
+      && table().filter((e) => e.name === 's8-c').every((e) => e.id === c.id) && said(await viaProxy(k, port('s8-c')), 'inside C'),
+      `A's preview under the name C holds is refused (${dup.text}), the gateway was not asked, and the name still answers from inside C`);
 
     // ---- a killed host: two threads run, one is stopped, one runner's socket was replaced, one socket is planted where hosts used to scan
     await quiesce();
@@ -168,18 +178,24 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
       "the container whose socket reported A's thread was not taken back: it is stopped, and its record stays");
     check(existsSync(planted) && !existsSync(`${planted}.dialed`), `the listener planted in ${path.dirname(planted)} was never dialed`);
     const qid = Q.id();
-    const [rQ, rC] = await Promise.all([Q.deliver(), C.deliver()]);
+    const [rQ, rC, rE] = await Promise.all([Q.deliver(), C.deliver(), E.deliver()]);
     check(!!rQ.reply?.ok && Q.record()?.id === qid && (await status(Q)) === 'running', `the thread that was stopped across the restart resumes in ${rQ.ms} ms (${rQ.reply?.error ?? ''})`);
     check(!!rC.reply?.ok && (await C.inside('cat /opt/s8-layer')) === 'layer', `and the stopped one answers again as its own thread in ${rC.ms} ms, with what root wrote outside its home before the stop (${rC.reply?.error ?? ''})`);
+    check(!!rE.reply?.ok && !!E.record()?.repos?.hello, `a fifth thread starts in ${rE.ms} ms, to be pruned while a message for it arrives (${rE.reply?.error ?? ''})`);
     kept.add(Q);
 
-    // ---- planted for the second restart; A and C are left to go idle
+    // ---- planted for the second restart; A, C and E are left to go idle
     kept.delete(A);
-    for (const id of [X, V, D]) mkdirSync(dir(id));
-    const make = (id: string, binds: string[]) =>
-      podman(['create', '--name', containerName(id), '--label', `sp.runner=${id}`, '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(id)}:/home/agent`, ...binds, x.image, 'true'], 60_000);
+    for (const id of [X, V, D, R]) mkdirSync(dir(id));
+    const make = (id: string, binds: string[], argv = ['true']) =>
+      podman(['create', '--name', containerName(id), '--label', `sp.runner=${id}`, '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(id)}:/home/agent`, ...binds, '--entrypoint', JSON.stringify(argv), x.image], 60_000);
     await make(X, ['-v', `${dir(X)}:${dir(X)}`]); // this host's, by its run directory, and of no record
     await make(F, []); // another host's
+    // This host's, running, and of a record whose file was cut short: nothing may remove what that record names.
+    await make(R, ['-v', `${dir(R)}:${dir(R)}`], ['/bin/sh', '-c', 'echo kept > /home/agent/s8-cut; trap "exit 0" TERM; sleep 900 & wait']);
+    await podman(['start', containerName(R)]);
+    check(!!(await until(async () => ((await podman(['exec', containerName(R), 'cat', '/home/agent/s8-cut']).catch(() => '')).trim() === 'kept' ? true : undefined), 10_000)), `planted: a running container ${containerName(R)} of this host, whose record's file is cut short`);
+    writeFileSync(cut, `{"id":"${R}","person":"${A.owner.dir}","key":"C_SANDBOX:9`);
     for (const id of [V, W]) await podman(['volume', 'create', volumeName(id)]);
     for (const id of [V, U]) await x.as.run(['/usr/bin/systemd-run', '--user', '--quiet', '--unit', unitName(id), '/bin/false'], { timeoutMs: 10_000 }).catch(() => {});
     check(!!(await until(async () => ((await failedUnit(V)) && (await failedUnit(U)) ? true : undefined), 10_000)), 'planted: a container and a home of no record, a home and a failed unit with a run directory, an empty run directory; and a container, a home and a failed unit of no run directory of this host');
@@ -208,12 +224,18 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
 
     // ---- what the start removes, and what a record without a container gets
     check(!!(await until(async () => (!(await has('container', containerName(X))) && !(await has('volume', volumeName(X))) ? true : undefined), 20_000)), 'the container with no record, and its home, are removed at the start');
+    const ofR = async () => `container ${await podman(['inspect', '--format', '{{.State.Status}}', containerName(R)]).then((s) => s.trim(), () => 'none')}, home ${(await has('volume', volumeName(R))) ? 'there' : 'gone'}, run directory ${existsSync(dir(R)) ? 'there' : 'gone'}, file ${existsSync(cut) ? 'there' : 'gone'}`;
+    const keptR = 'container exited, home there, run directory there, file there';
+    check(!!(await until(async () => ((await ofR()) === keptR ? true : undefined), 30_000)) && x.lines.slice(mark).some((l) => l.includes(`sandbox ${R}: its record did not load; kept, stopped`)),
+      `the running container whose record's file was cut short is stopped and not removed: ${await ofR()}`);
     check(!!rQ2.reply?.ok && Q.record()?.id === qid && (await Q.inside('cat /home/agent/s8-marker')) === 'kept', `the record whose container was removed gets a new container in ${rQ2.ms} ms, under the same id and with its home (${rQ2.reply?.error ?? ''})`);
 
     // ---- the sweep
     const sweptAt = Date.now();
     check(!!(await until(async () => (!(await has('volume', volumeName(V))) && ![V, X, D].some((id) => existsSync(dir(id))) && !(await failedUnit(V)) ? true : undefined), 60_000)),
       `the sweep removed the home of no record, the three run directories of no container, and reset the failed unit (${Date.now() - sweptAt} ms after the start's checks; objects older than ${SWEEP_AGE_MS} ms)`);
+    const homeR = await podman(['run', '--rm', '--userns=keep-id:uid=1500,gid=1500', '-v', `${volumeName(R)}:/home/agent`, '--entrypoint', '/bin/cat', x.image, '/home/agent/s8-cut'], 60_000).then((s) => s.trim(), (e) => `error: ${e.message}`);
+    check((await ofR()) === keptR && homeR === 'kept', `after the sweep too (${await ofR()}), and its home holds what was written in it (${JSON.stringify(homeR)})`);
     check((await has('container', containerName(F))) && (await has('volume', volumeName(F))) && (await has('volume', volumeName(W))) && (await failedUnit(U)),
       'the container, the homes and the failed unit that have no run directory of this host are untouched');
     const swept = await until(() => x.tel.slice(telMark).find((e) => e.event_name === 'sandbox.swept'), 15_000);
@@ -222,14 +244,28 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
     check((await whole(B)) && (await whole(Q)) && (await same(B, wasB)), "the running threads, one of each person, have their containers, homes, run directories and records; B's container never restarted");
 
     // ---- Prune: C is clean and pushed (nothing was committed), A has a commit on no remote
-    const [aid, cid, crun] = [A.id(), C.id(), C.run];
-    check(!!(await until(async () => ((await status(A)) === 'exited' && (await status(C)) === 'exited' ? true : undefined), 90_000)), 'A and C went idle and are stopped');
+    const [aid, cid, crun, eid] = [A.id(), C.id(), C.run, E.id()];
+    check(!!(await until(async () => ((await status(A)) === 'exited' && (await status(C)) === 'exited' && (await status(E)) === 'exited' ? true : undefined), 90_000)), 'A, C and E went idle and are stopped');
     const pruneAt = Date.now();
+    // A message for E the moment its prune shows (its record without repositories, or gone): the delivery waits for the thread's turn.
+    let seen = '';
+    const raced = (async () => {
+      for (const end = Date.now() + 200_000; Date.now() < end; await sleep(5)) {
+        const r = E.record();
+        if (r?.repos?.hello && r.id === eid) continue;
+        seen = r ? 'its record had lost its repositories' : 'its record was gone';
+        return E.deliver();
+      }
+    })();
     // A changed definition starts a housekeeping pass, unless one is running: asked again until it shows.
-    for (let n = 0; n < 15 && C.record(); n++) {
+    for (let n = 0; n < 15 && (C.record() || !seen); n++) {
       x.welcome(`fourth ${n}`);
-      await until(() => (C.record() ? undefined : true), 10_000);
+      await until(() => (C.record() || !seen ? undefined : true), 10_000);
     }
+    const rE2 = await raced;
+    const inE = await E.inside(`git -C /workspace/hello status --porcelain --branch; node -p "require('/workspace/.fork.json').key"; ls /clones/hello/.git/worktrees`);
+    check(!!rE2?.reply?.ok && (await status(E)) === 'running' && !!E.record()?.repos?.hello && inE === [`## ${E.branch}`, E.key, 'hello'].join('\n') && !(await has('container', containerName(eid))),
+      `a message that arrives while its thread is pruned (${seen || 'the prune never showed'}) is answered in ${rE2?.ms} ms by a thread that works, in a new container ${E.id()} and a prepared workspace: ${JSON.stringify(inE)} ${rE2?.reply?.error ?? ''}`);
     check(!C.record() && !(await has('container', containerName(cid))) && !(await has('volume', volumeName(cid))) && !existsSync(C.workspace) && !existsSync(path.dirname(C.registry('x'))) && !existsSync(crun),
       `a thread idle beyond retention with nothing unsaved is pruned (${Date.now() - pruneAt} ms after it was seen stopped; retention ${Math.round(RETENTION_DAYS * 86_400)} s): container, home, workspace, registries, run directory, record`);
     const branch = await x.as.run(['/usr/bin/git', '-C', x.clone(C.owner.dir, 'hello'), 'branch', '--list', C.branch], { timeoutMs: 10_000 }).catch((e) => `error: ${e.message}`);
@@ -254,9 +290,10 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
     const quiet = (p: Promise<unknown>) => p.catch(() => {});
     await quiet(x.as.run(['/usr/bin/pkill', '-f', planted], { timeoutMs: 5000 }));
     for (const f of [planted, `${planted}.dialed`]) rmSync(f, { force: true });
-    for (const id of [X, F]) await quiet(podman(['rm', '--force', containerName(id)]));
-    for (const id of [X, F, V, W]) await quiet(podman(['volume', 'rm', '--force', volumeName(id)]));
-    for (const id of [X, V, D]) rmSync(dir(id), { recursive: true, force: true });
+    for (const id of [X, F, R]) await quiet(podman(['rm', '--force', '--time', '0', containerName(id)]));
+    for (const id of [X, F, V, W, R]) await quiet(podman(['volume', 'rm', '--force', volumeName(id)]));
+    for (const id of [X, V, D, R]) rmSync(dir(id), { recursive: true, force: true });
+    rmSync(cut, { force: true });
     await quiet(x.as.run(['/usr/bin/systemctl', '--user', 'reset-failed', unitName(V), unitName(U)], { timeoutMs: 5000 }));
   }
   return times;

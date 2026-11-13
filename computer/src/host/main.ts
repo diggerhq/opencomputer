@@ -9,7 +9,7 @@
 //                              A definition in the gateway's welcome replaces it (<SP_DATA>/definition.json).
 //   [SP_IDLE_MS=7200000]       tell a runner to exit after this long without deliveries
 //   [SP_LAUNCH=systemd|podman|detached]  default systemd on Linux, detached elsewhere. podman (work 103): every
-//                              thread in its own container (sandbox/); needs SP_RUNNER_USER and SP_POOL_SIZE=0
+//                              thread in its own container (sandbox/), spares too; needs SP_RUNNER_USER
 //   [SP_IMAGE] [SP_IMAGE_ABI]  the session image and its ABI, from the release's .sp-version.env; required by podman
 //   [SP_SWEEP_AGE_MS=600000]   podman: how old a container, home or run directory of no thread must be before the
 //                              sweep removes it (sandbox/sweep.ts); the sweep runs every half of it, at most every 5 minutes
@@ -131,7 +131,7 @@ const pool = new Pool<Runner>({
   failed: () => tm.emit('pool.spare_failed', {}),
   evict: (r, reason) => {
     tm.emit('pool.spare_evicted', { data: { reason } });
-    exitRunner(r.sock);
+    starts.evict(r);
   },
 });
 /** Every connected runner: the sessions' and the spares. */
@@ -153,7 +153,7 @@ let stopping = false;
 
 /** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
 const sandbox = LAUNCH === 'podman'
-  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, spares: POOL_SIZE, tm,
+  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm,
       mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
       serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => allRunners().some((r) => r.id === id),
       adopt: (record, run, sock) => starts.adopt(record.id, sock, { verify: true, sandbox: { record, run } }),
@@ -165,7 +165,7 @@ const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
   mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-  sandbox: sandbox?.starts, stopSandbox: (id) => sandbox!.stop(id, 0),
+  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE, stopSandbox: (id) => sandbox!.stop(id, 0),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -185,7 +185,9 @@ function runnerClosed(r: Runner) {
   if (!stopping) api.down(r.id);
   if (!r.key) {
     pool.gone(r);
-    fillPool();
+    // A spare that leaves a `podman` host is Removed (sandbox/spares.ts), whatever made it go; the next host removes what this one leaves.
+    if (stopping) return;
+    void (sandbox?.spares.gone(r.id) ?? Promise.resolve()).then(fillPool);
     return;
   }
   if (runners.get(r.key) !== r) return;
@@ -250,7 +252,8 @@ function ensureRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Pr
   if (live) return Promise.resolve(live);
   let p = starting.get(spec.key);
   if (!p) {
-    p = starts.startRunner(spec, f, first).finally(() => starting.delete(spec.key));
+    // Until here nobody opens the session's journal beside the start (api-host.ts `mint`): its end, whichever, is what frees it.
+    p = starts.startRunner(spec, f, first).finally(() => (starting.delete(spec.key), api.startEnded(spec)));
     starting.set(spec.key, p);
   }
   return p;
@@ -284,7 +287,7 @@ const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-a
   dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
   forkPath: (key) => runners.get(key)?.report?.forkPath,
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
-    stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files }), sandbox: sandbox?.place, telemetry: tm });
+    stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files, terminal: sandbox?.terminal }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
   if (disk) toGateway(disk);
@@ -499,6 +502,8 @@ const shutdown = async () => {
   // Runners keep going; the next host finds them by their sockets.
   log.info('host stopping');
   for (const r of allRunners()) r.sock.destroy();
+  // A spare's container serves nobody and no host finds it again: each is stopped and Removed, within what the unit's stop allows (15 s in all).
+  const spares = sandbox && Promise.race([sandbox.spares.close(), new Promise((r) => setTimeout(r, 8000).unref())]);
   tokenServer.close();
   helperTokens?.close();
   previews.stop();
@@ -506,6 +511,7 @@ const shutdown = async () => {
   await api.stop();
   // One last send within 5 s; what is left stays in the spool for the next start.
   await telemetry.close(5000);
+  await spares;
   process.exit(0);
 };
 process.on('SIGTERM', () => void shutdown());

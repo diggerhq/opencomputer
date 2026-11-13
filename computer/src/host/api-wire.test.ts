@@ -7,6 +7,13 @@ describe('api-wire', () => {
     expect(wireFor({ launch: 'systemd', stateDir: '/nonexistent', user: { sudo: [], uid: 1500, env: {} } })).toBeTypeOf('function');
   });
 
+  it('on a podman host it needs where a session\'s files are and how its terminal enters the sandbox', () => {
+    const user = { sudo: [], uid: 1500, env: {} };
+    const files = () => ({ root: '/workspace', spawn: () => Promise.reject(new Error('not used')) });
+    expect(() => wireFor({ launch: 'podman', stateDir: '/nonexistent', user, files })).toThrow(/its terminal/);
+    expect(wireFor({ launch: 'podman', stateDir: '/nonexistent', user, files, terminal: { enter: async () => ({ running: true, leave() {} }), hangUp() {} } })).toBeTypeOf('function');
+  });
+
   it('reads a group\'s gid, undefined where it does not exist', () => {
     expect(groupId('sp-wire', () => 'sp-wire:x:997:sp-host\n')).toBe(997);
     expect(

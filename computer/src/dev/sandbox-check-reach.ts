@@ -167,12 +167,12 @@ async function filesEnded(k: Kit, t: Thread, running: boolean) {
   const where = running ? "running A's container" : 'a helper of stopped A';
   const place = k.filesPlace(t, running);
   const t0 = Date.now();
-  const limit = await exit(place.spawn(['/bin/sh', '-c', 'sleep 300 & sleep 301', 'sh'], { seconds: 2 }));
+  const limit = await exit(await place.spawn(['/bin/sh', '-c', 'sleep 300 & sleep 301', 'sh'], { seconds: 2 }));
   const ms = Date.now() - t0;
   // In the container timeout(1) ends it (124); a helper is ended by Podman, which says 255.
   const l1 = await nothingLeft(k, t, running);
   check(limit === (running ? 124 : 255) && l1 === 'nothing', `a /files script in ${where} that reaches its limit of 2 s exits ${limit} after ${ms} ms and leaves ${l1}`);
-  const p = place.spawn(['/bin/sh', '-c', 'sleep 302', 'sh'], { seconds: 120 });
+  const p = await place.spawn(['/bin/sh', '-c', 'sleep 302', 'sh'], { seconds: 120 });
   const closed = exit(p);
   await new Promise((r) => setTimeout(r, 3000));
   p.kill('SIGTERM');

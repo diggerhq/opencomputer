@@ -7,7 +7,7 @@ const r = { person: 'pat', key: 'C1:1.1' };
 
 function rig() {
   const calls: { args: string[]; o: RunOptions }[] = [];
-  const as: AsRunner = { run: async () => '', podman: async (args, o) => (calls.push({ args, o }), '') };
+  const as: AsRunner = { settled: async () => {}, run: async () => '', podman: async (args, o) => (calls.push({ args, o }), '') };
   return { m: mounts({ as, root: '/opt/slack-presence/releases/r1', dataDir: '/data' }), calls };
 }
 

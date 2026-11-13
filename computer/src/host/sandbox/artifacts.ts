@@ -14,7 +14,9 @@
 // - Only a thread with no runner is pruned, and its directories are removed
 //   in the thread's turn (thread-lock.ts): a thread that has a runner then, or
 //   whose record a start wrote since git was asked, loses nothing, and a start
-//   that arrives during the removal waits for it.
+//   that arrives during the removal waits for it. Neither does one a `/files`
+//   script or a terminal is in, or was since git was asked, and none enters
+//   during the removal (use.ts `claim`).
 // - A thread is looked at again only once it was used again.
 
 import { lstat } from 'node:fs/promises';
@@ -41,6 +43,8 @@ export interface ArtifactsDeps {
   helper(person: string, binds: Bind[]): ScriptRunner;
   /** True while the thread of this record has a runner. */
   running(id: string): boolean;
+  /** `sandboxUses.claim`: the thread, free of `/files` scripts and terminals since `since`, until the function returned is called. */
+  claim(id: string, since: number): (() => void) | undefined;
 }
 
 export type SandboxArtifacts = ReturnType<typeof sandboxArtifacts>;
@@ -65,6 +69,7 @@ export function sandboxArtifacts(d: ArtifactsDeps) {
   /** Remove the git-ignored build and dependency directories of a stopped thread's worktrees. Returns the directories removed, as host paths. */
   async function pruneArtifacts(r: SandboxRecord): Promise<string[]> {
     const ws = m.workspace(r);
+    const asked = Date.now();
     const q = await artifactQuestion(ws);
     if (!q.asked.length) return [];
     const binds: Bind[] = [
@@ -75,10 +80,16 @@ export function sandboxArtifacts(d: ArtifactsDeps) {
     return d.locks.run(r.person, r.key, async () => {
       // No runner and no start since git was asked first, then the paths: a thread that is not running cannot move them after they were resolved.
       if (d.running(r.id) || d.records.get(r.id)?.usedAt !== r.usedAt) return [];
-      const ignored = await stillInside(ws, ignoredArtifacts(q, out));
-      if (!ignored.length) return [];
-      await d.as.podman(unshareRmArgs(ignored), { timeoutMs: REMOVE_TIMEOUT_MS });
-      return ignored;
+      const free = d.claim(r.id, asked);
+      if (!free) return [];
+      try {
+        const ignored = await stillInside(ws, ignoredArtifacts(q, out));
+        if (!ignored.length) return [];
+        await d.as.podman(unshareRmArgs(ignored), { timeoutMs: REMOVE_TIMEOUT_MS });
+        return ignored;
+      } finally {
+        free();
+      }
     });
   }
 

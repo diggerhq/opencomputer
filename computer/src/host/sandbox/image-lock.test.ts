@@ -9,15 +9,16 @@ import { asRunner, type Exec, PodmanError } from './podman.js';
 describe('imageSettled', () => {
   it('costs nothing where provisioning never took the lock', async () => {
     const flock = vi.fn(async () => 0);
-    await imageSettled({ exists: () => false, flock });
+    expect(await imageSettled({ exists: () => false, flock })).toBe(true);
     expect(flock).not.toHaveBeenCalled();
   });
 
   it('takes a shared lock with a bound, and goes on when the bound passes or flock cannot run', async () => {
     const flock = vi.fn(async (_: string[]) => 1 as number | undefined);
-    await expect(imageSettled({ lock: '/run/x.lock', waitS: 7, exists: () => true, flock })).resolves.toBeUndefined();
+    // Still held after the bound: it says so, and who called decides (podman.ts).
+    await expect(imageSettled({ lock: '/run/x.lock', waitS: 7, exists: () => true, flock })).resolves.toBe(false);
     expect(flock.mock.calls[0][0]).toEqual(['--shared', '--timeout', '7', '/run/x.lock', '/usr/bin/true']);
-    await expect(imageSettled({ exists: () => true, flock: async () => undefined })).resolves.toBeUndefined();
+    await expect(imageSettled({ exists: () => true, flock: async () => undefined })).resolves.toBe(true);
   });
 
   it('after a wait that was a real one, waits for a run queued behind it too; within the one bound', async () => {
@@ -72,6 +73,17 @@ describe('imageSettled', () => {
 });
 
 describe('asRunner with the image lock', () => {
+  it('settled: with no bound it waits as podman() does and goes on; with one it refuses when the lock is still held then', async () => {
+    const asked: (number | undefined)[] = [];
+    const exec = (() => ({})) as unknown as Exec;
+    const held = asRunner(['/usr/bin/sudo'], exec, async (d) => (asked.push(d?.waitS), false));
+    await expect(held.settled()).resolves.toBeUndefined();
+    const e = await held.settled(10_000).catch((x) => x);
+    expect([e.name, e.message, e.retryable]).toEqual(['Unavailable', 'The computer is updating, try again in a few minutes.', true]);
+    expect(asked).toEqual([undefined, 10]);
+    await expect(asRunner(['/usr/bin/sudo'], exec, async () => true).settled(10_000)).resolves.toBeUndefined();
+  });
+
   it('starts no Podman call before provisioning is done, and other commands at once', async () => {
     const started: string[] = [];
     const exec = ((_cmd: string, args: string[], _o: unknown, cb: (e: null, out: string, err: string) => void) => {

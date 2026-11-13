@@ -24,7 +24,7 @@ import type { WireHooks, WireLinkLike } from './api-relay.js';
 import { systemdRunPrefix } from './runner-limits.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 import type { RunnerUser } from './runner-user.js';
-import { createTerminals } from './terminal.js';
+import { createTerminals, type TerminalsOptions } from './terminal.js';
 import { serveWireLink, WIRE_DIR } from './wire-link.js';
 import { createWorkspaceFiles, type Place } from './workspace-files.js';
 
@@ -40,6 +40,8 @@ export interface WireOptions {
   dir?: string;
   /** On a `podman` host: where a session's `/files` scripts run (sandbox/host.ts `files`). */
   files?(sandbox: SandboxPlace): Place;
+  /** On a `podman` host: how a terminal enters a session's sandbox and hangs up in it (sandbox/host.ts `terminal`). */
+  terminal?: TerminalsOptions['inside'];
 }
 
 /** The gid of `name`, or undefined where it does not exist. */
@@ -56,7 +58,7 @@ export function groupId(name: string, getent = (n: string) => execFileSync('/usr
 export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLinkLike>) | undefined {
   if (!o.user) return undefined;
   const podman = o.launch === 'podman';
-  if (podman && !o.files) throw new Error('SP_LAUNCH=podman: the wire socket needs the place of a session\'s files');
+  if (podman && !(o.files && o.terminal)) throw new Error('SP_LAUNCH=podman: the wire socket needs the place of a session\'s files and its terminal');
   const user = o.user;
   return (hooks) => {
     const dir = o.dir ?? WIRE_DIR;
@@ -68,6 +70,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       systemdRun: o.systemdRun ?? systemdRunPrefix(os.totalmem()),
       path: o.path,
       group,
+      inside: podman ? o.terminal : undefined,
     });
     const inSandbox = podman ? o.files : undefined;
     const files = createWorkspaceFiles({
