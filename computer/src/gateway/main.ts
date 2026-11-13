@@ -13,6 +13,14 @@
 //   SP_PEOPLE       JSON array of SlackPerson, upserted into the people table on start
 //   SP_SLACK_API_URL  dev only: Slack Web API base URL (a local fake), for every Slack call the gateway makes
 //
+// The sessions' model credentials (work 097 C9), sent to hosts as `models`;
+// the host binds each runner to one through the computer's model proxy:
+//   MODEL_PROFILE + MODEL_TOKEN  Claude Code on that profile (an operator's own, in the proxy's profiles.d);
+//                                wins over the two below
+//   CLAUDE_CODE_OAUTH_TOKEN      else Claude Code on `claude-oauth` (also from /setup)
+//   ANTHROPIC_API_KEY            else Claude Code on `anthropic-key` (also from /setup)
+//   OPENAI_API_KEY               Codex on `openai-key`, for threads started with `+codex`
+//
 // Slack credentials come from env first, then the secret store. One HTTP
 // server listens the whole time; what answers behind it is either the setup
 // routes (no Slack app yet) or Bolt (the app exists). When /setup stores new
@@ -29,6 +37,8 @@ import { WebClient } from '@slack/web-api';
 import { loadEnv, setEnv } from '../env.js';
 import { SCOPES, ensureApp, startTunnel, syncManifest } from '../provision.js';
 import { type HostCredentials, isSlackSpec, type PermissionMode, type SlackPerson } from '../protocol.js';
+import type { ModelRoute, ModelRoutes } from '../protocol-model.js';
+import { modelKey } from '../model-key.js';
 import { openSecrets, type Secrets } from '../setup/secrets.js';
 import { checkHostToken, setupRoutes, slackAppReady, slackReady, type SetupStep } from '../setup/index.js';
 import { slackApi } from '../setup/slack.js';
@@ -92,11 +102,25 @@ const credentials = (): HostCredentials => ({
   teamId: get('SLACK_TEAM_ID'),
 });
 
+/** The sessions' model routes, by harness (the table above). */
+const models = (): ModelRoutes => {
+  const route = (profile: string, token: string): ModelRoute => ({ mode: 'profile', profile, vars: { token }, key: modelKey(profile, { token }) });
+  const profile = get('MODEL_PROFILE');
+  const token = get('MODEL_TOKEN');
+  const oauth = get('CLAUDE_CODE_OAUTH_TOKEN');
+  const apiKey = get('ANTHROPIC_API_KEY');
+  const openai = get('OPENAI_API_KEY');
+  const claude =
+    profile && token ? route(profile, token) : oauth ? route('claude-oauth', oauth) : apiKey ? route('anthropic-key', apiKey) : undefined;
+  return { ...(claude ? { claude } : {}), ...(openai ? { codex: route('openai-key', openai) } : {}) };
+};
+
 const hub = new Hub({
   store,
   tokens: (env.SP_HOST_TOKENS ?? '').split(',').map((t) => t.trim()).filter(Boolean),
   checkToken: (t) => checkHostToken(store.db, t),
   credentials,
+  models,
   mintToken: (repos) => mintInstallationToken(secrets, repos),
   spawn: (from, req) => {
     if (!slackRouter) throw new Error('Slack is not set up on the gateway');
@@ -124,7 +148,7 @@ if (laptop) {
   origin = await startTunnel(PORT);
 }
 
-/** A setup step stored something: Slack app credentials rebuild Bolt; a new Claude token goes to the hosts. */
+/** A setup step stored something: Slack app credentials rebuild Bolt; a new Claude token goes to the hosts as `models`. */
 function onChange(step: SetupStep) {
   if (step === 'slack') reload();
   if (step === 'claude' || step === 'slack') hub.refreshCredentials();
@@ -282,6 +306,7 @@ function boltHandler(): RequestListener {
     store,
     hub,
     mode: (env.PERMISSION_MODE ?? 'bypassPermissions') as PermissionMode,
+    models,
     secrets: secretsUi,
     variables: variablesUi,
   }));
