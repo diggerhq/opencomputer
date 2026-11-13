@@ -1,0 +1,101 @@
+---
+title: "Sessions"
+description: "A suspended session has no runner but still answers reads and records writes; `sessions.resume` or sending a turn starts it again"
+---
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
+
+A session id is `cs_` followed by 16 characters. Fields of the `Session` object: [API schema](/reference/api-schema#objects).
+
+## Status
+
+| `status` | Meaning |
+| --- | --- |
+| `starting` | The runtime is starting. `runtime.starting` events give the phase: `computer`, then `agent` |
+| `running` | A turn is running |
+| `waiting` | An ask is open |
+| `idle` | No turn is running |
+| `suspended` | No runner holds the session. The host answers reads and records writes |
+
+Each change is a `session.status_changed` event with `from` and `to`.
+
+## Create and list
+
+HTTP only: `POST /sessions` with a `CreateSessionBody`, and `GET /sessions`.
+
+```json
+{"input":"Run the test suite and fix what fails","title":"Fix tests","mode":"acceptEdits","metadata":{"ticket":"ENG-123"}}
+```
+
+Every field is optional ([API schema](/reference/api-schema#operations)). `id` is a session id chosen by the client; `input` is the first message. Accepted values for `model`, `effort`, `speed` and `mode` are in the session's `capabilities`.
+
+## Read
+
+`sessions.get` (`GET /sessions/{id}`) returns the `Session`, including the active turn id, queued turns, open asks, running subagents and `lastSeq`. `minSeq` waits for the journal: [Session journal](/api/overview#session-journal).
+
+## Attach
+
+`sessions.attach` (WebSocket only) subscribes the connection to the session's events. It returns the session and its `capabilities`: models with their effort levels, permission modes, and features.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"sessions.attach","params":{"sessionId":"cs_0123456789abcdef","tailTurns":3,"deltas":true}}
+```
+
+| Param | Meaning |
+| --- | --- |
+| `after` | Replay events with `seq` greater than this, then follow live |
+| `tailTurns` | Replay the last 1 to 50 turns instead. `earlierTurns` in the result holds the turns before them |
+| Neither | Live events only |
+| `deltas` | Also send `delta` notifications (text as it is written) |
+| `resume` | Start the runtime if the session is suspended |
+| `readOnly` | Refuse writes to this session on this connection (`forbidden`, `reason: "read_only"`) |
+
+| Related | Use |
+| --- | --- |
+| `/connect?attach=<sessionId>&tailTurns=3&deltas=1` | Attaches in the connection URL. The server answers with a `sessions.attached` notification carrying the same fields, or an `error` |
+| `sessions.detach` | Ends the subscription |
+
+| Error | Cause |
+| --- | --- |
+| `too_many_attached` | The connection already holds 20 attached sessions |
+| `too_far_behind` | See [Events](/api/events) |
+
+## Update
+
+`sessions.update` (`PATCH /sessions/{id}`) changes any of `title`, `model`, `effort`, `speed`, `mode`, `archived` and `metadata`. It returns the session and a `seq`.
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"sessions.update","params":{"sessionId":"cs_0123456789abcdef","mode":"plan","metadata":{"ticket":"ENG-124"}}}
+```
+
+| Item | Rule |
+| --- | --- |
+| `metadata` | Keys (up to 40 characters) are merged one by one. Values are strings of up to 500 characters, or null |
+| `session.updated` event | `changes` maps each changed field to `{from, to}`. A metadata key is `metadata.<key>` |
+| Model the harness does not accept | `invalid_request` with `field: "model"`. The session stays on its model |
+
+## Compact
+
+`sessions.compact` (`POST /sessions/{id}/compact`) queues a compaction as a turn and returns the same result as `turns.send`.
+
+`instructions` (up to 10,000 characters) is passed to the harness's `/compact` command. The `session.compacted` event gives `beforeTokens`, `afterTokens` and `auto` (true when the harness compacted on its own). See Context and compaction.
+
+## Suspend
+
+`sessions.suspend` (`POST /sessions/{id}/suspend`) stops the session's runner. The journal and workspace stay on the computer.
+
+| State when called | Result |
+| --- | --- |
+| Idle | Suspends |
+| A turn is waiting on an ask | The turn is interrupted, then the session suspends |
+| A turn is running and no ask is open | `409 session_busy`. Interrupt first |
+| `ifIdle: true` and the session is not idle, or has running subagents or queued turns | The session, unchanged |
+| Already suspended | The session, unchanged |
+
+Suspending cancels queued turns, stops running subagents, closes open asks as `interrupted`, and records `runtime.suspended` with `reason: "requested"`. The other reasons are `idle` and `lost`.
+
+## Resume
+
+`sessions.resume` (`POST /sessions/{id}/resume`) starts the runtime of a suspended session and returns at once; `runtime.starting` and `runtime.connected` events follow. On a session that is not suspended it returns the session unchanged. [Sending a turn](/api/turns#send) to a suspended session also starts it.
+
+{/* Sources: computer/schema/computer-api.v1.json (Session, CreateSessionBody, AttachResult, methods); computer/src/api/schema-methods.ts; computer/src/api/read-methods.ts; computer/src/runner/api/api.ts (update, compact, suspend handlers); computer/src/host/session-writer.ts (suspend, resume, queued send while suspended); computer/src/wire/connection.ts and attachment.ts (attach, URL attach, read-only); computer/src/wire/limits.ts; opc/src/cmd (POST /sessions, GET /sessions) */}

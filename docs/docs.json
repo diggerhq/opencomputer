@@ -73,9 +73,27 @@
         ]
       },
       {
-        "group": "API",
+        "group": "API and CLI",
         "pages": [
-          "api/overview"
+          "api/overview",
+          "api/sessions",
+          "api/turns",
+          "api/events",
+          "api/asks",
+          "api/subagents",
+          "api/terminals",
+          "api/files",
+          "api/cli"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/slack-commands",
+          "reference/agent-tools",
+          "reference/configuration",
+          "reference/limits",
+          "reference/api-schema"
         ]
       },
       {

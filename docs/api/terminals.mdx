@@ -1,0 +1,74 @@
+---
+title: "Terminals"
+description: "A terminal is a shell or command the host starts in a session's workspace as the agent's Unix user, over WebSocket only"
+---
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
+
+`opc shell` is a client for terminals.
+
+## Access
+
+| Item | Rule |
+| --- | --- |
+| Caller | The session's owner or an admin, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
+| Process user | The agent's Unix user |
+| Environment | `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `TERM`. No session secrets |
+
+<Note>Not in the public code yet: launch blocker 2 (runner isolation). Today every session's runner and every terminal run as the same Unix user, so a terminal can read the files of other sessions on the computer.</Note>
+
+## Open
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"terminals.open","params":{"sessionId":"cs_0123456789abcdef","cols":120,"rows":40}}
+```
+
+```json
+{"jsonrpc":"2.0","id":8,"result":{"terminal":{"id":"tm_...","channel":1,"stderrChannel":null}}}
+```
+
+| Param | Meaning |
+| --- | --- |
+| `tty` | Default true: a pseudo-terminal; `cols` and `rows` are required. False: plain pipes, with standard error on its own channel, `stderrChannel` |
+| `cols`, `rows` | 1 to 1,000 |
+| `command` | A command to run instead of an interactive shell, up to 10,000 characters |
+| `term` | The `TERM` value, up to 64 characters |
+
+| Error | Cause |
+| --- | --- |
+| `409 too_many_terminals` | The session already holds 8 terminals, across all connections |
+
+A session with an open terminal is not suspended for being idle. The journal records `terminal.opened` and `terminal.closed` events.
+
+## Data frames
+
+A binary WebSocket frame is a 4-byte big-endian channel number, then the data.
+
+| Direction | Channel | Limit |
+| --- | --- | --- |
+| Client to server (input) | `channel` | 1 MiB per second per terminal. The server drops input over the limit, and the next request on the connection reports `rate_limited` |
+| Server to client (output) | `channel`, and `stderrChannel` when there is one | 64 KiB per frame, channel number included |
+
+## Resize, end input, close
+
+Each method takes the `terminalId`.
+
+| Method | Effect |
+| --- | --- |
+| `terminals.resize` | Sets `cols` and `rows` |
+| `terminals.eof` | Closes the process's standard input |
+| `terminals.close` | Hangs up: `SIGHUP` to the process group, `SIGKILL` 5 seconds later |
+
+A terminal belongs to the connection that opened it.
+
+| Case | Result |
+| --- | --- |
+| Its id used on another connection | `404 terminal_not_found` |
+| The connection closes | Every terminal it opened closes |
+| The process exits | The server sends `terminal.exited` |
+
+```json
+{"jsonrpc":"2.0","method":"terminal.exited","params":{"terminalId":"tm_...","exitCode":0,"signal":null}}
+```
+
+{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (agent user, environment, 8 per session, SIGHUP/SIGKILL); computer/src/host/wire-link.ts (cwd, repeated check, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}

@@ -1,8 +1,111 @@
 ---
-title: "API"
-description: "TBD: adopted from opc"
+title: "Overview"
+description: "The Computer API drives the same sessions as Slack threads, over WebSocket (JSON-RPC 2.0) and HTTP"
 ---
 
-{/* Open question: is this the opc API? */}
+<Note>
+Not in the public code yet: launch blocker 4 (API on a self-hosted instance).
 
-TODO
+**Today:** the API and `opc` work against the hosted service only. The public repository has the schema, the session journal and the relay, but the relay refuses every request.
+
+**Launch design:** the gateway serves the API, `/setup` mints API keys, and `OPENCOMPUTER_API_URL` points `opc` at the self-hosted gateway (see [opc CLI](/api/cli)).
+</Note>
+
+The schema is `computer/schema/computer-api.v1.json`; [API schema](/reference/api-schema) lists its operations, objects, events and errors. The relay, a process on the computer (`SP_WIRE_LISTEN`, default `127.0.0.1:7071`), serves the WebSocket and the workspace file routes. The client is the [opc CLI](/api/cli).
+
+## Transport
+
+| Transport | Operations |
+| --- | --- |
+| WebSocket and HTTP | Everything not listed below, with the same parameters, result and errors |
+| WebSocket only | `sessions.attach` (live events), terminals |
+| HTTP only | Creating and listing sessions, workspace files |
+
+### WebSocket
+
+Open `/connect` with the subprotocol `opc.v1` (without it: close `4400`). Messages are JSON-RPC 2.0 text frames; binary frames carry terminal data.
+
+The server's first frame:
+
+```json
+{"jsonrpc":"2.0","method":"ready","params":{"connectionId":"...","server":{"version":"...","region":null},"protocol":{"features":[]},"limits":{"maxAttached":20,"maxMessageBytes":1048576,"maxRequestsPerSecond":100},"expiresAt":null,"expiresInMs":null}}
+```
+
+A request and its response:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"sessions.get","params":{"sessionId":"cs_0123456789abcdef"}}
+{"jsonrpc":"2.0","id":1,"result":{"session":{"id":"cs_0123456789abcdef","status":"idle","...":"..."}}}
+```
+
+Batches are not supported. Close codes and relay limits: [API schema](/reference/api-schema#websocket-close-codes).
+
+### HTTP
+
+Routes are in the schema's `x-methods` map, for example `POST /sessions/{id}/turns` for `turns.send`. Path parameters replace the id fields of the method's params. `opc` sends them under `/api/managed-agents/computer` of its API URL.
+
+## Authentication
+
+| Layer | Credential |
+| --- | --- |
+| Hosted service | An API key in the `x-api-key` header, on HTTP requests and the WebSocket upgrade. `opc login` obtains it |
+| Relay | `X-Wire-*` headers signed with a key from the host, each signature valid 30 seconds. The relay does not check API keys: whatever fronts it verifies the key and signs the headers |
+
+### Scopes
+
+A credential without a scope list has every scope.
+
+| Scope | Operations |
+| --- | --- |
+| `sessions:read` | `sessions.attach`, `sessions.get`, `turns.get`, `events.list`, `asks.list`, `asks.get`, `subagents.list`, `subagents.get`, `subagents.stop`, file listing and download |
+| `sessions:write` | `turns.send`, `turns.cancel`, `sessions.update`, `sessions.interrupt`, `sessions.compact`, `sessions.suspend`, `sessions.resume`, file upload |
+| `asks:answer` | `asks.answer`, `asks.dismiss` |
+| `terminals` | `terminals.open`, `terminals.resize`, `terminals.eof`, `terminals.close` |
+
+A scope may also name sessions (`sessionIds`), be read-only (`readOnly`) and expire (`until`).
+
+| Case | Result |
+| --- | --- |
+| Scope missing | `forbidden`, `reason: "missing_scope"` |
+| Credential expired or revoked | Its connections close with `4001` |
+| Caller is not the session's owner and not on its member list | `session_not_found` on every operation. A null member list means the whole organization |
+| Terminal opened by someone other than the owner or an admin | `forbidden`, `reason: "terminal_owner_only"` |
+
+## Session journal
+
+Every state change in a session is an event with a `seq`, an integer from 1 that increases by one. `Session`, `Turn`, `Ask` and `Subagent` objects are computed from the events. Reads and most writes work on a suspended session.
+
+| Need | How |
+| --- | --- |
+| Read your own write | A write returns the `seq` of its event. A read with `minSeq` waits up to 2 seconds for the journal to reach it, then fails with `unavailable` |
+| Resume | Ask for events `after` the last `seq` processed. See [Events](/api/events) |
+| New epoch (`logEpoch`, `epochStartSeq`: the journal was rebuilt) | Discard held events from `epochStartSeq` on and read again from `epochStartSeq - 1` |
+
+## Idempotency keys
+
+Every write takes an `idempotencyKey` of 1 to 255 characters; over HTTP `opc` sends it as the `Idempotency-Key` header. A key is scoped to one member and one operation, shared by the operation's WebSocket method and HTTP route, and kept 24 hours.
+
+| Repeat | Result |
+| --- | --- |
+| Same key, same parameters | The first result, with its objects re-read at their current state, and `duplicate: true` where the result has that field |
+| Same key, different parameters | `409 idempotency_conflict` |
+| Same key while the first is in flight | Waits for the first |
+| After the first failed | Runs again |
+
+## Errors
+
+Over WebSocket an API error is JSON-RPC error `-32000` whose `data` is the error body; over HTTP it is `{"error": {...}}` with the matching status.
+
+```json
+{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"at most 20 turns may wait","data":{"code":"queue_full","message":"at most 20 turns may wait","status":409,"retryable":true,"retryAfterMs":5000,"requestId":"req_..."}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `retryable` | True for `rate_limited`, `unavailable`, `computer_unavailable`, `internal` and `queue_full` |
+| `retryAfterMs` | How long to wait, when the server knows |
+| `field` | The parameter at fault. An unknown parameter is `invalid_request` |
+
+All codes: [API schema](/reference/api-schema#errors).
+
+{/* Sources: computer/schema/computer-api.v1.json; computer/src/protocol-api.ts; computer/src/wire/main.ts, relay.ts, connection.ts, rpc.ts, limits.ts, edge-auth.ts, files.ts; computer/src/signed-header.ts; computer/src/api/read-methods.ts (minSeq wait, idempotency); computer/src/api/journal.ts (IDEM_TTL_MS); computer/src/host/session-writer.ts; computer/src/runner/api/api.ts; computer/src/gateway/*.ts (no API id or relay key); opc/src/config.rs (API_PREFIX, OPENCOMPUTER_API_URL); opc/src/http.rs and opc/src/wire/client.rs (x-api-key, opc.v1); opc/src/cmd/auth.rs; work doc 099 section 4 */}

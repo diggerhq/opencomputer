@@ -1,0 +1,81 @@
+---
+title: "Asks"
+description: "An ask is an approval or question the agent waits on; while open it keeps the session `waiting`, and it never expires"
+---
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
+
+The Slack side is in [Approvals, questions and plans](/slack/approvals-questions-plans). An ask's id is `ak_` followed by 12 characters.
+
+| `kind` | Body | Answer |
+| --- | --- | --- |
+| `approval` | `approval` | `{"decision": "allow" \| "deny" \| "always", "message"?, "mode"?}` |
+| `question` | `question.questions` | `{"answers": [{"questionId", "choices", "text"}]}` |
+| `secret` | `secret` | None: `asks.answer` returns `400 answer_with_secret` |
+
+The runner in the public code opens `approval` and `question` asks only. Body fields: [API schema](/reference/api-schema#objects).
+
+## Status
+
+The first close wins.
+
+| `status` | Closed by |
+| --- | --- |
+| `open` | Not closed |
+| `answered` | An answer, from Slack or the API |
+| `dismissed` | `asks.dismiss` |
+| `declined` | A message steered into the turn. `answer` is `{message, messageSeq}`; `messageSeq` is the `seq` of the message's `message.received` event |
+| `interrupted` | An interrupt, a suspend, or the runner ending |
+
+`closedBy` is the actor and `closedAt` the time. A message sent with `ifBusy: "queue"` leaves asks open; see [Turns](/api/turns#send).
+
+## Find open asks
+
+| Source | What it gives |
+| --- | --- |
+| `Session` object | Open asks in its `asks` list |
+| `ask.opened` event | The whole ask |
+| `asks.get` (`GET /sessions/{id}/asks/{askId}`) | One ask |
+| `asks.list` (`GET /sessions/{id}/asks`) | Asks, newest first |
+
+`asks.list` params:
+
+| Param | Meaning |
+| --- | --- |
+| `status` | One status, several separated by commas, or `all`. Default `open` |
+| `limit` | 1 to 100. Default 20 |
+| `cursor` | The previous page's `nextCursor`. A cursor from a listing with another `status` is `invalid_cursor` |
+
+## Answer
+
+`asks.answer` (`POST /sessions/{id}/asks/{askId}/answer`) closes the ask with an answer. Over HTTP the request body is the answer itself. It needs the `asks:answer` scope, as does `asks.dismiss`.
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"asks.answer","params":{"sessionId":"cs_0123456789abcdef","askId":"ak_0123456789ab","answer":{"decision":"allow"}}}
+```
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"asks.answer","params":{"sessionId":"cs_0123456789abcdef","askId":"ak_0123456789ab","answer":{"answers":[{"questionId":"q1","choices":["Postgres"],"text":null}]}}}
+```
+
+The result is the closed ask and the `seq` of its `ask.closed` event. The prompt message in Slack is deleted or updated, naming who answered.
+
+| Answer field | Rule |
+| --- | --- |
+| `decision` | Required on an approval |
+| `always` | Only when the ask's `approval.alwaysAllows` is set |
+| `mode` | Only on a plan approval (`toolName` is `ExitPlanMode`) with `allow`. Sets the mode after the plan: `default`, `acceptEdits`, `auto` or `bypassPermissions` |
+| `answers` | Required on a question, one per question, each with a choice or `text` |
+| `choices` | Each is the `label` of one of the question's options; more than one only when `multiSelect` is true |
+
+| Error | Cause |
+| --- | --- |
+| `400 invalid_answer` | A rule above is broken. `field` names the field at fault |
+| `400 answer_with_secret` | The ask's `kind` is `secret` |
+| `409 ask_closed` | The ask is closed. The error carries the ask. The same answer from the same person returns the ask instead |
+
+## Dismiss
+
+`asks.dismiss` (`POST /sessions/{id}/asks/{askId}/dismiss`) closes an ask with no answer; the agent reads it as a denial. An optional `message` (up to 2,000 characters) is passed along.
+
+{/* Sources: computer/schema/computer-api.v1.json (Ask, ApprovalAnswer, QuestionAnswer, DeclineAnswer, asks.*); computer/src/runner/api/asks.ts (close rules, invalid(), PLAN_EXIT_MODES, AskSpec kinds); computer/src/runner/api/api.ts; computer/src/runner/api/tap.ts (waiting status); computer/src/api/read-methods.ts (asks.list paging); computer/src/host/session-writer.ts; computer/src/wire/edge-auth.ts (scope) */}

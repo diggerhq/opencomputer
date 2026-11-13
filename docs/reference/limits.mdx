@@ -1,0 +1,79 @@
+---
+title: "Limits and defaults"
+---
+
+- **Configurable:** a variable from [Configuration](/reference/configuration), or "No" for a constant in the code.
+- **Per runner:** the count resets when the session's runner restarts (idle exit, `!restart`).
+- **Memory and CPU:** to change them, see [Resource limits](/self-hosting/operate).
+
+## Slack, sessions and the computer
+
+| Area | Limit | Value | Set in | Configurable |
+|---|---|---|---|---|
+| Runners | Idle time before a runner exits | 2 hours | `src/host/main.ts` | `SP_IDLE_MS` |
+| Runners | Spare runners kept for new sessions | 2 | `src/host/main.ts` | `SP_POOL_SIZE` |
+| Runners | Gateway's wait for the host to start a runner | 30 s | `src/gateway/hosts.ts` | No |
+| Memory | One runner, `MemoryHigh` / `MemoryMax` | 60% / 75% of RAM, at most 12G / 16G | `src/host/runner-limits.ts` | `SP_SYSTEMD_RUN` |
+| Memory | All runners together, `MemoryMax` | 93% of (RAM minus a reserve of 10% of RAM, at least 1024 MiB) | `deploy/vm/limits.sh` | No |
+| Memory | All runners together, `MemoryHigh` | 93% of its `MemoryMax` | `deploy/vm/limits.sh` | No |
+| Memory | Everything the agent user runs (`user-1500.slice`), `MemoryMax` | RAM minus a reserve of 10% of RAM, at least 1024 MiB | `deploy/vm/limits.sh` | No |
+| Memory | Everything the agent user runs, `MemoryHigh` | 93% of its `MemoryMax` | `deploy/vm/limits.sh` | No |
+| Memory | API relay, `MemoryMax` | 256M | `deploy/vm/provision.sh` | No |
+| Memory | Host, `MemoryMax` | RAM / 8, between 768 MiB and 2048 MiB | `deploy/vm/limits.sh` | No |
+| CPU | All runners together, `CPUQuota` | (CPUs - 2) x 100%, at least 100% | `deploy/vm/limits.sh` | No |
+| CPU | Everything the agent user runs, `CPUQuota` | (CPUs - 1) x 100%, at least 100% | `deploy/vm/limits.sh` | No |
+| CPU | One runner | no limit | | |
+| Processes | All runners together, `TasksMax` | 16384 | `deploy/vm/limits.sh` | No |
+| Processes | Everything the agent user runs, `TasksMax` | 20000 | `deploy/vm/limits.sh` | No |
+| Processes | API relay, `TasksMax` | 256 | `deploy/vm/provision.sh` | No |
+| Gateway | Messages kept for an offline host | 24 hours | `src/gateway/db.ts` | No |
+| Gateway | Host reconnect backoff | 1 s, doubling to 30 s, with jitter | `src/host/gateway-link.ts` | No |
+| Gateway | `/setup` sign-in cookie lifetime | 12 hours | `src/setup/index.ts` | No |
+| Git | Housekeeping period (clone, fetch, fast-forward, prune) | 5 min | `src/workspaces/index.ts` | `SP_FETCH_INTERVAL` |
+| Git | Housekeeping fetch timeout | 2 min | `src/workspaces/index.ts` | `SP_FETCH_TIMEOUT` |
+| Git | Housekeeping fetches at once | 4 | `src/workspaces/index.ts` | No |
+| Git | Fetch timeout at session start | 5 s | `src/workspaces/index.ts` | `SP_FORK_FETCH_TIMEOUT` |
+| Git | Session start skips its fetch if the clone was fetched within | 60 s | `src/workspaces/index.ts` | `SP_FORK_FETCH_FRESH` |
+| Git | Clone and setup command timeout | 30 min | `src/workspaces/index.ts` | No |
+| Git | Idle session directory removed after, if nothing is uncommitted or unpushed | 14 days | `src/workspaces/index.ts` | `SP_FORK_RETENTION_DAYS` |
+| Git | Idle session's build and dependency directories removed after | 24 hours | `src/workspaces/idle.ts` | `SP_ARTIFACTS_IDLE_HOURS` |
+| Context | Compaction between turns starts above | 120,000 tokens | `src/runner/harness/claude/shadow.ts` | `SP_COMPACT_AT` |
+| Context | Compaction after an idle period | 40 min idle, above 60,000 tokens | `src/runner/harness/claude/shadow.ts` | Token threshold follows `SP_COMPACT_AT` when that is lower |
+| Context | Compaction attempts | at most 3 per hour, 2 min apart | `src/runner/harness/claude/shadow.ts` | No |
+| Context | Claude Code auto-compact window (inside a turn) | 183,000 tokens; compacts at about the window minus 33,000 | `src/runner/context-window.ts` | `SP_CONTEXT_WINDOW` |
+| Context | Prompt cache lifetime | 1 hour on Anthropic's API | `src/runner/cache-ttl.ts` | `SP_PROMPT_CACHE_TTL` |
+| Slack output | Interval between flushes of a streamed reply | 600 ms | `src/runner/segment.ts` | `FLUSH_MS` (one-machine mode) |
+| Slack output | Reply length before a new message is started | 9,000 characters at a break, 10,000 at most | `src/runner/segment.ts` | No |
+| Slack output | Progress cards in a message before the turn folds into its history | 4 | `src/runner/timeline.ts` | `FOLD_AT` |
+| Slack output | `!diff` output | first 11,000 characters | `src/runner/commands.ts` | No |
+| Slack input | Images passed to the model inline | PNG, JPEG, GIF or WebP up to 5 MiB | `src/runner/attachments.ts` | No |
+| Slack input | Linked Slack threads read from one message | 3 | `src/links.ts` | No |
+| Slack input | Content read from one linked thread | first message plus the latest 40 replies, 16,000 characters, 4,000 per message | `src/links.ts` | No |
+| Slack input | Wait for linked threads before the message is delivered without them | 10 s | `src/gateway/routing.ts` | No |
+| Agent tools | Threads started with `spawn_thread` | 8 per runner | `src/runner/spawn.ts` | No |
+| Agent tools | Posts to other threads with `post_thread` | 20 per runner, 4,000 characters each | `src/runner/threads.ts` | No |
+| Agent tools | Secrets asked for with `request_secret` | 10 per runner | `src/runner/session-secrets.ts` | No |
+| Agent tools | Threads read with `read_thread` | 40 per runner | `src/runner/threads.ts` | No |
+| Agent tools | Files posted with `send_file` | 50 per runner, 100 MiB each, not empty | `src/runner/send-file.ts` | No |
+| Agent tools | Cards posted with `post_card` | 50 per runner | `src/runner/post-card.ts` | No |
+| Agent tools | Gateway time for one thread read or post | 25 s | `src/gateway/threads.ts` | No |
+| Secrets | Secret or variable value | 64 KiB | `src/gateway/vault.ts` | No |
+| Secrets | Value typed into the Slack form | 3,000 characters (Slack's input limit) | `src/gateway/secrets-ui.ts` | No |
+| Secrets | Value set with `!var` | 3,000 characters | `src/variables.ts` | No |
+| Secrets | Inactive session's session-scoped secrets deleted after | 30 days | `src/gateway/vault.ts` | No |
+| Telemetry | Spool on disk | 100 MB | `src/host/telemetry-spool.ts` | No |
+| Releases | Superseded release removed by `provision.sh` after | 2 days, when no process uses it | `deploy/vm/provision.sh` | No |
+| Data volume | Filesystem growth check | 1 min after boot, then every 10 min | `deploy/vm/grow-data.sh` | No |
+
+## API
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance).</Note>
+
+Connection, terminal, file and queue limits: [API schema](/reference/api-schema#relay-limits). None is configurable.
+
+| Limit | Value | Set in |
+|---|---|---|
+| Forced cancel after an interrupt the harness does not act on | 10 s | `src/runner/api/api.ts` |
+| Wait for a suspended session's runner to start | 60 s | `src/host/api-wake.ts` |
+
+{/* Sources: computer/src/host/main.ts; computer/src/host/pool.ts; computer/src/host/adoption.ts; computer/src/host/runner-limits.ts; computer/src/host/gateway-link.ts; computer/src/host/telemetry-spool.ts; computer/src/host/telemetry-ship.ts; computer/src/host/terminal.ts; computer/src/host/tar-check.ts; computer/src/host/workspace-files.ts; computer/src/host/api-wake.ts; computer/src/gateway/hosts.ts; computer/src/gateway/db.ts; computer/src/gateway/vault.ts; computer/src/gateway/secrets-ui.ts; computer/src/gateway/threads.ts; computer/src/gateway/routing.ts; computer/src/setup/index.ts; computer/src/github/app.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/harness/claude/shadow.ts; computer/src/runner/context-window.ts; computer/src/runner/cache-ttl.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/agents.ts; computer/src/runner/commands.ts; computer/src/runner/attachments.ts; computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/api/api.ts; computer/src/runner/session-secrets.ts; computer/src/links.ts; computer/src/variables.ts; computer/src/wire/limits.ts; computer/deploy/vm/limits.sh; computer/deploy/vm/provision.sh; computer/deploy/vm/grow-data.sh */}

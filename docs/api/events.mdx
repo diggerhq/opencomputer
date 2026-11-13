@@ -1,0 +1,94 @@
+---
+title: "Events"
+description: "A session's events are numbered by `seq` from 1 with no gaps; read them over HTTP or follow them live over WebSocket"
+---
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
+
+```json
+{"id":"ev_0123456789abcdef","seq":412,"createdAt":"2026-01-01T12:00:00.000Z","sessionId":"cs_0123456789abcdef","turnId":"tn_0123456789ab","actor":{"id":"usr_...","name":"Ada","via":"opc","client":"opc/0.1.0"},"type":"message.received","data":{"input":"Add a test for the empty case","ifBusy":"steer","delivery":"steered","interruptedTurnIds":[],"declinedAskIds":[]}}
+```
+
+`actor` is who caused the event (`via` is `slack`, `opc`, `dashboard` or `api`), or null. Event types and their `data` fields: [API schema](/reference/api-schema#events). A client must ignore types it does not know.
+
+## Read a range
+
+`events.list` (`GET /sessions/{id}/events`) returns events in `seq` order. To follow a session over HTTP, loop on it with `after` and `waitMs`.
+
+```
+GET /sessions/cs_0123456789abcdef/events?after=400&limit=100&types=turn.*,ask.opened
+```
+
+| Param | Meaning |
+| --- | --- |
+| `after` | Return events with `seq` greater than this. Default 0, the start of the journal |
+| `limit` | 1 to 500 events. Default 100 |
+| `tailTurns` | Start at the last 1 to 50 turns instead; `earlierTurns` in the result holds the turns before them. Cannot be combined with `after` |
+| `turnId` | Only events of this turn |
+| `types` | A comma-separated list of types. A trailing `*` matches a prefix |
+| `waitMs` | When there is nothing after `after`, wait up to this long (at most 60,000) for an event |
+
+The result is `events`, `earlierTurns`, `lastSeq` (the journal's last `seq`) and `hasMore`.
+
+| `hasMore` | Next `after` |
+| --- | --- |
+| true | The `seq` of the last event returned |
+| false | `lastSeq`. With a filter, the page may be shorter than the range it covered |
+
+| Error | Cause |
+| --- | --- |
+| `409 cursor_ahead` | `after` is beyond the journal's last `seq`: the journal's epoch changed. See [Session journal](/api/overview#session-journal) |
+
+## Follow live
+
+[Attach](/api/sessions#attach) over WebSocket. Each event arrives as an `event` notification whose `params` is the event:
+
+```json
+{"jsonrpc":"2.0","method":"event","params":{"id":"ev_...","seq":413,"type":"turn.steered","...":"..."}}
+```
+
+Order on one connection:
+
+- Events of a session arrive in `seq` order, each once.
+- The response to `sessions.attach` arrives before any replayed event.
+- The response to a write arrives before any event of that session the write caused.
+
+When the whole connection closes, reconnect and attach with `after` set to the last `seq` processed. A runner starting or stopping does not interrupt the subscription.
+
+| Error | Cause | What to do |
+| --- | --- | --- |
+| `too_far_behind` | Attach with `after` more than 10,000 events behind | Read the gap with `events.list` first, or attach with `tailTurns` |
+
+### Acknowledge
+
+Send `sessions.ack` notifications as events are processed:
+
+```json
+{"jsonrpc":"2.0","method":"sessions.ack","params":{"sessionId":"cs_0123456789abcdef","seq":413}}
+```
+
+The backlog of a session is its events not yet sent or, once the client has sent an ack, not yet acknowledged. When it passes 10,000 events or 8 MiB, the server detaches that session with `too_far_behind`.
+
+### Deltas
+
+An attach with `deltas: true` also receives `delta` notifications. Types: [API schema](/reference/api-schema#deltas).
+
+| Property | Detail |
+| --- | --- |
+| Content | Message and reasoning text as it is written, a tool call being prepared and its output, compaction, subagent progress |
+| Storage | No `seq`, not stored, not replayed |
+| Completeness | Each block of deltas is followed by an event with the whole text (`message.completed`, `reasoning.completed`, `tool.completed`). A client may ignore deltas |
+| Backlog | Sent only to a subscription that has been sent every event. Deltas of one block that wait are merged |
+
+### Detached
+
+When the server ends a subscription it sends `session.detached` with a `reason`:
+
+| `reason` | Cause | What to do |
+| --- | --- | --- |
+| `too_far_behind` | The backlog passed its limit | Attach again with `after` set to the last `seq` processed |
+| `access_lost` | The member no longer has access to the session | Nothing |
+| `epoch_changed` | The journal was rebuilt. The notification carries the new `logEpoch` and `epochStartSeq` | Discard events from `epochStartSeq` on and attach with `after` set to `epochStartSeq - 1` |
+| `unavailable` | The session's writer could not be reached | Attach again later |
+
+{/* Sources: computer/schema/computer-api.v1.json (Event, Delta, events.list, notifications); computer/src/api/read-methods.ts (eventsList, typeFilter); computer/src/api/hub.ts (backlog, too_far_behind, cursor_ahead, deltas to caught-up subscribers); computer/src/wire/attachment.ts (order, rewire, detach reasons); computer/src/wire/connection.ts (sessions.ack); computer/src/wire/limits.ts; computer/src/api/schema-events.ts (DELTA_DATA); computer/src/api/schema-objects.ts (Actor) */}

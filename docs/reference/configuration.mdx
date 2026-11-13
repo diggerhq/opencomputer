@@ -1,0 +1,187 @@
+---
+title: "Configuration"
+description: "Every environment variable, by the process that reads it, with its default"
+---
+
+| Process | Where its variables are set |
+|---|---|
+| Gateway | The container's environment. From a checkout, also `.env` at the checkout's root; the environment wins over the file. |
+| Host | `/etc/slack-presence/host.env` (root, mode 0600), read by `slack-presence-host.service`. Apply with `systemctl restart slack-presence-host`. |
+| Runner | `host.env`. The host passes a [fixed list](#passed-from-the-host-to-runners) to each runner; runners started after the host restart get the new value. |
+
+`provision.sh` rewrites `host.env` only when run with `SP_HOST_TOKEN`. It writes only the variables marked "written by `provision.sh`"; lines added by hand are lost.
+
+## Gateway
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3170`; the container image sets `8080` | Listen port, on all interfaces. |
+| `SP_DB` | `./gateway.db`; the image sets `/data/gateway.db` | SQLite database path. |
+| `SP_ORIGIN` | `http://localhost:<PORT>` | Public origin, for example `https://computer.example.com`. Used in Slack and GitHub callback URLs and the host URL. |
+| `SP_STORE_KEY` | unset | Secret the encryption key for stored secrets is derived from (`openssl rand -hex 32`). Unset: `/setup` and people cannot store secrets. Changed: every stored secret is unreadable. |
+| `SETUP_TOKEN` | unset | Token that signs in to `/setup`. |
+| `GITHUB_ORG` | unset | GitHub organization that owns the GitHub App. Required for the GitHub step of `/setup`. |
+| `SLACK_APP_NAME` | `Computer` | Name of the Slack app and bot that `/setup` creates, and the name the bot answers to. |
+| `SP_HOST_TOKENS` | empty | Comma-separated host tokens accepted besides those `/setup` issues. |
+| `SP_PEOPLE` | `[]` | JSON array of people, written to the people table at every start. |
+| `PERMISSION_MODE` | `bypassPermissions` | [Permission mode](/slack/permission-modes) of new sessions: `default`, `acceptEdits`, `plan`, `auto` or `bypassPermissions`. |
+| `SP_VERSION` | the checkout's commit, else `dev` | Version reported by `/healthz`. The image sets it from the `SP_VERSION` build argument. |
+| `SP_TUNNEL` | unset | `1`: development mode. The gateway creates the Slack app itself behind an ngrok tunnel. |
+| `NGROK_URL`, `PUBLIC_URL` | unset | With `SP_TUNNEL=1`: a reserved ngrok domain, or a public URL from another tunnel. |
+| `SP_SLACK_API_URL` | Slack's API | Development only: base URL of the Slack Web API. |
+| `SP_GITHUB_API_URL` | `https://api.github.com` | Development only: base URL of the GitHub API. |
+
+### Credentials
+
+`/setup` stores these in the database, encrypted. An environment variable of the same name wins.
+
+| Group | Names |
+|---|---|
+| Slack app | `SLACK_APP_ID`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_STATE_SECRET` |
+| Slack app configuration token | `SLACK_CONFIG_TOKEN`, `SLACK_CONFIG_TOKEN_EXP`, `SLACK_CONFIG_REFRESH_TOKEN` |
+| Slack installation | `SLACK_BOT_TOKEN`, `SLACK_BOT_USER_ID`, `SLACK_BOT_ID`, `SLACK_TEAM_ID` |
+| GitHub App | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_OWNER`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_PRIVATE_KEY` |
+| GitHub installation | `GITHUB_INSTALLATION_ID`, `GITHUB_INSTALLATION_ACCOUNT` |
+| Model | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` |
+
+## Host
+
+### Identity and connection
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_GATEWAY_URL` | `ws://localhost:3171/host` | The gateway's host endpoint, `wss://<gateway>/host`. Written by `provision.sh`. |
+| `SP_HOST_TOKEN` | unset | Bearer token for that endpoint, issued by `/setup`. Written by `provision.sh`. |
+| `SP_HOST_ID` | the hostname; `provision.sh` writes `shared-vm` | Host id. The people table routes people to it: keep it when the VM is replaced. |
+| `SP_DATA` | `/data` | Data directory. Set by the unit. |
+| `SP_RUN` | `/run/slack-presence` | Directory of runner sockets. Set by the unit. |
+| `SP_DEFINITION` | unset; the unit sets `/opt/slack-presence/current/definitions/computer.json` | Workspace definition used until the gateway sends one, which is saved under `<SP_DATA>/state/` and wins. |
+| `SP_VERSION` | the checkout's commit | Release commit. The unit reads it from the release's `.sp-version.env`. |
+
+### Runners
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_IDLE_MS` | `7200000` | Milliseconds without a message before the host stops a runner. |
+| `SP_POOL_SIZE` | `2` | Spare runners kept started for new sessions. `0`: no pool. |
+| `SP_LAUNCH` | `systemd` on Linux, `detached` elsewhere | `systemd`: runners are transient systemd user units. `detached`: detached processes that log to `<SP_RUN>/logs/`. |
+| `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. See [Resource limits](/self-hosting/operate). |
+| `SP_RUNNER_USER` | unset: runners run as the host's user | Start runners as this user through `sudo`. Where the host runs as `sp-host`, the install sets `agent`, with `SP_RUNNER_PATH`. |
+| `SP_RUNNER_PATH` | unset | `PATH` of runners and workspace commands when `SP_RUNNER_USER` is set. |
+
+### Workspaces
+
+The four durations accept a number of seconds or a unit: `300`, `500ms`, `30s`, `5m`, `2h`, `1d`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_FETCH_INTERVAL` | `5m` | Housekeeping period: clone, fetch, fast-forward, prune. |
+| `SP_FETCH_TIMEOUT` | `2m` | Timeout of one housekeeping fetch. |
+| `SP_FORK_FETCH_TIMEOUT` | `5s` | Timeout of the fetch at session start. On timeout the session starts from the refs already fetched. |
+| `SP_FORK_FETCH_FRESH` | `60s` | Session start skips its fetch when the clone was fetched this recently and nothing was pushed since. `0`: always fetch. |
+| `SP_FORK_RETENTION_DAYS` | `14` | Idle days before a session directory is removed, if it holds nothing uncommitted or unpushed. |
+| `SP_ARTIFACTS_IDLE_HOURS` | `24` | Idle hours before a session's git-ignored build and dependency directories are removed. |
+
+### Telemetry
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_TELEMETRY_URL` | unset: records are validated and discarded | Collector base URL. Written by `provision.sh` when passed. |
+| `SP_TELEMETRY_CREDENTIAL` | unset: records are spooled, not sent | The host's signed credential for the collector. Written by `provision.sh` when passed. |
+| `SP_REGION` | `unknown` | Region label on telemetry records. Passed to runners. Written by `provision.sh` when passed. |
+| `SP_SUBSTRATE` | unset | Label for where runners run, for example `vm`. Passed to runners. Written by `provision.sh` when passed. |
+
+See [Telemetry](/self-hosting/operate).
+
+### Model proxy
+
+<Note>Not in the public code yet: launch blocker 3 (model proxy). The host and runner read these variables; the proxy they point at is not in the public repository.</Note>
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_MODEL_PROXY` | unset; the `sp-host` install sets `/run/oc-modelproxy/control.sock` | The proxy's control socket. Unset: the host uses no proxy. |
+| `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | The proxy's API socket, which the harness connects to. Passed to runners. |
+| `SP_CODEX_BIN` | `/usr/local/lib/codex/bin/codex` | Codex CLI a Codex session runs. Passed to runners. |
+| `SP_CODEX_PEER_CHECK` | `on` | `off`: any local process can use a Codex session's model connection. Only for hosts whose runners are not systemd units. Passed to runners. |
+
+## Passed from the host to runners
+
+The host sets each of these on every runner, to its own value or empty; a runner treats empty as unset. Nothing else from the host's environment reaches a runner. Credentials go over the runner's socket, not the environment.
+
+| Variable | Default in the runner | Purpose |
+|---|---|---|
+| `MODEL` | `claude-opus-5-5` | Model id of the `default` tier. See [Models and harnesses](/slack/models-and-harnesses). |
+| `SP_COMPACT_AT` | `120000` | Tokens in a turn's last request above which the conversation is compacted between turns. `0`: off. See Context and compaction. |
+| `SP_CONTEXT_WINDOW` | `183000` | Tokens. Claude Code's auto-compact window, applied inside a turn. `0`: Claude Code's default. |
+| `SP_PROMPT_CACHE_TTL` | `1h` on Anthropic's API; Claude Code's default through another base URL | Claude Code's prompt cache lifetime, `5m` or `1h`, for the conversation and its subagents. |
+| `SP_PROMPT_GUARD` | on | `off`: the runner no longer withholds copies of its system prompt from its posts. |
+| `FOLD_AT` | `4` | Progress cards in one Slack message before a long turn folds into its history. |
+| `PERMISSION_MODE` | | Passed through; a session's mode comes from the gateway. |
+| `SP_COMMITTER_NAME`, `SP_COMMITTER_EMAIL` | `Computer`, `computer@users.noreply.opencomputer.dev` | Committer identity of commits made in sessions. |
+| `SP_REAL_GH`, `SP_REAL_OPENCOMPUTER` | found on `PATH` | The real `gh` and `opencomputer` binaries behind the shims in the release's `bin/`. |
+| `SP_RUN`, `SP_DATA`, `SP_DEFINITION`, `SP_VERSION`, `SP_REGION`, `SP_SUBSTRATE`, `SP_MODEL_SOCKET`, `SP_CODEX_BIN`, `SP_CODEX_PEER_CHECK` | | As for the host, above. |
+| `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TMPDIR` | `TMPDIR`: the system temporary directory | The runner's process environment. |
+| `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER` | | Read by Claude Code. |
+| `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM` | | Read by git. |
+| `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV` | | Set, empty unless the host has a value, so a session cannot change them for later runners. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lower-case forms | | Outbound proxy settings, as above. |
+| `SP_FAKE_SLACK`, `SP_SLACK_API_URL` | | Development only. |
+
+`WORKDIR` is also on the list and applies only in [one-machine mode](#one-machine-mode).
+
+## API relay
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance).</Note>
+
+Read by `slack-presence-wire.service`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SP_WIRE_LISTEN` | `127.0.0.1:7071` | Address the relay listens on. |
+| `SP_WIRE_SOCKET` | `<SP_RUN>/wire/wire.sock` | The host's socket the relay connects to. |
+| `SP_RUN` | `/run/slack-presence` | As for the host. |
+| `SP_VERSION` | `dev` | Release commit reported to clients. |
+| `SP_REGION` | unset | Region reported to clients. |
+
+## One-machine mode
+
+`npm start` in a checkout runs everything in one process, with no gateway or host (see Run from source). It reads `.env` and these variables, plus `PORT`, `PERMISSION_MODE`, `MODEL`, `SLACK_APP_NAME`, `NGROK_URL`, `PUBLIC_URL`, `FOLD_AT`, `SP_COMPACT_AT`, `SP_CONTEXT_WINDOW` and `SP_PROMPT_CACHE_TTL`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKDIR` | unset: `workspaces/<session>` in the checkout | One existing directory that every session works in. |
+| `STREAMING` | on | `off`: replies update by message edits, not Slack's native streaming. |
+| `FLUSH_MS` | `600` | Minimum milliseconds between timed flushes of a streamed reply. |
+
+The host does not pass `STREAMING` and `FLUSH_MS` to runners, so on a computer they keep their defaults.
+
+## `provision.sh` inputs
+
+<Note>Not in the public code yet: launch blocker 6 (install path).</Note>
+
+Read from the environment of each `provision.sh` run. See [Host VM](/self-hosting/host-vm) and [Upgrade](/self-hosting/operate).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REPO_URL` | required | HTTPS clone URL of the code. |
+| `REPO_REF` | `main` | Branch or tag to deploy. |
+| `REPO_TOKEN` | unset | GitHub token for a private `REPO_URL`, used for this run only. |
+| `CODE_ONLY` | `0` | `1`: skip apt packages and toolchains. |
+| `SP_GATEWAY_URL`, `SP_HOST_TOKEN`, `SP_HOST_ID` | | With `SP_HOST_TOKEN`: written to `host.env`, and the host is started. Without: the existing `host.env` is kept. |
+| `SP_TELEMETRY_URL`, `SP_TELEMETRY_CREDENTIAL`, `SP_REGION`, `SP_SUBSTRATE` | unset | Written to `host.env` with the above. |
+| `SP_DEFINITION_NAME` | `computer` | The shipped `definitions/<name>.json` the host uses until the gateway sends a definition. Remembered across runs. |
+| `CLOUD` | detected | `aws` or `none`. Selects how the data disk is found. |
+| `DATA_VOLUME_ID` | unset | EC2: the EBS volume id of the data volume, needed on first use. |
+| `DATA_DEVICE` | unset | Block device path of the data volume; overrides discovery. |
+| `DATA_WAIT_SECS` | `900` | Seconds to wait for the data volume to be attached. |
+| `FORMAT_IF_BLANK` | `1` | Format a data device with no partitions and no filesystem signature as ext4. `0`: fail instead. |
+| `ALLOW_NO_DATA_VOLUME` | `0` | `1`: use a plain `/data` directory on the root disk. For throwaway test VMs. |
+| `AGENT_UID` | `1500` | Uid and gid of the `agent` user. Must be the same on every VM that mounts the volume. |
+| `NODE_MAJOR` | `24` | Node.js major version. |
+| `GO_SERIES`, `GO_VERSION` | `1.27`, unset | Go series (latest patch) or an exact version. |
+| `PLAYWRIGHT_VERSION` | `1.64.1` | Playwright version whose browser and libraries are installed. |
+| `CODEX_VERSION` | `0.163.0` | Pinned Codex CLI version. |
+| `INSTALL_DOCKER` | `0` | `1`: install Docker and add `agent` to the `docker` group, which is root-equivalent. |
+| `WIRE_PORT` | `7071` | Loopback port of the API relay. |
+
+{/* Sources: computer/src/gateway/main.ts; computer/src/env.ts; computer/src/setup/index.ts; computer/src/setup/secrets.ts (SECRET_NAMES, SP_STORE_KEY); computer/src/gateway/vault.ts; computer/src/gateway/routing.ts; computer/src/github/app.ts; computer/src/provision.ts; computer/Dockerfile; computer/src/host/main.ts; computer/src/host/launch.ts; computer/src/host/runner-limits.ts; computer/src/host/runner-user.ts; computer/src/host/model-access.ts; computer/src/protocol.ts (HOST_DATA, HOST_RUN); computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/workspaces/definition.ts; computer/src/runner-env.ts; computer/src/runner/main.ts; computer/src/tiers.ts; computer/src/runner/harness/claude/shadow.ts; computer/src/runner/context-window.ts; computer/src/runner/cache-ttl.ts; computer/src/runner/prompt-guard.ts; computer/src/runner/timeline.ts; computer/src/runner/segment.ts; computer/src/workspace.ts; computer/src/main.ts; computer/src/wire/main.ts; computer/deploy/vm/provision.sh; computer/deploy/vm/host.env.example; computer/deploy/vm/sp-host.sh; computer/src/host/identity.ts */}

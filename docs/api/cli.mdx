@@ -1,0 +1,145 @@
+---
+title: "opc CLI"
+description: "`opc` is the Computer API's command-line client: one Rust binary from `diggerhq/opc` (Apache-2.0)"
+---
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). See [API overview](/api/overview).</Note>
+
+Releases before 0.1.0 are prereleases. `opc --version` prints the protocol (`opc.v1`) and schema (`computer-api.v1`) it speaks.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+```
+
+The script verifies the release's checksum and installs to `~/.local/bin/opc`, without `sudo` and without editing shell startup files. Run it again to update. Supported: macOS, Linux, and Windows under WSL 2.
+
+| Variable | Effect |
+| --- | --- |
+| `OPC_INSTALL_DIR` | Install directory instead of `~/.local/bin` |
+| `OPC_VERSION` | Install this release tag. Without it: the latest release, or the newest prerelease while there is no full release |
+
+The macOS builds are not signed. If macOS blocks the first run:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/opc
+```
+
+From source (Rust 1.89 or later):
+
+```bash
+cargo build --release --locked
+```
+
+## Authentication
+
+| Command | Does |
+| --- | --- |
+| `opc login` | Opens the browser to approve a device code and exchanges it for an API key. `--no-browser` prints the link. Running `opc` with no credential starts the same login |
+| `opc logout` | Revokes the credential and clears it from the file |
+| `opc whoami` | Shows who the credential belongs to |
+
+`opc` stores the key in `~/.opencomputer/config.json` (mode `0600`) with the API URL it was issued for:
+
+```json
+{"apiUrl": "...", "apiKey": "...", "login": {"credentialId": "...", "keyPrefix": "...", "name": "..."}}
+```
+
+`OPENCOMPUTER_API_KEY` overrides the file (for scripts and CI). The key in the file is used only when the file's `apiUrl` matches the API URL in use.
+
+## Endpoint configuration
+
+<Note>Not in the public code yet: launch blocker 4 (API on a self-hosted instance). Launch design: set `OPENCOMPUTER_API_URL` to the self-hosted gateway's URL and `OPENCOMPUTER_API_KEY` to a key minted in `/setup`. Today the public gateway serves none of the routes `opc` calls.</Note>
+
+| Variable | Meaning |
+| --- | --- |
+| `OPENCOMPUTER_API_URL` | The API's base URL. Overrides `apiUrl` in the configuration file. Default: the hosted service |
+| `OPC_WIRE_URL` | The WebSocket URL. Without it, and with a non-default API URL, `opc` reads `computer.wireUrl` from `GET /me` |
+| `OPENCOMPUTER_CONFIG` | Path of the configuration file |
+| `OPC_STATE_DIR` | Where `opc` keeps its state (last session, cached session list and events). Default `~/.opencomputer/opc` |
+| `OPC_LOG` | `error`, `warn` (default), `info` or `debug`. Logs go to standard error |
+| `OPC_NOTIFY=0` | No notifications |
+| `OPC_TELEMETRY=0` | Same as `opc config telemetry off` |
+| `NO_COLOR` | Non-empty: no colors |
+| `HTTPS_PROXY`, `NO_PROXY` | The proxy for connections, and the hosts that bypass it |
+
+| API URL rule | Detail |
+| --- | --- |
+| Scheme | `https`. `http` only for `localhost`, `127.0.0.1`, `::1` and `*.localhost` |
+| Trailing `/` or `/api` | Removed |
+| API requests | Sent under `<API URL>/api/managed-agents/computer` |
+| Login requests | Sent to `<API URL>/auth/cli/...` |
+
+`opc` uses HTTP for single reads and writes, and the WebSocket to follow a session live (the interactive screen, `attach`, `watch`, `wait`) and for `shell`.
+
+## Commands
+
+A session argument is an id, a prefix of one, `-` for the last session used on this machine, or a Slack thread link.
+
+| Command | Purpose |
+| --- | --- |
+| `opc [message]` | Log in if needed, then open the interactive session screen. With `-s <session>`, in that session |
+| `opc -p <message>` | Non-interactive: send the message, wait for the turn, print the result |
+| `opc new` | Create a session, send a message, return at once |
+| `opc attach` (`a`) | Attach to a session. `--read-only`, `--history N`, `--no-history` |
+| `opc list` (`ls`) | List sessions. `--status`, `--metadata`, `--archived`, `--limit`, `--long`, `--json` |
+| `opc log` | Print a session's history and exit. `--details`, `--after`, `--turn`, `--types` |
+| `opc send` | Send a message and return when it is accepted. `--wait` waits for the turn |
+| `opc wait` | Wait for a session, a turn, or several. `--turn`, `--any`, `--all` |
+| `opc watch` | Print a session's activity until it is idle or waiting. `--after`, `--from-start`, `--follow` |
+| `opc interrupt` | Interrupt the running turn and cancel queued ones. `--no-wait` |
+| `opc ask ls` | List asks |
+| `opc ask allow`, `deny`, `always` | Answer an approval. `-m` adds a message, `--mode` sets the mode after a plan |
+| `opc ask answer` | Answer a question. `--choice`, `--text` |
+| `opc ask dismiss` | Dismiss an ask |
+| `opc subagents ls`, `stop`, `result` | List, stop and read a session's subagents |
+| `opc rename` | Set a session's title |
+| `opc archive`, `opc unarchive` | Archive a session, or bring it back |
+| `opc open` | Open the session on the dashboard |
+| `opc diff` | Print the agent's changes as a git diff. `--stat` |
+| `opc push` | Copy a local directory into a session's workspace. `--to`, `--no-ignore`, `--dry-run` |
+| `opc pull` | Copy a directory or file from a session's workspace. `--force`, `--dry-run` |
+| `opc shell` | Open a shell in a session's workspace. `-c` runs one command, `--no-tty` |
+| `opc login`, `logout`, `whoami` | Manage the credential |
+| `opc doctor` | Check each link on the path to the computer, stopping at the first that fails |
+| `opc schema [object]` | Print the JSON Schema of `result`, `event`, `session`, `turn`, `ask`, `subagent` or `error` |
+| `opc config telemetry [on\|off]` | Show or set telemetry |
+| `opc completion bash\|zsh\|fish` | Print a shell completion script |
+| `opc help [topic]` | Help |
+
+## Send options
+
+For `opc [message]`, `opc -p` and, where they apply, `opc new` and `opc send`.
+
+| Option | Effect |
+| --- | --- |
+| `-s`, `--session` | The session to use instead of a new one |
+| `--queue`, `--steer`, `--interrupt` | What to do when the session is busy: the `ifBusy` value of [turns.send](/api/turns#send) |
+| `--model`, `--effort`, `--speed`, `--mode`, `--title`, `--metadata K=V` | Settings of the new session. Refused with `-s` |
+| `--push DIR` | Upload a directory to the new session's workspace first |
+| `--idempotency-key` | The key sent with the write |
+| `--output-format text\|json\|stream-json`, `--json` | With `-p`: the final text, one `Result` object, or one JSON line per event |
+| `--include-partial-messages` | With `stream-json`: also print deltas |
+| `--on-ask fail\|dismiss\|wait` | With `-p`, when an ask opens: exit 5, dismiss it, or wait for a person |
+| `--timeout` | Give up after this long, exit 124. `--interrupt-on-timeout` also interrupts the turn |
+| `--interrupt-on-exit` | With `-p`: interrupt the turn whenever `opc` exits before it ends |
+| `--wait-subagents` | Also wait for the background subagents the turn launched |
+
+Global options: `--timing`, `--no-color`, `-q`/`--quiet`, `-v`/`--verbose`.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Done |
+| 1 | The turn failed or was cancelled |
+| 2 | Usage error, or the server no longer supports this version's protocol |
+| 3 | Not logged in, or no access |
+| 4 | Unreachable or busy: retry |
+| 5 | Waiting for a person (an ask is open) |
+| 6 | Out of credits |
+| 124 | Timed out |
+| 130 | Interrupted |
+
+{/* Sources: opc/README.md; opc/ci/install.sh; opc/src/cli.rs (subcommands, options, doc comments); opc/src/config.rs (config file, OPENCOMPUTER_API_URL, OPENCOMPUTER_API_KEY, OPC_WIRE_URL, API_PREFIX, https rule); opc/src/http.rs; opc/src/wire/client.rs; opc/src/error.rs (exit codes); opc/src/net.rs (proxy); opc/src/log.rs; opc/src/cmd/mod.rs (NO_COLOR, wire URL); opc/src/cmd/run.rs; opc/src/cmd/auth.rs, doctor.rs, help.rs, push.rs, pull.rs, follow.rs; opc/docs/install.mdx; opc/docs/reference/environment.mdx; work doc 099 section 4 */}
