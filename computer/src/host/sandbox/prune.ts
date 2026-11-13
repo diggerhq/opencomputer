@@ -14,7 +14,9 @@
 // - Only a thread with no runner is pruned, and nothing of it is removed but
 //   in the thread's turn (thread-lock.ts), which every start takes too. Git is
 //   asked before the turn; in the turn the thread is left whole if it has a
-//   runner or its record was written since (every start writes it). A start
+//   runner or its record was written since (every start writes it), or if a
+//   `/files` script or a terminal is in it or was since git was asked; while
+//   it is removed none enters (use.ts `claim`). A start
 //   that arrives while the thread is removed waits for all of it, the record
 //   included, and then starts a new thread; while a kept thread's container
 //   is removed, it waits and resumes, creating the container again.
@@ -56,6 +58,8 @@ export interface PruneDeps {
   helper(person: string, binds?: Bind[]): ScriptRunner;
   /** True while the thread of this record has a runner. */
   running(id: string): boolean;
+  /** `sandboxUses.claim`: the thread, free of `/files` scripts and terminals since `since`, until the function returned is called. */
+  claim(id: string, since: number): (() => void) | undefined;
   /** When the thread was last used (artifacts.ts). */
   lastUsed(r: SandboxRecord): Promise<number>;
   /** Remove: the container and its home, and what the host keeps by the id; true when both went (containers.ts). */
@@ -99,29 +103,38 @@ export function sandboxPrune(d: PruneDeps) {
 
   /** Prune one thread. Returns why it was kept; undefined when it is gone, or in use again. */
   async function prune(r: SandboxRecord): Promise<string | undefined> {
+    const asked = Date.now();
     const why = await unsaved(r);
     return d.locks.run(r.person, r.key, async () => {
       // A start had the turn since git was asked (it wrote the record), or the thread runs: what git said is old.
       if (inUse(r)) return undefined;
-      if (why) {
-        await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS, repeatable: true });
-        return why;
-      }
-      if (!(await d.remove(r.id))) throw new Error('its container or its home was not removed');
-      // From here the workspace is not whole: a start that finds this record prepares it again.
-      const { repos, ...bare } = r;
-      if (repos) d.records.write(bare);
-      await d.as.podman(unshareRmArgs([m.workspace(r), path.dirname(m.registry(r, 'x'))]), { timeoutMs: REMOVE_TIMEOUT_MS });
-      // One branch per thread, normally; a branch the session did not get from the host (`sp/…`) is not the host's to delete.
-      const byBranch = new Map<string, string[]>();
-      for (const [name, repo] of Object.entries(repos ?? {})) if (repo.branch.startsWith('sp/')) byBranch.set(repo.branch, [...(byBranch.get(repo.branch) ?? []), name]);
-      for (const [branch, names] of byBranch)
-        await d.helper(r.person).run('ws-forget.sh', [CLONES, branch, ...names], { timeoutMs: FORGET_TIMEOUT_MS }).catch((e) => log.warn(`workspaces: branch ${branch} of ${r.key} not forgotten: ${msg(e)}`));
-      await d.deleteRun(r.id);
-      d.records.delete(r.id);
-      log.info(`workspaces: pruned thread ${r.key} (${r.person}), sandbox ${r.id}`);
-      return undefined;
+      // So it is when a `/files` script ran since; and from here none starts until this is over.
+      const free = d.claim(r.id, asked);
+      if (!free) return undefined;
+      return remove(r, why).finally(free);
     });
+  }
+
+  /** In the thread's turn, the thread claimed. */
+  async function remove(r: SandboxRecord, why: string | undefined): Promise<string | undefined> {
+    if (why) {
+      await d.as.podman(recreateRemoveArgs(r.id), { timeoutMs: REMOVE_TIMEOUT_MS, repeatable: true });
+      return why;
+    }
+    if (!(await d.remove(r.id))) throw new Error('its container or its home was not removed');
+    // From here the workspace is not whole: a start that finds this record prepares it again.
+    const { repos, ...bare } = r;
+    if (repos) d.records.write(bare);
+    await d.as.podman(unshareRmArgs([m.workspace(r), path.dirname(m.registry(r, 'x'))]), { timeoutMs: REMOVE_TIMEOUT_MS });
+    // One branch per thread, normally; a branch the session did not get from the host (`sp/…`) is not the host's to delete.
+    const byBranch = new Map<string, string[]>();
+    for (const [name, repo] of Object.entries(repos ?? {})) if (repo.branch.startsWith('sp/')) byBranch.set(repo.branch, [...(byBranch.get(repo.branch) ?? []), name]);
+    for (const [branch, names] of byBranch)
+      await d.helper(r.person).run('ws-forget.sh', [CLONES, branch, ...names], { timeoutMs: FORGET_TIMEOUT_MS }).catch((e) => log.warn(`workspaces: branch ${branch} of ${r.key} not forgotten: ${msg(e)}`));
+    await d.deleteRun(r.id);
+    d.records.delete(r.id);
+    log.info(`workspaces: pruned thread ${r.key} (${r.person}), sandbox ${r.id}`);
+    return undefined;
   }
 
   /** Prune `person`'s threads unused for SP_FORK_RETENTION_DAYS, except those with a runner. Returns the ones kept, as housekeeping reports them. */

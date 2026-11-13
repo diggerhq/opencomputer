@@ -116,7 +116,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   const uses = sandboxUses({ as, records, workspace: mnt.workspace, unitActive: all.unitActive });
   const scripts = sandboxScripts({ as, sudo: user.sudo, tm: d.tm, root: d.root, dataDir: d.data, helperRun, image, execIn: all.execIn, enter: uses.enter });
   const workspace = sandboxWorkspaces({ as, records, mounts: mnt, scripts: scripts.sessionScripts, pid: all.pid });
-  const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running });
+  const artifacts = sandboxArtifacts({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, claim: uses.claim });
   // A clones directory is `<people>/<person>/ws`: the helper is that person's.
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   const dial = (socket: string) => dialSocket(socket, { uid: user.uid });
@@ -126,7 +126,7 @@ export function sandboxHost(d: SandboxHostDeps) {
     running: (id) => d.running(id) || spares.has(id) });
   /** Step 10: spares are containers too (spares.ts); pool.ts decides how many. */
   const spares = sandboxSpares({ tm: d.tm, records, locks, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
-  const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, lastUsed: artifacts.lastUsed,
+  const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, claim: uses.claim, lastUsed: artifacts.lastUsed,
     remove: all.remove, deleteRun: sweep.deleteRun });
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));
   return {

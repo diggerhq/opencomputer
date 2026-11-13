@@ -9,6 +9,7 @@ import type { AsRunner } from './podman.js';
 import type { Bind } from './podman-args.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { threadLocks } from './thread-lock.js';
+import { sandboxUses } from './use.js';
 
 const HOUR = 3600e3;
 const ago = (ms: number) => new Date(Date.now() - ms);
@@ -40,8 +41,9 @@ function rig(o: { usedHoursAgo?: number; answer?: string; running?: () => boolea
     clones: '/clones', workspace: () => '/workspace',
     run: async (script, args, r) => (helped.push({ person, binds, args: [script, ...args], stdin: r.stdin }), o.asked?.(), o.answer ?? `1\tok\t-\t-\t-\t-\t${ignoredLine(String(r.stdin))}\n`),
   });
-  const a = sandboxArtifacts({ as, records, locks, mounts: m, helper, running: o.running ?? (() => false) });
-  return { a, log, helped, record, records, locks, wt, admin, data };
+  const uses = sandboxUses({ as, records, workspace: m.workspace, unitActive: async () => false });
+  const a = sandboxArtifacts({ as, records, locks, mounts: m, helper, running: o.running ?? (() => false), claim: uses.claim });
+  return { a, uses, log, helped, record, records, locks, wt, admin, data };
 }
 
 describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
@@ -104,7 +106,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
         rmSync(t.wt, { recursive: true });
         symlinkSync(other, t.wt);
         return `1\tok\t-\t-\t-\t-\t${ignoredLine(String(r.stdin))}\n`;
-      } }), running: () => false,
+      } }), running: () => false, claim: () => () => {},
     });
     expect(await a.pruneArtifacts(t.record)).toEqual([]);
     expect(t.log).toEqual([]);
@@ -118,6 +120,17 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     await started.a.pruneIdle('pat');
     expect(started.helped.length).toBe(1);
     expect([none.log, started.log]).toEqual([[], []]);
+  });
+
+  it('nothing is removed under a /files script, nor after one that ran since git was asked (C13)', async () => {
+    const reading = rig();
+    const use = await reading.uses.enter(reading.record.id);
+    expect(await reading.a.pruneArtifacts(reading.record)).toEqual([]);
+    use.leave();
+    let t: ReturnType<typeof rig>;
+    const since = (t = rig({ asked: () => void t.uses.enter(t.record.id).then((u) => u.leave()) }));
+    expect(await since.a.pruneArtifacts(since.record)).toEqual([]);
+    expect([reading.log, since.log]).toEqual([[], []]);
   });
 
   it('nothing is removed while a start has the thread\'s turn, nor after it: the start wrote the record', async () => {
@@ -153,7 +166,7 @@ describe('artifacts of a sandboxed thread (work 103, without host git)', () => {
     const t = rig();
     const a = sandboxArtifacts({
       as: { settled: async () => {}, run: async () => '', podman: async (args) => (t.log.push(args.join(' ')), '') }, records: t.records, locks: t.locks, mounts: mounts({ as: { settled: async () => {}, run: async () => '', podman: async () => '' }, root: '/opt/r1', dataDir: t.data }),
-      helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async () => Promise.reject(new Error('ws-inspect.sh: timed out')) }), running: () => false,
+      helper: () => ({ clones: '/clones', workspace: () => '/workspace', run: async () => Promise.reject(new Error('ws-inspect.sh: timed out')) }), running: () => false, claim: () => () => {},
     });
     await a.pruneIdle('pat');
     expect(t.log).toEqual([]);

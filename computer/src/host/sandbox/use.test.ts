@@ -34,6 +34,34 @@ describe('entering a sandbox (work 103, C13)', () => {
     expect(t.log).toEqual(['settled 10000']);
   });
 
+  it('a thread is in use from the moment it is entered until it is left, and nobody may claim it then or for what was read before', async () => {
+    const t = rig();
+    const t0 = Date.now();
+    const use = await t.uses.enter(ID);
+    expect(t.uses.claim(ID, t0)).toBeUndefined();
+    use.leave();
+    use.leave();
+    // Used since `t0`: what was found out about the thread before may be old.
+    expect(t.uses.claim(ID, t0)).toBeUndefined();
+    const free = t.uses.claim(ID, Date.now() + 1);
+    expect(free).toBeTypeOf('function');
+    // Claimed: nothing enters, and nobody else claims.
+    expect(t.uses.claim(ID, Date.now() + 1)).toBeUndefined();
+    const e = await t.uses.enter(ID).catch((x) => x);
+    expect([e.name, e.retryable]).toEqual(['Unavailable', true]);
+    expect(e.message).toMatch(/being cleaned up/);
+    free?.();
+    (await t.uses.enter(ID)).leave();
+  });
+
+  it('one that waits for the image lock is in use already, and one that was refused is not', async () => {
+    const t = rig({ held: true });
+    const entering = t.uses.enter(ID);
+    expect(t.uses.claim(ID, 0)).toBeUndefined();
+    await expect(entering).rejects.toThrow(/updating/);
+    expect(t.uses.claim(ID, Date.now() + 1)).toBeTypeOf('function');
+  });
+
   it('a thread whose record is gone has nothing to enter', async () => {
     const t = rig({ record: undefined });
     const e = await t.uses.enter(ID).catch((x) => x);

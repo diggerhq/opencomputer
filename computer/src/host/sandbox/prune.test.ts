@@ -9,6 +9,7 @@ import type { Bind } from './podman-args.js';
 import { sandboxPrune } from './prune.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { threadLocks } from './thread-lock.js';
+import { sandboxUses } from './use.js';
 
 const DAY = 24 * 3600e3;
 const ID = '00aa11bb22cc33dd';
@@ -49,11 +50,13 @@ function rig(o: { usedDaysAgo?: number; state?: string | Error; running?: () => 
     },
   });
   let clock = Date.now();
+  const uses = sandboxUses({ as, records, workspace: m.workspace, unitActive: async () => false });
   const p = sandboxPrune({
+    claim: uses.claim,
     as, records, mounts: m, helper, locks, running: o.running ?? (() => false), lastUsed: async (r) => Date.parse(r.usedAt),
     remove: async (id) => (log.push(`remove ${id}`), o.at?.('remove'), o.remove ?? true), deleteRun: async (id) => (log.push(`run deleted ${id}`), true), now: () => clock,
   });
-  return { p, log, helped, record, records, m, data, locks, later: (ms: number) => void (clock += ms) };
+  return { p, uses, log, helped, record, records, m, data, locks, later: (ms: number) => void (clock += ms) };
 }
 
 describe('pruning a sandboxed thread (work 103, Prune)', () => {
@@ -93,6 +96,28 @@ describe('pruning a sandboxed thread (work 103, Prune)', () => {
     }
     const short = rig({ state: '1\tok\tclean\n2\tok\tclean\t0\tsp/C1-1-1\t/y\n' });
     expect((await short.p.pruneIdle('pat'))[0]?.problem).toContain('alpha: cannot count unpushed commits');
+  });
+
+  it('a thread whose files somebody reads, or read since git was asked, is left whole; while one is removed nobody enters it (C13)', async () => {
+    // A `/files` script that runs while the turn comes.
+    const reading = rig();
+    const use = await reading.uses.enter(ID);
+    expect(await reading.p.pruneIdle('pat')).toEqual([]);
+    expect(reading.log).toEqual(['ws-inspect.sh']);
+    // One that ran, and may have written, after git said the thread was clean.
+    let t: ReturnType<typeof rig>;
+    const wrote = (t = rig({ during: () => void t.uses.enter(ID).then((u) => u.leave()) }));
+    expect(await wrote.p.pruneIdle('pat')).toEqual([]);
+    expect(wrote.log).toEqual(['ws-inspect.sh']);
+    expect(wrote.records.get(ID)).toBeDefined();
+    // Left: the next pass prunes.
+    use.leave();
+    await new Promise((r) => setTimeout(r, 5));
+    const refused: unknown[] = [];
+    const gone = (t = rig({ at: (what) => what === 'remove' && t.uses.enter(ID).catch((e) => refused.push(e.message)) }));
+    expect(await gone.p.pruneIdle('pat')).toEqual([]);
+    expect(gone.records.get(ID)).toBeUndefined();
+    expect(refused).toEqual([expect.stringMatching(/being cleaned up/)]);
   });
 
   it('a kept thread is reported at every pass, and asked about again only after an hour or a use', async () => {
