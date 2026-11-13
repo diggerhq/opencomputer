@@ -420,9 +420,9 @@ environment, which any session can change.
 | `SP_FORK_RETENTION_DAYS` | `14` | idle forks with nothing unpushed are removed after this |
 | `SP_ARTIFACTS_IDLE_HOURS` | `24` | forks idle this long (no live runner) lose their git-ignored build and dependency directories (`node_modules`, Rust `target`, `.venv`, `.next`, caches; `src/workspaces/idle.ts`); an install or build restores them |
 | `SP_POOL_SIZE` | `2` | spare runners a host keeps with Claude Code parked, so a new session's first message skips the runner's launch and Claude Code's start (`host/pool.ts`, work 069). A spare is claimed into the session's fork; resumed sessions, and hosts without a prepared workspace for the owner, start cold. `0` turns the pool off |
-| `SP_MODEL_PROXY` | unset (every session on the organization's credentials) | oc-modelproxy's control socket (`/run/oc-modelproxy/control.sock`): sessions may run on their owner's Claude subscription (work 077); set only on a host running as `sp-host` |
+| `SP_MODEL_PROXY` | unset (the model proxy is down: no session starts, logged as an error) | oc-modelproxy's control socket (`/run/oc-modelproxy/control.sock`); the host binds every runner there to its session's model profile (work 097, `host/model-access.ts`). Required |
 | `SP_RUNNER_USER` | unset (runners run as the host's user) | start runners as this user through `sudo -n -u` (work 077, `host/runner-user.ts`), for a host running as `sp-host` |
-| `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | the proxy's socket a subscription session's Claude Code uses (`ANTHROPIC_UNIX_SOCKET`); passed to runners |
+| `SP_MODEL_SOCKET` | `/run/oc-modelproxy/api.sock` | the proxy's API socket, which runners' model clients connect to; sent to runners in their credentials' `model.endpoint` |
 | `SP_CODEX_BIN` | `/usr/local/lib/codex/bin/codex` | the pinned Codex CLI a `harness: 'codex'` session runs as `codex app-server` (work 082); passed to runners |
 | `SP_CODEX_PEER_CHECK` | on | `off` lets any local process use a Codex session's model loopback; only where runners are not systemd units (a laptop). On, a connection is forwarded only when a process in the runner's own cgroup holds it, and refused if the cgroup cannot be read. Read from the host's own environment only: runners always get `on` unless the host runs with `off` |
 
