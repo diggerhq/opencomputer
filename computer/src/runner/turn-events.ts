@@ -32,7 +32,8 @@ export interface TurnEventsContext {
   /** The model id in effect (it changes with `!model` and at init). */
   model(): string | undefined;
   tierOf(model: string): string | undefined;
-  provider(): string;
+  /** The route's profile name; undefined before the host sent one. */
+  provider(): string | undefined;
   /** While this runner writes the session's journal (work 084): the API clients attached now, the host's mirror excluded. */
   apiClients?(): number | undefined;
 }
@@ -360,7 +361,7 @@ export class TurnEvents {
       trace_id: turn.trace?.id ?? turn.id,
       turn_id: turn.id,
       sent_at: tbTime(turn.sentAt),
-      provider: this.ctx.provider(),
+      ...(this.ctx.provider() ? { provider: this.ctx.provider() } : {}),
       ...(model ? { model, tier: this.ctx.tierOf(model) ?? 'custom' } : {}),
     };
   }

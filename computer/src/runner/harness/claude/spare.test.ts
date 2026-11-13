@@ -16,18 +16,18 @@ function holder(procs: ReturnType<typeof fake>[]) {
 }
 
 describe('Spare', () => {
-  it('parks a process, keeps it for the same credential and replaces it for another', async () => {
+  it('parks a process, keeps it for the same kind and replaces it for another', async () => {
     const a = fake();
     const b = fake();
     const { spare, log } = holder([a, b]);
-    spare.warm('fp1');
+    spare.warm('k1');
     expect(spare.ready).toBe(false);
     await tick();
     expect(spare.ready).toBe(true);
-    spare.warm('fp1');
-    spare.warm('fp2');
+    spare.warm('k1');
+    spare.warm('k2');
     expect(a.p.closed).toBe(true);
-    expect(spare.credential).toBe('fp2');
+    expect(spare.kind).toBe('k2');
     await tick();
     expect(spare.take()).toBe(b.p);
     expect(spare.ready).toBe(false);
@@ -40,7 +40,7 @@ describe('Spare', () => {
   it('reports a parked process that exits', async () => {
     const a = fake();
     const { spare, log } = holder([a]);
-    spare.warm('fp');
+    spare.warm('k');
     await tick();
     a.exit();
     await tick();
@@ -55,8 +55,8 @@ describe('Spare', () => {
     const gate = new Promise<void>((r) => (release = r));
     let n = 0;
     const spare = new Spare(async () => (n++ === 0 ? (await gate, a.p) : b.p), { changed: () => {}, died: () => {} });
-    spare.warm('fp1');
-    spare.warm('fp2');
+    spare.warm('k1');
+    spare.warm('k2');
     await tick();
     release();
     await tick();

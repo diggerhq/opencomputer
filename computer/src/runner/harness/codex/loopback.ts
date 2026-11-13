@@ -7,7 +7,7 @@
 //
 // Threat model. A port on 127.0.0.1 is open to every process on the
 // computer, and through it they would reach the model as this runner (its
-// session's subscription). Every session's runner, Codex and commands run as
+// session's model credential). Every session's runner, Codex and commands run as
 // the same user, so nothing in Codex's environment or files is secret from
 // another session: a shared key (this file's first design) was readable from
 // /proc/<codex>/environ. What another session cannot fake is where it runs:
