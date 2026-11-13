@@ -3,7 +3,7 @@ title: "Branches and pull requests"
 description: "Each session commits on branch `sp/<thread>` in its own worktrees and pushes as the instance's GitHub App"
 ---
 
-This page describes a computer with a workspace definition, which is what `provision.sh` installs. The definition lists the repositories; see [Repositories](/self-hosting/configure).
+This page describes a computer with a workspace definition, which is what `provision.sh` installs. The definition lists the repositories; see Repositories.
 
 <Frame>
   <img src="/images/slack/pull-request.png" alt="computer reports the pushed branch sp/C08EN6G4T2K-1791312345-821900 and the pull request link" />
@@ -27,7 +27,7 @@ A session starts with the repositories already cloned on the computer. It checks
 
 | Field | Value |
 | --- | --- |
-| Author | The session's owner, by the name and email in the [people list](/self-hosting/configure), even when another person in the thread asked for the change |
+| Author | The session's owner, by the name and email in the people list, even when another person in the thread asked for the change |
 | Committer | `Computer <computer@users.noreply.opencomputer.dev>`, or `SP_COMMITTER_NAME` and `SP_COMMITTER_EMAIL` when set |
 
 Claude Code's own attribution lines are turned off for commits and pull requests.
@@ -41,7 +41,7 @@ The session pushes and opens pull requests with `git` and `gh`, following the wo
 - Do not push to a default branch unless the person asks.
 - Say in the pull request body who asked: `Requested by @<person> in Slack`.
 
-To change this, edit the [instructions](/self-hosting/configure).
+To change this, edit the instructions.
 
 ## Identity and tokens
 
@@ -49,7 +49,7 @@ To change this, edit the [instructions](/self-hosting/configure).
 
 | Item | Value |
 | --- | --- |
-| Reachable repositories | Those granted to the app's installation; see [Connect GitHub](/self-hosting/github) |
+| Reachable repositories | Those granted to the app's installation; see Connect GitHub |
 | `git` token | Limited to the repository in the remote URL |
 | `gh` token | Covers every repository the installation grants |
 | Storage | No token is written to disk; the app's private key stays on the gateway. See Git. |

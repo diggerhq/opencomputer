@@ -50,7 +50,6 @@ Anyone in the Slack workspace can mention `@computer`. A session belongs to the 
 
 - [Threads](/slack/threads): what a session shows and how it ends.
 - [Branches and pull requests](/slack/branches-and-pull-requests): how work leaves the computer.
-- [Configure the computer](/self-hosting/configure): repositories, models and permissions.
 - [Self-hosting](/self-hosting/overview): run the gateway and the computer yourself.
 
 {/* Sources: opencomputer web/src/managed-agents/Computer.tsx, AgentStep.tsx and computer-state.ts (four steps, labels, status, first-task text); services/managed-agents/src/computer/github.ts (`EAGER_REPO_COUNT`: three clones, the rest lazy); services/managed-agents/src/computer/routes.ts (computer created in the Slack OAuth callback); services/managed-agents/src/computer/durable-object.ts (mention or DM starts a session, thread owner, `!link`) */}

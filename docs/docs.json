@@ -51,25 +51,12 @@
         ]
       },
       {
-        "group": "Self-hosting @computer",
+        "group": "Self-hosting",
         "pages": [
           "self-hosting/overview",
-          "self-hosting/gateway",
-          "self-hosting/host-vm",
-          {
-            "group": "Providers",
-            "pages": [
-              "self-hosting/providers/aws",
-              "self-hosting/providers/azure",
-              "self-hosting/providers/gcp",
-              "self-hosting/providers/vps"
-            ]
-          },
-          "self-hosting/github",
-          "self-hosting/configure",
-          "self-hosting/operate",
-          "self-hosting/security",
-          "self-hosting/troubleshooting"
+          "self-hosting/azure",
+          "self-hosting/aws",
+          "self-hosting/gcp"
         ]
       },
       {

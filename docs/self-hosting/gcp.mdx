@@ -1,0 +1,10 @@
+---
+title: "On Google Cloud"
+description: "Computer VMs on Google Cloud are not supported yet; deploy on Azure"
+---
+
+The platform Worker creates each organization's Computer VM through Azure Resource Manager. It has no Google Cloud provider yet, so a self-hosted deployment runs its Computers on [Azure](/self-hosting/azure).
+
+The Cloudflare part of the deployment (the application, gateway and platform Workers) does not depend on the cloud that runs the VMs.
+
+{/* Sources: services/managed-agents/src/platform/computers/arm.ts (ARM is the only VM provider); services/managed-agents/src/computer/cloud-contract.ts */}

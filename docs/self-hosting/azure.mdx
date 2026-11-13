@@ -1,0 +1,234 @@
+---
+title: "On Azure"
+description: "Deploy the app, gateway and platform Workers on Cloudflare, with Computer VMs in a private Azure subnet"
+---
+
+This page deploys the stack described in [Start here](/self-hosting/overview). The platform Worker creates each organization's Computer VM in your subscription when the organization adds the Slack app.
+
+The examples use two hostnames on your Cloudflare zone:
+
+| Placeholder | Serves |
+| --- | --- |
+| `app.example.com` | The app Worker: dashboard, sign-in, Slack and GitHub callbacks |
+| `gateway.example.com` | The gateway Worker: sessions and the VMs' WebSocket |
+
+## 1. Get the code
+
+```bash
+git clone https://github.com/diggerhq/opencomputer.git
+cd opencomputer
+(cd services/managed-agents && npm ci)
+(cd cloudflare-workers/api-edge && npm ci)
+(cd web && npm ci)
+```
+
+## 2. Create the bootstrap storage
+
+New VMs download the Computer release from a private blob container named `bootstrap`. Choose a region that has availability zone 1 and Premium SSD v2 disks; the VMs are placed in zone 1.
+
+```bash
+az login
+az account set --subscription '<SUBSCRIPTION>'
+
+export REGION=eastus
+export STORAGE_RG=computers-bootstrap
+export STORAGE_ACCOUNT=<globally unique, lowercase>
+
+az group create -n "$STORAGE_RG" -l "$REGION"
+az storage account create -n "$STORAGE_ACCOUNT" -g "$STORAGE_RG" -l "$REGION" \
+  --sku Standard_LRS --allow-blob-public-access false
+az storage container create --account-name "$STORAGE_ACCOUNT" -n bootstrap --auth-mode login
+```
+
+## 3. Create the Azure network and identities
+
+```bash
+cd services/managed-agents
+REGION="$REGION" SUBSCRIPTION='<SUBSCRIPTION>' \
+STORAGE_ACCOUNT="$STORAGE_ACCOUNT" STORAGE_RG="$STORAGE_RG" \
+SECRET_FILE=~/.computers-azure-secret \
+bash scripts/computers-infra.sh
+```
+
+The script creates:
+
+| Resource | Name |
+| --- | --- |
+| Resource group | `computers-<region>` |
+| VNet and subnet | `computers`, `10.80.0.0/16` and `10.80.0.0/20` |
+| NAT gateway and its public IP | `computers-nat`, `computers-nat-ip` |
+| Network security group, denying inbound | `computers-nsg` |
+| Managed identity the VMs use to read the bootstrap container | `computer-bootstrap` |
+| Service principal the platform Worker uses | `managed-agents-computers`, Contributor on the resource group |
+
+It writes the service principal's secret (valid one year) to `SECRET_FILE`, then prints the platform Worker's variables and secret commands. Keep the output for step 6. A warning about a missing `calvin-deploy` identity does not apply to a self-hosted deployment.
+
+## 4. Build and upload the Computer release
+
+```bash
+cd ../../computer
+deploy/bundle.sh /tmp/calvin-latest.bundle
+```
+
+`bundle.sh` prints the release commit. The bundle holds the Computer source and the model proxy built for Linux amd64. Upload it, and a version file holding that commit:
+
+```bash
+az storage blob upload --account-name "$STORAGE_ACCOUNT" -c bootstrap \
+  -n calvin-latest.bundle -f /tmp/calvin-latest.bundle --auth-mode login --overwrite
+
+printf '%s' '<COMMIT>' > /tmp/calvin-latest.version
+az storage blob upload --account-name "$STORAGE_ACCOUNT" -c bootstrap \
+  -n calvin-latest.version -f /tmp/calvin-latest.version --auth-mode login --overwrite
+```
+
+On first boot a VM downloads the bundle with its managed identity and runs `deploy/vm/azure-computer-boot.sh`, which runs `provision.sh`. To release a new version later, upload both files again.
+
+## 5. Create the Cloudflare resources
+
+```bash
+npx wrangler login
+npx wrangler d1 create computer-app
+npx wrangler d1 create computer-gateway
+npx wrangler kv namespace create WIRE_KEYS
+npx wrangler kv namespace create SESSIONS_KV
+npx wrangler r2 bucket create managed-agents-session-log
+```
+
+Note each ID; the next steps put them into the Workers' configuration files.
+
+## 6. Deploy the platform Worker
+
+In `services/managed-agents/wrangler.platform.jsonc`:
+
+- Set `account_id` to your Cloudflare account.
+- Set the `AZURE_*` and `COMPUTER_BOOTSTRAP_URL` variables to the values `computers-infra.sh` printed.
+- Remove `tail_consumers`.
+
+```bash
+cd services/managed-agents
+npx wrangler deploy --config wrangler.platform.jsonc
+printf '%s' '<TENANT_ID>' | npx wrangler secret put AZURE_TENANT_ID --config wrangler.platform.jsonc
+printf '%s' '<APP_ID>' | npx wrangler secret put AZURE_CLIENT_ID --config wrangler.platform.jsonc
+npx wrangler secret put AZURE_CLIENT_SECRET --config wrangler.platform.jsonc < ~/.computers-azure-secret
+```
+
+## 7. Create the WorkOS, Slack and GitHub apps
+
+The URLs below use `https://app.example.com`.
+
+**WorkOS.** Create an application with redirect URI `https://app.example.com/auth/callback`, and set the sign-out redirect to `https://app.example.com` in the WorkOS dashboard. Keep the API key and client ID.
+
+**Slack.** Create a Slack app with:
+
+| Setting | Value |
+| --- | --- |
+| OAuth redirect URL | `https://app.example.com/api/managed-agents/computer/slack/callback` |
+| Event request URL | `https://app.example.com/api/managed-agents/computer/slack/events` |
+| Interactivity request URL | `https://app.example.com/api/managed-agents/computer/slack/interactivity` |
+
+Bot token scopes:
+
+```text
+app_mentions:read assistant:write channels:history channels:read channels:manage
+groups:history groups:read groups:write im:history im:read im:write chat:write
+files:read files:write reactions:write users:read users:read.email
+```
+
+Bot events: `app_mention`, `message.im`, `message.channels`, `message.groups`, `app_uninstalled`, `tokens_revoked`, `team_leave`, `user_change`, and `agent_session_stopped` if Slack offers it. Keep the client ID, client secret and signing secret.
+
+**GitHub.** Create a GitHub App with:
+
+| Setting | Value |
+| --- | --- |
+| Callback URL | `https://app.example.com/api/managed-agents/github/callback` |
+| Webhook URL | `https://app.example.com/api/managed-agents/github/webhooks` |
+| Repository permissions | Metadata: read. Contents: read and write. Pull requests: read and write. Checks: write. |
+| Events | Installation, Installation repositories, Repository, Push, Pull request |
+
+Generate a private key. Keep the app ID, slug, client ID, client secret, webhook secret and private key.
+
+## 8. Deploy the gateway Worker
+
+Start from `services/managed-agents/wrangler.production.jsonc` and edit:
+
+| Field | Value |
+| --- | --- |
+| `name`, `account_id`, `routes` | Your Worker name, account, and `gateway.example.com` as a custom domain |
+| `COMPUTER_HOST_GATEWAY_URL` | `wss://gateway.example.com` |
+| `COMPUTER_PUBLIC_ORIGIN`, `OPENCOMPUTER_APP_URL` | `https://app.example.com` |
+| `COMPUTER_DEFAULT_SIZE` | `Standard_D2as_v7` or larger |
+| `COMPUTER_POOL_SIZE` | `"0"` (no pre-started VMs) |
+| `SLACK_COMPUTER_CLIENT_ID` | Add it, with the Slack client ID |
+| `OC_GITHUB_APP_ID`, `OC_GITHUB_APP_SLUG`, `OC_GITHUB_APP_CLIENT_ID` | From the GitHub App |
+| D1, KV and R2 bindings | The `computer-gateway` database, `WIRE_KEYS` namespace and `managed-agents-session-log` bucket from step 5 |
+| `DEPLOYMENTS` and `RUNTIMES` services | Your platform Worker's name |
+| `PREVIEWS`, `WORKERD_RUNTIME`, `OPENCOMPUTER_BILLING`, `tail_consumers` | Remove |
+
+Write the secrets to a JSON file with mode `0600`:
+
+| Secret | Value |
+| --- | --- |
+| `OC_MANAGED_AGENTS_SECRET`, `OC_MANAGED_CRED_HMAC_SECRET`, `BLUE_USAGE_HMAC_SECRET`, `BLUE_SESSION_INDEX_ADMIN_SECRET` | `openssl rand -hex 32` each |
+| `BLUE_CHANNEL_ENCRYPTION_KEY`, `COMPUTER_HOST_TOKEN_KEY` | `openssl rand -base64 32` each |
+| `SLACK_COMPUTER_CLIENT_SECRET`, `SLACK_COMPUTER_SIGNING_SECRET` | From the Slack app |
+| `OC_GITHUB_APP_PRIVATE_KEY`, `OC_GITHUB_APP_CLIENT_SECRET`, `OC_GITHUB_APP_WEBHOOK_SECRET` | From the GitHub App |
+| `COMPUTER_ANTHROPIC_API_KEY` | Your Anthropic API key |
+
+```bash
+npx wrangler d1 migrations apply computer-gateway --remote --config wrangler.production.jsonc
+npx wrangler deploy --config wrangler.production.jsonc --secrets-file gateway-secrets.json
+curl https://gateway.example.com/health
+```
+
+## 9. Deploy the app Worker
+
+In `cloudflare-workers/api-edge/wrangler.toml`:
+
+- Set `name`, `account_id`, and the route to `app.example.com`.
+- Set the D1 binding to `computer-app` and the KV binding to `SESSIONS_KV`.
+- Set the `CREDIT_ACCOUNT` binding's `script_name` to this Worker's name.
+- Set `COMPUTER_ENABLED_FOR_ALL = "true"` and `MANAGED_AGENTS_API_URL = "https://gateway.example.com"`.
+- Remove `tail_consumers`.
+
+Secrets, in a second `0600` JSON file:
+
+| Secret | Value |
+| --- | --- |
+| `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` | From WorkOS |
+| `OC_MANAGED_AGENTS_SECRET`, `OC_MANAGED_CRED_HMAC_SECRET` | The same values as the gateway |
+| `AGENT_RUNTIME_USAGE_HMAC_SECRET` | The gateway's `BLUE_USAGE_HMAC_SECRET` |
+| `SESSION_JWT_SECRET`, `CF_ADMIN_SECRET`, `SECRET_ENCRYPTION_KEY`, `EVENT_SECRET` | `openssl rand -hex 32` each |
+
+Build the dashboard into the Worker's assets, create the schema and deploy:
+
+```bash
+cd web && npm run build && cp -r dist/. ../cloudflare-workers/api-edge/assets/
+cd ../cloudflare-workers/api-edge
+npx wrangler d1 execute computer-app --remote -c wrangler.toml --file schema-snapshots/current_schema.sql
+npx wrangler d1 migrations apply computer-app --remote -c wrangler.toml
+npx wrangler deploy -c wrangler.toml --secrets-file app-secrets.json
+curl https://app.example.com/health
+```
+
+## 10. Add the Slack app and connect GitHub
+
+1. Open `https://app.example.com` and sign in.
+2. Click **Add to Slack** and approve. The platform Worker creates your organization's Computer VM: Ubuntu 24.04, a private NIC, a 64 GiB OS disk and a 128 GiB data disk. The dashboard shows its status until it is `Online`.
+3. Connect GitHub and choose the repositories.
+4. Mention `@computer` in a channel.
+
+## Check a VM
+
+The VMs have no SSH access. Find an organization's VM by its tag and run checks with Azure Run Command:
+
+```bash
+RG=computers-$REGION
+az vm list -g "$RG" --query "[?tags.organization=='<ORG_ID>'].name" -o tsv
+
+az vm run-command invoke -g "$RG" -n <VM_NAME> --command-id RunShellScript --scripts \
+  "systemctl is-active slack-presence-host.service oc-modelproxy.service; tail -50 /var/log/calvin-boot.log"
+```
+
+Restart the VM from the Azure portal or with `az vm restart`; the Computer reconnects and keeps the workspace on its data disk.
+
+{/* Sources: services/managed-agents/scripts/computers-infra.sh; services/managed-agents/scripts/stack.mjs:82-84,193-202,522-533,585-597; services/managed-agents/wrangler.platform.jsonc; services/managed-agents/wrangler.production.jsonc; services/managed-agents/README.md (Slack events); services/managed-agents/src/computer/config.ts:86-106; services/managed-agents/src/computer/routes.ts:148-155; services/managed-agents/src/computer/crypto.ts:35,46; services/managed-agents/src/computer/model-key.ts:95-103; services/managed-agents/src/computer/names.ts:25-34; services/managed-agents/src/platform/computers/resources.ts:54-63,95,186-187,317-375; computer/deploy/bundle.sh; computer/deploy/vm/self-update.sh:18-19; computer/deploy/vm/provision.sh; cloudflare-workers/api-edge/wrangler.toml; cloudflare-workers/api-edge/scripts/stack.mjs:100-150; cloudflare-workers/api-edge/src/index.ts:576-585,2242-2294 */}

@@ -11,7 +11,7 @@ Under Claude Code these tools are one MCP server named `calvin`; approval prompt
 | --- | --- | --- | --- |
 | `send_file` | yes | yes | yes |
 | `post_card` | yes | yes | yes |
-| `checkout_repo` | no | when the host has a [workspace definition](/self-hosting/configure) | yes |
+| `checkout_repo` | no | when the host has a workspace definition | yes |
 | `spawn_thread` | no | yes | yes |
 | `read_thread` | no | yes | yes |
 | `post_thread` | no | yes | yes |
@@ -63,7 +63,7 @@ Posts a card (key facts, a table, charts, link buttons) into the session's threa
 
 ## checkout_repo
 
-Adds workspace repositories to the session directory, each as a git worktree on the session's branch, cloning first if needed. A repository already checked out is returned as it is. See [Repositories](/self-hosting/configure).
+Adds workspace repositories to the session directory, each as a git worktree on the session's branch, cloning first if needed. A repository already checked out is returned as it is. See Repositories.
 
 | Parameter | Type | Required | Meaning |
 | --- | --- | --- | --- |

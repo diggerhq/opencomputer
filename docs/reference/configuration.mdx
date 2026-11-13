@@ -65,7 +65,7 @@ description: "Every environment variable, by the process that reads it, with its
 | `SP_IDLE_MS` | `7200000` | Milliseconds without a message before the host stops a runner. |
 | `SP_POOL_SIZE` | `2` | Spare runners kept started for new sessions. `0`: no pool. |
 | `SP_LAUNCH` | `systemd` on Linux, `detached` elsewhere | `systemd`: runners are transient systemd user units. `detached`: detached processes that log to `<SP_RUN>/logs/`. |
-| `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. See [Resource limits](/self-hosting/operate). |
+| `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. See Resource limits. |
 | `SP_RUNNER_USER` | unset: runners run as the host's user | Start runners as this user through `sudo`. Where the host runs as `sp-host`, the install sets `agent`, with `SP_RUNNER_PATH`. |
 | `SP_RUNNER_PATH` | unset | `PATH` of runners and workspace commands when `SP_RUNNER_USER` is set. |
 
@@ -91,7 +91,7 @@ The four durations accept a number of seconds or a unit: `300`, `500ms`, `30s`, 
 | `SP_REGION` | `unknown` | Region label on telemetry records. Passed to runners. Written by `provision.sh` when passed. |
 | `SP_SUBSTRATE` | unset | Label for where runners run, for example `vm`. Passed to runners. Written by `provision.sh` when passed. |
 
-See [Telemetry](/self-hosting/operate).
+See Telemetry.
 
 ### Model proxy
 
@@ -153,7 +153,7 @@ The host does not pass `STREAMING` and `FLUSH_MS` to runners, so on a computer t
 
 ## `provision.sh` inputs
 
-Read from the environment of each `provision.sh` run. See [Host VM](/self-hosting/host-vm) and [Upgrade](/self-hosting/operate).
+Read from the environment of each `provision.sh` run. See Host VM and Upgrade.
 
 | Variable | Default | Purpose |
 |---|---|---|
