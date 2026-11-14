@@ -214,3 +214,28 @@ test("template build emits an empty model list for agents without useModel", asy
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("platform-scoped secrets are not install-time requirements", async () => {
+  const parent = await mkdtemp(
+    resolve(tmpdir(), "opencomputer-template-platform-"),
+  );
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await writeFile(resolve(initialized.root, "oc-template.toml"), modelTemplate);
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { monid, useMcpServer } from "@opencomputer/agent";
+
+const tools = monid();
+export default function Agent() {
+  useMcpServer(tools);
+  return "Use the catalog.";
+}
+`,
+    );
+    const bundle = await buildTemplateProject(initialized.root);
+    assert.deepEqual(bundle.requirements.secrets, []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
