@@ -67,6 +67,8 @@ export type DownloadResult = {
   artifactId?: string;
   size: number;
   sha256: string;
+  /** False when the server supplied no expected digest: `sha256` was computed locally, not verified. */
+  verified: boolean;
 };
 
 export class VerificationError extends Error {}
@@ -162,6 +164,7 @@ export async function downloadWorkspaceFile(
     destination,
     size: download.size,
     sha256,
+    verified: download.sha256 !== undefined,
   };
 }
 
@@ -201,7 +204,16 @@ async function streamDirect(
       `Received ${received} bytes but expected ${download.size}.`,
     );
   }
-  return hash.digest("hex");
+  const digest = hash.digest("hex");
+  if (
+    download.sha256 !== undefined &&
+    digest !== download.sha256.toLowerCase()
+  ) {
+    throw new VerificationError(
+      "Downloaded bytes do not match the expected SHA-256.",
+    );
+  }
+  return digest;
 }
 
 /**
@@ -275,6 +287,7 @@ export async function downloadArtifact(
     artifactId: artifact.id,
     size: artifact.size,
     sha256: artifact.sha256,
+    verified: true,
   };
 }
 
