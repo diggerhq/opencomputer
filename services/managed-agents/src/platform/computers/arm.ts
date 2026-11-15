@@ -197,6 +197,7 @@ export interface ArmResource {
   id?: string;
   name?: string;
   tags?: Record<string, string>;
+  zones?: string[];
   properties?: {
     provisioningState?: string;
     diskSizeGB?: number;

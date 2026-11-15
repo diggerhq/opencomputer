@@ -35,6 +35,17 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   COMPUTER_MAX_SIZE?: string;
   /** Former name of COMPUTER_MAX_SIZE, still read when it is unset. */
   COMPUTER_PAID_SIZE?: string;
+  /**
+   * Work 106: zones a new computer may be placed in, most preferred first
+   * (e.g. "2,1,3"); unset: 1, 2, 3. A zone without capacity falls to the next.
+   */
+  COMPUTER_ZONES?: string;
+  /**
+   * Work 106: sizes tried, in order, once no zone has capacity for the size
+   * asked for (e.g. "Standard_D16ads_v7,Standard_D16as_v6"). Only those with
+   * its vCPUs, memory and disk controller are used; unset: none.
+   */
+  COMPUTER_FALLBACK_SIZES?: string;
   COMPUTER_DEFAULT_DISK_GIB?: string;
   /** The most a computer's data disk grows to on its own (work 071; default 1024). */
   COMPUTER_MAX_DISK_GIB?: string;
@@ -94,8 +105,8 @@ export const DEFAULT_WIRE_TUNNEL_DOMAIN = "w.opencomputer.dev";
 export const DEFAULT_SIZE = "Standard_D2as_v7";
 export const DEFAULT_DISK_GIB = 128;
 export const DEFAULT_MAX_DISK_GIB = 1024;
-/** Premium SSD v2 needs a zone; every eastus v7 size is offered in zone 1. */
-export const DEFAULT_ZONE = "1";
+/** Premium SSD v2 needs a zone; the numbers are the subscription's own (logical) zones. */
+export const DEFAULT_ZONES = ["1", "2", "3"];
 
 export class ComputersNotConfigured extends Error {
   constructor(readonly missing: string[]) {
@@ -129,6 +140,43 @@ export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
 export function sizeFor(env: ComputerEdgeEnv, tier: "max" | "default"): string {
   const max = env.COMPUTER_MAX_SIZE || env.COMPUTER_PAID_SIZE;
   return (tier === "max" ? max : undefined) || env.COMPUTER_DEFAULT_SIZE || DEFAULT_SIZE;
+}
+
+/** v6 and v7 sizes expose disks only over NVMe; the OS finds its disks by controller, so the two kinds do not mix. */
+export function nvmeSize(size: string): boolean {
+  return /_v[67]$/i.test(size);
+}
+
+/** Where a computer's VM and its zonal data disk are. */
+export interface Placement {
+  size: string;
+  zone: string;
+}
+
+/** COMPUTER_ZONES in order, without repeats or anything that is not a zone; none left: the default order. */
+export function zones(env: ComputerEdgeEnv): string[] {
+  const listed = (env.COMPUTER_ZONES ?? "").split(",").map((zone) => zone.trim());
+  const valid = [...new Set(listed.filter((zone) => DEFAULT_ZONES.includes(zone)))];
+  return valid.length ? valid : DEFAULT_ZONES;
+}
+
+/**
+ * Work 106: every placement a computer asked for at `size` may get, in the
+ * order tried: each zone at that size, then each zone at every fallback size
+ * of the same shape. The first is where it is created; the rest are for when
+ * the cloud has no capacity there (lifecycle.ts).
+ */
+export function placements(env: ComputerEdgeEnv, size: string): Placement[] {
+  const shape = sizeShape(size);
+  const fallbacks = (env.COMPUTER_FALLBACK_SIZES ?? "")
+    .split(",")
+    .map((other) => other.trim())
+    .filter((other) => {
+      if (!/^Standard_[A-Za-z0-9_]+$/.test(other) || other === size || nvmeSize(other) !== nvmeSize(size)) return false;
+      const { vcpus, memoryGiB } = sizeShape(other);
+      return vcpus === shape.vcpus && memoryGiB === shape.memoryGiB;
+    });
+  return [...new Set([size, ...fallbacks])].flatMap((each) => zones(env).map((zone) => ({ size: each, zone })));
 }
 
 export function defaultDiskGiB(env: ComputerEdgeEnv): number {

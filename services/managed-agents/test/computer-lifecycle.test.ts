@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "../src/computer/cloud-contract.js";
 import { CloudError, type ComputerCloud } from "../src/computer/cloud.js";
+import { placements, zones } from "../src/computer/config.js";
 import { ComputerLifecycle, POLL_MS, backoffMs } from "../src/computer/lifecycle.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
@@ -19,6 +20,10 @@ class FakeCloud implements ComputerCloud {
   prefixes: string[] = [];
   vmPuts: Array<{ mode: string; size: string; hostToken?: string; gatewayUrl?: string }> = [];
   vmOutcome: "Succeeded" | "Failed" = "Succeeded";
+  /** Placements (`size@zone`) whose VM ends Failed with ZonalAllocationFailed. */
+  noCapacity = new Set<string>();
+  /** Where every VM PUT asked to be. */
+  vmPlacements: string[] = [];
   failNext?: CloudError;
   missingNames: string[] = [];
 
@@ -45,6 +50,9 @@ class FakeCloud implements ComputerCloud {
     if (resource.provisioningState === "Creating" || resource.provisioningState === "Updating") {
       resource.provisioningState = kind === "vm" ? this.vmOutcome : "Succeeded";
       if (kind === "vm" && this.vmOutcome === "Failed") resource.failure = "Allocation failed";
+      if (kind === "vm" && this.noCapacity.has(`${resource.vmSize}@${resource.zone}`)) {
+        Object.assign(resource, { provisioningState: "Failed", failure: "We do not have sufficient capacity", failureCode: "ZonalAllocationFailed" });
+      }
     }
     return { ...resource };
   }
@@ -55,9 +63,9 @@ class FakeCloud implements ComputerCloud {
     return { ...resource };
   }
 
-  async putDataDisk(target: CloudTarget, spec: { diskGiB: number }) {
+  async putDataDisk(target: CloudTarget, spec: { diskGiB: number; zone: string }) {
     this.check("PUT dataDisk", target);
-    return this.create("dataDisk", { diskSizeGB: spec.diskGiB });
+    return this.create("dataDisk", { diskSizeGB: spec.diskGiB, zone: spec.zone });
   }
 
   async putNic(target: CloudTarget) {
@@ -65,11 +73,14 @@ class FakeCloud implements ComputerCloud {
     return this.create("nic");
   }
 
-  async putVm(target: CloudTarget, spec: { size: string; mode: "create" | "attach"; hostToken?: string; gatewayUrl?: string }) {
+  async putVm(target: CloudTarget, spec: { size: string; zone: string; mode: "create" | "attach"; hostToken?: string; gatewayUrl?: string }) {
     this.check(`PUT vm ${spec.mode}`, target);
     this.vmPuts.push(spec);
+    this.vmPlacements.push(`${spec.size}@${spec.zone}`);
+    const diskZone = this.resources.get("dataDisk")?.zone;
+    if (diskZone && diskZone !== spec.zone) throw new CloudError(400, "BadRequest", "the disk and the VM are in different zones");
     if (spec.mode === "create") this.resources.set("osDisk", { provisioningState: "Succeeded", organization: null });
-    return this.create("vm", { vmSize: spec.size });
+    return this.create("vm", { vmSize: spec.size, zone: spec.zone });
   }
 
   async resizeVm(target: CloudTarget, size: string) {
@@ -113,8 +124,10 @@ let readyCalls: number;
 let missingEdge: string[];
 let lifecycle: ComputerLifecycle;
 let selfManaged: boolean;
+let fallbackSizes: string[];
 
 beforeEach(() => {
+  fallbackSizes = [];
   cloud = new FakeCloud();
   alarms = [];
   now = 1_000_000;
@@ -131,6 +144,7 @@ beforeEach(() => {
     gatewayUrl: (org) => `wss://edge.example/v1/computer/host?organizationId=${org}`,
     setAlarm: async (at) => void alarms.push(at),
     hostConnected: () => connected,
+    placements: (size) => [size, ...fallbackSizes].flatMap((each) => ["1", "2", "3"].map((zone) => ({ size: each, zone }))),
     onReady: () => void (readyCalls += 1),
     now: () => now,
     sshPublicKey: async () => "ssh-rsa AAAA test",
@@ -224,6 +238,104 @@ describe("computer lifecycle", () => {
     // The OS disk of a first boot that never reached a host is not attached: it is replaced.
     expect(cloud.calls).toContain("DELETE osDisk");
     expect(cloud.vmPuts.map((p) => p.mode)).toEqual(["create", "create"]);
+  });
+
+  it("a zone without capacity falls to the next: the empty data disk moves with the VM, and the row keeps the zone", async () => {
+    cloud.noCapacity = new Set(["Standard_D2as_v7@1", "Standard_D2as_v7@2"]);
+    await lifecycle.create(ORG, OPTIONS);
+    await settle(60);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", zone: "3", lastError: null });
+    expect(cloud.vmPlacements).toEqual(["Standard_D2as_v7@1", "Standard_D2as_v7@2", "Standard_D2as_v7@3"]);
+    expect(cloud.resources.get("dataDisk")).toMatchObject({ zone: "3", provisioningState: "Succeeded" });
+    // The NIC is regional: it is kept.
+    expect(cloud.calls.filter((call) => call === "PUT nic")).toHaveLength(1);
+    expect(cloud.calls.filter((call) => call === "DELETE dataDisk")).toHaveLength(2);
+
+    // Parked and woken, it stays where its disk is.
+    lifecycle.noteHostSeen();
+    await lifecycle.park();
+    await settle();
+    await lifecycle.wake();
+    await settle();
+    expect(lifecycle.row()).toMatchObject({ state: "ready", zone: "3" });
+    expect(cloud.vmPlacements.at(-1)).toBe("Standard_D2as_v7@3");
+  });
+
+  it("falls to the next size once no zone has capacity, and fails with the capacity error when nothing is left", async () => {
+    fallbackSizes = ["Standard_D2ads_v7"];
+    cloud.noCapacity = new Set(["1", "2", "3"].map((zone) => `Standard_D2as_v7@${zone}`));
+    await lifecycle.create(ORG, OPTIONS);
+    await settle(80);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2ads_v7", zone: "1" });
+
+    const other = new ComputerLifecycle({ ...(lifecycle as any).deps, sql: sqlStorage() });
+    cloud = new FakeCloud();
+    cloud.noCapacity = new Set(["Standard_D2as_v7", "Standard_D2ads_v7"].flatMap((size) => ["1", "2", "3"].map((zone) => `${size}@${zone}`)));
+    await other.create(ORG, OPTIONS);
+    for (let i = 0; i < 120 && other.row()?.state === "provisioning"; i += 1) await other.tick();
+    expect(cloud.vmPlacements).toHaveLength(6);
+    expect(other.row()).toMatchObject({ state: "failed", lastError: "VM provisioning failed: ZonalAllocationFailed: We do not have sufficient capacity" });
+    expect(other.view()?.lastError).toBe("No capacity was available for your computer; try again in a few minutes.");
+    // Asked again, it starts over from every placement.
+    cloud.noCapacity.delete("Standard_D2as_v7@2");
+    await other.create(ORG, OPTIONS);
+    for (let i = 0; i < 120 && other.row()?.state === "provisioning"; i += 1) await other.tick();
+    expect(other.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", zone: "2" });
+  });
+
+  it("a capacity refusal of the VM PUT itself falls back too", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    await lifecycle.tick();
+    await lifecycle.tick();
+    cloud.calls = [];
+    // Third call of the next tick is the PUT: GET dataDisk, GET nic, GET vm, GET osDisk, PUT vm.
+    const put = cloud.putVm.bind(cloud);
+    let refused = false;
+    cloud.putVm = async (target, spec) => {
+      if (!refused) {
+        refused = true;
+        throw new CloudError(409, "SkuNotAvailable", "the requested size is currently not available in zone 1");
+      }
+      return put(target, spec);
+    };
+    await settle(40);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", zone: "2" });
+  });
+
+  it("a wake keeps its zone: with no capacity there it changes size, or fails saying so, and never touches the data disk", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    await settle();
+    lifecycle.noteHostSeen();
+    await lifecycle.park();
+    await settle();
+    cloud.noCapacity = new Set(["Standard_D2as_v7@1"]);
+    await lifecycle.wake();
+    await settle(40);
+    expect(lifecycle.row()).toMatchObject({ state: "failed", zone: "1" });
+    expect(lifecycle.view()?.lastError).toBe("No capacity was available for your computer; try again in a few minutes.");
+
+    fallbackSizes = ["Standard_D2ads_v7"];
+    await lifecycle.create(ORG, OPTIONS);
+    await settle(40);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2ads_v7", zone: "1" });
+    expect(cloud.vmPuts.at(-1)).toMatchObject({ mode: "attach", size: "Standard_D2ads_v7" });
+    expect(cloud.calls).not.toContain("DELETE dataDisk");
+    expect(cloud.calls.filter((call) => call === "PUT dataDisk")).toHaveLength(1);
+  });
+
+  it("a delete keeps retrying transient errors instead of stopping half way", async () => {
+    await lifecycle.create(ORG, OPTIONS);
+    await settle();
+    await lifecycle.delete({ deleteDisk: true });
+    for (let i = 0; i < 15; i += 1) {
+      cloud.failNext = new CloudError(409, "OperationNotAllowed", "the disk is being attached");
+      await lifecycle.tick();
+    }
+    expect(lifecycle.row()).toMatchObject({ state: "deleting", attempts: 15 });
+    expect(alarms.at(-1)).toBe(now + backoffMs(15));
+    await settle();
+    expect(lifecycle.row()?.state).toBe("deleted");
+    expect(cloud.resources.size).toBe(0);
   });
 
   it("refuses resources tagged for another organization", async () => {
@@ -412,6 +524,30 @@ describe("computer lifecycle", () => {
 });
 
 // Work 105: the operator runs the VM; the lifecycle never calls the cloud.
+describe("placements", () => {
+  const env = (vars: Record<string, string>) => vars as never;
+
+  it("tries every zone in the configured order; unset or nonsense is 1, 2, 3", () => {
+    expect(zones(env({}))).toEqual(["1", "2", "3"]);
+    expect(zones(env({ COMPUTER_ZONES: "2, 3,2,9" }))).toEqual(["2", "3"]);
+    expect(zones(env({ COMPUTER_ZONES: "east" }))).toEqual(["1", "2", "3"]);
+    expect(placements(env({ COMPUTER_ZONES: "3,1" }), "Standard_D16as_v7")).toEqual([
+      { size: "Standard_D16as_v7", zone: "3" },
+      { size: "Standard_D16as_v7", zone: "1" },
+    ]);
+  });
+
+  it("then the fallback sizes of the same shape and disk controller, each in every zone", () => {
+    const vars = { COMPUTER_ZONES: "1", COMPUTER_FALLBACK_SIZES: "Standard_D16ads_v7, Standard_D8as_v7,Standard_D16as_v5,Standard_E16as_v7,bogus,Standard_D16as_v6" };
+    expect(placements(env(vars), "Standard_D16as_v7").map((placement) => placement.size)).toEqual([
+      "Standard_D16as_v7",
+      "Standard_D16ads_v7",
+      "Standard_D16as_v6",
+    ]);
+    expect(placements(env(vars), "Standard_D8as_v7").map((placement) => placement.size)).toEqual(["Standard_D8as_v7"]);
+  });
+});
+
 describe("self-managed VMs", () => {
   beforeEach(() => {
     selfManaged = true;

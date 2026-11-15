@@ -14,6 +14,7 @@
 //   provisioning → warm → claiming → claimed
 //        ↑           │        │
 //        └───────────┴────────┘  (host gone, or the slot's object refused)
+//   provisioning | warm → retiring → (row dropped once its computer is deleted)
 //
 // A slot is `warm` once its object reports the host connected (it tells the
 // pool on hello; the alarm also asks). The alarm refills to
@@ -22,6 +23,15 @@
 // are atomic because the pick and the mark happen in one synchronous step of
 // this single-threaded object, before any await: two concurrent claims
 // never get the same slot.
+//
+// Work 106. A retired slot stays in the table as `retiring` until its
+// computer is deleted, and is asked to delete again if that stopped: a slot
+// dropped at once left its VM and disks behind whenever the delete failed.
+// And the refill backs off: every computer that fails to start or never
+// connects doubles the wait before the next start (REFILL_BACKOFF_MAX_MS at
+// most), one start at a time, until one comes up warm. Each failed start
+// creates and deletes a VM and two disks, so retrying every alarm through an
+// outage is churn; `computer.pool_degraded` says so on every alarm meanwhile.
 //
 // Work 081: a warm slot also checks Claude setup tokens for the dashboard,
 // before the person has a computer (`probe`). Stateless by design: it reads
@@ -34,7 +44,10 @@ import { type ProbeOutcome, tokenFingerprint } from "./model-access.js";
 import { computerName, newPoolId } from "./names.js";
 import { ProbeLimits } from "./pool-probe-limits.js";
 
-export type PoolSlotState = "provisioning" | "warm" | "claiming" | "claimed";
+export type PoolSlotState = "provisioning" | "warm" | "claiming" | "claimed" | "retiring";
+
+/** Consecutive pool computers that did not come up, and when the next may start. */
+export type PoolHealth = { failures: number; retryAt: number };
 
 export type PoolSlot = {
   poolId: string;
@@ -89,6 +102,13 @@ export interface PoolClaim extends AdoptedComputer {
 /** Pool computers created at once; the rest follow on later alarms. */
 export const MAX_PROVISIONING = 3;
 export const REFILL_INTERVAL_MS = 60_000;
+/** The longest wait between starts while pool computers keep failing. */
+export const REFILL_BACKOFF_MAX_MS = 30 * 60_000;
+
+/** The wait before the next start after `failures` consecutive failures: 2, 4, 8, 16, then 30 minutes. */
+export function refillBackoffMs(failures: number): number {
+  return Math.min(REFILL_INTERVAL_MS * 2 ** Math.min(failures, 10), REFILL_BACKOFF_MAX_MS);
+}
 /** A slot not connected by then is retired (a first boot takes about two minutes). */
 export const PROVISION_TIMEOUT_MS = 30 * 60_000;
 /** A claim whose hand-over never finished (the object was evicted mid-claim). */
@@ -124,6 +144,11 @@ export class ComputerPool {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS pool_health (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        failures INTEGER NOT NULL,
+        retry_at INTEGER NOT NULL
+      );
     `);
     this.limits = new ProbeLimits(deps.sql, () => this.now());
   }
@@ -146,6 +171,27 @@ export class ComputerPool {
     );
   }
 
+  /** Zero failures when every recent start came up. */
+  health(): PoolHealth {
+    return [...this.deps.sql.exec<PoolHealth>("SELECT failures, retry_at AS retryAt FROM pool_health WHERE id = 1")][0] ?? { failures: 0, retryAt: 0 };
+  }
+
+  /** A pool computer did not come up: the next start waits longer. */
+  private startFailed(): void {
+    const failures = this.health().failures + 1;
+    this.deps.sql.exec(
+      "INSERT INTO pool_health (id, failures, retry_at) VALUES (1, ?, ?) ON CONFLICT (id) DO UPDATE SET failures = excluded.failures, retry_at = excluded.retry_at",
+      failures,
+      this.now() + refillBackoffMs(failures),
+    );
+  }
+
+  /** provisioning → warm: a pool computer came up, so starts are working. */
+  private warmed(poolId: string): void {
+    this.setState(poolId, "provisioning", "warm");
+    this.deps.sql.exec("DELETE FROM pool_health");
+  }
+
   private drop(poolId: string): void {
     this.deps.sql.exec("DELETE FROM pool_slots WHERE pool_id = ?", poolId);
   }
@@ -157,7 +203,7 @@ export class ComputerPool {
 
   /** A slot's host said hello. */
   async connected(poolId: string): Promise<void> {
-    this.setState(poolId, "provisioning", "warm");
+    if (this.slots().some((slot) => slot.poolId === poolId && slot.state === "provisioning")) this.warmed(poolId);
   }
 
   /**
@@ -249,6 +295,7 @@ export class ComputerPool {
 
     for (const slot of this.slots()) {
       if (slot.state === "provisioning") await this.reconcile(slot, now);
+      else if (slot.state === "retiring") await this.reconcileRetiring(slot);
       else if (slot.state === "claiming" && now - slot.updatedAt > CLAIM_TIMEOUT_MS) await this.reconcileClaim(slot);
     }
 
@@ -264,7 +311,16 @@ export class ComputerPool {
     await this.gauge(live.filter((slot) => slot.state === "warm"));
 
     const provisioning = live.filter((slot) => slot.state === "provisioning").length;
-    const create = Math.min(target - live.length, MAX_PROVISIONING - provisioning);
+    const health = this.health();
+    const warm = live.length - provisioning;
+    if (health.failures > 0 && target > 0) {
+      console.error(
+        JSON.stringify({ level: "error", event: "computer.pool_degraded", failures: health.failures, warm, target, retryAt: new Date(health.retryAt).toISOString() }),
+      );
+    }
+    // While starts are failing: one at a time, and not before the backoff is over.
+    const atOnce = health.failures === 0 ? MAX_PROVISIONING : now >= health.retryAt ? 1 : 0;
+    const create = Math.min(target - live.length, atOnce - provisioning);
     for (let index = 0; index < create; index += 1) {
       const poolId = newPoolId();
       this.deps.sql.exec(
@@ -282,8 +338,11 @@ export class ComputerPool {
       }
       if (reply.status >= 400) {
         console.error(JSON.stringify({ level: "error", event: "computer.pool_start_failed", poolId, status: reply.status, message: reply.error }));
-        await this.deps.slot(poolId).retire().catch(() => {});
-        this.drop(poolId);
+        this.startFailed();
+        const slot = this.slots().find((each) => each.poolId === poolId)!;
+        await this.retire(slot, "start failed");
+        // Usually nothing was created, and the slot can go at once.
+        await this.reconcileRetiring(slot);
         break;
       }
       console.log(JSON.stringify({ level: "info", event: "computer.pool_started", poolId }));
@@ -320,15 +379,26 @@ export class ComputerPool {
       console.warn(JSON.stringify({ level: "warn", event: "computer.pool_status_failed", poolId: slot.poolId, message: errorText(error) }));
       return;
     }
-    if (status.state === "ready" && status.connected) return this.setState(slot.poolId, "provisioning", "warm");
+    if (status.state === "ready" && status.connected) return this.warmed(slot.poolId);
     if (status.state === null || status.state === "deleted" || status.state === "transferred") {
       this.drop(slot.poolId);
       return;
     }
     // From the last state change: a warm slot whose host dropped during a claim gets a fresh wait.
     if (status.state === "failed" || now - slot.updatedAt > PROVISION_TIMEOUT_MS) {
+      this.startFailed();
       await this.retire(slot, status.state === "failed" ? "failed" : "never connected");
     }
+  }
+
+  /** A retiring slot goes once its computer is deleted; a delete that stopped (the row `failed`) is asked for again. */
+  private async reconcileRetiring(slot: PoolSlot): Promise<void> {
+    const status = await this.deps.slot(slot.poolId).status().catch(() => null);
+    if (!status) return;
+    if (status.state === null || status.state === "deleted" || status.state === "transferred") return this.drop(slot.poolId);
+    if (status.state === "deleting") return;
+    console.error(JSON.stringify({ level: "error", event: "computer.pool_retire_stalled", poolId: slot.poolId, state: status.state }));
+    await this.deps.slot(slot.poolId).retire().catch(() => {});
   }
 
   /** A claim that never finished: the slot's object says whether it was handed over. */
@@ -353,10 +423,11 @@ export class ComputerPool {
     console.log(JSON.stringify({ level: "info", event: "computer.pool_retired", poolId: slot.poolId, reason }));
     try {
       await this.deps.slot(slot.poolId).retire();
-      this.drop(slot.poolId);
     } catch (error) {
+      // Still retiring: the alarm asks again.
       console.error(JSON.stringify({ level: "error", event: "computer.pool_retire_failed", poolId: slot.poolId, message: errorText(error) }));
     }
+    this.deps.sql.exec("UPDATE pool_slots SET state = 'retiring', claimed_by = NULL, updated_at = ? WHERE pool_id = ?", this.now(), slot.poolId);
   }
 }
 

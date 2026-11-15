@@ -24,8 +24,12 @@ export interface CloudResource {
   organization: string | null;
   vmSize?: string | null;
   diskSizeGB?: number | null;
+  /** The zone of a zonal resource (the data disk, the VM). */
+  zone?: string | null;
   /** VM instance view: why provisioning failed, when it did. */
   failure?: string | null;
+  /** That failure's code, e.g. `ZonalAllocationFailed` (work 106: capacity failures fall back). */
+  failureCode?: string | null;
 }
 
 /** Which computer an operation is about. */
