@@ -239,6 +239,7 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h/subagents"],
     ["GET", "/computer/sessions/cs_01h/subagents/sa_01h"],
     ["POST", "/computer/sessions/cs_01h/subagents/sa_01h/stop"],
+    ["GET", "/computer/capabilities"],
     ["GET", "/computer/secrets"],
     ["GET", "/computer/secrets/API_KEY/events"],
     ["PUT", "/computer/sessions/cs_01h/secrets/API_KEY"],
