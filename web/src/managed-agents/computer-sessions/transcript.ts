@@ -71,7 +71,8 @@ export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
             kind: 'user',
             key: e.id,
             text,
-            author: e.actor?.name ?? null,
+            // The computer falls back to the member id (`usr_…`) when there is no name: not worth showing.
+            author: e.actor?.name && e.actor.name !== e.actor.id ? e.actor.name : null,
             via: e.actor?.via ?? null,
             at: e.createdAt,
           })

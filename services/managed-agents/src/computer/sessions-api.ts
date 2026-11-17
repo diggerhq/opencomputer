@@ -380,7 +380,8 @@ export class ComputerSessionsApi {
   }
 
   private actor(caller: ApiCaller): CalvinApiActor {
-    return { id: caller.member, name: caller.name, via: caller.via, client: caller.client };
+    // No profile name (common for email sign-ins): the email reads better than the raw member id.
+    return { id: caller.member, name: caller.name || caller.email, via: caller.via, client: caller.client };
   }
 
   // ---------------------------------------------------------------- operations
