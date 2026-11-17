@@ -392,7 +392,7 @@ function SessionsSidebar({
   return (
     <aside
       className={cn(
-        'bg-sidebar border-sidebar-border w-full shrink-0 flex-col border-r md:flex md:w-72',
+        'bg-sidebar border-sidebar-border min-w-0 flex-1 flex-col border-r md:flex md:w-72 md:flex-none',
         listing ? 'flex' : 'hidden',
       )}
     >

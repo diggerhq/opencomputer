@@ -101,14 +101,14 @@ export function SettingsPickers({
     caps.models.find((m) => m.default) ??
     caps.models[0]
   return (
-    <div className="flex min-w-0 items-center gap-1.5">
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       {caps.models.length > 1 ? (
         <Select
           value={model?.id ?? ''}
           onValueChange={(m) => onChange({ ...value, model: m })}
           options={caps.models.map((m) => ({ value: m.id, label: m.name }))}
           disabled={disabled}
-          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs"
+          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap"
         />
       ) : null}
       {model && model.efforts.length > 1 ? (
@@ -121,7 +121,7 @@ export function SettingsPickers({
           onValueChange={(e) => onChange({ ...value, effort: e })}
           options={model.efforts.map((e) => ({ value: e, label: e }))}
           disabled={disabled}
-          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs capitalize"
+          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap capitalize"
         />
       ) : null}
       {caps.modes.length > 1 ? (
@@ -131,7 +131,7 @@ export function SettingsPickers({
           onValueChange={(m) => onChange({ ...value, mode: m })}
           options={caps.modes.map((m) => ({ value: m, label: modeLabel(m) }))}
           disabled={disabled}
-          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs"
+          className="text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap"
         />
       ) : null}
     </div>
