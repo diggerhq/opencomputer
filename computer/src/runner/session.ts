@@ -49,6 +49,7 @@ import type { TurnEvents } from './turn-events.js';
 import { Compaction } from './compaction.js';
 import { effortOf, speedOf, switchModel } from './model-switch.js';
 import { TurnCloser } from './turn-close.js';
+import { HeldSteer } from './held-steer.js';
 
 export { SILENT, prompts };
 
@@ -127,6 +128,7 @@ export class Session {
     (s) => this.hooks.secrets?.redact(s) ?? s,
   );
   private tools = new Map<string, { name: string; input: any }>();
+  private heldSteer = new HeldSteer({ running: () => this.timeline.longestRunning(), say: (t) => this.say(t) });
   private thinking = new ThinkingCards(this.timeline, () => this.hooks.turns?.thinkingShown());
   readonly compaction = new Compaction(this.timeline, (f) => this.hooks.turns?.compacted(f), () => this.busy);
   readonly shadow: Compactor;
@@ -225,7 +227,7 @@ export class Session {
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
     // Mid-turn messages land at the next tool boundary, like Claude Code's queue.
     Effect.runSync(h.send({ text, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
-    this.hooks.turns?.pushed(this.busy && !urgent);
+    this.hooks.turns?.pushed(this.busy && !urgent), this.busy && !urgent && this.heldSteer.arm();
     if (!this.busy) this.addressed = mentioned === undefined || mentioned === true;
     // An addressed turn's message opens now, before the model answers (work 068); a steer's output follows its turn's.
     if (!this.busy && this.addressed) this.timeline.open();
@@ -331,11 +333,7 @@ export class Session {
   private async pump(run: Running) {
     const record = (e: HarnessEvent) => {
       this.hooks.turns?.event(e), this.hooks.event?.(e), this.hooks.api?.event(e), this.compaction.observe(e);
-      try {
-        this.onEvent(e);
-      } catch (err) {
-        log.error('onEvent', err);
-      }
+      try { this.onEvent(e); } catch (err) { log.error('onEvent', err); }
     };
     try {
       await Effect.runPromise(Stream.runForEach(run.harness.events, (e) => Effect.sync(() => record(e))));
@@ -421,7 +419,7 @@ export class Session {
       case 'tool':
         return this.onTool(e);
       case 'tool_result':
-        return this.onToolResult(e);
+        return this.heldSteer.cancel(), this.onToolResult(e);
       case 'task':
         return this.onTask(e);
       case 'turn_ended':
@@ -517,7 +515,7 @@ export class Session {
     const silent = this.silent && !this.spoke && !failure;
     const reason = failure && (failure === 'error_during_execution' ? 'interrupted' : failure); // Claude Code's word for a stop (or a failure)
     this.hooks.turns?.ended(silent, failure), this.hooks.api?.ended(failure);
-    clearInterval(this.ticker);
+    clearInterval(this.ticker), this.heldSteer.cancel();
     this.thinking.clear();
     this.timeline.endTurn(reason);
     this.history = this.held = undefined;
