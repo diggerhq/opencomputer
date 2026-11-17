@@ -82,6 +82,21 @@ export default function App() {
             <Route path="security" element={<ManagedSecurityOnboarding />} />
             <Route path="getting-started" element={<ManagedAgentsHome />} />
             <Route path="computer" element={<ManagedComputer />} />
+          </Route>
+          {/* The computer's sessions are their own full-screen view, with
+              their own rail and sidebar (work 107); every other page opens in
+              the same rail, without the sessions sidebar. */}
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <ComputerSessionsLayout />
+              </Suspense>
+            }
+          >
+            <Route path="computer/sessions">
+              <Route index element={<ComputerSessionsHome />} />
+              <Route path=":id" element={<ComputerSession />} />
+            </Route>
             <Route
               path="computer/secrets"
               element={<ManagedComputerSecrets />}
@@ -131,23 +146,6 @@ export default function App() {
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />
-          </Route>
-          {/* The computer's sessions are their own full-screen view, with
-              their own rail and sidebar (work 107). */}
-          <Route
-            path="computer/sessions"
-            element={
-              <Suspense fallback={null}>
-                <ComputerSessionsLayout />
-              </Suspense>
-            }
-          >
-            <Route index element={<ComputerSessionsHome />} />
-            <Route path="automations" element={<ManagedAgentsHome list />} />
-            <Route path="secrets" element={<ManagedComputerSecrets />} />
-            <Route path="connections" element={<ManagedAgentConnections />} />
-            <Route path="new" element={<NewProject />} />
-            <Route path=":id" element={<ComputerSession />} />
           </Route>
           {/* A swarm run is its own full-screen view: no app-shell sidebar, so
               the mission-control map and report get the whole width. */}

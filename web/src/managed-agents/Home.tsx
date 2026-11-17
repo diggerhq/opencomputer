@@ -1,6 +1,6 @@
 import { useContext, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, Navigate, useMatch } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import {
   Archive,
   Check,
@@ -36,10 +36,6 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
   const user = useContext(AuthContext)?.user
   const computerEnabled = user?.computerEnabled ?? false
   const onboardingExperience = user?.onboardingExperience
-  // Inside the computer's sessions layout, project onboarding stays in it.
-  const newProjectPath = useMatch('/computer/sessions/*')
-    ? '/computer/sessions/new'
-    : '/new'
   const redirectToComputer =
     !list && onboardingExperience === 'computer' && computerEnabled
   const redirectToAutomations = !list && onboardingExperience === 'automations'
@@ -177,7 +173,7 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
             description="Ask your computer in Slack to automate something you do every week, or create a project yourself."
             action={
               <Button asChild variant="outline">
-                <Link to={newProjectPath}>
+                <Link to="/new">
                   <Plus /> New project
                 </Link>
               </Button>
@@ -286,7 +282,7 @@ export default function ProjectsHome({ list = false }: { list?: boolean }) {
                 </Button>
               )}
               <Button asChild>
-                <Link to={newProjectPath}>
+                <Link to="/new">
                   <Plus /> New project
                 </Link>
               </Button>

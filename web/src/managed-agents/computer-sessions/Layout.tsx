@@ -3,6 +3,7 @@ import {
   Link,
   NavLink,
   Outlet,
+  useLocation,
   useMatch,
   useNavigate,
   useParams,
@@ -34,6 +35,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { BillingWarningBanner, HaltModal } from '@/components/billing-surfaces'
 import { cn } from '@/lib/utils'
 import {
   listSessions,
@@ -55,29 +57,31 @@ import { timeAgo } from './transcript'
 // The computer's own full-screen view (work 107): a flat icon rail, the
 // sessions sidebar, and the open session or the new-session home.
 
-// Automations, secrets and connections open here too, in the rail but
-// without the sessions sidebar, so the rail never leads back to the old shell.
-const PAGES = ['automations', 'secrets', 'connections', 'new'] as const
-
-function usePage() {
-  const page = useMatch('/computer/sessions/:page')?.params.page
-  return PAGES.find((p) => p === page)
-}
-
+// Every other page (automations, secrets, settings, projects…) opens here too,
+// in the rail but without the sessions sidebar, so nothing leads back to the
+// old shell; only /computer, the onboarding, keeps it.
 export default function ComputerSessionsLayout() {
   const searchRef = useRef<HTMLInputElement>(null)
-  const page = usePage()
+  const { user } = useAuth()
+  const { pathname } = useLocation()
+  const sessions = !!useMatch('/computer/sessions/*')
   return (
     <div className="bg-background text-foreground flex h-dvh overflow-hidden">
       <Rail />
-      {page ? null : <SessionsSidebar searchRef={searchRef} />}
+      {sessions ? <SessionsSidebar searchRef={searchRef} /> : null}
       <main
         className={cn(
           'min-w-0 flex-1',
-          page && 'overflow-y-auto px-8 py-8 lg:px-12',
+          !sessions && 'flex flex-col overflow-y-auto',
         )}
       >
-        <ErrorBoundary>
+        {sessions ? null : (
+          <div className="sticky top-0 z-20">
+            <BillingWarningBanner />
+          </div>
+        )}
+        <HaltModal />
+        <ErrorBoundary key={`${user?.orgId ?? ''}:${pathname}`}>
           <Suspense
             fallback={
               <div className="flex h-full items-center justify-center">
@@ -85,7 +89,21 @@ export default function ComputerSessionsLayout() {
               </div>
             }
           >
-            <Outlet />
+            {sessions ? (
+              <Outlet />
+            ) : (
+              <div
+                className={cn(
+                  'mx-auto flex w-full flex-1 flex-col px-8 py-8 lg:px-12',
+                  pathname.startsWith('/projects/') ||
+                    pathname.startsWith('/managed-agents/')
+                    ? 'max-w-[1600px]'
+                    : 'max-w-7xl',
+                )}
+              >
+                <Outlet />
+              </div>
+            )}
           </Suspense>
         </ErrorBoundary>
       </main>
@@ -97,13 +115,11 @@ function RailLink({
   to,
   label,
   end,
-  inactive,
   children,
 }: {
   to: string
   label: string
   end?: boolean
-  inactive?: boolean
   children: ReactNode
 }) {
   return (
@@ -115,7 +131,7 @@ function RailLink({
       className={({ isActive }) =>
         cn(
           'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-9 items-center justify-center rounded-md transition-colors',
-          isActive && !inactive && 'bg-sidebar-accent text-foreground',
+          isActive && 'bg-sidebar-accent text-foreground',
         )
       }
     >
@@ -128,7 +144,6 @@ function Rail() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const activeOrg = user?.orgs?.find((o) => o.isActive)
-  const page = usePage()
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
@@ -138,13 +153,13 @@ function Rail() {
       >
         <OpenComputerMark className="size-8" />
       </Link>
-      <RailLink to="/computer/sessions" label="Sessions" inactive={!!page}>
+      <RailLink to="/computer/sessions" label="Sessions">
         <MessagesSquare className="size-4" aria-hidden />
       </RailLink>
-      <RailLink to="/computer/sessions/automations" label="Automations">
+      <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
-      <RailLink to="/computer/sessions/secrets" label="Secrets">
+      <RailLink to="/computer/secrets" label="Secrets">
         <KeyRound className="size-4" aria-hidden />
       </RailLink>
       <div className="flex-1" />
@@ -172,7 +187,7 @@ function Rail() {
             Dashboard
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => void navigate('/computer/sessions/connections')}
+            onClick={() => void navigate('/managed-agents/connections')}
           >
             <Plug className="size-4 opacity-60" aria-hidden />
             Connections
