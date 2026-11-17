@@ -13,6 +13,7 @@ import {
   Archive,
   CalendarClock,
   Check,
+  ChevronsUpDown,
   CreditCard,
   KeyRound,
   Loader2,
@@ -144,13 +145,11 @@ function RailLink({
 }
 
 function Rail() {
-  const { user, switchOrg } = useAuth()
+  const { user } = useAuth()
   const { dark, setDark } = useTheme()
   const navigate = useNavigate()
-  const [switching, setSwitching] = useState(false)
   const orgs = user?.orgs ?? []
   const activeOrg = orgs.find((o) => o.isActive)
-  const openSession = useMatch('/computer/sessions/:id')
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
@@ -196,36 +195,7 @@ function Rail() {
               <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
                 Organizations
               </DropdownMenuLabel>
-              {orgs.map((org) => (
-                <DropdownMenuItem
-                  key={org.id}
-                  disabled={switching}
-                  onClick={() => {
-                    if (org.isActive || switching) return
-                    setSwitching(true)
-                    // An open session belongs to the old organization.
-                    void switchOrg(org.id)
-                      .then(() => {
-                        if (openSession) void navigate('/computer/sessions')
-                      })
-                      .finally(() => setSwitching(false))
-                  }}
-                >
-                  <Check
-                    className={cn(
-                      'size-4 shrink-0',
-                      org.isActive ? 'opacity-100' : 'opacity-0',
-                    )}
-                    aria-hidden
-                  />
-                  <span className="truncate">{org.name}</span>
-                  {org.isPersonal ? (
-                    <span className="text-muted-foreground ml-auto text-xs">
-                      personal
-                    </span>
-                  ) : null}
-                </DropdownMenuItem>
-              ))}
+              <OrgItems />
               <DropdownMenuSeparator />
             </>
           ) : null}
@@ -272,6 +242,80 @@ function Rail() {
         </DropdownMenuContent>
       </DropdownMenu>
     </nav>
+  )
+}
+
+/** The organizations to switch between, the active one checked (the old shell's OrgSwitcher). */
+function OrgItems() {
+  const { user, switchOrg } = useAuth()
+  const navigate = useNavigate()
+  const [switching, setSwitching] = useState(false)
+  const openSession = useMatch('/computer/sessions/:id')
+  return (user?.orgs ?? []).map((org) => (
+    <DropdownMenuItem
+      key={org.id}
+      disabled={switching}
+      onClick={() => {
+        if (org.isActive || switching) return
+        setSwitching(true)
+        // An open session belongs to the old organization.
+        void switchOrg(org.id)
+          .then(() => {
+            if (openSession) void navigate('/computer/sessions')
+          })
+          .finally(() => setSwitching(false))
+      }}
+    >
+      <Check
+        className={cn(
+          'size-4 shrink-0',
+          org.isActive ? 'opacity-100' : 'opacity-0',
+        )}
+        aria-hidden
+      />
+      <span className="truncate">{org.name}</span>
+      {org.isPersonal ? (
+        <span className="text-muted-foreground ml-auto text-xs">personal</span>
+      ) : null}
+    </DropdownMenuItem>
+  ))
+}
+
+/** The sessions sidebar's header: the organization, and switching it. */
+function OrgSwitcher() {
+  const { user } = useAuth()
+  const orgs = user?.orgs ?? []
+  const active = orgs.find((o) => o.isActive)
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Switch organization"
+          className="hover:bg-sidebar-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium transition-colors"
+        >
+          <span className="bg-secondary text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded text-xs">
+            {(active?.name ?? '?').charAt(0).toUpperCase()}
+          </span>
+          <span className="min-w-0 flex-1 truncate">
+            {active?.name ?? 'Organization'}
+          </span>
+          <ChevronsUpDown
+            className="text-muted-foreground size-3.5 shrink-0"
+            aria-hidden
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
+      >
+        <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+          Organizations
+        </DropdownMenuLabel>
+        <OrgItems />
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -340,6 +384,7 @@ function SessionsSidebar({
   return (
     <aside className="bg-sidebar border-sidebar-border flex w-72 shrink-0 flex-col border-r">
       <div className="space-y-2 p-3">
+        <OrgSwitcher />
         <Button asChild variant="outline" className="w-full justify-start">
           <Link to="/computer/sessions">
             <Plus aria-hidden />
