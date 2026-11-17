@@ -12,17 +12,21 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import {
   Archive,
   CalendarClock,
+  Check,
   CreditCard,
   KeyRound,
   Loader2,
   LogOut,
   MessagesSquare,
+  Moon,
   Plus,
   Search,
   Settings,
+  Sun,
   Plug,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
+import { useTheme } from '@/hooks/useTheme'
 import { logout } from '@/api/client'
 import {
   DropdownMenu,
@@ -140,21 +144,27 @@ function RailLink({
 }
 
 function Rail() {
-  const { user } = useAuth()
+  const { user, switchOrg } = useAuth()
+  const { dark, setDark } = useTheme()
   const navigate = useNavigate()
-  const activeOrg = user?.orgs?.find((o) => o.isActive)
+  const [switching, setSwitching] = useState(false)
+  const orgs = user?.orgs ?? []
+  const activeOrg = orgs.find((o) => o.isActive)
+  const openSession = useMatch('/computer/sessions/:id')
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
-        to="/computer/sessions"
+        to={user?.computerEnabled ? '/computer/sessions' : '/automations'}
         title="Computer"
         className="mb-3 flex size-8 items-center justify-center"
       >
         <OpenComputerMark className="size-8" />
       </Link>
-      <RailLink to="/computer/sessions" label="Sessions">
-        <MessagesSquare className="size-4" aria-hidden />
-      </RailLink>
+      {user?.computerEnabled ? (
+        <RailLink to="/computer/sessions" label="Sessions">
+          <MessagesSquare className="size-4" aria-hidden />
+        </RailLink>
+      ) : null}
       <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
@@ -181,6 +191,44 @@ function Rail() {
             </span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          {orgs.length > 1 ? (
+            <>
+              <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+                Organizations
+              </DropdownMenuLabel>
+              {orgs.map((org) => (
+                <DropdownMenuItem
+                  key={org.id}
+                  disabled={switching}
+                  onClick={() => {
+                    if (org.isActive || switching) return
+                    setSwitching(true)
+                    // An open session belongs to the old organization.
+                    void switchOrg(org.id)
+                      .then(() => {
+                        if (openSession) void navigate('/computer/sessions')
+                      })
+                      .finally(() => setSwitching(false))
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      'size-4 shrink-0',
+                      org.isActive ? 'opacity-100' : 'opacity-0',
+                    )}
+                    aria-hidden
+                  />
+                  <span className="truncate">{org.name}</span>
+                  {org.isPersonal ? (
+                    <span className="text-muted-foreground ml-auto text-xs">
+                      personal
+                    </span>
+                  ) : null}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           <DropdownMenuItem
             onClick={() => void navigate('/managed-agents/connections')}
           >
@@ -198,6 +246,19 @@ function Rail() {
           <DropdownMenuItem onClick={() => void navigate('/billing')}>
             <CreditCard className="size-4 opacity-60" aria-hidden />
             Billing
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.preventDefault()
+              setDark(!dark)
+            }}
+          >
+            {dark ? (
+              <Sun className="size-4 opacity-60" aria-hidden />
+            ) : (
+              <Moon className="size-4 opacity-60" aria-hidden />
+            )}
+            {dark ? 'Light theme' : 'Dark theme'}
           </DropdownMenuItem>
           {user?.capabilities?.signOut !== false ? (
             <>

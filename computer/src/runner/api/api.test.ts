@@ -359,6 +359,8 @@ describe('SessionApi', () => {
     expect(named.actor).toBeNull();
     result(await w.call('sessions.update', { title: 'Mine' }));
     expect(w.api.renamed).toBe(true);
+    // Kept in the session's info, so it outlasts this runner.
+    expect(w.t.sess.info.renamed).toBe(true);
     for (const e of w.events()) assertEvent(e);
   });
 

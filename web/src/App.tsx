@@ -82,6 +82,36 @@ export default function App() {
             <Route path="security" element={<ManagedSecurityOnboarding />} />
             <Route path="getting-started" element={<ManagedAgentsHome />} />
             <Route path="computer" element={<ManagedComputer />} />
+            {/* Projects keep the old shell for now: their pages lean on its
+                sidebar and environment switcher. */}
+            <Route
+              path="projects/:projectId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/playground/:projectAgentId"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="projects/:projectId/sessions/:sessionId"
+              element={<ManagedSessionDetail />}
+            />
+            <Route
+              path="projects/:projectId/swarm"
+              element={<Navigate to="../swarms" replace />}
+            />
+            <Route
+              path="projects/:projectId/swarms"
+              element={<ManagedProjectSwarms />}
+            />
+            <Route
+              path="projects/:projectId/:tab"
+              element={<ManagedProjectDetail />}
+            />
+            <Route
+              path="managed-agents/:agentId"
+              element={<ManagedAgentDetail />}
+            />
           </Route>
           {/* The computer's sessions are their own full-screen view, with
               their own rail and sidebar (work 107); every other page opens in
@@ -115,34 +145,6 @@ export default function App() {
               element={<Navigate to="/new" replace />}
             />
             <Route path="new" element={<NewProject />} />
-            <Route
-              path="projects/:projectId"
-              element={<ManagedProjectDetail />}
-            />
-            <Route
-              path="projects/:projectId/playground/:projectAgentId"
-              element={<ManagedProjectDetail />}
-            />
-            <Route
-              path="projects/:projectId/sessions/:sessionId"
-              element={<ManagedSessionDetail />}
-            />
-            <Route
-              path="projects/:projectId/swarm"
-              element={<Navigate to="../swarms" replace />}
-            />
-            <Route
-              path="projects/:projectId/swarms"
-              element={<ManagedProjectSwarms />}
-            />
-            <Route
-              path="projects/:projectId/:tab"
-              element={<ManagedProjectDetail />}
-            />
-            <Route
-              path="managed-agents/:agentId"
-              element={<ManagedAgentDetail />}
-            />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />
