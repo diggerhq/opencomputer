@@ -46,7 +46,8 @@
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "./cloud-contract.js";
 import { CloudError, type ComputerCloud } from "./cloud.js";
-import { ComputersNotConfigured, type PublicComputer, type PublicComputerState, publicError } from "./config.js";
+import { ComputersNotConfigured, type PublicComputer, type PublicComputerState } from "./config.js";
+import { type FailureCode, failureMessage } from "./failure.js";
 import { POOL_TAG, computerName, ownerTag } from "./names.js";
 import { type Placement, candidates, isCapacity, isQuota, nvmeSize, sizeShape, validSize } from "./placement.js";
 
@@ -120,6 +121,8 @@ export type ComputerRow = {
   sshPublicKey: string;
   attempts: number;
   lastError: string | null;
+  /** A `FailureCode`: why it is `failed` (work 111). Null in every other state. */
+  failureCode: string | null;
   /** A wake was asked for while parking: wake as soon as parked. */
   wakeAfterPark: number;
   /** Delete the data disk too (deleting only). */
@@ -171,8 +174,29 @@ function writeAttempt(attempt: Attempt): string {
   return JSON.stringify(attempt);
 }
 
-/** Not worth retrying: the request itself is wrong, or a resource is not ours. */
-class Fatal extends Error {}
+/** Not worth retrying: the computer fails now, for this reason. */
+class Fatal extends Error {
+  constructor(
+    readonly code: FailureCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** Why a step's error fails the computer. `fatal`: at once; otherwise its retries ran out. */
+function failureCode(error: unknown, fatal: boolean): FailureCode {
+  if (error instanceof Fatal) return error.code;
+  if (error instanceof ComputersNotConfigured) return "not_configured";
+  if (error instanceof CloudError) {
+    if (error.code === "not_configured") return "not_configured";
+    // A disk or a network card can be refused for quota too, not only the VM.
+    if (isCapacity(error.code, error.message)) return "capacity";
+    // Refused outright: nothing a retry changes. Otherwise it was worth retrying, and never got through.
+    return fatal ? "internal" : "unavailable";
+  }
+  return "internal";
+}
 
 export const POLL_MS = 15_000;
 const MAX_ATTEMPTS = 10;
@@ -186,7 +210,7 @@ export function backoffMs(attempts: number): number {
 }
 
 const SELECT = `SELECT organization_id AS organizationId, state, size, disk_gib AS diskGiB, zone,
-  ssh_public_key AS sshPublicKey, attempts, last_error AS lastError, wake_after_park AS wakeAfterPark,
+  ssh_public_key AS sshPublicKey, attempts, last_error AS lastError, failure_code AS failureCode, wake_after_park AS wakeAfterPark,
   delete_disk AS deleteDisk, os_initialized AS osInitialized, data_used AS dataUsed, replace_failed_vm AS replaceFailedVm, wakes,
   resource_prefix AS resourcePrefix, pool_slot AS poolSlot, tags_pending AS tagsPending,
   preferred_size AS preferredSize, attempt, created_at AS createdAt,
@@ -217,6 +241,7 @@ export class ComputerLifecycle {
         ssh_public_key TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
+        failure_code TEXT,
         wake_after_park INTEGER NOT NULL DEFAULT 0,
         delete_disk INTEGER NOT NULL DEFAULT 0,
         os_initialized INTEGER NOT NULL DEFAULT 0,
@@ -243,6 +268,17 @@ export class ComputerLifecycle {
       ["attempt TEXT"],
       // Until now one flag said both "the OS disk booted" and "the data disk is in use".
       ["data_used INTEGER NOT NULL DEFAULT 0", "UPDATE computer SET data_used = os_initialized"],
+      // A computer that failed before work 111 has only its error's text: read it this once.
+      [
+        "failure_code TEXT",
+        `UPDATE computer SET failure_code = CASE
+           WHEN last_error LIKE '%not configured%' THEN 'not_configured'
+           WHEN last_error LIKE '%quota%' OR last_error LIKE '%capacity%' OR last_error LIKE '%allocation%'
+             OR last_error LIKE '%SkuNotAvailable%' OR last_error LIKE '%NotAvailableForSubscription%' THEN 'capacity'
+           WHEN last_error LIKE '%tagged for%' THEN 'inconsistent'
+           ELSE 'internal' END
+         WHERE state = 'failed'`,
+      ],
     ];
     for (const [column, backfill] of added) {
       try {
@@ -277,7 +313,7 @@ export class ComputerLifecycle {
       connected: this.deps.hostConnected(),
       ...sizeShape(row.size),
       diskGiB: row.diskGiB,
-      lastError: row.state === "failed" ? publicError(row.lastError) : null,
+      lastError: row.state === "failed" ? failureMessage(row.failureCode) : null,
       createdAt: new Date(row.createdAt).toISOString(),
       updatedAt: new Date(row.updatedAt).toISOString(),
     };
@@ -333,7 +369,7 @@ export class ComputerLifecycle {
       // unless the computer was deleted.
       const first = this.begin(row, options.size);
       this.deps.sql.exec(
-        `UPDATE computer SET state = 'provisioning', attempts = 0, last_error = NULL, wake_after_park = 0,
+        `UPDATE computer SET state = 'provisioning', attempts = 0, last_error = NULL, failure_code = NULL, wake_after_park = 0,
            delete_disk = 0, replace_failed_vm = 1, updated_at = ?,
            size = ?, zone = ?, attempt = ?,
            disk_gib = CASE WHEN state = 'deleted' THEN ? ELSE disk_gib END
@@ -378,7 +414,7 @@ export class ComputerLifecycle {
     const now = this.now();
     if (row) {
       this.deps.sql.exec(
-        `UPDATE computer SET state = 'ready', attempts = 0, last_error = NULL, wake_after_park = 0, delete_disk = 0,
+        `UPDATE computer SET state = 'ready', attempts = 0, last_error = NULL, failure_code = NULL, wake_after_park = 0, delete_disk = 0,
            replace_failed_vm = 0, tags_pending = 0, updated_at = ? WHERE id = 1`,
         now,
       );
@@ -579,7 +615,7 @@ export class ComputerLifecycle {
       return { status: 200 };
     }
     this.deps.sql.exec(
-      "UPDATE computer SET state = 'deleting', delete_disk = ?, attempts = 0, last_error = NULL, updated_at = ? WHERE id = 1",
+      "UPDATE computer SET state = 'deleting', delete_disk = ?, attempts = 0, last_error = NULL, failure_code = NULL, updated_at = ? WHERE id = 1",
       options.deleteDisk ? 1 : 0,
       this.now(),
     );
@@ -613,7 +649,7 @@ export class ComputerLifecycle {
       );
       // A delete that stops half way leaks what is left, and nothing comes back for it: keep trying.
       if (fatal || (attempts >= MAX_ATTEMPTS && row.state !== "deleting")) {
-        this.transition(row.state, "failed", text);
+        this.fail(row, failureCode(error, fatal), text, attempts);
         return;
       }
       this.deps.sql.exec(
@@ -705,14 +741,14 @@ export class ComputerLifecycle {
         if (!(error instanceof CloudError) || !isCapacity(error.code, error.message)) throw error;
         if (this.fallBack(row, error.message, { nextSize: isQuota(error.code, error.message) })) return POLL_MS;
         // Nowhere left: fail now, as a VM that ends Failed does, rather than retry a refusal that will not change.
-        throw new Fatal(`${error.code}: ${error.message}`);
+        throw new Fatal("capacity", `${error.code}: ${error.message}`);
       }
     }
     const state = vm.provisioningState;
     if (state === "Failed") {
       const failure = await this.vmFailure(target);
       if (failure.capacity && this.fallBack(row, failure.text, { nextSize: failure.quota })) return POLL_MS;
-      throw new Fatal(failure.text);
+      throw new Fatal(failure.capacity ? "capacity" : "internal", failure.text);
     }
     if (state !== "Succeeded") return POLL_MS;
     // The OS disk a VM PUT created carries no tags: tag it, so it is
@@ -742,8 +778,11 @@ export class ComputerLifecycle {
 
   private async awaitResize(row: ComputerRow): Promise<number | null> {
     const vm = this.ours(row, await this.deps.cloud().get(this.target(row), "vm"), "VM");
-    if (!vm) throw new Fatal("the VM no longer exists");
-    if (vm.provisioningState === "Failed") throw new Fatal((await this.vmFailure(this.target(row))).text);
+    if (!vm) throw new Fatal("inconsistent", "the VM no longer exists");
+    if (vm.provisioningState === "Failed") {
+      const failure = await this.vmFailure(this.target(row));
+      throw new Fatal(failure.capacity ? "capacity" : "internal", failure.text);
+    }
     if (vm.provisioningState !== "Succeeded" || vm.vmSize !== row.size) return POLL_MS;
     this.ready(row);
     // Messages queued during the restart go now.
@@ -782,7 +821,7 @@ export class ComputerLifecycle {
     if (owner === ownerTag(row.organizationId) || (!owner && options.allowUntagged)) return resource;
     // Claimed from the warm pool, tags not moved yet.
     if (owner === POOL_TAG && row.tagsPending) return resource;
-    throw new Fatal(`${what} is tagged for ${owner ?? "no organization"}, not ${ownerTag(row.organizationId)}`);
+    throw new Fatal("inconsistent", `${what} is tagged for ${owner ?? "no organization"}, not ${ownerTag(row.organizationId)}`);
   }
 
   /**
@@ -846,7 +885,7 @@ export class ComputerLifecycle {
    * steps create all three in the row's zone. Never a disk a host has used.
    */
   private async clearZone(row: ComputerRow, disk: CloudResource): Promise<number> {
-    if (row.dataUsed) throw new Fatal(`the data disk is in zone ${disk.zone}, the computer in zone ${row.zone}`);
+    if (row.dataUsed) throw new Fatal("inconsistent", `the data disk is in zone ${disk.zone}, the computer in zone ${row.zone}`);
     const cloud = this.deps.cloud();
     const target = this.target(row);
     for (const kind of ["vm", "osDisk"] as const) {
@@ -859,7 +898,7 @@ export class ComputerLifecycle {
     return POLL_MS;
   }
 
-  /** Why the VM ended Failed. The code leads the text: `publicError` tells capacity by it. */
+  /** Why the VM ended Failed, and whether for capacity; the cloud's code leads the text, for whoever reads the log. */
   private async vmFailure(target: CloudTarget): Promise<{ text: string; capacity: boolean; quota: boolean }> {
     try {
       const vm = await this.deps.cloud().get(target, "vm", { instanceView: true });
@@ -888,13 +927,30 @@ export class ComputerLifecycle {
     );
   }
 
-  private transition(from: ComputerState, to: ComputerState, error: string | null): void {
+  /** Any state but `failed`, which `fail` writes with its reason. */
+  private transition(from: ComputerState, to: Exclude<ComputerState, "failed">, error: string | null): void {
     this.deps.sql.exec(
-      "UPDATE computer SET state = ?, last_error = ?, updated_at = ? WHERE id = 1 AND state = ?",
+      "UPDATE computer SET state = ?, last_error = ?, failure_code = NULL, updated_at = ? WHERE id = 1 AND state = ?",
       to,
       error,
       this.now(),
       from,
+    );
+  }
+
+  /** The computer stops here until someone asks for it again: the reason is stored with the state, and said once. */
+  private fail(row: ComputerRow, code: FailureCode, text: string, attempts: number): void {
+    const written = this.deps.sql.exec(
+      "UPDATE computer SET state = 'failed', last_error = ?, failure_code = ?, updated_at = ? WHERE id = 1 AND state = ?",
+      text,
+      code,
+      this.now(),
+      row.state,
+    );
+    // The row moved on while the step ran (a delete came in): nothing failed.
+    if (!written.rowsWritten) return;
+    console.error(
+      JSON.stringify({ level: "error", event: "computer.failed", accountId: row.organizationId, code, from: row.state, attempts, message: text }),
     );
   }
 }

@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "../src/computer/cloud-contract.js";
 import { CloudError, type ComputerCloud } from "../src/computer/cloud.js";
-import { CAPACITY_ERROR } from "../src/computer/config.js";
+import { failureMessage } from "../src/computer/failure.js";
 import { ComputerLifecycle, type LifecycleDeps, POLL_MS, backoffMs, readAttempt } from "../src/computer/lifecycle.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
@@ -49,7 +49,7 @@ class FakeCloud implements ComputerCloud {
     }
     if (resource.provisioningState === "Creating" || resource.provisioningState === "Updating") {
       resource.provisioningState = kind === "vm" ? this.vmOutcome : "Succeeded";
-      if (kind === "vm" && this.vmOutcome === "Failed") resource.failure = "Allocation failed";
+      if (kind === "vm" && this.vmOutcome === "Failed") resource.failure = "the image could not be read";
       if (kind === "vm" && this.noCapacity.has(`${resource.vmSize}@${resource.zone}`)) {
         Object.assign(resource, { provisioningState: "Failed", failure: "We do not have sufficient capacity", failureCode: "ZonalAllocationFailed" });
       }
@@ -227,15 +227,114 @@ describe("computer lifecycle", () => {
     cloud.failNext = new CloudError(400, "InvalidParameter", "bad request");
     await other.tick();
     expect(other.row()).toMatchObject({ state: "failed", lastError: "bad request" });
-    expect(other.view()?.lastError).toBe("Your computer could not be started.");
+    expect(other.view()?.lastError).toBe(failureMessage("internal"));
+  });
+
+  // Work 111: the reason is named where the computer fails, stored with the state and logged once.
+  describe("why it failed", () => {
+    const failed = () => vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line))).filter((event) => event.event === "computer.failed");
+    beforeEach(() => void vi.spyOn(console, "error").mockImplementation(() => {}));
+    afterEach(() => vi.restoreAllMocks());
+
+    it("internal: the cloud refuses the request", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(400, "InvalidParameter", "bad request");
+      await lifecycle.tick();
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "internal" });
+      expect(failed()).toEqual([{ level: "error", event: "computer.failed", accountId: ORG, code: "internal", from: "provisioning", attempts: 1, message: "bad request" }]);
+    });
+
+    it("unavailable: the cloud keeps failing in a way worth retrying", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      for (let i = 0; i < 10; i += 1) {
+        cloud.failNext = new CloudError(503, "ServiceUnavailable", "try later");
+        await lifecycle.tick();
+      }
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "unavailable" });
+      expect(lifecycle.view()?.lastError).toBe(failureMessage("unavailable"));
+      expect(failed()).toMatchObject([{ code: "unavailable", attempts: 10 }]);
+    });
+
+    it("capacity: no placement has room", async () => {
+      cloud.noCapacity = new Set(["1", "2", "3"].map((zone) => `Standard_D2as_v7@${zone}`));
+      await lifecycle.create(ORG, OPTIONS);
+      await settle(60);
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "capacity" });
+      expect(failed()).toMatchObject([{ code: "capacity", from: "provisioning" }]);
+    });
+
+    it("capacity: quota refuses something other than the VM", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(400, "QuotaExceeded", "Operation could not be completed as it results in exceeding approved quota");
+      await lifecycle.tick();
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "capacity" });
+    });
+
+    it("inconsistent: a resource is another organization's", async () => {
+      cloud.resources.set("dataDisk", { provisioningState: "Succeeded", organization: "org_other" });
+      await lifecycle.create(ORG, OPTIONS);
+      await lifecycle.tick();
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "inconsistent" });
+      expect(lifecycle.view()?.lastError).toBe(failureMessage("inconsistent"));
+    });
+
+    it("not_configured: a setting went missing after the computer was asked for", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(503, "not_configured", "computers are not configured: missing AZURE_COMPUTER_SUBNET_ID");
+      await lifecycle.tick();
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "not_configured" });
+      expect(lifecycle.view()?.lastError).toBe("Computers are not available yet.");
+    });
+
+    it("forgets the reason when the computer is asked for again", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(400, "InvalidParameter", "bad request");
+      await lifecycle.tick();
+      await lifecycle.create(ORG, OPTIONS);
+      expect(lifecycle.row()).toMatchObject({ state: "provisioning", failureCode: null, lastError: null });
+      expect(lifecycle.view()?.lastError).toBeNull();
+    });
+
+    it("says nothing when the computer was deleted while the step ran", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(400, "InvalidParameter", "bad request");
+      const step = lifecycle.tick();
+      deps.sql.exec("UPDATE computer SET state = 'deleting'");
+      await step;
+      expect(lifecycle.row()).toMatchObject({ state: "deleting", failureCode: null });
+      expect(failed()).toEqual([]);
+    });
+
+    it("reads the reason of a computer that failed before it was stored, once", async () => {
+      const reasons: Array<[lastError: string, code: string]> = [
+        ["VM provisioning failed: ZonalAllocationFailed: We do not have sufficient capacity", "capacity"],
+        ["Operation could not be completed as it results in exceeding approved Total Regional Cores quota", "capacity"],
+        ["computers are not configured: missing AZURE_COMPUTER_SUBNET_ID", "not_configured"],
+        ["data disk is tagged for org_other, not org_test", "inconsistent"],
+        ["bad request", "internal"],
+      ];
+      for (const [lastError, code] of reasons) {
+        const sql = sqlStorage();
+        const before = another(sql);
+        await before.create(ORG, OPTIONS);
+        sql.exec("UPDATE computer SET state = 'failed', last_error = ?", lastError);
+        sql.exec("ALTER TABLE computer DROP COLUMN failure_code");
+        expect(another(sql).row()).toMatchObject({ state: "failed", failureCode: code });
+      }
+      // A computer that is not failed gets none.
+      const sql = sqlStorage();
+      await another(sql).create(ORG, OPTIONS);
+      sql.exec("ALTER TABLE computer DROP COLUMN failure_code");
+      expect(another(sql).row()).toMatchObject({ state: "provisioning", failureCode: null });
+    });
   });
 
   it("a failed VM leaves the computer failed; creating again replaces the VM", async () => {
     cloud.vmOutcome = "Failed";
     await lifecycle.create(ORG, OPTIONS);
     await settle();
-    expect(lifecycle.row()).toMatchObject({ state: "failed", lastError: "VM provisioning failed: Allocation failed" });
-    expect(lifecycle.view()).toMatchObject({ state: "failed", lastError: CAPACITY_ERROR });
+    expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "internal", lastError: "VM provisioning failed: the image could not be read" });
+    expect(lifecycle.view()).toMatchObject({ state: "failed", lastError: failureMessage("internal") });
     cloud.vmOutcome = "Succeeded";
     expect(await lifecycle.create(ORG, OPTIONS)).toEqual({ status: 202 });
     await settle();
@@ -281,7 +380,7 @@ describe("computer lifecycle", () => {
     for (let i = 0; i < 120 && other.row()?.state === "provisioning"; i += 1) await other.tick();
     expect(cloud.vmPlacements).toHaveLength(6);
     expect(other.row()).toMatchObject({ state: "failed", lastError: "VM provisioning failed: ZonalAllocationFailed: We do not have sufficient capacity" });
-    expect(other.view()?.lastError).toBe(CAPACITY_ERROR);
+    expect(other.view()?.lastError).toBe(failureMessage("capacity"));
     // Asked again, it starts over from every placement.
     cloud.noCapacity.delete("Standard_D2as_v7@2");
     await other.create(ORG, OPTIONS);
@@ -423,7 +522,7 @@ describe("computer lifecycle", () => {
     // One PUT per zone, then failed: not ten attempts on the last.
     expect(puts).toBe(3);
     expect(lifecycle.row()).toMatchObject({ state: "failed", attempts: 0 });
-    expect(lifecycle.view()?.lastError).toBe(CAPACITY_ERROR);
+    expect(lifecycle.view()?.lastError).toBe(failureMessage("capacity"));
   });
 
   it("an instance view that cannot be read is asked for again: the reason decides the fallback", async () => {
@@ -500,7 +599,7 @@ describe("computer lifecycle", () => {
     await lifecycle.wake();
     await settle(40);
     expect(lifecycle.row()).toMatchObject({ state: "failed", zone: "1" });
-    expect(lifecycle.view()?.lastError).toBe(CAPACITY_ERROR);
+    expect(lifecycle.view()?.lastError).toBe(failureMessage("capacity"));
 
     fallbackSizes = ["Standard_D2s_v7"];
     await lifecycle.create(ORG, OPTIONS);

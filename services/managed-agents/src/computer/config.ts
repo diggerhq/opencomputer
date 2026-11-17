@@ -209,26 +209,8 @@ export interface PublicComputer {
   vcpus: number;
   memoryGiB: number;
   diskGiB: number;
+  /** Why it is `failed`, as a sentence a customer may read (failure.ts); null in any other state. */
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-/**
- * An error as the dashboard may show it. Lifecycle errors come from the
- * cloud and name it, its resources and regions; the page gets a plain
- * sentence and the full text stays in the logs.
- */
-/** Says whose side it is on: a customer read the terser sentence as an unpaid bill (work 106). */
-export const CAPACITY_ERROR =
-  "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Try again later.";
-
-export function publicError(error: string | null): string | null {
-  if (!error) return null;
-  if (/not configured/i.test(error)) return "Computers are not available yet.";
-  if (/quota|capacity|allocation|SkuNotAvailable|NotAvailableForSubscription/i.test(error)) {
-    return CAPACITY_ERROR;
-  }
-  if (/tagged for/i.test(error)) return "Your computer's resources are in an unexpected state; support has been notified.";
-  return "Your computer could not be started.";
 }
