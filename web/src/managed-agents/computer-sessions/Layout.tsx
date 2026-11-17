@@ -66,17 +66,10 @@ function usePage() {
 
 export default function ComputerSessionsLayout() {
   const searchRef = useRef<HTMLInputElement>(null)
-  const navigate = useNavigate()
   const page = usePage()
   return (
     <div className="bg-background text-foreground flex h-dvh overflow-hidden">
-      <Rail
-        onSearch={() => {
-          if (!page) return searchRef.current?.focus()
-          void navigate('/computer/sessions')
-          setTimeout(() => searchRef.current?.focus())
-        }}
-      />
+      <Rail />
       {page ? null : <SessionsSidebar searchRef={searchRef} />}
       <main
         className={cn(
@@ -131,7 +124,7 @@ function RailLink({
   )
 }
 
-function Rail({ onSearch }: { onSearch: () => void }) {
+function Rail() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const activeOrg = user?.orgs?.find((o) => o.isActive)
@@ -148,15 +141,6 @@ function Rail({ onSearch }: { onSearch: () => void }) {
       <RailLink to="/computer/sessions" label="Sessions" inactive={!!page}>
         <MessagesSquare className="size-4" aria-hidden />
       </RailLink>
-      <button
-        type="button"
-        title="Search sessions"
-        aria-label="Search sessions"
-        onClick={onSearch}
-        className="text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-9 items-center justify-center rounded-md transition-colors"
-      >
-        <Search className="size-4" aria-hidden />
-      </button>
       <RailLink to="/computer/sessions/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
