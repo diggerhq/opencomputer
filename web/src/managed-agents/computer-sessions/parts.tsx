@@ -113,8 +113,11 @@ export function SettingsPickers({
       ) : null}
       {model && model.efforts.length > 1 ? (
         <Select
-          value={value.effort ?? ''}
-          placeholder="Effort"
+          // Unset runs at the computer's default (DEFAULT_EFFORT in computer/src/tiers.ts).
+          value={
+            value.effort ??
+            (model.efforts.includes('medium') ? 'medium' : model.efforts[0]!)
+          }
           onValueChange={(e) => onChange({ ...value, effort: e })}
           options={model.efforts.map((e) => ({ value: e, label: e }))}
           disabled={disabled}
