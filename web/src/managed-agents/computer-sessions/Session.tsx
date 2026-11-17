@@ -30,7 +30,7 @@ import {
   type SessionEvent,
   type SessionSettings,
 } from '../computer-sessions-api'
-import { AskCard, SettingsPickers, StatusDot } from './parts'
+import { AskCard, OpenComputerMark, SettingsPickers, StatusDot } from './parts'
 import {
   askTitle,
   isBusy,
@@ -172,7 +172,14 @@ function SessionPage({ id }: { id: string }) {
               Nothing here yet.
             </p>
           ) : (
-            items.map((item) => <Item key={item.key} item={item} />)
+            items.map((item, i) => (
+              <Item
+                key={item.key}
+                item={item}
+                // A reply opens with who is speaking: the first agent item after a person's message.
+                leads={i === 0 || items[i - 1].kind === 'user'}
+              />
+            ))
           )}
           {s && isBusy(s.status) && !openAsks.length ? (
             <p className="text-muted-foreground flex items-center gap-2 text-sm">
@@ -246,26 +253,56 @@ function Header({ id }: { id: string }) {
   )
 }
 
-function Item({ item }: { item: TranscriptItem }) {
+// A person's avatar: initials of their name, or the first letter of their email.
+function initials(author: string | null): string {
+  if (!author) return '?'
+  if (author.includes('@')) return author[0].toUpperCase()
+  const words = author.trim().split(/\s+/)
+  return words
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join('')
+}
+
+function Item({ item, leads }: { item: TranscriptItem; leads: boolean }) {
   switch (item.kind) {
     case 'user':
       return (
-        <div className="flex flex-col items-end gap-1">
-          {item.author ? (
-            <span className="text-muted-foreground text-xs">
-              {item.author}
-              {item.via && item.via !== 'dashboard' ? ` via ${item.via}` : ''}
-            </span>
-          ) : null}
-          <div className="bg-secondary max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm whitespace-pre-wrap">
-            {item.text}
+        <div className="flex items-end justify-end gap-2">
+          <div className="flex max-w-[85%] flex-col items-end gap-1">
+            {item.author ? (
+              <span className="text-muted-foreground text-xs">
+                {item.author}
+                {item.via && item.via !== 'dashboard' ? ` via ${item.via}` : ''}
+              </span>
+            ) : null}
+            <div className="bg-secondary rounded-2xl rounded-br-md px-3.5 py-2 text-sm whitespace-pre-wrap">
+              {item.text}
+            </div>
           </div>
+          <span
+            className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+            title={item.author ?? undefined}
+            aria-hidden
+          >
+            {initials(item.author)}
+          </span>
         </div>
       )
     case 'agent':
-      return <AgentMarkdown>{item.text}</AgentMarkdown>
+      return (
+        <div className="space-y-2">
+          {leads ? <AgentByline /> : null}
+          <AgentMarkdown>{item.text}</AgentMarkdown>
+        </div>
+      )
     case 'work':
-      return <WorkStep item={item} />
+      return (
+        <div className="space-y-2">
+          {leads ? <AgentByline /> : null}
+          <WorkStep item={item} />
+        </div>
+      )
     case 'ask':
       // Open asks are answered at the end of the transcript.
       if (item.ask.status === 'open') return null
@@ -463,6 +500,15 @@ function Composer({ id }: { id: string }) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function AgentByline() {
+  return (
+    <div className="flex items-center gap-2 text-xs font-medium">
+      <OpenComputerMark className="size-6" />
+      Computer
     </div>
   )
 }
