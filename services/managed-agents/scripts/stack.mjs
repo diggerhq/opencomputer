@@ -441,6 +441,8 @@ function writeConfigs(stack, { bootstrap }) {
         { name: "MEMORY", class_name: "MemoryDurableObject" },
         { name: "DATABASES", class_name: "ProjectDatabaseDurableObject" },
         { name: "COMPUTERS", class_name: "ComputerDurableObject" },
+        // Work 084: one per computer session, the sessions API's copy of its event log.
+        { name: "SESSION_LOG", class_name: "SessionLogDurableObject" },
       ],
     },
     migrations: [
@@ -452,6 +454,7 @@ function writeConfigs(stack, { bootstrap }) {
       { tag: "v3", new_sqlite_classes: ["MemoryDurableObject"] },
       { tag: "v4", new_sqlite_classes: ["ProjectDatabaseDurableObject"] },
       { tag: "v5", new_sqlite_classes: ["ComputerDurableObject"] },
+      { tag: "v6", new_sqlite_classes: ["SessionLogDurableObject"] },
     ],
     observability,
   });
