@@ -190,6 +190,8 @@ function failureCode(error: unknown, fatal: boolean): FailureCode {
   if (error instanceof ComputersNotConfigured) return "not_configured";
   if (error instanceof CloudError) {
     if (error.code === "not_configured") return "not_configured";
+    // A disk or a network card can be refused for quota too, not only the VM.
+    if (isCapacity(error.code, error.message)) return "capacity";
     // Refused outright: nothing a retry changes. Otherwise it was worth retrying, and never got through.
     return fatal ? "internal" : "unavailable";
   }
@@ -412,7 +414,7 @@ export class ComputerLifecycle {
     const now = this.now();
     if (row) {
       this.deps.sql.exec(
-        `UPDATE computer SET state = 'ready', attempts = 0, last_error = NULL, wake_after_park = 0, delete_disk = 0,
+        `UPDATE computer SET state = 'ready', attempts = 0, last_error = NULL, failure_code = NULL, wake_after_park = 0, delete_disk = 0,
            replace_failed_vm = 0, tags_pending = 0, updated_at = ? WHERE id = 1`,
         now,
       );

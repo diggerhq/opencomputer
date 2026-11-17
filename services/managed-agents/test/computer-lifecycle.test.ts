@@ -263,6 +263,13 @@ describe("computer lifecycle", () => {
       expect(failed()).toMatchObject([{ code: "capacity", from: "provisioning" }]);
     });
 
+    it("capacity: quota refuses something other than the VM", async () => {
+      await lifecycle.create(ORG, OPTIONS);
+      cloud.failNext = new CloudError(400, "QuotaExceeded", "Operation could not be completed as it results in exceeding approved quota");
+      await lifecycle.tick();
+      expect(lifecycle.row()).toMatchObject({ state: "failed", failureCode: "capacity" });
+    });
+
     it("inconsistent: a resource is another organization's", async () => {
       cloud.resources.set("dataDisk", { provisioningState: "Succeeded", organization: "org_other" });
       await lifecycle.create(ORG, OPTIONS);

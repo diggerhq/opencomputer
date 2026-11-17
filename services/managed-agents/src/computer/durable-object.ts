@@ -2816,13 +2816,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       // Work 105: nothing here can start the operator's VM; the message waits for its host.
       notice = OFFLINE_NOTICE;
     } else if (row.state === "failed") {
+      // Claimed per reason below: a thread told of one failure still hears of a different one.
       notice = failureNotice(row.failureCode, publicOrigin(this.env));
     }
     if (!notice) return;
     const inserted = this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO notices (thread_key, kind) VALUES (?, ?)",
       threadKey,
-      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : notice === OFFLINE_NOTICE ? "offline" : "failed",
+      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : notice === OFFLINE_NOTICE ? "offline" : `failed:${row?.failureCode ?? ""}`,
     );
     // Off the chain (work 068 §3b): the notice is claimed above, synchronously, so it posts once.
     if (inserted.rowsWritten > 0) {
