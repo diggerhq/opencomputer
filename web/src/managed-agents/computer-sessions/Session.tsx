@@ -338,8 +338,8 @@ function Item({
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium">
-                  {item.author ? (
-                    initials(item.author)
+                  {item.author || email ? (
+                    initials(item.author ?? email ?? '')
                   ) : (
                     <User className="size-3.5" />
                   )}
