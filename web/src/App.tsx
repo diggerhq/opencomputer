@@ -125,6 +125,8 @@ export default function App() {
           >
             <Route path="computer/sessions">
               <Route index element={<ComputerSessionsHome />} />
+              {/* The same home, for a phone, where the index is the list. */}
+              <Route path="new" element={<ComputerSessionsHome />} />
               <Route path=":id" element={<ComputerSession />} />
             </Route>
             <Route

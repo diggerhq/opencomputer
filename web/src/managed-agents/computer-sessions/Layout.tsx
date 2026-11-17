@@ -69,13 +69,19 @@ export default function ComputerSessionsLayout() {
   const { user } = useAuth()
   const { pathname } = useLocation()
   const sessions = !!useMatch('/computer/sessions/*')
+  // On a phone the list and a session take turns: the list at
+  // /computer/sessions, the session (or the new-session home) on its own.
+  const listing = !!useMatch({ path: '/computer/sessions', end: true })
   return (
     <div className="bg-background text-foreground flex h-dvh overflow-hidden">
       <Rail />
-      {sessions ? <SessionsSidebar searchRef={searchRef} /> : null}
+      {sessions ? (
+        <SessionsSidebar searchRef={searchRef} listing={listing} />
+      ) : null}
       <main
         className={cn(
           'min-w-0 flex-1',
+          listing && 'hidden md:block',
           !sessions && 'flex flex-col overflow-y-auto',
         )}
       >
@@ -330,8 +336,10 @@ function useDebounced<T>(value: T, ms: number) {
 
 function SessionsSidebar({
   searchRef,
+  listing,
 }: {
   searchRef: React.RefObject<HTMLInputElement | null>
+  listing: boolean
 }) {
   const [query, setQuery] = useState('')
   const [archived, setArchived] = useState(false)
@@ -382,11 +390,16 @@ function SessionsSidebar({
 
   const flat = !!q || archived
   return (
-    <aside className="bg-sidebar border-sidebar-border flex w-72 shrink-0 flex-col border-r">
+    <aside
+      className={cn(
+        'bg-sidebar border-sidebar-border w-full shrink-0 flex-col border-r md:flex md:w-72',
+        listing ? 'flex' : 'hidden',
+      )}
+    >
       <div className="space-y-2 p-3">
         <OrgSwitcher />
         <Button asChild variant="outline" className="w-full justify-start">
-          <Link to="/computer/sessions">
+          <Link to="/computer/sessions/new">
             <Plus aria-hidden />
             New session
           </Link>
