@@ -1,5 +1,12 @@
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, NavLink, Outlet, useNavigate, useParams } from 'react-router-dom'
+import {
+  Link,
+  NavLink,
+  Outlet,
+  useMatch,
+  useNavigate,
+  useParams,
+} from 'react-router-dom'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import {
   Archive,
@@ -13,6 +20,7 @@ import {
   Plus,
   Search,
   Settings,
+  Plug,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout } from '@/api/client'
@@ -47,13 +55,35 @@ import { timeAgo } from './transcript'
 // The computer's own full-screen view (work 107): a flat icon rail, the
 // sessions sidebar, and the open session or the new-session home.
 
+// Automations, secrets and connections open here too, in the rail but
+// without the sessions sidebar, so the rail never leads back to the old shell.
+const PAGES = ['automations', 'secrets', 'connections'] as const
+
+function usePage() {
+  const page = useMatch('/computer/sessions/:page')?.params.page
+  return PAGES.find((p) => p === page)
+}
+
 export default function ComputerSessionsLayout() {
   const searchRef = useRef<HTMLInputElement>(null)
+  const navigate = useNavigate()
+  const page = usePage()
   return (
     <div className="bg-background text-foreground flex h-dvh overflow-hidden">
-      <Rail onSearch={() => searchRef.current?.focus()} />
-      <SessionsSidebar searchRef={searchRef} />
-      <main className="min-w-0 flex-1">
+      <Rail
+        onSearch={() => {
+          if (!page) return searchRef.current?.focus()
+          void navigate('/computer/sessions')
+          setTimeout(() => searchRef.current?.focus())
+        }}
+      />
+      {page ? null : <SessionsSidebar searchRef={searchRef} />}
+      <main
+        className={cn(
+          'min-w-0 flex-1',
+          page && 'overflow-y-auto px-8 py-8 lg:px-12',
+        )}
+      >
         <ErrorBoundary>
           <Suspense
             fallback={
@@ -74,11 +104,13 @@ function RailLink({
   to,
   label,
   end,
+  inactive,
   children,
 }: {
   to: string
   label: string
   end?: boolean
+  inactive?: boolean
   children: ReactNode
 }) {
   return (
@@ -90,7 +122,7 @@ function RailLink({
       className={({ isActive }) =>
         cn(
           'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-9 items-center justify-center rounded-md transition-colors',
-          isActive && 'bg-sidebar-accent text-foreground',
+          isActive && !inactive && 'bg-sidebar-accent text-foreground',
         )
       }
     >
@@ -103,6 +135,7 @@ function Rail({ onSearch }: { onSearch: () => void }) {
   const { user } = useAuth()
   const navigate = useNavigate()
   const activeOrg = user?.orgs?.find((o) => o.isActive)
+  const page = usePage()
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
@@ -112,7 +145,7 @@ function Rail({ onSearch }: { onSearch: () => void }) {
       >
         <OpenComputerMark className="size-8" />
       </Link>
-      <RailLink to="/computer/sessions" label="Sessions">
+      <RailLink to="/computer/sessions" label="Sessions" inactive={!!page}>
         <MessagesSquare className="size-4" aria-hidden />
       </RailLink>
       <button
@@ -124,10 +157,10 @@ function Rail({ onSearch }: { onSearch: () => void }) {
       >
         <Search className="size-4" aria-hidden />
       </button>
-      <RailLink to="/automations" label="Automations">
+      <RailLink to="/computer/sessions/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
-      <RailLink to="/computer/secrets" label="Secrets">
+      <RailLink to="/computer/sessions/secrets" label="Secrets">
         <KeyRound className="size-4" aria-hidden />
       </RailLink>
       <div className="flex-1" />
@@ -153,6 +186,12 @@ function Rail({ onSearch }: { onSearch: () => void }) {
           <DropdownMenuItem onClick={() => void navigate('/computer')}>
             <LayoutDashboard className="size-4 opacity-60" aria-hidden />
             Dashboard
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => void navigate('/computer/sessions/connections')}
+          >
+            <Plug className="size-4 opacity-60" aria-hidden />
+            Connections
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => void navigate('/settings')}>
             <Settings className="size-4 opacity-60" aria-hidden />
