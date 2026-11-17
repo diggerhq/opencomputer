@@ -13,7 +13,6 @@ import {
   Plus,
   Search,
   Settings,
-  SquareTerminal,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout } from '@/api/client'
@@ -34,7 +33,7 @@ import {
   type ListSessionsQuery,
   type Session,
 } from '../computer-sessions-api'
-import { OriginMark, StatusDot } from './parts'
+import { OpenComputerMark, OriginMark, StatusDot } from './parts'
 import {
   isUnread,
   NEEDS_YOU,
@@ -109,9 +108,9 @@ function Rail({ onSearch }: { onSearch: () => void }) {
       <Link
         to="/computer/sessions"
         title="Computer"
-        className="bg-foreground text-background mb-3 flex size-8 items-center justify-center rounded-lg"
+        className="mb-3 flex size-8 items-center justify-center"
       >
-        <SquareTerminal className="size-4" aria-hidden />
+        <OpenComputerMark className="size-8" />
       </Link>
       <RailLink to="/computer/sessions" label="Sessions">
         <MessagesSquare className="size-4" aria-hidden />
