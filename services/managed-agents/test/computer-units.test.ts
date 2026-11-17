@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, publicError, sizeFor } from "../src/computer/config.js";
+import { gatewayUrl, sizeFor } from "../src/computer/config.js";
+import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
 import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
 import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
@@ -85,14 +86,30 @@ describe("computer config and vocabulary", () => {
     expect(gatewayUrl("https://x.dev/", "a:b")).toBe("wss://x.dev/v1/computer/host?organizationId=a%3Ab");
   });
 
-  it("keeps cloud details out of public errors", () => {
-    for (const raw of [
-      "computers are not configured: missing AZURE_COMPUTER_SUBNET_ID",
-      "VM provisioning failed: Allocation failed in eastus for Standard_D2as_v7",
-      "PUT Microsoft.Compute/virtualMachines/oc-org-1: 400 InvalidParameter",
-    ]) {
-      expect(publicError(raw)).not.toMatch(/azure|eastus|Standard_|Microsoft|oc-org/i);
+  // Work 111: one catalog of sentences, for the dashboard and for Slack.
+  it("says whose side a failure is on and that the files are safe, and names no cloud", () => {
+    for (const code of FAILURE_CODES) {
+      for (const text of [failureMessage(code), failureNotice(code, "https://app.opencomputer.dev")]) {
+        expect(text).not.toMatch(/azure|eastus|Standard_|Microsoft|oc-org|zone|quota|\{page\}|undefined/i);
+        if (code !== "not_configured") expect(text).toContain("This is on our side, not your plan or billing, and your files are safe.");
+      }
     }
+    expect(failureMessage("capacity")).toBe(
+      "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Try again later.",
+    );
+  });
+
+  it("tells a thread why its message waits, and where to try again when that can help", () => {
+    expect(failureNotice("capacity", "https://app.opencomputer.dev")).toBe(
+      "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Your message is waiting. Open the Computer page on app.opencomputer.dev to try again later.",
+    );
+    expect(failureNotice("inconsistent", "https://app.opencomputer.dev")).toMatch(/Your message is waiting\. Trying again will not fix it: contact support\.$/);
+    expect(failureNotice("not_configured", "http://localhost:8787")).toBe("Computers are not available yet. Your message is waiting.");
+  });
+
+  it("gives a code it does not know the general sentence", () => {
+    expect(failureMessage(null)).toBe(failureMessage("internal"));
+    expect(failureMessage("from_a_newer_version")).toBe(failureMessage("internal"));
   });
 });
 

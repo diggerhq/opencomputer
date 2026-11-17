@@ -97,6 +97,7 @@ import { type DiskReport, diskDecision } from "./disk-growth.js";
 import { type Linked, LINK_TIMEOUT_MS, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
+import { failureNotice } from "./failure.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
 import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, modelCredentials, requestManagedModelKey } from "./model-key.js";
 import { mintOpenComputerKey } from "./opencomputer-key.js";
@@ -262,6 +263,8 @@ export interface OperatorComputerStatus {
   lastActivityAt: string | null;
   nextIdleCheckAt: string | null;
   slackTeamName: string | null;
+  /** Why it is `failed` (work 111), with the error as the cloud gave it; null in any other state. */
+  failure: { code: string | null; message: string | null; at: string } | null;
 }
 
 /** What `notifyJoinRequest` did: whether the person who linked the workspace was told. */
@@ -1336,6 +1339,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       lastActivityAt: iso(Number(this.setting("lastActivityAt") ?? row.updatedAt)),
       nextIdleCheckAt: iso(idleAt),
       slackTeamName: this.setting("slackTeamName") ?? null,
+      failure: row.state === "failed" ? { code: row.failureCode, message: row.lastError, at: iso(row.updatedAt)! } : null,
     };
   }
 
@@ -2812,7 +2816,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       // Work 105: nothing here can start the operator's VM; the message waits for its host.
       notice = OFFLINE_NOTICE;
     } else if (row.state === "failed") {
-      notice = "Your computer could not start, so this message is waiting. Open the Computer page on app.opencomputer.dev to try again.";
+      notice = failureNotice(row.failureCode, publicOrigin(this.env));
     }
     if (!notice) return;
     const inserted = this.ctx.storage.sql.exec(

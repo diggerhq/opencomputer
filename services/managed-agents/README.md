@@ -169,7 +169,18 @@ out too, or until the size is taken out of `COMPUTER_FALLBACK_SIZES`.
 `computer.capacity_fallback` and `computer.placed` log every move and where
 it ended; `computer.capacity_exhausted` (error) says a computer failed with
 nowhere left to try, which is the one to alert on. Nothing retries a failed
-computer: its owner (or `operatorWake`) does. A value in either var that is
+computer: its owner (or `operatorWake`) does.
+
+A computer that ends `failed` stores why (`failure_code`, work 111):
+`capacity`, `unavailable` (the cloud kept failing in a way worth retrying),
+`inconsistent` (a resource is another owner's, in another zone, or gone),
+`not_configured` or `internal`. The lifecycle names the code where it fails
+the computer, and nothing parses the error's text: the dashboard's
+`lastError` and the Slack notice are the code's sentence in
+`computer/failure.ts`, the operator's status carries `failure` (code, the
+cloud's text, when), and `computer.failed` (error) logs once per failed
+computer with `accountId`, `code`, `from`, `attempts` and `message`. A new
+way to fail picks one of the codes, or adds one with its sentence. A value in either var that is
 not a zone or a size, or a fallback size that can stand in for no plan's size,
 stops creates (`computers are not configured`) rather than being skipped.
 
