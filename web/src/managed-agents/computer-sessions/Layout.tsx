@@ -57,7 +57,7 @@ import { timeAgo } from './transcript'
 
 // Automations, secrets and connections open here too, in the rail but
 // without the sessions sidebar, so the rail never leads back to the old shell.
-const PAGES = ['automations', 'secrets', 'connections'] as const
+const PAGES = ['automations', 'secrets', 'connections', 'new'] as const
 
 function usePage() {
   const page = useMatch('/computer/sessions/:page')?.params.page

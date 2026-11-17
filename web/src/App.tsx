@@ -146,6 +146,7 @@ export default function App() {
             <Route path="automations" element={<ManagedAgentsHome list />} />
             <Route path="secrets" element={<ManagedComputerSecrets />} />
             <Route path="connections" element={<ManagedAgentConnections />} />
+            <Route path="new" element={<NewProject />} />
             <Route path=":id" element={<ComputerSession />} />
           </Route>
           {/* A swarm run is its own full-screen view: no app-shell sidebar, so
