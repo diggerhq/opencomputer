@@ -1,4 +1,4 @@
-import { lazy } from 'react'
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -15,6 +15,15 @@ const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
 const ManagedComputerSecrets = lazy(
   () => import('./managed-agents/ComputerSecrets'),
+)
+const ComputerSessionsLayout = lazy(
+  () => import('./managed-agents/computer-sessions/Layout'),
+)
+const ComputerSessionsHome = lazy(
+  () => import('./managed-agents/computer-sessions/Home'),
+)
+const ComputerSession = lazy(
+  () => import('./managed-agents/computer-sessions/Session'),
 )
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
@@ -122,6 +131,19 @@ export default function App() {
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />
+          </Route>
+          {/* The computer's sessions are their own full-screen view, with
+              their own rail and sidebar (work 107). */}
+          <Route
+            path="computer/sessions"
+            element={
+              <Suspense fallback={null}>
+                <ComputerSessionsLayout />
+              </Suspense>
+            }
+          >
+            <Route index element={<ComputerSessionsHome />} />
+            <Route path=":id" element={<ComputerSession />} />
           </Route>
           {/* A swarm run is its own full-screen view: no app-shell sidebar, so
               the mission-control map and report get the whole width. */}
