@@ -4,6 +4,7 @@
 // the host token key, where hosts dial, and the organization Slack app.
 
 import type { ManagedAgentBillingService } from "../edge/billing-admission.js";
+import { ZONES, standsIn, validSize, validZone } from "./placement.js";
 import type { PreviewsEnv } from "./previews.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
@@ -35,6 +36,18 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   COMPUTER_MAX_SIZE?: string;
   /** Former name of COMPUTER_MAX_SIZE, still read when it is unset. */
   COMPUTER_PAID_SIZE?: string;
+  /**
+   * Work 106: zones a new computer may be placed in, most preferred first
+   * (e.g. "2,1,3"); unset: 1, 2, 3. A zone without capacity falls to the next.
+   */
+  COMPUTER_ZONES?: string;
+  /**
+   * Work 106: more sizes a computer may be built on, in order, once no zone
+   * has capacity for the one asked for (e.g. "Standard_D16s_v7,Standard_D16as_v6").
+   * Each is used for the sizes it matches in vCPUs, memory and disk
+   * controller (placement.ts); unset: none.
+   */
+  COMPUTER_FALLBACK_SIZES?: string;
   COMPUTER_DEFAULT_DISK_GIB?: string;
   /** The most a computer's data disk grows to on its own (work 071; default 1024). */
   COMPUTER_MAX_DISK_GIB?: string;
@@ -94,8 +107,6 @@ export const DEFAULT_WIRE_TUNNEL_DOMAIN = "w.opencomputer.dev";
 export const DEFAULT_SIZE = "Standard_D2as_v7";
 export const DEFAULT_DISK_GIB = 128;
 export const DEFAULT_MAX_DISK_GIB = 1024;
-/** Premium SSD v2 needs a zone; every eastus v7 size is offered in zone 1. */
-export const DEFAULT_ZONE = "1";
 
 export class ComputersNotConfigured extends Error {
   constructor(readonly missing: string[]) {
@@ -120,6 +131,16 @@ export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
   if (!selfManagedVms(env)) {
     if (!env.RUNTIMES) missing.push("RUNTIMES");
     if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
+    // A misspelt zone or size is a fallback that is not there when capacity runs out: say so now.
+    if (!list(env.COMPUTER_ZONES).every(validZone)) missing.push("COMPUTER_ZONES (not a list of zones 1 to 3)");
+    const fallbacks = list(env.COMPUTER_FALLBACK_SIZES);
+    if (!fallbacks.every(validSize)) missing.push("COMPUTER_FALLBACK_SIZES (not a list of sizes)");
+    else {
+      // One that can stand in for neither plan's size would never be tried (placement.ts `standsIn`).
+      const plans = [sizeFor(env, "default"), sizeFor(env, "max")];
+      const unused = fallbacks.filter((size) => !plans.some((plan) => standsIn(size, plan)));
+      if (unused.length) missing.push(`COMPUTER_FALLBACK_SIZES (${unused.join(", ")} cannot stand in for ${[...new Set(plans)].join(" or ")})`);
+    }
   }
   if (!env.COMPUTER_HOST_TOKEN_KEY) missing.push("COMPUTER_HOST_TOKEN_KEY");
   return missing;
@@ -129,6 +150,29 @@ export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
 export function sizeFor(env: ComputerEdgeEnv, tier: "max" | "default"): string {
   const max = env.COMPUTER_MAX_SIZE || env.COMPUTER_PAID_SIZE;
   return (tier === "max" ? max : undefined) || env.COMPUTER_DEFAULT_SIZE || DEFAULT_SIZE;
+}
+
+function list(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** COMPUTER_ZONES in order; unset: 1, 2, 3. (A value that is not zones stops creates: missingEdgeConfig.) */
+export function zones(env: ComputerEdgeEnv): readonly string[] {
+  const listed = [...new Set(list(env.COMPUTER_ZONES).filter(validZone))];
+  return listed.length ? listed : ZONES;
+}
+
+/**
+ * Work 106: every size this deployment builds computers on, in the order
+ * tried when one has no capacity: the plans' sizes, then
+ * COMPUTER_FALLBACK_SIZES. A create or wake uses those of its own shape
+ * (placement.ts `candidates`).
+ */
+export function sizes(env: ComputerEdgeEnv): string[] {
+  return [...new Set([sizeFor(env, "default"), sizeFor(env, "max"), ...list(env.COMPUTER_FALLBACK_SIZES)])].filter(validSize);
 }
 
 export function defaultDiskGiB(env: ComputerEdgeEnv): number {
@@ -156,18 +200,6 @@ export function slackRedirectUri(env: ComputerEdgeEnv): string {
   return `${publicOrigin(env)}/api/managed-agents/computer/slack/callback`;
 }
 
-/**
- * vCPUs and memory of a size, without naming it: `Standard_D2as_v7` → 2
- * vCPUs, 8 GiB. D sizes have 4 GiB per vCPU, E 8, F 2.
- */
-export function sizeShape(size: string): { vcpus: number; memoryGiB: number } {
-  const match = size.match(/^Standard_([A-Z]+)(\d+)/i);
-  const family = match?.[1]?.toUpperCase() ?? "D";
-  const vcpus = Number(match?.[2] ?? 2);
-  const perVcpu = family.startsWith("E") ? 8 : family.startsWith("F") ? 2 : 4;
-  return { vcpus, memoryGiB: vcpus * perVcpu };
-}
-
 export type PublicComputerState = "provisioning" | "ready" | "parked" | "waking" | "failed" | "deleting";
 
 /** The dashboard's `Computer` (work 052, API contract): no cloud, region, size or host names. */
@@ -187,11 +219,15 @@ export interface PublicComputer {
  * cloud and name it, its resources and regions; the page gets a plain
  * sentence and the full text stays in the logs.
  */
+/** Says whose side it is on: a customer read the terser sentence as an unpaid bill (work 106). */
+export const CAPACITY_ERROR =
+  "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Try again later.";
+
 export function publicError(error: string | null): string | null {
   if (!error) return null;
   if (/not configured/i.test(error)) return "Computers are not available yet.";
   if (/quota|capacity|allocation|SkuNotAvailable|NotAvailableForSubscription/i.test(error)) {
-    return "No capacity was available for your computer; try again in a few minutes.";
+    return CAPACITY_ERROR;
   }
   if (/tagged for/i.test(error)) return "Your computer's resources are in an unexpected state; support has been notified.";
   return "Your computer could not be started.";
