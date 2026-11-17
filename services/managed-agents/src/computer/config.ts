@@ -4,6 +4,7 @@
 // the host token key, where hosts dial, and the organization Slack app.
 
 import type { ManagedAgentBillingService } from "../edge/billing-admission.js";
+import { ZONES, validSize } from "./placement.js";
 import type { PreviewsEnv } from "./previews.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
@@ -41,9 +42,10 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
    */
   COMPUTER_ZONES?: string;
   /**
-   * Work 106: sizes tried, in order, once no zone has capacity for the size
-   * asked for (e.g. "Standard_D16ads_v7,Standard_D16as_v6"). Only those with
-   * its vCPUs, memory and disk controller are used; unset: none.
+   * Work 106: more sizes a computer may be built on, in order, once no zone
+   * has capacity for the one asked for (e.g. "Standard_D16s_v7,Standard_D16as_v6").
+   * Each is used for the sizes it matches in vCPUs, memory and disk
+   * controller (placement.ts); unset: none.
    */
   COMPUTER_FALLBACK_SIZES?: string;
   COMPUTER_DEFAULT_DISK_GIB?: string;
@@ -105,8 +107,6 @@ export const DEFAULT_WIRE_TUNNEL_DOMAIN = "w.opencomputer.dev";
 export const DEFAULT_SIZE = "Standard_D2as_v7";
 export const DEFAULT_DISK_GIB = 128;
 export const DEFAULT_MAX_DISK_GIB = 1024;
-/** Premium SSD v2 needs a zone; the numbers are the subscription's own (logical) zones. */
-export const DEFAULT_ZONES = ["1", "2", "3"];
 
 export class ComputersNotConfigured extends Error {
   constructor(readonly missing: string[]) {
@@ -131,6 +131,9 @@ export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
   if (!selfManagedVms(env)) {
     if (!env.RUNTIMES) missing.push("RUNTIMES");
     if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
+    // A misspelt zone or size is a fallback that is not there when capacity runs out: say so now.
+    if (!list(env.COMPUTER_ZONES).every((zone) => ZONES.includes(zone))) missing.push("COMPUTER_ZONES (not a list of zones 1 to 3)");
+    if (!list(env.COMPUTER_FALLBACK_SIZES).every(validSize)) missing.push("COMPUTER_FALLBACK_SIZES (not a list of sizes)");
   }
   if (!env.COMPUTER_HOST_TOKEN_KEY) missing.push("COMPUTER_HOST_TOKEN_KEY");
   return missing;
@@ -142,41 +145,27 @@ export function sizeFor(env: ComputerEdgeEnv, tier: "max" | "default"): string {
   return (tier === "max" ? max : undefined) || env.COMPUTER_DEFAULT_SIZE || DEFAULT_SIZE;
 }
 
-/** v6 and v7 sizes expose disks only over NVMe; the OS finds its disks by controller, so the two kinds do not mix. */
-export function nvmeSize(size: string): boolean {
-  return /_v[67]$/i.test(size);
+function list(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
-/** Where a computer's VM and its zonal data disk are. */
-export interface Placement {
-  size: string;
-  zone: string;
-}
-
-/** COMPUTER_ZONES in order, without repeats or anything that is not a zone; none left: the default order. */
+/** COMPUTER_ZONES in order; unset: 1, 2, 3. (A value that is not zones stops creates: missingEdgeConfig.) */
 export function zones(env: ComputerEdgeEnv): string[] {
-  const listed = (env.COMPUTER_ZONES ?? "").split(",").map((zone) => zone.trim());
-  const valid = [...new Set(listed.filter((zone) => DEFAULT_ZONES.includes(zone)))];
-  return valid.length ? valid : DEFAULT_ZONES;
+  const listed = [...new Set(list(env.COMPUTER_ZONES).filter((zone) => ZONES.includes(zone)))];
+  return listed.length ? listed : ZONES;
 }
 
 /**
- * Work 106: every placement a computer asked for at `size` may get, in the
- * order tried: each zone at that size, then each zone at every fallback size
- * of the same shape. The first is where it is created; the rest are for when
- * the cloud has no capacity there (lifecycle.ts).
+ * Work 106: every size this deployment builds computers on, in the order
+ * tried when one has no capacity: the plans' sizes, then
+ * COMPUTER_FALLBACK_SIZES. A create or wake uses those of its own shape
+ * (placement.ts `candidates`).
  */
-export function placements(env: ComputerEdgeEnv, size: string): Placement[] {
-  const shape = sizeShape(size);
-  const fallbacks = (env.COMPUTER_FALLBACK_SIZES ?? "")
-    .split(",")
-    .map((other) => other.trim())
-    .filter((other) => {
-      if (!/^Standard_[A-Za-z0-9_]+$/.test(other) || other === size || nvmeSize(other) !== nvmeSize(size)) return false;
-      const { vcpus, memoryGiB } = sizeShape(other);
-      return vcpus === shape.vcpus && memoryGiB === shape.memoryGiB;
-    });
-  return [...new Set([size, ...fallbacks])].flatMap((each) => zones(env).map((zone) => ({ size: each, zone })));
+export function sizes(env: ComputerEdgeEnv): string[] {
+  return [...new Set([sizeFor(env, "default"), sizeFor(env, "max"), ...list(env.COMPUTER_FALLBACK_SIZES)])].filter(validSize);
 }
 
 export function defaultDiskGiB(env: ComputerEdgeEnv): number {
@@ -202,18 +191,6 @@ export function publicOrigin(env: ComputerEdgeEnv): string {
 
 export function slackRedirectUri(env: ComputerEdgeEnv): string {
   return `${publicOrigin(env)}/api/managed-agents/computer/slack/callback`;
-}
-
-/**
- * vCPUs and memory of a size, without naming it: `Standard_D2as_v7` → 2
- * vCPUs, 8 GiB. D sizes have 4 GiB per vCPU, E 8, F 2.
- */
-export function sizeShape(size: string): { vcpus: number; memoryGiB: number } {
-  const match = size.match(/^Standard_([A-Z]+)(\d+)/i);
-  const family = match?.[1]?.toUpperCase() ?? "D";
-  const vcpus = Number(match?.[2] ?? 2);
-  const perVcpu = family.startsWith("E") ? 8 : family.startsWith("F") ? 2 : 4;
-  return { vcpus, memoryGiB: vcpus * perVcpu };
 }
 
 export type PublicComputerState = "provisioning" | "ready" | "parked" | "waking" | "failed" | "deleting";

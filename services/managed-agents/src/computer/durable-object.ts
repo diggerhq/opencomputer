@@ -84,13 +84,13 @@ import {
   gatewayUrl,
   maxDiskGiB,
   missingEdgeConfig,
-  placements,
   selfManagedVms,
   publicOrigin,
   sizeFor,
-  sizeShape,
+  sizes,
   zones,
 } from "./config.js";
+import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, harnessOnProfile, helloProfiles, profileHarnesses, takeHarnessPrefix } from "./harnesses.js";
 import { type SealPurpose, seal, sha256Hex, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
@@ -528,7 +528,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       },
       setAlarm: (at) => this.schedule("lifecycle", at),
       hostConnected: () => this.socket() !== undefined,
-      placements: (size) => placements(env, size),
+      zones: () => zones(env),
+      sizes: () => sizes(env),
       selfManaged: () => selfManagedVms(env),
       onReady: () => {
         this.noteActivity();
@@ -1367,7 +1368,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
     const reply =
       (await this.claimFromPool(accountId)) ??
-      (await this.lifecycle.create(accountId, { size, diskGiB: defaultDiskGiB(this.env), zone: zones(this.env)[0]! }));
+      (await this.lifecycle.create(accountId, { size, diskGiB: defaultDiskGiB(this.env) }));
     if (reply.status === 202) this.noteActivity();
     return reply;
   }
@@ -1531,7 +1532,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   /** Creates the pool computer: the free size and the default disk, like a new free organization's. */
   startPoolComputer(poolId: string): Promise<LifecycleReply> {
     this.bindPool(poolId);
-    return this.lifecycle.create(poolId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env), zone: zones(this.env)[0]! });
+    return this.lifecycle.create(poolId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env) });
   }
 
   poolComputerStatus(poolId: string): PoolSlotStatus {
@@ -3150,7 +3151,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (selfManagedVms(this.env)) {
       // Work 105: the operator's VM connecting is what makes the computer: its row is `ready` from here,
       // whether or not Slack was installed first, and threads told it was offline may be told again next time.
-      await this.lifecycle.create(accountId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env), zone: zones(this.env)[0]! });
+      await this.lifecycle.create(accountId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env) });
       this.ctx.storage.sql.exec("DELETE FROM notices WHERE kind = 'offline'");
     }
     this.lifecycle.noteHostSeen();

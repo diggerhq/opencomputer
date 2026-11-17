@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "../src/computer/cloud-contract.js";
 import { CloudError, type ComputerCloud } from "../src/computer/cloud.js";
-import { placements, zones } from "../src/computer/config.js";
+import { missingEdgeConfig, sizes, zones } from "../src/computer/config.js";
 import { ComputerLifecycle, POLL_MS, backoffMs } from "../src/computer/lifecycle.js";
+import { candidates, isCapacity, sameShape, sizeShape } from "../src/computer/placement.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const ORG = "org_test";
@@ -144,14 +145,15 @@ beforeEach(() => {
     gatewayUrl: (org) => `wss://edge.example/v1/computer/host?organizationId=${org}`,
     setAlarm: async (at) => void alarms.push(at),
     hostConnected: () => connected,
-    placements: (size) => [size, ...fallbackSizes].flatMap((each) => ["1", "2", "3"].map((zone) => ({ size: each, zone }))),
+    zones: () => ["1", "2", "3"],
+    sizes: () => fallbackSizes,
     onReady: () => void (readyCalls += 1),
     now: () => now,
     sshPublicKey: async () => "ssh-rsa AAAA test",
   });
 });
 
-const OPTIONS = { size: "Standard_D2as_v7", diskGiB: 128, zone: "1" };
+const OPTIONS = { size: "Standard_D2as_v7", diskGiB: 128 };
 
 /** Runs alarms until the state settles (or `limit` ticks). */
 async function settle(limit = 20) {
@@ -283,6 +285,112 @@ describe("computer lifecycle", () => {
     expect(other.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", zone: "2" });
   });
 
+  it("a size family out of quota falls back like one out of capacity; another refusal of the same code does not", async () => {
+    fallbackSizes = ["Standard_D2s_v7"];
+    const put = cloud.putVm.bind(cloud);
+    cloud.putVm = async (target, spec) => {
+      if (spec.size === "Standard_D2as_v7") {
+        throw new CloudError(409, "OperationNotAllowed", "Operation could not be completed as it results in exceeding approved standardDASv7Family Cores quota.");
+      }
+      return put(target, spec);
+    };
+    await lifecycle.create(ORG, OPTIONS);
+    await settle(80);
+    // The quota is the region's: every zone refuses, then the next size is tried.
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2s_v7", zone: "1" });
+
+    const other = new ComputerLifecycle({ ...(lifecycle as any).deps, sql: sqlStorage() });
+    cloud = new FakeCloud();
+    cloud.putVm = async () => {
+      throw new CloudError(409, "OperationNotAllowed", "the disk is being attached");
+    };
+    await other.create(ORG, OPTIONS);
+    for (let i = 0; i < 6; i += 1) await other.tick();
+    expect(other.row()).toMatchObject({ state: "provisioning", size: "Standard_D2as_v7", zone: "1", lastError: "the disk is being attached" });
+  });
+
+  it("remembers the size it last ran on and tries it first, so a computer that fell back does not fail first on every wake", async () => {
+    fallbackSizes = ["Standard_D2s_v7"];
+    await lifecycle.create(ORG, OPTIONS);
+    await settle();
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", preferredSize: "Standard_D2as_v7" });
+    lifecycle.noteHostSeen();
+    await lifecycle.park();
+    await settle();
+
+    cloud.noCapacity = new Set(["Standard_D2as_v7@1"]);
+    await lifecycle.wake("Standard_D2as_v7");
+    await settle(40);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2s_v7", zone: "1", preferredSize: "Standard_D2s_v7" });
+    expect(JSON.parse(lifecycle.row()!.attempt!)).toEqual({
+      asked: "Standard_D2as_v7",
+      candidates: [
+        { size: "Standard_D2as_v7", zone: "1" },
+        { size: "Standard_D2s_v7", zone: "1" },
+      ],
+      index: 1,
+    });
+
+    // The plan still asks for the first size; the computer goes straight to the one that worked.
+    await lifecycle.park();
+    await settle();
+    cloud.vmPlacements = [];
+    await lifecycle.wake("Standard_D2as_v7");
+    await settle(40);
+    expect(cloud.vmPlacements).toEqual(["Standard_D2s_v7@1"]);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2s_v7" });
+
+    // That size gone too: back to the one asked for.
+    await lifecycle.park();
+    await settle();
+    cloud.noCapacity = new Set(["Standard_D2s_v7@1"]);
+    cloud.vmPlacements = [];
+    await lifecycle.wake("Standard_D2as_v7");
+    await settle(40);
+    expect(cloud.vmPlacements).toEqual(["Standard_D2s_v7@1", "Standard_D2as_v7@1"]);
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", preferredSize: "Standard_D2as_v7" });
+    expect(cloud.calls).not.toContain("DELETE dataDisk");
+  });
+
+  it("a plan of another shape overrides the remembered size, on waking and while parking", async () => {
+    await lifecycle.create(ORG, { ...OPTIONS, size: "Standard_D8as_v7" });
+    await settle();
+    lifecycle.noteHostSeen();
+    await lifecycle.park();
+    await settle();
+    await lifecycle.wake("Standard_D2as_v7");
+    await settle();
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2as_v7", preferredSize: "Standard_D2as_v7" });
+
+    await lifecycle.park();
+    await lifecycle.tick();
+    expect(lifecycle.row()?.state).toBe("parking");
+    await lifecycle.wake("Standard_D8as_v7");
+    await settle();
+    expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D8as_v7", preferredSize: "Standard_D8as_v7" });
+  });
+
+  it("a computer from before placements were stored keeps its size first, and one under way then fails on capacity as before", async () => {
+    const sql = sqlStorage();
+    sql.exec(`CREATE TABLE computer (id INTEGER PRIMARY KEY, organization_id TEXT NOT NULL, state TEXT NOT NULL, size TEXT NOT NULL,
+      disk_gib INTEGER NOT NULL, zone TEXT NOT NULL, ssh_public_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+      wake_after_park INTEGER NOT NULL DEFAULT 0, delete_disk INTEGER NOT NULL DEFAULT 0, os_initialized INTEGER NOT NULL DEFAULT 0,
+      replace_failed_vm INTEGER NOT NULL DEFAULT 0, wakes INTEGER NOT NULL DEFAULT 0, resource_prefix TEXT, pool_slot TEXT,
+      tags_pending INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);`);
+    sql.exec("INSERT INTO computer (id, organization_id, state, size, disk_gib, zone, ssh_public_key, created_at, updated_at) VALUES (1, ?, 'provisioning', 'Standard_D2s_v7', 128, '1', 'k', 0, 0)", ORG);
+    fallbackSizes = ["Standard_D2s_v7"];
+    const old = new ComputerLifecycle({ ...(lifecycle as any).deps, sql });
+    expect(old.row()).toMatchObject({ preferredSize: "Standard_D2s_v7", attempt: null });
+    // The backfill runs once: a later start leaves the column alone.
+    sql.exec("UPDATE computer SET preferred_size = NULL");
+    expect(new ComputerLifecycle({ ...(lifecycle as any).deps, sql }).row()?.preferredSize).toBeNull();
+
+    cloud.noCapacity = new Set(["Standard_D2s_v7@1"]);
+    for (let i = 0; i < 20 && old.row()?.state === "provisioning"; i += 1) await old.tick();
+    expect(old.row()).toMatchObject({ state: "failed", size: "Standard_D2s_v7", zone: "1" });
+    expect(cloud.vmPlacements).toEqual(["Standard_D2s_v7@1"]);
+  });
+
   it("a capacity refusal of the VM PUT itself falls back too", async () => {
     await lifecycle.create(ORG, OPTIONS);
     await lifecycle.tick();
@@ -318,6 +426,7 @@ describe("computer lifecycle", () => {
     await lifecycle.create(ORG, OPTIONS);
     await settle(40);
     expect(lifecycle.row()).toMatchObject({ state: "ready", size: "Standard_D2ads_v7", zone: "1" });
+    expect(cloud.vmPlacements.slice(-2)).toEqual(["Standard_D2as_v7@1", "Standard_D2ads_v7@1"]);
     expect(cloud.vmPuts.at(-1)).toMatchObject({ mode: "attach", size: "Standard_D2ads_v7" });
     expect(cloud.calls).not.toContain("DELETE dataDisk");
     expect(cloud.calls.filter((call) => call === "PUT dataDisk")).toHaveLength(1);
@@ -526,25 +635,73 @@ describe("computer lifecycle", () => {
 // Work 105: the operator runs the VM; the lifecycle never calls the cloud.
 describe("placements", () => {
   const env = (vars: Record<string, string>) => vars as never;
+  const D16 = "Standard_D16as_v7";
 
-  it("tries every zone in the configured order; unset or nonsense is 1, 2, 3", () => {
+  it("reads the zones in the configured order; unset is 1, 2, 3", () => {
     expect(zones(env({}))).toEqual(["1", "2", "3"]);
-    expect(zones(env({ COMPUTER_ZONES: "2, 3,2,9" }))).toEqual(["2", "3"]);
-    expect(zones(env({ COMPUTER_ZONES: "east" }))).toEqual(["1", "2", "3"]);
-    expect(placements(env({ COMPUTER_ZONES: "3,1" }), "Standard_D16as_v7")).toEqual([
-      { size: "Standard_D16as_v7", zone: "3" },
-      { size: "Standard_D16as_v7", zone: "1" },
+    expect(zones(env({ COMPUTER_ZONES: "2, 3,2" }))).toEqual(["2", "3"]);
+  });
+
+  it("the deployment's sizes are the plans' sizes, then the fallback sizes", () => {
+    expect(sizes(env({}))).toEqual(["Standard_D2as_v7"]);
+    expect(sizes(env({ COMPUTER_DEFAULT_SIZE: D16, COMPUTER_MAX_SIZE: "Standard_D32as_v7", COMPUTER_FALLBACK_SIZES: "Standard_D16s_v7, Standard_D16as_v7" }))).toEqual([
+      D16,
+      "Standard_D32as_v7",
+      "Standard_D16s_v7",
     ]);
   });
 
-  it("then the fallback sizes of the same shape and disk controller, each in every zone", () => {
-    const vars = { COMPUTER_ZONES: "1", COMPUTER_FALLBACK_SIZES: "Standard_D16ads_v7, Standard_D8as_v7,Standard_D16as_v5,Standard_E16as_v7,bogus,Standard_D16as_v6" };
-    expect(placements(env(vars), "Standard_D16as_v7").map((placement) => placement.size)).toEqual([
-      "Standard_D16as_v7",
-      "Standard_D16ads_v7",
-      "Standard_D16as_v6",
+  it("a zone or size list that is not one stops creates, by name, instead of being ignored", () => {
+    const configured = { COMPUTERS: {}, RUNTIMES: {}, COMPUTER_HOST_GATEWAY_URL: "wss://edge.example", COMPUTER_HOST_TOKEN_KEY: "k" };
+    const missing = (vars: Record<string, string>) => missingEdgeConfig({ ...configured, ...vars } as never);
+    expect(missing({ COMPUTER_ZONES: "2,1", COMPUTER_FALLBACK_SIZES: "Standard_D16s_v7" })).toEqual([]);
+    expect(missing({ COMPUTER_ZONES: "east" })).toEqual(["COMPUTER_ZONES (not a list of zones 1 to 3)"]);
+    expect(missing({ COMPUTER_FALLBACK_SIZES: "Standard_D16s_v7;D16as_v6" })).toEqual(["COMPUTER_FALLBACK_SIZES (not a list of sizes)"]);
+    expect(missing({ COMPUTER_VMS: "self-managed", COMPUTER_ZONES: "east" })).toEqual([]);
+  });
+
+  it("knows a size's shape, low-memory sizes included", () => {
+    expect(sizeShape("Standard_D16as_v7")).toEqual({ vcpus: 16, memoryGiB: 64 });
+    expect(sizeShape("Standard_D16als_v7")).toEqual({ vcpus: 16, memoryGiB: 32 });
+    expect(sizeShape("Standard_D16ls_v6")).toEqual({ vcpus: 16, memoryGiB: 32 });
+    expect(sizeShape("Standard_E8as_v7")).toEqual({ vcpus: 8, memoryGiB: 64 });
+    expect(sizeShape("Standard_F4s_v2")).toEqual({ vcpus: 4, memoryGiB: 8 });
+    expect(sameShape("Standard_D16as_v7", "Standard_D16s_v7")).toBe(true);
+    expect(sameShape("Standard_D16as_v7", "Standard_D16als_v7")).toBe(false);
+  });
+
+  it("tries the size asked for in every zone, then each other size of its shape and disk controller", () => {
+    const all = ["Standard_D16ads_v7", "Standard_D8as_v7", "Standard_D16as_v5", "Standard_E16as_v7", "Standard_D16als_v7", "bogus", D16, "Standard_D16as_v6"];
+    expect(candidates({ asked: D16, sizes: all, zones: ["3", "1"] })).toEqual([
+      { size: D16, zone: "3" },
+      { size: D16, zone: "1" },
+      { size: "Standard_D16ads_v7", zone: "3" },
+      { size: "Standard_D16ads_v7", zone: "1" },
+      { size: "Standard_D16as_v6", zone: "3" },
+      { size: "Standard_D16as_v6", zone: "1" },
     ]);
-    expect(placements(env(vars), "Standard_D8as_v7").map((placement) => placement.size)).toEqual(["Standard_D8as_v7"]);
+    expect(candidates({ asked: "Standard_D8as_v7", sizes: all, zones: ["1"] })).toEqual([{ size: "Standard_D8as_v7", zone: "1" }]);
+  });
+
+  it("puts the size last run on first when it has the shape asked for, and keeps a used disk's zone", () => {
+    const input = { asked: D16, sizes: [D16, "Standard_D16s_v7"], zones: ["1", "2"] };
+    const order = (extra: object) => candidates({ ...input, ...extra }).map((placement) => `${placement.size}@${placement.zone}`);
+    expect(order({ preferred: "Standard_D16s_v7" })).toEqual(["Standard_D16s_v7@1", "Standard_D16s_v7@2", `${D16}@1`, `${D16}@2`]);
+    // A size no longer configured is still the computer's own.
+    expect(order({ preferred: "Standard_D16as_v6", pinnedZone: "2" })).toEqual(["Standard_D16as_v6@2", `${D16}@2`, "Standard_D16s_v7@2"]);
+    // Another shape (the plan changed) or disk controller: not tried.
+    expect(order({ preferred: "Standard_D2as_v7", pinnedZone: "2" })).toEqual([`${D16}@2`, "Standard_D16s_v7@2"]);
+    expect(order({ preferred: "Standard_D16as_v5", pinnedZone: "2" })).toEqual([`${D16}@2`, "Standard_D16s_v7@2"]);
+  });
+
+  it("tells capacity and quota from other failures by ARM's code", () => {
+    for (const code of ["ZonalAllocationFailed", "AllocationFailed", "OverconstrainedZonalAllocationRequest", "OverconstrainedAllocationRequest", "SkuNotAvailable", "QuotaExceeded"]) {
+      expect(isCapacity(code, null)).toBe(true);
+    }
+    expect(isCapacity("OperationNotAllowed", "exceeding approved standardDSv7Family Cores quota")).toBe(true);
+    expect(isCapacity("OperationNotAllowed", "the disk is being attached")).toBe(false);
+    expect(isCapacity("Conflict", "Allocation failed")).toBe(false);
+    expect(isCapacity(undefined, "quota")).toBe(false);
   });
 });
 

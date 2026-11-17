@@ -22,12 +22,15 @@
 // Parking deletes the VM and NIC and keeps both disks. Deleting never gives
 // up on a transient error: a row left `failed` mid-delete leaks what is left.
 //
-// Capacity (work 106): when the cloud has no capacity for the VM's size in
-// its zone, the row moves to the next placement (`placements`: the other
-// zones, then the fallback sizes) and the same step builds it there. The
-// data disk is zonal, so a zone change deletes and recreates it; that only
-// happens while it is still empty (no host has ever said hello). A computer
-// whose disk holds data keeps its zone and can only change size.
+// Capacity (work 106, placement.ts): a create or wake works out, once, every
+// placement it may try (`attempt`): the size the computer last ran on
+// (`preferred_size`), the size asked for, then the deployment's other sizes
+// of that shape, each in every zone. When the cloud has no capacity or quota
+// for the row's size in its zone, the row moves to the next one and the same
+// step builds it there. The data disk is zonal, so a zone change deletes and
+// recreates it; that only happens while it is still empty (no host has ever
+// said hello). A computer whose disk holds data keeps its zone and can only
+// change size.
 //
 // Every cloud call names the computer by its stored resource name prefix
 // (`resource_prefix`), not by a name derived from the organization id at
@@ -43,16 +46,9 @@
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "./cloud-contract.js";
 import { CloudError, type ComputerCloud } from "./cloud.js";
-import {
-  ComputersNotConfigured,
-  type Placement,
-  type PublicComputer,
-  type PublicComputerState,
-  nvmeSize,
-  publicError,
-  sizeShape,
-} from "./config.js";
+import { ComputersNotConfigured, type PublicComputer, type PublicComputerState, publicError } from "./config.js";
 import { POOL_TAG, computerName, ownerTag } from "./names.js";
+import { type Placement, ZONES, candidates, isCapacity, nvmeSize, sizeShape, validSize } from "./placement.js";
 
 export type ComputerState =
   | "provisioning"
@@ -78,11 +74,10 @@ export interface LifecycleDeps {
   gatewayUrl(organizationId: string): string;
   setAlarm(at: number): Promise<void>;
   hostConnected(): boolean;
-  /**
-   * Work 106: every placement a computer asked for at `size` may get, in
-   * the order tried (config.ts `placements`). Absent: no fallback.
-   */
-  placements?(size: string): Placement[];
+  /** Work 106: the zones a new computer may be placed in, most preferred first (config.ts `zones`). Absent: 1, 2, 3. */
+  zones?(): string[];
+  /** Work 106: the sizes the deployment builds computers on, in the order tried (config.ts `sizes`). Absent: no other size. */
+  sizes?(): string[];
   /** The operator runs the VMs (COMPUTER_VMS=self-managed): the cloud is never called. */
   selfManaged?(): boolean;
   /** The computer became ready (created or woken): counts as activity, so it is not parked at once. */
@@ -92,9 +87,9 @@ export interface LifecycleDeps {
 }
 
 export interface CreateOptions {
+  /** The size asked for (the plan's); with no capacity for it, another of its shape (placement.ts). */
   size: string;
   diskGiB: number;
-  zone: string;
   /** Resource name prefix; default the one derived from the organization id. */
   prefix?: string;
 }
@@ -141,11 +136,24 @@ export type ComputerRow = {
   poolSlot: string | null;
   /** Claimed from the pool and its resources still tagged `pool`: the alarm moves them. */
   tagsPending: number;
-  /** JSON list of the placements (`size@zone`) this create or wake found without capacity; null: none. */
-  placementsTried: string | null;
+  /** The size the computer last became ready on: tried first when it is built again. Null: never ready. */
+  preferredSize: string | null;
+  /** JSON `Attempt`: the placements of the create or wake under way (or last run). Null on rows from before work 106. */
+  attempt: string | null;
   createdAt: number;
   updatedAt: number;
 };
+
+/**
+ * A create or wake's placements, worked out when it began: `size` and `zone`
+ * of the row are `candidates[index]`, and a capacity failure moves to the next.
+ */
+interface Attempt {
+  /** The size asked for (the plan's). */
+  asked: string;
+  candidates: Placement[];
+  index: number;
+}
 
 /** Not worth retrying: the request itself is wrong, or a resource is not ours. */
 class Fatal extends Error {}
@@ -165,7 +173,7 @@ const SELECT = `SELECT organization_id AS organizationId, state, size, disk_gib 
   ssh_public_key AS sshPublicKey, attempts, last_error AS lastError, wake_after_park AS wakeAfterPark,
   delete_disk AS deleteDisk, os_initialized AS osInitialized, replace_failed_vm AS replaceFailedVm, wakes,
   resource_prefix AS resourcePrefix, pool_slot AS poolSlot, tags_pending AS tagsPending,
-  placements_tried AS placementsTried, created_at AS createdAt,
+  preferred_size AS preferredSize, attempt, created_at AS createdAt,
   updated_at AS updatedAt FROM computer WHERE id = 1`;
 
 const PUBLIC_STATE: Record<Exclude<ComputerState, "deleted" | "transferred">, PublicComputerState> = {
@@ -179,23 +187,6 @@ const PUBLIC_STATE: Record<Exclude<ComputerState, "deleted" | "transferred">, Pu
   failed: "failed",
   deleting: "deleting",
 };
-
-/** ARM's codes for "no capacity for this size here"; another zone or size may have it. */
-const CAPACITY_CODES = new Set([
-  "ZonalAllocationFailed",
-  "AllocationFailed",
-  "OverconstrainedZonalAllocationRequest",
-  "OverconstrainedAllocationRequest",
-  "SkuNotAvailable",
-]);
-
-function placementKey(placement: Placement): string {
-  return `${placement.size}@${placement.zone}`;
-}
-
-function validSize(size: string): boolean {
-  return /^Standard_[A-Za-z0-9_]+$/.test(size);
-}
 
 export class ComputerLifecycle {
   constructor(private readonly deps: LifecycleDeps) {
@@ -218,15 +209,18 @@ export class ComputerLifecycle {
         resource_prefix TEXT,
         pool_slot TEXT,
         tags_pending INTEGER NOT NULL DEFAULT 0,
-        placements_tried TEXT,
+        preferred_size TEXT,
+        attempt TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
     `);
     // Columns added after the table first shipped (no migration step: NULL means "derive").
-    for (const column of ["resource_prefix TEXT", "pool_slot TEXT", "tags_pending INTEGER NOT NULL DEFAULT 0", "placements_tried TEXT"]) {
+    for (const column of ["resource_prefix TEXT", "pool_slot TEXT", "tags_pending INTEGER NOT NULL DEFAULT 0", "preferred_size TEXT", "attempt TEXT"]) {
       try {
         deps.sql.exec(`ALTER TABLE computer ADD COLUMN ${column}`);
+        // Once, when the column is new: a computer from before it keeps trying the size it has first.
+        if (column === "preferred_size TEXT") deps.sql.exec("UPDATE computer SET preferred_size = size");
       } catch {
         // Already there.
       }
@@ -306,28 +300,34 @@ export class ComputerLifecycle {
     if (row && row.state !== "failed" && row.state !== "deleted") return { status: 200 };
     if (row) {
       // Again after a failure or a delete: same names, so kept disks are reused.
-      // The size is the configured one again (a failure may be the size's
-      // capacity); the disk stays what it was unless the computer was deleted.
+      // The size asked for is the configured one again and every placement is
+      // tried anew (a failure may be capacity); the disk stays what it was
+      // unless the computer was deleted.
+      const first = this.begin(row, options.size);
       this.deps.sql.exec(
         `UPDATE computer SET state = 'provisioning', attempts = 0, last_error = NULL, wake_after_park = 0,
-           delete_disk = 0, replace_failed_vm = 1, placements_tried = NULL, updated_at = ?,
-           size = ?,
+           delete_disk = 0, replace_failed_vm = 1, updated_at = ?,
+           size = ?, zone = ?, attempt = ?,
            disk_gib = CASE WHEN state = 'deleted' THEN ? ELSE disk_gib END
          WHERE id = 1`,
         now,
-        options.size,
+        first.size,
+        first.zone,
+        first.attempt,
         options.diskGiB,
       );
     } else {
+      const first = this.begin(null, options.size);
       this.deps.sql.exec(
-        `INSERT INTO computer (id, organization_id, state, size, disk_gib, zone, ssh_public_key, resource_prefix, created_at, updated_at)
-         VALUES (1, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO computer (id, organization_id, state, size, disk_gib, zone, ssh_public_key, resource_prefix, attempt, created_at, updated_at)
+         VALUES (1, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?)`,
         organizationId,
-        options.size,
+        first.size,
         options.diskGiB,
-        options.zone,
+        first.zone,
         sshPublicKey,
         options.prefix ?? computerName(organizationId),
+        first.attempt,
         now,
         now,
       );
@@ -361,7 +361,7 @@ export class ComputerLifecycle {
         organizationId,
         options.size,
         options.diskGiB,
-        options.zone,
+        this.zones()[0]!,
         options.prefix ?? computerName(organizationId),
         now,
         now,
@@ -375,11 +375,36 @@ export class ComputerLifecycle {
     return this.deps.selfManaged?.() ?? false;
   }
 
+  private zones(): string[] {
+    const zones = this.deps.zones?.() ?? [];
+    return zones.length ? zones : ZONES;
+  }
+
+  /**
+   * The placements of a create or wake that starts now and asks for `asked`,
+   * as the row's next size, zone and attempt. `row` is the computer so far
+   * (null: none): its last size goes first, and a data disk a host has used
+   * keeps its zone.
+   */
+  private begin(row: ComputerRow | null, asked: string): Placement & { attempt: string } {
+    const all = candidates({
+      asked,
+      sizes: this.deps.sizes?.() ?? [],
+      zones: this.zones(),
+      preferred: row?.preferredSize,
+      pinnedZone: row?.osInitialized ? row.zone : null,
+    });
+    const attempt: Attempt = { asked, candidates: all, index: 0 };
+    return { ...all[0]!, attempt: JSON.stringify(attempt) };
+  }
+
   /**
    * Wakes a parked computer (or one being parked, once it is). True if it is
-   * now waking or will be. With `size`, the VM comes back on that size (the
+   * now waking or will be. With `size`, that is the size asked for (the
    * organization's plan's: a downsize happens here, never on a running
-   * computer); a size on another disk controller is ignored.
+   * computer); a size on another disk controller is ignored. Without, the
+   * size it had. The VM comes back on the size it last ran on when that has
+   * the shape asked for, else on the size asked for (`begin`).
    */
   async wake(size?: string): Promise<boolean> {
     const row = this.row();
@@ -396,10 +421,16 @@ export class ComputerLifecycle {
       return true;
     }
     if (row.state !== "parked") return false;
+    // Read again: the size asked for may have just been written.
+    const parked = this.row()!;
+    const first = this.begin(parked, parked.size);
     this.deps.sql.exec(
       `UPDATE computer SET state = 'waking', attempts = 0, last_error = NULL, wakes = wakes + 1,
-         placements_tried = NULL, updated_at = ?
+         size = ?, zone = ?, attempt = ?, updated_at = ?
        WHERE id = 1 AND state = 'parked'`,
+      first.size,
+      first.zone,
+      first.attempt,
       this.now(),
     );
     await this.deps.setAlarm(this.now());
@@ -446,10 +477,11 @@ export class ComputerLifecycle {
     if (this.row()) return false;
     const now = this.now();
     this.deps.sql.exec(
-      `INSERT INTO computer (id, organization_id, state, size, disk_gib, zone, ssh_public_key, os_initialized,
+      `INSERT INTO computer (id, organization_id, state, size, preferred_size, disk_gib, zone, ssh_public_key, os_initialized,
          resource_prefix, pool_slot, tags_pending, created_at, updated_at)
-       VALUES (1, ?, 'ready', ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)`,
+       VALUES (1, ?, 'ready', ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)`,
       organizationId,
+      computer.size,
       computer.size,
       computer.diskGiB,
       computer.zone,
@@ -554,7 +586,9 @@ export class ComputerLifecycle {
         error instanceof Fatal ||
         error instanceof ComputersNotConfigured ||
         (error instanceof CloudError && !error.retryable);
-      console.error(JSON.stringify({ level: "error", event: "computer.lifecycle_error", state: row.state, attempts, fatal, message: text }));
+      console.error(
+        JSON.stringify({ level: "error", event: "computer.lifecycle_error", accountId: row.organizationId, state: row.state, attempts, fatal, message: text }),
+      );
       // A delete that stops half way leaks what is left, and nothing comes back for it: keep trying.
       if (fatal || (attempts >= MAX_ATTEMPTS && row.state !== "deleting")) {
         this.transition(row.state, "failed", text);
@@ -643,8 +677,8 @@ export class ComputerLifecycle {
               hostToken: await this.deps.hostToken(org),
             });
       } catch (error) {
-        // Refused outright for capacity (the usual way is a VM that ends up Failed, below).
-        if (error instanceof CloudError && CAPACITY_CODES.has(error.code) && this.fallBack(row, error.message)) return POLL_MS;
+        // Refused outright for capacity or quota (a zone's capacity is more often a VM that ends up Failed, below).
+        if (error instanceof CloudError && isCapacity(error.code, error.message) && this.fallBack(row, error.message)) return POLL_MS;
         throw error;
       }
     }
@@ -663,7 +697,19 @@ export class ComputerLifecycle {
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", event: "computer.os_disk_tag_failed", message: message(error) }));
     }
-    this.transition(row.state, "ready", null);
+    this.ready(row);
+    const attempt = this.attempt(row);
+    console.log(
+      JSON.stringify({
+        level: "info",
+        event: "computer.placed",
+        accountId: org,
+        state: row.state,
+        size: row.size,
+        zone: row.zone,
+        ...(attempt ? { asked: attempt.asked, index: attempt.index, of: attempt.candidates.length } : {}),
+      }),
+    );
     this.deps.onReady?.();
     return null;
   }
@@ -673,7 +719,7 @@ export class ComputerLifecycle {
     if (!vm) throw new Fatal("the VM no longer exists");
     if (vm.provisioningState === "Failed") throw new Fatal((await this.vmFailure(this.target(row))).text);
     if (vm.provisioningState !== "Succeeded" || vm.vmSize !== row.size) return POLL_MS;
-    this.transition("resizing", "ready", null);
+    this.ready(row);
     // Messages queued during the restart go now.
     this.deps.onReady?.();
     return null;
@@ -711,37 +757,44 @@ export class ComputerLifecycle {
     throw new Fatal(`${what} is tagged for ${owner ?? "no organization"}, not ${ownerTag(row.organizationId)}`);
   }
 
+  private attempt(row: ComputerRow): Attempt | null {
+    return row.attempt ? (JSON.parse(row.attempt) as Attempt) : null;
+  }
+
   /**
-   * The row's placement has no capacity: move the row to the next one this
-   * create or wake has not tried, and let the next steps rebuild the VM
-   * there (the failed VM is replaced; `clearZone` when the zone changed).
-   * False when there is none left, and the capacity error stands. A data
-   * disk a host has used stays in its zone: only the size may change.
+   * The row's placement has no capacity: move the row to the attempt's next
+   * one, and let the next steps rebuild the VM there (the failed VM is
+   * replaced; `clearZone` when the zone changed). False when there is none
+   * left, and the capacity error stands.
    */
   private fallBack(row: ComputerRow, reason: string): boolean {
+    const attempt = this.attempt(row);
+    const to = attempt?.candidates[attempt.index + 1];
+    if (!attempt || !to) return false;
     const from = { size: row.size, zone: row.zone };
-    const tried = [...(JSON.parse(row.placementsTried ?? "[]") as string[]), placementKey(from)];
-    // The first one tried is at the size that was asked for.
-    const asked = tried[0]!.split("@")[0]!;
-    const to = (this.deps.placements?.(asked) ?? []).find(
-      (placement) =>
-        !tried.includes(placementKey(placement)) &&
-        nvmeSize(placement.size) === nvmeSize(row.size) &&
-        (placement.zone === row.zone || !row.osInitialized),
-    );
-    if (!to) return false;
+    const index = attempt.index + 1;
     this.deps.sql.exec(
-      `UPDATE computer SET size = ?, zone = ?, placements_tried = ?, replace_failed_vm = 1, attempts = 0, last_error = ?, updated_at = ?
+      `UPDATE computer SET size = ?, zone = ?, attempt = ?, replace_failed_vm = 1, attempts = 0, last_error = ?, updated_at = ?
        WHERE id = 1 AND state = ?`,
       to.size,
       to.zone,
-      JSON.stringify(tried),
+      JSON.stringify({ ...attempt, index }),
       reason,
       this.now(),
       row.state,
     );
     console.warn(
-      JSON.stringify({ level: "warn", event: "computer.capacity_fallback", accountId: row.organizationId, state: row.state, from, to, message: reason }),
+      JSON.stringify({
+        level: "warn",
+        event: "computer.capacity_fallback",
+        accountId: row.organizationId,
+        state: row.state,
+        from,
+        to,
+        index,
+        of: attempt.candidates.length,
+        message: reason,
+      }),
     );
     return true;
   }
@@ -770,12 +823,21 @@ export class ComputerLifecycle {
       const vm = await this.deps.cloud().get(target, "vm", { instanceView: true });
       if (vm?.failure) {
         const code = vm.failureCode && !vm.failure.includes(vm.failureCode) ? `${vm.failureCode}: ` : "";
-        return { text: `VM provisioning failed: ${code}${vm.failure}`, capacity: CAPACITY_CODES.has(vm.failureCode ?? "") };
+        return { text: `VM provisioning failed: ${code}${vm.failure}`, capacity: isCapacity(vm.failureCode, vm.failure) };
       }
     } catch {
       // The plain message below is enough.
     }
     return { text: "VM provisioning failed", capacity: false };
+  }
+
+  /** Built, woken or resized: ready, and its size is the one to try first next time. */
+  private ready(row: ComputerRow): void {
+    this.deps.sql.exec(
+      "UPDATE computer SET state = 'ready', last_error = NULL, preferred_size = size, updated_at = ? WHERE id = 1 AND state = ?",
+      this.now(),
+      row.state,
+    );
   }
 
   private transition(from: ComputerState, to: ComputerState, error: string | null): void {

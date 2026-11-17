@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, publicError, sizeFor, sizeShape } from "../src/computer/config.js";
+import { gatewayUrl, publicError, sizeFor } from "../src/computer/config.js";
+import { sizeShape } from "../src/computer/placement.js";
 import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
 import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";

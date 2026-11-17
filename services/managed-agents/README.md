@@ -141,7 +141,7 @@ Configuration (empty values make computer creation answer
 
 | Worker | Secrets | Vars |
 |---|---|---|
-| edge | `COMPUTER_HOST_TOKEN_KEY`, `SLACK_COMPUTER_CLIENT_ID`, `SLACK_COMPUTER_CLIENT_SECRET`, `SLACK_COMPUTER_SIGNING_SECRET`, `COMPUTER_ANTHROPIC_API_KEY` (fallback model credentials), `BLUE_USAGE_HMAC_SECRET` and `OC_MANAGED_CRED_HMAC_SECRET` (shared with serverless agents) | `COMPUTER_HOST_GATEWAY_URL` (wss origin the VM dials), `COMPUTER_DEFAULT_SIZE`, `COMPUTER_MAX_SIZE` (the $200 "max" usage plan's size; `COMPUTER_PAID_SIZE` is read when it is unset), `COMPUTER_DEFAULT_DISK_GIB`, `COMPUTER_MAX_DISK_GIB` (the data disk grows on its own at 80% used up to this, default 1024), `COMPUTER_POOL_SIZE`, `COMPUTER_VMS` (`self-managed`: the operator creates and runs each organization's VM, the gateway only accepts its host's connection and needs no platform Worker), `COMPUTER_API_ORGS`, `COMPUTER_PUBLIC_ORIGIN`, `SLACK_COMPUTER_SCOPES` |
+| edge | `COMPUTER_HOST_TOKEN_KEY`, `SLACK_COMPUTER_CLIENT_ID`, `SLACK_COMPUTER_CLIENT_SECRET`, `SLACK_COMPUTER_SIGNING_SECRET`, `COMPUTER_ANTHROPIC_API_KEY` (fallback model credentials), `BLUE_USAGE_HMAC_SECRET` and `OC_MANAGED_CRED_HMAC_SECRET` (shared with serverless agents) | `COMPUTER_HOST_GATEWAY_URL` (wss origin the VM dials), `COMPUTER_DEFAULT_SIZE`, `COMPUTER_MAX_SIZE` (the $200 "max" usage plan's size; `COMPUTER_PAID_SIZE` is read when it is unset), `COMPUTER_ZONES` (zones a new computer may be placed in, most preferred first; default `1,2,3`), `COMPUTER_FALLBACK_SIZES` (more sizes to build a computer on when its own has no capacity or quota, in order; each serves the sizes it matches in vCPUs, memory and disk controller), `COMPUTER_DEFAULT_DISK_GIB`, `COMPUTER_MAX_DISK_GIB` (the data disk grows on its own at 80% used up to this, default 1024), `COMPUTER_POOL_SIZE`, `COMPUTER_VMS` (`self-managed`: the operator creates and runs each organization's VM, the gateway only accepts its host's connection and needs no platform Worker), `COMPUTER_API_ORGS`, `COMPUTER_PUBLIC_ORIGIN`, `SLACK_COMPUTER_SCOPES` |
 | platform | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | `AZURE_SUBSCRIPTION_ID`, `AZURE_COMPUTER_RESOURCE_GROUP`, `AZURE_COMPUTER_REGION`, `AZURE_COMPUTER_SUBNET_ID`, `AZURE_COMPUTER_IDENTITY_ID`, `AZURE_COMPUTER_IDENTITY_CLIENT_ID`, `COMPUTER_BOOTSTRAP_URL` |
 
 A production deploy sets these Worker secrets, under the same names: edge `COMPUTER_HOST_TOKEN_KEY`,
@@ -153,6 +153,16 @@ unset is left out of the Worker's secrets file, so it never wipes a value
 already set on the Worker. The vars live in `wrangler.production.jsonc` and
 `wrangler.platform.jsonc` (`COMPUTER_POOL_SIZE` stays `"0"` and the Azure ids
 empty until the production infrastructure exists).
+
+Capacity (work 106, `src/computer/placement.ts`): when the cloud has no
+capacity or quota for a computer's size in its zone, the create or wake moves
+on by itself: the size in each of `COMPUTER_ZONES`, then each matching size of
+`COMPUTER_FALLBACK_SIZES` in each zone. A computer whose disk holds data keeps
+its zone and only changes size. Each computer remembers the size it last ran
+on and tries that first, so one that fell back stays on its new size until
+that runs out too; `computer.capacity_fallback` and `computer.placed` log
+every move and where it ended. A value in either var that is not a zone or a
+size stops creates (`computers are not configured`) rather than being skipped.
 
 Size (2026-10-13): only the $200 usage plan ("max", the billing
 admission's `usagePlan`) gets `COMPUTER_MAX_SIZE`; Pro and free get the
