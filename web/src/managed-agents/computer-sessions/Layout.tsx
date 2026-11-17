@@ -14,7 +14,6 @@ import {
   CalendarClock,
   CreditCard,
   KeyRound,
-  LayoutDashboard,
   Loader2,
   LogOut,
   MessagesSquare,
@@ -182,10 +181,6 @@ function Rail() {
             </span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => void navigate('/computer')}>
-            <LayoutDashboard className="size-4 opacity-60" aria-hidden />
-            Dashboard
-          </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => void navigate('/managed-agents/connections')}
           >
