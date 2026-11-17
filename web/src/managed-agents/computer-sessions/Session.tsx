@@ -11,6 +11,7 @@ import {
   Loader2,
   Square,
   X,
+  User,
 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
@@ -254,8 +255,7 @@ function Header({ id }: { id: string }) {
 }
 
 // A person's avatar: initials of their name, or the first letter of their email.
-function initials(author: string | null): string {
-  if (!author) return '?'
+function initials(author: string): string {
   if (author.includes('@')) return author[0].toUpperCase()
   const words = author.trim().split(/\s+/)
   return words
@@ -285,7 +285,11 @@ function Item({ item, leads }: { item: TranscriptItem; leads: boolean }) {
             title={item.author ?? undefined}
             aria-hidden
           >
-            {initials(item.author)}
+            {item.author ? (
+              initials(item.author)
+            ) : (
+              <User className="size-3.5" />
+            )}
           </span>
         </div>
       )
