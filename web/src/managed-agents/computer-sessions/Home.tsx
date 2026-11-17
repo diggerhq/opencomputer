@@ -91,11 +91,11 @@ export default function ComputerSessionsHome() {
           </section>
         ) : null}
         <div className="flex-1" />
-        <p className="text-muted-foreground mt-10 text-center text-xs">
-          {busy
-            ? `${busy} ${busy === 1 ? 'session is' : 'sessions are'} working`
-            : 'Sessions sleep when idle and wake when you send a message.'}
-        </p>
+        {busy ? (
+          <p className="text-muted-foreground mt-10 text-center text-xs">
+            {busy} {busy === 1 ? 'session is' : 'sessions are'} working
+          </p>
+        ) : null}
       </div>
     </div>
   )
