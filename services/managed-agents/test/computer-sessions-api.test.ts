@@ -920,6 +920,7 @@ describe("api-http", () => {
     expect(matchApiRoute("POST", `/sessions/${SID}/asks/ak_7c1v9b4m8q2x/answer`)).toEqual({ op: "asks.answer", sessionId: SID, sub: "ak_7c1v9b4m8q2x" });
     expect(matchApiRoute("POST", `/sessions/${SID}/subagents/sa_000000000001/stop`)).toEqual({ op: "subagents.stop", sessionId: SID, sub: "sa_000000000001" });
     expect(matchApiRoute("GET", "/me")).toEqual({ op: "me" });
+    expect(matchApiRoute("GET", "/capabilities")).toEqual({ op: "capabilities" });
     expect(matchApiRoute("DELETE", `/sessions/${SID}`)).toBeNull();
   });
 

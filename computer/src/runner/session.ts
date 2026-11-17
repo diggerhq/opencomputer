@@ -62,6 +62,8 @@ export interface SessionInfo {
   teamId?: string;
   cwd: string;
   title: string;
+  /** A person set the title (the API's sessions.update): the computer's naming (work 093) leaves it alone. */
+  renamed?: boolean;
   mode: PermissionMode;
   model?: string;
   effort?: EffortLevel; // `!effort` (model-switch.ts); DEFAULT_EFFORT without

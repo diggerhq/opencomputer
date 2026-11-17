@@ -33,6 +33,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   pattern: RegExp;
 }> = [
   { methods: new Set(["GET"]), pattern: route("/me") },
+  { methods: new Set(["GET"]), pattern: route("/capabilities") },
   { methods: new Set(["POST"]), pattern: route("/tickets") },
   { methods: new Set(["GET", "POST"]), pattern: route("/sessions") },
   { methods: new Set(["GET", "PATCH"]), pattern: route(`/sessions/${SEG}`) },

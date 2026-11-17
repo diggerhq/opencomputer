@@ -77,6 +77,20 @@ describe('SessionApi', () => {
     for (const e of w.events()) assertEvent(e);
   });
 
+  it('a message from outside Slack is quoted into the thread under its sender, before the turn; one from Slack is not', async () => {
+    const w = await world();
+    const posts = () =>
+      w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: { text: string } }).args.text);
+    const web = { actor: { ...BOB.actor, via: 'dashboard' as const }, member: 'usr_bob' };
+    result(await w.call('turns.send', { input: 'ship it\n<!channel> & go' }, web));
+    expect(posts()[0]).toBe('*Bob* from the web:\n> ship it\n> &lt;!channel&gt; &amp; go');
+    const at = w.rec.findIndex((r) => (r as { slack?: string }).slack === 'chat.postMessage');
+    expect(w.rec.findIndex((r) => (r as { harness?: string }).harness === 'send')).toBeGreaterThan(at);
+    await w.t.feed(w.T.first(), w.T.done());
+    result(await w.call('turns.send', { input: 'from slack' }, { actor: { ...BOB.actor, via: 'slack' as const }, member: 'usr_bob' }));
+    expect(posts().filter((t) => t.includes('from slack'))).toEqual([]);
+  });
+
   it('one idempotency key gives one turn', async () => {
     const w = await world();
     const ctx = { ...ANN_CTX, idempotencyKey: 'k-1' };
@@ -333,6 +347,20 @@ describe('SessionApi', () => {
     expect(r.session.status).toBe('suspended');
     expect(w.of('runtime.suspended').map((e) => e.data)).toEqual([{ reason: 'requested' }]);
     expect(w.suspended.n).toBe(1);
+    for (const e of w.events()) assertEvent(e);
+  });
+
+  it('the computer naming a session journals the title; a person renaming it marks it renamed', async () => {
+    const w = await world();
+    expect(w.api.renamed).toBe(false);
+    w.api.named('golden', 'Sea poem');
+    const named = w.of('session.updated').at(-1)!;
+    expect(named.data).toEqual({ changes: { title: { from: 'golden', to: 'Sea poem' } } });
+    expect(named.actor).toBeNull();
+    result(await w.call('sessions.update', { title: 'Mine' }));
+    expect(w.api.renamed).toBe(true);
+    // Kept in the session's info, so it outlasts this runner.
+    expect(w.t.sess.info.renamed).toBe(true);
     for (const e of w.events()) assertEvent(e);
   });
 

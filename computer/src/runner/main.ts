@@ -247,19 +247,23 @@ const hooks: SessionHooks = {
   turns,
 };
 
-/** The session's title in Slack after a turn (work 093): one try at a time, none once it is final. */
+/** The session's title after a turn (work 093), in Slack and the API: one try at a time, none once it is final. */
 let titling = false;
 let titled = false;
 /** The Codex harness running, for a Codex session. */
 let codex: Harness | undefined;
 async function retitle() {
   const sid = s?.info.sdkSessionId;
-  if (titling || titled || !sid || !s?.thread.slack) return;
+  if (titling || titled || !sid || !s || !(s.thread.slack || api) || api?.api.renamed) return;
   titling = true;
   const named = ss?.harness === 'codex' ? codex?.name?.() : nameSession(sid, s.info.cwd);
   const r = await Promise.resolve(named).finally(() => (titling = false));
   titled = !!r?.done;
-  if (r?.title && r.title !== s.info.title) (s.info.title = r.title), await s.thread.rename(r.title);
+  if (!r?.title || r.title === s.info.title || api?.api.renamed) return;
+  api?.api.named(s.info.title, r.title);
+  s.info.title = r.title;
+  s.persist();
+  if (s.thread.slack) await s.thread.rename(r.title);
 }
 
 /** Codex for a session whose spec names it (work 082), loaded here and only then; undefined is Claude. */
