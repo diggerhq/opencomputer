@@ -18,6 +18,8 @@ export type TranscriptItem =
       key: string
       text: string
       author: string | null
+      // The member id (`usr_…`) of whoever sent it.
+      authorId: string | null
       via: string | null
       at: string
     }
@@ -72,7 +74,11 @@ export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
             key: e.id,
             text,
             // The computer falls back to the member id (`usr_…`) when there is no name: not worth showing.
-            author: e.actor?.name && e.actor.name !== e.actor.id ? e.actor.name : null,
+            author:
+              e.actor?.name && e.actor.name !== e.actor.id
+                ? e.actor.name
+                : null,
+            authorId: e.actor?.id ?? null,
             via: e.actor?.via ?? null,
             at: e.createdAt,
           })

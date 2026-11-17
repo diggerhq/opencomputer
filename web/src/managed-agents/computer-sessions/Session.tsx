@@ -13,10 +13,16 @@ import {
   X,
   User,
 } from 'lucide-react'
-import { ApiError } from '@/api/client'
+import { ApiError, getOrgMembers } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
 import { Button } from '@/components/ui/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { AgentMarkdown } from '../AgentMarkdown'
@@ -126,6 +132,7 @@ function SessionPage({ id }: { id: string }) {
   })
   const items = useMemo(() => buildTranscript(events), [events])
   const s = session.data
+  const emails = useMemberEmails()
 
   // Reading the session marks it read up to what was shown.
   const lastSeq = events[events.length - 1]?.seq
@@ -177,6 +184,7 @@ function SessionPage({ id }: { id: string }) {
               <Item
                 key={item.key}
                 item={item}
+                emails={emails}
                 // A reply opens with who is speaking: the first agent item after a person's message.
                 leads={i === 0 || items[i - 1].kind === 'user'}
               />
@@ -254,6 +262,23 @@ function Header({ id }: { id: string }) {
   )
 }
 
+// Members' emails by member id (`usr_…`), which the computer derives from the WorkOS user id.
+function useMemberEmails(): Map<string, string> {
+  const { data } = useQuery({
+    queryKey: ['org-members'],
+    queryFn: getOrgMembers,
+    staleTime: 5 * 60_000,
+  })
+  return useMemo(() => {
+    const emails = new Map<string, string>()
+    for (const m of data ?? []) {
+      const workos = /^user_(\w+)$/.exec(m.workosUserId ?? '')
+      if (workos) emails.set(`usr_${workos[1].toLowerCase()}`, m.email)
+    }
+    return emails
+  }, [data])
+}
+
 // A person's avatar: initials of their name, or the first letter of their email.
 function initials(author: string): string {
   if (author.includes('@')) return author[0].toUpperCase()
@@ -264,9 +289,18 @@ function initials(author: string): string {
     .join('')
 }
 
-function Item({ item, leads }: { item: TranscriptItem; leads: boolean }) {
+function Item({
+  item,
+  leads,
+  emails,
+}: {
+  item: TranscriptItem
+  leads: boolean
+  emails: Map<string, string>
+}) {
   switch (item.kind) {
-    case 'user':
+    case 'user': {
+      const email = item.authorId ? emails.get(item.authorId) : undefined
       return (
         <div className="flex items-end justify-end gap-2">
           <div className="flex max-w-[85%] flex-col items-end gap-1">
@@ -280,19 +314,28 @@ function Item({ item, leads }: { item: TranscriptItem; leads: boolean }) {
               {item.text}
             </div>
           </div>
-          <span
-            className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
-            title={item.author ?? undefined}
-            aria-hidden
-          >
-            {item.author ? (
-              initials(item.author)
-            ) : (
-              <User className="size-3.5" />
-            )}
-          </span>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium">
+                  {item.author ? (
+                    initials(item.author)
+                  ) : (
+                    <User className="size-3.5" />
+                  )}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="left">
+                {item.author ?? 'Someone'}
+                {email && email !== item.author ? (
+                  <span className="block opacity-70">{email}</span>
+                ) : null}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       )
+    }
     case 'agent':
       return (
         <div className="space-y-2">
