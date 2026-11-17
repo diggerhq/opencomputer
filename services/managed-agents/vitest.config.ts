@@ -489,6 +489,7 @@ export default defineConfig({
             "test/computer-azure.test.ts",
             "test/computer-billing.test.ts",
             "test/computer-lifecycle.test.ts",
+            "test/computer-placement.test.ts",
             "test/computer-pool.test.ts",
             "test/computer-pool-probe.test.ts",
             "test/computer-token-check.test.ts",

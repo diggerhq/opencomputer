@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ArmError, AzureClient, armRequest, tokenRequest } from "../src/platform/computers/arm.js";
+import { ArmError, AzureClient, armError, armRequest, tokenRequest } from "../src/platform/computers/arm.js";
 import {
   type ComputerPlacement,
   cloudInit,
@@ -304,6 +304,17 @@ describe("platform computer route", () => {
     expect(failed.status).toBe(502);
     expect(failed.body.error).toMatchObject({ status: 400, code: "InvalidSubnet" });
     expect(JSON.stringify(failed.body)).not.toContain(ENV.AZURE_CLIENT_SECRET);
+  });
+
+  it("reads a capacity or quota refusal out of a wrapped ARM error, and leaves any other error as it is", async () => {
+    const error = async (body: unknown) => {
+      const { code, message } = await armError(Response.json({ error: body }, { status: 409 }), "PUT vm");
+      return `${code}|${message}`;
+    };
+    const quota = { code: "QuotaExceeded", message: "over the quota" };
+    expect(await error({ code: "Conflict", message: "failed", details: [{ code: "Other" }, quota] })).toBe("QuotaExceeded|PUT vm: 409 QuotaExceeded: over the quota");
+    expect(await error({ code: "Conflict", message: "busy", details: [{ code: "Other", message: "x" }] })).toBe("Conflict|PUT vm: 409 Conflict: busy");
+    expect(await error({ code: "SkuNotAvailable", message: "none", details: [quota] })).toBe("SkuNotAvailable|PUT vm: 409 SkuNotAvailable: none");
   });
 
   it("retries sign-in after a 401 and reports network failures as status 0", async () => {

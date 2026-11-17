@@ -311,8 +311,10 @@ export class ComputerPool {
     await this.gauge(live.filter((slot) => slot.state === "warm"));
 
     const provisioning = live.filter((slot) => slot.state === "provisioning").length;
-    const health = this.health();
     const warm = live.length - provisioning;
+    // Full again without a start coming up (the target was lowered, or a slot came back from a claim): no longer degraded.
+    if (warm >= target) this.deps.sql.exec("DELETE FROM pool_health");
+    const health = this.health();
     if (health.failures > 0 && target > 0) {
       console.error(
         JSON.stringify({ level: "error", event: "computer.pool_degraded", failures: health.failures, warm, target, retryAt: new Date(health.retryAt).toISOString() }),

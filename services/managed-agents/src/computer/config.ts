@@ -4,7 +4,7 @@
 // the host token key, where hosts dial, and the organization Slack app.
 
 import type { ManagedAgentBillingService } from "../edge/billing-admission.js";
-import { ZONES, validSize } from "./placement.js";
+import { ZONES, standsIn, validSize, validZone } from "./placement.js";
 import type { PreviewsEnv } from "./previews.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
@@ -132,8 +132,15 @@ export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
     if (!env.RUNTIMES) missing.push("RUNTIMES");
     if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
     // A misspelt zone or size is a fallback that is not there when capacity runs out: say so now.
-    if (!list(env.COMPUTER_ZONES).every((zone) => ZONES.includes(zone))) missing.push("COMPUTER_ZONES (not a list of zones 1 to 3)");
-    if (!list(env.COMPUTER_FALLBACK_SIZES).every(validSize)) missing.push("COMPUTER_FALLBACK_SIZES (not a list of sizes)");
+    if (!list(env.COMPUTER_ZONES).every(validZone)) missing.push("COMPUTER_ZONES (not a list of zones 1 to 3)");
+    const fallbacks = list(env.COMPUTER_FALLBACK_SIZES);
+    if (!fallbacks.every(validSize)) missing.push("COMPUTER_FALLBACK_SIZES (not a list of sizes)");
+    else {
+      // One that can stand in for neither plan's size would never be tried (placement.ts `standsIn`).
+      const plans = [sizeFor(env, "default"), sizeFor(env, "max")];
+      const unused = fallbacks.filter((size) => !plans.some((plan) => standsIn(size, plan)));
+      if (unused.length) missing.push(`COMPUTER_FALLBACK_SIZES (${unused.join(", ")} cannot stand in for ${[...new Set(plans)].join(" or ")})`);
+    }
   }
   if (!env.COMPUTER_HOST_TOKEN_KEY) missing.push("COMPUTER_HOST_TOKEN_KEY");
   return missing;
@@ -153,8 +160,8 @@ function list(value: string | undefined): string[] {
 }
 
 /** COMPUTER_ZONES in order; unset: 1, 2, 3. (A value that is not zones stops creates: missingEdgeConfig.) */
-export function zones(env: ComputerEdgeEnv): string[] {
-  const listed = [...new Set(list(env.COMPUTER_ZONES).filter((zone) => ZONES.includes(zone)))];
+export function zones(env: ComputerEdgeEnv): readonly string[] {
+  const listed = [...new Set(list(env.COMPUTER_ZONES).filter(validZone))];
   return listed.length ? listed : ZONES;
 }
 
@@ -212,11 +219,15 @@ export interface PublicComputer {
  * cloud and name it, its resources and regions; the page gets a plain
  * sentence and the full text stays in the logs.
  */
+/** Says whose side it is on: a customer read the terser sentence as an unpaid bill (work 106). */
+export const CAPACITY_ERROR =
+  "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Try again later.";
+
 export function publicError(error: string | null): string | null {
   if (!error) return null;
   if (/not configured/i.test(error)) return "Computers are not available yet.";
   if (/quota|capacity|allocation|SkuNotAvailable|NotAvailableForSubscription/i.test(error)) {
-    return "No capacity was available for your computer; try again in a few minutes.";
+    return CAPACITY_ERROR;
   }
   if (/tagged for/i.test(error)) return "Your computer's resources are in an unexpected state; support has been notified.";
   return "Your computer could not be started.";

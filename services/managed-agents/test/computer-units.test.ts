@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
 import { gatewayUrl, publicError, sizeFor } from "../src/computer/config.js";
-import { sizeShape } from "../src/computer/placement.js";
 import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
 import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
@@ -68,7 +67,7 @@ describe("host tokens", () => {
 });
 
 describe("computer config and vocabulary", () => {
-  it("sizes by plan and describes sizes without naming them", () => {
+  it("sizes by plan", () => {
     const env = { ACCOUNTS: {} as DurableObjectNamespace };
     expect(sizeFor(env, "default")).toBe("Standard_D2as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
@@ -77,9 +76,6 @@ describe("computer config and vocabulary", () => {
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7" }, "max")).toBe("Standard_D4as_v7");
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7", COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "" }, "max")).toBe("Standard_D2as_v7");
-    expect(sizeShape("Standard_D2as_v7")).toEqual({ vcpus: 2, memoryGiB: 8 });
-    expect(sizeShape("Standard_E4as_v7")).toEqual({ vcpus: 4, memoryGiB: 32 });
-    expect(sizeShape("Standard_D16as_v7")).toEqual({ vcpus: 16, memoryGiB: 64 });
   });
 
   it("builds the gateway URL the host dials", () => {

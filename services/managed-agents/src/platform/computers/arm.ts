@@ -9,6 +9,8 @@
 // Errors carry the HTTP status and ARM's own error code and message, never a
 // token or the client secret.
 
+import { isCapacity } from "../../computer/placement.js";
+
 export const ARM_ORIGIN = "https://management.azure.com";
 export const LOGIN_ORIGIN = "https://login.microsoftonline.com";
 
@@ -89,7 +91,7 @@ export async function armError(response: Response, what: string): Promise<ArmErr
   let message = "";
   try {
     const body = (await response.json()) as {
-      error?: string | { code?: string; message?: string };
+      error?: string | { code?: string; message?: string; details?: Array<{ code?: string; message?: string }> };
       error_description?: string;
     };
     if (typeof body.error === "string") {
@@ -99,6 +101,12 @@ export async function armError(response: Response, what: string): Promise<ArmErr
     } else if (body.error) {
       code = body.error.code ?? code;
       message = body.error.message ?? "";
+      // A capacity or quota refusal may be wrapped (`Conflict` with the cause in `details`): the cause is what callers act on.
+      const cause = isCapacity(code, message) ? undefined : body.error.details?.find((detail) => isCapacity(detail.code, detail.message));
+      if (cause?.code) {
+        code = cause.code;
+        message = cause.message ?? message;
+      }
     }
   } catch {
     // Not JSON: the status says enough.
