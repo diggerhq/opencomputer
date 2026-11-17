@@ -14,6 +14,7 @@ import {
   User,
 } from 'lucide-react'
 import { ApiError, getOrgMembers } from '@/api/client'
+import type { OrgMember } from '@/api/schemas'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
 import { Button } from '@/components/ui/button'
@@ -262,21 +263,40 @@ function Header({ id }: { id: string }) {
   )
 }
 
-// Members' emails by member id (`usr_…`), which the computer derives from the WorkOS user id.
-function useMemberEmails(): Map<string, string> {
-  const { data } = useQuery({
+// Members' emails by member id (`usr_…`). The computer derives that id from the
+// user id: the WorkOS id when there is one, else a hash (`memberId` in managed-agents).
+async function memberEmails(
+  members: OrgMember[],
+): Promise<Map<string, string>> {
+  const emails = new Map<string, string>()
+  for (const m of members) {
+    const workos = /^user_(\w+)$/.exec(m.workosUserId ?? '')
+    if (workos) emails.set(`usr_${workos[1].toLowerCase()}`, m.email)
+    if (!m.id) continue
+    const digest = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(m.id)),
+    )
+    const hex = [...digest.slice(0, 13)]
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+    emails.set(`usr_x${hex}`, m.email)
+  }
+  return emails
+}
+
+function useMemberEmails(): Map<string, string> | undefined {
+  const { data: members } = useQuery({
     queryKey: ['org-members'],
     queryFn: getOrgMembers,
     staleTime: 5 * 60_000,
   })
-  return useMemo(() => {
-    const emails = new Map<string, string>()
-    for (const m of data ?? []) {
-      const workos = /^user_(\w+)$/.exec(m.workosUserId ?? '')
-      if (workos) emails.set(`usr_${workos[1].toLowerCase()}`, m.email)
-    }
-    return emails
-  }, [data])
+  const { data } = useQuery({
+    queryKey: ['org-members', 'emails', members],
+    queryFn: () => memberEmails(members ?? []),
+    enabled: !!members,
+    staleTime: Infinity,
+  })
+  return data
 }
 
 // A person's avatar: initials of their name, or the first letter of their email.
@@ -296,17 +316,17 @@ function Item({
 }: {
   item: TranscriptItem
   leads: boolean
-  emails: Map<string, string>
+  emails: Map<string, string> | undefined
 }) {
   switch (item.kind) {
     case 'user': {
-      const email = item.authorId ? emails.get(item.authorId) : undefined
+      const email = item.authorId ? emails?.get(item.authorId) : undefined
       return (
         <div className="flex items-end justify-end gap-2">
           <div className="flex max-w-[85%] flex-col items-end gap-1">
-            {item.author ? (
+            {item.author || email ? (
               <span className="text-muted-foreground text-xs">
-                {item.author}
+                {item.author ?? email}
                 {item.via && item.via !== 'dashboard' ? ` via ${item.via}` : ''}
               </span>
             ) : null}
@@ -326,8 +346,8 @@ function Item({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="left">
-                {item.author ?? 'Someone'}
-                {email && email !== item.author ? (
+                {item.author ?? email ?? 'Someone'}
+                {email && item.author && email !== item.author ? (
                   <span className="block opacity-70">{email}</span>
                 ) : null}
               </TooltipContent>
