@@ -350,6 +350,18 @@ describe('SessionApi', () => {
     for (const e of w.events()) assertEvent(e);
   });
 
+  it('the computer naming a session journals the title; a person renaming it marks it renamed', async () => {
+    const w = await world();
+    expect(w.api.renamed).toBe(false);
+    w.api.named('golden', 'Sea poem');
+    const named = w.of('session.updated').at(-1)!;
+    expect(named.data).toEqual({ changes: { title: { from: 'golden', to: 'Sea poem' } } });
+    expect(named.actor).toBeNull();
+    result(await w.call('sessions.update', { title: 'Mine' }));
+    expect(w.api.renamed).toBe(true);
+    for (const e of w.events()) assertEvent(e);
+  });
+
   it('sessions.update speed reaches the harness, the session and the journal; a bad one is refused', async () => {
     const w = await world();
     const r = result(await w.call('sessions.update', { speed: 'standard' }));

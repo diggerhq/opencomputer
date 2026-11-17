@@ -90,6 +90,8 @@ export class SessionApi implements Writer {
   /** The API's session sends, one after another; `inflight` counts those not done (an interrupt's stop and send run behind its answer). */
   private sending: Promise<unknown> = Promise.resolve();
   private inflight = 0;
+  /** A person set the title over the API: the computer's naming (work 093) leaves it alone from then on. */
+  renamed = false;
 
   constructor(
     readonly log: SessionLog,
@@ -117,6 +119,11 @@ export class SessionApi implements Writer {
           } catch {} // telemetry never fails a call
           return out;
         };
+  }
+
+  /** The computer named the session (work 093): the journal says so, and the session list follows. */
+  named(from: string, to: string) {
+    this.log.append('session.updated', { changes: { title: { from, to } } }, { actor: null });
   }
 
   get sessionId() {
@@ -312,7 +319,7 @@ export class SessionApi implements Writer {
         if (p.effort !== undefined && p.effort !== s.info.effort) await switchEffort(s, p.effort as EffortLevel);
         if (p.speed !== undefined && p.speed !== s.info.speed) await switchSpeed(s, p.speed);
         const changes: Record<string, { from: unknown; to: unknown }> = {};
-        if (p.title !== undefined && p.title !== s.info.title) (changes.title = { from: s.info.title, to: p.title }), (s.info.title = p.title), s.persist();
+        if (p.title !== undefined && p.title !== s.info.title) (changes.title = { from: s.info.title, to: p.title }), (s.info.title = p.title), (this.renamed = true), s.persist();
         const cur = fold.session();
         if (p.archived !== undefined && p.archived !== cur.archived) changes.archived = { from: cur.archived, to: p.archived };
         for (const [k, v] of Object.entries(p.metadata ?? {})) if ((cur.metadata[k] ?? null) !== v) changes[`metadata.${k}`] = { from: cur.metadata[k] ?? null, to: v };
