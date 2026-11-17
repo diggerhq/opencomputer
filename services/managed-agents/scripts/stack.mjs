@@ -407,6 +407,8 @@ function writeConfigs(stack, { bootstrap }) {
       COMPUTER_DEFAULT_DISK_GIB: String(stack.computer?.diskGiB ?? 128),
       // Warm computers cost like a free organization's each: opt in per stack.
       COMPUTER_POOL_SIZE: process.env.OC_STACK_COMPUTER_POOL_SIZE || "0",
+      // The computer API's rollout gate (api-gate.ts): open, as in production.
+      COMPUTER_API_ORGS: "*",
       SLACK_COMPUTER_SCOPES:
         "app_mentions:read,assistant:write,channels:history,channels:read,channels:manage,groups:history,groups:read,groups:write,im:history,im:read,im:write,chat:write,files:read,files:write,reactions:write,users:read,users:read.email",
       ...optionalSecrets({
