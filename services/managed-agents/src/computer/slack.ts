@@ -19,6 +19,8 @@ export interface SlackMessageJob {
   /** Messages forwarded in this one: Slack sends them in `attachments`, not `text`. */
   forwarded?: ForwardedMessage[];
   mentioned: boolean;
+  /** Mentioned only mid-message, not at its start (work 112: such a mention asks nothing of the app). */
+  mentionedInline?: boolean;
   /** Raw text @mentions someone other than this app: most likely not addressed to it. */
   mentionsOthers?: boolean;
   channelType?: string;
@@ -143,7 +145,8 @@ function fileMetadata(files: CalvinSlackFile[] | undefined): CalvinSlackFile[] |
 export type ParsedSlackEvent =
   | { kind: "challenge"; challenge: string }
   | { kind: "message"; job: SlackMessageJob }
-  | { kind: "stop"; teamId: string; channelId: string; threadTs?: string; eventId: string }
+  /** `userId`: who pressed stop, when Slack says (work 112: an outsider's stop is ignored). */
+  | { kind: "stop"; teamId: string; channelId: string; threadTs?: string; userId?: string; eventId: string }
   /** The app was uninstalled from the workspace, or its bot token revoked. */
   | { kind: "revoked"; teamId: string }
   /** Work 077: a person left the workspace, was deactivated or became a guest (`team_leave`, `user_change`). */
@@ -169,6 +172,7 @@ export function parseSlackEnvelope(payload: unknown, now = Date.now()): ParsedSl
       teamId: envelope.team_id,
       channelId: event.channel,
       ...(event.thread_ts ? { threadTs: event.thread_ts } : {}),
+      ...(typeof event.user === "string" && event.user ? { userId: event.user } : {}),
       eventId: envelope.event_id,
     };
   }
@@ -234,9 +238,12 @@ export function parseSlackEnvelope(payload: unknown, now = Date.now()): ParsedSl
 export function normalizeJob(job: SlackMessageJob, botUserId: string): SlackMessageJob | null {
   const mention = `<@${botUserId}>`;
   const raw = botUserId ? job.text.replaceAll(mention, "") : job.text;
+  const mentioned = job.mentioned || (botUserId !== "" && job.text.includes(mention));
+  const leading = botUserId !== "" && job.text.trimStart().startsWith(mention);
   const normalized: SlackMessageJob = {
     ...job,
-    mentioned: job.mentioned || (botUserId !== "" && job.text.includes(mention)),
+    mentioned,
+    ...(mentioned && !leading ? { mentionedInline: true } : {}),
     mentionsOthers: /<@[UW]/.test(raw),
     text: decodeSlack(raw).trim(),
   };

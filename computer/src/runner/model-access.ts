@@ -155,7 +155,8 @@ export function runnerModelAccess({ env, cacheTtl, hooks: o }: RunnerModelAccess
       const s = o.session();
       if (!retry || !s) return false;
       retry = false;
-      void s.send(RETRY_TEXT, s.info.userId);
+      // The retried turn is still the driver's (work 112): their prompts keep waiting on them.
+      void s.send(RETRY_TEXT, s.driver ?? s.info.userId, [], undefined, undefined, s.driver ? 'driver' : undefined);
       return true;
     },
   };

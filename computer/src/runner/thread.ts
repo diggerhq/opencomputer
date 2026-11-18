@@ -14,6 +14,7 @@ import type { FileUpload } from './send-file.js';
 import { describeChannel, type Names } from './names.js';
 import { gitBranch } from '../workspace.js';
 import { fmtTokens } from './format.js';
+import { accessButtonBlock } from '../access-views.js';
 
 /** A name lookup never holds a message longer than this; the id stands in (p90 is ~240 ms). */
 const LOOKUP_MS = 800;
@@ -170,11 +171,13 @@ export class SlackThread implements Names {
   /** A code channel's diff tab. */
   /**
    * A brand-new session's first reply: the thread id to copy (later a link to
-   * the thread's page) and where the commands are.
+   * the thread's page), where the commands are, and the Access button that
+   * opens the session's access modal in the gateway (work 112).
    */
-  async intro(threadId: string) {
+  async intro(threadId: string, sessionKey: string) {
     await this.post(`Thread ${threadId}`, [
       { type: 'context', elements: [{ type: 'mrkdwn', text: `:thread: Thread \`${threadId}\`  ·  \`!help\` for commands` }] },
+      accessButtonBlock(sessionKey) as KnownBlock,
     ]).catch((e) => this.warn('intro', e));
   }
 

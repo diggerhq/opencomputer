@@ -1,6 +1,8 @@
 // `!help`: the command list a thread shows. Pure text, so the session only
 // supplies the current model and mode.
 
+import { ACCESS_HELP_LINE } from '../access.js';
+
 export function helpText(model: string, mode: string) {
   return [
     `*Commands* (model \`${model}\` · mode \`${mode}\`)`,
@@ -14,6 +16,7 @@ export function helpText(model: string, mode: string) {
     '`!status`: model, effort, mode, context, cost, thread id, cwd, session id',
     '`!diff`: show uncommitted changes',
     '`!secret NAME`: give the session a secret through a private form, never in a message; `!secret help` for more',
+    ACCESS_HELP_LINE,
     '`!restart`: restart this thread\'s agent on the newest deployed version and current credentials (after the current turn)',
     '`!done`: archive this code channel',
     '`!help`: this list',

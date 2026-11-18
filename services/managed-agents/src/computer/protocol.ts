@@ -122,6 +122,13 @@ export interface CalvinDelivery {
   mentioned?: boolean;
   /** Slack threads linked in the message (work 049 L3, threads.ts): read, or why not. */
   linked?: Linked[];
+  /**
+   * Work 112: the sender's role in the session, as this gateway decided it (access.ts).
+   * `participant` only on `!stop`, `!esc`, `!help`, `!status`. A runner remembers a
+   * `driver`'s message so only they or the owner answer the prompts it causes.
+   * Absent: as before, anyone answers.
+   */
+  role?: "owner" | "driver" | "participant";
 }
 
 /**
@@ -279,7 +286,12 @@ export type CalvinGatewayToHost =
    * Work 082 adds `provider` and `accountId` (absent: anthropic); blue does not probe chatgpt yet.
    */
   | { t: "probe"; id: string; token: string; provider?: ModelProvider; accountId?: string }
-  | { t: "action"; id: string; sessionKey: string; promptId: string; value: string; userId: string }
+  /**
+   * A prompt button click. `role` (work 112): the clicker's, `owner` or `driver`; a runner refuses a
+   * driver's click on a prompt another's message caused, with the reply error `not-asked`
+   * (NOT_ASKED). Absent: handled as before.
+   */
+  | { t: "action"; id: string; sessionKey: string; promptId: string; value: string; userId: string; role?: "owner" | "driver" }
   | { t: "stop"; id: string; sessionKey: string }
   | { t: "token"; id: string; result?: CalvinGitHubToken; error?: string }
   | { t: "spawned"; id: string; result?: CalvinSpawnResult; error?: string }
@@ -704,6 +716,9 @@ export function parseSessionKey(key: string): { teamId: string; channelId: strin
   if (!teamId || !channelId || !threadTs || extra !== undefined) return null;
   return { teamId, channelId, threadTs };
 }
+
+/** The `reply` error of an `action` whose clicker may not answer that prompt (work 112): answered with S6. */
+export const NOT_ASKED = "not-asked";
 
 /** A prompt button the runner posted: `p:<base64url(sessionKey)>:<promptId>:<value>`. */
 export function decodeCalvinActionId(actionId: string): { sessionKey: string; promptId: string; value: string } | null {

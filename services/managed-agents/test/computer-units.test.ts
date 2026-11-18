@@ -342,6 +342,15 @@ describe("Slack", () => {
       threadTs: "1.1",
       eventId: "E",
     });
+    // Work 112: who pressed stop.
+    expect(parseSlackEnvelope({ type: "event_callback", event_id: "E", team_id: "T", event: { type: "agent_session_stopped", channel: "C", thread_ts: "1.1", user: "U1" } })).toEqual({
+      kind: "stop",
+      teamId: "T",
+      channelId: "C",
+      threadTs: "1.1",
+      userId: "U1",
+      eventId: "E",
+    });
   });
 
   it("normalizes text: strips this app's mention, decodes, notices other mentions", () => {
@@ -624,7 +633,7 @@ describe("thread links (work 049 L3)", () => {
       }
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const ref = { url: "u", host: "acme.slack.com", channel: "C0PUB", ts: "1700000001.000100" };
     const slow = await access.read(ref, { owner: "U1", destination: "C0PUB", deadline: Date.now() + 50 });
     expect(slow).toMatchObject({ ok: false, reason: "reading it took too long; ask again to retry" });
@@ -645,7 +654,7 @@ describe("thread links (work 049 L3)", () => {
       }
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const linked = await access.read(
       { url: "u", host: "acme.slack.com", channel: "C0PUB", ts: "1700000001.000205", threadTs: "1700000001.000100" },
       { owner: "U1", destination: "C0PUB" },
@@ -676,7 +685,7 @@ describe("thread links (work 049 L3)", () => {
         };
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const ref = { url: "", channel: "C0PUB", ts: "1700000001.000300", threadTs: "1700000001.000100" };
     const linked = await access.read(ref, { owner: "U1", destination: "C0PUB" }, ref.ts);
     if (!linked.ok) throw new Error(linked.reason);

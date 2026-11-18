@@ -213,7 +213,7 @@ check('ch → code channel session', cc?.session.key === 'C_CODE' && cc.session.
 await router.action(encodeActionId(`C1:${first.ts}`, 'pr7', 'allow'), owner.slackUserId, client, 'C1');
 const a = await host.next('action');
 check('action routed by session key', a?.sessionKey === `C1:${first.ts}` && a.promptId === 'pr7' && a.value === 'allow', a);
-await router.stop({ channel: 'C1', thread_ts: first.ts }, 'Ev-stop');
+await router.stop({ channel: 'C1', thread_ts: first.ts }, 'Ev-stop', client);
 const st = await host.next('stop');
 check('stop button → stop', st?.sessionKey === `C1:${first.ts}`, st);
 

@@ -278,10 +278,12 @@ export class Hub {
     return n;
   }
 
-  async action(key: string, promptId: string, value: string, userId: string): Promise<Reply | 'queued'> {
+  /** `role` (work 112): the clicker's, for the runner's `not-asked` check. */
+  async action(key: string, promptId: string, value: string, userId: string, role?: 'owner' | 'driver'): Promise<Reply | 'queued'> {
     const conn = this.hostFor(key);
-    if (!conn) return this.deps.store.enqueue({ t: 'action', key, promptId, value, userId }), 'queued';
-    return this.request(conn, { t: 'action', sessionKey: key, promptId, value, userId });
+    const r = role ? { role } : {};
+    if (!conn) return this.deps.store.enqueue({ t: 'action', key, promptId, value, userId, ...r }), 'queued';
+    return this.request(conn, { t: 'action', sessionKey: key, promptId, value, userId, ...r });
   }
 
   /** A stop has no meaning later, so it is not queued. */
@@ -314,7 +316,7 @@ export class Hub {
     for (const q of queued) {
       const row = this.deps.store.session(q.key);
       if (!row) continue;
-      const r = q.t === 'deliver' ? await this.deliver(row.spec, q.msg) : await this.action(q.key, q.promptId, q.value, q.userId);
+      const r = q.t === 'deliver' ? await this.deliver(row.spec, q.msg) : await this.action(q.key, q.promptId, q.value, q.userId, q.role);
       if (r !== 'queued' && !r.ok) log.warn(`queued ${q.t} for ${q.key} failed: ${r.error}`);
     }
     if (queued.length) log.info(`flushed ${queued.length} queued message(s)`);

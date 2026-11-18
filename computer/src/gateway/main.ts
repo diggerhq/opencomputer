@@ -49,6 +49,7 @@ import { Vault } from './vault.js';
 import { createSecretsUi, SECRET_VIEW, type SecretsUi } from './secrets-ui.js';
 import { createVariablesUi } from './variables-ui.js';
 import { createRouter, type Ctx, type Msg, type Router } from './routing.js';
+import { ACCESS_VIEW } from '../access-views.js';
 import { errorText, log } from '../log.js';
 
 loadEnv();
@@ -137,7 +138,15 @@ const hub = new Hub({
   secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
   requestSecret: (from, req) => secretsUi.request(from, req, new WebClient(get('SLACK_BOT_TOKEN'), slackClientOptions)),
 });
-const secretsUi: SecretsUi = createSecretsUi({ store, vault, hub });
+const secretsUi: SecretsUi = createSecretsUi({
+  store,
+  vault,
+  hub,
+  deliver: (spec, h, client) => {
+    if (!slackRouter) throw new Error('Slack is not set up on the gateway');
+    return slackRouter.deliver(spec, h, client);
+  },
+});
 const variablesUi = createVariablesUi({ store, vault, hub });
 /** The current Slack router (rebuilt with Bolt on reload); spawn requests from hosts go through it. */
 let slackRouter: Router | undefined;
@@ -327,8 +336,9 @@ function boltHandler(): RequestListener {
     await router.route(m, ctx(client, body, context), false);
   });
 
-  app.event('agent_session_stopped' as any, async ({ event, body }: any) => {
-    await router.stop(event, body.event_id);
+  // `event.user`: who clicked stop (work 112: an outsider's click is ignored, anyone else but the owner is named).
+  app.event('agent_session_stopped' as any, async ({ event, body, client }: any) => {
+    await router.stop(event, body.event_id, client);
   });
 
   // post_card's link buttons (post-card.ts): Slack opens the URL; acked so it shows no error.
@@ -350,6 +360,19 @@ function boltHandler(): RequestListener {
     await ack();
     const a = action as { action_id: string; value?: string };
     await variablesUi.confirm(a.action_id, a.value ?? '', body, respond);
+  });
+
+  // Session access (work 112, access-ui.ts): Access and Change… open the modal; Allow and Not now answer a request to drive.
+  app.action(/^ac:/, async ({ ack, action, body, client }) => {
+    await ack();
+    await router.access.click((action as { action_id: string }).action_id, body, client);
+  });
+
+  app.view(ACCESS_VIEW, async ({ ack, view, body, client }) => {
+    const r = await router.access.submit(view, body.user.id, client);
+    if (r && 'errors' in r) return void (await ack({ response_action: 'errors', errors: r.errors }));
+    await ack();
+    await r?.done().catch((e) => log.warn('access saved, follow-up failed:', errorText(e)));
   });
 
   app.view(SECRET_VIEW, async ({ ack, view, body, client }) => {

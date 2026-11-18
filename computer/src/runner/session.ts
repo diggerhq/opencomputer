@@ -26,7 +26,7 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
+import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
 import type { ThreadHooks } from './threads.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
@@ -152,6 +152,8 @@ export class Session {
   private addressed = true;
   /** The prompt a typed reply answers (prompts.ts), by prompt id. */
   openPrompt?: string;
+  /** Work 112: the last sender when the gateway said they drive (not own) it; prompts wait on them. A participant's `!stop` leaves it. */
+  driver?: string;
   maxModel?: string; // the route's model ceiling (model-access.ts): `!model` stays at or below it
   private costUsd = 0;
   private ctxTokens = 0;
@@ -178,14 +180,10 @@ export class Session {
   get client() { return this.thread.client; }
   set client(c: WebClient) { this.thread.client = c; }
 
-  get isBusy() {
-    return this.busy;
-  }
+  get isBusy() { return this.busy; }
 
   /** The thread's id in a copyable form: the fork directory and branch suffix (`sp/<id>`). */
-  get threadId() {
-    return safeKey(this.info.key);
-  }
+  get threadId() { return safeKey(this.info.key); }
 
   private get out(): Segment {
     if (this.seg?.full) this.rotate();
@@ -204,9 +202,10 @@ export class Session {
    * side by side; the message goes to the model once names and attachments
    * are in, and output waits for the intro only to be posted below it.
    */
-  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom) {
+  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom, role?: Delivery['role']) {
     this.shadow.cancel();
     this.info.userId = userId ?? this.info.userId;
+    if (role !== 'participant') this.driver = role === 'driver' ? userId : undefined;
     const urgent = raw.startsWith('!!');
     const { tier, rest: typed } = takeTier(urgent ? raw.slice(2).trim() : raw);
     const intro = this.intro();
@@ -582,7 +581,7 @@ export class Session {
 
   /** A brand-new session's first reply, above any output (thread.ts); posted once, never throws. */
   private intro() {
-    if (this.fresh) this.introducing ??= this.timed('intro', this.thread.intro(this.threadId));
+    if (this.fresh) this.introducing ??= this.timed('intro', this.thread.intro(this.threadId, this.info.key));
     return this.introducing;
   }
 

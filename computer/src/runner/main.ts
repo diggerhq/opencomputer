@@ -37,6 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { WebClient } from '@slack/web-api';
 import { Session, type SessionHooks, prompts } from './session.js';
+import { mayAnswer } from './prompts.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
 import { type Linked, withLinked } from '../links.js';
 import { SessionSecrets, redactingClient } from './session-secrets.js';
@@ -44,7 +45,7 @@ import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
 import { fakeSlack } from '../dev/fake-slack.js';
 import { lines, pidFileFor, send } from '../ipc.js';
-import { HOST_RUN, RUNNER_TOKEN_DIR, isSlackSpec, type RunnerApi } from '../protocol.js';
+import { HOST_RUN, NOT_ASKED, RUNNER_TOKEN_DIR, isSlackSpec, type RunnerApi } from '../protocol.js';
 import { type AttachedApi, attachApi } from './api/attach.js';
 import { NullSurface } from './api/surface.js';
 import { RunningSubagents } from './api/running.js';
@@ -423,7 +424,7 @@ async function handle(m: Delivery, trace?: TraceContext) {
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
   const fetching = fetchAttachments(m.files, botToken, ss.key);
   const atts = m.files?.length ? turns.timed('attachments', fetching, { count: m.files.length }) : fetching;
-  await s.send(withLinked(m.text, m.linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned);
+  await s.send(withLinked(m.text, m.linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, undefined, m.role);
   // The gateway set the status to `processing` on receipt. A reply that only
   // answered an open prompt starts no turn, and nothing would clear it.
   if (!s.isBusy) void s.setStatus('active');
@@ -483,6 +484,7 @@ async function onHost(m: HostToRunner) {
         (async () => {
           const p = prompts.get(m.promptId);
           if (!p) throw new Error('no such prompt (answered already, or the runner restarted)');
+          if (!mayAnswer(p, m.role, m.userId)) throw new Error(NOT_ASKED); // the gateway answers with S6 (work 112)
           await p.onAction(m.value, m.userId);
         })(),
       );
