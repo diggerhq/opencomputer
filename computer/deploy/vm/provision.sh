@@ -115,7 +115,7 @@ GO_VERSION="${GO_VERSION:-}"
 NODE_MAJOR="${NODE_MAJOR:-24}"
 PLAYWRIGHT_VERSION="${PLAYWRIGHT_VERSION:-1.64.1}"
 # Pinned: the Codex harness speaks this version's app-server protocol (work 082; src/runner/harness/codex/).
-CODEX_VERSION="${CODEX_VERSION:-0.163.0}"
+CODEX_VERSION="${CODEX_VERSION:-0.170.0}"
 INSTALL_DOCKER="${INSTALL_DOCKER:-0}"
 CODE_ONLY="${CODE_ONLY:-0}"
 

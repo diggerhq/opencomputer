@@ -12,7 +12,7 @@ export const DEFAULT_EFFORT = 'medium' as const;
 
 export type Tier = 'smart' | 'fast' | 'default';
 
-/** Each harness's model for each tier; Codex's are in its catalog (`model/list`, 0.163.0). */
+/** Each harness's model for each tier; Codex's are in its catalog (`model/list`, 0.170.0). */
 export const TIERS: Record<HarnessName, Record<Tier, string>> = {
   claude: {
     smart: 'claude-fable-5-2',
