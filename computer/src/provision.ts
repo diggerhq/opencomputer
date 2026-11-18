@@ -33,6 +33,8 @@ export const SCOPES = [
   'im:read',
   'im:write',
   'chat:write',
+  // Posts a person's web messages into their thread under their own name and photo (runner/api/api.ts echo).
+  'chat:write.customize',
   'files:read',
   'files:write',
   'reactions:write',

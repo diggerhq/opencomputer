@@ -35,6 +35,8 @@ export interface Surface extends Names {
   /** A subagents panel; `stop` stops one subagent. */
   panel(stop: (taskId: string) => Promise<void>): AgentsPanel;
   say(text: string): Promise<void>;
+  /** `text` under Slack user `id`'s name and photo; false (nothing posted) when Slack won't. */
+  sayAs(id: string, text: string): Promise<boolean>;
   post(text: string, blocks: KnownBlock[]): Promise<string>;
   update(ts: string, text: string, blocks: KnownBlock[], what?: string): Promise<void>;
   delete(ts: string, what?: string): Promise<void>;
@@ -92,6 +94,9 @@ export class NullSurface implements Surface {
     return new AgentsPanel(this.client, this.target, stop);
   }
   async say() {}
+  async sayAs() {
+    return false;
+  }
   async post() {
     return '';
   }

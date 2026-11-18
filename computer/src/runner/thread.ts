@@ -41,7 +41,9 @@ export interface ContextBarItem {
 
 export class SlackThread implements Names {
   private warned = new Set<string>();
-  private static names = new Map<string, { name?: string; at: number }>();
+  private static names = new Map<string, { name?: string; image?: string; at: number }>();
+  /** Whether the app may post under another name and photo (`chat:write.customize`), asked once per process. */
+  private static customize?: Promise<boolean>;
   private channelName?: string;
 
   constructor(
@@ -196,14 +198,34 @@ export class SlackThread implements Names {
 
   /** A person's display name (falling back to real name), cached for the process; misses for ten minutes. */
   async nameOf(id: string): Promise<string | undefined> {
+    return (await this.profileOf(id))?.name;
+  }
+
+  /** A person's display name and photo, cached as `nameOf` says. */
+  private async profileOf(id: string): Promise<{ name?: string; image?: string } | undefined> {
     const c = SlackThread.names.get(id);
-    if (c && (c.name || Date.now() - c.at < MISS_TTL_MS)) return c.name;
+    if (c && (c.name || Date.now() - c.at < MISS_TTL_MS)) return c;
     const r = await within(() => this.client.users.info({ user: id })).catch((e) => this.warn('users.info', e));
     const u = r?.user;
     const name = u?.profile?.display_name || u?.real_name || u?.name || undefined;
+    const image = u?.profile?.image_192 || u?.profile?.image_72 || undefined;
     // A timeout or error is tried again next message; only Slack's answer is cached.
-    if (r) SlackThread.names.set(id, { name, at: Date.now() });
-    return name;
+    if (r) SlackThread.names.set(id, { name, image, at: Date.now() });
+    return { name, image };
+  }
+
+  /** `text` posted under Slack user `id`'s name and photo, as Devin does; false (nothing posted) when the app lacks `chat:write.customize` or Slack can't name them. */
+  async sayAs(id: string, text: string): Promise<boolean> {
+    SlackThread.customize ??= within(() => this.client.auth.test())
+      .then((r) => !!r?.response_metadata?.scopes?.includes('chat:write.customize'))
+      .catch((e) => (this.warn('auth.test', e), false));
+    if (!(await SlackThread.customize)) return false;
+    const p = await this.profileOf(id);
+    if (!p?.name) return false;
+    return this.client.chat
+      .postMessage({ channel: this.info.channel, ...this.thread, text, username: p.name, ...(p.image ? { icon_url: p.image } : {}) })
+      .then(() => true)
+      .catch((e) => (this.warn('say', e), false));
   }
 
   /** The conversation by name (`#eng`, `a DM`), looked up once per session; a failure is retried next time. */

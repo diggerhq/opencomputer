@@ -26,13 +26,13 @@ afterEach(async () => {
 });
 
 /** `before`: what the journal holds when the runner attaches (it then resumes, as attachApi does). */
-async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void) {
+async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[] } = {}) {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'], now: new Date('2026-10-26T00:00:00Z') });
   const T = await import('./testing.js');
   const { SessionApi } = await import('./api.js');
   const rec: unknown[] = [];
-  const t = T.fakeSession(rec);
+  const t = T.fakeSession(rec, o);
   const tmp = tempSession();
   const log = await openLog(tmp.file, tmp.sessionId);
   before?.(log);
@@ -89,6 +89,21 @@ describe('SessionApi', () => {
     await w.t.feed(w.T.first(), w.T.done());
     result(await w.call('turns.send', { input: 'from slack' }, { actor: { ...BOB.actor, via: 'slack' as const }, member: 'usr_bob' }));
     expect(posts().filter((t) => t.includes('from slack'))).toEqual([]);
+  });
+
+  it("the owner's message from the web posts under their own Slack name and photo when the app may; without the scope, quoted", async () => {
+    const posted = async (scopes: string[], who: typeof ANN_CTX) => {
+      const w = await world(undefined, { scopes });
+      result(await w.call('turns.send', { input: 'ship <it>' }, { ...who, actor: { ...who.actor, via: 'dashboard' as const } }));
+      return w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: object }).args);
+    };
+    expect(await posted(['chat:write', 'chat:write.customize'], ANN_CTX)).toEqual([
+      expect.objectContaining({ text: 'ship &lt;it&gt;', username: 'name-U1', icon_url: 'https://img/U1' }),
+    ]);
+    expect(await posted(['chat:write', 'chat:write.customize'], BOB)).toEqual([expect.objectContaining({ text: '*Bob* from the web:\n> ship &lt;it&gt;' })]);
+    const [plain] = await posted(['chat:write'], ANN_CTX);
+    expect(plain).not.toHaveProperty('username');
+    expect(plain).toMatchObject({ text: expect.stringContaining('from the web:\n> ship &lt;it&gt;') });
   });
 
   it('one idempotency key gives one turn', async () => {

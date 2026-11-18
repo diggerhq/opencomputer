@@ -22,8 +22,9 @@
 //   (asks.ts, prompts.ts); a stop of a subagent is the panel's Stop button;
 // - Slack sees what it saw before, plus the words: a message into a Slack
 //   session from anywhere else (the dashboard, the CLI, the API) is posted
-//   into its thread, quoted under its sender's name, before the session takes
-//   it, so the thread reads as the whole conversation. Nothing else here posts
+//   into its thread before the session takes it, so the thread reads as the
+//   whole conversation: the owner's own words under their Slack name and photo
+//   when the app has `chat:write.customize`, anyone else's quoted under their name. Nothing else here posts
 //   to it beyond what the session's own commands (a model switch) say.
 
 import { log } from '../../log.js';
@@ -66,16 +67,22 @@ const fail = (code: string, message: string, status: number, extra: Record<strin
   error: apiError(code, message, status, { retryable: status >= 500, ...extra }),
 });
 const actorOf = (a: ApiActor): Actor => ({ ...a, name: a.name ?? a.id });
+/** A person's name for the API: their own, else their git author name without the " via Computer" commits carry. */
+export const personName = (p: Person): string => p.name ?? p.gitName.replace(/ via Computer$/, '');
 
 /** Longest echo of a message into Slack; the rest is cut. */
 export const ECHO_MAX = 3_000;
 const VIA: Record<string, string> = { dashboard: 'the web', opc: 'the CLI', api: 'the API' };
 
+/** A message from outside Slack as posted under its sender's own name: the words, cut, mentions inert. */
+export function echoPlain(text: string): string {
+  const cut = text.length > ECHO_MAX ? `${text.slice(0, ECHO_MAX)}…` : text;
+  return cut.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /** A message from outside Slack as its thread shows it: the sender, where from, and the words quoted (mentions inert). */
 export function echoText(text: string, actor: Actor): string {
-  const cut = text.length > ECHO_MAX ? `${text.slice(0, ECHO_MAX)}…` : text;
-  const safe = cut.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const quoted = safe.split('\n').map((l) => `> ${l}`).join('\n');
+  const quoted = echoPlain(text).split('\n').map((l) => `> ${l}`).join('\n');
   return `*${actor.name}* from ${VIA[actor.via] ?? actor.via}:\n${quoted}`;
 }
 
@@ -147,7 +154,7 @@ export class SessionApi implements Writer {
   /** A Slack user as the API names people: the owner by their member id, anyone else by their Slack id. */
   private slackActor(u: string | undefined): Actor {
     const owner = this.o.owner;
-    if (!u || u === owner.slackUserId) return { id: owner.userId ?? owner.slackUserId ?? 'owner', name: owner.name ?? owner.gitName, via: 'slack', client: null };
+    if (!u || u === owner.slackUserId) return { id: owner.userId ?? owner.slackUserId ?? 'owner', name: personName(owner), via: 'slack', client: null };
     return { id: u, name: u, via: 'slack', client: null };
   }
 
@@ -228,9 +235,12 @@ export class SessionApi implements Writer {
     return this.sent(d.turnId, 'queued');
   }
 
-  /** A message from outside Slack, into a Slack session's thread (never throws: `say` logs Slack's refusals). */
+  /** A message from outside Slack, into a Slack session's thread (never throws: `say` logs Slack's refusals). The owner's
+   * own words post under their Slack name and photo when the app may (`chat:write.customize`); anyone else's, quoted. */
   private async echo(text: string, actor: Actor) {
     if (actor.via === 'slack' || !this.session.thread.slack) return;
+    const { owner } = this.o;
+    if (owner.slackUserId && actor.id === owner.userId && (await this.session.thread.sayAs(owner.slackUserId, echoPlain(text)))) return;
     await this.session.thread.say(echoText(text, actor));
   }
 
