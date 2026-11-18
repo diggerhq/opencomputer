@@ -251,9 +251,45 @@ not refuse files that contain them. Within one scope a name is either a secret
 or a variable. A variable does not replace a secret; setting a secret over a
 variable is allowed, because that only tightens it.
 
+### Who can drive a session
+
+A session runs as its owner, the person who started it: their repositories,
+secrets and credentials. Who else may give it instructions is the session's
+`drivers`: everyone in the thread (`open`, the default), only the owner, or
+the owner and named people. A thread whose session is restricted carries a 🔒
+reaction on its first message.
+
+- **The owner and drivers** instruct the session and answer its prompts. A
+  prompt raised while a driver's message was running reads `Waiting on @them`
+  and only they or the owner can click it. Settings commands (`!mode`,
+  `!restart`, `!done`) stay the owner's.
+- **Other enabled people in the thread** (participants) are not delivered.
+  Their messages are kept as context and reach the session with the next
+  message from someone who drives, marked as context. Mentioning the bot asks
+  the owner once, in the thread, with `Allow` and `Not now`; `Allow` lets them
+  drive and runs the message that asked. They can still `!stop`, `!help` and
+  `!status`.
+- **Anyone not in `SP_PEOPLE`** is ignored, as before.
+
+The first reply's `Access` button opens the settings; `!access` does the same
+in text and is never delivered:
+
+| Typed | Does |
+|---|---|
+| `!access` | who drives now (`Change…` for the owner and admins) |
+| `!access open` / `!access owner` | everyone in the thread / only the owner |
+| `!access @a @b` | the owner and these people |
+| `!access add @a` / `!access remove @a` | edit the list |
+| `!access default open` / `!access default owner` | what new sessions start with (admins) |
+
+The owner and admins (`"admin": true` in `SP_PEOPLE`) change it; only people
+in `SP_PEOPLE` can be named. A thread started with `spawn_thread` copies its
+parent's setting. Stored in the gateway's SQLite (`sessions.drivers`,
+`session_context`, `access_requests`, `settings`). Design: work 112.
+
 ### Commands and code channels
 
-`!help` `!stop`/`!esc` `!! <text>` `!mode <m>` `!model <tier|id>` `!status` `!diff` `!restart` `!secret` `!var` `!done`.
+`!help` `!stop`/`!esc` `!! <text>` `!mode <m>` `!model <tier|id>` `!status` `!diff` `!restart` `!secret` `!var` `!access` `!done`.
 Start any message with `+smart` or `+fast` (or `+default`) to switch the
 thread's model and send the rest, e.g. `@Computer +smart redesign the router`
 or `@Computer +fast ch bump the deps`. People pick a tier, not a model: the tiers
@@ -511,11 +547,13 @@ src/
   variables.ts      `!var` syntax and how values are shown (gateway; ported to the backend)
   slack-text.ts     Slack message markup → plain text for the model
   links.ts          Slack permalinks in a message → linked thread content, if everyone may see it
+  access.ts         session roles: who may do what, `!access` syntax, the strings (access-views.ts: Block Kit)
   build.ts          which commit is running (shown in footers and !status)
   log.ts, env.ts    logging; .env load and write-back
   gateway/          Slack endpoint, routing, SQLite tables, host WebSockets;
                     vault.ts and secrets-ui.ts: secrets storage, !secret and the modal;
-                    variables-ui.ts: !var; threads.ts: read_thread and post_thread
+                    variables-ui.ts: !var; threads.ts: read_thread and post_thread;
+                    access-store.ts, access-flow.ts, access-ui.ts: who can drive a session
   host/             host agent: forks, runner lifecycle, token relay;
                     previews.ts: preview URLs (cloudflared, preview-proxy.ts, preview-probe.ts)
   runner/           one session per process:

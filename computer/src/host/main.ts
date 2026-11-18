@@ -427,7 +427,7 @@ async function onGateway(m: GatewayToHost) {
     }
     case 'action': {
       const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId })
+      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId, ...(m.role ? { role: m.role } : {}) })
         : Promise.reject(new Error('no runner for this session (the prompt ended with it)')));
     }
     case 'stop': {

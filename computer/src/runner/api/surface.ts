@@ -44,7 +44,8 @@ export interface Surface extends Names {
   showContext(s: { cwd: string; model?: string; mode: string; costUsd: number; ctxTokens: number }): Promise<void>;
   setDiffView(diff: string): Promise<void>;
   archive(): Promise<void>;
-  intro(threadId: string): Promise<void>;
+  /** `sessionKey`: for the Access button (work 112). */
+  intro(threadId: string, sessionKey: string): Promise<void>;
   userName(id: string): Promise<string>;
 }
 

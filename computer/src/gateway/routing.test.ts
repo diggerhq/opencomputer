@@ -1,62 +1,15 @@
 // The router against an in-memory store, a recording hub and a recording
 // Slack client: who gets a session, what reaches the host, and what Slack sees.
+// Session roles' rules (work 112) are access-flow.test.ts, on the same fakes.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { WebClient } from '@slack/web-api';
-import type { Delivery, SlackPerson, SlackSessionSpec } from '../protocol.js';
 import type { ModelRoutes } from '../protocol-model.js';
 import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
 import { withLinked } from '../links.js';
 import { type Ctx, createRouter, type Msg, takeHarness } from './routing.js';
-
-const owner: SlackPerson = { slackUserId: 'U1', dir: 'owner', gitName: 'Owner', gitEmail: 'owner@example.com' };
-const BOT = 'UBOT';
-
-function fakeStore() {
-  const sessions = new Map<string, SlackSessionSpec>();
-  const people = new Map<string, SlackPerson>([[owner.slackUserId, owner]]);
-  const events = new Set<string>();
-  return {
-    sessions,
-    session: (key: string) => (sessions.has(key) ? { spec: sessions.get(key)!, updated: 0 } : undefined),
-    putSession: (spec: SlackSessionSpec) => void sessions.set(spec.key, spec),
-    person: (id: string) => people.get(id),
-    firstSeen: (id: string) => (events.has(id) ? false : (events.add(id), true)),
-  };
-}
-
-function fakeHub(online = true) {
-  const delivered: { spec: SlackSessionSpec; msg: Delivery }[] = [];
-  const stops: string[] = [];
-  return {
-    delivered,
-    stops,
-    get connected() {
-      return online ? ['host-1'] : [];
-    },
-    deliver: async (spec: SlackSessionSpec, msg: Delivery) => (online ? (delivered.push({ spec, msg }), { ok: true }) : 'queued'),
-    action: async () => ({ ok: true }),
-    stop: async (key: string) => (stops.push(key), { ok: true }),
-  };
-}
-
-function fakeClient() {
-  const calls: { method: string; args: Record<string, unknown> }[] = [];
-  const rec =
-    (method: string, result: Record<string, unknown> = { ok: true }) =>
-    async (args: Record<string, unknown>) => (calls.push({ method, args }), result);
-  return {
-    calls,
-    of: (method: string) => calls.filter((c) => c.method === method).map((c) => c.args),
-    chat: { postMessage: rec('chat.postMessage', { ok: true, ts: '2.0' }), postEphemeral: rec('chat.postEphemeral') },
-    reactions: { add: rec('reactions.add') },
-    agents: {
-      sessions: { setStatus: rec('agents.sessions.setStatus'), rename: rec('agents.sessions.rename') },
-      conversations: { create: rec('agents.conversations.create', { ok: true, channel_id: 'CCODE' }) },
-    },
-  };
-}
+import { BOT, fakeClient, fakeHub, fakeStore, owner } from './test-fakes.js';
 
 let store: ReturnType<typeof fakeStore>;
 let hub: ReturnType<typeof fakeHub>;

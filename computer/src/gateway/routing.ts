@@ -12,12 +12,15 @@
 //   read_thread / post_thread from a session → threads.ts, with this router's link resolver (work 049 L3)
 //   `!secret …` wherever the bot is addressed → handled here, never delivered (secrets-ui.ts, work 046)
 //   `!var …` likewise (variables-ui.ts)
+//   `!access …`, `ac:` buttons, the access modal → access-ui.ts (work 112)
 //
 // Only people in the people table get a session; anyone else gets an ephemeral
-// "not enabled for you yet" and nothing else.
+// "not enabled for you yet" and nothing else. In a session, who may instruct,
+// answer and stop is access-flow.ts's (work 112): a message that may not
+// instruct is refused, held as context or dropped.
 
 import type { WebClient } from '@slack/web-api';
-import { decodeActionId, type Delivery, type HarnessName, type PermissionMode, type SlackPerson, type SlackSessionSpec, type SpawnRequest, type SpawnResult } from '../protocol.js';
+import { decodeActionId, type Delivery, type HarnessName, NOT_ASKED, type PermissionMode, type SlackPerson, type SlackSessionSpec, type SpawnRequest, type SpawnResult } from '../protocol.js';
 import type { SlackFile } from '../protocol.js';
 import type { ModelRoutes } from '../protocol-model.js';
 import { addressed, decodeSlack } from '../slack-text.js';
@@ -29,6 +32,9 @@ import type { Hub, Reply } from './hosts.js';
 import type { SecretsUi } from './secrets-ui.js';
 import type { VariablesUi } from './variables-ui.js';
 import { log } from '../log.js';
+import { can, commandAction, initialDrivers, role } from '../access.js';
+import { accessOf, actor, createAccessFlow, type DeliveredRole } from './access-flow.js';
+import { createAccessUi } from './access-ui.js';
 
 export interface Msg {
   channel: string;
@@ -88,6 +94,13 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
   // Reading links takes a moment; a session's messages still reach it in the order they were posted.
   const sending = new Map<string, Promise<unknown>>();
 
+  const flow = createAccessFlow({
+    store,
+    deliver: (spec, h, r, client) => forward(spec, h.m, h.text, client, h.mentioned, h.inline, false, false, r),
+    name: resolveLinks.nameOf,
+  });
+  const access = createAccessUi({ store, flow, name: resolveLinks.nameOf });
+
   const lookup = (channel: string, threadTs?: string) =>
     store.session(channel) ?? (threadTs ? store.session(`${channel}:${threadTs}`) : undefined);
 
@@ -103,12 +116,19 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
     const existing = lookup(m.channel, m.thread_ts);
     if (!existing && !mentioned && m.channel_type !== 'im') return;
     const person = store.person(m.user);
-    // Someone else talking in a session's thread is not asking for access.
-    if (!person) return mentioned || !existing ? notEnabled(m, client) : undefined;
-    if (secrets && /^!secrets?(\s|$)/i.test(text)) return secrets.command(text, m, person, existing?.spec, client);
-    if (variables && (await variables.command(text, m, person, existing?.spec, client))) return;
-    // In a DM or a code channel every message is for the bot.
-    if (existing) return forward(existing.spec, m, text, client, mentioned || m.channel_type === 'im' || existing.spec.kind === 'channel', a.inline);
+    if (!person && !existing) return notEnabled(m, client);
+    if (person && secrets && /^!secrets?(\s|$)/i.test(text)) return secrets.command(text, m, person, existing?.spec, client);
+    if (person && variables && (await variables.command(text, m, person, existing?.spec, client))) return;
+    if (commandAction(text) === 'access') return access.command(text, m, existing?.spec, client);
+    if (existing) {
+      // In a DM or a code channel every message is for the bot.
+      const forBot = mentioned || m.channel_type === 'im' || existing.spec.kind === 'channel';
+      const r = await flow.message(existing.spec, { m, text, mentioned: forBot, inline: a.inline }, client);
+      // Someone else talking in a session's thread is not asking for access.
+      if (r === 'outsider') return mentioned ? notEnabled(m, client) : undefined;
+      return r ? forward(existing.spec, m, text, client, forBot, a.inline, false, false, r) : undefined;
+    }
+    if (!person) return;
 
     // `+codex` first; then `+smart ch <task>` and `ch +smart <task>` both work; the tier stays on the task for the session.
     const { harness, text: asked } = takeHarness(text);
@@ -132,14 +152,15 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
       ...(harness ? { harness } : {}),
     };
     store.putSession(spec);
+    flow.begin(spec, initialDrivers(store.access.accessDefault()), client);
     log.info(`new session ${spec.key} for ${person.dir}`);
     // Mentioned mid-thread: the session also gets the replies above (it only sees what reaches it from now on).
     const midThread = spec.kind === 'thread' && !!m.thread_ts && m.thread_ts !== m.ts;
-    return forward(spec, m, task, client, true, a.inline, midThread, spec.kind === 'thread');
+    return forward(spec, m, task, client, true, a.inline, midThread, spec.kind === 'thread', 'owner');
   }
 
-  /** Feedback first (< 1 s, no await), then hand to the host. */
-  async function forward(spec: SlackSessionSpec, m: Msg, text: string, client: WebClient, mentioned?: boolean, inline = false, midThread = false, fresh = false) {
+  /** Feedback first (< 1 s, no await), then hand to the host; `role`: the sender's (access-flow.ts), which also brings held context. */
+  async function forward(spec: SlackSessionSpec, m: Msg, text: string, client: WebClient, mentioned?: boolean, inline = false, midThread = false, fresh = false, role?: DeliveredRole) {
     const msg: Delivery = {
       userId: m.user!,
       text,
@@ -147,6 +168,7 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
       ...(m.files?.length ? { files: m.files } : {}),
       ...(mentioned !== undefined ? { mentioned } : {}),
       ...(mentioned && inline ? { mentionedInline: true } : {}),
+      ...(role ? { role } : {}),
     };
     const command = text.startsWith('!') && !text.startsWith('!!');
     const online = hub.connected.length > 0;
@@ -160,13 +182,25 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
       mentioned !== undefined && !command
         ? Promise.all([midThread ? threadAbove(spec, m, client) : [], linkedFor(spec, m.user!, text, client).catch(() => [])]).then((r) => r.flat())
         : [];
-    const ready = Promise.all([sending.get(spec.key), reading]);
+    // Held context is read in turn too, so one message takes it and the next does not; commands never carry it.
+    const withContext = (role === 'owner' || role === 'driver') && !command;
+    const ready = Promise.all([sending.get(spec.key), reading]).then(async ([, linked]) => ({
+      linked,
+      held: withContext ? await flow.context(spec, client).catch(() => undefined) : undefined,
+    }));
     sending.set(spec.key, ready);
-    const [, linked] = await ready;
+    const { linked, held } = await ready;
     if (sending.get(spec.key) === ready) sending.delete(spec.key);
-    const all = [...forwarded(m.attachments), ...linked];
+    const all = [...forwarded(m.attachments), ...linked, ...(held?.linked ? [held.linked] : [])];
     if (all.length) msg.linked = all;
-    const r = await hub.deliver(spec, msg);
+    let accepted = false;
+    let r: Reply | 'queued';
+    try {
+      r = await hub.deliver(spec, msg);
+      accepted = r === 'queued' || r.ok;
+    } finally {
+      held?.settle(accepted);
+    }
     if (r === 'queued') return ephemeral(client, m.channel, m.user!, OFFLINE, m.thread_ts);
     if (!r.ok) await failed(spec, r, client);
   }
@@ -260,24 +294,30 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
     }
   }
 
-  /** Slack's native stop button on a processing agent session. */
-  async function stop(ev: { channel: string; thread_ts?: string }, eventId?: string) {
+  /** Slack's native stop button on a processing agent session; `user`: who clicked, when Slack says. */
+  async function stop(ev: { channel: string; thread_ts?: string; user?: string }, eventId?: string, client?: WebClient) {
     if (!fresh(eventId)) return;
     const row = lookup(ev.channel, ev.thread_ts);
-    log.info('stop button', ev.channel, ev.thread_ts, !!row);
+    log.info('stop button', ev.channel, ev.thread_ts, ev.user, !!row);
     if (!row) return;
+    if (ev.user && !can(accessOf(store, row.spec), actor(store, ev.user), 'stop')) return log.info(`stop ${row.spec.key} by ${ev.user} ignored`);
     const r = await hub.stop(row.spec.key);
-    if (!r.ok) log.warn(`stop ${row.spec.key}: ${r.error}`);
+    if (!r.ok) return log.warn(`stop ${row.spec.key}: ${r.error}`);
+    if (ev.user && ev.user !== row.spec.owner.slackUserId && client) await flow.stopped(row.spec, ev.user, client);
   }
 
   /** A prompt button: `p:<base64url(sessionKey)>:<promptId>:<value>`. */
   async function action(actionId: string, userId: string, client: WebClient, channel?: string) {
     const a = decodeActionId(actionId);
     if (!a) return log.warn('unknown action id', actionId);
-    if (!store.person(userId)) return channel ? ephemeral(client, channel, userId, NOT_ENABLED) : undefined;
-    if (!store.session(a.sessionKey)) return log.warn('action for unknown session', a.sessionKey);
-    const r = await hub.action(a.sessionKey, a.promptId, a.value, userId);
+    const spec = store.session(a.sessionKey)?.spec;
+    if (!spec) return log.warn('action for unknown session', a.sessionKey);
+    const acc = accessOf(store, spec);
+    const u = actor(store, userId);
+    if (!can(acc, u, 'answer')) return flow.notAsked(spec, userId, client);
+    const r = await hub.action(a.sessionKey, a.promptId, a.value, userId, role(acc, u) === 'owner' ? 'owner' : 'driver');
     if (r === 'queued') return channel ? ephemeral(client, channel, userId, OFFLINE) : undefined;
+    if (!r.ok && r.error === NOT_ASKED) return flow.notAsked(spec, userId, client);
     if (!r.ok) log.warn(`action for ${a.sessionKey}: ${r.error}`);
   }
 
@@ -319,19 +359,21 @@ export function createRouter({ store, hub, mode, models, secrets, variables }: R
       ...(req.tier && req.tier !== 'default' ? { model: TIERS[parent.harness ?? 'claude'][req.tier] } : !req.tier && parent.model ? { model: parent.model } : {}),
     };
     store.putSession(spec);
+    // Copied now, like mode and model; later changes to the parent do not follow.
+    flow.begin(spec, store.access.drivers(from), client);
     log.info(`spawned ${spec.key} from ${from} for ${owner.dir}`);
     const text =
       `${req.task}\n\nBrief: ${req.brief}\n` +
       `Started by the session in thread ${from}${parentUrl ? ` (${parentUrl})` : ''}. ` +
       'Read the brief first; claim and report there.';
     // Not awaited: starting the runner can take longer than the parent should wait.
-    void forward(spec, { channel, ts: threadTs, thread_ts: threadTs, user: owner.slackUserId }, text, client).catch((e) =>
+    void forward(spec, { channel, ts: threadTs, thread_ts: threadTs, user: owner.slackUserId }, text, client, undefined, false, false, false, 'owner').catch((e) =>
       log.warn(`deliver to spawned ${spec.key}:`, e?.message ?? e),
     );
     return { key: spec.key, url: await link(channel, threadTs) };
   }
 
-  return { route, stop, action, spawn, threads: threadAccess(store, resolveLinks) };
+  return { route, stop, action, spawn, access, threads: threadAccess(store, resolveLinks) };
 }
 
 export type Router = ReturnType<typeof createRouter>;

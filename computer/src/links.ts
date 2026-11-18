@@ -284,7 +284,12 @@ export function linkResolver() {
     }
   }
 
-  return Object.assign(resolve, { one, thread: above });
+  /** A person's name from the cached directory (work 112: held context, refusals); their id when unknown or unreadable. */
+  async function name(client: WebClient, id: string): Promise<string> {
+    return (await directory(client).catch(() => undefined))?.get(id)?.name ?? id;
+  }
+
+  return Object.assign(resolve, { one, thread: above, nameOf: name });
 }
 
 export type LinkResolver = ReturnType<typeof linkResolver>;
