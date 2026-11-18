@@ -18,6 +18,24 @@ const ev = (
 })
 
 describe('buildTranscript', () => {
+  it('shows a Slack message\'s words without the computer\'s header, and its sender without " via Computer"', () => {
+    const [item] = buildTranscript([
+      {
+        ...ev('message.received', {
+          input:
+            '[Slack: from Mo (<@U1>) in #dev, mentions you]\nhello\n[Slack: from Mo (<@U1>) in #dev, does not mention you]\nand more',
+        }),
+        actor: { id: 'U1', name: 'Mo via Computer', via: 'slack' },
+      },
+    ])
+    expect(item).toMatchObject({
+      kind: 'user',
+      text: 'hello\nand more',
+      author: 'Mo',
+      via: 'slack',
+    })
+  })
+
   it('folds tool calls between messages into one work step', () => {
     const items = buildTranscript([
       ev('message.received', { input: 'Fix the test' }),
