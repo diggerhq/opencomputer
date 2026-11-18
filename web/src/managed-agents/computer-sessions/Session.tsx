@@ -263,6 +263,9 @@ function Header({ id }: { id: string }) {
   )
 }
 
+/** Where a message came from, beside its author's name; the web's own messages say nothing. */
+const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
+
 // Members' emails by member id (`usr_…`). The computer derives that id from the
 // user id: the WorkOS id when there is one, else a hash (`memberId` in managed-agents).
 async function memberEmails(
@@ -327,7 +330,7 @@ function Item({
             {item.author || email ? (
               <span className="text-muted-foreground text-xs">
                 {item.author ?? email}
-                {item.via && item.via !== 'dashboard' ? ` via ${item.via}` : ''}
+                {item.via && VIA[item.via] ? ` · ${VIA[item.via]}` : ''}
               </span>
             ) : null}
             <div className="bg-secondary rounded-2xl rounded-br-md px-3.5 py-2 text-sm whitespace-pre-wrap">

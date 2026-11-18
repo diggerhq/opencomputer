@@ -37,6 +37,10 @@ export type TranscriptItem =
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 
+/** A Slack message's words without the `[Slack: from … in #eng, mentions you]` line the computer puts above each for the model. */
+export const withoutSlackHeader = (text: string | null): string | null =>
+  text && text.replace(/^\[Slack: from [^\n]*\]\n?/gm, '').trim()
+
 export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
   const items: TranscriptItem[] = []
   let work: Extract<TranscriptItem, { kind: 'work' }> | null = null
@@ -67,17 +71,16 @@ export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
     switch (e.type) {
       case 'message.received': {
         closeWork()
-        const text = str(d.input)
+        const text = withoutSlackHeader(str(d.input))
+        // Journals before the computer stopped using the git author name carry " via Computer".
+        const name = e.actor?.name?.replace(/ via Computer$/, '')
         if (text)
           items.push({
             kind: 'user',
             key: e.id,
             text,
             // The computer falls back to the member id (`usr_…`) when there is no name: not worth showing.
-            author:
-              e.actor?.name && e.actor.name !== e.actor.id
-                ? e.actor.name
-                : null,
+            author: name && e.actor?.name !== e.actor?.id ? name : null,
             authorId: e.actor?.id ?? null,
             via: e.actor?.via ?? null,
             at: e.createdAt,
