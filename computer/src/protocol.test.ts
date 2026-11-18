@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { decodeAccessId, encodeAccessId } from './action-ids.js';
 import { decodeActionId, encodeActionId, type GatewayToHost, type TraceContext } from './protocol.js';
 import fixture from './telemetry/deliver-trace.fixture.json' with { type: 'json' };
 
@@ -21,6 +22,43 @@ describe('action ids', () => {
     expect(decodeActionId('a:panel:stop:task')).toBeUndefined();
     expect(decodeActionId('p:not*base64:x:y')).toBeUndefined();
     expect(decodeActionId('')).toBeUndefined();
+  });
+});
+
+describe('access ids (work 112)', () => {
+  it('round-trip open, and allow/deny with the requester', () => {
+    const key = 'C0B:1791495325.000001';
+    expect(encodeAccessId(key, 'open')).toBe(`ac:${Buffer.from(key).toString('base64url')}:open`);
+    expect(decodeAccessId(encodeAccessId(key, 'open'))).toEqual({ sessionKey: key, verb: 'open' });
+    expect(decodeAccessId(encodeAccessId(key, 'allow', 'U0123ABC'))).toEqual({ sessionKey: key, verb: 'allow', userId: 'U0123ABC' });
+    expect(decodeAccessId(encodeAccessId('T1:C2:1791495325.000001', 'deny', 'W9'))).toEqual({
+      sessionKey: 'T1:C2:1791495325.000001',
+      verb: 'deny',
+      userId: 'W9',
+    });
+  });
+
+  it('encode the key as the prompt ids do, and stay under Slack’s 255 chars', () => {
+    const key = 'T0123456789:C0123456789:1791495325.000001';
+    expect(encodeAccessId(key, 'allow', 'U0123456789').split(':')[1]).toBe(encodeActionId(key, 'p', 'v').split(':')[1]);
+    expect(encodeAccessId(key, 'allow', 'U0123456789').length).toBeLessThan(255);
+  });
+
+  it('rejects anything else', () => {
+    const k = Buffer.from('C0B').toString('base64url');
+    for (const id of [
+      '',
+      `p:${k}:p1:allow`,
+      `ac:${k}`,
+      `ac:${k}:open:U1`,
+      `ac:${k}:allow`,
+      `ac:${k}:deny:`,
+      `ac:${k}:grant:U1`,
+      'ac:not*base64:open',
+      'ac::open',
+    ])
+      expect(decodeAccessId(id), id).toBeUndefined();
+    expect(decodeActionId(encodeAccessId('C0B', 'open'))).toBeUndefined();
   });
 });
 

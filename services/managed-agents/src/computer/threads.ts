@@ -31,9 +31,21 @@ export interface LinkedMessage {
 /**
  * One thread: its content, or why it isn't shared (calvin src/links.ts `Linked`).
  * `here`: the replies above a mention that started a session mid-thread, not a link.
+ * `context` (work 112): the messages held for this session from people who cannot
+ * instruct it (`url` and `where` empty), oldest first.
  */
 export type Linked =
-  | { url: string; ok: true; where: string; messages: LinkedMessage[]; omitted?: number; unread?: boolean; here?: boolean; forwarded?: boolean }
+  | {
+      url: string;
+      ok: true;
+      where: string;
+      messages: LinkedMessage[];
+      omitted?: number;
+      unread?: boolean;
+      here?: boolean;
+      forwarded?: boolean;
+      context?: boolean;
+    }
   | { url: string; ok: false; reason: string; here?: boolean };
 
 /** A message forwarded into Slack ("Forward message"): Slack attaches its copy instead of putting it in `text`. */

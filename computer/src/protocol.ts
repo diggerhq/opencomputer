@@ -140,6 +140,13 @@ export interface Delivery {
   linked?: Linked[];
   /** Work 084: a message from the API (opc, dashboard): who, and how it is delivered when busy. */
   api?: ApiDelivery;
+  /**
+   * Work 112: the sender's role in the session, as the gateway decided it (access.ts).
+   * `participant` only on `!stop`, `!esc`, `!help`, `!status`. A runner remembers a
+   * `driver`'s message so only they or the owner answer the prompts it causes.
+   * Absent (an older gateway, the API, a synthetic delivery): as before, anyone answers.
+   */
+  role?: 'owner' | 'driver' | 'participant';
 }
 
 /**
@@ -387,8 +394,12 @@ export type GatewayToHost =
       model?: ModelRoute; epoch?: number; lastSeq?: number }
   /** A session's secrets changed: the host passes them to its runner, if one is running. */
   | { t: 'secrets'; sessionKey: string; secrets: SessionSecret[] }
-  /** A button click on a prompt the session's runner posted. */
-  | { t: 'action'; id: string; sessionKey: string; promptId: string; value: string; userId: string }
+  /**
+   * A button click on a prompt the session's runner posted. `role` (work 112): the clicker's, `owner`
+   * or `driver`; a runner refuses a driver's click on a prompt another's message caused, with the
+   * reply error `not-asked` (NOT_ASKED). Absent: handled as before.
+   */
+  | { t: 'action'; id: string; sessionKey: string; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
   /** Slack's stop button or !stop: interrupt the running turn. */
   | { t: 'stop'; id: string; sessionKey: string }
   /** A push to a repository: fetch it in every workspace that has it (D4). */
@@ -436,7 +447,8 @@ export interface SpareReport {
 
 export type HostToRunner =
   | { t: 'deliver'; id: string; msg: Delivery; trace?: TraceContext }
-  | { t: 'action'; id: string; promptId: string; value: string; userId: string }
+  /** `role`: as on the gateway's `action` (work 112). */
+  | { t: 'action'; id: string; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
   | { t: 'stop'; id: string }
   /** Credentials refreshed (e.g. after a host reconnect). */
   | { t: 'credentials'; credentials: HostCredentials }
@@ -457,7 +469,8 @@ export type HostToRunner =
    */
   | { t: 'claim'; id: string; session: SessionSpec & { forkPath: string }; api?: RunnerApi }
   /** The session's owner changed (their name or email became known): commits from now on carry it. */
-  | { t: 'owner'; owner: Person } | HostToRunnerV4;
+  | { t: 'owner'; owner: Person }
+  | HostToRunnerV4;
 
 /** A repository checked out into a running session's fork (`checkout_repo`), cloned first if needed. */
 export interface CheckoutResult {
@@ -494,6 +507,9 @@ export type RunnerToHost =
   /** Work 077: the subscription refused `model`; the runner switched to `fallbackTo`. Forwarded as `model-denied`. */
   | { t: 'model-denied'; model: string; fallbackTo: string }
   | { t: 'reply'; id: string; ok: boolean; error?: string };
+
+/** The `reply` error of an `action` whose clicker may not answer that prompt (work 112): the gateway answers it with S6. */
+export const NOT_ASKED = 'not-asked';
 
 // Slack button ids: action-ids.ts (p:<base64url(sessionKey)>:<promptId>:<value>).
 export { decodeActionId, encodeActionId } from './action-ids.js';
