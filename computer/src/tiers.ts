@@ -20,9 +20,9 @@ export const TIERS: Record<HarnessName, Record<Tier, string>> = {
     default: process.env.MODEL || DEFAULT_MODEL,
   },
   codex: {
-    smart: 'gpt-6-astra',
+    smart: 'gpt-6.2-astra',
     fast: 'gpt-6-luna',
-    default: 'gpt-6.1-sol',
+    default: 'gpt-6.2-sol',
   },
 };
 
