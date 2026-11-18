@@ -105,8 +105,8 @@ async function gitHubOf(env: ComputerEdgeEnv, accountId: string) {
   return { connected: installations.length > 0, installations };
 }
 
-async function body(env: ComputerEdgeEnv, accountId: string, userId?: string, overview?: ComputerOverview) {
-  const view = overview ?? (await computerOf(env, accountId).overview(accountId, userId));
+async function body(env: ComputerEdgeEnv, accountId: string, userId?: string, overview?: ComputerOverview, verifiedEmail?: string) {
+  const view = overview ?? (await computerOf(env, accountId).overview(accountId, userId, verifiedEmail));
   return {
     computer: view.computer,
     slack: view.slack,
@@ -219,7 +219,7 @@ export async function routeComputerDashboard(
   if (reservedName(accountId) || isPoolId(accountId)) return problem(403, "forbidden", "Not an organization");
   const computer = computerOf(env, accountId);
 
-  if (route === "GET /v1/computer") return json(await body(env, accountId, identity.userId));
+  if (route === "GET /v1/computer") return json(await body(env, accountId, identity.userId, undefined, identity.verifiedEmail));
 
   // Work 081. The token is in the request body only: never logged, never echoed.
   if (route === "PUT /v1/computer/agent/claude") {

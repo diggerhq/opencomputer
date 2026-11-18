@@ -311,6 +311,8 @@ const INSTALL_NONCE_TTL_MS = 10 * 60_000;
 /** At most one pair of join-request DMs per requesting Slack user in this window. */
 export const JOIN_REQUEST_INTERVAL_MS = 24 * 3600_000;
 const PLAN_TTL_MS = 10 * 60_000;
+/** How long the card waits for an auto-link (Slack's users.lookupByEmail) before answering without it. */
+const AUTO_LINK_WAIT_MS = 3_000;
 const DEDUP_TTL_MS = 24 * 3600_000;
 /** Linked threads (work 049 L3) wait with an undelivered message this long at most. */
 const LINKED_TTL_MS = 10 * 60_000;
@@ -1166,9 +1168,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   // ------------------------------------------------------------------ dashboard (routes.ts)
 
   /** `userId`: the dashboard user asking, for their `agent` block (work 081); none, no block. */
-  async overview(accountId: string, userId?: string): Promise<ComputerOverview> {
+  async overview(accountId: string, userId?: string, verifiedEmail?: string): Promise<ComputerOverview> {
     this.bind(accountId);
     this.kickPool();
+    // The card shows the link it makes; Slack's lookup is bounded so the card never waits long.
+    if (userId && verifiedEmail && this.access.agents.autoLink && this.access.agents.needsLink(userId)) {
+      const link = this.access.agents.autoLink(userId, verifiedEmail).catch(() => undefined);
+      await Promise.race([link, new Promise((resolve) => setTimeout(resolve, AUTO_LINK_WAIT_MS))]);
+    }
     const teamId = this.setting("slackTeamId");
     const teamName = this.setting("slackTeamName");
     const botUserId = this.setting("slackBotUserId");

@@ -96,7 +96,7 @@ export const CATALOG = {
   // was refused (malformed|other_org|unknown|expired|wrong_purpose), or the connect's error code (failed); `failures`
   // before this redemption (redeemed) or with it (failed); `kept` the code survives.
   'subscription.connect_code': gateway('action', 'via', 'reason', 'failures', 'kept', 'purpose', 'subject'),
-  // A dashboard user linked to a Slack user (work 083; person_id the Slack id). `via` install|code; `replaced` an
+  // A dashboard user linked to a Slack user (work 083; person_id the Slack id). `via` install|code|email; `replaced` an
   // older link of either went; `moved` a stray `web:` row was re-keyed (a code link; should never happen).
   'subscription.linked': gateway('via', 'replaced', 'moved'),
   // `!link <code>` refused; `reason` malformed|unknown|expired|wrong_purpose|not_member; `failures` with this one

@@ -521,6 +521,7 @@ const SESSION_TTL_SEC = 60 * 60 * 8; // 8h
 interface WorkOSProfile {
   id: string;
   email: string;
+  email_verified?: boolean;
   first_name?: string;
   last_name?: string;
   organization_id?: string;
@@ -692,6 +693,10 @@ async function provisionWorkOSIdentity(
   }
 
   const userID = userRow.id;
+  // Every login: the email WorkOS verified, or none (the computer's auto-link trusts only this).
+  await env.OPENCOMPUTER_DB.prepare(`UPDATE users SET verified_email = ?1 WHERE id = ?2`)
+    .bind(profile.email_verified === true ? profile.email : null, userID)
+    .run();
   type MembershipRow = {
     id: string;
     name: string;

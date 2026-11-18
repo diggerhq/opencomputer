@@ -34,6 +34,8 @@ export interface RequestIdentity extends ManagedAgentIdentity {
   /** The key creator's name and email, when the edge loaded them. */
   userName?: string;
   userEmail?: string;
+  /** A dashboard member's WorkOS-verified email (the edge's `verified_email`), on the computer's card only. */
+  verifiedEmail?: string;
 }
 
 export interface AssertedApiKey {
@@ -188,6 +190,7 @@ export async function authenticateRequest(
       if (apiKey === null) return null;
       const userName = verified.payload.user_name;
       const userEmail = verified.payload.user_email;
+      const verifiedEmail = verified.payload.verified_email;
       return {
         kind: "user",
         accountId,
@@ -200,6 +203,7 @@ export async function authenticateRequest(
         ...(apiKey ? { apiKey } : {}),
         ...(typeof userName === "string" && userName ? { userName } : {}),
         ...(typeof userEmail === "string" && userEmail ? { userEmail } : {}),
+        ...(typeof verifiedEmail === "string" && verifiedEmail ? { verifiedEmail } : {}),
       };
     } catch (error) {
       console.warn(

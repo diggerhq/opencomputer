@@ -271,6 +271,7 @@ export function parseInteraction(rawBody: string): SlackInteraction | null {
 /** The Slack Web API with a bot token. Read methods ignore JSON bodies, so they are form-encoded. */
 const FORM_METHODS = new Set([
   "users.info",
+  "users.lookupByEmail",
   "chat.getPermalink",
   "conversations.info",
   "conversations.replies",
@@ -286,6 +287,7 @@ export interface SlackResult {
   permalink?: string;
   channel?: { id?: string };
   user?: {
+    id?: string;
     team_id?: string;
     name?: string;
     real_name?: string;
