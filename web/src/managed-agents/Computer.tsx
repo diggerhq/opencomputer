@@ -945,7 +945,9 @@ function Setup({
                   : 'Skipped for now'
               }
               doneAction={
-                status.github.connected ? undefined : <GitHubAction />
+                status.github.connected ? undefined : (
+                  <GitHubAction size="sm" variant="outline" />
+                )
               }
             >
               <p>
@@ -965,48 +967,55 @@ function Setup({
             </SetupItem>
             <SetupItem
               number={number('start')}
-              title="Give it its first task"
+              title={
+                status.slack.installed
+                  ? 'Give it its first task'
+                  : 'Add OpenComputer to Slack'
+              }
               state={progress('start')}
             >
-              <FirstTaskComposer />
-              <div className="space-y-3 border-t pt-4">
-                {status.slack.installed ? (
-                  <>
-                    <p className="text-foreground font-medium">
-                      Or ask in Slack
-                    </p>
-                    <p>{firstTaskLead(computer)} For example:</p>
-                    <CopyRow value={`@OpenComputer ${EXAMPLE_ASKS[0]}`} />
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-                      {slack.dm ? (
-                        <Button variant="outline" asChild>
-                          <a href={slack.dm}>
-                            <MessagesSquare className="size-4" aria-hidden />
-                            Message OpenComputer
-                          </a>
-                        </Button>
-                      ) : null}
-                      {slack.web ? (
+              {status.slack.installed ? (
+                <>
+                  <p>{firstTaskLead(computer)} For example:</p>
+                  <CopyRow value={`@OpenComputer ${EXAMPLE_ASKS[0]}`} />
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                    {slack.dm ? (
+                      <Button size="lg" asChild>
+                        <a href={slack.dm}>
+                          <MessagesSquare className="size-4" aria-hidden />
+                          Message OpenComputer
+                        </a>
+                      </Button>
+                    ) : null}
+                    {slack.web ? (
+                      slack.dm ? (
                         <a
                           href={slack.web}
                           target="_blank"
                           rel="noreferrer"
-                          className="hover:text-foreground decoration-muted-foreground/40 inline-flex items-center gap-1 underline underline-offset-4 transition-colors"
+                          className="hover:text-foreground decoration-muted-foreground/40 underline underline-offset-4 transition-colors"
                         >
                           Open Slack in the browser
-                          <ExternalLink className="size-3" aria-hidden />
                         </a>
-                      ) : null}
-                    </div>
-                    <p className="inline-flex items-center gap-2">
-                      <PulseDot tone="busy" />
-                      Waiting for its first task. This page moves on by itself.
-                    </p>
-                  </>
-                ) : (
-                  <SlackOffer />
-                )}
-              </div>
+                      ) : (
+                        <Button size="lg" asChild>
+                          <a href={slack.web} target="_blank" rel="noreferrer">
+                            Open Slack
+                            <ExternalLink className="size-4" aria-hidden />
+                          </a>
+                        </Button>
+                      )
+                    ) : null}
+                  </div>
+                  <p className="inline-flex items-center gap-2">
+                    <PulseDot tone="busy" />
+                    Waiting for its first task. This page moves on by itself.
+                  </p>
+                </>
+              ) : (
+                <SlackOffer />
+              )}
+              <WebStart />
             </SetupItem>
           </ol>
           <div className="flex flex-col gap-6 self-start xl:[grid-area:context]">
@@ -1094,23 +1103,52 @@ function FirstTaskComposer() {
   )
 }
 
-/** Slack, offered beside the web: where the team works the task together. */
+/** Slack, the way in: where the team works the task together. */
 function SlackOffer() {
   return (
     <>
-      <p className="text-foreground font-medium">Or connect it to Slack</p>
       <p>
         Coding is more fun with your team. Mention it in any thread and work the
         task through together, right there.
       </p>
-      <SlackInstallButton variant="outline" label="Add to Slack" />
+      <SlackInstallButton size="lg" label="Add to Slack" />
       {/* Most workspaces only let admins add apps; where approval is on,
           Slack itself lets a member ask for it. */}
       <p className="text-xs">
         Not a Slack admin? Click it anyway: Slack lets you ask your admin to
-        approve it.
+        approve it. Come back here once they have.
       </p>
     </>
+  )
+}
+
+/**
+ * The web, for whoever asks for it: Slack stays the way in, and the composer
+ * only opens on request (Mohamed, 2026-11-18: shown upfront, everyone would
+ * take the text box).
+ */
+function WebStart() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="border-t pt-4">
+      {open ? (
+        <div className="space-y-3">
+          <p className="text-foreground font-medium">
+            Give it a first task here
+          </p>
+          <FirstTaskComposer />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="hover:text-foreground decoration-muted-foreground/40 inline-flex items-center gap-1 underline underline-offset-4 transition-colors"
+        >
+          Prefer to start on the web? Give it a first task here
+          <ArrowRight className="size-3" aria-hidden />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -1487,11 +1525,18 @@ function ConnectionsMenu({
   )
 }
 
-function GitHubAction({ size = 'default' }: { size?: 'default' | 'lg' }) {
+function GitHubAction({
+  size = 'default',
+  variant = 'default',
+}: {
+  size?: 'default' | 'sm' | 'lg'
+  variant?: 'default' | 'outline'
+}) {
   const [starting, setStarting] = useState(false)
   return (
     <Button
       size={size}
+      variant={variant}
       disabled={starting}
       onClick={() => {
         setStarting(true)

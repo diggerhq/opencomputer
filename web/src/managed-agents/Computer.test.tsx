@@ -273,8 +273,6 @@ describe('Computer page', () => {
     )
 
     expect(container.textContent).toContain('Step 1 of 2')
-    // Slack is no longer a step.
-    expect(container.textContent).not.toContain('Add OpenComputer to Slack')
     // Before the first session or Slack there is no computer to report on,
     // and no pitch.
     expect(container.textContent).not.toContain('Not set up yet')
@@ -287,7 +285,7 @@ describe('Computer page', () => {
       [...container.querySelectorAll('button')].map((b) => b.textContent),
     ).toEqual(['Connect GitHub', 'Skip for now'])
     // The last step is named, not offered yet.
-    expect(container.textContent).toContain('Give it its first task')
+    expect(container.textContent).toContain('Add OpenComputer to Slack')
     expect(container.querySelector('textarea')).toBeNull()
     // Projects are a side door.
     expect(container.querySelector('a[href="/new"]')?.textContent).toContain(
@@ -323,10 +321,7 @@ describe('Computer page', () => {
       'start step',
     )
     const current = container.querySelector('li[aria-current="step"]')!
-    expect(current.textContent).toContain('Give it its first task')
-    expect(
-      current.querySelector('textarea[aria-label="First task"]'),
-    ).not.toBeNull()
+    expect(current.textContent).toContain('Add OpenComputer to Slack')
     expect(container.textContent).toContain('Skipped for now')
     expect(localStorage.getItem('computer.setup.githubSkipped')).toBe('1')
     // Still nothing created: the first session does that.
@@ -343,7 +338,7 @@ describe('Computer page', () => {
     )
   })
 
-  it('offers Slack beside the first task when it is not installed', async () => {
+  it('leads with Slack, the web only on request, when Slack is not in', async () => {
     localStorage.setItem('computer.setup.githubSkipped', '1')
     computerApi.getComputer.mockResolvedValue(empty)
     computerApi.startComputerSlackInstall.mockReturnValue(new Promise(() => {}))
@@ -354,11 +349,13 @@ describe('Computer page', () => {
       'start step',
     )
     const current = container.querySelector('li[aria-current="step"]')!
-    expect(current.textContent).toContain('Or connect it to Slack')
+    expect(current.textContent).toContain('Add OpenComputer to Slack')
     expect(current.textContent).toContain('Coding is more fun with your team')
+    // The text box waits to be asked for, so Slack stays the way in.
+    expect(current.querySelector('textarea')).toBeNull()
+    expect(current.textContent).toContain('Prefer to start on the web?')
     expect(current.textContent).toContain('Not a Slack admin?')
     // Nothing to wait for in Slack yet.
-    expect(current.textContent).not.toContain('Or ask in Slack')
     expect(current.textContent).not.toContain('Waiting for its first task')
     const invite = [...current.querySelectorAll('button')].find(
       (button) => button.textContent === 'Add to Slack',
@@ -407,6 +404,10 @@ describe('Computer page', () => {
       () => container.textContent?.includes('Step 2 of 2') === true,
       'start step',
     )
+    const web = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.startsWith('Prefer to start on the web?'),
+    )!
+    act(() => web.click())
     const field = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="First task"]',
     )!
@@ -681,18 +682,16 @@ describe('Computer page', () => {
     )
     const current = container.querySelector('li[aria-current="step"]')!
     expect(current.textContent).toContain('Give it its first task')
-    // Here, or in Slack.
-    expect(
-      current.querySelector('textarea[aria-label="First task"]'),
-    ).not.toBeNull()
-    expect(current.textContent).toContain('Or ask in Slack')
+    // In Slack; the web only on request.
+    expect(current.querySelector('textarea')).toBeNull()
+    expect(current.textContent).toContain('Prefer to start on the web?')
     expect(current.textContent).toContain('@OpenComputer why is the')
     expect(current.textContent).toContain('Waiting for its first task')
     expect(current.textContent).not.toContain('Add to Slack')
     expect(
       current.querySelector('a[href="https://app.slack.com/client/T1"]')
         ?.textContent,
-    ).toBe('Open Slack in the browser')
+    ).toBe('Open Slack')
     expect(container.textContent).toContain('Repositories in acme')
     expect(container.textContent).not.toContain('Live now')
   })
