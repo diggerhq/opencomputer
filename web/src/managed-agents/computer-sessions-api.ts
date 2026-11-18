@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { apiFetch } from '@/api/client'
+import { ApiError } from '@/api/errors'
 
 // The Computer API v1 (computer/schema/computer-api.v1.json), called with the
 // dashboard's session cookie on the public `/api` base: the api-edge accepts a
@@ -157,13 +158,45 @@ export type SessionSettings = {
   mode?: string
 }
 
-export function createSession(input: string, settings: SessionSettings = {}) {
-  return apiFetch(
-    `${PREFIX}/sessions`,
-    { method: 'POST', body: JSON.stringify({ input, ...settings }) },
-    SessionResultSchema,
-    '/api',
-  ).then((r) => r.session)
+// A cold computer takes a few minutes to boot; past this, starting gives up.
+const START_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * Starts a session. While the computer is starting (the first session of an
+ * organization with no computer creates it), the API answers 503
+ * `computer_unavailable`: wait as it asks and try again, telling the caller
+ * so it can say why the wait.
+ */
+export async function createSession(
+  input: string,
+  settings: SessionSettings = {},
+  onComputerStarting?: () => void,
+) {
+  const deadline = Date.now() + START_TIMEOUT_MS
+  for (;;) {
+    try {
+      const result = await apiFetch(
+        `${PREFIX}/sessions`,
+        { method: 'POST', body: JSON.stringify({ input, ...settings }) },
+        SessionResultSchema,
+        '/api',
+      )
+      return result.session
+    } catch (error) {
+      if (
+        !(error instanceof ApiError) ||
+        error.type !== 'computer_unavailable' ||
+        Date.now() > deadline
+      ) {
+        throw error
+      }
+      onComputerStarting?.()
+      const wait = error.details?.retryAfterMs
+      await new Promise((resolve) =>
+        setTimeout(resolve, typeof wait === 'number' ? wait : 5_000),
+      )
+    }
+  }
 }
 
 export function getSession(id: string) {

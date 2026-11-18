@@ -162,23 +162,26 @@ export function computerPollInterval(
   }
 }
 
-export const SETUP_STEPS = ['agent', 'slack', 'github', 'hello'] as const
+export const SETUP_STEPS = ['agent', 'github', 'start'] as const
 export type SetupStep = (typeof SETUP_STEPS)[number]
 
 /**
  * The setup step a person is on, or null once set up. The coding agent comes
- * first (work 081), then Slack brings the computer to life, GitHub gives it
- * the code, and the first mention in Slack finishes setup. Step 1 is done
- * once the person has connected a subscription (Claude or, since work 082,
- * a ChatGPT plan for Codex) or chosen free credits; choosing a card alone
- * keeps the step open, on reload too. It only blocks before Slack, and only when
- * the backend reports it: existing organizations (all installed) and an
- * older backend never see it, and nobody is sent back to it. Sessions not
- * read yet (or unreadable) never hold the page on setup.
+ * first (work 081), then GitHub gives it the code (or is skipped for now),
+ * and the first session finishes setup: started here on the web, which brings
+ * the computer to life, or by a mention once Slack is in. Slack is not a step
+ * since sessions start from the web (Mohamed, 2026-11-18); it stays on offer.
+ * Step 1 is done once the person has connected a subscription (Claude or,
+ * since work 082, a ChatGPT plan for Codex) or chosen free credits; choosing a
+ * card alone keeps the step open, on reload too. It only blocks before Slack,
+ * and only when the backend reports it: existing organizations and an older backend never see
+ * it, and nobody is sent back to it. Sessions not read yet (or unreadable)
+ * never hold the page on setup.
  */
 export function setupStep(
   status: ComputerStatus,
   sessions: ComputerSession[] | undefined,
+  githubSkipped = false,
 ): SetupStep | null {
   if (
     status.agent &&
@@ -188,12 +191,11 @@ export function setupStep(
   ) {
     return 'agent'
   }
-  if (!status.slack.installed) return 'slack'
-  if (!status.github.connected) return 'github'
-  // No computer yet (its creation is under way or failed): nothing can have
-  // run, and the sessions are not even asked for.
-  if (!status.computer) return 'hello'
-  if (sessions?.length === 0) return 'hello'
+  if (!status.github.connected && !githubSkipped) return 'github'
+  // No computer yet (the first session creates it): nothing can have run,
+  // and the sessions are not even asked for.
+  if (!status.computer) return 'start'
+  if (sessions?.length === 0) return 'start'
   return null
 }
 
@@ -332,15 +334,6 @@ export const EXAMPLE_ASKS = [
   'what would break if we moved to the latest React?',
   "sketch a cleaner API for the cart service, then let's refine it.",
 ] as const
-
-/**
- * Onboarded: the computer is in Slack and knows the code. From then on the
- * page stops selling and setting up, and shows the work instead (Mohamed,
- * 2026-10-11: "mainly showcase the sessions that are live").
- */
-export function computerIsOnboarded(status: ComputerStatus): boolean {
-  return status.slack.installed && status.github.connected
-}
 
 /** A session the computer is working on right now. */
 export function sessionIsLive(session: ComputerSession): boolean {

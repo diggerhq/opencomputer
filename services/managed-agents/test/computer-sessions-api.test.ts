@@ -407,8 +407,19 @@ describe("POST /sessions", () => {
     expect(f.frames("start")[0]).toMatchObject({ epoch: 2 });
   });
 
-  it("refusals: no computer 409, no credits 402, billing down 503, no v4 host 503 with a wake", async () => {
-    expect(await fixture({ status: "not_set_up" }).api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 409, error: { code: "computer_not_set_up" } });
+  it("no computer yet: the first create starts one (503 with a wake), only past the credit check", async () => {
+    for (const body of [{ input: "hi" }, {}]) {
+      const fresh = fixture({ status: "not_set_up", protocol: null });
+      expect(await fresh.api.handle(caller(), { op: "create", body })).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
+      expect(fresh.state.wakes).toBe(1);
+      expect(fresh.api.row(SID)).toBeUndefined();
+      const broke = fixture({ status: "not_set_up", protocol: null, admitted: false });
+      expect(await broke.api.handle(caller(), { op: "create", body })).toMatchObject({ status: 402, error: { code: "insufficient_credits" } });
+      expect(broke.state.wakes).toBe(0);
+    }
+  });
+
+  it("refusals: no credits 402, billing down 503, no v4 host 503 with a wake", async () => {
     expect(await fixture({ admitted: false }).api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 402, error: { code: "insufficient_credits" } });
     expect(await fixture({ admitted: "throws" }).api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 503, error: { code: "unavailable" } });
     const old = fixture({ protocol: 3 });

@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, Navigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ArrowRight,
   Check,
@@ -58,6 +58,8 @@ import { addManagedGitHubConnection } from './api'
 import { GitHubStarBonus } from './GitHubStarBonus'
 import { launchAuthorizationWindow } from './authorization-window'
 import { SlackInstallButton, UnlinkSlackDialog } from './computer-slack'
+import { createSession } from './computer-sessions-api'
+import { ChatTextarea } from '@/components/chat-textarea'
 import {
   AgentCard,
   AgentChangeAction,
@@ -81,7 +83,6 @@ import {
   alreadyLinkedCopy,
   SESSION_STATUS,
   START_SESSION_COPY,
-  computerIsOnboarded,
   computerPollInterval,
   BOOT_STAGES,
   bootProgress,
@@ -129,8 +130,9 @@ function ComputerPageContent() {
 
   // The computer comes alive when the organization installs the Slack app
   // (the install's callback claims or creates it; work 052, Mohamed
-  // 2026-10-13), never on a visit: most organizations only look, and each
-  // computer is a VM. A visit only creates one when Slack is already
+  // 2026-10-13) or starts its first session here (the sessions API creates
+  // it), never on a visit: most organizations only look, and each computer
+  // is a VM. A visit only creates one when Slack is already
   // installed and the computer is still missing (the install's claim
   // failed), and Try again retries a failed one. The call is idempotent.
   const create = useMutation({
@@ -179,10 +181,19 @@ function ComputerPageContent() {
   // Someone who waited here for the first task sees it land: setup gives way
   // to the work with that task on top, live, and a way into its thread.
   // Without the wait, only a first task still under way earns the panel.
-  const step = status.data ? setupStep(status.data, sessions.data) : null
+  const [githubSkipped, setGithubSkipped] = useState(
+    () => localStorage.getItem(GITHUB_SKIPPED_KEY) === '1',
+  )
+  const skipGithub = () => {
+    localStorage.setItem(GITHUB_SKIPPED_KEY, '1')
+    setGithubSkipped(true)
+  }
+  const step = status.data
+    ? setupStep(status.data, sessions.data, githubSkipped)
+    : null
   const [waitedForFirstTask, setWaitedForFirstTask] = useState(false)
   const [firstTaskDismissed, setFirstTaskDismissed] = useState(false)
-  if (step === 'hello' && !waitedForFirstTask) setWaitedForFirstTask(true)
+  if (step === 'start' && !waitedForFirstTask) setWaitedForFirstTask(true)
 
   if (status.isLoading) {
     return (
@@ -234,7 +245,7 @@ function ComputerPageContent() {
 
   // Whether the first mention is still to come decides between setup and the
   // work, so wait for the sessions rather than flash one and then the other.
-  if (sessionsLoading && computerIsOnboarded(status.data)) {
+  if (sessionsLoading && step === null) {
     return (
       <div
         role="status"
@@ -246,8 +257,8 @@ function ComputerPageContent() {
     )
   }
 
-  // Once it is in Slack, knows the code and has had its first mention, the
-  // page is about the work.
+  // Once it knows the code and has had its first session, the page is about
+  // the work.
   if (step === null) {
     const first = firstSession(sessions.data)
     const showFirstTask =
@@ -264,6 +275,7 @@ function ComputerPageContent() {
             onRetry={() => create.mutate()}
           />
           {slackProblemPanel}
+          {status.data.slack.installed ? null : <SlackNudge />}
           {showFirstTask ? (
             <FirstTask
               session={first}
@@ -290,6 +302,7 @@ function ComputerPageContent() {
       status={status.data}
       step={step}
       notice={slackProblemPanel}
+      onSkipGithub={skipGithub}
       createError={createError}
       creating={create.isPending}
       onRetry={() => create.mutate()}
@@ -546,12 +559,16 @@ function Overview({
         ) : null}
       </div>
       <div className="flex items-center gap-5 text-sm">
-        <Connection label="Slack">
-          {status.slack.teamName ?? 'Connected'}
-        </Connection>
-        <Connection label="GitHub">
-          {accounts.length ? accounts.join(', ') : 'Connected'}
-        </Connection>
+        {status.slack.installed ? (
+          <Connection label="Slack">
+            {status.slack.teamName ?? 'Connected'}
+          </Connection>
+        ) : null}
+        {status.github.connected ? (
+          <Connection label="GitHub">
+            {accounts.length ? accounts.join(', ') : 'Connected'}
+          </Connection>
+        ) : null}
         <ConnectionsMenu status={status} manage />
       </div>
     </header>
@@ -786,12 +803,14 @@ function SlackInstallFailed({
 /**
  * Setup is the onboarding of every new organization: three steps, one call to
  * action at a time, and where the person is in them. No pitch; the page is not
- * a landing page (Igor, 2026-10-13).
+ * a landing page (Igor, 2026-10-13). The last step starts the first session
+ * here or connects Slack, whichever the person likes (Mohamed, 2026-11-18).
  */
 function Setup({
   status,
   step,
   notice,
+  onSkipGithub,
   createError,
   creating,
   onRetry,
@@ -799,6 +818,7 @@ function Setup({
   status: ComputerStatus
   step: SetupStep
   notice: ReactNode
+  onSkipGithub: () => void
   createError: Error | null
   creating: boolean
   onRetry: () => void
@@ -806,8 +826,7 @@ function Setup({
   const { computer } = status
   const failedToCreate = !computer && createError !== null
   const failed = failedToCreate || computer?.state === 'failed'
-  // Without the backend's agent block (an older edge), setup is the three
-  // steps it was.
+  // Without the backend's agent block (an older edge), setup is two steps.
   const { agent } = status
   const steps = SETUP_STEPS.filter((id) => id !== 'agent' || agent)
   const position = steps.indexOf(step) + 1
@@ -821,13 +840,13 @@ function Setup({
     // reads "free credits": routing decides from the subscription row alone,
     // so that is what runs its threads.
     agent: Boolean(agent) && step !== 'agent',
-    slack: status.slack.installed,
-    github: status.github.connected,
-    hello: false,
+    // Skipped counts as done; its row still offers to connect.
+    github: step !== 'github',
+    start: false,
   }
   const slack = slackLinks(status.slack)
   // The last step holds the most; the others leave the bottom free.
-  const stepsRunLong = step === 'hello'
+  const stepsRunLong = step === 'start'
   const progress = (id: SetupStep): SetupItemState =>
     id === step ? 'current' : done[id] ? 'done' : 'upcoming'
   return (
@@ -838,8 +857,8 @@ function Setup({
             <p className="text-muted-foreground text-sm font-medium">
               Step {position} of {steps.length}
             </p>
-            {/* Before Slack there is no computer to report on; while it
-                comes to life, how far along it is. */}
+            {/* Before the first session or Slack there is no computer to
+                report on; while it comes to life, how far along it is. */}
             {boot && !failed ? (
               <BootProgress stage={boot.stage} since={boot.since} />
             ) : computer || status.slack.installed ? (
@@ -917,80 +936,85 @@ function Setup({
               </SetupItem>
             ) : null}
             <SetupItem
-              number={number('slack')}
-              title="Add OpenComputer to Slack"
-              state={progress('slack')}
-              summary={`In ${status.slack.teamName ?? 'your Slack workspace'}`}
-              doneAction={<ConnectionsMenu status={status} />}
-            >
-              <p>
-                Mention it in any thread and work the task through together,
-                right there.
-              </p>
-              <SlackInstallButton size="lg" label="Add to Slack" />
-              {/* Most workspaces only let admins add apps; where approval is
-                  on, Slack itself lets a member ask for it. */}
-              <p className="text-xs">
-                Not a Slack admin? Click it anyway: Slack lets you ask your
-                admin to approve it. Come back here once they have.
-              </p>
-            </SetupItem>
-            <SetupItem
               number={number('github')}
               title="Connect GitHub"
               state={progress('github')}
-              summary={githubSummary(status.github)}
+              summary={
+                status.github.connected
+                  ? githubSummary(status.github)
+                  : 'Skipped for now'
+              }
+              doneAction={
+                status.github.connected ? undefined : <GitHubAction />
+              }
             >
               <p>
                 Pick the repositories it can work in. It reads and runs the code
                 to answer, and changes it when you say so.
               </p>
-              <GitHubAction size="lg" />
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                <GitHubAction size="lg" />
+                <button
+                  type="button"
+                  onClick={onSkipGithub}
+                  className="hover:text-foreground decoration-muted-foreground/40 underline underline-offset-4 transition-colors"
+                >
+                  Skip for now
+                </button>
+              </div>
             </SetupItem>
             <SetupItem
-              number={number('hello')}
-              title="Give it a first task"
-              state={progress('hello')}
+              number={number('start')}
+              title="Give it its first task"
+              state={progress('start')}
             >
-              <p>{firstTaskLead(computer)} For example:</p>
-              <CopyRow value={`@OpenComputer ${EXAMPLE_ASKS[0]}`} />
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-                {slack.dm ? (
-                  <Button size="lg" asChild>
-                    <a href={slack.dm}>
-                      <MessagesSquare className="size-4" aria-hidden />
-                      Message OpenComputer
-                    </a>
-                  </Button>
-                ) : null}
-                {slack.web ? (
-                  slack.dm ? (
-                    <a
-                      href={slack.web}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hover:text-foreground decoration-muted-foreground/40 underline underline-offset-4 transition-colors"
-                    >
-                      Open Slack in the browser
-                    </a>
-                  ) : (
-                    <Button size="lg" asChild>
-                      <a href={slack.web} target="_blank" rel="noreferrer">
-                        Open Slack
-                        <ExternalLink className="size-4" aria-hidden />
-                      </a>
-                    </Button>
-                  )
-                ) : null}
+              <FirstTaskComposer />
+              <div className="space-y-3 border-t pt-4">
+                {status.slack.installed ? (
+                  <>
+                    <p className="text-foreground font-medium">
+                      Or ask in Slack
+                    </p>
+                    <p>{firstTaskLead(computer)} For example:</p>
+                    <CopyRow value={`@OpenComputer ${EXAMPLE_ASKS[0]}`} />
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                      {slack.dm ? (
+                        <Button variant="outline" asChild>
+                          <a href={slack.dm}>
+                            <MessagesSquare className="size-4" aria-hidden />
+                            Message OpenComputer
+                          </a>
+                        </Button>
+                      ) : null}
+                      {slack.web ? (
+                        <a
+                          href={slack.web}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="hover:text-foreground decoration-muted-foreground/40 inline-flex items-center gap-1 underline underline-offset-4 transition-colors"
+                        >
+                          Open Slack in the browser
+                          <ExternalLink className="size-3" aria-hidden />
+                        </a>
+                      ) : null}
+                    </div>
+                    <p className="inline-flex items-center gap-2">
+                      <PulseDot tone="busy" />
+                      Waiting for its first task. This page moves on by itself.
+                    </p>
+                  </>
+                ) : (
+                  <SlackOffer />
+                )}
               </div>
-              <p className="inline-flex items-center gap-2">
-                <PulseDot tone="busy" />
-                Waiting for its first task. This page moves on by itself.
-              </p>
             </SetupItem>
           </ol>
           <div className="flex flex-col gap-6 self-start xl:[grid-area:context]">
-            <SetupContext step={step} agentCard={agentCard} />
+            <SetupContext
+              step={step}
+              agentCard={agentCard}
+              slackInstalled={status.slack.installed}
+            />
             <GitHubStarBonus />
           </div>
           {/* The scene only uses height nobody else needs: its area is a size
@@ -998,7 +1022,7 @@ function Setup({
               the scene shows when the space left fits it plus clearance. */}
           <div className="[container-type:size] relative hidden min-h-0 xl:block xl:[grid-area:scene]">
             <PixelScene
-              asleep={step === 'agent' || step === 'slack'}
+              asleep={!computer}
               shape={stepsRunLong ? 'compact' : 'wide'}
               className={cn(
                 'absolute inset-x-0 bottom-0 hidden',
@@ -1014,6 +1038,103 @@ function Setup({
   )
 }
 
+/** Where skipping GitHub in setup is remembered, so a reload keeps it. */
+const GITHUB_SKIPPED_KEY = 'computer.setup.githubSkipped'
+
+/**
+ * The first task, asked right here: starting it brings the computer to life
+ * when there is none yet, then opens the session.
+ */
+function FirstTaskComposer() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [input, setInput] = useState('')
+  const [booting, setBooting] = useState(false)
+  const start = useMutation({
+    mutationFn: () => createSession(input.trim(), {}, () => setBooting(true)),
+    onSettled: () => setBooting(false),
+    onSuccess: (session) => {
+      void queryClient.invalidateQueries({ queryKey: computerQueryKey })
+      void navigate(`/computer/sessions/${session.id}`)
+    },
+    onError: (error) => notifyError('Could not start the session', error),
+  })
+  const send = () => {
+    if (input.trim() && !start.isPending) start.mutate()
+  }
+  return (
+    <div className="space-y-2">
+      <div className="bg-card focus-within:border-ring/60 rounded-lg border transition-colors">
+        <ChatTextarea
+          aria-label="First task"
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onSend={send}
+          placeholder={`For example: ${EXAMPLE_ASKS[0]}`}
+          className="text-foreground min-h-16 resize-none border-0 bg-transparent px-3 pt-2.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+        />
+        <div className="flex justify-end px-2 pb-2">
+          <Button disabled={!input.trim() || start.isPending} onClick={send}>
+            {start.isPending ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <ArrowRight className="size-4" aria-hidden />
+            )}
+            Start
+          </Button>
+        </div>
+      </div>
+      {booting ? (
+        <p role="status" className="inline-flex items-center gap-2">
+          <PulseDot tone="busy" />
+          Starting your computer. The first time takes a minute or two.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/** Slack, offered beside the web: where the team works the task together. */
+function SlackOffer() {
+  return (
+    <>
+      <p className="text-foreground font-medium">Or connect it to Slack</p>
+      <p>
+        Coding is more fun with your team. Mention it in any thread and work the
+        task through together, right there.
+      </p>
+      <SlackInstallButton variant="outline" label="Add to Slack" />
+      {/* Most workspaces only let admins add apps; where approval is on,
+          Slack itself lets a member ask for it. */}
+      <p className="text-xs">
+        Not a Slack admin? Click it anyway: Slack lets you ask your admin to
+        approve it.
+      </p>
+    </>
+  )
+}
+
+/** Set up without Slack: keep it on offer, quietly, until it is in. */
+function SlackNudge() {
+  return (
+    <section
+      aria-label="Connect Slack"
+      className="bg-panel text-muted-foreground flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border px-5 py-4 text-sm shadow-sm"
+    >
+      <div className="min-w-0">
+        <p className="text-foreground font-medium">
+          Coding is more fun with your team
+        </p>
+        <p className="mt-0.5">
+          Add OpenComputer to Slack and work tasks through together in any
+          thread.
+        </p>
+      </div>
+      <SlackInstallButton variant="outline" label="Add to Slack" />
+    </section>
+  )
+}
+
 /**
  * Why each step matters, beside the steps: quiet, never a call to action
  * (Igor, 2026-10-13: setup lost the what and the why).
@@ -1021,10 +1142,12 @@ function Setup({
 function SetupContext({
   step,
   agentCard,
+  slackInstalled,
   className,
 }: {
   step: SetupStep
   agentCard: AgentCardChoice
+  slackInstalled: boolean
   className?: string
 }) {
   return (
@@ -1041,9 +1164,9 @@ function SetupContext({
             fixes CI.
           </p>
         </div>
-      ) : step === 'slack' ? (
+      ) : step === 'start' && !slackInstalled ? (
         <>
-          <ContextHeading>How it works</ContextHeading>
+          <ContextHeading>Better with your team</ContextHeading>
           <SlackThreadPreview />
           <ContextPoints
             points={[
@@ -1344,13 +1467,15 @@ function ConnectionsMenu({
               </Link>
             </DropdownMenuItem>
           ) : null}
-          <DropdownMenuItem
-            variant="destructive"
-            onSelect={() => setConfirmUnlink(true)}
-          >
-            <Unplug aria-hidden />
-            Unlink Slack workspace
-          </DropdownMenuItem>
+          {status.slack.installed ? (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => setConfirmUnlink(true)}
+            >
+              <Unplug aria-hidden />
+              Unlink Slack workspace
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
       <UnlinkSlackDialog
