@@ -10,7 +10,7 @@ export function helpText(model: string, mode: string) {
     '`!! <text>`: interrupt and redirect with new text',
     '`!mode <default|accept|plan|auto|bypass>`: permission mode',
     '`+smart` / `+fast` / `+default` at the start of a message: switch this thread to the smartest model, a quick one, or back to the default',
-    '`!model <name|id>`: switch model, e.g. `smart`, `fast` or a model id (no name shows the current one and the choices; on Codex, `smart` is `gpt-6-astra` and `fast` is `gpt-6-luna`)',
+    '`!model <name|id>`: switch model, e.g. `smart`, `fast` or a model id (no name shows the current one and the choices; on Codex, `smart` is `gpt-6.2-astra` and `fast` is `gpt-6-luna`)',
     '`!effort <low|medium|high|xhigh|max>`: reasoning effort, `medium` by default, `ultra` too on Codex (no level shows the current one)',
     '`!speed <fast|standard>`: output speed, `fast` by default (Claude\'s fast mode where the model has it, Codex\'s priority tier); no value shows the current one',
     '`!status`: model, effort, mode, context, cost, thread id, cwd, session id',
