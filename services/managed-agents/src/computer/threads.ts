@@ -258,6 +258,15 @@ export class ThreadAccess {
     return { ts: posted.ts, url: `https://${host}/archives/${ref.channel}/p${posted.ts.replace(".", "")}?thread_ts=${root}&cid=${ref.channel}` };
   }
 
+  /** A person's display name from the cached lookup, or their id when Slack does not say (work 112: held context). */
+  async name(id: string): Promise<string> {
+    try {
+      return (await this.user(id)).name;
+    } catch {
+      return id;
+    }
+  }
+
   /** D6, in order. Throws `Refused` (or Slack's error) unless the thread may be read here. */
   private async check(ref: ThreadRef, audience: ThreadAudience): Promise<{ url: string; channel: Channel }> {
     // 1. This workspace.

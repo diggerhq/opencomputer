@@ -269,7 +269,7 @@ export default defineConfig({
         ],
         test: {
           name: "computer",
-          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts"],
+          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts", "test/computer-access-do.test.ts"],
         },
       },
       {
@@ -502,6 +502,7 @@ export default defineConfig({
             "test/computer-connect-codes.test.ts",
             "test/computer-units.test.ts",
             "test/computer-access.test.ts",
+            "test/computer-access-store.test.ts", "test/computer-access-flow.test.ts", "test/computer-access-ui.test.ts",
             "test/session-fold.test.ts",
             "test/computer-calvin-contract.test.ts",
             "test/computer-telemetry.test.ts",

@@ -1139,6 +1139,11 @@ export class ComputerSessionsApi {
     return this.adminsCache;
   }
 
+  /** Whether organization member `member` (`usr_…`) is an admin, as last seen on the dashboard (work 112: session roles). */
+  isAdmin(member: string): boolean {
+    return this.admins().includes(member);
+  }
+
   /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
   private noteAdmin(member: string, admin: boolean): void {
     const admins = this.admins();

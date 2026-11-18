@@ -146,6 +146,11 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
+import { AccessStore } from "./access-store.js";
+import { AccessFlow } from "./access-flow.js";
+import { AccessUi } from "./access-ui.js";
+import { ACCESS_VIEW, type AccessSubmission } from "./access-views.js";
+import { commandAction } from "./access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./connections.js";
 import {
   AGENT_ERRORS,
@@ -285,6 +290,8 @@ interface Dispatch {
   trace?: CalvinTraceContext;
   /** Threads linked in the message (work 049 L3): dropped from the row once the host has answered. */
   linked?: Linked[];
+  /** Work 112: the sender's role in the session (access-flow.ts); absent for a message that starts one. */
+  role?: "owner" | "driver" | "participant";
 }
 
 type SessionRow = {
@@ -400,6 +407,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    */
   private readonly access: ModelAccess;
   private readonly connections: ComputerConnections;
+  /** Work 112: who may drive each Slack session (access-flow.ts), its modal and `!access` (access-ui.ts). */
+  private readonly roles: AccessFlow;
+  private readonly rolesUi: AccessUi;
   private readonly billing: ComputerRuntimeBilling;
   /** Work 054: the gateway's telemetry events (telemetry/computer.ts); sends nothing unless configured. */
   private readonly telemetry: ComputerTelemetry;
@@ -667,6 +677,29 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       put: (key, value) => this.put(key, value),
       remove: (key) => this.remove(key),
       telemetry: this.apiTelemetry,
+    });
+    // Work 112: session roles. After the sessions table and `this.api` (who is an admin).
+    const roleStore = new AccessStore(sql);
+    this.roles = new AccessFlow({
+      store: roleStore,
+      slack: (method, body) => this.slack(method, body),
+      teamId: () => this.setting("slackTeamId") ?? "",
+      session: (key) => this.runnerSession(key),
+      linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.api.isAdmin(member),
+      name: (slackUserId) => this.threads().name(slackUserId),
+      admit: (channelId, threadTs) => this.admit(channelId, threadTs),
+      // An allowed request's message, as `wakeSession` delivers: a trace of its own.
+      deliver: (d) => this.deliver({ ...d, trace: this.telemetry.trace({ teamId: this.setting("slackTeamId") ?? "", channelId: d.channelId, userId: d.userId, messageTs: d.messageTs, receivedAt: Date.now() }) }),
+      changed: (key, by, from, to) => this.telemetry.accessChanged(key, by, from, to),
+      waitUntil: (work) => ctx.waitUntil(work),
+    });
+    this.rolesUi = new AccessUi({
+      flow: this.roles,
+      store: roleStore,
+      slack: (method, body) => this.slack(method, body),
+      teamId: () => this.setting("slackTeamId") ?? "",
+      name: (slackUserId) => this.threads().name(slackUserId),
     });
     // A new instance holds no drain: every row an evicted one left `running` goes
     // back to the queue, synchronously (local SQL; a failure is logged, never thrown:
@@ -2288,6 +2321,17 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (variableCommand) {
       return this.telemetry.command(t, "variable", this.secrets.variableCommand(variableCommand, { ...here, ...inSession }, text));
     }
+    // `!access` (work 112): the gateway's too, in a session or not; never delivered.
+    if (commandAction(text) === "access") {
+      return this.telemetry.command(t, "access", this.rolesUi.command(text, { ...here, ...(session?.ownerId ? { session: { key } } : {}) }));
+    }
+    // Work 112: who may instruct an existing session. Not delivered: held as context, or dropped.
+    const roleSession = this.runnerSession(key);
+    const gate = roleSession ? await this.roles.message(job, text, roleSession) : undefined;
+    if (gate && !gate.deliver) {
+      await this.withdrawAcknowledgement(job, sequence);
+      return t.emit("message.ignored", { data: { reason: gate.reason } });
+    }
     // The credit gate, before anything is created or delivered (the working
     // status was usually started on accept; a refusal resets it).
     const ackKey = `${job.channelId}:${job.messageTs}`;
@@ -2323,7 +2367,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     // A mention partway through a thread starts the session: it also gets the replies above (it sees only what comes after).
     const above = !addressed && job.channelType !== "im" && job.threadTs !== job.messageTs;
     const linked = await this.linkedThreads(t, job, session.ownerId ?? job.userId, above);
-    await this.deliver({
+    const dispatch: Dispatch = {
       channelId: job.channelId,
       threadTs: job.threadTs,
       messageTs: job.messageTs,
@@ -2333,7 +2377,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       mentioned,
       ...(job.trace ? { trace: job.trace } : {}),
       ...(linked.length ? { linked } : {}),
-    }, t);
+      ...(gate?.deliver ? { role: gate.role } : {}),
+    };
+    // With the context held for the session, except on a command.
+    if (gate?.deliver && gate.context) await this.roles.deliver(key, dispatch, (d) => this.deliver(d, t));
+    else await this.deliver(dispatch, t);
   }
 
   private threads(): ThreadAccess {
@@ -2534,7 +2582,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     console.log(JSON.stringify({ level: "info", event: "computer.thread_harness", harness, via }));
   }
 
-  private createSession(input: { channelId: string; threadTs: string; ownerId: string; title: string; mode?: CalvinMode; model?: string }): SessionRow {
+  /** `from`: the session that spawned this one, whose `drivers` it starts with (work 112). */
+  private createSession(input: { channelId: string; threadTs: string; ownerId: string; title: string; mode?: CalvinMode; model?: string; from?: string }): SessionRow {
     const teamId = this.setting("slackTeamId")!;
     const key = sessionKey(teamId, input.channelId, input.threadTs);
     const now = Date.now();
@@ -2552,6 +2601,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       now,
       now,
     );
+    // Work 112: who may drive it, from the organization's default or the parent; 🔒 when restricted.
+    this.roles.start(key, input.from);
     // Analytics: one row per created session in the managed-agent session
     // index, like every serverless agent session, with source `computer`
     // so @OpenComputer sessions stay distinct from api, schedule, webhook,
@@ -2574,14 +2625,16 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return { indicator: "reaction", ok: reacted.ok, callMs: Date.now() - started };
   }
 
-  /** Slack's stop button on a thread. */
-  async slackStop(accountId: string, channelId: string, threadTs?: string): Promise<{ delivered: boolean }> {
+  /** Slack's stop button on a thread. `userId`: who pressed it (work 112: an outsider's is ignored, anyone else's is named). */
+  async slackStop(accountId: string, channelId: string, threadTs?: string, userId?: string): Promise<{ delivered: boolean }> {
     this.bind(accountId);
     const teamId = this.setting("slackTeamId");
     if (!teamId || !threadTs) return { delivered: false };
     const key = sessionKey(teamId, channelId, threadTs);
     if (!this.session(key)) return { delivered: false };
-    return { delivered: this.send({ t: "stop", id: crypto.randomUUID(), sessionKey: key }) };
+    const stop = () => this.send({ t: "stop", id: crypto.randomUUID(), sessionKey: key });
+    const roleSession = this.runnerSession(key);
+    return { delivered: roleSession ? await this.roles.stop(roleSession, userId, stop) : stop() };
   }
 
   /** Interactivity: the secret modal's submission, its button, and prompts the runner posted. */
@@ -2607,6 +2660,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (interaction.type === "view_submission" && interaction.view?.callback_id === CONNECTION_VIEW) {
       const { errors, after } = await this.connections.submit(interaction.view, userId);
       if (after) this.ctx.waitUntil(after().catch((error) => console.error("computer.connection_followup_failed", errorText(error))));
+      return errors ? { errors } : {};
+    }
+    // Work 112: the session access modal.
+    if (interaction.type === "view_submission" && interaction.view?.callback_id === ACCESS_VIEW) {
+      const { errors, after } = await this.rolesUi.submit(interaction.view as AccessSubmission, userId);
+      if (after) this.ctx.waitUntil(after().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.access_followup_failed", message: errorText(error) }))));
       return errors ? { errors } : {};
     }
     if (interaction.type === "view_submission" && interaction.view) {
@@ -2676,9 +2735,27 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       }, respond);
       return {};
     }
+    // Work 112: `Access`, and a request's `Allow` / `Not now`.
+    if (actionId.startsWith("ac:")) {
+      const container = interaction.container;
+      const channelId = interaction.channel?.id ?? container?.channel_id;
+      if (!channelId) return {};
+      const { after } = await this.rolesUi.action(actionId, interaction.trigger_id, {
+        userId,
+        channelId,
+        ...(container?.thread_ts ? { threadTs: container.thread_ts } : {}),
+      });
+      if (after) this.ctx.waitUntil(after().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.access_followup_failed", message: errorText(error) }))));
+      return {};
+    }
     const action = decodeCalvinActionId(actionId);
     if (action) {
-      this.send({ t: "action", id: crypto.randomUUID(), sessionKey: action.sessionKey, promptId: action.promptId, value: action.value, userId });
+      // Work 112: only someone who may answer the session's prompts; the frame carries their role.
+      await this.roles.answer(action.sessionKey, userId, (role) => {
+        const id = crypto.randomUUID();
+        this.send({ t: "action", id, sessionKey: action.sessionKey, promptId: action.promptId, value: action.value, userId, ...(role ? { role } : {}) });
+        return id;
+      });
     }
     return {};
   }
@@ -2953,6 +3030,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         ...(dispatch.files?.length ? { files: dispatch.files } : {}),
         ...(dispatch.mentioned !== undefined ? { mentioned: dispatch.mentioned } : {}),
         ...(dispatch.linked?.length ? { linked: dispatch.linked } : {}),
+        ...(dispatch.role ? { role: dispatch.role } : {}),
       },
       credentials,
       secrets,
@@ -3009,6 +3087,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         );
         this.ctx.storage.sql.exec("DELETE FROM dispatches WHERE state IN ('complete', 'failed') AND updated_at < ?", Date.now() - DEDUP_TTL_MS);
         if (!event.ok) await this.deliveryFailed(event.id, event.error ?? "unknown error");
+        // Work 112: a prompt click the runner refused (`not-asked`) is told to whoever clicked.
+        await this.roles.answered(event.id, event.ok ? undefined : event.error);
         // Other threads' text is not kept past delivery (the row stays for dedup).
         this.ctx.storage.sql.exec(
           "UPDATE dispatches SET payload = json_remove(payload, '$.linked') WHERE id = ? AND json_extract(payload, '$.linked') IS NOT NULL",
@@ -3328,6 +3408,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       threadTs,
       ownerId,
       title: task,
+      from,
       ...(parent.mode ? { mode: parent.mode } : {}),
       // A tier picks its own model in the runner; without one the parent's carries over.
       ...(!req.tier && parent.model ? { model: parent.model } : {}),

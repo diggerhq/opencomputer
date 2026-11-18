@@ -143,7 +143,8 @@ function fileMetadata(files: CalvinSlackFile[] | undefined): CalvinSlackFile[] |
 export type ParsedSlackEvent =
   | { kind: "challenge"; challenge: string }
   | { kind: "message"; job: SlackMessageJob }
-  | { kind: "stop"; teamId: string; channelId: string; threadTs?: string; eventId: string }
+  /** `userId`: who pressed stop, when Slack says (work 112: an outsider's stop is ignored). */
+  | { kind: "stop"; teamId: string; channelId: string; threadTs?: string; userId?: string; eventId: string }
   /** The app was uninstalled from the workspace, or its bot token revoked. */
   | { kind: "revoked"; teamId: string }
   /** Work 077: a person left the workspace, was deactivated or became a guest (`team_leave`, `user_change`). */
@@ -169,6 +170,7 @@ export function parseSlackEnvelope(payload: unknown, now = Date.now()): ParsedSl
       teamId: envelope.team_id,
       channelId: event.channel,
       ...(event.thread_ts ? { threadTs: event.thread_ts } : {}),
+      ...(typeof event.user === "string" && event.user ? { userId: event.user } : {}),
       eventId: envelope.event_id,
     };
   }
@@ -299,6 +301,27 @@ export interface SlackResult {
     is_owner?: boolean;
     is_primary_owner?: boolean;
   };
+}
+
+/**
+ * A full member of the linked workspace (`teamId`): not deleted, a bot, a
+ * guest (`is_restricted`, `is_ultra_restricted`) or someone from another
+ * organization (`is_stranger`, another `team_id`). A failed lookup is false.
+ * Organization secrets (secrets-store.ts) and session roles (access-flow.ts).
+ */
+export async function isWorkspaceMember(
+  slack: (method: string, body: Record<string, unknown>) => Promise<Pick<SlackResult, "ok" | "user">>,
+  teamId: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const r = await slack("users.info", { user: userId });
+    const u = r.ok ? r.user : undefined;
+    if (!u || u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger) return false;
+    return !u.team_id || u.team_id === teamId;
+  } catch {
+    return false;
+  }
 }
 
 /** Errors that mean the bot token is dead for good: the app was uninstalled or the token revoked. */

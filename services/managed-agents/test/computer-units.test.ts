@@ -342,6 +342,15 @@ describe("Slack", () => {
       threadTs: "1.1",
       eventId: "E",
     });
+    // Work 112: who pressed stop.
+    expect(parseSlackEnvelope({ type: "event_callback", event_id: "E", team_id: "T", event: { type: "agent_session_stopped", channel: "C", thread_ts: "1.1", user: "U1" } })).toEqual({
+      kind: "stop",
+      teamId: "T",
+      channelId: "C",
+      threadTs: "1.1",
+      userId: "U1",
+      eventId: "E",
+    });
   });
 
   it("normalizes text: strips this app's mention, decodes, notices other mentions", () => {

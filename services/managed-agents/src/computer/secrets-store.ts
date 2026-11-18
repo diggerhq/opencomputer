@@ -34,6 +34,7 @@ import {
   secretNameProblem,
   setBlocks,
 } from "./secrets.js";
+import { isWorkspaceMember } from "./slack.js";
 import { type VariableCommand, VARIABLE_HELP, credentialHint, parseVariableCommand, showValue } from "./variables.js";
 import type { ApiCaller, ApiReply } from "./sessions-api.js";
 
@@ -256,11 +257,8 @@ export class SecretsStore {
    * workspace (2026-10-11: they are trusted). Not guests, people from
    * other organizations in shared channels, bots or deactivated accounts.
    */
-  private async isMember(userId: string): Promise<boolean> {
-    const r = await this.deps.slack("users.info", { user: userId });
-    const u = r.ok ? r.user : undefined;
-    if (!u || u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger) return false;
-    return !u.team_id || u.team_id === this.deps.teamId();
+  private isMember(userId: string): Promise<boolean> {
+    return isWorkspaceMember((method, body) => this.deps.slack(method, body), this.deps.teamId(), userId);
   }
 
   private async ephemeral(ctx: SecretContext, text: string, blocks?: unknown[]): Promise<void> {
