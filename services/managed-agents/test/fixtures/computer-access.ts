@@ -3,6 +3,7 @@ import { AccessFlow, type AccessDispatch } from "../../src/computer/access-flow.
 import { AccessStore } from "../../src/computer/access-store.js";
 import { AccessUi } from "../../src/computer/access-ui.js";
 import type { SlackMessageJob, SlackResult } from "../../src/computer/slack.js";
+import { ThreadAccess } from "../../src/computer/threads.js";
 import { sqlStorage } from "./computer-sql.js";
 
 /** People in the fake workspace: ids as Slack's (`!access` reads `@U…` with at least 7 characters). */
@@ -16,7 +17,7 @@ export const ADMIN = "UADMIN01";
 export const KEY = "T1:C1:100.1";
 export const SESSION = { key: KEY, ownerId: OWNER, channelId: "C1", threadTs: "100.1" };
 
-/** AccessFlow and AccessUi over node:sqlite, a fake Slack and a recording delivery. */
+/** AccessFlow and AccessUi over node:sqlite, a fake Slack, the one lookup of people, and a recording queue and delivery. */
 export function accessHarness(drivers: Drivers = "*") {
   const sql = sqlStorage();
   sql.exec(`
@@ -26,6 +27,8 @@ export function accessHarness(drivers: Drivers = "*") {
   const store = new AccessStore(sql);
   const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
   const delivered: AccessDispatch[] = [];
+  /** Messages `setDrivers` put back on the Slack queue. */
+  const requeued: SlackMessageJob[] = [];
   const changes: Array<{ key: string; by: { id: string; admin: boolean }; from: string; to: string }> = [];
   const pending: Promise<unknown>[] = [];
   const h = {
@@ -33,9 +36,9 @@ export function accessHarness(drivers: Drivers = "*") {
     store,
     calls,
     delivered,
+    requeued,
     changes,
     failDelivery: false,
-    admitted: true,
     /** Slack answers for a method, instead of `{ ok: true, ts }`. */
     answers: new Map<string, SlackResult>(),
     flow: undefined as unknown as AccessFlow,
@@ -72,10 +75,12 @@ export function accessHarness(drivers: Drivers = "*") {
     }
     return { ok: true, ts: `${ts++}.1` };
   };
+  // The Durable Object's one lookup of a person (threads.ts).
+  const people = new ThreadAccess(slack, "T1");
   h.flow = new AccessFlow({
     store,
     slack,
-    teamId: () => "T1",
+    member: (id) => people.member(id),
     session: (key) => {
       const row = [...sql.exec<{ owner: string | null; channelId: string; threadTs: string }>(
         "SELECT owner_id AS owner, channel_id AS channelId, thread_ts AS threadTs FROM sessions WHERE runner_key = ?",
@@ -86,15 +91,11 @@ export function accessHarness(drivers: Drivers = "*") {
     linkOfSlack: (id) => (id === ADMIN ? "member-admin" : id === OWNER ? "member-owner" : undefined),
     isAdmin: (member) => member === "member-admin",
     name: async (id) => `name-${id}`,
-    admit: async () => h.admitted,
-    deliver: async (d) => {
-      if (h.failDelivery) throw new Error("hub down");
-      delivered.push(d);
-    },
+    requeue: (job) => void requeued.push(job),
     changed: (key, by, from, to) => void changes.push({ key, by, from, to }),
     waitUntil: (p) => void pending.push(p),
   });
-  h.ui = new AccessUi({ flow: h.flow, store, slack, teamId: () => "T1", name: async (id) => `name-${id}` });
+  h.ui = new AccessUi({ flow: h.flow, store, slack });
   h.addSession(KEY, OWNER, "100.1", drivers);
   return h;
 }
@@ -113,4 +114,11 @@ export async function send(h: AccessHarness, job: SlackMessageJob, text = job.te
   if (gate.context) await h.flow.deliver(KEY, dispatch, deliver);
   else await deliver(dispatch);
   return gate;
+}
+
+/** The queue's turn: each requeued message through the gate, as `process` takes it. */
+export async function drain(h: AccessHarness) {
+  const gates = [];
+  while (h.requeued.length) gates.push(await send(h, h.requeued.shift()!));
+  return gates;
 }

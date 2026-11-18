@@ -180,11 +180,11 @@ describe('parseAccessCommand', () => {
     expect(accessCommandNeeds({ kind: 'remove', ids: ['U1'] })).toBe('grant');
     expect(accessCommandNeeds({ kind: 'default', value: 'owner' })).toBe('admin');
   });
-  it("edits the current list, '*' counting as empty", () => {
-    expect(editDrivers('*', { kind: 'add', ids: ['U1'] })).toEqual(['U1']);
+  it("edits the current list, and refuses add and remove on an open session", () => {
+    expect(editDrivers('*', { kind: 'add', ids: ['U1'] })).toBeUndefined();
     expect(editDrivers(['U2'], { kind: 'add', ids: ['U1'] })).toEqual(['U2', 'U1']);
     expect(editDrivers(['U1', 'U2'], { kind: 'remove', ids: ['U1'] })).toEqual(['U2']);
-    expect(editDrivers('*', { kind: 'remove', ids: ['U1'] })).toEqual([]);
+    expect(editDrivers('*', { kind: 'remove', ids: ['U1'] })).toBeUndefined();
     expect(editDrivers(['U1'], { kind: 'set', drivers: '*' })).toBe('*');
   });
 });

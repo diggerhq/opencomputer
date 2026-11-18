@@ -204,11 +204,14 @@ export function accessCommandNeeds(c: AccessCommand): 'view' | 'grant' | 'admin'
   return c.kind === 'default' ? 'admin' : 'grant';
 }
 
-/** The list a `set`, `add` or `remove` asks for, from the current one (`'*'` counts as empty for add and remove). Not normalized. */
-export function editDrivers(current: Drivers, c: Extract<AccessCommand, { kind: 'set' | 'add' | 'remove' }>): Drivers {
+/**
+ * The list a `set`, `add` or `remove` asks for, from the current one. Not normalized. `undefined` when the session is
+ * open and the edit is `add` or `remove`: there is no list to change, and making one would lock the thread by surprise.
+ */
+export function editDrivers(current: Drivers, c: Extract<AccessCommand, { kind: 'set' | 'add' | 'remove' }>): Drivers | undefined {
   if (c.kind === 'set') return c.drivers;
-  const list = current === '*' ? [] : current;
-  return c.kind === 'add' ? [...list, ...c.ids] : list.filter((id) => !c.ids.includes(id));
+  if (current === '*') return undefined;
+  return c.kind === 'add' ? [...current, ...c.ids] : current.filter((id) => !c.ids.includes(id));
 }
 
 /** The answer to any other form of `!access`. */

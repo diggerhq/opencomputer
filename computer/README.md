@@ -213,13 +213,15 @@ the session once the value is set.
 
 | Scope | Gets it | Who can set it | Kept |
 |---|---|---|---|
-| This session | this thread | anyone enabled | 30 days after the session was last active |
+| This session | this thread | anyone who can drive it | 30 days after the session was last active |
 | Just me (user) | every session the person owns | that person | until removed |
 | Workspace | every session in the Slack workspace | admins | until removed |
 
 The narrowest scope wins on a name clash. `!secret` lists names (never values),
 `!secret rm NAME [session|me|workspace]` removes one, `!secret help` explains.
-`!secret` is handled by the gateway and never reaches the session.
+`!secret` is handled by the gateway and never reaches the session. In a
+session's thread, `!secret`, `!var` and the secret form are for people who can
+drive it (see below).
 
 **Where values live.** The gateway is the copy of record: AES-256-GCM, with
 each row's scope, owner and name as associated data, so a row copied elsewhere
@@ -279,7 +281,7 @@ in text and is never delivered:
 | `!access` | who drives now (`Change…` for the owner and admins) |
 | `!access open` / `!access owner` | everyone in the thread / only the owner |
 | `!access @a @b` | the owner and these people |
-| `!access add @a` / `!access remove @a` | edit the list |
+| `!access add @a` / `!access remove @a` | edit the list (not on an open session) |
 | `!access default open` / `!access default owner` | what new sessions start with (admins) |
 
 The owner and admins (`"admin": true` in `SP_PEOPLE`) change it; only people

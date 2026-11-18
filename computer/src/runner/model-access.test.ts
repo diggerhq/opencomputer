@@ -201,4 +201,13 @@ describe('runnerModelAccess: the ceiling and a refused model', () => {
     expect(s.send).toHaveBeenCalledOnce();
     expect(a.idle()).toBe(false);
   });
+
+  it('the retry keeps the turn’s driver (work 112)', async () => {
+    const { a, s } = setup();
+    Object.assign(s, { driver: 'UD' });
+    a.apply(route({ tokenEnv: 'CLAUDE_CODE_OAUTH_TOKEN', downgradeOnModelRefusal: true }));
+    await a.event(denied);
+    a.idle();
+    expect(s.send).toHaveBeenCalledWith(expect.any(String), 'UD', [], undefined, undefined, 'driver');
+  });
 });

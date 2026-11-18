@@ -10,6 +10,8 @@ import { encodeAccessId } from '../access-views.js';
 import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
 import { type Ctx, createRouter, type Msg } from './routing.js';
+import type { SecretsUi } from './secrets-ui.js';
+import type { VariablesUi } from './variables-ui.js';
 import { BOT, fakeClient, fakeHub, fakeStore } from './test-fakes.js';
 
 const person = (id: string, admin = false) => ({ slackUserId: id, dir: id.toLowerCase(), gitName: id, gitEmail: `${id}@example.com`, ...(admin ? { admin } : {}) });
@@ -21,6 +23,7 @@ let router: ReturnType<typeof createRouter>;
 let n = 0;
 let root: Msg;
 let key: string;
+const deps = () => ({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'default' as const, models: () => ({ claude: { mode: 'profile' as const, profile: 'p', vars: {}, key: 'k' } }) });
 
 const msg = (over: Partial<Msg> = {}): Msg => ({ channel: 'C1', ts: `1.${++n}`, user: 'U1', text: `<@${BOT}> do it`, ...over });
 const ctx = (): Ctx => ({ client: client as unknown as WebClient, botUserId: BOT, teamId: 'T1', eventId: `ev-${++n}` });
@@ -35,7 +38,7 @@ beforeEach(async () => {
   store = fakeStore(person('UBEA0002'), person('UCY00003'), person('UA', true));
   hub = fakeHub();
   client = fakeClient();
-  router = createRouter({ store: store as unknown as Store, hub: hub as unknown as Hub, mode: 'default', models: () => ({ claude: { mode: 'profile', profile: 'p', vars: {}, key: 'k' } }) });
+  router = createRouter(deps());
   root = msg();
   key = `C1:${root.ts}`;
   await router.route(root, ctx(), true);
@@ -254,5 +257,99 @@ describe('new sessions', () => {
     await router.route(m, ctx(), true);
     expect(store.access.drivers(`C1:${m.ts}`)).toEqual([]);
     expect(lock('reactions.add')).toEqual([{ channel: 'C1', timestamp: m.ts, name: 'lock' }]);
+  });
+});
+
+describe('one gate for everything that writes to a session', () => {
+  it('a participant’s `!secret` and `!var` answer S8 and reach neither; a driver’s are handled, never delivered', async () => {
+    const seen: string[] = [];
+    const command = async (text: string) => (seen.push(text), true);
+    router = createRouter({ ...deps(), secrets: { command } as unknown as SecretsUi, variables: { command } as unknown as VariablesUi });
+    store.access.writeDrivers(key, ['UBEA0002']);
+    await say('UCY00003', '!secret API_KEY');
+    await say('UCY00003', '!var REGION=eu');
+    await say('UBEA0002', '!secret API_KEY');
+    expect(ephemerals('UCY00003')).toEqual([
+      'Only people who can drive this session can use `!secret`.',
+      'Only people who can drive this session can use `!var`.',
+    ]);
+    expect(seen).toEqual(['!secret API_KEY']);
+    expect(hub.delivered).toHaveLength(0);
+    expect(store.access.held(key)).toHaveLength(0);
+  });
+
+  it('an owner no longer in the people table can do nothing in their session', async () => {
+    store.db.prepare('DELETE FROM people WHERE slack_user_id = ?').run('U1');
+    await say('U1', 'go on');
+    await say('U1', `<@${BOT}> go on`, true);
+    await router.action(encodeActionId(key, 'p1', 'allow'), 'U1', wc(), 'C1');
+    await router.stop({ channel: 'C1', thread_ts: root.ts, user: 'U1' }, 'ev-gone', wc());
+    await router.access.click(encodeAccessId(key, 'open'), { user: { id: 'U1' }, trigger_id: 't', container: { channel_id: 'C1', thread_ts: root.ts } }, wc());
+    expect([hub.delivered, hub.actions, hub.stops, client.of('views.open')].map((c) => c.length)).toEqual([0, 0, 0, 0]);
+    expect(ephemerals('U1')).toEqual([expect.stringMatching(/not enabled/), expect.stringMatching(/not enabled/)]);
+  });
+});
+
+describe('setDrivers refuses', () => {
+  const access = (user: string, text: string) => say(user, `!access ${text}`);
+
+  it('more than MAX_DRIVERS people, before asking who they are', async () => {
+    await access('U1', Array.from({ length: 51 }, (_, i) => `<@UX${String(i).padStart(6, '0')}>`).join(' '));
+    expect(ephemerals('U1')).toEqual(['At most 50 people can be named.']);
+    expect(store.access.drivers(key)).toBe('*');
+  });
+
+  it('add or remove on an open session: the usage, and nothing changes', async () => {
+    await access('U1', 'add <@UBEA0002>');
+    expect(ephemerals('U1')[0]).toMatch(/^`!access`/);
+    expect(store.access.drivers(key)).toBe('*');
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('Allow for a requester who is no longer a member: told to the clicker, the request stays open', async () => {
+    store.access.writeDrivers(key, []);
+    await say('UBEA0002', `<@${BOT}> fix the login`, true);
+    store.db.prepare('DELETE FROM people WHERE slack_user_id = ?').run('UBEA0002');
+    await router.access.click(encodeAccessId(key, 'allow', 'UBEA0002'), { user: { id: 'U1' }, channel: { id: 'C1' } }, wc());
+    expect(ephemerals('U1')).toEqual(['<@UBEA0002> can’t be added: only full members of this workspace can drive.']);
+    expect(store.access.drivers(key)).toEqual([]);
+    expect(store.access.request(key, 'UBEA0002')?.state).toBe('open');
+    expect(hub.delivered).toHaveLength(0);
+  });
+});
+
+describe('the request row is the guard', () => {
+  beforeEach(() => store.access.writeDrivers(key, []));
+
+  it('two mentions at once post one request', async () => {
+    await Promise.all([say('UBEA0002', `<@${BOT}> fix it`, true), say('UBEA0002', `<@${BOT}> please`, true)]);
+    expect(posts()).toHaveLength(1);
+    expect(store.access.held(key)).toHaveLength(2);
+  });
+
+  it('a request whose post failed is dropped, so the next mention asks again', async () => {
+    const postMessage = client.chat.postMessage;
+    client.chat.postMessage = async () => {
+      throw new Error('slack down');
+    };
+    await say('UBEA0002', `<@${BOT}> fix it`, true);
+    expect(store.access.request(key, 'UBEA0002')).toBeUndefined();
+    expect(ephemerals('UBEA0002')).toHaveLength(0);
+    client.chat.postMessage = postMessage;
+    await say('UBEA0002', `<@${BOT}> please`, true);
+    expect(posts()).toHaveLength(1);
+    expect(store.access.request(key, 'UBEA0002')?.state).toBe('open');
+  });
+});
+
+describe('context order', () => {
+  it('a delivery that carried the newest 40 held messages deletes the older ones too', async () => {
+    store.access.writeDrivers(key, []);
+    for (let i = 0; i < 45; i++) await say('UBEA0002', `note ${i}`);
+    expect(store.access.held(key)).toHaveLength(40);
+    await say('U1', 'go');
+    const context = hub.delivered[0].msg.linked!.at(-1)!;
+    expect(context.ok && context.messages).toHaveLength(40);
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM session_context').get()).toEqual({ n: 0 });
   });
 });

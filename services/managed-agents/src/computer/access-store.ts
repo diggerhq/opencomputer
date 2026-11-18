@@ -50,6 +50,7 @@ export class AccessStore {
         key TEXT NOT NULL, user_id TEXT NOT NULL, ts TEXT NOT NULL,
         text TEXT NOT NULL, files TEXT, at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS session_context_key ON session_context (key, seq);
+      CREATE UNIQUE INDEX IF NOT EXISTS session_context_ts ON session_context (key, ts);
       CREATE TABLE IF NOT EXISTS access_requests (
         key TEXT NOT NULL, user_id TEXT NOT NULL,
         state TEXT NOT NULL,
@@ -87,16 +88,17 @@ export class AccessStore {
 
   // ---------------------------------------------------------------- context
 
-  hold(key: string, m: { userId: string; ts: string; text: string; files: string[] }, now = Date.now()): void {
-    this.sql.exec(
-      "INSERT INTO session_context (key, user_id, ts, text, files, at) VALUES (?, ?, ?, ?, ?, ?)",
+  /** True when this call held it: a message already held (a retried job) is not held, or acted on, again. */
+  hold(key: string, m: { userId: string; ts: string; text: string; files: string[] }, now = Date.now()): boolean {
+    return this.sql.exec(
+      "INSERT OR IGNORE INTO session_context (key, user_id, ts, text, files, at) VALUES (?, ?, ?, ?, ?, ?)",
       key,
       m.userId,
       m.ts,
       m.text.slice(0, CONTEXT_MAX_CHARS),
       m.files.length ? JSON.stringify(m.files) : null,
       now,
-    );
+    ).rowsWritten > 0;
   }
 
   /** The newest CONTEXT_MAX_ROWS, oldest first, after this session's rows older than CONTEXT_MAX_AGE_MS are deleted. */
@@ -141,8 +143,22 @@ export class AccessStore {
     )];
   }
 
-  addRequest(key: string, userId: string, messageTs: string, held: string, now = Date.now()): void {
-    this.sql.exec("INSERT OR IGNORE INTO access_requests (key, user_id, state, message_ts, held, at) VALUES (?, ?, 'open', ?, ?, ?)", key, userId, messageTs, held, now);
+  /**
+   * True when this call added it: the row is the guard against a second
+   * request, so it is written before the request is posted (`messageTs` '').
+   */
+  addRequest(key: string, userId: string, held: string, now = Date.now()): boolean {
+    return this.sql.exec("INSERT OR IGNORE INTO access_requests (key, user_id, state, message_ts, held, at) VALUES (?, ?, 'open', '', ?, ?)", key, userId, held, now).rowsWritten > 0;
+  }
+
+  /** The request's post, once Slack has it. */
+  postedRequest(key: string, userId: string, messageTs: string): void {
+    this.sql.exec("UPDATE access_requests SET message_ts = ? WHERE key = ? AND user_id = ?", messageTs, key, userId);
+  }
+
+  /** A request whose post failed: gone, so the next mention asks again. */
+  deleteRequest(key: string, userId: string): void {
+    this.sql.exec("DELETE FROM access_requests WHERE key = ? AND user_id = ?", key, userId);
   }
 
   /** True when this call closed it: one of two overlapping clicks acts. */

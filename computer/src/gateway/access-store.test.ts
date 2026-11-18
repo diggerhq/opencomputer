@@ -68,28 +68,40 @@ describe('held context', () => {
     expect(a.held('other', 0).map((r) => r.text)).toEqual(['old elsewhere']);
   });
 
-  it('release deletes by seq; releaseTs by the message’s ts', () => {
+  it('release deletes every row up to a seq, also those left out; releaseTs by the message’s ts', () => {
     const a = fresh();
-    a.hold(spec.key, 'U2', '2.1', 'one');
-    a.hold(spec.key, 'U2', '2.2', 'two');
-    a.hold(spec.key, 'U2', '2.3', 'three');
-    a.release([a.held(spec.key)[0].seq]);
-    a.releaseTs(spec.key, '2.3');
-    expect(a.held(spec.key).map((r) => r.text)).toEqual(['two']);
+    for (let i = 1; i <= CONTEXT_MAX_ROWS + 3; i++) a.hold(spec.key, 'U2', `2.${i}`, `m${i}`);
+    a.hold('other', 'U2', '2.0', 'elsewhere');
+    const read = a.held(spec.key);
+    a.hold(spec.key, 'U2', '2.99', 'later');
+    a.hold(spec.key, 'U2', '2.100', 'gone');
+    a.release(spec.key, read.at(-1)!.seq);
+    a.releaseTs(spec.key, '2.100');
+    expect(a.held(spec.key).map((r) => r.text)).toEqual(['later']);
+    expect(a.held('other')).toHaveLength(1);
   });
 });
 
 describe('requests', () => {
   it('one per person per session: a closed one stays and is never replaced', () => {
     const a = fresh();
-    a.putRequest(spec.key, 'U2', '3.1', '{"m":1}', 1);
-    a.putRequest(spec.key, 'U3', '3.2', '{"m":2}', 2);
+    expect(a.putRequest(spec.key, 'U2', '{"m":1}', 1)).toBe(true);
+    a.requestPosted(spec.key, 'U2', '3.1');
+    expect(a.putRequest(spec.key, 'U3', '{"m":2}', 2)).toBe(true);
     expect(a.openRequests(spec.key).map((r) => r.userId)).toEqual(['U2', 'U3']);
     a.closeRequest(spec.key, 'U2');
-    a.putRequest(spec.key, 'U2', '3.3', '{"m":3}', 3);
+    expect(a.putRequest(spec.key, 'U2', '{"m":3}', 3)).toBe(false);
     expect(a.request(spec.key, 'U2')).toEqual({ key: spec.key, userId: 'U2', state: 'closed', messageTs: '3.1', held: '{"m":1}', at: 1 });
     expect(a.openRequests(spec.key).map((r) => r.userId)).toEqual(['U3']);
     expect(a.request(spec.key, 'U9')).toBeUndefined();
+  });
+
+  it('a request whose message was not posted is dropped, so the person can ask again', () => {
+    const a = fresh();
+    a.putRequest(spec.key, 'U2', '{"m":1}');
+    a.dropRequest(spec.key, 'U2');
+    expect(a.request(spec.key, 'U2')).toBeUndefined();
+    expect(a.putRequest(spec.key, 'U2', '{"m":2}')).toBe(true);
   });
 });
 

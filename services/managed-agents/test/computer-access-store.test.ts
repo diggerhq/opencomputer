@@ -49,12 +49,25 @@ describe("session roles: the store (work 112)", () => {
     expect(s.held("k", now).map((m) => m.ts)).toEqual(["t0"]);
   });
 
+  it("context: a message is held once, however often its job runs", () => {
+    const { store: s } = store();
+    const m = { userId: "U2", ts: "1.1", text: "hi", files: [] };
+    expect(s.hold("k", m, 1)).toBe(true);
+    expect(s.hold("k", m, 2)).toBe(false);
+    expect(s.hold("k2", m, 2)).toBe(true);
+    expect(s.held("k", 2)).toHaveLength(1);
+  });
+
   it("requests: one per person, closed once", () => {
     const { store: s } = store();
-    s.addRequest("k", "U2", "1.1", "{}", 1);
-    s.addRequest("k", "U2", "2.2", "{}", 2);
-    s.addRequest("k", "U3", "3.3", "{}", 3);
-    expect(s.openRequests("k").map((r) => [r.userId, r.messageTs])).toEqual([["U2", "1.1"], ["U3", "3.3"]]);
+    expect(s.addRequest("k", "U2", "{}", 1)).toBe(true);
+    expect(s.addRequest("k", "U2", "{}", 2)).toBe(false);
+    expect(s.addRequest("k", "U3", "{}", 3)).toBe(true);
+    s.postedRequest("k", "U2", "1.1");
+    expect(s.openRequests("k").map((r) => [r.userId, r.messageTs])).toEqual([["U2", "1.1"], ["U3", ""]]);
+    s.deleteRequest("k", "U3");
+    expect(s.request("k", "U3")).toBeUndefined();
+    expect(s.addRequest("k", "U3", "{}", 4)).toBe(true);
     expect(s.closeRequest("k", "U2")).toBe(true);
     expect(s.closeRequest("k", "U2")).toBe(false);
     expect(s.request("k", "U2")?.state).toBe("closed");

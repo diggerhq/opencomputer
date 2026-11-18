@@ -19,6 +19,8 @@ export interface SlackMessageJob {
   /** Messages forwarded in this one: Slack sends them in `attachments`, not `text`. */
   forwarded?: ForwardedMessage[];
   mentioned: boolean;
+  /** Mentioned only mid-message, not at its start (work 112: such a mention asks nothing of the app). */
+  mentionedInline?: boolean;
   /** Raw text @mentions someone other than this app: most likely not addressed to it. */
   mentionsOthers?: boolean;
   channelType?: string;
@@ -236,9 +238,12 @@ export function parseSlackEnvelope(payload: unknown, now = Date.now()): ParsedSl
 export function normalizeJob(job: SlackMessageJob, botUserId: string): SlackMessageJob | null {
   const mention = `<@${botUserId}>`;
   const raw = botUserId ? job.text.replaceAll(mention, "") : job.text;
+  const mentioned = job.mentioned || (botUserId !== "" && job.text.includes(mention));
+  const leading = botUserId !== "" && job.text.trimStart().startsWith(mention);
   const normalized: SlackMessageJob = {
     ...job,
-    mentioned: job.mentioned || (botUserId !== "" && job.text.includes(mention)),
+    mentioned,
+    ...(mentioned && !leading ? { mentionedInline: true } : {}),
     mentionsOthers: /<@[UW]/.test(raw),
     text: decodeSlack(raw).trim(),
   };
@@ -301,27 +306,6 @@ export interface SlackResult {
     is_owner?: boolean;
     is_primary_owner?: boolean;
   };
-}
-
-/**
- * A full member of the linked workspace (`teamId`): not deleted, a bot, a
- * guest (`is_restricted`, `is_ultra_restricted`) or someone from another
- * organization (`is_stranger`, another `team_id`). A failed lookup is false.
- * Organization secrets (secrets-store.ts) and session roles (access-flow.ts).
- */
-export async function isWorkspaceMember(
-  slack: (method: string, body: Record<string, unknown>) => Promise<Pick<SlackResult, "ok" | "user">>,
-  teamId: string,
-  userId: string,
-): Promise<boolean> {
-  try {
-    const r = await slack("users.info", { user: userId });
-    const u = r.ok ? r.user : undefined;
-    if (!u || u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger) return false;
-    return !u.team_id || u.team_id === teamId;
-  } catch {
-    return false;
-  }
 }
 
 /** Errors that mean the bot token is dead for good: the app was uninstalled or the token revoked. */

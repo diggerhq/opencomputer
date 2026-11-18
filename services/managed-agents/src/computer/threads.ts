@@ -181,12 +181,17 @@ export function stripAttribution(text: string): string {
 
 class Refused extends Error {}
 
+/** The answer to a click or a modal when `member` could not ask Slack: a click has nobody to retry it but the person. */
+export const LOOKUP_FAILED_TEXT = "Slack could not be asked about the people involved just now; try again.";
+
 interface User {
   at: number;
   name: string;
-  /** Deleted, or the lookup failed: never passes the check. */
+  /** Deleted: never passes the check. */
   unknown: boolean;
   guest: boolean;
+  /** A full member of this workspace (work 112): not deleted, a bot, a guest or from another organization. */
+  member: boolean;
 }
 
 interface Channel {
@@ -198,16 +203,20 @@ interface Channel {
 }
 
 /**
- * One per Durable Object. Caches the workspace's own host and team
- * (auth.test) and people (users.info, ten minutes); never a channel's
- * state (a channel can go private, or lose the app, at any moment) and
- * never message text.
+ * One per Durable Object and linked workspace (`teamId`). Caches the
+ * workspace's own host and team (auth.test) and people (users.info, ten
+ * minutes): the one lookup of a person, for names, this check and
+ * membership. Never a channel's state (a channel can go private, or lose
+ * the app, at any moment) and never message text.
  */
 export class ThreadAccess {
   private own?: { host: string; teamId: string };
   private readonly users = new Map<string, User>();
 
-  constructor(private readonly slack: Slack) {}
+  constructor(
+    private readonly slack: Slack,
+    private readonly teamId: string,
+  ) {}
 
   /** Every thread link in a message, read or refused. Never throws. */
   async resolve(text: string, audience: ThreadAudience): Promise<Linked[]> {
@@ -267,6 +276,20 @@ export class ThreadAccess {
     }
   }
 
+  /**
+   * Whether a person is a full member of the linked workspace (work 112:
+   * roles, organization secrets). Throws when Slack could not be asked: a
+   * failed lookup is not an answer.
+   */
+  async member(id: string): Promise<boolean> {
+    return (await this.user(id)).member;
+  }
+
+  /** Drop what is cached about a person: they left, or changed (Slack's team_leave, user_change). */
+  forget(id: string): void {
+    this.users.delete(id);
+  }
+
   /** D6, in order. Throws `Refused` (or Slack's error) unless the thread may be read here. */
   private async check(ref: ThreadRef, audience: ThreadAudience): Promise<{ url: string; channel: Channel }> {
     // 1. This workspace.
@@ -280,8 +303,8 @@ export class ThreadAccess {
     // 3. The people it is for.
     let members: Set<string> | undefined;
     for (const id of new Set([audience.owner, audience.poster].filter((p): p is string => !!p))) {
-      const person = await this.user(id);
-      if (person.unknown) throw new Refused("could not confirm who asked can see that channel");
+      const person = await this.user(id).catch(() => undefined);
+      if (!person || person.unknown) throw new Refused("could not confirm who asked can see that channel");
       if (person.guest && !(members ??= await this.members(ref.channel, audience.deadline)).has(id)) throw new Refused("a guest who asked is not in that channel");
     }
     // 4. Not into a conversation shared with another organization.
@@ -315,18 +338,20 @@ export class ThreadAccess {
     };
   }
 
-  /** users.info, cached. A failed lookup is not cached and counts as unknown: the check fails closed. */
+  /** users.info, cached. A failed lookup throws and is not cached: each caller decides what failing means. */
   private async user(id: string): Promise<User> {
     const cached = this.users.get(id);
     if (cached && Date.now() - cached.at < USERS_TTL_MS) return cached;
     const r = await this.slack("users.info", { user: id });
     const u = r.ok ? r.user : undefined;
-    if (!u) return { at: Date.now(), name: id, unknown: true, guest: true };
+    if (!u) throw new Error(`users.info failed: ${r.error ?? "no user"}`);
+    const guest = !!(u.is_restricted || u.is_ultra_restricted || u.is_stranger);
     const user: User = {
       at: Date.now(),
       name: u.profile?.display_name || u.real_name || u.profile?.real_name || u.name || id,
       unknown: !!u.deleted,
-      guest: !!(u.is_restricted || u.is_ultra_restricted || u.is_stranger),
+      guest,
+      member: !u.deleted && !u.is_bot && !guest && (!u.team_id || u.team_id === this.teamId),
     };
     this.users.set(id, user);
     return user;

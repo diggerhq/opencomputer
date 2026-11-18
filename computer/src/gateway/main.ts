@@ -138,7 +138,15 @@ const hub = new Hub({
   secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
   requestSecret: (from, req) => secretsUi.request(from, req, new WebClient(get('SLACK_BOT_TOKEN'), slackClientOptions)),
 });
-const secretsUi: SecretsUi = createSecretsUi({ store, vault, hub });
+const secretsUi: SecretsUi = createSecretsUi({
+  store,
+  vault,
+  hub,
+  deliver: (spec, h, client) => {
+    if (!slackRouter) throw new Error('Slack is not set up on the gateway');
+    return slackRouter.deliver(spec, h, client);
+  },
+});
 const variablesUi = createVariablesUi({ store, vault, hub });
 /** The current Slack router (rebuilt with Bolt on reload); spawn requests from hosts go through it. */
 let slackRouter: Router | undefined;
@@ -364,7 +372,7 @@ function boltHandler(): RequestListener {
     const r = await router.access.submit(view, body.user.id, client);
     if (r && 'errors' in r) return void (await ack({ response_action: 'errors', errors: r.errors }));
     await ack();
-    await r?.done(client).catch((e) => log.warn('access saved, follow-up failed:', errorText(e)));
+    await r?.done().catch((e) => log.warn('access saved, follow-up failed:', errorText(e)));
   });
 
   app.view(SECRET_VIEW, async ({ ack, view, body, client }) => {

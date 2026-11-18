@@ -128,10 +128,10 @@ describe('the modal’s submission', () => {
     });
   });
 
-  it('a valid submission changes drivers only once acknowledged', async () => {
+  it('a valid submission changes drivers at once; done() finishes the announcing', async () => {
     const r = await router.access.submit(submission('people', [B, 'U1']), ADMIN, wc());
-    expect(store.access.drivers(key)).toBe('*');
-    await (r as { done(c: WebClient): Promise<void> }).done(wc());
+    expect(store.access.drivers(key)).toEqual([B]);
+    await (r as { done(): Promise<void> }).done();
     expect(store.access.drivers(key)).toEqual([B]);
     expect(client.of('chat.postMessage')).toHaveLength(0); // '*' to a list: nobody gains
   });

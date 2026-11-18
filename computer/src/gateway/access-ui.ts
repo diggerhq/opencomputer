@@ -5,11 +5,13 @@
 //
 //   !access                            the state line; `Change…` for someone who can grant
 //   !access open | owner | @a @b       replace who drives, then the state line
-//   !access add @a | remove @a         edit the list ('*' counts as empty)
+//   !access add @a | remove @a         edit the list (not on an open session: the usage)
 //   !access default open | owner       the org default for new sessions (admins)
 //
-// Views and strings are access-views.ts and access.ts; the steps that follow a
-// change are access-flow.ts's setDrivers.
+// Views and strings are access-views.ts and access.ts; access-flow.ts's
+// setDrivers checks and makes a change, and this file only says its refusals.
+// Someone not in the people table gets nothing from a button or the modal
+// (routing.ts turns them away before `!access`).
 
 import type { WebClient } from '@slack/web-api';
 import type { KnownBlock, View } from '@slack/types';
@@ -19,23 +21,18 @@ import {
   can,
   defaultChangedText,
   editDrivers,
-  mention,
   noSessionText,
-  normalize,
-  notMemberText,
   onlyAdminDefaultText,
   onlyGrantorChangesText,
-  overLimit,
   parseAccessCommand,
   stateText,
-  tooManyPeopleText,
 } from '../access.js';
 import { type AccessSubmission, accessView, decodeAccessId, readSubmission, statePost, submittedKey } from '../access-views.js';
 import type { SlackSessionSpec } from '../protocol.js';
 import type { Store } from './db.js';
 import type { Msg } from './routing.js';
 import type { ClickBody } from './secrets-ui.js';
-import { type AccessFlow, accessOf, actor, changedBy } from './access-flow.js';
+import { type AccessFlow, accessOf, actor, changedBy, refusedText } from './access-flow.js';
 import { errorText, log } from '../log.js';
 
 export interface AccessUiDeps {
@@ -75,12 +72,9 @@ export function createAccessUi({ store, flow, name }: AccessUiDeps) {
     }
     if (c.kind === 'show' || c.kind === 'usage') return; // answered above; this narrows the type
     if (!can(a, u, 'grant')) return say(onlyGrantorChangesText(a.owner));
-    const next = normalize(a.owner, editDrivers(a.drivers, c));
-    if (overLimit(next)) return say(tooManyPeopleText());
-    const named = c.kind === 'add' ? c.ids : c.kind === 'set' && c.drivers !== '*' ? c.drivers : [];
-    const stranger = named.find((id) => id !== a.owner && !actor(store, id).member);
-    if (stranger) return say(notMemberText(mention(stranger)));
-    await flow.setDrivers(spec, next, changedBy(spec, u.id), client);
+    const r = flow.setDrivers(spec, (d) => editDrivers(d, c), changedBy(spec, u.id), client);
+    if ('refused' in r) return say(refusedText(r));
+    await r.after;
     return say(stateText(accessOf(store, spec)));
   }
 
@@ -89,6 +83,7 @@ export function createAccessUi({ store, flow, name }: AccessUiDeps) {
     const id = decodeAccessId(actionId);
     const userId = body.user?.id;
     if (!id || !userId) return log.warn('unknown access action', actionId);
+    if (!store.person(userId)) return;
     if (id.verb !== 'open') return flow.answer(id.sessionKey, id.verb, id.userId!, userId, client);
     const row = store.session(id.sessionKey);
     if (!row) {
@@ -105,23 +100,24 @@ export function createAccessUi({ store, flow, name }: AccessUiDeps) {
     await client.views.open({ trigger_id: body.trigger_id ?? '', view: view as unknown as View }).catch((e) => log.warn('views.open', errorText(e)));
   }
 
-  /** The modal's submission: errors to show in it, or the change to make once it is acknowledged. */
+  /** The modal's submission: errors to show in it, or the change, made, whose Slack follow-up `done` awaits after the ack. */
   async function submit(
     view: AccessSubmission,
     userId: string,
     client: WebClient,
-  ): Promise<{ errors: Record<string, string> } | { done(client: WebClient): Promise<void> } | undefined> {
+  ): Promise<{ errors: Record<string, string> } | { done(): Promise<void> } | undefined> {
     const key = submittedKey(view);
     const spec = key ? store.session(key)?.spec : undefined;
-    if (!spec) return undefined;
-    const r = readSubmission(view, accessOf(store, spec), actor(store, userId));
-    if (!r.ok) return { errors: r.errors };
-    const stranger = r.ids.find((id) => !actor(store, id).member);
-    if (stranger) {
-      const wait = new Promise<string>((ok) => setTimeout(() => ok(stranger), NAME_WAIT_MS).unref());
-      return { errors: { people: notMemberText(await Promise.race([name(client, stranger), wait])) } };
-    }
-    return { done: (c) => flow.setDrivers(spec, r.drivers, changedBy(spec, userId), c) };
+    if (!spec || !store.person(userId)) return undefined;
+    const s = readSubmission(view, accessOf(store, spec), actor(store, userId));
+    if (!s.ok) return { errors: s.errors };
+    // Made now, so a refusal goes back in the ack; Slack hears of it after (`done`).
+    const r = flow.setDrivers(spec, () => s.drivers, changedBy(spec, userId), client);
+    if (!('refused' in r)) return { done: () => r.after };
+    if (r.refused !== 'member') return { errors: { people: refusedText(r) } };
+    const { id } = r;
+    const wait = new Promise<string>((ok) => setTimeout(() => ok(id), NAME_WAIT_MS).unref());
+    return { errors: { people: refusedText(r, await Promise.race([name(client, id), wait])) } };
   }
 
   return { command, click, submit };

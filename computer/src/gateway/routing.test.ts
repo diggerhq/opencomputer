@@ -210,7 +210,7 @@ describe('replies in a session', () => {
   });
 
   it('the stop button interrupts the session', async () => {
-    await router.stop({ channel: 'C1', thread_ts: root.ts }, 'ev-stop');
+    await router.stop({ channel: 'C1', thread_ts: root.ts }, 'ev-stop', client as unknown as WebClient);
     expect(hub.stops).toEqual([`C1:${root.ts}`]);
   });
 });

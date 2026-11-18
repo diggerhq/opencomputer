@@ -12,6 +12,7 @@ import {
   tooManyPeopleText,
 } from "../src/computer/access.js";
 import { ACCESS_VIEW, encodeAccessId } from "../src/computer/access-views.js";
+import { LOOKUP_FAILED_TEXT } from "../src/computer/threads.js";
 import { A, ADMIN, B, GUEST, KEY, OWNER, accessHarness } from "./fixtures/computer-access.js";
 
 const where = (userId: string) => ({ userId, channelId: "C1", threadTs: "100.1" });
@@ -27,9 +28,10 @@ describe("session roles: !access (work 112)", () => {
     expect(participant).toMatchObject({ user: B, thread_ts: "100.1", text: stateText({ owner: OWNER, drivers: [A] }) });
     expect(blocksOf(participant).map((b) => b.type)).toEqual(["section"]);
     expect(blocksOf(own)[1]!.elements![0]!.action_id).toBe(encodeAccessId(KEY, "open"));
-    // An outsider cannot view.
+    // An outsider cannot view, and gets no answer, as for any view command.
     await h.ui.command("!access", inSession(GUEST));
-    expect(h.ephemerals(GUEST)).toEqual([onlyGrantorChangesText(OWNER)]);
+    expect(h.ephemerals(GUEST)).toEqual([]);
+    expect(h.store.drivers(KEY)).toEqual([A]);
   });
 
   it("open, owner, a list, add and remove change drivers through setDrivers and answer S10", async () => {
@@ -63,6 +65,13 @@ describe("session roles: !access (work 112)", () => {
     await h.ui.command(`!access add @${GUEST}`, inSession(OWNER));
     expect(h.ephemerals(OWNER)).toEqual([notMemberText(`name-${GUEST}`)]);
     expect(h.store.drivers(KEY)).toEqual([A]);
+  });
+
+  it("add or remove when everyone drives answers the usage", async () => {
+    const h = accessHarness("*");
+    await h.ui.command(`!access add @${A}`, inSession(OWNER));
+    expect(h.ephemerals(OWNER)).toEqual([ACCESS_USAGE]);
+    expect(h.store.drivers(KEY)).toBe("*");
   });
 
   it("more than 50 people are refused", async () => {
@@ -127,12 +136,15 @@ describe("session roles: the modal (work 112)", () => {
     expect(h.ephemerals(B)).toHaveLength(1);
   });
 
-  it("Save re-checks grant, refuses nobody and non-members, then sets drivers", async () => {
+  it("Save re-checks grant and refuses nobody in the modal; setDrivers refuses a non-member after it closes", async () => {
     const h = accessHarness("*");
     expect(await h.ui.submit(submission("owner"), A)).toEqual({ errors: { who: onlyGrantorChangesText(OWNER) } });
     expect(await h.ui.submit(submission("people", [OWNER]), OWNER)).toEqual({ errors: { people: pickSomeoneText() } });
-    expect(await h.ui.submit(submission("people", [A, GUEST]), OWNER)).toEqual({ errors: { people: notMemberText(`name-${GUEST}`) } });
     expect(await h.ui.submit(submission("people", [A], "T1:C1:9.9"), OWNER)).toEqual({ errors: { who: noSessionText() } });
+    const guest = await h.ui.submit(submission("people", [A, GUEST]), OWNER);
+    expect(guest.errors).toBeUndefined();
+    await guest.after!();
+    expect(h.ephemerals(OWNER)).toEqual([notMemberText(`name-${GUEST}`)]);
     expect(h.store.drivers(KEY)).toBe("*");
     const ok = await h.ui.submit(submission("people", [B, A, OWNER]), OWNER);
     expect(ok.errors).toBeUndefined();
@@ -140,5 +152,12 @@ describe("session roles: the modal (work 112)", () => {
     expect(h.store.drivers(KEY)).toEqual([A, B]);
     // Nothing else is posted for a restriction.
     expect(h.posts()).toEqual([]);
+  });
+
+  it("a failed lookup of the person saving says try again and changes nothing", async () => {
+    const h = accessHarness("*");
+    h.answers.set("users.info", { ok: false, error: "ratelimited" });
+    expect(await h.ui.submit(submission("owner"), ADMIN)).toEqual({ errors: { who: LOOKUP_FAILED_TEXT } });
+    expect(h.store.drivers(KEY)).toBe("*");
   });
 });

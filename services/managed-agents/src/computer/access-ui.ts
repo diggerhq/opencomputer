@@ -11,18 +11,15 @@ import {
   defaultChangedText,
   editDrivers,
   noSessionText,
-  normalize,
-  notMemberText,
   onlyAdminDefaultText,
   onlyGrantorChangesText,
-  overLimit,
   parseAccessCommand,
-  tooManyPeopleText,
 } from "./access.js";
 import { type AccessSubmission, accessView, decodeAccessId, readSubmission, statePost, submittedKey } from "./access-views.js";
 import type { AccessFlow } from "./access-flow.js";
 import type { AccessStore } from "./access-store.js";
-import { type SlackResult, isWorkspaceMember } from "./slack.js";
+import type { SlackResult } from "./slack.js";
+import { LOOKUP_FAILED_TEXT } from "./threads.js";
 
 /** Where an answer goes: the person, and the channel and thread they acted in. */
 export interface AccessWhere {
@@ -35,9 +32,6 @@ export interface AccessUiDeps {
   flow: AccessFlow;
   store: AccessStore;
   slack(method: string, body: Record<string, unknown>): Promise<SlackResult>;
-  teamId(): string;
-  /** A person's display name (cached), or their id. */
-  name(slackUserId: string): Promise<string>;
 }
 
 /** Follow-up work the Durable Object runs after it answered Slack (`waitUntil`). */
@@ -63,23 +57,44 @@ export class AccessUi {
       await this.deps.flow.ephemeral(threadOf(where), where.userId, noSessionText());
       return {};
     }
-    const view = accessView(id.sessionKey, a, await this.deps.flow.actor(where.userId, a.owner));
+    const u = await this.deps.flow.clicker(threadOf(where), where.userId, a.owner);
+    const view = u && accessView(id.sessionKey, a, u);
     if (view && triggerId) await this.call("views.open", { trigger_id: triggerId, view });
     return {};
   }
 
-  /** The modal's `Save`: `errors` keep it open; `after` is the change. */
+  /**
+   * The modal's `Save`: `errors` keep it open; `after` is the change, whose
+   * refusal (someone not a member, too many) is an ephemeral in the session's
+   * thread: its lookups are `setDrivers`' and do not fit Slack's 3 s.
+   */
   async submit(view: AccessSubmission, userId: string): Promise<{ errors?: Record<string, string>; after?: After }> {
     const key = submittedKey(view);
     const a = key ? this.deps.flow.access(key) : undefined;
     if (!key || !a) return { errors: { who: noSessionText() } };
-    const u = await this.deps.flow.actor(userId, a.owner);
+    let u;
+    try {
+      u = await this.deps.flow.actor(userId, a.owner);
+    } catch {
+      return { errors: { who: LOOKUP_FAILED_TEXT } };
+    }
     const read = readSubmission(view, a, u);
     if (!read.ok) return { errors: read.errors };
-    for (const id of read.ids) {
-      if (!(await this.member(id))) return { errors: { people: notMemberText(await this.deps.name(id)) } };
-    }
-    return { after: () => this.deps.flow.setDrivers(key, read.drivers, this.deps.flow.by(a, u)) };
+    const by = this.deps.flow.by(a, u);
+    return {
+      after: async () => {
+        const s = this.deps.flow.session(key);
+        if (!s) return;
+        let answer: string | undefined;
+        try {
+          const refused = await this.deps.flow.setDrivers(key, () => read.drivers, by);
+          if (refused) answer = await this.deps.flow.refusalText(refused);
+        } catch {
+          answer = LOOKUP_FAILED_TEXT;
+        }
+        if (answer) await this.deps.flow.ephemeral(s, userId, answer);
+      },
+    };
   }
 
   /** `!access …`, never delivered. All answers are ephemerals to the typer, in the thread. */
@@ -98,28 +113,19 @@ export class AccessUi {
     if (!key || !a) return say(noSessionText());
     const u = await this.deps.flow.actor(ctx.userId, a.owner);
     if (accessCommandNeeds(c) === "view") {
-      if (!can(a, u, "view")) return say(onlyGrantorChangesText(a.owner));
+      // An outsider cannot view, and is not answered (as `!access` self-hosted).
+      if (!can(a, u, "view")) return;
       if (c.kind === "usage") return say(ACCESS_USAGE);
       const post = statePost(key, a, can(a, u, "grant"));
       return say(post.text, post.blocks);
     }
     if (!can(a, u, "grant")) return say(onlyGrantorChangesText(a.owner));
     const edit = c as Extract<AccessCommand, { kind: "set" | "add" | "remove" }>;
-    const next = normalize(a.owner, editDrivers(a.drivers, edit));
-    if (overLimit(next)) return say(tooManyPeopleText());
-    // Only people this adds are checked: someone already named stays until removed.
-    const before = a.drivers === "*" ? [] : a.drivers;
-    for (const id of next === "*" ? [] : next.filter((id) => !before.includes(id))) {
-      if (!(await this.member(id))) return say(notMemberText(await this.deps.name(id)));
-    }
-    await this.deps.flow.setDrivers(key, next, this.deps.flow.by(a, u));
+    const refused = await this.deps.flow.setDrivers(key, (current) => editDrivers(current, edit), this.deps.flow.by(a, u));
+    if (refused) return say(await this.deps.flow.refusalText(refused));
     const after = this.deps.flow.access(key) ?? a;
     const post = statePost(key, after, true);
     return say(post.text, post.blocks);
-  }
-
-  private member(userId: string): Promise<boolean> {
-    return isWorkspaceMember((method, body) => this.deps.slack(method, body), this.deps.teamId(), userId);
   }
 
   private async call(method: string, body: Record<string, unknown>): Promise<void> {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ACCESS_USAGE,
   driversCommandText,
   grantedText,
   notAskedText,
@@ -12,9 +13,12 @@ import {
   requestSentText,
   requestText,
   stoppedText,
+  type Drivers,
 } from "../src/computer/access.js";
 import { declinedPost, encodeAccessId } from "../src/computer/access-views.js";
-import { A, ADMIN, B, GUEST, KEY, OWNER, SESSION, STRANGER, accessHarness, send } from "./fixtures/computer-access.js";
+import { normalizeJob } from "../src/computer/slack.js";
+import { LOOKUP_FAILED_TEXT } from "../src/computer/threads.js";
+import { A, ADMIN, B, GUEST, KEY, OWNER, SESSION, STRANGER, accessHarness, drain, send } from "./fixtures/computer-access.js";
 
 const ctx = (h: ReturnType<typeof accessHarness>) => h.store.held(KEY);
 const owner = { id: OWNER, admin: false };
@@ -56,12 +60,55 @@ describe("session roles: messages (work 112)", () => {
     expect(ctx(h).map((m) => m.text)).toEqual(["please fix it", "hello?"]);
   });
 
-  it("a request whose post failed is not recorded and answers nothing", async () => {
+  it("a request whose post failed is not recorded and answers nothing; the next mention asks again", async () => {
     const h = accessHarness([]);
     h.answers.set("chat.postMessage", { ok: false, error: "not_in_channel" });
     await send(h, h.job(A, "please", { mentioned: true }));
     expect(h.store.request(KEY, A)).toBeUndefined();
     expect(h.ephemerals(A)).toEqual([]);
+    h.answers.delete("chat.postMessage");
+    await send(h, h.job(A, "please?", { mentioned: true }));
+    expect(h.store.request(KEY, A)).toMatchObject({ state: "open", messageTs: expect.stringMatching(/\.1$/) });
+    expect(h.ephemerals(A)).toEqual([requestSentText(OWNER)]);
+  });
+
+  it("the rows are guards: a retried message is held once and asks once", async () => {
+    const h = accessHarness([]);
+    const job = h.job(A, "please fix it", { mentioned: true, messageTs: "250.1" });
+    await send(h, job);
+    await send(h, job);
+    expect(ctx(h)).toHaveLength(1);
+    expect(h.of("chat.postMessage")).toHaveLength(1);
+    expect(h.ephemerals(A)).toEqual([requestSentText(OWNER)]);
+  });
+
+  it("only a mention at the message's start asks to drive; one mid-message is context only", async () => {
+    const h = accessHarness([]);
+    const inline = normalizeJob(h.job(A, "ask <@UBOT> later", { mentioned: true }), "UBOT")!;
+    expect(inline).toMatchObject({ mentioned: true, mentionedInline: true });
+    expect(normalizeJob(h.job(A, " <@UBOT> now"), "UBOT")).toMatchObject({ mentioned: true });
+    expect(normalizeJob(h.job(A, " <@UBOT> now"), "UBOT")!.mentionedInline).toBeUndefined();
+    expect(await send(h, inline)).toEqual({ deliver: false, reason: "held" });
+    expect(h.of("chat.postMessage")).toEqual([]);
+    expect(h.ephemerals(A)).toEqual([]);
+    await send(h, normalizeJob(h.job(A, "<@UBOT> now"), "UBOT")!);
+    expect(h.posts()).toEqual([requestText(OWNER, A)]);
+  });
+
+  it("one lookup of a person, cached; a failed one throws on a message (the queue retries) and says try again on a click", async () => {
+    const h = accessHarness([]);
+    h.answers.set("users.info", { ok: false, error: "ratelimited" });
+    await expect(send(h, h.job(A, "note"))).rejects.toThrow();
+    expect(ctx(h)).toEqual([]);
+    await h.flow.answer(KEY, A, () => "x");
+    expect(h.ephemerals(A)).toEqual([LOOKUP_FAILED_TEXT]);
+    expect(await h.flow.stop(SESSION, A, () => true)).toBe(false);
+    h.answers.delete("users.info");
+    await send(h, h.job(A, "note"));
+    await send(h, h.job(A, "another"));
+    expect(ctx(h)).toHaveLength(2);
+    // Three failures, none kept; then one answer kept for both messages.
+    expect(h.of("users.info")).toHaveLength(4);
   });
 
   it("held context rides the next driver message, oldest first with names, and is deleted after", async () => {
@@ -125,6 +172,13 @@ describe("session roles: messages (work 112)", () => {
     expect(await send(h, h.job(GUEST, "!help"))).toEqual({ deliver: false, reason: "command_refused" });
     expect(h.ephemerals(GUEST)).toEqual([]);
   });
+
+  it("the gateway's own commands read as instruct: S8 for a participant's `!secret`, through for a driver", async () => {
+    const h = accessHarness([B]);
+    expect(await send(h, h.job(A, "!secret set TOKEN"))).toEqual({ deliver: false, reason: "command_refused" });
+    expect(h.ephemerals(A)).toEqual([driversCommandText("secret")]);
+    expect(await h.flow.message(h.job(B, "!var X=1"), "!var X=1", SESSION)).toEqual({ deliver: true, role: "driver", context: false });
+  });
 });
 
 describe("session roles: requests to drive (work 112)", () => {
@@ -145,23 +199,50 @@ describe("session roles: requests to drive (work 112)", () => {
     expect(h.of("chat.update")).toEqual([]);
   });
 
-  it("Allow by the owner adds the driver, edits the request to S3 and delivers the held message once, not as context", async () => {
+  it("Allow by the owner adds the driver, edits the request to S3 and puts the held message back on the queue, where it runs once as theirs", async () => {
     const h = await requested();
     await send(h, h.job(B, "unrelated note"));
     await h.flow.answerRequest(KEY, "allow", A, OWNER);
     expect(h.store.drivers(KEY)).toEqual([A]);
     expect(h.store.request(KEY, A)?.state).toBe("closed");
     expect(h.of("chat.update")).toEqual([{ channel: "C1", ts: "300.1", text: grantedText(owner, [A], OWNER), blocks: [] }]);
+    expect(h.delivered).toEqual([]);
+    expect(h.requeued).toMatchObject([{ userId: A, text: "please fix it", messageTs: "250.1", mentioned: true }]);
+    // The request's own message is no longer context; the queue gates it again.
+    expect(ctx(h).map((m) => m.text)).toEqual(["unrelated note"]);
+    expect(await drain(h)).toEqual([{ deliver: true, role: "driver", context: true }]);
     expect(h.delivered).toHaveLength(1);
-    expect(h.delivered[0]).toMatchObject({ userId: A, text: "please fix it", messageTs: "250.1", role: "driver", mentioned: true });
-    // The other participant's note rides along; the request's own message does not.
+    expect(h.delivered[0]).toMatchObject({ userId: A, text: "please fix it", messageTs: "250.1", role: "driver" });
+    // The other participant's note rides along, once.
     expect(h.delivered[0]!.linked).toMatchObject([{ context: true, messages: [{ text: "unrelated note" }] }]);
     expect(ctx(h)).toEqual([]);
     // Step 4 handled A: no second S3 in the thread.
     expect(h.posts()).toEqual([requestText(OWNER, A)]);
     // A second click on the same request does nothing.
     await h.flow.answerRequest(KEY, "allow", A, OWNER);
-    expect(h.delivered).toHaveLength(1);
+    expect(h.requeued).toEqual([]);
+  });
+
+  it("Allow when everyone drives already answers the request and runs its message, without a special case", async () => {
+    const h = await requested();
+    h.store.writeDrivers(KEY, "*");
+    await h.flow.answerRequest(KEY, "allow", A, OWNER);
+    expect(h.store.request(KEY, A)?.state).toBe("closed");
+    expect(h.requeued).toHaveLength(1);
+    expect(h.of("chat.update")).toHaveLength(1);
+    expect(h.changes).toEqual([]);
+  });
+
+  it("Allow for someone who is no longer a member tells the clicker and leaves the request open", async () => {
+    const h = accessHarness([]);
+    // Held while a member (the lookup is cached ten minutes); a guest by the time of the click.
+    await h.flow.message(h.job(GUEST, "x", { mentioned: true }), "x", SESSION);
+    expect(h.posts()).toEqual([]);
+    h.store.addRequest(KEY, GUEST, JSON.stringify(h.job(GUEST, "x")));
+    await h.flow.answerRequest(KEY, "allow", GUEST, OWNER);
+    expect(h.ephemerals(OWNER)).toEqual([`name-${GUEST} can’t be added: only full members of this workspace can drive.`]);
+    expect(h.store.request(KEY, GUEST)?.state).toBe("open");
+    expect(h.store.drivers(KEY)).toEqual([]);
   });
 
   it("Allow by an admin who is not the owner says so", async () => {
@@ -185,32 +266,24 @@ describe("session roles: requests to drive (work 112)", () => {
 
   it("opening the session answers open requests and delivers their messages", async () => {
     const h = await requested();
-    await h.flow.setDrivers(KEY, "*", owner);
+    await h.flow.setDrivers(KEY, () => "*", owner);
     expect(h.store.request(KEY, A)?.state).toBe("closed");
-    expect(h.delivered).toHaveLength(1);
+    expect(h.requeued).toHaveLength(1);
     expect(h.posts()).toEqual([requestText(OWNER, A), openedText(owner, OWNER)]);
-  });
-
-  it("an allowed message waits for credits like any other", async () => {
-    const h = await requested();
-    h.admitted = false;
-    await h.flow.answerRequest(KEY, "allow", A, OWNER);
-    expect(h.store.drivers(KEY)).toEqual([A]);
-    expect(h.delivered).toEqual([]);
   });
 });
 
 describe("session roles: setDrivers (work 112)", () => {
   it("the same value does nothing at all", async () => {
     const h = accessHarness([A]);
-    await h.flow.setDrivers(KEY, [A, OWNER, A], owner);
+    await h.flow.setDrivers(KEY, () => [A, OWNER, A], owner);
     expect(h.calls).toEqual([]);
     expect(h.changes).toEqual([]);
   });
 
   it("restricting writes, adds the marker and posts nothing", async () => {
     const h = accessHarness("*");
-    await h.flow.setDrivers(KEY, [B, A, OWNER], owner);
+    await h.flow.setDrivers(KEY, () => [B, A, OWNER], owner);
     expect(h.store.drivers(KEY)).toEqual([A, B]);
     expect(h.of("reactions.add")).toEqual([{ channel: "C1", timestamp: "100.1", name: "lock" }]);
     expect(h.posts()).toEqual([]);
@@ -219,28 +292,51 @@ describe("session roles: setDrivers (work 112)", () => {
 
   it("opening a restricted session removes the marker and posts S3b", async () => {
     const h = accessHarness([]);
-    await h.flow.setDrivers(KEY, "*", owner);
+    await h.flow.setDrivers(KEY, () => "*", owner);
     expect(h.of("reactions.remove")).toEqual([{ channel: "C1", timestamp: "100.1", name: "lock" }]);
     expect(h.posts()).toEqual([openedText(owner, OWNER)]);
   });
 
   it("adding people to a list posts S3 once naming them; removing posts nothing; the marker stays", async () => {
     const h = accessHarness([A]);
-    await h.flow.setDrivers(KEY, [A, B, ADMIN], owner);
+    await h.flow.setDrivers(KEY, () => [A, B, ADMIN], owner);
     expect(h.posts()).toEqual([grantedText(owner, [ADMIN, B], OWNER)]);
-    await h.flow.setDrivers(KEY, [], owner);
+    await h.flow.setDrivers(KEY, () => [], owner);
     expect(h.posts()).toHaveLength(1);
     expect(h.of("reactions.add")).toEqual([]);
     expect(h.of("reactions.remove")).toEqual([]);
     expect(h.changes.map((c) => c.to)).toEqual([JSON.stringify([A, ADMIN, B].sort()), "[]"]);
   });
 
+  it("refusals come back for the caller to word: not a member, too many, a form that does not apply, no session", async () => {
+    const h = accessHarness([A]);
+    expect(await h.flow.setDrivers(KEY, (d) => (d === "*" ? d : [...d, GUEST]), owner)).toEqual({ refused: "member", id: GUEST });
+    expect(await h.flow.setDrivers(KEY, () => [STRANGER], owner)).toEqual({ refused: "member", id: STRANGER });
+    const many = Array.from({ length: 51 }, (_, i) => `U${String(i).padStart(7, "0")}`);
+    expect(await h.flow.setDrivers(KEY, () => many, owner)).toEqual({ refused: "limit" });
+    expect(await h.flow.setDrivers(KEY, () => undefined, owner)).toEqual({ refused: "usage" });
+    expect(await h.flow.refusalText({ refused: "usage" })).toBe(ACCESS_USAGE);
+    expect(await h.flow.setDrivers("T1:C9:1.1", () => "*", owner)).toEqual({ refused: "gone" });
+    expect(h.store.drivers(KEY)).toEqual([A]);
+    expect(h.changes).toEqual([]);
+    // Too many is refused before anyone is looked up.
+    expect(h.of("users.info").map((b) => b.user)).toEqual([GUEST, STRANGER]);
+  });
+
+  it("only people it adds are looked up, together, and an edit made meanwhile is not lost", async () => {
+    const h = accessHarness([A]);
+    const add = (id: string) => (d: Drivers) => (d === "*" ? undefined : [...d, id]);
+    await Promise.all([h.flow.setDrivers(KEY, add(B), owner), h.flow.setDrivers(KEY, add(ADMIN), owner)]);
+    expect(h.store.drivers(KEY)).toEqual([ADMIN, A, B].sort());
+    expect(h.of("users.info").map((b) => b.user).sort()).toEqual([ADMIN, B].sort());
+  });
+
   it("a marker that is already there (or a refused one) does not fail the change", async () => {
     const h = accessHarness("*");
     h.answers.set("reactions.add", { ok: false, error: "already_reacted" });
-    await h.flow.setDrivers(KEY, [], owner);
+    await h.flow.setDrivers(KEY, () => [], owner);
     h.answers.set("reactions.remove", { ok: false, error: "missing_scope" });
-    await h.flow.setDrivers(KEY, "*", owner);
+    await h.flow.setDrivers(KEY, () => "*", owner);
     expect(h.store.drivers(KEY)).toBe("*");
     expect(h.changes).toHaveLength(2);
   });

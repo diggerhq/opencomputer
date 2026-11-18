@@ -94,7 +94,7 @@ import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, harnessOnProfile, helloProfiles, profileHarnesses, takeHarnessPrefix } from "./harnesses.js";
 import { type SealPurpose, seal, sha256Hex, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
-import { type Linked, LINK_TIMEOUT_MS, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
+import { type Linked, LINK_TIMEOUT_MS, LOOKUP_FAILED_TEXT, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
 import { failureNotice } from "./failure.js";
@@ -150,7 +150,7 @@ import { AccessStore } from "./access-store.js";
 import { AccessFlow } from "./access-flow.js";
 import { AccessUi } from "./access-ui.js";
 import { ACCESS_VIEW, type AccessSubmission } from "./access-views.js";
-import { commandAction } from "./access.js";
+import { commandAction, driversCommandText } from "./access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./connections.js";
 import {
   AGENT_ERRORS,
@@ -553,7 +553,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.secrets = new SecretsStore({
       sql,
       encryptionKey: () => env.BLUE_CHANNEL_ENCRYPTION_KEY,
-      teamId: () => this.setting("slackTeamId") ?? "",
+      member: (userId) => this.threads().member(userId),
+      // Lazy: `this.roles` is built below.
+      instructs: (key, userId) => this.roles.instructs(key, userId),
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
       push: (which) => this.pushSecrets(which),
@@ -585,11 +587,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
-      slackUserName: async (userId) => {
-        const r = await this.slack("users.info", { user: userId });
-        const u = r.ok ? r.user : undefined;
-        return u?.profile?.display_name || u?.real_name || u?.profile?.real_name || u?.name || undefined;
-      },
+      slackUserName: (userId) => this.threads().name(userId),
       connectCodeIndex: {
         put: (hash, expiresAt) => this.computerObject(connectCodeIndexName(hash)).indexConnectCode(hash, this.accountId(), expiresAt),
         forget: (hash) => this.computerObject(connectCodeIndexName(hash)).forgetConnectCode(hash),
@@ -683,14 +681,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.roles = new AccessFlow({
       store: roleStore,
       slack: (method, body) => this.slack(method, body),
-      teamId: () => this.setting("slackTeamId") ?? "",
+      member: (slackUserId) => this.threads().member(slackUserId),
       session: (key) => this.runnerSession(key),
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
       isAdmin: (member) => this.api.isAdmin(member),
       name: (slackUserId) => this.threads().name(slackUserId),
-      admit: (channelId, threadTs) => this.admit(channelId, threadTs),
-      // An allowed request's message, as `wakeSession` delivers: a trace of its own.
-      deliver: (d) => this.deliver({ ...d, trace: this.telemetry.trace({ teamId: this.setting("slackTeamId") ?? "", channelId: d.channelId, userId: d.userId, messageTs: d.messageTs, receivedAt: Date.now() }) }),
+      requeue: (job) => this.requeueSlackJob(job),
       changed: (key, by, from, to) => this.telemetry.accessChanged(key, by, from, to),
       waitUntil: (work) => ctx.waitUntil(work),
     });
@@ -698,8 +694,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       flow: this.roles,
       store: roleStore,
       slack: (method, body) => this.slack(method, body),
-      teamId: () => this.setting("slackTeamId") ?? "",
-      name: (slackUserId) => this.threads().name(slackUserId),
     });
     // A new instance holds no drain: every row an evicted one left `running` goes
     // back to the queue, synchronously (local SQL; a failure is logged, never thrown:
@@ -2034,6 +2028,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   }
 
   /**
+   * A message back on the queue (work 112: an allowed request's), queued as
+   * `acceptSlackEvent` queues one: the row synchronously, in the caller's
+   * block; the drain and the alarm off its path. Its working status was
+   * withdrawn when it was held, so it has none.
+   */
+  private requeueSlackJob(job: SlackMessageJob): void {
+    const { acked: _acked, ackIndicator: _indicator, ...rest } = job;
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(rest), Date.now(), `${job.channelId}:${job.threadTs}`);
+    sql.exec(
+      "INSERT INTO alarms (purpose, at) VALUES ('slack', ?) ON CONFLICT(purpose) DO UPDATE SET at = MIN(at, excluded.at)",
+      Date.now() + SLACK_FALLBACK_MS,
+    );
+    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
+    this.ctx.waitUntil(this.armAlarm());
+  }
+
+  /**
    * Starts the working status for a message, off the caller's path; `ack.done`
    * goes on `t` when it settles. The queue row says so (`acked`) and, once
    * Slack answered, which indicator is showing (`ackIndicator`): what takes it
@@ -2293,6 +2305,18 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const text = commandText(job.text);
     const here = { userId: job.userId, channelId: job.channelId, ...(job.threadTs !== job.messageTs ? { threadTs: job.threadTs } : {}) };
     const inSession = session?.ownerId ? { session: { key, ownerId: session.ownerId } } : {};
+    // `!access` (work 112): the gateway's, in a session or not; never delivered.
+    if (commandAction(text) === "access") {
+      return this.telemetry.command(t, "access", this.rolesUi.command(text, { ...here, ...(session?.ownerId ? { session: { key } } : {}) }));
+    }
+    // Work 112: who may instruct an existing session, before every other command, the
+    // gateway's own too (they read as `instruct`). Not delivered: held as context, or dropped.
+    const roleSession = this.runnerSession(key);
+    const gate = roleSession ? await this.roles.message(job, text, roleSession) : undefined;
+    if (gate && !gate.deliver) {
+      await this.withdrawAcknowledgement(job, sequence);
+      return t.emit("message.ignored", { data: { reason: gate.reason } });
+    }
     // `!secret` and `!var` are the gateway's: they never reach the session or its history.
     const secretCommand = parseSecretCommand(text);
     if (secretCommand) {
@@ -2320,17 +2344,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const variableCommand = parseVariableCommand(text);
     if (variableCommand) {
       return this.telemetry.command(t, "variable", this.secrets.variableCommand(variableCommand, { ...here, ...inSession }, text));
-    }
-    // `!access` (work 112): the gateway's too, in a session or not; never delivered.
-    if (commandAction(text) === "access") {
-      return this.telemetry.command(t, "access", this.rolesUi.command(text, { ...here, ...(session?.ownerId ? { session: { key } } : {}) }));
-    }
-    // Work 112: who may instruct an existing session. Not delivered: held as context, or dropped.
-    const roleSession = this.runnerSession(key);
-    const gate = roleSession ? await this.roles.message(job, text, roleSession) : undefined;
-    if (gate && !gate.deliver) {
-      await this.withdrawAcknowledgement(job, sequence);
-      return t.emit("message.ignored", { data: { reason: gate.reason } });
     }
     // The credit gate, before anything is created or delivered (the working
     // status was usually started on accept; a refusal resets it).
@@ -2387,7 +2400,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   private threads(): ThreadAccess {
     const teamId = this.setting("slackTeamId") ?? "";
     if (this.threadAccess?.teamId !== teamId) {
-      this.threadAccess = { teamId, access: new ThreadAccess((method, body) => this.slack(method, body)) };
+      this.threadAccess = { teamId, access: new ThreadAccess((method, body) => this.slack(method, body), teamId) };
     }
     return this.threadAccess.access;
   }
@@ -2727,6 +2740,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         await respond("That session is gone; nothing was set.");
         return {};
       }
+      // Work 112: `!var` in a session's thread is a write to it, from a click as from a message.
+      const instructs = key ? await this.roles.instructs(key, userId).catch(() => undefined) : true;
+      if (!instructs) {
+        await respond(instructs === undefined ? LOOKUP_FAILED_TEXT : driversCommandText("var"));
+        return {};
+      }
       await this.secrets.confirmVariable(interaction.actions?.[0]?.value ?? "", {
         userId,
         ...(channelId ? { channelId } : {}),
@@ -2761,7 +2780,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   }
 
   /** A session that asked for something and is waiting: `text` from `userId` starts its next turn. */
-  private async wakeSession(session: { channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void> {
+  private async wakeSession(session: { key: string; channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void> {
+    // Work 112: waking a session is instructing it.
+    if (!(await this.roles.instructs(session.key, userId))) return;
     if (!(await this.admit(session.channelId, session.threadTs))) return;
     const trace = this.telemetry.trace({ teamId: this.setting("slackTeamId") ?? "", channelId: session.channelId, userId, messageTs: ts, receivedAt: Date.now() });
     await this.deliver({ channelId: session.channelId, threadTs: session.threadTs, messageTs: ts, userId, text, mentioned: true, trace });
@@ -3463,6 +3484,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   /** Slack says a person left, was deactivated or became a guest (work 077): their Claude subscription goes. */
   async slackMemberLeft(accountId: string, userId: string): Promise<void> {
     this.bind(accountId);
+    this.threads().forget(userId);
     await this.access.models.memberRemoved(userId);
   }
 

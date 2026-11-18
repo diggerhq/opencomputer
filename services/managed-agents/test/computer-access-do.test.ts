@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { onlyMembersText, stateText, stoppedText } from "../src/computer/access.js";
+import { driversCommandText, onlyMembersText, stateText, stoppedText } from "../src/computer/access.js";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
@@ -129,6 +129,22 @@ describe("computer session roles (work 112)", () => {
     expect(await s.computer.slackStop("org_roles_stop", "C1", TS, "UGRACE")).toEqual({ delivered: true });
     expect(s.frames.filter((f) => f.t === "stop")).toHaveLength(1);
     expect((await s.calls()).filter((c) => c.method === "chat.postMessage" && c.body.text === stoppedText("UGRACE"))).toHaveLength(1);
+    s.socket.close();
+  });
+
+  it("in a session's thread the gateway's own commands need someone who can drive it", async () => {
+    const s = await withSession("org_roles_commands", "T0ROLES4");
+    await s.say("UADA", "!access owner");
+    await until(s.drivers, (d) => d === "[]", "restricted");
+    const asked = [await s.say("UGRACE", "!var X=1"), await s.say("UGRACE", "!secret add TOKEN")];
+    const refusals = await until(
+      async () => (await s.calls()).filter((c) => c.method === "chat.postEphemeral" && c.body.user === "UGRACE").map((c) => c.body.text),
+      (all) => all.length === 2,
+      "two refusals",
+    );
+    expect(refusals).toEqual([driversCommandText("var"), driversCommandText("secret")]);
+    expect((await s.calls()).filter((c) => c.method === "views.open")).toEqual([]);
+    expect(s.frames.filter((f) => f.t === "deliver" && asked.includes(f.msg.ts))).toEqual([]);
     s.socket.close();
   });
 

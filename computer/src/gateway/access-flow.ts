@@ -2,7 +2,8 @@
 // does per role. A message in a session is delivered, refused or held as
 // context; a participant's mention asks the owner to let them drive; `Allow`
 // and `Not now` answer that; `setDrivers` is the one write of `drivers`; held
-// context rides the next delivered message; a stop by someone else is named.
+// context rides the next delivered message; a stop by someone else is named;
+// a prompt's button is answered by whoever it may be.
 //
 // Who may do what is access.ts (`role`, `can`); the strings and Block Kit are
 // access.ts and access-views.ts; SQL is access-store.ts. This file holds the
@@ -10,10 +11,14 @@
 // `forward`, given as `deliver`, as secrets-ui.ts is given the hub.
 //
 // Member and admin here: a row in the people table, and that row's `admin`.
+// Only people in that table get this far (routing.ts and access-ui.ts turn
+// anyone else away at each entry point), so the one acting is never an
+// `outsider` here; a person named as a driver may still not be a member.
 
 import type { WebClient } from '@slack/web-api';
 import type { KnownBlock } from '@slack/types';
 import {
+  ACCESS_USAGE,
   type Access,
   type AccessAction,
   type Actor,
@@ -26,23 +31,28 @@ import {
   encodeDrivers,
   gained,
   grantedText,
+  mention,
   normalize,
   notAskedText,
+  notMemberText,
   onlyGrantorAnswersText,
   openedText,
+  overLimit,
   ownerCommandText,
   ownerDecidesText,
   requestSentText,
   restricted,
-  type Role,
   role,
   sameDrivers,
   stoppedText,
+  tooManyPeopleText,
 } from '../access.js';
 import { declinedPost, requestPost } from '../access-views.js';
-import type { Delivery, SlackSessionSpec } from '../protocol.js';
+import { type Delivery, NOT_ASKED, type SlackSessionSpec } from '../protocol.js';
 import type { Linked, LinkedMessage } from '../links.js';
+import type { AccessRequest } from './access-store.js';
 import type { Store } from './db.js';
+import type { Hub, Reply } from './hosts.js';
 import type { Msg } from './routing.js';
 import { errorText, log } from '../log.js';
 
@@ -62,10 +72,24 @@ export interface HeldMessage {
 
 export interface AccessFlowDeps {
   store: Store;
+  hub: Pick<Hub, 'stop' | 'action'>;
   /** Deliver as an ordinary message from `held.m.user` (routing.ts `forward`), with their role. */
   deliver(spec: SlackSessionSpec, held: HeldMessage, role: DeliveredRole, client: WebClient): Promise<void>;
   /** A person's name, for held context (links.ts's cached directory). */
   name(client: WebClient, id: string): Promise<string>;
+}
+
+/**
+ * What `setDrivers` did: the change is written (`after` settles once Slack has
+ * been told), or why not: `usage` the edit does not apply to the current value
+ * (add or remove on an open session), `limit` more than MAX_DRIVERS, `member`
+ * a newly named id that is not a full member.
+ */
+export type DriversChange = { ok: true; after: Promise<void> } | { refused: 'usage' | 'limit' } | { refused: 'member'; id: string };
+
+/** A refusal as words; `name`: how to show a `member` refusal's id (a mention, or a plain name in a modal). */
+export function refusedText(r: Extract<DriversChange, { refused: string }>, name = r.refused === 'member' ? mention(r.id) : ''): string {
+  return r.refused === 'usage' ? ACCESS_USAGE : r.refused === 'limit' ? tooManyPeopleText() : notMemberText(name);
 }
 
 /** Whoever acts, as this gateway knows them. */
@@ -83,7 +107,7 @@ export const changedBy = (spec: SlackSessionSpec, id: string): ChangedBy => ({ i
 
 const inThread = (spec: SlackSessionSpec) => (spec.kind === 'thread' && spec.threadTs ? { thread_ts: spec.threadTs } : {});
 
-export function createAccessFlow({ store, deliver, name }: AccessFlowDeps) {
+export function createAccessFlow({ store, hub, deliver, name }: AccessFlowDeps) {
   // Held rows attached to a delivery the hub has not answered yet: the next message does not attach them again.
   const inFlight = new Set<number>();
 
@@ -116,44 +140,43 @@ export function createAccessFlow({ store, deliver, name }: AccessFlowDeps) {
   }
 
   /**
-   * A message in an existing session ("Messages" steps 2 to 4). The role to
-   * deliver it with; `outsider` when it is dropped (routing.ts answers a
-   * mention); undefined when it was answered or held here.
+   * A message in an existing session ("Messages" steps 2 to 4), from a person
+   * in the people table: the role to deliver it with, or undefined when it was
+   * refused or held here. Every command but `!access` passes here, gateway
+   * commands (`!secret`, `!var`) too: they read as `instruct`.
    */
-  async function message(spec: SlackSessionSpec, h: HeldMessage, client: WebClient): Promise<Role | undefined> {
+  async function message(spec: SlackSessionSpec, h: HeldMessage, client: WebClient): Promise<DeliveredRole | undefined> {
     const a = accessOf(store, spec);
     const u = actor(store, h.m.user!);
-    const r = role(a, u);
+    // Never `outsider`: the sender is in the people table (see the header).
+    const r = role(a, u) as DeliveredRole;
     const needs = commandAction(h.text);
     if (needs !== undefined) {
-      // `!access` never gets here (routing.ts); commands never carry context.
+      // Commands never carry context.
       if (can(a, u, needs as AccessAction)) return r;
       const word = commandWord(h.text) ?? '';
-      if (needs === 'settings') await ephemeral(client, spec, u.id, ownerCommandText(a.owner, word));
-      else if (needs === 'instruct') await ephemeral(client, spec, u.id, driversCommandText(word));
+      await ephemeral(client, spec, u.id, needs === 'settings' ? ownerCommandText(a.owner, word) : driversCommandText(word));
       return undefined;
     }
     if (can(a, u, 'instruct')) return r;
-    if (r === 'outsider') return 'outsider';
     store.access.hold(spec.key, u.id, h.m.ts, h.text, (h.m.files ?? []).map((f) => f.name ?? f.id));
     // In a code channel every message is for the bot.
-    if (!(spec.kind === 'channel' || (h.mentioned && !h.inline))) return undefined;
-    if (store.access.request(spec.key, u.id)) return void (await ephemeral(client, spec, u.id, ownerDecidesText(a.owner)));
-    await requestToDrive(spec, a, h, client);
+    if (spec.kind === 'channel' || (h.mentioned && !h.inline)) await requestToDrive(spec, a.owner, h, client);
     return undefined;
   }
 
-  /** "Request to drive": the visible request, its row, and S2 to the requester. */
-  async function requestToDrive(spec: SlackSessionSpec, a: Access, h: HeldMessage, client: WebClient) {
+  /** "Request to drive": its row first (the guard against a second), then the visible request, then S2; S2b when there was one. */
+  async function requestToDrive(spec: SlackSessionSpec, owner: string, h: HeldMessage, client: WebClient) {
     const requester = h.m.user!;
-    const p = requestPost(spec.key, a.owner, requester);
+    if (!store.access.putRequest(spec.key, requester, JSON.stringify(h))) return ephemeral(client, spec, requester, ownerDecidesText(owner));
+    const p = requestPost(spec.key, owner, requester);
     const posted = await post(client, spec, p.text, p.blocks);
-    if (!posted?.ts) return;
-    store.access.putRequest(spec.key, requester, posted.ts, JSON.stringify(h));
-    await ephemeral(client, spec, requester, requestSentText(a.owner));
+    if (!posted?.ts) return store.access.dropRequest(spec.key, requester);
+    store.access.requestPosted(spec.key, requester, posted.ts);
+    await ephemeral(client, spec, requester, requestSentText(owner));
   }
 
-  /** `Allow` or `Not now` on a request, clicked by `clicker`. */
+  /** `Allow` or `Not now` on a request, clicked by `clicker` (a person). */
   async function answer(key: string, verb: 'allow' | 'deny', requester: string, clicker: string, client: WebClient) {
     const spec = store.session(key)?.spec;
     if (!spec) return log.warn('access answer for unknown session', key);
@@ -166,41 +189,58 @@ export function createAccessFlow({ store, deliver, name }: AccessFlowDeps) {
       const p = declinedPost(requester);
       return update(client, spec, q.messageTs, p.text, p.blocks);
     }
-    if (a.drivers !== '*') return setDrivers(spec, [...a.drivers, requester], changedBy(spec, clicker), client);
+    const by = changedBy(spec, clicker);
+    const r = setDrivers(spec, (d) => (d === '*' ? undefined : [...d, requester]), by, client);
+    if (!('refused' in r)) return r.after;
+    if (r.refused !== 'usage') return ephemeral(client, spec, clicker, refusedText(r));
     // Everyone already drives (it cannot normally happen): the request is answered, the held message stays context.
     store.access.closeRequest(key, requester);
-    await update(client, spec, q.messageTs, grantedText(changedBy(spec, clicker), [requester], a.owner), []);
+    await update(client, spec, q.messageTs, grantedText(by, [requester], a.owner), []);
   }
 
-  /** "One transition": the only write of `drivers` after a session's first. */
-  async function setDrivers(spec: SlackSessionSpec, want: Drivers, by: ChangedBy, client: WebClient) {
+  /**
+   * "One transition": the only write of `drivers` after a session's first.
+   * `edit` is applied to the value read here; reading, checking, writing and
+   * closing the requests it answers happen with no await between them, so two
+   * changes never interleave. Slack is told after, in `after`.
+   */
+  function setDrivers(spec: SlackSessionSpec, edit: (current: Drivers) => Drivers | undefined, by: ChangedBy, client: WebClient): DriversChange {
     const { owner, drivers: prev } = accessOf(store, spec);
+    const want = edit(prev);
+    if (want === undefined) return { refused: 'usage' };
     const next = normalize(owner, want);
-    if (sameDrivers(prev, next)) return;
+    if (overLimit(next)) return { refused: 'limit' };
+    const added = next === '*' ? [] : next.filter((id) => prev === '*' || !prev.includes(id));
+    const stranger = added.find((id) => !actor(store, id).member);
+    if (stranger) return { refused: 'member', id: stranger };
+    if (sameDrivers(prev, next)) return { ok: true, after: Promise.resolve() };
     store.access.writeDrivers(spec.key, next);
-    if (restricted(prev) !== restricted(next)) await marker(spec, restricted(next), client);
-
     const after: Access = { owner, drivers: next };
-    const handled: string[] = [];
-    const deliveries: Promise<void>[] = [];
-    for (const q of store.access.openRequests(spec.key)) {
-      if (role(after, actor(store, q.userId)) !== 'driver') continue;
+    const granted = store.access.openRequests(spec.key).filter((q) => role(after, actor(store, q.userId)) === 'driver');
+    for (const q of granted) {
       store.access.closeRequest(spec.key, q.userId);
-      await update(client, spec, q.messageTs, grantedText(by, [q.userId], owner), []);
-      const held = JSON.parse(q.held) as HeldMessage;
-      store.access.releaseTs(spec.key, held.m.ts);
-      handled.push(q.userId);
-      // Started in request order (forward keeps a session's order); not awaited before the announcement.
-      deliveries.push(deliver(spec, held, 'driver', client).catch((e) => log.warn(`deliver held ${spec.key}:`, errorText(e))));
+      store.access.releaseTs(spec.key, (JSON.parse(q.held) as HeldMessage).m.ts);
     }
+    log.info('access', spec.key, by.id, by.admin, encodeDrivers(prev), encodeDrivers(next));
+    return { ok: true, after: tell(spec, prev, next, granted, by, client) };
+  }
 
+  /** What follows a change in Slack: the marker, the answered requests and their held messages, the announcement. */
+  async function tell(spec: SlackSessionSpec, prev: Drivers, next: Drivers, granted: AccessRequest[], by: ChangedBy, client: WebClient) {
+    const owner = spec.owner.slackUserId;
+    if (restricted(prev) !== restricted(next)) await marker(spec, restricted(next), client);
+    const deliveries: Promise<void>[] = [];
+    for (const q of granted) {
+      await update(client, spec, q.messageTs, grantedText(by, [q.userId], owner), []);
+      // Started in request order (forward keeps a session's order); not awaited before the announcement.
+      deliveries.push(deliver(spec, JSON.parse(q.held) as HeldMessage, 'driver', client).catch((e) => log.warn(`deliver held ${spec.key}:`, errorText(e))));
+    }
     const g = gained(prev, next);
     if (g === 'opened') await post(client, spec, openedText(by, owner));
     else {
-      const added = g.filter((id) => !handled.includes(id));
+      const added = g.filter((id) => !granted.some((q) => q.userId === id));
       if (added.length) await post(client, spec, grantedText(by, added, owner));
     }
-    log.info('access', spec.key, by.id, by.admin, encodeDrivers(prev), encodeDrivers(next));
     await Promise.all(deliveries);
   }
 
@@ -214,7 +254,8 @@ export function createAccessFlow({ store, deliver, name }: AccessFlowDeps) {
   /**
    * The session's held context as one `Linked`, for a message about to be
    * delivered; `settle` once the hub answers: accepted (delivered or queued)
-   * deletes the rows, anything else keeps them for the next message.
+   * deletes every row up to the newest attached, those left out as skipped
+   * too, so none arrives later out of order; anything else keeps them.
    */
   async function context(spec: SlackSessionSpec, client: WebClient): Promise<{ linked?: Linked; settle(accepted: boolean): void }> {
     const rows = store.access.held(spec.key).filter((r) => !inFlight.has(r.seq));
@@ -228,18 +269,30 @@ export function createAccessFlow({ store, deliver, name }: AccessFlowDeps) {
       linked: { url: '', ok: true, where: '', context: true, messages },
       settle(accepted) {
         for (const r of rows) inFlight.delete(r.seq);
-        if (accepted) store.access.release(rows.map((r) => r.seq));
+        if (accepted) store.access.release(spec.key, rows[rows.length - 1].seq);
       },
     };
   }
 
-  /** A prompt button's clicker who may not answer it (S6), in the session's thread. */
-  const notAsked = (spec: SlackSessionSpec, user: string, client: WebClient) => ephemeral(client, spec, user, notAskedText(spec.owner.slackUserId));
+  /** Slack's stop button, clicked by `user` (a person) or by nobody Slack names ("Stop"): stop, then S9 when it was not the owner. */
+  async function stop(spec: SlackSessionSpec, user: string | undefined, client: WebClient) {
+    const r = await hub.stop(spec.key);
+    if (!r.ok) return log.warn(`stop ${spec.key}: ${r.error}`);
+    if (user && user !== spec.owner.slackUserId) await post(client, spec, stoppedText(user));
+  }
 
-  /** S9: someone other than the owner stopped the turn with the native button. */
-  const stopped = (spec: SlackSessionSpec, user: string, client: WebClient) => post(client, spec, stoppedText(user)).then(() => {});
+  /** A prompt's button, clicked by `user` (a person): to the host with their role, or S6. The host's answer otherwise. */
+  async function click(spec: SlackSessionSpec, promptId: string, value: string, user: string, client: WebClient): Promise<Reply | 'queued' | undefined> {
+    const a = accessOf(store, spec);
+    const u = actor(store, user);
+    const notAsked = () => ephemeral(client, spec, user, notAskedText(a.owner));
+    if (!can(a, u, 'answer')) return void (await notAsked());
+    const r = await hub.action(spec.key, promptId, value, user, role(a, u) === 'owner' ? 'owner' : 'driver');
+    if (r !== 'queued' && !r.ok && r.error === NOT_ASKED) return void (await notAsked());
+    return r;
+  }
 
-  return { message, answer, setDrivers, begin, context, notAsked, stopped };
+  return { message, answer, setDrivers, begin, context, stop, click };
 }
 
 export type AccessFlow = ReturnType<typeof createAccessFlow>;

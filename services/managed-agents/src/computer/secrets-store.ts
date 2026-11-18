@@ -34,7 +34,8 @@ import {
   secretNameProblem,
   setBlocks,
 } from "./secrets.js";
-import { isWorkspaceMember } from "./slack.js";
+import { driversCommandText } from "./access.js";
+import { LOOKUP_FAILED_TEXT } from "./threads.js";
 import { type VariableCommand, VARIABLE_HELP, credentialHint, parseVariableCommand, showValue } from "./variables.js";
 import type { ApiCaller, ApiReply } from "./sessions-api.js";
 
@@ -78,14 +79,6 @@ export interface SlackResult {
   ok: boolean;
   error?: string;
   ts?: string;
-  user?: {
-    team_id?: string;
-    deleted?: boolean;
-    is_bot?: boolean;
-    is_restricted?: boolean;
-    is_ultra_restricted?: boolean;
-    is_stranger?: boolean;
-  };
 }
 
 /** Where a command or click came from. */
@@ -100,8 +93,15 @@ export interface SecretContext {
 export interface SecretsStoreDeps {
   sql: SqlStorage;
   encryptionKey: () => string | undefined;
-  /** The linked Slack workspace's id: organization secrets are for its own full members. */
-  teamId: () => string;
+  /**
+   * Whether a person is a full member of the linked Slack workspace: who may
+   * set and remove organization secrets (2026-10-11: they are trusted). Not
+   * guests, people from other organizations in shared channels, bots or
+   * deactivated accounts. Throws when Slack could not be asked.
+   */
+  member(userId: string): Promise<boolean>;
+  /** Whether a person may write to a session (work 112: `can(instruct)`). Throws when Slack could not be asked. */
+  instructs(sessionKey: string, userId: string): Promise<boolean>;
   slack(method: string, body: Record<string, unknown>): Promise<SlackResult>;
   /** The session a runner key names, if this workspace has its conversation. */
   session(runnerKey: string): { key: string; ownerId: string; channelId: string; threadTs: string } | undefined;
@@ -252,15 +252,6 @@ export class SecretsStore {
 
   // ---------------------------------------------------------------- Slack
 
-  /**
-   * Who may set and remove workspace secrets: full members of this Slack
-   * workspace (2026-10-11: they are trusted). Not guests, people from
-   * other organizations in shared channels, bots or deactivated accounts.
-   */
-  private isMember(userId: string): Promise<boolean> {
-    return isWorkspaceMember((method, body) => this.deps.slack(method, body), this.deps.teamId(), userId);
-  }
-
   private async ephemeral(ctx: SecretContext, text: string, blocks?: unknown[]): Promise<void> {
     if (!ctx.channelId) return;
     await this.deps.slack("chat.postEphemeral", {
@@ -309,7 +300,7 @@ export class SecretsStore {
       return `\`${name}\` is set in several scopes (${where}); say which: \`!secret rm ${name} <${where.replaceAll(", ", "|")}>\``;
     }
     const [scope, owner] = present[0]!;
-    if (scope === "workspace" && !(await this.isMember(ctx.userId))) return `\`${name}\` is an organization secret; only full members of this Slack workspace can remove it.`;
+    if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return `\`${name}\` is an organization secret; only full members of this Slack workspace can remove it.`;
     this.remove(scope, owner, name, { id: ctx.userId, surface: "slack" });
     console.log("secret_removed", { scope, name, by: ctx.userId });
     await this.deps.push(scope === "session" ? { key: owner } : scope === "user" ? { owner } : {});
@@ -341,7 +332,14 @@ export class SecretsStore {
   async confirmVariable(text: string, ctx: SecretContext, respond: (text: string) => Promise<void>): Promise<void> {
     const cmd = parseVariableCommand(text);
     if (cmd?.kind !== "set") return;
-    await respond(await this.variableReply(cmd, ctx, true));
+    let reply: string;
+    try {
+      reply = await this.variableReply(cmd, ctx, true);
+    } catch {
+      // A button has nobody to retry it but the person: the lookup failed, or the store did.
+      reply = LOOKUP_FAILED_TEXT;
+    }
+    await respond(reply);
   }
 
   private async variableReply(cmd: VariableCommand, ctx: SecretContext, confirmed: true): Promise<string>;
@@ -367,7 +365,7 @@ export class SecretsStore {
     }
     const scope: SecretScope = cmd.scope ?? (ctx.session ? "session" : "user");
     if (scope === "session" && !ctx.session) return "Not in a session: add `me` or `org`.";
-    if (scope === "workspace" && !(await this.isMember(ctx.userId))) return "Only full members of this Slack workspace can set or remove organization variables.";
+    if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return "Only full members of this Slack workspace can set or remove organization variables.";
     const owner = scope === "session" ? ctx.session!.key : scope === "user" ? ctx.userId : "*";
     const where = scopeLabel(scope, owner, ctx.userId);
     const existing = cmd.name ? this.meta([[scope, owner]]).find((m) => m.name === cmd.name) : undefined;
@@ -402,6 +400,12 @@ export class SecretsStore {
     const d = decodeButtonId(actionId);
     if (!d) return;
     const session = d.k ? this.deps.session(d.k) : undefined;
+    let member: boolean;
+    try {
+      member = await this.deps.member(ctx.userId);
+    } catch {
+      return this.ephemeral(ctx, LOOKUP_FAILED_TEXT);
+    }
     const meta: ModalData = {
       ...(session ? { k: session.key } : {}),
       ...(ctx.channelId ? { ch: ctx.channelId } : {}),
@@ -411,7 +415,7 @@ export class SecretsStore {
     const view = secretModal(d, meta, {
       session: !!session,
       ...(session && session.ownerId !== ctx.userId ? { otherOwner: session.ownerId } : {}),
-      member: await this.isMember(ctx.userId),
+      member,
     });
     const r = await this.deps.slack("views.open", { trigger_id: triggerId, view });
     if (!r.ok) console.error("secret_modal_failed", { error: r.error });
@@ -427,7 +431,13 @@ export class SecretsStore {
     if ("errors" in s) return { errors: s.errors };
     const session = s.meta.k ? this.deps.session(s.meta.k) : undefined;
     if (s.scope === "session" && !session) return { errors: { scope: "This session no longer exists; pick another scope." } };
-    if (s.scope === "workspace" && !(await this.isMember(userId))) return { errors: { scope: "Only full members of this Slack workspace can set organization secrets." } };
+    try {
+      // A secret set from a session's thread is a write to that session (work 112), as `!secret` there is.
+      if (session && !(await this.deps.instructs(session.key, userId))) return { errors: { scope: driversCommandText("secret") } };
+      if (s.scope === "workspace" && !(await this.deps.member(userId))) return { errors: { scope: "Only full members of this Slack workspace can set organization secrets." } };
+    } catch {
+      return { errors: { scope: LOOKUP_FAILED_TEXT } };
+    }
     const owner = s.scope === "session" ? session!.key : s.scope === "user" ? userId : "*";
     try {
       await this.put(s.scope, owner, s.name, s.value, s.file, { id: userId, surface: "slack" });

@@ -12,7 +12,9 @@
 //   newest CONTEXT_MAX_ROWS of the session, oldest first, after that
 //   session's rows older than CONTEXT_MAX_AGE_MS are deleted;
 // - one request per person per session, ever: a closed one stays, so a
-//   declined person is never asked about twice.
+//   declined person is never asked about twice. The row is inserted before
+//   its message is posted (`message_ts` empty until then), so it is the guard
+//   against two quick mentions; a post that fails deletes it.
 //
 // SQL only: who may do what is access.ts, what happens is access-flow.ts.
 
@@ -110,10 +112,9 @@ export class AccessStore {
     return out;
   }
 
-  /** Held messages that went to the session, by seq. */
-  release(seqs: readonly number[]) {
-    const del = this.db.prepare('DELETE FROM session_context WHERE seq = ?');
-    for (const seq of seqs) del.run(seq);
+  /** Held messages up to `seq` went to the session (or were left out as skipped): none of them is sent later, out of order. */
+  release(key: string, seq: number) {
+    this.db.prepare('DELETE FROM session_context WHERE key = ? AND seq <= ?').run(key, seq);
   }
 
   /** The held message with this ts (a request's, delivered on Allow). */
@@ -133,10 +134,22 @@ export class AccessStore {
     return (this.db.prepare("SELECT * FROM access_requests WHERE key = ? AND state = 'open' ORDER BY at, rowid").all(key) as unknown as RequestRow[]).map(toRequest);
   }
 
-  putRequest(key: string, userId: string, messageTs: string, held: string, at = Date.now()) {
-    this.db
-      .prepare("INSERT OR IGNORE INTO access_requests (key, user_id, state, message_ts, held, at) VALUES (?, ?, 'open', ?, ?, ?)")
-      .run(key, userId, messageTs, held, at);
+  /** A new open request, its message not posted yet; false when this person already has one (the row is the guard). */
+  putRequest(key: string, userId: string, held: string, at = Date.now()): boolean {
+    const r = this.db
+      .prepare("INSERT OR IGNORE INTO access_requests (key, user_id, state, message_ts, held, at) VALUES (?, ?, 'open', '', ?, ?)")
+      .run(key, userId, held, at);
+    return r.changes > 0;
+  }
+
+  /** The request's message, once posted. */
+  requestPosted(key: string, userId: string, messageTs: string) {
+    this.db.prepare('UPDATE access_requests SET message_ts = ? WHERE key = ? AND user_id = ?').run(messageTs, key, userId);
+  }
+
+  /** A request whose message could not be posted: as if never asked. */
+  dropRequest(key: string, userId: string) {
+    this.db.prepare('DELETE FROM access_requests WHERE key = ? AND user_id = ?').run(key, userId);
   }
 
   closeRequest(key: string, userId: string) {
