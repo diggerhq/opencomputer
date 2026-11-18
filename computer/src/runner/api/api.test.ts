@@ -106,6 +106,17 @@ describe('SessionApi', () => {
     expect(plain).toMatchObject({ text: expect.stringContaining('from the web:\n> ship &lt;it&gt;') });
   });
 
+  it('a message over the wire carries only the member id: quoted under the owner\'s name, or "Someone", never the id', async () => {
+    const w = await world();
+    const posts = () =>
+      w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: { text: string } }).args.text);
+    const wire = (id: string) => ({ actor: { id, name: null, via: 'dashboard' as const, client: null }, member: id });
+    result(await w.call('turns.send', { input: 'one' }, wire(OWNER.userId)));
+    await w.t.feed(w.T.first(), w.T.done());
+    result(await w.call('turns.send', { input: 'two' }, wire('usr_bob')));
+    expect(posts()).toEqual(['*Ann* from the web:\n> one', '*Someone* from the web:\n> two']);
+  });
+
   it('one idempotency key gives one turn', async () => {
     const w = await world();
     const ctx = { ...ANN_CTX, idempotencyKey: 'k-1' };
