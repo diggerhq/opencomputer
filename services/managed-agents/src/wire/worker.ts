@@ -2,7 +2,8 @@
 //
 //   GET /v1 (WebSocket)  key (Authorization: Bearer / x-api-key) → sha256 → KV,
 //                        or a ticket in the `opc.ticket.<t>` subprotocol → verify (never both: 4003 ticket_and_key;
-//                        the ticket's org, member, computer and tunnelId must match the key's KV record)
+//                        the ticket's org, member, computer and tunnelId must match the key's KV record;
+//                        a login ticket, work 113, has no key: its claims stand, read-only, for ten minutes)
 //                        → fetch https://<tunnelId>.<WIRE_TUNNEL_DOMAIN>/connect, signed (X-Wire-*)
 //                        → the 101 handed back as it came (Cloudflare pipes the socket)
 //   /v1/sessions/<cs_…>/workspace/(archive|file|files)
@@ -26,6 +27,16 @@ export const TICKET_PROTOCOL_PREFIX = "opc.ticket.";
 export const DEFAULT_TUNNEL_DOMAIN = "w.opencomputer.dev";
 /** A ticket connection is closed by the relay this long after it opened. */
 export const TICKET_CONNECTION_TTL_MS = 3600_000;
+/**
+ * A login ticket's connection (work 113) lives this long. Nothing revokes it
+ * sooner: the client mints again and re-dials, and minting checks the login,
+ * so a member removed from the organization stops watching within this.
+ */
+export const LOGIN_CONNECTION_TTL_MS = 600_000;
+/** What a login ticket may do: watch. The dashboard writes over HTTP. */
+const LOGIN_SCOPES = ["sessions:read"];
+/** `X-Wire-Key` for a login ticket: the relay closes connections by this id, so it names the member. */
+export const loginKeyId = (member: string) => `login:${member}`;
 export const RETRY_AFTER_MS = 1_000;
 /** A parked computer was woken: it boots in seconds, not one. */
 export const WAKING_RETRY_AFTER_MS = 5_000;
@@ -285,7 +296,18 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
       via = "ticket";
       f.via = "ticket";
       const claims = await verifyTicket(env.WIRE_TICKET_KEY, ticket, at);
-      if (claims) {
+      if (claims?.login) {
+        // No key to read: the signed claims are the record, and the scope is fixed here, not taken from the ticket.
+        const { org, member, computer, tunnelId } = claims;
+        record = { org, member, computer, tunnelId, keyId: loginKeyId(member), scopes: LOGIN_SCOPES, expiresAt: null, kind: "user" };
+        client = WIRE_CLIENT.test(claims.client) ? claims.client : "";
+        scope = {
+          scopes: LOGIN_SCOPES,
+          ...(claims.scope.sessionIds ? { sessionIds: claims.scope.sessionIds } : {}),
+          readOnly: true,
+          until: at + LOGIN_CONNECTION_TTL_MS,
+        };
+      } else if (claims?.keyId !== undefined) {
         record = await kv(f, recordByKeyId(env.WIRE_KEYS, claims.keyId));
         // The ticket names its key; the key's current record must still be that member's, on the ticket's computer.
         if (

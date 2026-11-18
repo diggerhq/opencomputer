@@ -3,6 +3,9 @@
 // upgrade. The route (routes.ts) resolves the key, refuses project keys and
 // rate-limits; this module validates the body and mints. The wire Worker
 // alone verifies (src/wire/ticket.ts).
+//
+// A dashboard login gets one too (work 113): without `keyId`, always
+// read-only, and labelled `dashboard…` so the relay's actor says so.
 
 import { WIRE_CLIENT } from "../wire/auth.js";
 import { SESSION_ID, TICKET_MAX_SESSIONS, TICKET_TTL_MS, TicketTooLongError, mintTicket as mintWireTicket } from "../wire/ticket.js";
@@ -32,8 +35,12 @@ export interface MintTicketInput extends TicketRequest {
   member: string;
   computer: string;
   tunnelId: string;
-  keyId: string;
+  /** The minting API key's id; absent for a dashboard login, whose ticket is read-only whatever `readOnly` says. */
+  keyId?: string;
 }
+
+/** A login ticket's client label: the caller's own when it already says `dashboard`, else plain `dashboard`. */
+export const dashboardClient = (client: string) => (client.startsWith("dashboard") ? client : "dashboard");
 
 export interface MintedTicket {
   token: string;
@@ -100,9 +107,12 @@ export function validateTicketRequest(body: unknown, userAgent?: string | null):
 export async function mintTicket(env: TicketEnv, input: MintTicketInput, now = Date.now()): Promise<MintedTicket> {
   if (!env.WIRE_TICKET_KEY) throw new Error("WIRE_TICKET_KEY is not set");
   const { org, member, computer, tunnelId, keyId, client, sessionIds, readOnly } = input;
+  const sessions = sessionIds ? { sessionIds } : {};
   const token = await mintWireTicket(
     env.WIRE_TICKET_KEY,
-    { org, member, computer, tunnelId, keyId, client, scope: { ...(sessionIds ? { sessionIds } : {}), ...(readOnly ? { readOnly } : {}) } },
+    keyId !== undefined
+      ? { org, member, computer, tunnelId, keyId, client, scope: { ...sessions, ...(readOnly ? { readOnly } : {}) } }
+      : { org, member, computer, tunnelId, login: true, client: dashboardClient(client), scope: { ...sessions, readOnly: true } },
     now,
   );
   return {
