@@ -78,6 +78,27 @@ describe("OpenComputer managed-agent assertions", () => {
     });
   });
 
+  it("carries a member's verified email, and ignores one that is not a string", async () => {
+    const secret = "test-managed-agent-secret-at-least-32-bytes";
+    const authenticate = async (verified_email: unknown) => {
+      const token = await new SignJWT({ org_id: "org_test", user_id: "user_test", verified_email })
+        .setProtectedHeader({ alg: "HS256" })
+        .setIssuer("opencomputer-edge")
+        .setAudience("managedagents")
+        .setIssuedAt()
+        .setExpirationTime("2m")
+        .sign(new TextEncoder().encode(secret));
+      const request = new Request("https://managedagents.test/v1/computer", { headers: { "x-opencomputer-agent-token": token } });
+      return authenticateRequest(
+        request,
+        { BLUE_ACCOUNT_ID: "unused", BLUE_ENVIRONMENT: "production", OC_MANAGED_AGENTS_SECRET: secret },
+        new URL(request.url),
+      );
+    };
+    expect(await authenticate("maya@acme.test")).toMatchObject({ userId: "user_test", verifiedEmail: "maya@acme.test" });
+    expect(await authenticate(7)).not.toHaveProperty("verifiedEmail");
+  });
+
   it("carries the computer principal and its session, and nothing else", async () => {
     const secret = "test-managed-agent-secret-at-least-32-bytes";
     const assertion = (claims: Record<string, unknown>) =>

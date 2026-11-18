@@ -319,6 +319,12 @@ export interface ModelAccessAgents {
   rekey(dashboardUserId: string, installerUserId: string): Promise<void>;
   /** Slack is installed and this dashboard user has no Slack half: they link first (work 083). */
   needsLink(user: string): boolean;
+  /**
+   * An unlinked dashboard user whose WorkOS-verified email is a full member's
+   * of the linked workspace becomes that member's dashboard half (work 083,
+   * auto-link). Best effort; absent where nothing links.
+   */
+  autoLink?(user: string, verifiedEmail: string): Promise<void>;
   /** What a new thread of Slack user `owner` runs. */
   harnessFor(owner: string): { harness: CalvinHarness; via: "choice" | "latest" | "none" };
   /** The object's "agent" alarm. */

@@ -55,6 +55,9 @@ class FakeStatement {
     if (this.sql.includes("SELECT role FROM org_memberships")) {
       return { role: "owner" } as T;
     }
+    if (this.sql.includes("SELECT m.role, u.verified_email FROM org_memberships m")) {
+      return { role: "owner", verified_email: this.db.verifiedEmail } as T;
+    }
     if (this.sql.includes("SELECT id FROM api_keys WHERE key_hash")) {
       const row = this.db.keys.get(String(this.args[0]));
       return (row ? { id: row.id } : null) as T | null;
@@ -72,6 +75,7 @@ class FakeStatement {
 
 class FakeDB {
   keys = new Map<string, KeyRow>();
+  verifiedEmail: string | null = null;
   reads: { sql: string; args: unknown[] }[] = [];
   executed: { sql: string; args: unknown[] }[] = [];
   prepare(sql: string): FakeStatement {
@@ -616,6 +620,38 @@ describe("computer API proxy to blue", () => {
     const { url, headers } = sent(fetchMock);
     expect(url).toBe(`${BLUE}/v1/computer/sessions`);
     expect(headers.get("x-opencomputer-surface")).toBeNull();
+  });
+
+  it("asserts the member's verified email to the computer's card only (auto-link)", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = new FakeDB();
+    db.verifiedEmail = "igor@example.com";
+    for (const path of ["/computer", "/computer/sessions"]) {
+      await worker.fetch(
+        new Request(`${ORIGIN}/api/dashboard/managed-agents${path}`, { headers: { cookie: await sessionCookie() } }),
+        testEnv(db),
+        testCtx().ctx,
+      );
+    }
+    const claims = (call: number) => {
+      const token = sent(fetchMock, call).headers.get("x-opencomputer-agent-token")!;
+      return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    };
+    expect(claims(0)).toMatchObject({ verified_email: "igor@example.com", role: "admin" });
+    expect(claims(1).verified_email).toBeUndefined();
+  });
+
+  it("asserts no email when WorkOS has not verified one", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await worker.fetch(
+      new Request(`${ORIGIN}/api/dashboard/managed-agents/computer`, { headers: { cookie: await sessionCookie() } }),
+      testEnv(new FakeDB()),
+      testCtx().ctx,
+    );
+    const token = sent(fetchMock).headers.get("x-opencomputer-agent-token")!;
+    expect(JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).verified_email).toBeUndefined();
   });
 });
 

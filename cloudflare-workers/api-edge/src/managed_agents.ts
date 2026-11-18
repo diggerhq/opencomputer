@@ -53,6 +53,8 @@ export interface ManagedAgentsCaller {
   /** The key creator's name and email, when the auth read loaded them. */
   userName?: string | null;
   userEmail?: string | null;
+  /** A dashboard member's WorkOS-verified email, for the computer's auto-link (work 083). */
+  verifiedEmail?: string;
 }
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
@@ -146,6 +148,7 @@ export async function mintManagedAgentsAssertion(
     if (caller.userName) payload.user_name = caller.userName;
     if (caller.userEmail) payload.user_email = caller.userEmail;
   }
+  if (caller.verifiedEmail && !caller.key) payload.verified_email = caller.verifiedEmail;
   const encoder = new TextEncoder();
   const signingInput =
     `${b64url(encoder.encode(JSON.stringify(header)))}.` +

@@ -669,8 +669,9 @@ export async function handleDashboard(
       }
     }
     const membership = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
-    ).bind(caller.orgID, caller.userID).first<{ role: string }>();
+      `SELECT m.role, u.verified_email FROM org_memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = ?1 AND m.user_id = ?2`,
+    ).bind(caller.orgID, caller.userID).first<{ role: string; verified_email: string | null }>();
     return proxyManagedAgents(
       req,
       env,
@@ -681,6 +682,10 @@ export async function handleDashboard(
           membership?.role === "owner" || membership?.role === "admin"
             ? "admin"
             : membership?.role,
+        // Only the computer's card reads it, to link this member to their Slack self.
+        ...(method === "GET" && sub === "/managed-agents/computer" && membership?.verified_email
+          ? { verifiedEmail: membership.verified_email }
+          : {}),
       },
       "/api/dashboard/managed-agents",
     );
