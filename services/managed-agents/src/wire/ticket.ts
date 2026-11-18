@@ -10,6 +10,11 @@
 // 10 minutes to present, at most 1024 characters, at most 20 sessionIds. The
 // key's scopes are not carried: the wire Worker reads the key's record by
 // `keyId` on every use (that is also how a revoked key stops its tickets).
+//
+// A login ticket (work 113) is minted for a dashboard login, which has no
+// key: `"login":true` stands where `"keyId"` does, and exactly one of the two
+// is present. It has no record to read, so the Worker grants it a fixed,
+// read-only scope (worker.ts).
 
 import { base64UrlString, equalStrings, fromBase64Url, hmacBase64Url, hmacKey, utf8 } from "./crypto.js";
 
@@ -26,20 +31,25 @@ export interface TicketScope {
   readOnly?: boolean;
 }
 
-export interface TicketClaims {
-  v: 1;
+/** Whose ticket it is: an API key's, or a dashboard login's. Exactly one. */
+export type TicketPrincipal = { keyId: string; login?: undefined } | { login: true; keyId?: undefined };
+
+interface TicketBody {
   org: string;
   member: string;
   computer: string;
   tunnelId: string;
-  keyId: string;
   client: string;
   scope: TicketScope;
-  /** Present-by time, ms since the epoch. */
-  exp: number;
 }
 
-export type TicketInput = Omit<TicketClaims, "v" | "exp">;
+export type TicketClaims = TicketBody & TicketPrincipal & {
+  v: 1;
+  /** Present-by time, ms since the epoch. */
+  exp: number;
+};
+
+export type TicketInput = TicketBody & TicketPrincipal;
 
 /** K, the ticket MAC key's raw bytes (exported for the vector test). */
 export async function ticketMacKeyBytes(wireTicketKey: string): Promise<Uint8Array<ArrayBuffer>> {
@@ -60,11 +70,12 @@ export class TicketTooLongError extends Error {
 
 /** A signed ticket good for TICKET_TTL_MS from `now`. Throws TicketTooLongError past TICKET_MAX_LENGTH. */
 export async function mintTicket(wireTicketKey: string, input: TicketInput, now = Date.now()): Promise<string> {
-  const { org, member, computer, tunnelId, keyId, client } = input;
+  const { org, member, computer, tunnelId, client } = input;
+  const principal = input.login ? ({ login: true } as const) : { keyId: input.keyId };
   const scope: TicketScope = {};
   if (input.scope.sessionIds) scope.sessionIds = input.scope.sessionIds;
   if (input.scope.readOnly !== undefined) scope.readOnly = input.scope.readOnly;
-  const claims: TicketClaims = { v: 1, org, member, computer, tunnelId, keyId, client, scope, exp: now + TICKET_TTL_MS };
+  const claims: TicketClaims = { v: 1, org, member, computer, tunnelId, ...principal, client, scope, exp: now + TICKET_TTL_MS };
   const body = `tk_${base64UrlString(JSON.stringify(claims))}`;
   const token = `${body}.${await hmacBase64Url(await macKey(wireTicketKey), body)}`;
   if (token.length > TICKET_MAX_LENGTH) throw new TicketTooLongError(token.length);
@@ -78,17 +89,19 @@ export async function verifyTicket(wireTicketKey: string, token: string | null |
   if (!match) return undefined;
   const expected = await hmacBase64Url(await macKey(wireTicketKey), match[1]!);
   if (!equalStrings(expected, match[2]!)) return undefined;
-  let claims: Partial<TicketClaims>;
+  let claims: Partial<TicketBody> & { v?: unknown; exp?: unknown; keyId?: unknown; login?: unknown };
   try {
-    claims = JSON.parse(new TextDecoder().decode(fromBase64Url(match[1]!.slice(3)))) as Partial<TicketClaims>;
+    claims = JSON.parse(new TextDecoder().decode(fromBase64Url(match[1]!.slice(3)))) as typeof claims;
   } catch {
     return undefined;
   }
   if (!claims || typeof claims !== "object" || claims.v !== 1) return undefined;
   if (typeof claims.exp !== "number" || claims.exp <= now || claims.exp > now + TICKET_TTL_MS + CLOCK_SKEW_MS) return undefined;
-  for (const field of ["org", "member", "computer", "tunnelId", "keyId", "client"] as const) {
+  for (const field of ["org", "member", "computer", "tunnelId", "client"] as const) {
     if (typeof claims[field] !== "string") return undefined;
   }
+  // A key's ticket or a login's, never both and never neither.
+  if (claims.login === undefined ? typeof claims.keyId !== "string" : claims.login !== true || claims.keyId !== undefined) return undefined;
   const scope = claims.scope;
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return undefined;
   if (scope.readOnly !== undefined && typeof scope.readOnly !== "boolean") return undefined;

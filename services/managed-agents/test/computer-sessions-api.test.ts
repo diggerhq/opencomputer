@@ -925,6 +925,20 @@ describe("hello and tickets", () => {
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
   });
 
+  it("tickets: a dashboard login gets a read-only login ticket, 60 a minute per member, and writes no key", async () => {
+    const f = fixture({ ticketKey: true });
+    const login = (member = OWNER) => f.api.handle(caller(member, { via: "dashboard", client: "Mozilla/5.0" }), { op: "ticket", body: { readOnly: false } });
+    const ok = await login();
+    expect(ok).toMatchObject({ status: 200, body: { ticket: { url: "wss://wire.opencomputer.dev/v1", expiresInMs: 600_000 } } });
+    const token = (ok.body as { ticket: { token: string } }).ticket.token;
+    const claims = JSON.parse(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/")));
+    expect(claims).toMatchObject({ member: OWNER, login: true, client: "dashboard", scope: { readOnly: true } });
+    expect(claims.keyId).toBeUndefined();
+    for (let i = 0; i < 59; i++) await login();
+    expect(await login()).toMatchObject({ status: 429, error: { code: "rate_limited" } });
+    expect(await login(MO)).toMatchObject({ status: 200 });
+  });
+
   it("/me names the wire and the credential", async () => {
     const f = fixture();
     const me = await f.api.handle(caller(), { op: "me" });

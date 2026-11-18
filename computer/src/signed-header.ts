@@ -141,7 +141,9 @@ export interface TicketClaims {
   member: string;
   computer: string;
   tunnelId: string;
-  keyId: string;
+  /** The API key the ticket narrows; a dashboard login's ticket (work 113) has `login: true` in its place. */
+  keyId?: string;
+  login?: true;
   client: string;
   scope: { sessionIds?: string[]; readOnly?: boolean };
   /** Present-by time, ms since the epoch. */
@@ -154,11 +156,12 @@ export function ticketKey(wireTicketKey: string): Buffer {
 }
 
 export function mintTicket(wireTicketKey: string, claims: Omit<TicketClaims, 'v' | 'exp'>, now = Date.now()): string {
-  const { org, member, computer, tunnelId, keyId, client } = claims;
+  const { org, member, computer, tunnelId, client } = claims;
+  const principal = claims.login ? { login: true } : { keyId: claims.keyId };
   const scope: TicketClaims['scope'] = {};
   if (claims.scope.sessionIds) scope.sessionIds = claims.scope.sessionIds;
   if (claims.scope.readOnly !== undefined) scope.readOnly = claims.scope.readOnly;
-  const body = Buffer.from(JSON.stringify({ v: 1, org, member, computer, tunnelId, keyId, client, scope, exp: now + TICKET_TTL_MS })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ v: 1, org, member, computer, tunnelId, ...principal, client, scope, exp: now + TICKET_TTL_MS })).toString('base64url');
   return `tk_${body}.${hmac(ticketKey(wireTicketKey), `tk_${body}`)}`;
 }
 
@@ -169,7 +172,8 @@ export function verifyTicket(wireTicketKey: string, ticket: string | undefined, 
   if (!equal(hmac(ticketKey(wireTicketKey), `tk_${match[1]}`), match[2])) return undefined;
   const claims = parseClaims(match[1]) as Partial<TicketClaims> | undefined;
   if (claims?.v !== 1 || typeof claims.exp !== 'number' || claims.exp <= now) return undefined;
-  for (const f of ['org', 'member', 'computer', 'tunnelId', 'keyId', 'client'] as const) if (typeof claims[f] !== 'string') return undefined;
+  for (const f of ['org', 'member', 'computer', 'tunnelId', 'client'] as const) if (typeof claims[f] !== 'string') return undefined;
+  if (claims.login === undefined ? typeof claims.keyId !== 'string' : claims.login !== true || claims.keyId !== undefined) return undefined;
   if (!isScope(claims.scope) || (claims.scope.sessionIds?.length ?? 0) > 20) return undefined;
   return claims as TicketClaims;
 }
