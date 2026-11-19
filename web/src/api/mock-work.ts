@@ -83,11 +83,13 @@ const open: Json[] = [
     updated: 40,
     stateLine:
       'Metering ships behind the invoice preview; the price table needs a decision.',
-    tags: ['billing', 'pricing'],
+    tags: ['billing', 'pricing', 'invoices'],
     owner: igor,
     mine: true,
     left: 3,
+    warnings: ['The "Left" section has an item with no checkbox.'],
     pullRequests: [
+      pr(4175, 'merged', 'Usage table'),
       pr(4182, 'open', 'Meter session minutes'),
       pr(4190, 'draft', 'Invoice preview'),
     ],
@@ -127,7 +129,8 @@ const open: Json[] = [
   }),
   item(21, 'Pick a chart library for the usage page', {
     updated: 15,
-    stateLine: 'Comparing three libraries on bundle size and dark theme.',
+    stateLine:
+      'Comparing three libraries on bundle size, dark theme and how they draw a gap in the data; Recharts leads, but its tooltips need work before it can ship.',
     tags: ['frontend'],
     owner: igor,
     mine: true,
@@ -168,15 +171,19 @@ const open: Json[] = [
       },
     ],
   }),
-  item(26, 'Faster cold start for sandboxes', {
-    updated: 6 * H,
-    stateLine: 'Snapshot restore is 40% faster in staging; measuring prod.',
-    tags: ['infra', 'performance'],
-    owner: sam,
-    left: 2,
-    attention: { state: 'waiting_on', name: 'Sam', since: ago(6 * H) },
-    warnings: ['The "Left" section has an item with no checkbox.'],
-  }),
+  item(
+    26,
+    'Faster cold start for sandboxes restored from a snapshot on a busy worker',
+    {
+      updated: 6 * H,
+      stateLine: 'Snapshot restore is 40% faster in staging; measuring prod.',
+      tags: ['infra', 'performance', 'sandboxes', 'workers'],
+      owner: sam,
+      left: 2,
+      attention: { state: 'waiting_on', name: 'Sam', since: ago(6 * H) },
+      warnings: ['The "Left" section has an item with no checkbox.'],
+    },
+  ),
   item(27, 'Onboarding checklist for new organizations', {
     updated: D + 4 * H,
     stateLine: null,
@@ -184,6 +191,13 @@ const open: Json[] = [
     owner: null,
     author: priya,
     left: 6,
+  }),
+  item(31, 'Look into the flaky end-to-end test', {
+    updated: 2 * D,
+    stateLine: null,
+    owner: null,
+    author: sam,
+    left: 1,
   }),
   item(29, 'Audit log export', {
     updated: 3 * D,
