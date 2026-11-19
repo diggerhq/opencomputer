@@ -205,7 +205,7 @@ export function UnpublishedMark({
     <span
       title={UNPUBLISHED}
       className={cn(
-        'text-status-pending inline-flex items-center gap-1 text-xs',
+        'text-muted-foreground inline-flex items-center gap-1 text-xs',
         className,
       )}
     >

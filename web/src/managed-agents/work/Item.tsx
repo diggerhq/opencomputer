@@ -41,6 +41,18 @@ import {
   WarningMark,
 } from './parts'
 
+// The doc's own type: AgentMarkdown's chat sizes, set for reading at length.
+// Section headings get room above them; task lists draw their own boxes and
+// mute what is done (the boxes are styled in index.css, .work-doc).
+const DOC = cn(
+  'work-doc max-w-[42rem]',
+  '[&_h2]:mt-8 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:leading-6',
+  '[&_h3]:mt-6 [&_h3]:mb-1.5 [&_h3]:text-sm [&_h3]:leading-6',
+  '[&_.contains-task-list]:mb-3 [&_.contains-task-list]:space-y-1 [&_.contains-task-list]:last:mb-0',
+  '[&_.task-list-item]:relative [&_.task-list-item]:pl-6',
+  '[&_.task-list-item:has(>input:checked)]:text-muted-foreground',
+)
+
 // One item (ux-spec 5): its working doc at reading width, and beside it the
 // details the API composes and the doc's history. No chat, no diff.
 
@@ -107,51 +119,54 @@ export function ItemView() {
     <div>
       <Breadcrumb number={it.number} />
       <ItemHeader item={it} />
-      <div className="mt-6 flex flex-col gap-8 lg:flex-row lg:items-start">
-        <article className="min-w-0 flex-1">
-          <div className="max-w-[72ch]">
+      <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-0">
+        <article className="min-w-0 lg:pr-12">
+          <div className={DOC}>
             <AgentMarkdown resolveUrl={(u) => resolveAgainst(u, it.url)}>
               {presentBody(item.data.body)}
             </AgentMarkdown>
           </div>
         </article>
-        <aside className="lg:sticky lg:top-8 lg:w-80 lg:shrink-0">
-          <div
-            role="tablist"
-            aria-label="About this item"
-            className="mb-4 flex gap-4 border-b text-sm"
-          >
-            {(['details', 'history'] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                role="tab"
-                aria-selected={tab === t}
-                onClick={() =>
-                  setParams(
-                    (p) => {
-                      const next = new URLSearchParams(p)
-                      if (t === 'history') next.set('tab', t)
-                      else next.delete('tab')
-                      return next
-                    },
-                    { replace: true },
-                  )
-                }
-                className={cn(
-                  'text-muted-foreground -mb-px border-b-2 border-transparent pb-2 transition-colors',
-                  tab === t && 'border-foreground text-foreground',
-                )}
-              >
-                {t === 'details' ? 'Details' : 'History'}
-              </button>
-            ))}
+        <aside className="lg:border-l lg:pl-8">
+          <div className="lg:sticky lg:top-8">
+            <div
+              role="tablist"
+              aria-label="About this item"
+              className="mb-5 flex gap-5 border-b text-sm"
+            >
+              {(['details', 'history'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t}
+                  onClick={() =>
+                    setParams(
+                      (p) => {
+                        const next = new URLSearchParams(p)
+                        if (t === 'history') next.set('tab', t)
+                        else next.delete('tab')
+                        return next
+                      },
+                      { replace: true },
+                    )
+                  }
+                  className={cn(
+                    'text-muted-foreground hover:text-foreground -mb-px border-b-2 border-transparent pb-2 leading-6 transition-colors',
+                    tab === t &&
+                      'border-foreground text-foreground font-medium',
+                  )}
+                >
+                  {t === 'details' ? 'Details' : 'History'}
+                </button>
+              ))}
+            </div>
+            {tab === 'details' ? (
+              <Details item={it} />
+            ) : (
+              <HistoryList number={it.number} />
+            )}
           </div>
-          {tab === 'details' ? (
-            <Details item={it} />
-          ) : (
-            <HistoryList number={it.number} />
-          )}
         </aside>
       </div>
     </div>
@@ -178,14 +193,14 @@ function ItemHeader({ item }: { item: Item }) {
   const closed = item.stage === 'closed'
   return (
     <header className="border-b pb-5">
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <h1 className="min-w-0 flex-1 text-xl font-semibold tracking-tight">
-          <span className="text-muted-foreground mr-2 font-normal tabular-nums">
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+        <h1 className="min-w-0 flex-1 text-xl leading-8 font-semibold tracking-tight text-pretty">
+          <span className="text-muted-foreground mr-2.5 font-normal tabular-nums">
             {item.number}
           </span>
           {item.title}
         </h1>
-        <div className="flex items-center gap-2">
+        <div className="flex h-8 items-center gap-2">
           <a
             href={item.url}
             target="_blank"
@@ -198,44 +213,88 @@ function ItemHeader({ item }: { item: Item }) {
           {/* Close and Reopen arrive here with build step 5. */}
         </div>
       </div>
-      <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
-        <span
-          className={cn(
-            'rounded-full border px-2 py-0.5 font-medium',
-            closed
-              ? 'text-muted-foreground'
-              : item.readyToClose
-                ? 'text-foreground'
-                : 'text-status-running border-status-running/40',
-          )}
-        >
-          {closed ? 'Closed' : item.readyToClose ? 'Ready to close' : 'Open'}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          {item.owner ? (
-            <>
-              <Avatar person={item.owner} />
-              {personName(item.owner)}
-            </>
-          ) : (
-            'no owner'
-          )}
-        </span>
-        {item.author ? <span>started by {personName(item.author)}</span> : null}
-        {closed ? (
-          <span title={item.closedAt ?? undefined}>
-            {item.closedBy ? `closed by ${item.closedBy}` : 'closed'}
-            {item.closedAt ? ` · ${timeAgo(item.closedAt)}` : null}
+      {/* The row is pulled 20px left and clipped, so a dot that wraps to the
+          start of a line falls outside and is never seen. */}
+      <div className="text-muted-foreground mt-2 overflow-hidden text-xs">
+        <div className="-ml-5 flex flex-wrap items-center gap-y-1.5">
+          <span
+            className={cn(
+              'mr-3 ml-5 inline-flex h-5 items-center rounded-full border px-2 font-medium',
+              closed ? 'text-muted-foreground' : 'text-foreground',
+            )}
+          >
+            {closed ? 'Closed' : item.readyToClose ? 'Ready to close' : 'Open'}
           </span>
-        ) : (
-          <span title={item.updatedAt}>changed {timeAgo(item.updatedAt)}</span>
-        )}
-        {!closed ? <AttentionMark item={item} /> : null}
-        <WarningMark warnings={item.warnings} />
-        {item.unpublished ? <UnpublishedMark /> : null}
+          <Dotted>
+            <span className="inline-flex items-center gap-1.5">
+              {item.owner ? (
+                <>
+                  <Avatar person={item.owner} />
+                  <span className="text-foreground">
+                    {personName(item.owner)}
+                  </span>
+                </>
+              ) : (
+                'no owner'
+              )}
+            </span>
+            {item.author ? (
+              <span>started by {personName(item.author)}</span>
+            ) : null}
+            {closed ? (
+              <span>
+                {item.closedBy ? `closed by ${item.closedBy}` : 'closed'}
+              </span>
+            ) : null}
+            <span
+              title={(closed ? item.closedAt : null) ?? item.updatedAt}
+              className="tabular-nums"
+            >
+              {closed
+                ? timeAgo(item.closedAt ?? item.updatedAt)
+                : `changed ${timeAgo(item.updatedAt)}`}
+            </span>
+            {!closed && item.attention ? <AttentionMark item={item} /> : null}
+            {item.warnings.length ? (
+              <span className="inline-flex items-center gap-1">
+                <WarningMark warnings={item.warnings} />
+                <span className="text-status-pending">
+                  {item.warnings.length === 1
+                    ? 'a problem in the doc'
+                    : `${item.warnings.length} problems in the doc`}
+                </span>
+              </span>
+            ) : null}
+            {item.unpublished ? <UnpublishedMark /> : null}
+          </Dotted>
+        </div>
       </div>
     </header>
   )
+}
+
+/** Inline facts with a quiet dot between them; only the first may shrink. */
+function Dotted({ children }: { children: ReactNode[] }) {
+  const parts = children.filter(Boolean)
+  return parts.map((part, i) => (
+    <span
+      key={i}
+      className={cn(
+        'inline-flex items-center',
+        i === 0 ? 'min-w-0' : 'shrink-0',
+      )}
+    >
+      {i > 0 ? (
+        <span
+          aria-hidden
+          className="text-muted-foreground/50 inline-block w-5 text-center"
+        >
+          ·
+        </span>
+      ) : null}
+      {part}
+    </span>
+  ))
 }
 
 function Details({ item }: { item: Item }) {
@@ -270,22 +329,20 @@ function Details({ item }: { item: Item }) {
       </Section>
       <Section title={`Sessions${count(item.sessions.length)}`}>
         {item.sessions.length ? (
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {item.sessions.map((s) => (
               <li key={s.id} className="flex items-start gap-2">
-                {s.status ? (
-                  <span className="mt-1.5">
-                    <StatusDot status={s.status} />
-                  </span>
-                ) : null}
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                  {s.status ? <StatusDot status={s.status} /> : null}
+                </span>
                 <div className="min-w-0">
                   <Link
                     to={`/computer/sessions/${s.id}`}
-                    className="hover:text-foreground block truncate underline-offset-4 hover:underline"
+                    className="block truncate leading-5 underline-offset-4 hover:underline"
                   >
                     {s.title || 'Untitled session'}
                   </Link>
-                  <p className="text-muted-foreground text-xs">
+                  <p className="text-muted-foreground text-xs leading-4">
                     {[s.ownerName, s.status].filter(Boolean).join(' · ')}
                   </p>
                 </div>
@@ -298,10 +355,10 @@ function Details({ item }: { item: Item }) {
       </Section>
       <Section title={`Pull requests${count(item.pullRequests.length)}`}>
         {item.pullRequests.length ? (
-          <ul className="space-y-2">
+          <ul className="space-y-2.5">
             {item.pullRequests.map((pr) => (
               <li key={pr.url} className="flex items-start gap-2">
-                <span className="mt-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center">
                   <PullDot state={pr.state} />
                 </span>
                 <div className="min-w-0">
@@ -309,14 +366,14 @@ function Details({ item }: { item: Item }) {
                     href={pr.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="block truncate underline-offset-4 hover:underline"
+                    className="block truncate leading-5 underline-offset-4 hover:underline"
                   >
                     <span className="text-muted-foreground tabular-nums">
                       {pullLabel(pr)}
                     </span>{' '}
                     {pr.title}
                   </a>
-                  <p className="text-muted-foreground text-xs">
+                  <p className="text-muted-foreground text-xs leading-4">
                     {pullStateWord(pr.state)}
                   </p>
                 </div>
@@ -328,11 +385,11 @@ function Details({ item }: { item: Item }) {
         )}
       </Section>
       <Section title="People">
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {people.map(({ name, role }) => (
             <li key={`${role}-${name}`} className="flex items-center gap-2">
               <Avatar person={{ name, email: name, id: null }} />
-              <span className="min-w-0 truncate">{name}</span>
+              <span className="min-w-0 truncate leading-5">{name}</span>
               <span className="text-muted-foreground ml-auto text-xs">
                 {role}
               </span>
@@ -381,7 +438,7 @@ function HistoryList({ number }: { number: number }) {
   if (!revisions.length) return <None>No changes yet</None>
   return (
     <div>
-      <ol className="relative space-y-4 border-l pl-4">
+      <ol>
         {revisions.map((r) => (
           <RevisionRow key={r.sha} revision={r} />
         ))}
@@ -400,35 +457,50 @@ function HistoryList({ number }: { number: number }) {
   )
 }
 
+// A timeline: a dot centred on the summary's first line, and a rule from
+// each dot to the next that stops short of both.
 function RevisionRow({ revision: r }: { revision: Revision }) {
   return (
-    <li className="relative text-sm">
+    <li className="group/rev relative pb-5 pl-5 text-sm last:pb-0">
       <span
         aria-hidden
-        className="bg-background absolute top-1.5 -left-[21px] size-2.5 rounded-full border"
+        className="bg-border absolute top-[18px] -bottom-0.5 left-[3.5px] w-px group-last/rev:hidden dark:bg-white/10"
       />
-      <p className="leading-5">{r.summary}</p>
-      <p className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
-        <span>{r.authorName}</span>
-        <span title={r.at}>{timeAgo(r.at)}</span>
-        {r.sessionId ? (
-          <Link
-            to={`/computer/sessions/${r.sessionId}`}
-            className="hover:text-foreground underline underline-offset-4"
-          >
-            session
-          </Link>
-        ) : null}
-        <a
-          href={r.url}
-          target="_blank"
-          rel="noreferrer"
-          title="This change on GitHub"
-          className="hover:text-foreground inline-flex items-center gap-0.5 font-mono"
+      <span
+        aria-hidden
+        className="border-muted-foreground/60 bg-background absolute top-1.5 left-0 size-2 rounded-full border-[1.5px]"
+      />
+      <div className="flex items-start gap-3">
+        <p className="min-w-0 flex-1 leading-5 text-pretty">{r.summary}</p>
+        <span
+          title={r.at}
+          className="text-muted-foreground shrink-0 text-xs leading-5 tabular-nums"
         >
-          <GitCommitHorizontal className="size-3" aria-hidden />
-          {r.sha.slice(0, 7)}
-        </a>
+          {timeAgo(r.at)}
+        </span>
+      </div>
+      <p className="text-muted-foreground mt-0.5 flex min-w-0 items-center text-xs leading-5 whitespace-nowrap">
+        <Dotted>
+          <span className="block truncate">{r.authorName}</span>
+          {r.sessionId ? (
+            <Link
+              to={`/computer/sessions/${r.sessionId}`}
+              className="hover:text-foreground underline-offset-4 hover:underline"
+            >
+              session
+            </Link>
+          ) : null}
+          <a
+            href={r.url}
+            target="_blank"
+            rel="noreferrer"
+            title="This change on GitHub"
+            className="hover:text-foreground inline-flex items-center gap-1 font-mono text-[11px]"
+          >
+            <GitCommitHorizontal className="size-3" aria-hidden />
+            {r.sha.slice(0, 7)}
+          </a>
+        </Dotted>
       </p>
     </li>
   )
