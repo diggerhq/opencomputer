@@ -1,0 +1,45 @@
+---
+title: "Shared threads"
+description: "Anyone on the people list can steer a session with its owner's secrets; replies not meant for the bot get no answer"
+---
+
+<Frame>
+  <img src="/images/slack/shared-thread.png" alt="A second person asks a follow-up without a mention and gets an answer; two later replies between the people get no response" />
+</Frame>
+
+## Owner
+
+The person whose message started the session owns it. A session started by `spawn_thread` has its parent's owner.
+
+In a team install the session:
+
+- runs in the owner's workspace;
+- gets the owner's secrets and variables, plus the session's own and the workspace-wide ones (see [Secrets and variables](/slack/secrets-and-variables));
+- reads and posts to other threads with the owner's Slack access (see [Linked and spawned threads](/slack/linked-and-spawned-threads)).
+
+## Who can steer
+
+| Person | Message that mentions `@computer` | Reply without a mention | Buttons on approvals, questions, plans |
+| --- | --- | --- | --- |
+| On the people list | Delivered | Delivered | Accepted |
+| Not on the people list | Not delivered; ephemeral "not enabled for you yet" reply | Dropped silently | Refused with the same ephemeral reply |
+
+Anyone whose messages are delivered can send instructions, run `!` commands (including `!stop` and `!mode`) and answer prompts. They act with the owner's workspace and secrets.
+
+One-machine mode has no people list: every reply in a session thread is delivered.
+
+<Frame>
+  <img src="/images/slack/not-enabled.png" alt="A person who is not on the people list mentions the bot and gets a reply only they can see: not enabled for you yet" />
+</Frame>
+
+<Note>Not in the open-source code yet (runner isolation). Until it lands, every session on a computer runs as one Unix user, so a session can read other sessions' files and secrets on the same computer.</Note>
+
+## When the bot stays silent
+
+The model decides whether each delivered reply is for it. If not, nothing is posted: no message, no card, no footer.
+
+- The model can misjudge either way.
+- A silent turn still runs the model and counts towards usage.
+- In a direct message, every message counts as addressed to `@computer`.
+
+{/* Sources: computer/src/gateway/routing.ts (people table, NOT_ENABLED, acknowledge, action, spawn owner); computer/src/gateway/secrets-ui.ts (scopes); computer/src/main.ts; computer/src/runner/names.ts; computer/src/runner/system-prompt.ts (no-reply); computer/src/runner/session.ts (silent turn); computer/src/runner/prompts.ts (first answer wins) */}

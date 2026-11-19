@@ -324,29 +324,29 @@ ripping them out has no prod blast radius. Phasing:
 ## 9. Testing
 
 We test the **real** path around the existing GCP dev box (`opensandbox-qemu-dev-igor`,
-34.181.232.88) by standing up a one-off, clearly-labeled `igor-dev` edge stack in **Mo's CF account
-`b8f23cb8`** (the local `CLOUDFLARE_API_TOKEN` is Mo's, so deploys work; the repo tomls' `1241f114`
-is stale/inaccessible — the dev tomls must set `account_id = b8f23cb8`). Tear down after, or leave —
+34.181.232.88) by standing up a one-off, clearly-labeled `igor-dev` edge stack in **Mo's CF
+account** (the local `CLOUDFLARE_API_TOKEN` is Mo's, so deploys work; the repo tomls' `1241f114`
+is stale/inaccessible — the dev tomls must target Mo's account). Tear down after, or leave —
 everything is prefixed `…-igor-dev`. The path under test:
 `client → api-edge-igor-dev → (mgmt→Svix; create→dev-box CP) → events:{cell} → events-ingest-igor-dev → Svix → sink`.
 
-### 9.1 Create in CF (Mo's account `b8f23cb8`)
+### 9.1 Create in CF (Mo's account)
 1. **D1 `opencomputer-igor-dev`** — apply `cloudflare-workers/schema*.sql` + the new webhook-index
    migration. Seed minimal rows: one `orgs` row; one `api_keys` row (`key_hash` = sha256 of a dev
    API key); one `cells` row (`base_url = http://34.181.232.88:8080`, healthy) so api-edge can auth +
    route create to the dev box.
 2. **R2 `events-archive-igor-dev`**.
-3. **Worker `opencomputer-api-edge-igor-dev`** (`account_id b8f23cb8`) — bindings: D1 (above), KV
+3. **Worker `opencomputer-api-edge-igor-dev`** (Mo's account) — bindings: D1 (above), KV
    sessions, DO `CREDIT_ACCOUNT` (self), R2. Secrets: `SESSION_JWT_SECRET`, `EVENT_SECRET`,
    `SVIX_API_TOKEN`, `CF_ADMIN_SECRET` (WorkOS/Autumn left unset/stubbed — off the webhook path).
    New code: `/api/webhooks*` management + `/internal/webhooks/register`.
-4. **Worker `opencomputer-events-ingest-igor-dev`** (`account_id b8f23cb8`) — **stripped**: bindings
+4. **Worker `opencomputer-events-ingest-igor-dev`** (Mo's account) — **stripped**: bindings
    D1 + R2 + secrets only, **drop the `CREDIT_ACCOUNT` DO binding** (it's free-tier debit, off the
    webhook path; without it `usage_tick` debit logs a harmless error in `waitUntil` and never blocks
    the 202). This avoids needing api-edge's full DO/KV/WorkOS/Autumn/Stripe stack just to test
    deliveries. Secrets: `EVENT_SECRET` (**must equal** the box's `OPENSANDBOX_CF_EVENT_SECRET`),
    `SVIX_API_TOKEN`. New code: `SvixSink` + sync-handoff. (Confirmed Igor 2026-06-24: create resources
-   in **Mo's account `b8f23cb8`**, prefix `…-igor-dev`; the local `CLOUDFLARE_API_TOKEN` is Mo's so
+   in **Mo's account**, prefix `…-igor-dev`; the local `CLOUDFLARE_API_TOKEN` is Mo's so
    `wrangler` lands there.)
 5. **Svix** — nothing to pre-create: apps are per-org-`uid`, created on demand by the mgmt API. The
    one `SVIX_API_TOKEN` (`/tmp/svix_token`) suffices; dev uses dev org uids so apps don't collide
@@ -385,7 +385,7 @@ Delete the two workers + D1 + R2 (or leave, clearly labeled). Optionally delete 
 `uid` prefix.
 
 ### 9.6 Results (2026-06-24) — STOOD UP + PASSED
-Live stack in Mo's acct `b8f23cb87a7a6c64040d3134643da448`: D1 `opencomputer-igor-dev`
+Live stack in Mo's acct: D1 `opencomputer-igor-dev`
 (`d5bbb12a-…`), R2 `events-archive-igor-dev`, workers `opencomputer-events-ingest-igor-dev` +
 `opencomputer-api-edge-igor-dev` (dev tomls: `events-ingest/wrangler.igor-dev.toml`,
 `api-edge/wrangler.igor-dev.toml`). Validated end-to-end against **real Svix Cloud**:

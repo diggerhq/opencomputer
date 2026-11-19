@@ -22,4 +22,5 @@ regexes = [
   '''^\s+'sk_live_abcdefghijkl',$''',
   '''^\s+'AKIAABCDEFGHIJKLMNOP',$''',
   '''find\(api, 'do_busy_ms_per_min_p95'\)''',
+  '''-H 'x-api-key: ssh-placeholder' ''',
 ]

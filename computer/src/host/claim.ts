@@ -1,5 +1,5 @@
 // A new session's runner from the warm pool (work 069): take a parked spare
-// whose Claude credential matches the delivery's, make the session's fork,
+// of the session's spare kind (pool.ts), make the session's fork,
 // then `claim` the spare into it. Anything short of a claimed spare falls back
 // to a cold start, in the fork when it was made.
 //
@@ -34,7 +34,7 @@ export const isGone = (e: unknown) => /runner gone/.test(String((e as Error)?.me
 
 export async function claimSpare<R>(s: ClaimSteps<R>): Promise<ClaimOutcome<R>> {
   const taken = s.take();
-  if (taken === 'none' || taken === 'credential') return { missed: taken as MissReason };
+  if (taken === 'none' || taken === 'kind') return { missed: taken as MissReason };
   const r = taken as R;
   let forkPath: string;
   try {

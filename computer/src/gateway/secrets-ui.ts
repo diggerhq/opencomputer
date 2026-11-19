@@ -12,6 +12,11 @@
 // Scopes: this session (anyone enabled), just me (all sessions the person
 // owns), workspace (every session; admins only). Handled here, not by the runner:
 // the gateway holds the values and Slack modals need its interactivity.
+//
+// Session roles (work 112): in a session, `!secret` passes routing.ts's role
+// gate like any message; a form opened from a session is submitted only by
+// someone who can instruct it, and the "continue" it sends goes through that
+// same gate (`deliver`), never to the hub directly.
 
 import type { WebClient } from '@slack/web-api';
 import type { KnownBlock, View } from '@slack/types';
@@ -21,6 +26,8 @@ import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
 import { MAX_VALUE, type Vault } from './vault.js';
 import type { Msg } from './routing.js';
+import { can, driversCommandText } from '../access.js';
+import { accessOf, actor, type HeldMessage } from './access-flow.js';
 import { errorText, log } from '../log.js';
 
 export const SECRET_VIEW = 'calvin_secret';
@@ -87,10 +94,12 @@ export interface SubmittedView {
 export interface SecretsUiDeps {
   store: Store;
   vault: Vault;
-  hub: Hub;
+  hub: Pick<Hub, 'pushSecrets'>;
+  /** A message to a session as if its sender typed it (routing.ts `deliver`: the role gate, then the host). */
+  deliver(spec: SlackSessionSpec, h: HeldMessage, client: WebClient): Promise<void>;
 }
 
-export function createSecretsUi({ store, vault, hub }: SecretsUiDeps) {
+export function createSecretsUi({ store, vault, hub, deliver }: SecretsUiDeps) {
   const thread = (spec?: SlackSessionSpec) => (spec?.kind === 'thread' ? spec.threadTs : undefined);
 
   async function ephemeral(client: WebClient, channel: string, user: string, text: string, threadTs?: string, blocks?: KnownBlock[]) {
@@ -243,6 +252,7 @@ export function createSecretsUi({ store, vault, hub }: SecretsUiDeps) {
     if (!value.trim()) return { errors: { value: 'Enter a value.' } };
     if (Buffer.byteLength(value) > MAX_VALUE) return { errors: { value: 'Too large.' } };
     const spec = meta.k ? store.session(meta.k)?.spec : undefined;
+    if (spec && !can(accessOf(store, spec), actor(store, userId), 'instruct')) return { errors: { name: driversCommandText('secret') } };
     if (scope === 'session' && !spec) return { errors: { scope: 'This session no longer exists; pick another scope.' } };
     if (scope === 'workspace' && !person.admin) return { errors: { scope: 'Only admins can set workspace secrets.' } };
     if (!scope) return { errors: { scope: 'Pick where it applies.' } };
@@ -267,8 +277,8 @@ export function createSecretsUi({ store, vault, hub }: SecretsUiDeps) {
         const applies = spec && (scope !== 'user' || spec.owner.slackUserId === userId);
         if (meta.rq && spec && applies) {
           const text = `Secret $${name} is set (${where === 'just you' ? 'all my sessions' : where}). It is in the environment of your next Bash command${file ? ' as the path of a file holding it' : ''}. Continue.`;
-          const r = await hub.deliver(spec, { userId, text, ts: meta.rq, mentioned: true });
-          if (r !== 'queued' && !r.ok) log.warn(`secret set: deliver to ${spec.key} failed: ${r.error}`);
+          const m = { channel: meta.ch ?? spec.channel, ts: meta.rq, user: userId, ...(meta.th ? { thread_ts: meta.th } : {}) };
+          await deliver(spec, { m, text, mentioned: true, inline: false }, client);
         }
         if (pushed) log.info(`secrets pushed to ${pushed} live session(s)`);
       },

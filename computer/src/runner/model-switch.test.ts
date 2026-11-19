@@ -21,7 +21,7 @@ function host(id: HarnessId) {
   } as unknown as Harness;
   const s: ModelHost = {
     info: { kind: 'thread' },
-    model: id === 'codex' ? 'gpt-6.1-sol' : 'claude-opus-5-5',
+    model: id === 'codex' ? 'gpt-6.2-sol' : 'claude-opus-5-5',
     isBusy: false,
     say: async (t) => void said.push(t),
     ensureHarness: () => harness,
@@ -35,7 +35,7 @@ describe('tiers per harness', () => {
   it.each([
     ['claude', 'smart', 'claude-fable-5-2'],
     ['claude', 'fast', 'claude-sonnet-5-5'],
-    ['codex', 'smart', 'gpt-6-astra'],
+    ['codex', 'smart', 'gpt-6.2-astra'],
     ['codex', 'FAST', 'gpt-6-luna'],
   ] as const)('%s: %s is %s', async (id, tier, model) => {
     const { s, set } = host(id);

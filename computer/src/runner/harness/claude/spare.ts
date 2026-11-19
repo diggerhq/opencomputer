@@ -1,11 +1,10 @@
 // A spare runner's parked Claude Code (work 069): started before any session
-// is known, with the Claude credential the host gave it, and handed over
-// whole to the session that claims the runner.
+// is known, on the model route the host gave it, and handed over whole to
+// the session that claims the runner.
 //
 // Invariants: at most one process is parked, and it was started with the
-// credential `credential` names (its fingerprint): Claude Code copies the
-// environment when it starts, so a new credential means close and start
-// again. A parked process that goes away, or never starts, is reported as
+// environment `kind` names (model-key.ts `spareKind`): Claude Code copies the
+// environment when it starts, so another kind means close and start again. A parked process that goes away, or never starts, is reported as
 // `died`: the runner exits and the host starts another spare. Taken or
 // closed, a process is no longer this holder's to report.
 
@@ -20,7 +19,7 @@ export interface SpareEvents {
 
 export class Spare {
   private p?: SpareProcess;
-  private fp?: string;
+  private k?: string;
   /** Bumped by every start, take and close: a start that finishes late is closed, not parked. */
   private gen = 0;
 
@@ -34,16 +33,16 @@ export class Spare {
     return !!this.p;
   }
 
-  /** The fingerprint of the credential the process was (or is being) started with. */
-  get credential() {
-    return this.fp;
+  /** The kind of environment the process was (or is being) started with. */
+  get kind() {
+    return this.k;
   }
 
-  /** Park a process started with the credential now in the environment; a different credential replaces it. */
-  warm(credential: string) {
-    if (credential === this.fp) return;
+  /** Park a process started with the environment now set, of `kind`; another kind replaces it. */
+  warm(kind: string) {
+    if (kind === this.k) return;
     this.close();
-    this.fp = credential;
+    this.k = kind;
     const gen = this.gen;
     this.on.changed();
     this.start().then(
