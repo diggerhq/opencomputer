@@ -249,6 +249,7 @@ describe("computer API allowlist", () => {
     ["PUT", "/computer/organization/secrets/API_KEY"],
     ["GET", "/computer/work/repository"],
     ["PUT", "/computer/work/repository"],
+    ["GET", "/computer/work/repositories"],
     ["GET", "/computer/work/items"],
     ["GET", "/computer/work/items/22"],
     ["GET", "/computer/work/items/22/history"],
@@ -276,6 +277,7 @@ describe("computer API allowlist", () => {
     // Close and Reopen come with build step 5.
     ["POST", "/computer/work/items/22/close"],
     ["DELETE", "/computer/work/repository"],
+    ["PUT", "/computer/work/repositories"],
     ["GET", "/computer/work/files"],
   ])("refuses %s %s", (method, suffix) => {
     expect(isComputerApiRoute(method, suffix)).toBe(false);

@@ -76,6 +76,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   },
   // The Work API (work tracking tech design 3.10).
   { methods: new Set(["GET", "PUT"]), pattern: route("/work/repository") },
+  { methods: new Set(["GET"]), pattern: route("/work/repositories") },
   { methods: new Set(["GET"]), pattern: route("/work/items") },
   { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}`) },
   { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}/history`) },
