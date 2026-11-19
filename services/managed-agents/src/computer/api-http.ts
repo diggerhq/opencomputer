@@ -25,11 +25,12 @@ import type { LogReadRefusal, SessionLogRpc } from "./session-log-contract.js";
 import { isSessionId, memberId } from "./session-ids.js";
 import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
 import type { SecretsApiOp } from "./secrets-store.js";
+import type { WorkContextOp } from "./work/briefs.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
-  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply>;
+  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp): Promise<ApiReply>;
 }
 
 const BODY_MAX_BYTES = 512 * 1024;

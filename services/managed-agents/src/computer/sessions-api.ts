@@ -273,12 +273,12 @@ export class ComputerSessionsApi {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE session_id = ?`, sessionId)][0] as unknown as ApiRow | undefined;
   }
 
-  private rowByKey(key: string): ApiRow | undefined {
+  rowByKey(key: string): ApiRow | undefined {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE runner_key = ?`, key)][0] as unknown as ApiRow | undefined;
   }
 
   /** A session the caller may see: every API session; a Slack one only by its linked owner. */
-  private visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
+  visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
     if (!isSessionId(sessionId)) return undefined;
     const row = this.row(sessionId);
     if (!row) return undefined;

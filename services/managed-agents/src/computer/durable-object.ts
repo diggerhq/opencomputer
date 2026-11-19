@@ -146,6 +146,7 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
+import { type WorkContextOp, workContext } from "./work/briefs.js";
 import { AccessStore } from "./access-store.js";
 import { AccessFlow } from "./access-flow.js";
 import { AccessUi } from "./access-ui.js";
@@ -1625,10 +1626,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   // ------------------------------------------------------------------ session API (work 084)
 
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
-  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
+  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
+    // The Work API's sessions and people (work tracking 3.10), likewise.
+    if (op.op === "work.context") return workContext({ sql: this.ctx.storage.sql, api: this.api }, caller, op as WorkContextOp);
     return this.api.handle(caller, op as ApiOp);
   }
 
