@@ -47,6 +47,7 @@ sdks/typescript/examples/loom/
 # Media files
 *.mp4
 *.gif
+!docs/images/readme-*.gif
 
 # Temp files
 *.tmp

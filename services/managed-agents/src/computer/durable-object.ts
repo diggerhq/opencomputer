@@ -79,24 +79,27 @@ import { PlatformComputerCloud } from "./cloud.js";
 import {
   type ComputerEdgeEnv,
   ComputersNotConfigured,
-  DEFAULT_ZONE,
   type PublicComputer,
   defaultDiskGiB,
   gatewayUrl,
   maxDiskGiB,
   missingEdgeConfig,
+  selfManagedVms,
   publicOrigin,
   sizeFor,
-  sizeShape,
+  sizes,
+  zones,
 } from "./config.js";
-import { computerHarnesses, takeHarnessPrefix } from "./harnesses.js";
+import { sizeShape } from "./placement.js";
+import { DEFAULT_HARNESS, computerHarnesses, harnessOnProfile, helloProfiles, profileHarnesses, takeHarnessPrefix } from "./harnesses.js";
 import { type SealPurpose, seal, sha256Hex, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
-import { type Linked, LINK_TIMEOUT_MS, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
+import { type Linked, LINK_TIMEOUT_MS, LOOKUP_FAILED_TEXT, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
+import { failureNotice } from "./failure.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
-import { MANAGED_MODEL_PROVIDER, modelCredentials, requestManagedModelKey } from "./model-key.js";
+import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, modelCredentials, requestManagedModelKey } from "./model-key.js";
 import { mintOpenComputerKey } from "./opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./parking.js";
@@ -109,6 +112,7 @@ import { type ApiCaller, type ApiOp, type ApiReply, ComputerSessionsApi } from "
 import type { PreviewComputerState } from "../previews/worker.js";
 import {
   CALVIN_API_PROTOCOL,
+  CALVIN_MODEL_PROTOCOL,
   CALVIN_PROTOCOL_VERSION,
   type CalvinGatewayToHost,
   type CalvinTraceContext,
@@ -126,6 +130,8 @@ import {
   type CalvinReadThreadRequest,
   type CalvinSpawnRequest,
   type CalvinSpawnResult,
+  type ModelProfile,
+  type ModelRoute,
   type SecretRequest,
   type SessionSecret,
   type WorkspaceDefinition,
@@ -140,6 +146,11 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
+import { AccessStore } from "./access-store.js";
+import { AccessFlow } from "./access-flow.js";
+import { AccessUi } from "./access-ui.js";
+import { ACCESS_VIEW, type AccessSubmission } from "./access-views.js";
+import { commandAction, driversCommandText } from "./access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./connections.js";
 import {
   AGENT_ERRORS,
@@ -156,6 +167,7 @@ import {
   MODEL_VIEW_CODEX,
   type MintResult,
   type ModelAccess,
+  type ModelSession,
   type ModelSubmittedView,
   type ProbeOutcome,
   type RedeemInput,
@@ -174,6 +186,7 @@ import { type Acknowledgement, ComputerTelemetry, type HostAttachment } from "./
 import type { GatewayTelemetry } from "./telemetry/gateway.js";
 import { SLACK_QUEUE_STATE_INDEX, slackQueueNow } from "./slack-queue-gauge.js";
 import {
+  OFFLINE_NOTICE,
   RESIZING_NOTICE,
   STARTING_NOTICE,
   type SlackInteraction,
@@ -255,6 +268,8 @@ export interface OperatorComputerStatus {
   lastActivityAt: string | null;
   nextIdleCheckAt: string | null;
   slackTeamName: string | null;
+  /** Why it is `failed` (work 111), with the error as the cloud gave it; null in any other state. */
+  failure: { code: string | null; message: string | null; at: string } | null;
 }
 
 /** What `notifyJoinRequest` did: whether the person who linked the workspace was told. */
@@ -275,6 +290,8 @@ interface Dispatch {
   trace?: CalvinTraceContext;
   /** Threads linked in the message (work 049 L3): dropped from the row once the host has answered. */
   linked?: Linked[];
+  /** Work 112: the sender's role in the session (access-flow.ts); absent for a message that starts one. */
+  role?: "owner" | "driver" | "participant";
 }
 
 type SessionRow = {
@@ -390,6 +407,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    */
   private readonly access: ModelAccess;
   private readonly connections: ComputerConnections;
+  /** Work 112: who may drive each Slack session (access-flow.ts), its modal and `!access` (access-ui.ts). */
+  private readonly roles: AccessFlow;
+  private readonly rolesUi: AccessUi;
   private readonly billing: ComputerRuntimeBilling;
   /** Work 054: the gateway's telemetry events (telemetry/computer.ts); sends nothing unless configured. */
   private readonly telemetry: ComputerTelemetry;
@@ -521,6 +541,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       },
       setAlarm: (at) => this.schedule("lifecycle", at),
       hostConnected: () => this.socket() !== undefined,
+      zones: () => zones(env),
+      sizes: () => sizes(env),
+      selfManaged: () => selfManagedVms(env),
       onReady: () => {
         this.noteActivity();
         sql.exec("DELETE FROM notices");
@@ -530,7 +553,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.secrets = new SecretsStore({
       sql,
       encryptionKey: () => env.BLUE_CHANNEL_ENCRYPTION_KEY,
-      teamId: () => this.setting("slackTeamId") ?? "",
+      member: (userId) => this.threads().member(userId),
+      // Lazy: `this.roles` is built below.
+      instructs: (key, userId) => this.roles.instructs(key, userId),
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
       push: (which) => this.pushSecrets(which),
@@ -542,8 +567,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       accountId: () => this.accountId(),
       teamId: () => this.setting("slackTeamId") ?? "",
       slack: (method, body) => this.slack(method, body),
-      harnesses: () => computerHarnesses(this.hostFeatures()),
+      harnesses: () => this.harnesses(),
       host: () => this.liveHost(),
+      managedRoute: async () => (await this.managedModel((await this.organizationModelKey()).key)).route,
       send: (frame) => this.send(frame),
       schedule: (purpose) => this.purposeScheduler(purpose),
       liveSessions: () => this.liveSessions(),
@@ -558,14 +584,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         const teamName = this.setting("slackTeamName");
         return { installed, ...(teamName ? { teamName } : {}) };
       },
-      poolProbe: (token, user) => (this.env.COMPUTERS && poolSize(this.env.COMPUTER_POOL_SIZE) > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
+      poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
-      slackUserName: async (userId) => {
-        const r = await this.slack("users.info", { user: userId });
-        const u = r.ok ? r.user : undefined;
-        return u?.profile?.display_name || u?.real_name || u?.profile?.real_name || u?.name || undefined;
-      },
+      slackUserName: (userId) => this.threads().name(userId),
       connectCodeIndex: {
         put: (hash, expiresAt) => this.computerObject(connectCodeIndexName(hash)).indexConnectCode(hash, this.accountId(), expiresAt),
         forget: (hash) => this.computerObject(connectCodeIndexName(hash)).forgetConnectCode(hash),
@@ -654,6 +676,25 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       remove: (key) => this.remove(key),
       telemetry: this.apiTelemetry,
     });
+    // Work 112: session roles. After the sessions table and `this.api` (who is an admin).
+    const roleStore = new AccessStore(sql);
+    this.roles = new AccessFlow({
+      store: roleStore,
+      slack: (method, body) => this.slack(method, body),
+      member: (slackUserId) => this.threads().member(slackUserId),
+      session: (key) => this.runnerSession(key),
+      linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.api.isAdmin(member),
+      name: (slackUserId) => this.threads().name(slackUserId),
+      requeue: (job) => this.requeueSlackJob(job),
+      changed: (key, by, from, to) => this.telemetry.accessChanged(key, by, from, to),
+      waitUntil: (work) => ctx.waitUntil(work),
+    });
+    this.rolesUi = new AccessUi({
+      flow: this.roles,
+      store: roleStore,
+      slack: (method, body) => this.slack(method, body),
+    });
     // A new instance holds no drain: every row an evicted one left `running` goes
     // back to the queue, synchronously (local SQL; a failure is logged, never thrown:
     // a throw here would reset the object on every instantiation). The alarm for
@@ -723,30 +764,77 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return this.keptHostFeatures() ?? this.liveHost()?.features;
   }
 
+  /**
+   * The profiles a host at protocol 5 listed in its hello (work 097), kept as
+   * its features are and read once per object. A hello without any (its model
+   * proxy is down) leaves them; a hello below 5 forgets them.
+   */
+  private keptProfiles?: { value: ModelProfile[] | undefined };
+  private keptHostProfiles(): ModelProfile[] | undefined {
+    if (this.keptProfiles) return this.keptProfiles.value;
+    let value: ModelProfile[] | undefined;
+    try {
+      value = helloProfiles(JSON.parse(this.setting("hostProfiles") ?? "null"));
+    } catch {
+      // Unreadable: as if never recorded.
+    }
+    this.keptProfiles = { value };
+    return value;
+  }
+
+  private recordHostProfiles(profiles: ModelProfile[] | undefined): void {
+    if (JSON.stringify(profiles) === JSON.stringify(this.keptHostProfiles())) return;
+    if (profiles) this.put("hostProfiles", JSON.stringify(profiles));
+    else this.remove("hostProfiles");
+    this.keptProfiles = { value: profiles };
+    console.log(JSON.stringify({ level: "info", event: "computer.host_profiles_changed", profiles: profiles?.map((p) => p.name) ?? null }));
+  }
+
+  /** The harnesses this computer can run (harnesses.ts): by its host's profiles once it has listed them, by its features until then. */
+  private harnesses(): CalvinHarness[] {
+    const profiles = this.keptHostProfiles();
+    return profiles ? profileHarnesses(profiles) : computerHarnesses(this.hostFeatures());
+  }
+
   /** Work 084 rollout gate: whether this organization's host is spoken to at v4 (api-gate.ts). */
   private apiEnabled(): boolean {
     return computerApiEnabled(this.env.COMPUTER_API_ORGS, this.setting("accountId"));
   }
 
-  /** The protocol every `welcome` says: ours, or v3 for an organization the gate holds back. */
-  private welcomeProtocol(): number {
-    return this.apiEnabled() ? CALVIN_PROTOCOL_VERSION : GATED_PROTOCOL;
+  /**
+   * Whether a host that said `protocol` (the connected one's, by default) is
+   * spoken to at protocol 5 (work 097): the one test in this object that
+   * tells the two protocols apart, made on the host's hello and nothing else.
+   * It and what it guards go when no host says 4.
+   */
+  private speaksProfiles(protocol = this.liveHost()?.protocol ?? 0): boolean {
+    return protocol >= CALVIN_MODEL_PROTOCOL;
   }
 
-  /** The connected host's hello `protocol` (at most v3 when gated off, recorded at its hello) and `features`; undefined when none is connected. */
-  private liveHost(): { protocol: number; features: string[] } | undefined {
+  /** The protocol every `welcome` says: ours (5 to a host that said 5), or v3 for an organization the gate holds back. */
+  private welcomeProtocol(): number {
+    if (!this.apiEnabled()) return GATED_PROTOCOL;
+    return this.speaksProfiles() ? CALVIN_MODEL_PROTOCOL : CALVIN_PROTOCOL_VERSION;
+  }
+
+  /**
+   * The connected host's hello `protocol` (at most v3 when gated off, recorded at its hello) and `features`, and
+   * the `profiles` kept from a hello at protocol 5; undefined when none is connected.
+   */
+  private liveHost(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined {
     const socket = this.socket();
     if (!socket) return undefined;
+    const profiles = this.keptHostProfiles();
     try {
       const a = socket.deserializeAttachment() as HostAttachment | null;
-      return { protocol: a?.protocol ?? 1, features: a?.features ?? [] };
+      return { protocol: a?.protocol ?? 1, features: a?.features ?? [], ...(profiles ? { profiles } : {}) };
     } catch {
       return { protocol: 1, features: [] };
     }
   }
 
   /** The host the sessions API sees: below protocol 4 until its welcome is sent (review r3 P2). */
-  private apiHost(): { protocol: number; features: string[] } | undefined {
+  private apiHost(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined {
     const socket = this.socket();
     if (!socket) return undefined;
     let welcomed = true;
@@ -783,6 +871,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const accountId = this.setting("accountId");
     if (!accountId) throw new Error("computer object is not bound to an organization");
     return accountId;
+  }
+
+  /** Warm pool computers to keep; none when the operator runs the VMs (work 105). */
+  private poolTarget(): number {
+    return selfManagedVms(this.env) ? 0 : poolSize(this.env.COMPUTER_POOL_SIZE);
   }
 
   private noteActivity(): void {
@@ -862,7 +955,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (due.includes("size")) this.ctx.waitUntil(this.reconcileSize().catch(failed("size")));
     // A ready computer is always being watched for idleness (pool computers never park).
     const row = this.lifecycle.row();
-    if (row?.state === "ready" && !isPoolId(row.organizationId) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
+    if (row?.state === "ready" && !isPoolId(row.organizationId) && !selfManagedVms(this.env) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
       this.ctx.storage.sql.exec("INSERT INTO alarms (purpose, at) VALUES ('idle', ?)", Date.now() + 15 * 60_000);
     }
     const next = [...this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM alarms")][0]?.at;
@@ -957,7 +1050,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   private async reconcileSizeOnce(): Promise<void> {
     const row = this.lifecycle.row();
-    if (!row || isPoolId(row.organizationId) || row.state !== "ready") return;
+    // Self-managed VMs (work 105): the operator sizes them.
+    if (!row || isPoolId(row.organizationId) || row.state !== "ready" || selfManagedVms(this.env)) return;
     const desired = await this.desiredSize();
     if (!desired || desired === row.size) return;
     if (sizeShape(desired).vcpus <= sizeShape(row.size).vcpus) return;
@@ -981,7 +1075,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   private async idleCheck(): Promise<void> {
     const row = this.lifecycle.row();
-    if (!row) return;
+    // Self-managed VMs (work 105) never park: the operator stops and starts them.
+    if (!row || selfManagedVms(this.env)) return;
     await this.reconcileSize();
     const pool = isPoolId(row.organizationId);
     const plan = pool ? "free" : await this.plan();
@@ -1271,6 +1366,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       lastActivityAt: iso(Number(this.setting("lastActivityAt") ?? row.updatedAt)),
       nextIdleCheckAt: iso(idleAt),
       slackTeamName: this.setting("slackTeamName") ?? null,
+      failure: row.state === "failed" ? { code: row.failureCode, message: row.lastError, at: iso(row.updatedAt)! } : null,
     };
   }
 
@@ -1303,7 +1399,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
     const reply =
       (await this.claimFromPool(accountId)) ??
-      (await this.lifecycle.create(accountId, { size, diskGiB: defaultDiskGiB(this.env), zone: DEFAULT_ZONE }));
+      (await this.lifecycle.create(accountId, { size, diskGiB: defaultDiskGiB(this.env) }));
     if (reply.status === 202) this.noteActivity();
     return reply;
   }
@@ -1320,7 +1416,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   /** Reminds the pool to look at itself, at most every few minutes, off the request's path. */
   private kickPool(): void {
-    if (!this.env.COMPUTERS || poolSize(this.env.COMPUTER_POOL_SIZE) === 0) return;
+    if (!this.env.COMPUTERS || this.poolTarget() === 0) return;
     const last = Number(this.setting("poolKickedAt") ?? 0);
     if (Date.now() - last < POOL_KICK_INTERVAL_MS) return;
     this.put("poolKickedAt", String(Date.now()));
@@ -1339,7 +1435,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * usual way. The steps are in this file's header.
    */
   private async claimFromPool(accountId: string): Promise<LifecycleReply | null> {
-    if (!this.env.COMPUTERS || poolSize(this.env.COMPUTER_POOL_SIZE) === 0) return null;
+    if (!this.env.COMPUTERS || this.poolTarget() === 0) return null;
     if (this.lifecycle.row() || isPoolId(accountId)) return null;
     if (missingEdgeConfig(this.env).length) return null;
     const started = Date.now();
@@ -1411,7 +1507,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.bind(POOL_OBJECT);
     this.pool ??= new ComputerPool({
       sql: this.ctx.storage.sql,
-      target: () => poolSize(this.env.COMPUTER_POOL_SIZE),
+      target: () => this.poolTarget(),
       slot: (poolId) => {
         const stub = this.poolSlotObject(poolId);
         return {
@@ -1467,7 +1563,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   /** Creates the pool computer: the free size and the default disk, like a new free organization's. */
   startPoolComputer(poolId: string): Promise<LifecycleReply> {
     this.bindPool(poolId);
-    return this.lifecycle.create(poolId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env), zone: DEFAULT_ZONE });
+    return this.lifecycle.create(poolId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env) });
   }
 
   poolComputerStatus(poolId: string): PoolSlotStatus {
@@ -1681,7 +1777,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   /** The host's `/data` usage (work 071): grow the data disk near capacity, up to COMPUTER_MAX_DISK_GIB. */
   private async diskReported(report: DiskReport): Promise<void> {
     const row = this.lifecycle.row();
-    if (row?.state !== "ready") return;
+    // Self-managed VMs (work 105): the operator grows the disk.
+    if (row?.state !== "ready" || selfManagedVms(this.env)) return;
     const now = Date.now();
     const decision = diskDecision(report, { diskGiB: row.diskGiB, maxGiB: maxDiskGiB(this.env), grownAt: Number(this.setting("diskGrownAt") ?? 0) }, now);
     if (decision.action === "none") return;
@@ -1747,7 +1844,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       "slackBotToken",
       await seal(link.botToken, this.env.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${accountId}\0${link.teamId}`),
     );
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
     // Work 081: the installer's token from the dashboard moves to their Slack id (never throws).
     if (link.installerUserId && link.dashboardUserId) await this.access.agents.rekey(link.dashboardUserId, link.installerUserId);
     return { previousTeamId: previous && previous !== link.teamId ? previous : null };
@@ -1765,7 +1862,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.ctx.storage.sql.exec("DELETE FROM join_requests");
     // Other threads' text read for that workspace goes with it.
     this.ctx.storage.sql.exec("UPDATE dispatches SET payload = json_remove(payload, '$.linked') WHERE json_extract(payload, '$.linked') IS NOT NULL");
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
     return { teamId };
   }
 
@@ -1928,6 +2025,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
     await this.armAlarm();
     return { accepted: true };
+  }
+
+  /**
+   * A message back on the queue (work 112: an allowed request's), queued as
+   * `acceptSlackEvent` queues one: the row synchronously, in the caller's
+   * block; the drain and the alarm off its path. Its working status was
+   * withdrawn when it was held, so it has none.
+   */
+  private requeueSlackJob(job: SlackMessageJob): void {
+    const { acked: _acked, ackIndicator: _indicator, ...rest } = job;
+    const sql = this.ctx.storage.sql;
+    sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(rest), Date.now(), `${job.channelId}:${job.threadTs}`);
+    sql.exec(
+      "INSERT INTO alarms (purpose, at) VALUES ('slack', ?) ON CONFLICT(purpose) DO UPDATE SET at = MIN(at, excluded.at)",
+      Date.now() + SLACK_FALLBACK_MS,
+    );
+    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
+    this.ctx.waitUntil(this.armAlarm());
   }
 
   /**
@@ -2190,6 +2305,18 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const text = commandText(job.text);
     const here = { userId: job.userId, channelId: job.channelId, ...(job.threadTs !== job.messageTs ? { threadTs: job.threadTs } : {}) };
     const inSession = session?.ownerId ? { session: { key, ownerId: session.ownerId } } : {};
+    // `!access` (work 112): the gateway's, in a session or not; never delivered.
+    if (commandAction(text) === "access") {
+      return this.telemetry.command(t, "access", this.rolesUi.command(text, { ...here, ...(session?.ownerId ? { session: { key } } : {}) }));
+    }
+    // Work 112: who may instruct an existing session, before every other command, the
+    // gateway's own too (they read as `instruct`). Not delivered: held as context, or dropped.
+    const roleSession = this.runnerSession(key);
+    const gate = roleSession ? await this.roles.message(job, text, roleSession) : undefined;
+    if (gate && !gate.deliver) {
+      await this.withdrawAcknowledgement(job, sequence);
+      return t.emit("message.ignored", { data: { reason: gate.reason } });
+    }
     // `!secret` and `!var` are the gateway's: they never reach the session or its history.
     const secretCommand = parseSecretCommand(text);
     if (secretCommand) {
@@ -2253,7 +2380,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     // A mention partway through a thread starts the session: it also gets the replies above (it sees only what comes after).
     const above = !addressed && job.channelType !== "im" && job.threadTs !== job.messageTs;
     const linked = await this.linkedThreads(t, job, session.ownerId ?? job.userId, above);
-    await this.deliver({
+    const dispatch: Dispatch = {
       channelId: job.channelId,
       threadTs: job.threadTs,
       messageTs: job.messageTs,
@@ -2263,13 +2390,17 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       mentioned,
       ...(job.trace ? { trace: job.trace } : {}),
       ...(linked.length ? { linked } : {}),
-    }, t);
+      ...(gate?.deliver ? { role: gate.role } : {}),
+    };
+    // With the context held for the session, except on a command.
+    if (gate?.deliver && gate.context) await this.roles.deliver(key, dispatch, (d) => this.deliver(d, t));
+    else await this.deliver(dispatch, t);
   }
 
   private threads(): ThreadAccess {
     const teamId = this.setting("slackTeamId") ?? "";
     if (this.threadAccess?.teamId !== teamId) {
-      this.threadAccess = { teamId, access: new ThreadAccess((method, body) => this.slack(method, body)) };
+      this.threadAccess = { teamId, access: new ThreadAccess((method, body) => this.slack(method, body), teamId) };
     }
     return this.threadAccess.access;
   }
@@ -2464,7 +2595,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     console.log(JSON.stringify({ level: "info", event: "computer.thread_harness", harness, via }));
   }
 
-  private createSession(input: { channelId: string; threadTs: string; ownerId: string; title: string; mode?: CalvinMode; model?: string }): SessionRow {
+  /** `from`: the session that spawned this one, whose `drivers` it starts with (work 112). */
+  private createSession(input: { channelId: string; threadTs: string; ownerId: string; title: string; mode?: CalvinMode; model?: string; from?: string }): SessionRow {
     const teamId = this.setting("slackTeamId")!;
     const key = sessionKey(teamId, input.channelId, input.threadTs);
     const now = Date.now();
@@ -2482,6 +2614,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       now,
       now,
     );
+    // Work 112: who may drive it, from the organization's default or the parent; 🔒 when restricted.
+    this.roles.start(key, input.from);
     // Analytics: one row per created session in the managed-agent session
     // index, like every serverless agent session, with source `computer`
     // so @OpenComputer sessions stay distinct from api, schedule, webhook,
@@ -2504,14 +2638,16 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return { indicator: "reaction", ok: reacted.ok, callMs: Date.now() - started };
   }
 
-  /** Slack's stop button on a thread. */
-  async slackStop(accountId: string, channelId: string, threadTs?: string): Promise<{ delivered: boolean }> {
+  /** Slack's stop button on a thread. `userId`: who pressed it (work 112: an outsider's is ignored, anyone else's is named). */
+  async slackStop(accountId: string, channelId: string, threadTs?: string, userId?: string): Promise<{ delivered: boolean }> {
     this.bind(accountId);
     const teamId = this.setting("slackTeamId");
     if (!teamId || !threadTs) return { delivered: false };
     const key = sessionKey(teamId, channelId, threadTs);
     if (!this.session(key)) return { delivered: false };
-    return { delivered: this.send({ t: "stop", id: crypto.randomUUID(), sessionKey: key }) };
+    const stop = () => this.send({ t: "stop", id: crypto.randomUUID(), sessionKey: key });
+    const roleSession = this.runnerSession(key);
+    return { delivered: roleSession ? await this.roles.stop(roleSession, userId, stop) : stop() };
   }
 
   /** Interactivity: the secret modal's submission, its button, and prompts the runner posted. */
@@ -2537,6 +2673,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (interaction.type === "view_submission" && interaction.view?.callback_id === CONNECTION_VIEW) {
       const { errors, after } = await this.connections.submit(interaction.view, userId);
       if (after) this.ctx.waitUntil(after().catch((error) => console.error("computer.connection_followup_failed", errorText(error))));
+      return errors ? { errors } : {};
+    }
+    // Work 112: the session access modal.
+    if (interaction.type === "view_submission" && interaction.view?.callback_id === ACCESS_VIEW) {
+      const { errors, after } = await this.rolesUi.submit(interaction.view as AccessSubmission, userId);
+      if (after) this.ctx.waitUntil(after().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.access_followup_failed", message: errorText(error) }))));
       return errors ? { errors } : {};
     }
     if (interaction.type === "view_submission" && interaction.view) {
@@ -2598,6 +2740,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         await respond("That session is gone; nothing was set.");
         return {};
       }
+      // Work 112: `!var` in a session's thread is a write to it, from a click as from a message.
+      const instructs = key ? await this.roles.instructs(key, userId).catch(() => undefined) : true;
+      if (!instructs) {
+        await respond(instructs === undefined ? LOOKUP_FAILED_TEXT : driversCommandText("var"));
+        return {};
+      }
       await this.secrets.confirmVariable(interaction.actions?.[0]?.value ?? "", {
         userId,
         ...(channelId ? { channelId } : {}),
@@ -2606,15 +2754,35 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       }, respond);
       return {};
     }
+    // Work 112: `Access`, and a request's `Allow` / `Not now`.
+    if (actionId.startsWith("ac:")) {
+      const container = interaction.container;
+      const channelId = interaction.channel?.id ?? container?.channel_id;
+      if (!channelId) return {};
+      const { after } = await this.rolesUi.action(actionId, interaction.trigger_id, {
+        userId,
+        channelId,
+        ...(container?.thread_ts ? { threadTs: container.thread_ts } : {}),
+      });
+      if (after) this.ctx.waitUntil(after().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.access_followup_failed", message: errorText(error) }))));
+      return {};
+    }
     const action = decodeCalvinActionId(actionId);
     if (action) {
-      this.send({ t: "action", id: crypto.randomUUID(), sessionKey: action.sessionKey, promptId: action.promptId, value: action.value, userId });
+      // Work 112: only someone who may answer the session's prompts; the frame carries their role.
+      await this.roles.answer(action.sessionKey, userId, (role) => {
+        const id = crypto.randomUUID();
+        this.send({ t: "action", id, sessionKey: action.sessionKey, promptId: action.promptId, value: action.value, userId, ...(role ? { role } : {}) });
+        return id;
+      });
     }
     return {};
   }
 
   /** A session that asked for something and is waiting: `text` from `userId` starts its next turn. */
-  private async wakeSession(session: { channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void> {
+  private async wakeSession(session: { key: string; channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void> {
+    // Work 112: waking a session is instructing it.
+    if (!(await this.roles.instructs(session.key, userId))) return;
     if (!(await this.admit(session.channelId, session.threadTs))) return;
     const trace = this.telemetry.trace({ teamId: this.setting("slackTeamId") ?? "", channelId: session.channelId, userId, messageTs: ts, receivedAt: Date.now() });
     await this.deliver({ channelId: session.channelId, threadTs: session.threadTs, messageTs: ts, userId, text, mentioned: true, trace });
@@ -2707,7 +2875,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.send({
       t: "welcome",
       protocol: this.welcomeProtocol(),
-      credentials: await this.credentials(),
+      ...(await this.hostCredentials()),
       people: this.people(),
       definition,
       ...preview,
@@ -2742,14 +2910,18 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       notice = WAKING_NOTICE;
     } else if (row.state === "provisioning") {
       notice = STARTING_NOTICE;
+    } else if (row.state === "ready" && selfManagedVms(this.env) && !this.socket()) {
+      // Work 105: nothing here can start the operator's VM; the message waits for its host.
+      notice = OFFLINE_NOTICE;
     } else if (row.state === "failed") {
-      notice = "Your computer could not start, so this message is waiting. Open the Computer page on app.opencomputer.dev to try again.";
+      // Claimed per reason below: a thread told of one failure still hears of a different one.
+      notice = failureNotice(row.failureCode, publicOrigin(this.env));
     }
     if (!notice) return;
     const inserted = this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO notices (thread_key, kind) VALUES (?, ?)",
       threadKey,
-      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : "failed",
+      notice === WAKING_NOTICE ? "waking" : notice === STARTING_NOTICE ? "starting" : notice === RESIZING_NOTICE ? "resizing" : notice === OFFLINE_NOTICE ? "offline" : `failed:${row?.failureCode ?? ""}`,
     );
     // Off the chain (work 068 §3b): the notice is claimed above, synchronously, so it posts once.
     if (inserted.rowsWritten > 0) {
@@ -2867,6 +3039,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         ...(stored?.forkPath ? { forkPath: stored.forkPath } : {}),
         // Work 082: a ChatGPT route runs Codex (only ever sent to a host at protocol 3 with the feature).
         ...(model.mode === "subscription" && model.provider === "chatgpt" ? { harness: "codex" as const } : {}),
+        // Protocol 5: a session runs Codex when it asked to and its route's profile serves Codex.
+        ...(model.mode === "profile" && harnessOnProfile(this.liveHost()?.profiles, model.profile, this.access.models.harness(row.key)) === "codex"
+          ? { harness: "codex" as const }
+          : {}),
       },
       msg: {
         userId: dispatch.userId,
@@ -2875,10 +3051,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         ...(dispatch.files?.length ? { files: dispatch.files } : {}),
         ...(dispatch.mentioned !== undefined ? { mentioned: dispatch.mentioned } : {}),
         ...(dispatch.linked?.length ? { linked: dispatch.linked } : {}),
+        ...(dispatch.role ? { role: dispatch.role } : {}),
       },
       credentials,
       secrets,
-      ...(model.mode === "subscription" ? { model } : {}),
+      // `managed` is the absence of a route: the host uses `credentials` (protocol 4) or `models` (5). Every other route is sent.
+      ...(model.mode === "managed" ? {} : { model }),
       ...(api ? { epoch: api.epoch, lastSeq: api.lastSeq } : {}),
       ...this.telemetry.sentTrace(dispatch),
     };
@@ -2914,8 +3092,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     } catch {
       return;
     }
-    // A pool computer runs no sessions: only its hello, and answers to its own token checks (work 081).
-    if (event.t !== "hello" && event.t !== "probed" && isPoolId(this.setting("accountId") ?? "")) return;
+    // A pool computer runs no sessions: only its hello, and answers to its own token checks (work 081; `model-response` at protocol 5).
+    if (event.t !== "hello" && event.t !== "probed" && event.t !== "model-response" && isPoolId(this.setting("accountId") ?? "")) return;
     switch (event.t) {
       case "hello":
         return this.hello(ws, event);
@@ -2930,6 +3108,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         );
         this.ctx.storage.sql.exec("DELETE FROM dispatches WHERE state IN ('complete', 'failed') AND updated_at < ?", Date.now() - DEDUP_TTL_MS);
         if (!event.ok) await this.deliveryFailed(event.id, event.error ?? "unknown error");
+        // Work 112: a prompt click the runner refused (`not-asked`) is told to whoever clicked.
+        await this.roles.answered(event.id, event.ok ? undefined : event.error);
         // Other threads' text is not kept past delivery (the row stays for dedup).
         this.ctx.storage.sql.exec(
           "UPDATE dispatches SET payload = json_remove(payload, '$.linked') WHERE id = ? AND json_extract(payload, '$.linked') IS NOT NULL",
@@ -2982,7 +3162,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       case "probed":
         return this.access.models.probed(event.id, event.result, event.error);
       case "model-bound":
-        return this.access.models.bound(event.sessionKey, event.mode, event.fingerprint);
+        return this.access.models.bound(event.sessionKey, event.mode, event.key ?? event.fingerprint, event.profile);
+      // Work 097, protocol 5: what an upstream answered on a session's credential, and the answer to a `model-request`.
+      case "model-observed":
+        return this.access.models.observed?.(event);
+      case "model-response":
+        return this.access.models.responded?.(event);
       case "model-health":
         return this.access.models.health(event);
       case "model-denied":
@@ -3058,6 +3243,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     } satisfies HostAttachment);
     // A pool slot's hello isn't the organization's computer's: its own hello as the organization comes after the claim.
     if (!isPoolId(this.setting("accountId") ?? "")) this.recordHostFeatures(features ?? []);
+    // Work 097: a host at protocol 5 lists its model proxy's profiles; without them (the proxy is down) the last list stands.
+    const profiles = helloProfiles(event.profiles);
+    if (!this.speaksProfiles(protocol)) this.recordHostProfiles(undefined);
+    else if (profiles) this.recordHostProfiles(profiles);
     this.telemetry.connected(event.version, previous);
     if ((event.protocol ?? 1) < CALVIN_PROTOCOL_VERSION) {
       // Expected of every host until calvin #129 ships protocol 3: a note, not a warning.
@@ -3065,6 +3254,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
     const accountId = this.setting("accountId") ?? "";
     if (isPoolId(accountId)) return this.poolHello(ws, accountId);
+    if (selfManagedVms(this.env)) {
+      // Work 105: the operator's VM connecting is what makes the computer: its row is `ready` from here,
+      // whether or not Slack was installed first, and threads told it was offline may be told again next time.
+      await this.lifecycle.create(accountId, { size: sizeFor(this.env, "default"), diskGiB: defaultDiskGiB(this.env) });
+      this.ctx.storage.sql.exec("DELETE FROM notices WHERE kind = 'offline'");
+    }
     this.lifecycle.noteHostSeen();
     const assignedAt = this.setting("assignPendingSince");
     if (assignedAt) {
@@ -3081,7 +3276,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       JSON.stringify({
         t: "welcome",
         protocol: this.welcomeProtocol(),
-        credentials: await this.credentials(),
+        ...(await this.hostCredentials()),
         people: this.people(),
         ...(definition ? { definition } : {}),
         ...(await this.telemetry.credential(event.hostId)),
@@ -3234,6 +3429,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       threadTs,
       ownerId,
       title: task,
+      from,
       ...(parent.mode ? { mode: parent.mode } : {}),
       // A tier picks its own model in the runner; without one the parent's carries over.
       ...(!req.tier && parent.model ? { model: parent.model } : {}),
@@ -3278,16 +3474,17 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     }
   }
 
-  /** Sessions running now, with their conversations (pushes go to these). */
-  private liveSessions(): Array<{ key: string; ownerId: string; channelId: string; threadTs: string }> {
-    return [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; channelId: string; threadTs: string }>(
-      "SELECT runner_key AS key, owner_id AS ownerId, channel_id AS channelId, thread_ts AS threadTs FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
-    )].flatMap((row) => (row.ownerId ? [{ key: row.key, ownerId: row.ownerId, channelId: row.channelId, threadTs: row.threadTs }] : []));
+  /** Sessions running now, with their conversations and last activity (pushes go to these). */
+  private liveSessions(): ModelSession[] {
+    return [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; channelId: string; threadTs: string; status: string; activeAt: number }>(
+      "SELECT runner_key AS key, owner_id AS ownerId, channel_id AS channelId, thread_ts AS threadTs, status, updated_at AS activeAt FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
+    )].flatMap((row) => (row.ownerId ? [{ key: row.key, ownerId: row.ownerId, channelId: row.channelId, threadTs: row.threadTs, status: row.status, activeAt: row.activeAt }] : []));
   }
 
   /** Slack says a person left, was deactivated or became a guest (work 077): their Claude subscription goes. */
   async slackMemberLeft(accountId: string, userId: string): Promise<void> {
     this.bind(accountId);
+    this.threads().forget(userId);
     await this.access.models.memberRemoved(userId);
   }
 
@@ -3330,28 +3527,49 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return true;
   }
 
-  /** The host's credentials; `credentials.resolved` on `t` (or its own emitter), with where the model key came from. */
+  /** The host's credentials, as a `deliver` carries them. */
   private async credentials(telemetry?: GatewayTelemetry): Promise<CalvinHostCredentials> {
+    return (await this.hostCredentials(telemetry)).credentials;
+  }
+
+  /**
+   * What a `welcome` or a `credentials` frame carries: the host's credentials
+   * and, at protocol 5, `models`, the route of a session whose delivery names
+   * none. `credentials.resolved` on `t` (or its own emitter), with where the
+   * model key came from.
+   */
+  private async hostCredentials(telemetry?: GatewayTelemetry): Promise<Pick<Extract<CalvinGatewayToHost, { t: "credentials" }>, "credentials" | "models">> {
     return this.telemetry.within(telemetry, async (t) => {
       const span = t.start("credentials.resolved");
       try {
         const teamId = this.setting("slackTeamId");
         const { key, source } = await this.organizationModelKey();
-        const { credentials: model, fallback } = modelCredentials(key, this.env);
-        if (fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
+        const model = await this.managedModel(key);
+        if (model.fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
         const credentials = {
           slackBotToken: await this.slackBotToken(),
           slackBotUserId: this.setting("slackBotUserId") ?? "",
           ...(teamId ? { teamId } : {}),
-          ...model,
+          ...model.credentials,
         };
         span.end({ outcome: "completed", data: { source } });
-        return credentials;
+        return { credentials, ...(model.route.mode === "managed" ? {} : { models: { [DEFAULT_HARNESS]: model.route } }) };
       } catch (error) {
         span.end({ outcome: "failed", error_type: "unknown" });
         throw error;
       }
     });
+  }
+
+  /**
+   * The organization's managed models as the connected host takes them
+   * (model-key.ts). Below protocol 5: the key in the host's credentials, and
+   * the route `managed`. At 5 (work 097): no key in the credentials, and the
+   * profile route that carries it, or a refusal.
+   */
+  private async managedModel(key: string | null): Promise<{ credentials: ModelCredentials; route: ModelRoute; fallback: boolean }> {
+    if (this.speaksProfiles()) return { credentials: {}, ...(await managedModelRoute(key, this.env, this.liveHost()?.profiles)) };
+    return { ...modelCredentials(key, this.env), route: { mode: "managed" } };
   }
 
   /**
@@ -3441,7 +3659,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (!accountId || isPoolId(accountId)) return;
     this.unsealed.clear();
     await this.refreshModelKey(accountId);
-    this.send({ t: "credentials", credentials: await this.credentials() });
+    this.send({ t: "credentials", ...(await this.hostCredentials()) });
   }
 
   private provisionModelKey(accountId: string): void {
@@ -3455,7 +3673,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         return;
       }
       console.log(JSON.stringify({ level: "info", event: "computer.model_key_provisioned", accountId }));
-      this.send({ t: "credentials", credentials: await this.credentials() });
+      this.send({ t: "credentials", ...(await this.hostCredentials()) });
     })()
       .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "computer.model_key_provision_failed", accountId, message: errorText(error) })))
       .finally(() => {
