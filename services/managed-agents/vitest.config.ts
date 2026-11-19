@@ -495,6 +495,7 @@ export default defineConfig({
             "test/computer-token-check.test.ts",
             "test/computer-secrets.test.ts", "test/computer-secrets-scopes.test.ts",
             "test/work-item.test.ts",
+            "test/work-index.test.ts",
             "test/computer-connections.test.ts",
             "test/computer-model-subscriptions.test.ts",
             "test/computer-codex-subscriptions.test.ts",
