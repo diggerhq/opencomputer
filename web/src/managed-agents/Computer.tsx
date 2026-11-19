@@ -59,7 +59,6 @@ import { GitHubStarBonus } from './GitHubStarBonus'
 import { launchAuthorizationWindow } from './authorization-window'
 import { SlackInstallButton, UnlinkSlackDialog } from './computer-slack'
 import { createSession } from './computer-sessions-api'
-import { KnowledgeRepositorySection } from './work/KnowledgeRepository'
 import { ChatTextarea } from '@/components/chat-textarea'
 import {
   AgentCard,
@@ -292,7 +291,6 @@ function ComputerPageContent() {
             failed={sessions.isError}
           />
           <AgentCard status={status.data} />
-          <KnowledgeRepositorySection id="work-repository" />
           <IdeasToTry />
         </div>
       </WithDeveloperFooter>

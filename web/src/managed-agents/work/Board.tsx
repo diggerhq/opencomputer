@@ -368,7 +368,7 @@ function IndexStatus({
             Cannot read {repository}. {problem}
           </span>
           <Link
-            to="/computer#work-repository"
+            to="/settings#work-repository"
             className="hover:text-foreground underline underline-offset-4"
           >
             Settings
@@ -383,7 +383,7 @@ function IndexStatus({
         <>
           {/* Quiet: where the board reads from, and the way to change it. */}
           <Link
-            to="/computer#work-repository"
+            to="/settings#work-repository"
             title="Change the working docs repository"
             className="hover:text-foreground"
           >

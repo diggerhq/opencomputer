@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { getManagedRuntimeProfile } from '@/managed-agents/api'
+import { KnowledgeRepositorySection } from '@/managed-agents/work/KnowledgeRepository'
 
 function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -114,6 +115,10 @@ export default function Settings() {
       <PageHeader title="Settings" description="Organization configuration" />
 
       <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="lg:col-span-2">
+          <KnowledgeRepositorySection id="work-repository" />
+        </div>
+
         <Panel className="p-6 lg:col-span-2">
           <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
             <div>

@@ -79,7 +79,7 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
   - unknown: outline
 - Where things live:
   - `KnowledgeRepositorySection` (`KnowledgeRepository.tsx`, props `{id?}`) is the stateful setting and can be mounted anywhere. It shows the repository (linked to GitHub), the branch and its state: "Up to date · read N ago at <short SHA>", "Reading the working docs for the first time…" while building, or the problem sentence in red with a fix per code (Reconnect GitHub for a removed or suspended installation, the installation's `settingsUrl` for a missing repository or denied access, choose again for a missing branch, a note that it is ours for `github_app_not_configured`). Change opens the picker in place.
-  - It is mounted on the Computer page as `/computer#work-repository`, after "Your agent", until the organization settings are redesigned. The board's no-repository state embeds `FirstRepository`, the picker alone.
+  - It is mounted at the top of the organization Settings page as `/settings#work-repository`, until those settings are redesigned (work 116). The Computer page is not the place: it shows the setup wizard until setup is complete. The board's no-repository state embeds `FirstRepository`, the picker alone.
   - The GitHub repository and commit links are built in the web (`https://github.com/owner/name`, `/commit/<head>`); a `url` on `Repository` from the API would remove that.
   - Queries more than one screen reads (`useOpenItems`, `useRepository`, `useGrantingInstallations`) live in `queries.ts`, so tests that mock `./api` reach them.
   - The board's header names the repository it reads as a quiet link to that setting; when the repository has a problem the link reads "Settings".

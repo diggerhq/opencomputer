@@ -258,7 +258,7 @@ describe('board', () => {
     workApi.getOpenItems.mockResolvedValue(openPage(items))
     await render('/computer/work')
     expect(
-      container.querySelector('a[href="/computer#work-repository"]')
+      container.querySelector('a[href="/settings#work-repository"]')
         ?.textContent,
     ).toBe('acme/knowledge')
   })
@@ -294,7 +294,7 @@ describe('board', () => {
     )
     expect(container.textContent).not.toContain('access_denied')
     expect(
-      container.querySelector('a[href="/computer#work-repository"]')
+      container.querySelector('a[href="/settings#work-repository"]')
         ?.textContent,
     ).toBe('Settings')
   })
