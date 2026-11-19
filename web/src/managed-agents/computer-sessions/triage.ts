@@ -7,6 +7,7 @@ import {
   type ListSessionsQuery,
   type Session,
 } from '../computer-sessions-api'
+import { approvalLine } from './ask-line'
 import { askTitle } from './state'
 
 // What triage shows (work-tracking, ux-spec 3): the caller's own sessions
@@ -27,11 +28,16 @@ export const TRIAGE_WORKING: ListSessionsQuery = {
   limit: 50,
 }
 
+/** What the person is asked for; decides the answer dock's shape. */
+export type TriageKind = 'approval' | 'question' | 'secret' | 'reply'
+
 export type TriageEntry = {
   /** The ask's id: what Set aside stores, and what the screen selects by. */
   ref: string
   session: Session
-  ask: Ask
+  /** The open ask; null when the session needs a reply to plain text. */
+  ask: Ask | null
+  kind: TriageKind
   /** The ask in one line, the screen's headline. */
   line: string
   /** When the ask opened. */
@@ -39,17 +45,47 @@ export type TriageEntry = {
   aside: boolean
 }
 
+const KINDS = new Set(['approval', 'question', 'secret'])
+
+/** The ask in one line, as triage heads it. */
+export function askLine(ask: Ask): string {
+  return ask.kind === 'approval' ? approvalLine(ask) : askTitle(ask)
+}
+
+// Tech design 3.7, read ahead of the server: a session whose last turn ended
+// in text that needs its person. Absent today; the schema is loose.
+type Attention = {
+  reason?: string
+  ref?: string
+  line?: string | null
+  at?: string
+}
+
 /** The session's ask for triage: its oldest open ask, or null when none is open. */
 export function triageEntry(s: Session): TriageEntry | null {
   const ask = s.asks
     .filter((a) => a.status === 'open')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
-  if (!ask) return null
+  if (!ask) {
+    const att = (s as { attention?: Attention | null }).attention
+    if (!att?.ref || (att.reason !== 'reply' && att.reason !== 'failed'))
+      return null
+    return {
+      ref: att.ref,
+      session: s,
+      ask: null,
+      kind: 'reply',
+      line: att.line || 'Needs a reply',
+      at: att.at ?? s.lastActiveAt ?? s.createdAt,
+      aside: s.aside,
+    }
+  }
   return {
     ref: ask.id,
     session: s,
     ask,
-    line: askTitle(ask),
+    kind: KINDS.has(ask.kind) ? (ask.kind as TriageKind) : 'reply',
+    line: askLine(ask),
     at: ask.createdAt,
     aside: s.aside,
   }

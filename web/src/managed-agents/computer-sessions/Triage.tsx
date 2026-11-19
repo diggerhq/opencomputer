@@ -4,36 +4,45 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentType,
   type ReactNode,
 } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Loader2 } from 'lucide-react'
-import { ChatTextarea } from '@/components/chat-textarea'
-import { Button } from '@/components/ui/button'
-import { notifyError } from '@/lib/errors'
-import { cn } from '@/lib/utils'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  bringBack,
-  getEvents,
-  sendTurn,
-  sessionKeys,
-  setAside,
-  type Session,
-} from '../computer-sessions-api'
+  ArrowUpRight,
+  Check,
+  CircleHelp,
+  KeyRound,
+  MessageSquareText,
+  ShieldCheck,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { getEvents, sessionKeys, type Session } from '../computer-sessions-api'
+import { AnswerDock } from './AnswerDock'
 import { Item } from './conversation'
 import { useMemberEmails } from './members'
-import { AskCard, StatusDot } from './parts'
-import { sessionLine, sessionTitle, useCapabilities } from './state'
-import { TRIAGE_NEEDS, useTriage, type TriageEntry } from './triage'
+import { StatusDot } from './parts'
+import { sessionLine, sessionTitle } from './state'
+import {
+  TRIAGE_NEEDS,
+  useTriage,
+  type TriageEntry,
+  type TriageKind,
+} from './triage'
 import { buildTranscript, timeAgo } from './transcript'
 
-// Triage (work-tracking ux-spec 3): one ask at a time, answer, next. The ask
-// on screen is `?ask=<id>`; nothing replaces it while it is shown.
+// Triage (work-tracking ux-spec 3; TRIAGE_WEB_NOTES.md): one ask at a time,
+// answer, next. The ask on screen is `?ask=<id>`; nothing replaces it while
+// it is shown.
 
 const WORKING_ROWS = 5
-// Asks the agent put as a dialog, answered with AskCard's buttons.
-const DIALOGS = new Set(['approval', 'question', 'secret'])
+// How long the line saying what was just sent stays.
+const SENT_MS = 5_000
+
+/** What was just sent, and where: shown over the next ask for a moment. */
+type Sent = { said: string; title: string }
 
 export default function Triage() {
   const qc = useQueryClient()
@@ -45,6 +54,12 @@ export default function Triage() {
   // Asks answered from here: they leave the list before the next poll says so.
   const [done, setDone] = useState<ReadonlySet<string>>(new Set())
   const open = needs.filter((e) => !done.has(e.ref))
+  const [sent, setSent] = useState<Sent | null>(null)
+  useEffect(() => {
+    if (!sent) return
+    const t = setTimeout(() => setSent(null), SENT_MS)
+    return () => clearTimeout(t)
+  }, [sent])
 
   // The ask on screen, kept once its row is gone so the card does not vanish.
   const live = [...needs, ...aside].find((e) => e.ref === want) ?? null
@@ -67,14 +82,15 @@ export default function Triage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, entry, first, want])
 
-  const answered = (ref: string) => {
-    setDone((d) => new Set(d).add(ref))
+  const answered = (e: TriageEntry, said: string) => {
+    setDone((d) => new Set(d).add(e.ref))
     setDrafts((d) => {
       const rest = { ...d }
-      delete rest[ref]
+      delete rest[e.ref]
       return rest
     })
-    go(next(ref))
+    setSent({ said, title: sessionTitle(e.session) })
+    go(next(e.ref))
   }
   const refetch = () =>
     qc.refetchQueries({ queryKey: sessionKeys.list(TRIAGE_NEEDS) })
@@ -82,10 +98,14 @@ export default function Triage() {
   return (
     <div className="flex h-full">
       <aside className="border-border hidden w-80 shrink-0 flex-col overflow-y-auto border-r md:flex">
-        <Section label="Needs you" count={loaded ? open.length : undefined}>
+        <Section
+          label="Needs you"
+          count={loaded ? open.length : undefined}
+          primary
+        >
           {loaded && !open.length ? (
-            <p className="text-muted-foreground px-3 py-1 text-sm">
-              Nothing right now.
+            <p className="text-muted-foreground px-3 py-2 text-xs">
+              Nothing waits on you.
             </p>
           ) : null}
           {open.map((e) => (
@@ -103,6 +123,7 @@ export default function Triage() {
               <AskRow
                 key={e.ref}
                 entry={e}
+                quiet
                 current={e.ref === entry?.ref}
                 onClick={() => go(e.ref)}
               />
@@ -132,9 +153,10 @@ export default function Triage() {
             key={entry.ref}
             entry={entry}
             gone={gone}
+            sent={sent}
             draft={drafts[entry.ref] ?? ''}
             setDraft={(text) => setDrafts((d) => ({ ...d, [entry.ref]: text }))}
-            onAnswered={() => answered(entry.ref)}
+            onAnswered={(said) => answered(entry, said)}
             onAside={async () => {
               await refetch()
               go(next(entry.ref))
@@ -144,6 +166,7 @@ export default function Triage() {
           />
         ) : loaded ? (
           <AllClear
+            sent={sent}
             working={working.length}
             aside={aside.length}
             onAside={() => go(aside[0]?.ref ?? null)}
@@ -157,54 +180,104 @@ export default function Triage() {
 function Section({
   label,
   count,
+  primary,
   children,
 }: {
   label: string
   count?: number
+  /** "Needs you": the one heading in the foreground, its count in amber. */
+  primary?: boolean
   children: ReactNode
 }) {
   return (
-    <section className="border-border space-y-0.5 border-b px-2 py-4 last:border-b-0">
-      <h2 className="flex items-baseline gap-2 px-3 pb-1.5 text-sm font-medium">
+    <section className="border-border border-b px-2 pt-4 pb-3 last:border-b-0">
+      <h2
+        className={cn(
+          'flex h-8 items-center gap-2 px-3',
+          primary
+            ? 'text-sm font-medium'
+            : 'text-muted-foreground text-xs leading-5 font-medium',
+        )}
+      >
         {label}
         {count !== undefined ? (
-          <span className="text-muted-foreground text-xs font-normal">
+          <span
+            className={cn(
+              'text-xs font-normal tabular-nums',
+              primary && count
+                ? 'font-medium text-amber-600 dark:text-amber-500'
+                : 'text-muted-foreground',
+            )}
+          >
             {count}
           </span>
         ) : null}
       </h2>
-      {children}
+      <div className="space-y-px">{children}</div>
     </section>
   )
+}
+
+const KIND: Record<
+  TriageKind,
+  { icon: ComponentType<{ className?: string }>; label: string }
+> = {
+  approval: { icon: ShieldCheck, label: 'Approval' },
+  question: { icon: CircleHelp, label: 'Question' },
+  secret: { icon: KeyRound, label: 'Secret' },
+  reply: { icon: MessageSquareText, label: 'Reply' },
 }
 
 function AskRow({
   entry,
   current,
+  quiet,
   onClick,
 }: {
   entry: TriageEntry
   current: boolean
+  /** Set aside: outside the loop, so muted. */
+  quiet?: boolean
   onClick: () => void
 }) {
+  const { icon: Icon, label } = KIND[entry.kind]
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={current ? 'true' : undefined}
       className={cn(
-        'hover:bg-muted/60 flex w-full items-start gap-2 rounded-md px-3 py-1.5 text-left',
-        current && 'bg-muted',
+        'hover:bg-muted/60 grid w-full grid-cols-[16px_1fr_auto] gap-x-2.5 rounded-md px-3 py-2 text-left',
+        current && 'bg-muted hover:bg-muted',
       )}
     >
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm">{entry.line}</span>
-        <span className="text-muted-foreground block truncate text-xs">
-          {sessionTitle(entry.session)}
-        </span>
+      <span
+        className={cn(
+          'text-muted-foreground flex h-5 items-center',
+          quiet && 'opacity-70',
+        )}
+        title={label}
+      >
+        <Icon className="size-3.5" aria-label={label} />
       </span>
-      <span className="text-muted-foreground shrink-0 pt-0.5 text-xs">
+      <span
+        className={cn(
+          'truncate text-sm leading-5',
+          quiet && 'text-muted-foreground',
+        )}
+      >
+        {entry.line}
+      </span>
+      <span className="text-muted-foreground text-xs leading-5 tabular-nums">
         {timeAgo(entry.at)}
+      </span>
+      <span
+        className={cn(
+          'text-muted-foreground col-start-2 col-end-4 truncate text-xs leading-4',
+          quiet && 'opacity-80',
+        )}
+      >
+        {sessionTitle(entry.session)}
       </span>
     </button>
   )
@@ -215,42 +288,65 @@ function WorkingRow({ session }: { session: Session }) {
   return (
     <Link
       to={`/computer/sessions/${session.id}`}
-      className="hover:bg-muted/60 flex items-start gap-2 rounded-md px-3 py-1.5"
+      className="hover:bg-muted/60 grid grid-cols-[16px_1fr] gap-x-2.5 rounded-md px-3 py-2"
     >
-      <StatusDot status={session.status} className="mt-1.5" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm">{sessionTitle(session)}</span>
-        {line ? (
-          <span className="text-muted-foreground block truncate text-xs">
-            {line}
-          </span>
-        ) : null}
+      <span className="flex h-5 items-center justify-center">
+        <StatusDot status={session.status} />
       </span>
+      <span className="text-muted-foreground truncate text-sm leading-5">
+        {sessionTitle(session)}
+      </span>
+      {line ? (
+        <span className="text-muted-foreground/80 col-start-2 truncate text-xs leading-4">
+          {line}
+        </span>
+      ) : null}
     </Link>
   )
 }
 
+function SentLine({ sent }: { sent: Sent }) {
+  return (
+    <p
+      role="status"
+      className="text-muted-foreground animate-in fade-in flex min-w-0 items-center gap-1.5 text-xs"
+    >
+      <Check className="text-status-running size-3.5 shrink-0" aria-hidden />
+      <span className="text-foreground shrink-0">{sent.said}</span>
+      <span aria-hidden>·</span>
+      <span className="truncate">{sent.title}</span>
+    </p>
+  )
+}
+
 function AllClear({
+  sent,
   working,
   aside,
   onAside,
 }: {
+  sent: Sent | null
   working: number
   aside: number
   onAside: () => void
 }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <h1 className="text-2xl font-semibold tracking-tight">All clear</h1>
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 pb-16 text-center">
+      <div className="mb-2 flex h-5 justify-center">
+        {sent ? <SentLine sent={sent} /> : null}
+      </div>
+      <h1 className="text-xl leading-7 font-semibold tracking-tight">
+        All clear
+      </h1>
+      <p className="text-muted-foreground max-w-sm text-sm">
+        {working
+          ? `${working} ${working === 1 ? 'agent is' : 'agents are'} working. The next one that needs you appears here.`
+          : 'Nothing waits on you.'}
+      </p>
       {aside ? (
-        <Button variant="outline" size="sm" onClick={onAside}>
+        <Button variant="outline" size="sm" className="mt-2" onClick={onAside}>
           {aside} set aside
         </Button>
-      ) : working ? (
-        <p className="text-muted-foreground max-w-sm text-sm">
-          {working} {working === 1 ? 'agent is' : 'agents are'} working. The
-          next one that needs you appears here.
-        </p>
       ) : null}
     </div>
   )
@@ -261,6 +357,7 @@ function AskView({
   gone,
   draft,
   setDraft,
+  sent,
   onAnswered,
   onAside,
   onBack,
@@ -270,120 +367,61 @@ function AskView({
   gone: boolean
   draft: string
   setDraft: (text: string) => void
-  onAnswered: () => void
+  sent: Sent | null
+  onAnswered: (said: string) => void
   onAside: () => Promise<void>
   onBack: () => void
   onNext: () => void
 }) {
-  const { session: s, ask } = entry
-  const { data: caps } = useCapabilities()
-  // Focus in the box when the ask appears.
-  const answer = useRef<HTMLDivElement>(null)
-  useEffect(() => answer.current?.querySelector('textarea')?.focus(), [])
-
-  // A reply is the answer: steering closes the open asks with the message
-  // (turns, "Open asks close as declined; the message is the answer"). Once
-  // the ask is gone, the text goes as an ordinary message.
-  const send = useMutation({
-    mutationFn: (text: string) =>
-      sendTurn(
-        s.id,
-        text,
-        !gone && caps?.features.steer !== false ? 'steer' : 'queue',
-      ),
-    onSuccess: () => (gone ? setDraft('') : onAnswered()),
-  })
-  const aside = useMutation({
-    mutationFn: () =>
-      entry.aside ? bringBack(s.id) : setAside(s.id, entry.ref),
-    onSuccess: () => (entry.aside ? onBack() : onAside()),
-    onError: (e) =>
-      notifyError(
-        entry.aside ? 'Could not bring it back' : 'Could not set it aside',
-        e,
-      ),
-  })
-  const submit = () => {
-    if (draft.trim() && !send.isPending) send.mutate(draft.trim())
-  }
-  const dialog = !gone && DIALOGS.has(ask.kind)
-
+  const s = entry.session
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-6 pt-8 pb-5">
-      <header className="shrink-0 space-y-1 pb-4">
-        <p className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-sm">
-          <span className="truncate">{sessionTitle(s)}</span>
-          <span aria-hidden>·</span>
-          <span className="shrink-0">{timeAgo(entry.at)} ago</span>
-        </p>
-        <h1 className="text-xl font-semibold tracking-tight">{entry.line}</h1>
-      </header>
-
-      <Conversation session={s} turnId={ask.turnId} />
-
-      <div ref={answer} className="shrink-0 space-y-2 pt-4">
-        {gone ? (
-          <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm">
-            <span className="text-muted-foreground">
-              This was answered elsewhere.
-            </span>
-            <Button size="sm" onClick={onNext}>
-              Next
-            </Button>
-          </div>
-        ) : dialog ? (
-          <AskCard ask={ask} session={s} hideTitle onAnswered={onAnswered} />
-        ) : null}
-        <div className="bg-card focus-within:border-ring/60 rounded-xl border shadow-sm transition-colors">
-          <ChatTextarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onSend={submit}
-            placeholder={gone ? 'Message the agent' : 'Reply'}
-            aria-label="Reply"
-            className="min-h-11 resize-none border-0 bg-transparent px-4 pt-3 shadow-none focus-visible:ring-0 dark:bg-transparent"
-          />
-          <div className="flex items-center justify-end gap-1.5 px-2 pb-2">
-            {send.isError ? (
-              <p
-                role="alert"
-                className="text-destructive mr-auto flex items-center gap-2 px-2 text-xs"
-              >
-                Not sent
-                <button
-                  type="button"
-                  className="underline underline-offset-2"
-                  onClick={submit}
-                >
-                  Retry
-                </button>
-              </p>
-            ) : null}
-            {gone ? null : (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={aside.isPending}
-                onClick={() => aside.mutate()}
-              >
-                {entry.aside ? 'Bring back' : 'Set aside'}
-              </Button>
-            )}
-            <Button
-              size="icon"
-              className="rounded-full"
-              aria-label="Send"
-              disabled={!draft.trim() || send.isPending}
-              onClick={submit}
+    <div className="mx-auto flex h-full w-full max-w-[47rem] flex-col px-6 pt-6 pb-6">
+      <header className="shrink-0">
+        <div className="flex h-5 items-center gap-4 text-xs">
+          <p className="text-muted-foreground flex min-w-0 items-center gap-1.5">
+            <Link
+              to={`/computer/sessions/${s.id}`}
+              className="hover:text-foreground truncate"
             >
-              {send.isPending ? (
-                <Loader2 className="animate-spin" aria-hidden />
-              ) : (
-                <ArrowUp aria-hidden />
-              )}
-            </Button>
+              {sessionTitle(s)}
+            </Link>
+            <span aria-hidden>·</span>
+            <span className="shrink-0 tabular-nums">
+              {timeAgo(entry.at)} ago
+            </span>
+          </p>
+          <div className="ml-auto flex min-w-0 shrink-0 justify-end">
+            {sent ? (
+              <SentLine sent={sent} />
+            ) : (
+              <Link
+                to={`/computer/sessions/${s.id}`}
+                className="text-muted-foreground hover:text-foreground flex items-center gap-1"
+              >
+                Open the session
+                <ArrowUpRight className="size-3.5" aria-hidden />
+              </Link>
+            )}
           </div>
         </div>
+        <h1 className="mt-1 line-clamp-2 text-xl leading-7 font-semibold tracking-tight">
+          {entry.line}
+        </h1>
+      </header>
+
+      <Conversation session={s} turnId={entry.ask?.turnId ?? null} />
+
+      <div className="shrink-0 pt-4">
+        <AnswerDock
+          entry={entry}
+          gone={gone}
+          draft={draft}
+          setDraft={setDraft}
+          onAnswered={onAnswered}
+          onAside={onAside}
+          onBack={onBack}
+          onNext={onNext}
+        />
       </div>
     </div>
   )
@@ -391,8 +429,9 @@ function AskView({
 
 const TAIL_TURNS = 3
 
-// The excerpt: a link to the earlier messages, then the last turns, with a
-// rule where the asking turn starts.
+// The excerpt, unframed: a link to the earlier messages, then the last turns,
+// with a rule where the asking turn starts. It sits on the dock: short
+// excerpts are pushed to the bottom, long ones open scrolled to the end.
 function Conversation({
   session,
   turnId,
@@ -434,37 +473,27 @@ function Conversation({
   return (
     <section
       aria-label="Conversation"
-      className="flex min-h-0 flex-1 flex-col rounded-xl border"
+      ref={scroller}
+      className="-mx-2 mt-2 min-h-0 flex-1 overflow-y-auto [mask-image:linear-gradient(to_bottom,transparent,black_24px)] px-2"
     >
-      <div className="border-border flex h-10 shrink-0 items-center justify-between gap-3 border-b px-4 text-xs">
-        <span className="font-medium">Conversation</span>
-        <Link
-          to={`/computer/sessions/${session.id}`}
-          className="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-        >
-          Open the session
-        </Link>
-      </div>
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="space-y-5 px-5 py-4">
-          {earlier ? (
-            <Link
-              to={`/computer/sessions/${session.id}`}
-              className="text-muted-foreground hover:text-foreground block text-center text-xs"
-            >
-              {earlier} earlier {earlier === 1 ? 'message' : 'messages'}
-            </Link>
-          ) : null}
-          {items(before)}
-          {after.length ? (
-            <div className="text-muted-foreground flex items-center gap-3 text-xs">
-              <span className="bg-border h-px flex-1" />
-              where it stopped
-              <span className="bg-border h-px flex-1" />
-            </div>
-          ) : null}
-          {items(after)}
-        </div>
+      <div className="flex min-h-full flex-col justify-end gap-5 pt-6 pb-1">
+        {earlier ? (
+          <Link
+            to={`/computer/sessions/${session.id}`}
+            className="text-muted-foreground hover:text-foreground self-center text-xs"
+          >
+            {earlier} earlier {earlier === 1 ? 'message' : 'messages'}
+          </Link>
+        ) : null}
+        {items(before)}
+        {after.length ? (
+          <div className="text-muted-foreground/80 flex items-center gap-3 text-xs">
+            <span className="bg-border h-px flex-1" />
+            where it stopped
+            <span className="bg-border h-px flex-1" />
+          </div>
+        ) : null}
+        {items(after)}
       </div>
     </section>
   )
