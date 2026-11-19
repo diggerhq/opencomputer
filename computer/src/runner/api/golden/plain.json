@@ -17,6 +17,20 @@
        "text": ":thread: Thread `C1-1-0`  ·  `!help` for commands"
       }
      ]
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Access"
+       },
+       "action_id": "ac:QzEtMS4w:open",
+       "value": "open"
+      }
+     ]
     }
    ]
   }

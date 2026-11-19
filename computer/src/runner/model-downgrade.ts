@@ -1,10 +1,11 @@
-// A Claude subscription's model ceiling (work 077). The seat's entitlements
-// are unknown up front (no bootstrap on the proxy's socket), so a Pro seat
-// asked for Opus finds out from the API: Claude Code turns the error into an
-// assistant message with `error: 'model_not_found'`. The runner then steps the
-// session one family down (fable → opus → sonnet → haiku), retries the turn
-// once, says so in the thread, and the host reports `model-denied` so the
-// gateway starts the owner's next threads at the ceiling.
+// A credential's model ceiling (work 077, 097 C5). What a credential may use
+// can be unknown up front, so a route whose profile says
+// `downgradeOnModelRefusal` finds out from the API: Claude Code turns the
+// error into an assistant message with `error: 'model_not_found'`. The runner
+// then steps the session one family down (fable → opus → sonnet → haiku),
+// retries the turn once, says so in the thread, and the host reports
+// `model-denied` so the gateway starts the owner's next threads at the
+// ceiling. A route's `maxModel` is a ceiling known in advance, on any route.
 //
 // Invariant: only ever downward, one family per denial; a model with no
 // known family is never switched (it may be a full id the person chose).
@@ -31,7 +32,7 @@ export function nextDown(model: string): string | undefined {
   return i < 0 ? undefined : LADDER[i + 1]?.[1];
 }
 
-/** Whether `model` is above the subscription's ceiling `max` (both known families). */
+/** Whether `model` is above the ceiling `max` (both known families). */
 export function aboveCeiling(model: string, max: string | undefined) {
   if (!max) return false;
   const [m, c] = [rank(model), rank(max)];
@@ -40,7 +41,7 @@ export function aboveCeiling(model: string, max: string | undefined) {
 
 /** The line posted when a model is refused or `!model` asks above the ceiling. */
 export const deniedLine = (model: string, to: string) =>
-  `Your Claude subscription doesn't include ${familyName(model)}; this thread is on ${familyName(to)}.`;
+  `This credential doesn't include ${familyName(model)}; this thread is on ${familyName(to)}.`;
 
 /** What a retried turn says to the model: the request that failed is the one to redo. */
-export const RETRY_TEXT = 'The last request failed because the model was not available on this subscription; it has been switched. Continue where you left off.';
+export const RETRY_TEXT = 'The last request failed because the model was not available; it has been switched. Continue where you left off.';

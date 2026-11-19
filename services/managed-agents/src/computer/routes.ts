@@ -573,7 +573,7 @@ async function slackEvents(request: Request, env: ComputerEdgeEnv, context: Exec
       }
       if (parsed.kind === "stop") {
         const interacted = interactionSpan(env, request, context, { teamId, channelId: parsed.channelId, accountId });
-        await interacted("stop", computer.slackStop(accountId, parsed.channelId, parsed.threadTs));
+        await interacted("stop", computer.slackStop(accountId, parsed.channelId, parsed.threadTs, parsed.userId));
       } else {
         const accepted = await computer.acceptSlackEvent(accountId, received ? { ...parsed.job, trace: received.trace } : parsed.job);
         // The organization is not linked to this workspace (any more): a cached link was stale.

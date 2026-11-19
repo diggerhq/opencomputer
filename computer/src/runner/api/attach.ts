@@ -8,7 +8,7 @@ import { SessionLog } from '../../api/session-log.js';
 import { createdOf } from '../../api/created.js';
 import type { Person, RunnerApi, SessionSpec } from '../../protocol.js';
 import type { Session } from '../session.js';
-import { SessionApi, type SessionApiOptions } from './api.js';
+import { personName, SessionApi, type SessionApiOptions } from './api.js';
 import type { Telemetry } from '../../telemetry/emitter.js';
 import { apiWriteEvent } from './write-events.js';
 
@@ -35,7 +35,7 @@ export async function attachApi(
     created: o.spec && createdOf(o.spec),
     seed: {
       sessionId: spec.sessionId,
-      owner: { id: owner.userId ?? owner.slackUserId ?? 'owner', name: owner.name ?? owner.gitName, email: owner.email ?? null },
+      owner: { id: owner.userId ?? owner.slackUserId ?? 'owner', name: personName(owner), email: owner.email ?? null },
     },
   });
   const api = new SessionApi(log, session, { ...o, onWrite: o.onWrite ?? (o.telemetry && apiWriteEvent(o.telemetry)) });

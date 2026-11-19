@@ -16,7 +16,8 @@
 //   [SP_TELEMETRY_URL]         telemetry collector (work 054); unset: telemetry is validated and discarded
 //   [SP_TELEMETRY_CREDENTIAL]  the collector credential the gateway signed for this host; a `welcome` renews it
 //   [SP_REGION] [SP_SUBSTRATE] telemetry dimensions (`westus2`, `vm`)
-//   [SP_MODEL_PROXY]           oc-modelproxy's control socket (work 077, subscriptions.ts); unset: every session managed
+//   SP_MODEL_PROXY             the model proxy's control socket (work 097, model-access.ts); unset: the proxy is down, no session starts
+//   [SP_MODEL_SOCKET=/run/oc-modelproxy/api.sock]  where runners reach the proxy's API (sent to them, C4)
 //   [SP_RUNNER_USER=agent]     run runners as this user, through sudo (work 077, runner-user.ts); the host then runs as another
 //   [SP_RUNNER_PATH=...]       the PATH runners and workspace commands get then (the host's own has no agent-owned directory)
 //   node --import tsx src/host/main.ts
@@ -67,7 +68,6 @@ import { log } from '../log.js';
 import { closed, rediscover, retire } from './runner-sockets.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
-import { credentialFingerprint } from '../credential-fingerprint.js';
 import { freshTokenDir, tokenRelay } from './tokens.js';
 import { hostPreviews } from './previews.js';
 import { startHostTelemetry, workspaceTelemetry } from './telemetry.js';
@@ -75,7 +75,8 @@ import { diskReport, hostSampler } from './sample.js';
 import { decidePath, forwardTrace, loadForwarded, runnerGone, saveForwarded, traceFields } from './trace.js';
 import type { Dimensions } from '../telemetry/envelope.js';
 import { assignedIdentity, codeVersion, identityFile, loadIdentity, saveIdentity } from './identity.js';
-import { createHostModelAccess } from './model-access-impl.js';
+import { hostModelAccess } from './model-access.js';
+import { unitExists } from './launch.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
 import { gatewayUpdates } from './gateway-updates.js';
@@ -110,8 +111,9 @@ observeWorkspaces(workspaceTelemetry(tm, () => forkContext.getStore()));
 /** The organization's credentials and people, as the gateway last sent them. */
 const org = gatewayUpdates({ runners: () => runners.values(), spares: () => pool.spares, forRunner: (key, c) => subs.forRunner(key, c),
   fillPool: () => fillPool(), prepare: (p) => workspacesEnabled() && prepareInBackground(p) });
-const subs = createHostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, dataDir: HOST_DATA, toGateway, tm, // the seam: model-access.ts (work 097)
-  runner: (key) => runners.get(key), rehello: () => link.redial(), codexBin: codexBin(env) });
+const subs = hostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, modelSocket: env.SP_MODEL_SOCKET || undefined, single: LAUNCH !== 'systemd',
+  toGateway, tm, runner: (key) => runners.get(key), creds: () => org.creds, exit: switchRunner, unitExists: (id) => unitExists(id, LAUNCH, env),
+  rehello: () => link.redial(), codexBin: codexBin(env) });
 
 // ---------------------------------------------------------------- runners
 
@@ -128,10 +130,14 @@ const pool = new Pool<Runner>({
 });
 /** Every connected runner: the sessions' and the spares. */
 const allRunners = () => [...runners.values(), ...pool.spares];
-const fillPool = () => !stopping && pool.fill(!!credentialFingerprint(org.creds));
+const fillPool = () => !stopping && pool.fill(subs.canSpare());
 function exitRunner(sock: net.Socket) {
   send(sock, { t: 'exit' } satisfies HostToRunner);
   sock.end();
+}
+/** A busy one is only told to go (its turn ends at its next model call); an idle one is closed as well. */
+function switchRunner(key: string, r = runners.get(key)) {
+  if (r) (r.switching = true), r.report?.status === 'busy' ? send(r.sock, { t: 'exit' } satisfies HostToRunner) : exitRunner(r.sock);
 }
 /** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s. */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
@@ -145,35 +151,32 @@ let stopping = false;
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
-  creds: () => org.creds, forRunner: (key, c, harness) => subs.forRunner(key, c, harness), routeMode: (key) => subs.routes.mode(key),
+  creds: () => org.creds, models: subs,
   mint: (spec, id) => api.mint(spec, id), serveTokens: (id, session) => tokens.serveRunner(HOST_RUN, id, session),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
 
 /** The runner serves its session from now on; one already there for it (found twice after a restart) is told to go. */
-function register(r: Runner) {
+function register(r: Runner, found = false) {
   const old = runners.get(r.key);
   if (old && old !== r) exitRunner(old.sock);
   runners.set(r.key, r);
-  subs.routes.registered(r.key, r.id, r.harness);
+  subs.registered(r.key, r.id, r.harness, found);
   r.forwarded ??= loadForwarded(r.key);
   api.up(r.id);
 }
 
 function runnerClosed(r: Runner) {
   for (const c of r.calls.values()) c({ ok: false, error: 'runner gone' });
-  if (!stopping) api.down(r.id);
+  if (!stopping) api.down(r.id), subs.closed(r.key, r.id);
   if (!r.key) {
     pool.gone(r);
     fillPool();
     return;
   }
   if (runners.get(r.key) !== r) return;
-  if (!stopping) {
-    runnerGone(tm, r);
-    subs.routes.closed(r.key, r.id);
-  }
+  if (!stopping) runnerGone(tm, r);
   runners.delete(r.key);
   if (r.report && r.report.status !== 'stopped') toGateway({ t: 'session', report: { ...r.report, status: 'error', error: 'runner exited' } });
 }
@@ -252,7 +255,7 @@ const link = gatewayLink({
   url: () => identity.gatewayUrl,
   token: () => identity.token,
   hello: () => ({ t: 'hello', protocol: PROTOCOL_VERSION, hostId: identity.hostId, version: VERSION,
-    sessions: [...runners.values()].flatMap((r) => (r.report ? [r.report] : [])), features: subs.features(), journals: api.journals() }),
+    sessions: [...runners.values()].flatMap((r) => (r.report ? [r.report] : [])), profiles: subs.profiles(), journals: api.journals() }),
   message: (m) => void onGateway(m).catch((e) => log.error('gateway message', m.t, e)),
 });
 function toGateway(m: HostToGateway) {
@@ -273,7 +276,7 @@ async function onGateway(m: GatewayToHost) {
       () => toGateway({ t: 'reply', id, ok: true }),
       (e) => toGateway({ t: 'reply', id, ok: false, error: String(e?.message ?? e) }),
     );
-  if (subs.onGateway(m, org.creds)) return; // `model`, `probe` (work 077)
+  if (subs.onGateway(m)) return; // `model`, `model-request` (work 097); reads `models` from `welcome` and `credentials`
   if (await api.onGateway(m)) return; // `start`, `api`, `journal-ack`, `access`, `revoked` (work 084, api-host.ts)
   switch (m.t) {
     case 'welcome':
@@ -312,7 +315,7 @@ async function onGateway(m: GatewayToHost) {
     }
     case 'action': {
       const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId })
+      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId, ...(m.role ? { role: m.role } : {}) })
         : Promise.reject(new Error('no runner for this session (the prompt ended with it)')));
     }
     case 'stop': {
@@ -353,13 +356,11 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
   const deliveryCredentials = await subs.delivered(spec.key, delivered, rx.model, spec.harness);
   for (let attempt = 0; ; attempt++) {
     let r = await ensureRunner(spec, rx.f, deliveryCredentials);
-    if ((r.harness ?? 'claude') !== (spec.harness ?? 'claude')) {
-      // On the other harness still (busy past the switch's wait, or started before it): never given this delivery.
-      if (attempt) throw new Error(`session ${spec.key}: its runner is still on ${r.harness ?? 'claude'}; try again when its turn ends`);
-      // A busy one is only told to go (its turn ends at its next model call); an idle one is closed as well. At most 5 s.
-      if (r.report?.status === 'busy') send(r.sock, { t: 'exit' } satisfies HostToRunner);
-      else exitRunner(r.sock);
-      await closed(r.sock);
+    if (r.switching || (r.harness ?? 'claude') !== (spec.harness ?? 'claude')) {
+      // On the other harness or route still (busy past the switch's wait, or started before it): never given this delivery.
+      if (attempt) throw new Error(`session ${spec.key}: its runner is still on its previous agent or model; try again when its turn ends`);
+      switchRunner(spec.key, r);
+      await closed(r.sock); // at most 5 s
       continue;
     }
     // Reported `stopped` (idle exit, !restart): let it go, then start a new one from the current release.
@@ -367,6 +368,7 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
       await closed(r.sock);
       r = await ensureRunner(spec, rx.f, deliveryCredentials);
     }
+    await subs.ready(r.key); // its bind answered: its first model request finds it
     const cold = r.cold;
     r.cold = undefined;
     // A Cloudflare Durable Object gateway supplies the Slack installation for
@@ -457,6 +459,7 @@ const emitSample = () =>
     since_gateway_message_s: link.seenAt ? Math.round((Date.now() - link.seenAt) / 1000) : undefined,
     telemetry_spooled_bytes: telemetry.spooledBytes,
     telemetry_dropped: telemetry.dropped,
+    model_proxy_down_s: subs.downS(),
   }) });
 emitSample();
 setInterval(emitSample, 60_000).unref();

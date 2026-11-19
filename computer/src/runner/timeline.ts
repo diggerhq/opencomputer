@@ -270,6 +270,14 @@ export class Timeline {
     }
   }
 
+  /** The step running longest and for how long: what a message sent mid-turn waits behind. */
+  longestRunning() {
+    for (const [id, t0] of this.started) {
+      const t = this.tasks.get(id);
+      if (t?.status === 'in_progress' && !t.waiting && !isThinking(t)) return { title: t.title, ms: Date.now() - t0 };
+    }
+  }
+
   /** The turn is over: running steps show as interrupted, the run closes, the state clears. `failure`: why, for an unclaimed opening card. */
   endTurn(failure?: string) {
     if (this.opening) this.settleOpening(failure);

@@ -10,6 +10,7 @@
 //   host socket   host.connected / .disconnected; the telemetry credential in `welcome`
 //   subscriptions subscription.* (work 082), from ModelSubscriptions through `subscription`
 //   billing       billing.vm_terminated (work 086), from the idle check
+//   roles         access.changed (work 112), from AccessFlow.setDrivers
 //
 // Invariants: no hook throws or awaits anything a turn waits for; batches
 // leave through `waitUntil`. With telemetry off (gateway.ts) every hook still
@@ -191,6 +192,15 @@ export class ComputerTelemetry {
   vmTerminated(daysUnpaid: number): void {
     const t = this.invocation();
     t.emit("billing.vm_terminated", { data: { days_unpaid: daysUnpaid } });
+    this.send(t);
+  }
+
+  // ---------------------------------------------------------------- session roles
+
+  /** `access.changed` (work 112): who can drive a session changed, in its own batch. */
+  accessChanged(key: string, by: { id: string; admin: boolean }, from: string, to: string): void {
+    const t = this.invocation();
+    t.emit("access.changed", { session_key: key, person_id: by.id, data: { by_admin: by.admin, from, to } });
     this.send(t);
   }
 
