@@ -1,0 +1,1 @@
+{"t":"event","name":"model.pool","at":1792520091000,"outcome":"completed","profile":"openai-key","data":{"open_conns":3,"idle_conns":2,"active_streams":1,"idle_pool_miss":1,"dials":1,"bindings":4,"dropped_messages":0}}

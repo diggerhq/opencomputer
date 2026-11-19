@@ -66,7 +66,18 @@ describe("operator computer routes", () => {
         plan: "free",
         trialEndsAt: new Date(trialEndsAt * 1000).toISOString(),
         haltedAt: null,
+        failure: null,
       });
+
+      // Work 111: a failed computer says why, with the error as the cloud gave it.
+      await inside((_instance, state) =>
+        state.storage.sql.exec("UPDATE computer SET state = 'failed', failure_code = 'capacity', last_error = 'ZonalAllocationFailed: no capacity', updated_at = 1794900000000"),
+      );
+      expect((await operator("status")).body).toMatchObject({
+        state: "failed",
+        failure: { code: "capacity", message: "ZonalAllocationFailed: no capacity", at: "2026-11-17T07:20:00.000Z" },
+      });
+      await inside((_instance, state) => state.storage.sql.exec("UPDATE computer SET state = 'ready', failure_code = NULL, last_error = NULL"));
 
       // Ready: the wake changes nothing.
       const again = await operator("wake");

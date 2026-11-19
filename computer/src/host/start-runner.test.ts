@@ -22,7 +22,7 @@ function rig(sock: net.Socket) {
     tm: createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} }),
     sandbox,
     serveTokens: () => ({ close: () => void log.push('tokens closed') }),
-    creds: () => undefined, forRunner: () => undefined,
+    creds: () => undefined, models: { up: true, forRunner: () => undefined },
     register: () => void log.push('registered'), closed: () => void log.push('closed'), message: (_r: unknown, m: { t: string }) => void log.push(`message ${m.t}`), exit: () => void log.push('exit sent'),
     stopSandbox: async (id: string) => void log.push(`stopped ${id}`),
   } as unknown as StartDeps;

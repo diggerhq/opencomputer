@@ -80,6 +80,8 @@ export interface ContainersDeps {
   root: string;
   image: string;
   abi: string;
+  /** The model proxy's API socket, mounted into every container. */
+  modelSocket: string;
   /** `runnerVars(env)`, read at every start. */
   vars(): Record<string, string>;
   /** The definition file in effect, if any (`definitionFile`). */
@@ -130,7 +132,7 @@ export function containers(d: ContainersDeps) {
     const t0 = Date.now();
     const run = d.runRoot(id);
     dir(run, 0o2750);
-    await as.podman(createArgs({ id, run, dataDir: d.dataDir, image: d.image, abi: d.abi }), { timeoutMs: TIMEOUTS.create });
+    await as.podman(createArgs({ id, run, dataDir: d.dataDir, image: d.image, abi: d.abi, modelSocket: d.modelSocket }), { timeoutMs: TIMEOUTS.create });
     return Date.now() - t0;
   }
 

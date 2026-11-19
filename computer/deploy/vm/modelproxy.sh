@@ -1,84 +1,110 @@
 #!/usr/bin/env bash
-# oc-modelproxy on a computer (work 077): Claude Code in runners reaches the
-# owner's Claude subscription through it, never holding the token.
+# oc-modelproxy on a computer (work 097 C9): every session's model client
+# reaches its upstream through it, and holds only a placeholder, never the
+# credential.
 #
 # provision.sh runs `modelproxy.sh install` on every provision and code-only
-# update: it installs the binary CI built, shipped in the release as
-# modelproxy/oc-modelproxy (deploy/bundle.sh), as /usr/local/libexec/oc-modelproxy
-# when it changed, and writes its socket and service units. Nothing is
-# compiled on a computer.
+# update. From this release it installs the binary deploy/bundle.sh built
+# (modelproxy/oc-modelproxy) as /usr/local/libexec/oc-modelproxy, and the
+# shipped profiles (modelproxy/profiles/*.json) into
+# /etc/oc-modelproxy/profiles.d/, then writes the socket and service units.
+# Nothing is compiled on a computer.
 #
-#   /run/oc-modelproxy/api/api.sock  group agent: runners' Claude Code (ANTHROPIC_UNIX_SOCKET)
-#   /run/oc-modelproxy/control.sock  group sp-host: the host agent only (SP_MODEL_PROXY)
-#   /run/oc-modelproxy/api.sock      a link to api/api.sock, for runners started by an older release
-#
-# The API socket has a directory of its own (work 103) because a session's
-# container mounts that directory and nothing else of the proxy's: the control
-# socket and the bindings file stay outside every container.
+#   /run/oc-modelproxy/api.sock      group agent: the sessions' model clients (SP_MODEL_SOCKET);
+#                                    a session's container mounts this file alone (work 103)
+#   /run/oc-modelproxy/control.sock  group sp-host: the host agent only (SP_MODEL_PROXY, sp-host.sh)
 #
 # Invariants:
-# - Inert until the host agent runs as sp-host (sp-host.sh migrate): before
-#   that the host cannot open the control socket, sets no SP_MODEL_PROXY, and
-#   the gateway routes every session managed.
-# - /run/oc-modelproxy/api exists after every install, proxy or not: a
-#   container names it as a bind source, and podman refuses a missing one.
-# - Best effort: a release without a working binary leaves the previous one
-#   (or none) and never fails the provision; the host then advertises no `model-proxy`.
+# - Checked before installed: the release's binary loads the profile set it
+#   would serve (profiles.d as it is, with this release's files over it) in a
+#   temporary directory first. When it does not, nothing installed changes and
+#   the script fails; the installed proxy, if any, keeps serving.
+# - A new binary or profile is a handoff (SIGUSR2, `systemctl reload`), never
+#   a stop: no connection is refused and streams in flight finish. Only a
+#   changed unit file restarts the service, since a handoff keeps the old
+#   command line and limits.
+# - Files in profiles.d that the release does not ship (an operator's own)
+#   are left as they are, and checked with the rest.
+# - Profiles are 0640 root:modelproxy: the proxy reads them, sessions do not.
+# - `-caller-uid` (only a process of the sessions' uid is a session: in a
+#   container every other uid is one of its subordinate ids, work 103) is
+#   passed only when this release's binary knows the option.
 # - The proxy runs as its own system user with no home and no write access
-#   outside its runtime directory, so a runner (uid agent) can neither read its
-#   memory nor its tokens.
+#   outside its runtime directory, so a runner (uid agent) can read neither its
+#   memory nor its credentials.
 set -euo pipefail
 
 AGENT_USER="${AGENT_USER:-agent}"
 SP_CURRENT="${SP_CURRENT:-/opt/slack-presence/current}"
 BIN=/usr/local/libexec/oc-modelproxy
+PROFILES=/etc/oc-modelproxy/profiles.d
 USER_=modelproxy
 RUN=/run/oc-modelproxy
+UNITS=/etc/systemd/system
 
 [[ ${1:-} == install ]] || { echo "usage: modelproxy.sh install" >&2; exit 2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+src="$SP_CURRENT/modelproxy/oc-modelproxy"
+"$src" -version >/dev/null 2>&1 \
+  || die "no working oc-modelproxy in this release ($src; deploy/bundle.sh builds it); nothing installed"
+shopt -s nullglob
+shipped=("$SP_CURRENT"/modelproxy/profiles/*.json)
+installed=("$PROFILES"/*.json)
+shopt -u nullglob
+((${#shipped[@]})) || die "no profiles in this release ($SP_CURRENT/modelproxy/profiles); nothing installed"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/profiles.d"
+((${#installed[@]} == 0)) || cp "${installed[@]}" "$tmp/profiles.d/"
+cp "${shipped[@]}" "$tmp/profiles.d/"
+"$src" -check -profiles "$tmp/profiles.d" \
+  || die "this release's oc-modelproxy does not load the profiles it would serve; nothing installed"
+
+caller_uid=""
+help="$("$src" -help 2>&1 || true)" # not a pipe: under pipefail, grep -q closing early would fail it
+if grep -q -- '-caller-uid' <<<"$help"; then caller_uid=" -caller-uid=$(id -u "$AGENT_USER")"; fi
 
 getent group sp-host >/dev/null || groupadd --system sp-host
 id "$USER_" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$USER_"
 
-# Install only a binary that answers --version (a bundle made without one, or
-# built for another platform, keeps whatever is installed).
-src="$SP_CURRENT/modelproxy/oc-modelproxy"
-if [[ -f $src ]] && "$src" --version >/dev/null 2>&1; then
-  if ! cmp -s "$src" "$BIN"; then
-    install -D -m 0755 "$src" "$BIN"
+changed=0       # binary or profiles: a handoff
+unit_changed=0  # a unit file: a restart
+
+if ! cmp -s "$src" "$BIN"; then
+  install -D -m 0755 -o root -g root "$src" "$BIN"
+  changed=1
+fi
+install -d -m 0755 -o root -g root "${PROFILES%/*}" "$PROFILES"
+for f in "${shipped[@]}"; do
+  dst="$PROFILES/${f##*/}"
+  if ! cmp -s "$f" "$dst"; then
+    install -m 0640 -o root -g "$USER_" "$f" "$dst"
     changed=1
   fi
-else
-  echo "WARNING: no working oc-modelproxy in this release (deploy/bundle.sh ships CI's build); keeping $([[ -x $BIN ]] && echo the installed one || echo none)" >&2
-fi
+done
+
+# put <path>: stdin to path when it differs; a unit that changed restarts the service.
+put() {
+  cat > "$tmp/unit"
+  cmp -s "$tmp/unit" "$1" && return
+  install -m 0644 "$tmp/unit" "$1"
+  unit_changed=1
+}
 
 # Not RuntimeDirectory=: it would go when the service stops, taking the sockets runners hold.
-# Before the binary is looked at: the api directory is there on a computer without a proxy too.
 cat > /etc/tmpfiles.d/oc-modelproxy.conf <<EOF
 d $RUN 0755 $USER_ $USER_ -
-d $RUN/api 0750 $USER_ $AGENT_USER -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/oc-modelproxy.conf
-[[ -x $BIN ]] || exit 0
 
-# Where the API socket listens, as the unit on disk has it: when that changes,
-# the socket unit must be restarted, which systemd refuses while its service runs.
-api_unit=/etc/systemd/system/oc-modelproxy-api.socket
-listen_was="$(sed -n 's/^ListenStream=//p' "$api_unit" 2>/dev/null || true)"
-# Only callers of the runners' uid are sessions (in a container, every other
-# uid is one of its subordinate ids). A binary from before the option runs without it.
-caller_uid=""
-help="$("$BIN" --help 2>&1 || true)" # not a pipe: under pipefail, grep -q closing early would fail it
-if grep -q -- '-caller-uid' <<<"$help"; then caller_uid=" --caller-uid=$(id -u "$AGENT_USER")"; fi
-
-cat > /etc/systemd/system/oc-modelproxy-api.socket <<EOF
+put "$UNITS/oc-modelproxy-api.socket" <<EOF
 # Written by deploy/vm/modelproxy.sh install.
 [Unit]
-Description=oc-modelproxy: Claude Code's socket (runners)
+Description=oc-modelproxy: the sessions' model clients
 
 [Socket]
-ListenStream=$RUN/api/api.sock
-Symlinks=$RUN/api.sock
+ListenStream=$RUN/api.sock
 SocketUser=$USER_
 SocketGroup=$AGENT_USER
 SocketMode=0660
@@ -89,7 +115,7 @@ Service=oc-modelproxy.service
 WantedBy=sockets.target
 EOF
 
-cat > /etc/systemd/system/oc-modelproxy-control.socket <<EOF
+put "$UNITS/oc-modelproxy-control.socket" <<EOF
 # Written by deploy/vm/modelproxy.sh install.
 [Unit]
 Description=oc-modelproxy: the host agent's control socket
@@ -106,26 +132,36 @@ Service=oc-modelproxy.service
 WantedBy=sockets.target
 EOF
 
-cat > /etc/systemd/system/oc-modelproxy.service <<EOF
+put "$UNITS/oc-modelproxy.service" <<EOF
 # Written by deploy/vm/modelproxy.sh install.
 [Unit]
-Description=oc-modelproxy: Claude subscriptions for runners (work 077)
+Description=oc-modelproxy: the sessions' model credentials (work 097)
 Requires=oc-modelproxy-api.socket oc-modelproxy-control.socket
 After=oc-modelproxy-api.socket oc-modelproxy-control.socket network-online.target
 Wants=network-online.target
 
 [Service]
+# The handoff's replacement reports itself as the main pid (MAINPID=).
 Type=notify
+NotifyAccess=all
 User=$USER_
 Group=$USER_
-ExecStart=$BIN --bindings-file=$RUN/bindings.json$caller_uid
+ExecStartPre=$BIN -check -profiles $PROFILES
+ExecStart=$BIN -profiles $PROFILES$caller_uid
+# The handoff: a replacement with the binary and profiles now on disk.
+ExecReload=/bin/kill -USR2 \$MAINPID
 Restart=always
 RestartSec=1
-# Streams in flight may finish on a restart (Claude Code's own request timeout is 600 s).
+# Streams in flight finish on a stop (-drain-timeout 630s; Claude Code's own request timeout is 600 s).
 TimeoutStopSec=660
 # A memory-pressured computer kills a runner, not every stream.
 OOMScoreAdjust=-900
 MemoryMax=512M
+# A ceiling, not a raise (Go lifts its soft limit to the hard one): two
+# descriptors a stream, the caller's and the upstream's.
+LimitNOFILE=65536
+# A core would hold credentials.
+LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$RUN
@@ -141,27 +177,24 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 CapabilityBoundingSet=
-# Reads callers' cgroups to tell runners apart (unit sp-runner-<id>.service).
+# Not invisible: a caller is named by /proc/<pid>/cgroup of its process,
+# which runs as $AGENT_USER (identity.go), and invisible hides other users' processes.
 ProtectProc=default
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-if [[ -n $listen_was && $listen_was != "$RUN/api/api.sock" ]]; then
-  # The socket moved (once, on the update that brings work 103). systemd will
-  # not rebind a socket under its running service, so the service stops first
-  # and its streams are cut; the host resyncs its binds when it reconnects.
-  echo "oc-modelproxy: API socket moves from $listen_was to $RUN/api/api.sock; restarting the proxy"
-  systemctl kill --signal=SIGKILL oc-modelproxy.service 2>/dev/null || true
-  systemctl stop oc-modelproxy.service oc-modelproxy-api.socket
-  rm -f "$listen_was"
-  changed=1
-fi
+((unit_changed == 0)) || systemctl daemon-reload
 systemctl enable --now oc-modelproxy-api.socket oc-modelproxy-control.socket
 systemctl enable oc-modelproxy.service
-# A new binary takes over without blocking the provision: the old one drains its streams (up to 10 min)
-# while new connections wait on the sockets; the host resyncs its binds when it reconnects.
-if [[ ${changed:-0} == 1 ]]; then systemctl restart --no-block oc-modelproxy.service; else systemctl start --no-block oc-modelproxy.service; fi
-echo "oc-modelproxy: $("$BIN" --version 2>/dev/null || echo installed)"
+if ! systemctl is-active --quiet oc-modelproxy.service; then
+  systemctl start --no-block oc-modelproxy.service
+elif ((unit_changed)); then
+  # The old process drains its streams (up to 10 min) while new connections
+  # wait on the sockets; the host re-binds when it reconnects.
+  systemctl restart --no-block oc-modelproxy.service
+elif ((changed)); then
+  systemctl reload oc-modelproxy.service
+fi
+echo "oc-modelproxy $("$BIN" -version)"

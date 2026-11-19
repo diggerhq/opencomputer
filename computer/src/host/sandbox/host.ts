@@ -56,6 +56,8 @@ export interface SandboxHostDeps {
   /** The release the host runs from, and its version. */
   root: string;
   version: string;
+  /** Where runners reach the model proxy's API (SP_MODEL_SOCKET or its default). */
+  modelSocket: string;
   /** SP_POOL_SIZE. */
   spares: number;
   tm: Telemetry;
@@ -91,7 +93,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   const ports = previewPorts(path.join(d.data, 'state', 'previews.json'));
   const as = asRunner(user.sudo);
   const all = containers({
-    as, runRoot, dataDir: d.data, root: d.root, image, abi,
+    as, runRoot, dataDir: d.data, root: d.root, image, abi, modelSocket: d.modelSocket,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
     vars: () => runnerVars(env), definition: definitionFile, serveTokens: d.serveTokens,
     removed: (id) => {

@@ -25,6 +25,8 @@ export interface HostFigures {
   containers_other?: number;
   data_used_pct?: number;
   podman_bytes?: number;
+  /** Seconds the model proxy's control socket has been down (work 097); 0 while up. A host's health fails past 30. */
+  model_proxy_down_s?: number;
 }
 
 interface CpuTimes {

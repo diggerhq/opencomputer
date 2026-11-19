@@ -32,7 +32,7 @@ import { type RunRoot, sandboxRunFor, socketFor } from '../ipc.js';
 import type { HostToGateway, Person, SessionSpec } from '../protocol.js';
 import type { TelemetryEvent } from '../telemetry/envelope.js';
 import { safeKey } from '../workspaces/clones.js';
-import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, model, said, serve, show, toolCall, viaProxy } from './sandbox-check-reach.js';
+import { APP_PORT, type Kit, type Thread as Reached, said, serve, show, toolCall, viaProxy } from './sandbox-check-reach.js';
 
 const LOCK_S = 8;
 const SWEEP_AGE_MS = 6000;
@@ -130,8 +130,6 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T) {
       `after a stop and a resume the previews answer again, B's ${port('s9-b')} and A's ${port('s9-none')} (${show(ga)}), and no runner asked for a preview again`);
 
     // ---- unpreview: only a session's own names
-    for (const t of [a, b, c]) await model(k, t);
-    await until(async () => ((await Promise.all([a, b, c].map((t) => k.inside(t.id, `curl -s -m 2 ${MODEL_URL}/calls`).catch(() => '')))).every(Boolean) ? true : undefined), 15_000);
     const un = await toolCall(k, a, 'unpreview', { name: 's9-b' });
     check(/no preview named s9-b in this session/.test(un.text) && x.names.has('s9-b') && !x.unpreviewed.some((u) => u.name === 's9-b') && said(await viaProxy(k, port('s9-b')), 'inside B'),
       `A's unpreview of B's name is refused (${un.text}), the gateway was not asked, and B's preview still answers`);

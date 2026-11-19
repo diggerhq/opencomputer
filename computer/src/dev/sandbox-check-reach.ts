@@ -6,9 +6,9 @@
 // compares.
 //
 // The `preview` and `unpreview` tools are called by the real runner and the
-// real Agent SDK: the turn's model is src/dev/fake-model.mjs, started inside
-// the session's container, which answers `call <tool> <json>` with that tool
-// call. No model and no credential is involved.
+// real Agent SDK: the turn's model is src/dev/fake-model.mjs behind the
+// check's model proxy (sandbox-check-model.ts), which answers `call <tool>
+// <json>` with that tool call. No model and no credential is involved.
 //
 // Invariants:
 // - Two threads of one person, each serving a different answer on the same
@@ -35,13 +35,13 @@ import { VIRTUAL_PORTS } from '../host/sandbox/preview-ports.js';
 import { type RunRoot, previewSocketFor } from '../ipc.js';
 import type { PreviewRequest, SessionSpec } from '../protocol.js';
 import { signPreview } from '../signed-header.js';
+import type { ModelCall } from './sandbox-check-model.js';
 import type { WireClient } from './wire-client.js';
 
 /** The port every server of the check listens on: inside each container, and on the host. */
 export const APP_PORT = 5173;
-const MODEL_PORT = 18080;
-/** The model endpoint a session's harness is given: the fake, on the container's own loopback. */
-export const MODEL_URL = `http://127.0.0.1:${MODEL_PORT}`;
+/** A second port a server listens on inside a container, which no preview names. */
+const OTHER_PORT = 18080;
 
 export interface Thread {
   name: string;
@@ -68,6 +68,8 @@ export interface Kit {
   until<T>(f: () => T | undefined | Promise<T | undefined>, ms?: number): Promise<T | undefined>;
   /** `sh -c` inside a thread's container, as the session's user. */
   inside(id: string, script: string): Promise<string>;
+  /** The tool calls the model stand-in made, with their results (sandbox-check-model.ts); one list for every thread, and turns are told one at a time. */
+  calls(): Promise<ModelCall[]>;
   /** A detached process inside a thread's container. */
   detached(id: string, argv: string[]): Promise<unknown>;
   /** A command as the runners' user on the host. */
@@ -104,17 +106,12 @@ const viaSocket = (t: Thread, port: number) => get({ host: '127.0.0.1', port, pa
 export const serve = (k: Kit, t: Thread, port: number) =>
   k.detached(t.id, ['node', '-e', `require("http").createServer((q,s)=>s.end("inside ${t.name}")).listen(${port},"127.0.0.1")`]);
 
-/** The model stand-in, started inside a thread's container: it goes with the container's processes at every stop. */
-export const model = (k: Kit, t: Thread) => k.detached(t.id, ['node', path.join(k.root, 'src/dev/fake-model.mjs'), String(MODEL_PORT)]);
-
-interface Call { tool: string; input: unknown; result?: string }
-const calls = async (k: Kit, t: Thread): Promise<Call[]> => JSON.parse((await k.inside(t.id, `curl -s -m 5 ${MODEL_URL}/calls`).catch(() => '')) || '[]');
 /** One turn in which the (fake) model calls `tool` with `input`: the tool's result as the model got it, parsed when it is JSON. */
 export async function toolCall(k: Kit, t: Thread, tool: string, input: object): Promise<{ text: string; json?: Record<string, unknown>; ms: number }> {
-  const before = (await calls(k, t)).length;
+  const before = (await k.calls()).length;
   const at = Date.now();
   await k.tell(t, `sandbox-check: call ${tool} ${JSON.stringify(input)}`);
-  const c = await k.until(async () => (await calls(k, t)).slice(before).find((x) => x.result !== undefined), 60_000);
+  const c = await k.until(async () => (await k.calls()).slice(before).find((x) => x.result !== undefined), 60_000);
   const text = c?.result ?? '(the tool was never called, or its result never reached the model)';
   let json: Record<string, unknown> | undefined;
   try {
@@ -189,8 +186,7 @@ async function filesEnded(k: Kit, t: Thread, running: boolean) {
 }
 
 /**
- * All three threads run: `a` and `b` of one person, `q` of another, with a journal. Starts the fake model in `a` and
- * `b` and leaves `a`'s preview of APP_PORT taken down, `b`'s up.
+ * All three threads run: `a` and `b` of one person, `q` of another, with a journal. Leaves `a`'s preview of APP_PORT taken down, `b`'s up.
  */
 export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
   const { check } = k;
@@ -198,7 +194,7 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
   try {
     await new Promise((r, j) => host.once('listening', r).once('error', j));
     for (const t of [a, b]) {
-      await model(k, t);
+      await serve(k, t, OTHER_PORT);
       await serve(k, t, APP_PORT);
     }
     check((await k.until(async () => ((await k.inside(a.id, `curl -s -m 2 127.0.0.1:${APP_PORT}`).catch(() => '')) === 'inside A' ? true : undefined), 15_000)) === true
@@ -226,8 +222,8 @@ export async function reachRunning(k: Kit, a: Thread, b: Thread, q: Thread) {
     const raw = await viaProxy(k, APP_PORT);
     check(!('refused' in raw) && raw.status === 403, `asked for ${APP_PORT} itself it still refuses, so the host's own ${APP_PORT} never answers: ${show(raw)}`);
     check(said(await viaSocket(a, APP_PORT), 'inside A'), `the runner's socket now carries port ${APP_PORT}`);
-    const other = await viaSocket(a, MODEL_PORT);
-    check('refused' in other, `and no other port of the session (${MODEL_PORT}, where its model stand-in listens): ${show(other)}`);
+    const other = await viaSocket(a, OTHER_PORT);
+    check('refused' in other, `and no other port of the session (${OTHER_PORT}, where another server of it listens): ${show(other)}`);
 
     // ---- the probe, on a port nothing listens on
     const pn = await toolCall(k, a, 'preview', { port: APP_PORT + 1, name: 's9-none' });

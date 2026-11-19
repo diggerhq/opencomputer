@@ -51,7 +51,7 @@ function start(name: string, spec: Partial<StartSpec> = {}, env: Record<string, 
   const kind = codexKind(
     {
       bin: launcher({ FAKE_CODEX_TRANSCRIPT: transcript(name), FAKE_CODEX_LOG: logFile, ...env }),
-      socket: path.join(dir, 'model.sock'),
+      endpoint: () => ({ unixSocket: path.join(dir, 'model.sock'), placeholder: 'ssh-placeholder' }),
       root: path.join(dir, 'codex'),
       peerCheck: false,
       env: {
@@ -312,7 +312,7 @@ describe('CodexHarness', () => {
   });
 
   const bare = (bin: string, socket?: string) => {
-    const run = codexKind({ bin, socket, root: dir, peerCheck: false, env: {}, version: '0' }, 'k').start({
+    const run = codexKind({ bin, endpoint: () => (socket ? { unixSocket: socket, placeholder: 'p' } : undefined), root: dir, peerCheck: false, env: {}, version: '0' }, 'k').start({
       cwd: dir,
       mode: 'default',
       model: 'm',
