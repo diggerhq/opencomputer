@@ -3,9 +3,15 @@
 // object calls the other; this is the only place their answers meet.
 //
 // api-http.ts matches the routes, checks scopes and turns the `WorkReply` into a response.
+//
+// The open list is polled. Its ETag is `"{head}-{stamp}"`: the index's head and version (rows,
+// pull request state, the problem), the Computer object's session stamp (`work.stamp`, any write
+// to sessions or people), and the caller (attention, `mine` and visibility are the caller's). Both
+// stamps are read first, two small calls, and a match answers 304 before anything is composed.
+// Every read answers `Work-As-Of`, when the head was last confirmed against GitHub.
 
 import type { ApiCaller, ApiReply } from "../sessions-api.js";
-import type { SessionBrief, WorkContext, WorkContextOp } from "./briefs.js";
+import type { SessionBrief, WorkContext, WorkContextOp, WorkStampOp } from "./briefs.js";
 import type { IndexedItem, ItemsResult, Revision, WorkIndexRpc } from "./index-contract.js";
 
 export interface Person {
@@ -40,7 +46,8 @@ export interface Item {
   /** 3.10's `{id, title, ownerName}`, plus the session's lifecycle `status` (the board shows it). */
   sessions: { id: string; title: string | null; ownerName: string | null; status: SessionBrief["status"] }[];
   unpublished: boolean;
-  updatedAt: string;
+  /** The last commit that changed the file; null until the index has dated it. */
+  updatedAt: string | null;
   createdAt: string | null;
   closedAt: string | null;
   closedBy: string | null;
@@ -54,16 +61,16 @@ export interface WorkRoute {
   sub?: string;
 }
 
-/** An ApiReply, with the open list's ETag; status 304 has no body. */
-export type WorkReply = ApiReply & { etag?: string };
+/** An ApiReply, with the open list's ETag and the reads' `Work-As-Of`; status 304 has no body. */
+export type WorkReply = ApiReply & { etag?: string; asOf?: string | null };
 
 export interface WorkDeps {
   accountId: string;
   caller: ApiCaller;
   /** The Work index, or null when the binding is missing. */
   index: WorkIndexRpc | null;
-  /** The Computer object's `work.context`. */
-  context(op: WorkContextOp): Promise<ApiReply>;
+  /** The Computer object's `work.context` and `work.stamp`. */
+  context(op: WorkContextOp | WorkStampOp): Promise<ApiReply>;
 }
 
 /** The query parameters each route takes; any other is refused. */
@@ -79,7 +86,6 @@ const CLOSED_LIMIT_MAX = 100;
 const NUMBER = /^[1-9]\d{0,8}$/;
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
-const BRANCH = /^[^\s~^:?*[\\]{1,255}$/;
 const UNAVAILABLE: WorkReply = { status: 503, error: { code: "unavailable", message: "Work is unavailable. Try again shortly.", retryAfterMs: 5_000 } };
 
 const invalid = (message: string, field: string): WorkReply => ({ status: 400, error: { code: "invalid_request", message, field } });
@@ -119,6 +125,15 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
       if (rawLimit !== null && (!/^\d{1,3}$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > CLOSED_LIMIT_MAX)) {
         return invalid(`limit is 1 to ${CLOSED_LIMIT_MAX}.`, "limit");
       }
+      let stamp: string | null = null;
+      if (stage === "open") {
+        // The stamps first: an unchanged poll is answered without reading or composing the list.
+        const [open, sessions] = await Promise.all([index.stamp(deps.accountId), deps.context({ op: "work.stamp" })]);
+        if (sessions.error) return sessions;
+        stamp = String((sessions.body as { stamp: number }).stamp);
+        const etag = await etagOf(open.head, open.version, stamp, deps.caller);
+        if (ifNoneMatch !== null && matches(ifNoneMatch, etag)) return { status: 304, etag, asOf: open.asOf };
+      }
       const cursor = query.get("cursor");
       const result: ItemsResult = await index.items(deps.accountId, {
         stage,
@@ -126,24 +141,23 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
         ...(rawLimit !== null ? { limit: Number(rawLimit) } : {}),
       });
       if (!result.ok) return { status: 400, error: { code: "invalid_cursor", message: "The cursor is not valid for this list." } };
-      const composed = await compose(deps, result.items, result.asOf);
+      const composed = await compose(deps, result.items);
       if ("status" in composed) return composed;
-      if (stage === "closed") return { status: 200, body: { items: composed.items, nextCursor: result.nextCursor } };
+      if (stage === "closed") return { status: 200, body: { items: composed.items, nextCursor: result.nextCursor }, asOf: result.asOf };
       const page = { repository: result.repository, head: result.head, asOf: result.asOf, building: result.building, items: composed.items };
-      const etag = await etagOf(page);
-      if (ifNoneMatch !== null && matches(ifNoneMatch, etag)) return { status: 304, etag };
-      return { status: 200, body: page, etag };
+      // The list's own head and version: the ETag never names content newer than the page.
+      return { status: 200, body: page, etag: await etagOf(result.head, result.version, stamp!, deps.caller), asOf: result.asOf };
     }
 
     case "work.item": {
       if (!NUMBER.test(route.sub ?? "")) return notFound();
       const result = await index.item(deps.accountId, Number(route.sub));
-      if (!result.item) return notFound();
-      // A closed item's body is read on first view; GitHub could not be reached.
-      if (result.body === null) return UNAVAILABLE;
-      const composed = await compose(deps, [result.item], result.asOf);
+      // A closed item's body is read on first view; GitHub did not give it in time.
+      if (!result.ok) return { ...UNAVAILABLE, error: { ...UNAVAILABLE.error!, retryAfterMs: result.retryAfterMs } };
+      if (!result.item || result.body === null) return notFound();
+      const composed = await compose(deps, [result.item]);
       if ("status" in composed) return composed;
-      return { status: 200, body: { item: composed.items[0]!, body: result.body } };
+      return { status: 200, body: { item: composed.items[0]!, body: result.body }, asOf: result.asOf };
     }
 
     case "work.history": {
@@ -161,7 +175,7 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
       // A trailer names a session id or a Slack session's key: shown as the session's id, and only
       // when the caller may see it.
       const revisions: Revision[] = result.revisions.map((r) => ({ ...r, sessionId: r.sessionId ? (context.sessions[r.sessionId]?.id ?? null) : null }));
-      return { status: 200, body: { revisions, nextCursor: result.nextCursor } };
+      return { status: 200, body: { revisions, nextCursor: result.nextCursor }, asOf: result.asOf };
     }
   }
 }
@@ -182,7 +196,7 @@ function repositoryChoice(body: unknown): { value: { installationId: string; own
   if (installation === null) return { error: invalid("installationId is the GitHub installation's id.", "installationId") };
   if (typeof owner !== "string" || !OWNER.test(owner)) return { error: invalid("owner is a GitHub account login.", "owner") };
   if (typeof name !== "string" || !REPO_NAME.test(name) || name === "." || name === "..") return { error: invalid("name is a GitHub repository name.", "name") };
-  if (branch !== undefined && branch !== null && (typeof branch !== "string" || !BRANCH.test(branch))) return { error: invalid("branch is a branch name.", "branch") };
+  if (branch !== undefined && branch !== null && (typeof branch !== "string" || !branchName(branch))) return { error: invalid("branch is a branch name.", "branch") };
   return { value: { installationId: installation, owner, name, ...(typeof branch === "string" ? { branch } : {}) } };
 }
 
@@ -192,8 +206,24 @@ async function workContext(deps: WorkDeps, sessionIds: string[], emails: string[
   return reply.body as WorkContext;
 }
 
+/**
+ * A name `git check-ref-format --branch` accepts: no `.` or `..` segment, no segment starting with
+ * `.` or ending with `.lock`, no `..`, `@{`, `//`, control characters, space or `~^:?*[\`, not `@`,
+ * not starting with `-` or `/`, not ending with `/` or `.`. At most 255 characters.
+ */
+export function branchName(name: string): boolean {
+  if (name.length < 1 || name.length > 255 || name === "@") return false;
+  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return false;
+  if (name.includes("..") || name.includes("@{") || name.includes("//")) return false;
+  for (let i = 0; i < name.length; i++) {
+    const c = name.charCodeAt(i);
+    if (c < 0x21 || c === 0x7f || "~^:?*[\\".includes(name[i]!)) return false;
+  }
+  return name.split("/").every((segment) => !segment.startsWith(".") && !segment.endsWith(".lock"));
+}
+
 /** The index's items joined with the caller's sessions and the members behind emails. */
-async function compose(deps: WorkDeps, items: IndexedItem[], asOf: string | null): Promise<{ items: Item[] } | WorkReply> {
+async function compose(deps: WorkDeps, items: IndexedItem[]): Promise<{ items: Item[] } | WorkReply> {
   const sessionIds = [...new Set(items.flatMap((i) => i.sessionIds))];
   const emails = [...new Set(items.flatMap((i) => [i.owner, i.author?.email ?? null]).filter((e): e is string => !!e).map((e) => e.toLowerCase()))];
   const context = items.length ? await workContext(deps, sessionIds, emails) : { sessions: {}, people: {}, callerEmails: [] };
@@ -224,7 +254,7 @@ async function compose(deps: WorkDeps, items: IndexedItem[], asOf: string | null
         attention: itemAttention(briefs, deps.caller.member),
         sessions: briefs.map((b) => ({ id: b.id, title: b.title, ownerName: b.ownerName, status: b.status })),
         unpublished: false,
-        updatedAt: i.updatedAt ?? i.closedAt ?? i.createdAt ?? asOf ?? new Date(0).toISOString(),
+        updatedAt: i.updatedAt ?? i.closedAt ?? i.createdAt,
         createdAt: i.createdAt,
         closedAt: i.closedAt,
         closedBy: i.closedBy,
@@ -270,14 +300,14 @@ export function itemAttention(briefs: SessionBrief[], member: string): ItemAtten
 }
 
 /**
- * The open list's ETag: the head, and a stamp of everything else the page says except `asOf`
- * (attention, sessions, people and pull request states change without a commit).
+ * The open list's ETag: the head, then a digest of the index's version, the Computer object's
+ * session stamp and the caller (attention, sessions, people and pull request states change without
+ * a commit; `mine` and visibility are the caller's).
  */
-export async function etagOf(page: { head: string | null; asOf: string | null }): Promise<string> {
-  const { asOf: _asOf, ...rest } = page;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(rest)));
+export async function etagOf(head: string | null, version: number, sessions: string, caller: Pick<ApiCaller, "member" | "email">): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([version, sessions, caller.member, caller.email])));
   const stamp = [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `"${page.head ?? "none"}-${stamp}"`;
+  return `"${head ?? "none"}-${stamp}"`;
 }
 
 function matches(ifNoneMatch: string, etag: string): boolean {

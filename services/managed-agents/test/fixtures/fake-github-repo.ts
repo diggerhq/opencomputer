@@ -3,8 +3,13 @@ import { createHash } from "node:crypto";
 /**
  * A knowledge repository on a fake GitHub, as much of the REST API as the Work index uses: the
  * branch ref (with ETag), compare (with rename detection), commits (one, and filtered by path),
- * trees (a commit's root, then one directory), blobs, the repository, and the pull request
- * GraphQL query. History is a list of commits with whole-tree snapshots; `forcePush` rewrites it.
+ * trees (a commit's root, then one directory), blobs, the repository (by name and by id), and the
+ * pull request GraphQL query. History is a list of commits with whole-tree snapshots; `forcePush`
+ * rewrites it.
+ *
+ * GitHub's limits hold: compare lists at most 300 files and a page of commits; lists take
+ * `per_page` up to 100 (30 when absent) and `page`; commits take `until`. Tree shas are content
+ * addressed, so an unchanged folder keeps its sha across commits.
  */
 
 export interface FakeCommit {
@@ -32,8 +37,19 @@ export class FakeRepo {
   head: string | null = null;
   /** Every request, as `METHOD path`. */
   log: string[] = [];
-  /** The next requests answer this (then normal service resumes). */
-  failNext: { status: number; headers?: Record<string, string> }[] = [];
+  /** The next requests (of those `match` fits, when set) answer this; then normal service resumes. */
+  failNext: { status: number; headers?: Record<string, string>; message?: string; match?: RegExp }[] = [];
+  /** The GraphQL queries asked. */
+  queries: string[] = [];
+  /** The next this many requests never answer (until the client aborts them). */
+  hangNext = 0;
+  /** GitHub's id for the repository, which survives a rename. */
+  id = 4242;
+  /** Names the repository had: requests to them are redirected when `redirects`, else 404. */
+  formerNames: string[] = [];
+  redirects = true;
+  private readonly blobStore = new Map<string, string>();
+  private readonly trees = new Map<string, { path: string; type: string; sha: string }[]>();
   remaining = 5000;
   limit = 5000;
   deleted = false;
@@ -56,6 +72,7 @@ export class FakeRepo {
       else files.set(path, text);
     }
     this.clock += 60_000;
+    for (const text of files.values()) this.blobStore.set(this.blobSha(text), text);
     const sha = sha1(`${this.head}\n${message}\n${this.clock}\n${[...files].join("\n")}`);
     this.commits.set(sha, { sha, parent: this.head, message, author, at: new Date(this.clock).toISOString(), files });
     this.head = sha;
@@ -105,10 +122,28 @@ export class FakeRepo {
     return this.diff(c.parent ? this.commits.get(c.parent)!.files : new Map(), c.files);
   }
 
-  private blobs(): Map<string, string> {
-    const out = new Map<string, string>();
-    for (const c of this.commits.values()) for (const text of c.files.values()) out.set(this.blobSha(text), text);
-    return out;
+  /** Renames the repository; the old name redirects (or 404s when `redirects` is false). */
+  rename(name: string): void {
+    this.formerNames.push(this.name);
+    this.name = name;
+  }
+
+  /** The tree of `prefix` in `files` (content addressed), registered by its sha. */
+  private treeOf(files: Map<string, string>, prefix: string): string {
+    const entries = new Map<string, { path: string; type: string; sha: string }>();
+    const dirs = new Set<string>();
+    for (const [path, text] of files) {
+      if (!path.startsWith(prefix)) continue;
+      const name = path.slice(prefix.length);
+      const slash = name.indexOf("/");
+      if (slash === -1) entries.set(name, { path: name, type: "blob", sha: this.blobSha(text) });
+      else dirs.add(name.slice(0, slash));
+    }
+    for (const dir of dirs) entries.set(dir, { path: dir, type: "tree", sha: this.treeOf(files, `${prefix}${dir}/`) });
+    const list = [...entries.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+    const sha = sha1(`tree\n${JSON.stringify(list)}`);
+    this.trees.set(sha, list);
+    return sha;
   }
 
   /** The `fetch` the client is given. */
@@ -123,14 +158,24 @@ export class FakeRepo {
       "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
       "x-ratelimit-resource": url.pathname === "/graphql" ? "graphql" : "core",
     });
-    const json = (status: number, body: unknown, extra: Record<string, string> = {}) =>
-      new Response(status === 304 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...quota(), ...extra } });
-    const fail = this.failNext.shift();
-    if (fail) return json(fail.status, { message: "failed" }, fail.headers);
+    let redirected = false;
+    const json = (status: number, body: unknown, extra: Record<string, string> = {}) => {
+      const response = new Response(status === 304 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...quota(), ...extra } });
+      if (redirected) Object.defineProperty(response, "redirected", { value: true });
+      return response;
+    };
+    if (this.hangNext > 0) {
+      this.hangNext -= 1;
+      return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+    }
+    const at = this.failNext.findIndex((f) => !f.match || f.match.test(url.pathname));
+    const fail = at === -1 ? undefined : this.failNext.splice(at, 1)[0];
+    if (fail) return json(fail.status, { message: fail.message ?? "failed" }, fail.headers);
     if (!headers.get("authorization")?.startsWith("Bearer ")) return json(401, { message: "no token" });
 
     if (url.pathname === "/graphql") {
       const query = JSON.parse(String(init?.body)).query as string;
+      this.queries.push(query);
       const data: Record<string, unknown> = {};
       for (const m of query.matchAll(/(p\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\) \{ pullRequest\(number: (\d+)\)/g)) {
         const pr = this.pulls.get(`https://github.com/${m[2]}/${m[3]}/pull/${m[4]}`);
@@ -138,17 +183,29 @@ export class FakeRepo {
       }
       return json(200, { data });
     }
-    const base = `/repos/${this.owner}/${this.name}`;
-    // GitHub's owner and repository names are case-insensitive.
-    if (this.deleted || !url.pathname.toLowerCase().startsWith(base.toLowerCase())) return json(404, { message: "Not Found" });
+    const about = () => ({ id: this.id, name: this.name, owner: { login: this.owner }, default_branch: this.defaultBranch });
+    if (url.pathname === `/repositories/${this.id}`) return this.deleted ? json(404, { message: "Not Found" }) : json(200, about());
+    // GitHub's owner and repository names are case-insensitive; a former name redirects.
+    const lower = url.pathname.toLowerCase();
+    const under = (b: string) => lower === b.toLowerCase() || lower.startsWith(`${b.toLowerCase()}/`);
+    const current = `/repos/${this.owner}/${this.name}`;
+    const former = this.formerNames.map((n) => `/repos/${this.owner}/${n}`).find(under);
+    let base: string;
+    if (this.deleted) return json(404, { message: "Not Found" });
+    if (under(current)) base = current;
+    else if (former && this.redirects) {
+      redirected = true;
+      base = former;
+    } else return json(404, { message: "Not Found" });
     const rest = url.pathname.slice(base.length);
-    if (rest === "") return json(200, { name: this.name, owner: { login: this.owner }, default_branch: this.defaultBranch });
+    if (rest === "") return json(200, about());
     if (rest === `/git/ref/heads/${this.defaultBranch}`) {
       const etag = `"${this.head}"`;
       if (headers.get("if-none-match") === etag) return json(304, null, { etag });
       return json(200, { object: { sha: this.head, type: "commit" } }, { etag });
     }
     if (rest.startsWith("/git/ref/heads/")) return json(404, { message: "Not Found" });
+    const perPage = () => Math.min(Number(url.searchParams.get("per_page") ?? "30"), 100);
     let m = /^\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/.exec(rest);
     if (m) {
       const [baseSha, headSha] = [m[1]!, m[2]!];
@@ -161,45 +218,44 @@ export class FakeRepo {
       return json(200, {
         status: "ahead",
         total_commits: range.length,
-        commits: range.map((c) => this.commitJson(c)),
-        files: this.diff(this.commits.get(baseSha)!.files, this.commits.get(headSha)!.files),
+        commits: range.slice(0, perPage()).map((c) => this.commitJson(c)),
+        // GitHub lists at most 300 files.
+        files: this.diff(this.commits.get(baseSha)!.files, this.commits.get(headSha)!.files).slice(0, 300),
       });
     }
     m = /^\/commits\/([0-9a-f]+)$/.exec(rest);
     if (m) {
       const c = this.commits.get(m[1]!);
-      return c ? json(200, { ...this.commitJson(c), files: this.changed(c) }) : json(404, { message: "Not Found" });
+      // 300 files a page.
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return c ? json(200, { ...this.commitJson(c), files: this.changed(c).slice((page - 1) * 300, page * 300) }) : json(404, { message: "Not Found" });
     }
     if (rest === "/commits") {
       const from = url.searchParams.get("sha")!;
       const path = url.searchParams.get("path")!;
       const page = Number(url.searchParams.get("page") ?? "1");
-      const perPage = Number(url.searchParams.get("per_page") ?? "30");
+      const until = url.searchParams.get("until");
+      const size = perPage();
+      if (!this.commits.has(from)) return json(404, { message: "Not Found" });
       const touching = this.ancestors(from)
         .map((s) => this.commits.get(s)!)
+        .filter((c) => !until || c.at <= until)
         .filter((c) => this.changed(c).some((f) => f.filename === path || f.filename.startsWith(`${path}/`) || f.previous_filename === path || f.previous_filename?.startsWith(`${path}/`)));
-      return json(200, touching.slice((page - 1) * perPage, page * perPage).map((c) => this.commitJson(c)));
+      return json(200, touching.slice((page - 1) * size, page * size).map((c) => this.commitJson(c)));
     }
     m = /^\/git\/trees\/(.+)$/.exec(rest);
     if (m) {
       const id = decodeURIComponent(m[1]!);
-      const dir = /^tree-([0-9a-f]+)-(.+)$/.exec(id);
-      const commit = this.commits.get(dir ? dir[1]! : id);
-      if (!commit) return json(404, { message: "Not Found" });
-      const prefix = dir ? `${dir[2]}/` : "";
-      const entries = new Map<string, { path: string; type: string; sha: string }>();
-      for (const [path, text] of commit.files) {
-        if (!path.startsWith(prefix)) continue;
-        const name = path.slice(prefix.length);
-        const slash = name.indexOf("/");
-        if (slash === -1) entries.set(name, { path: name, type: "blob", sha: this.blobSha(text) });
-        else entries.set(name.slice(0, slash), { path: name.slice(0, slash), type: "tree", sha: `tree-${commit.sha}-${prefix}${name.slice(0, slash)}` });
-      }
-      return json(200, { sha: id, tree: [...entries.values()], truncated: false });
+      // A commit's sha names its root tree.
+      const commit = this.commits.get(id);
+      const sha = commit ? this.treeOf(commit.files, "") : id;
+      const tree = this.trees.get(sha);
+      if (!tree) return json(404, { message: "Not Found" });
+      return json(200, { sha, tree, truncated: false });
     }
     m = /^\/git\/blobs\/([0-9a-f]+)$/.exec(rest);
     if (m) {
-      const text = this.blobs().get(m[1]!);
+      const text = this.blobStore.get(m[1]!);
       return text === undefined ? json(404, { message: "Not Found" }) : json(200, { sha: m[1], encoding: "base64", content: Buffer.from(text).toString("base64") });
     }
     return json(404, { message: "Not Found" });

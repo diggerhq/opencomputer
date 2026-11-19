@@ -1,12 +1,14 @@
 // The Work index's Durable Object (tech design 3.6): binding `WORK_INDEX`, one per organization,
-// addressed by account id like `COMPUTERS`. The logic is `WorkIndex` (index.ts); this is storage,
-// the alarm and the Account object.
+// addressed by account id like `COMPUTERS`. The logic is `WorkIndex` (index.ts), which holds no
+// platform; this file adapts the Durable Object to it (platform.ts): SQLite storage, the clock, the
+// alarm, fetch and the Account object. It is the only Work index file that names Cloudflare.
 
 import { DurableObject } from "cloudflare:workers";
 
 import type { TokenMinter } from "./github.js";
 import { WorkIndex } from "./index.js";
 import type { ItemsQuery, RepositoryChoice, WorkActor, WorkIndexRpc } from "./index-contract.js";
+import type { IndexStore, StoreValue } from "./platform.js";
 
 export interface WorkIndexEnv {
   /** The edge's AccountDurableObject, addressed by account id. */
@@ -19,12 +21,22 @@ export class WorkIndexDurableObject extends DurableObject<WorkIndexEnv> implemen
   constructor(ctx: DurableObjectState, env: WorkIndexEnv) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
-      this.index = new WorkIndex({
-        sql: ctx.storage.sql,
+      const store: IndexStore = {
+        exec: <T extends Record<string, StoreValue>>(sql: string, ...params: StoreValue[]) => ctx.storage.sql.exec<T>(sql, ...params).toArray(),
         transaction: (fn) => ctx.storage.transactionSync(fn),
+      };
+      this.index = new WorkIndex({
+        store,
+        clock: {
+          now: () => Date.now(),
+          timeout: (ms, fn) => {
+            const timer = setTimeout(fn, ms);
+            return () => clearTimeout(timer);
+          },
+        },
+        scheduler: { arm: (at) => this.arm(at), waitUntil: (promise) => ctx.waitUntil(promise) },
         account: (accountId) => env.ACCOUNTS.getByName(accountId) as unknown as TokenMinter,
-        arm: (at) => this.arm(at),
-        waitUntil: (promise) => ctx.waitUntil(promise),
+        fetch: (url, init) => fetch(url, init),
       });
     });
   }
@@ -56,6 +68,10 @@ export class WorkIndexDurableObject extends DurableObject<WorkIndexEnv> implemen
 
   poke(accountId: string) {
     return this.index.poke(accountId);
+  }
+
+  stamp(accountId: string) {
+    return this.index.stamp(accountId);
   }
 
   override async alarm(): Promise<void> {

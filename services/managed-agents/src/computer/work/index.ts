@@ -2,17 +2,34 @@
 // repository's `work/` and `done/` folders, kept in SQLite and moved forward from a cursor commit.
 // The repository is the record; this is a cache that can always be rebuilt from it.
 //
-// - Advance (the only way the projection changes, besides a build): compare `cursor...head`, fetch
-//   the blobs of the changed item files, then write rows, links and the cursor in one transaction.
-//   A crash before the transaction repeats the work with the same result.
-// - Build (no cursor, or the head is not ahead of it): list the two folders at the head; open items
-//   are read in batches of 50 continued by the alarm, and the cursor is set when they are done.
-//   Closed items get a row from the listing and are read when a page of them is asked for. Then a
-//   background walk of the commits recovers links, authors and close dates within the quota.
+// - Advance (the only way the projection changes, besides a build), from the cursor to the head:
+//   1. compare `cursor...head` (one call): not ahead means a rewritten history, so rebuild. When
+//      it lists fewer than 300 files, that list is the change.
+//   2. Otherwise the trees: the head's root tree, and each of `work/` and `done/` whose tree sha
+//      differs from the one stored at the cursor (2-3 calls), diffed against the `files` table.
+//   3. The blobs of the changed items only, then rows, files and the cursor in one transaction.
+//      Changed rows lose `updatedAt`, a new close loses `closedAt`/`closedBy`: null until the walk
+//      fills them, never a guess. A range of one commit fills them at once from compare's files.
+//   4. The walk (below) gets the range: a page of each changed folder's commits and up to
+//      ADVANCE_DETAILS commit details now, the rest from the alarm.
+//   Whatever the range's size, an advance never rebuilds and stays within those calls.
+// - Build (no cursor, or a rewritten history): list the two folders at the head; open items are
+//   read in batches of 50 continued by the alarm, and the cursor is set when they are done. Closed
+//   items get a row from the listing and are read when a page of them is asked for. Dates,
+//   authors and links come from the walk.
+// - The walk: `commits?path=work` and `commits?path=done` from a head, back to the newest commit of
+//   that folder already listed (a page of 100 at a time); then each listed commit's files (one call
+//   each, newest first, within the quota). A commit's files give its items' revisions (history),
+//   links (`Session:` trailers), the add (author, created), the move into done/ (closed) and the
+//   latest change (updated).
 // - Duplicate numbers: `files` holds every item file at the cursor; the row of a number is its open
-//   file before a closed one, then the first path. The others show as a warning on the row.
+//   file before a closed one, then the first path. The others show as a warning naming them.
 // - One GitHub task at a time (`exclusive`): look, build, fill, walk, pull state, setRepository.
-//   Reads are SQL and never wait on GitHub, except a page of closed items not read yet (bounded).
+//   Reads never wait on it: they are SQL, and the two that may need GitHub (an item or a page of
+//   closed items not read yet, history while the walk is not done) wait at most READ_WAIT_MS. Every
+//   GitHub request is aborted after 10 s, so a hung one holds the chain no longer than that.
+// - A permanent failure is stored as `problem` (a code) and `problemMessage`; it is retried from
+//   the alarm with a backoff from PROBLEM_RETRY_MS to PROBLEM_RETRY_MAX_MS and cleared on success.
 //
 // Close and Reopen (3.9, build step 5) are writes in the same chain: a commit through the
 // contents API, then an advance to it.
@@ -21,6 +38,7 @@ import {
   GitHubGone,
   GitHubPaused,
   GitHubUnavailable,
+  PER_PAGE_MAX,
   pullOf,
   WorkGitHub,
   type CommitInfo,
@@ -35,6 +53,7 @@ import type {
   ItemResult,
   ItemsQuery,
   ItemsResult,
+  OpenStamp,
   ReadState,
   Repository,
   RepositoryChoice,
@@ -43,6 +62,7 @@ import type {
   WorkWrite,
 } from "./index-contract.js";
 import { itemPath, PARSER_VERSION, parseItem, readyToClose, sessionTrailers, slugTitle, type ItemPath, type ParsedItem } from "./item.js";
+import { within, type Clock, type Fetch, type IndexStore, type Scheduler, type StoreValue } from "./platform.js";
 
 /** A read finding the head older than this looks behind its response. */
 export const LOOK_AFTER_MS = 10_000;
@@ -54,26 +74,37 @@ const BUILD_STEP_MS = 1_000;
 export const FILL_BATCH = 50;
 /** Pull request state is asked at most this often. */
 export const PULLS_EVERY_MS = 5 * 60_000;
-const PULLS_PER_QUERY = 50;
-/** An advance asks per-commit files for at most this many commits. */
-const DETAIL_CAP = 20;
-/** Compare lists at most 300 files; at that many, the listing may be cut: rebuild. */
-const COMPARE_FILES_MAX = 300;
-/** A page of closed items waits this long for bodies not read yet, then answers with what it has. */
-const LAZY_WAIT_MS = 5_000;
-const WALK_PAGE = 30;
-const WALK_COMMITS_PER_TICK = 10;
+export const PULLS_PER_QUERY = 50;
+/** A pull request GitHub would not show is asked again after this. */
+export const UNREADABLE_RECHECK_MS = 24 * 60 * 60_000;
+/** Compare lists at most this many files; at that many, the list may be cut. */
+export const COMPARE_FILES_MAX = 300;
+/** Commit details an advance asks itself; the alarm asks the rest. */
+export const ADVANCE_DETAILS = 10;
+/** Per alarm without readers: pages of folder commits, and commit details. */
+export const WALK_PAGES_PER_TICK = 2;
+export const WALK_DETAILS_PER_TICK = 10;
+/** A read that needs GitHub answers within this, or 503 `unavailable`. */
+export const READ_WAIT_MS = 5_000;
+/** A stored problem is retried after this, doubling each time up to the maximum. */
+export const PROBLEM_RETRY_MS = 60_000;
+export const PROBLEM_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_PAGE = 30;
 const CLOSED_LIMIT_DEFAULT = 50;
 const CLOSED_LIMIT_MAX = 100;
 const FETCH_PARALLEL = 6;
+/** Durable Object SQL binds at most 100 parameters per statement. */
+const BIND_MAX = 90;
 /** Stored bodies re-parsed per step after PARSER_VERSION changes. */
 export const REPARSE_BATCH = 100;
+/** The tables' shape; another stored version drops them (the repository is the record). */
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
   number INTEGER PRIMARY KEY,
   path TEXT NOT NULL,
+  stage TEXT NOT NULL,
   blob TEXT NOT NULL,
   body TEXT NOT NULL,
   parsed TEXT NOT NULL,
@@ -81,31 +112,43 @@ CREATE TABLE IF NOT EXISTS items (
   author_name TEXT, author_email TEXT, created_at TEXT,
   updated_at TEXT, closed_at TEXT, closed_by TEXT
 );
+CREATE INDEX IF NOT EXISTS items_stage ON items (stage, number);
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, number INTEGER NOT NULL, blob TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS files_number ON files (number);
 CREATE TABLE IF NOT EXISTS links (number INTEGER NOT NULL, session_id TEXT NOT NULL, last_at TEXT NOT NULL, PRIMARY KEY (number, session_id));
+CREATE TABLE IF NOT EXISTS commits (
+  sha TEXT PRIMARY KEY, at TEXT, author_name TEXT NOT NULL, author_email TEXT, message TEXT NOT NULL, detailed INTEGER NOT NULL,
+  listed TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS commits_todo ON commits (detailed, at);
+CREATE TABLE IF NOT EXISTS revisions (
+  number INTEGER NOT NULL, sha TEXT NOT NULL, path TEXT NOT NULL, at TEXT NOT NULL, author_name TEXT NOT NULL, summary TEXT NOT NULL, session_id TEXT,
+  PRIMARY KEY (number, sha, path)
+);
+CREATE INDEX IF NOT EXISTS revisions_order ON revisions (number, at, sha);
 CREATE TABLE IF NOT EXISTS pulls (url TEXT PRIMARY KEY, state TEXT, title TEXT, checked_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
+const TABLES = ["items", "files", "links", "commits", "revisions", "pulls"];
 
-/** What the index needs of its Durable Object. */
+/** What the index needs of where it runs. */
 export interface WorkIndexDeps {
-  sql: SqlStorage;
-  transaction<T>(fn: () => T): T;
+  store: IndexStore;
+  clock: Clock;
+  scheduler: Scheduler;
   /** The organization's Account object. */
   account(accountId: string): TokenMinter;
-  /** Makes sure the alarm fires at `at` or sooner. */
-  arm(at: number): Promise<void>;
-  waitUntil(promise: Promise<unknown>): void;
-  fetch?: typeof fetch;
-  now?: () => number;
+  fetch: Fetch;
 }
+
+/** The columns a list shows (no body). */
+const ROW_COLUMNS = "number, path, stage, blob, parsed, parser, author_name, author_email, created_at, updated_at, closed_at, closed_by";
 
 interface ItemRow {
   number: number;
   path: string;
+  stage: string;
   blob: string;
-  body: string;
   parsed: string;
   parser: number;
   author_name: string | null;
@@ -116,40 +159,68 @@ interface ItemRow {
   closed_by: string | null;
 }
 
-type Row = Record<string, SqlStorageValue>;
+type Row = Record<string, StoreValue>;
+type Dir = "work" | "done";
+const DIRS: Dir[] = ["work", "done"];
 
 interface StoredRepo extends WorkRepo {}
 
-interface WalkState {
+/**
+ * The walk's listing of one folder's commits: from `head` back to the first commit already listed
+ * for that folder (everything older is listed, or is the range of a task still running).
+ */
+interface WalkTask {
+  dir: Dir;
   head: string;
-  dir: "work" | "done";
+  /** The next page to ask. */
   page: number;
-  index: number;
 }
+
+interface WalkState {
+  tasks: WalkTask[];
+}
+
+type DirShas = Record<Dir, string | null>;
 
 /** One organization's Work index. */
 export class WorkIndex {
-  private readonly now: () => number;
+  private readonly store: IndexStore;
+  private readonly clock: Clock;
   private github: WorkGitHub | null = null;
   private tail: Promise<unknown> = Promise.resolve();
   private looking: Promise<void> | null = null;
-  private readonly filling = new Set<number>();
+  private readonly filling = new Map<number, Promise<void>>();
 
   constructor(private readonly deps: WorkIndexDeps) {
-    this.now = deps.now ?? Date.now;
-    deps.sql.exec(SCHEMA);
+    this.store = deps.store;
+    this.clock = deps.clock;
+    this.store.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    if (this.meta("schema_version") !== String(SCHEMA_VERSION)) {
+      // An earlier shape: drop the projection and keep the setting; the next look rebuilds it.
+      this.store.transaction(() => {
+        for (const table of TABLES) this.store.exec(`DROP TABLE IF EXISTS ${table}`);
+        this.store.exec("DELETE FROM meta WHERE k NOT IN ('repo', 'account_id')");
+        this.setMeta("schema_version", SCHEMA_VERSION);
+        this.setMeta("parser_version", PARSER_VERSION);
+      });
+    }
+    this.store.exec(SCHEMA);
+  }
+
+  private now(): number {
+    return this.clock.now();
   }
 
   // ------------------------------------------------------------------ meta
 
   private meta(k: string): string | null {
-    const row = this.deps.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", k).toArray()[0];
+    const row = this.store.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", k)[0];
     return row ? row.v : null;
   }
 
   private setMeta(k: string, v: string | number | null): void {
-    if (v === null) this.deps.sql.exec("DELETE FROM meta WHERE k = ?", k);
-    else this.deps.sql.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v", k, String(v));
+    if (v === null) this.store.exec("DELETE FROM meta WHERE k = ?", k);
+    else this.store.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v", k, String(v));
   }
 
   private metaJson<T>(k: string): T | null {
@@ -167,6 +238,11 @@ export class WorkIndex {
     return Number.isFinite(v) ? v : 0;
   }
 
+  /** Marks the projection changed: the open list's ETag moves. Call inside the writing transaction. */
+  private bump(): void {
+    this.setMeta("version", this.metaNumber("version") + 1);
+  }
+
   /** The organization the object serves; recorded on the first call so the alarm knows it. */
   private bind(accountId: string): void {
     if (this.meta("account_id") !== accountId) this.setMeta("account_id", accountId);
@@ -176,20 +252,28 @@ export class WorkIndex {
     return this.metaJson<StoredRepo>("repo");
   }
 
+  private newClient(repo: WorkRepo, accountId: string): WorkGitHub {
+    return new WorkGitHub({ repo, account: this.deps.account(accountId), clock: this.clock, fetch: this.deps.fetch });
+  }
+
   private client(): WorkGitHub | null {
     const repo = this.repo();
     const accountId = this.meta("account_id");
     if (!repo || !accountId) return null;
     const g = this.github;
     if (g && g.repo.installationId === repo.installationId && g.repo.owner === repo.owner && g.repo.name === repo.name && g.repo.branch === repo.branch) return g;
-    this.github = new WorkGitHub({ repo, account: this.deps.account(accountId), now: this.now, ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}) });
+    this.github = this.newClient(repo, accountId);
     return this.github;
+  }
+
+  private problemNow(): { problem: RepositoryProblem | null; problemMessage: string | null } {
+    return { problem: (this.meta("problem") as RepositoryProblem | null) ?? null, problemMessage: this.meta("problem_message") };
   }
 
   private repository(): Repository | null {
     const repo = this.repo();
     if (!repo) return null;
-    return { installationId: repo.installationId, owner: repo.owner, name: repo.name, branch: repo.branch, problem: (this.meta("problem") as RepositoryProblem | null) ?? null };
+    return { installationId: repo.installationId, owner: repo.owner, name: repo.name, branch: repo.branch, ...this.problemNow() };
   }
 
   private readState(): ReadState {
@@ -199,8 +283,15 @@ export class WorkIndex {
       head: this.meta("cursor") ?? build?.head ?? null,
       asOf: asOf ? new Date(asOf).toISOString() : null,
       building: build !== null,
-      problem: (this.meta("problem") as RepositoryProblem | null) ?? null,
+      version: this.metaNumber("version"),
+      ...this.problemNow(),
     };
+  }
+
+  /** Until when GitHub asked us to wait (core requests), from storage: it outlives the client. */
+  private pausedUntil(): number {
+    const until = this.metaNumber("pause_until");
+    return until > this.now() ? until : 0;
   }
 
   // ------------------------------------------------------------------ one at a time
@@ -227,8 +318,8 @@ export class WorkIndex {
     this.setMeta("read_at", now);
     if (!this.repo()) return;
     const seen = Math.max(this.metaNumber("as_of"), this.metaNumber("tried_at"));
-    if (now - seen > LOOK_AFTER_MS || this.reparsing()) this.deps.waitUntil(this.kick());
-    this.deps.waitUntil(this.deps.arm(now + ALARM_EVERY_MS));
+    if (now - seen > LOOK_AFTER_MS || this.reparsing()) this.deps.scheduler.waitUntil(this.kick());
+    this.deps.scheduler.waitUntil(this.deps.scheduler.arm(now + ALARM_EVERY_MS));
   }
 
   // ------------------------------------------------------------------ RPC
@@ -241,28 +332,38 @@ export class WorkIndex {
   async poke(accountId: string): Promise<void> {
     this.bind(accountId);
     if (!this.repo()) return;
-    this.deps.waitUntil(this.kick());
+    this.deps.scheduler.waitUntil(this.kick());
   }
 
+  /** The open list's stamp, for its ETag: SQL only. A read like the others (it may look behind). */
+  async stamp(accountId: string): Promise<OpenStamp> {
+    this.bind(accountId);
+    this.noteRead();
+    const { head, asOf, version } = this.readState();
+    return { head, asOf, version };
+  }
+
+  /**
+   * Checks the choice against GitHub with a fresh client (a stored problem or pause plays no part),
+   * then stores it. The owner must be the installation's account.
+   */
   async setRepository(accountId: string, choice: RepositoryChoice, _by: WorkActor): Promise<WorkWrite<Repository>> {
     this.bind(accountId);
     return this.exclusive(async () => {
-      const trial = new WorkGitHub({
-        repo: { installationId: choice.installationId, owner: choice.owner, name: choice.name, branch: choice.branch ?? "main" },
-        account: this.deps.account(accountId),
-        now: this.now,
-        ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
-      });
+      const trial = this.newClient({ installationId: choice.installationId, owner: choice.owner, name: choice.name, branch: choice.branch ?? "main" }, accountId);
       let repo: StoredRepo;
       try {
+        const login = await trial.accountLogin();
+        if (login.toLowerCase() !== choice.owner.toLowerCase()) {
+          return { ok: false, status: 400, code: "invalid_request", message: `The installation is on the GitHub account ${login}; owner must be ${login}.`, field: "owner", reason: "owner_mismatch" };
+        }
         const found = await trial.repository();
-        repo = { installationId: choice.installationId, owner: found.owner, name: found.name, branch: choice.branch ?? found.defaultBranch };
-        const checked = new WorkGitHub({ repo, account: this.deps.account(accountId), now: this.now, ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}) });
-        await checked.head();
+        repo = { installationId: choice.installationId, owner: found.owner, name: found.name, branch: choice.branch ?? found.defaultBranch, ...(found.id !== null ? { id: found.id } : {}) };
+        await this.newClient(repo, accountId).head();
       } catch (error) {
         if (error instanceof GitHubGone) {
           const field = error.problem === "branch_not_found" ? "branch" : error.problem === "repository_not_found" ? "name" : "installationId";
-          return { ok: false, status: 400, code: "invalid_request", message: refusal(error.problem), field, reason: error.problem };
+          return { ok: false, status: 400, code: "invalid_request", message: error.message, field, reason: error.problem };
         }
         const retryAfterMs = error instanceof GitHubPaused ? Math.max(1000, error.until - this.now()) : 5_000;
         return { ok: false, status: 503, code: "unavailable", message: "GitHub could not be reached. Try again shortly.", retryAfterMs };
@@ -271,19 +372,21 @@ export class WorkIndex {
       const same =
         current !== null &&
         current.installationId === repo.installationId &&
-        current.owner.toLowerCase() === repo.owner.toLowerCase() &&
-        current.name.toLowerCase() === repo.name.toLowerCase() &&
-        current.branch === repo.branch;
-      this.deps.transaction(() => {
+        current.branch === repo.branch &&
+        (current.id !== undefined && repo.id !== undefined
+          ? current.id === repo.id
+          : current.owner.toLowerCase() === repo.owner.toLowerCase() && current.name.toLowerCase() === repo.name.toLowerCase());
+      this.store.transaction(() => {
         if (!same) {
-          for (const table of ["items", "files", "links", "pulls"]) this.deps.sql.exec(`DELETE FROM ${table}`);
-          for (const k of ["cursor", "build", "walk", "head_etag", "as_of", "tried_at", "pulls_at", "pause_until"]) this.setMeta(k, null);
+          for (const table of TABLES) this.store.exec(`DELETE FROM ${table}`);
+          for (const k of ["cursor", "build", "walk", "dirs", "head_etag", "as_of", "tried_at", "pulls_at", "pause_until", "pulls_pause_until"]) this.setMeta(k, null);
         }
         this.setMeta("repo", JSON.stringify(repo));
-        this.setMeta("problem", null);
+        this.clearProblem();
+        this.bump();
       });
       this.github = null;
-      this.deps.waitUntil(this.kick());
+      this.deps.scheduler.waitUntil(this.kick());
       return { ok: true, value: this.repository()! };
     });
   }
@@ -293,24 +396,22 @@ export class WorkIndex {
     this.noteRead();
     const repository = this.repository();
     if (query.stage === "open") {
-      const rows = this.deps.sql.exec<ItemRow & Row>("SELECT * FROM items WHERE path LIKE 'work/%' ORDER BY number").toArray();
+      const rows = this.store.exec<ItemRow & Row>(`SELECT ${ROW_COLUMNS} FROM items WHERE stage = 'open' ORDER BY number`);
       return { ok: true, ...this.readState(), repository, items: this.indexed(rows), nextCursor: null };
     }
     let before = Number.MAX_SAFE_INTEGER;
     if (query.cursor !== undefined) {
-      const n = decodeCursor(query.cursor, "n");
-      if (n === null) return { ok: false, error: "invalid_cursor" };
+      const n = decodeCursor(query.cursor)?.n;
+      if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) return { ok: false, error: "invalid_cursor" };
       before = n;
     }
     const limit = Math.min(Math.max(query.limit ?? CLOSED_LIMIT_DEFAULT, 1), CLOSED_LIMIT_MAX);
-    const select = () =>
-      this.deps.sql.exec<ItemRow & Row>("SELECT * FROM items WHERE path LIKE 'done/%' AND number < ? ORDER BY number DESC LIMIT ?", before, limit + 1).toArray();
+    const select = () => this.store.exec<ItemRow & Row>(`SELECT ${ROW_COLUMNS} FROM items WHERE stage = 'closed' AND number < ? ORDER BY number DESC LIMIT ?`, before, limit + 1);
     let rows = select();
     const pending = rows.slice(0, limit).filter((r) => r.parser === 0);
-    if (pending.length) {
-      await this.fillLater(pending);
-      rows = select();
-    }
+    // Bodies not read yet are read now, for at most READ_WAIT_MS; the page then shows what it has.
+    if (pending.length && (await within(this.clock, READ_WAIT_MS, this.fillLater(pending).then(() => true), () => false))) rows = select();
+    else if (pending.length) rows = select();
     const page = rows.slice(0, limit);
     const nextCursor = rows.length > limit ? encodeCursor({ n: page[page.length - 1]!.number }) : null;
     return { ok: true, ...this.readState(), repository, items: this.indexed(page), nextCursor };
@@ -319,95 +420,173 @@ export class WorkIndex {
   async item(accountId: string, number: number): Promise<ItemResult> {
     this.bind(accountId);
     this.noteRead();
-    const select = () => this.deps.sql.exec<ItemRow & Row>("SELECT * FROM items WHERE number = ?", number).toArray()[0];
+    const select = () => this.store.exec<ItemRow & { body: string } & Row>(`SELECT ${ROW_COLUMNS}, body FROM items WHERE number = ?`, number)[0];
     let row = select();
     if (row && row.parser === 0) {
-      await this.fillLater([row]);
+      // Read now, within READ_WAIT_MS; else the caller is told to come back.
+      await within(this.clock, READ_WAIT_MS, this.fillLater([row]), () => undefined);
       row = select();
+      if (row && row.parser === 0) return { ok: false, error: "unavailable", retryAfterMs: Math.max(1000, this.pausedUntil() - this.now(), 5_000) };
     }
-    return { ...this.readState(), repository: this.repository(), item: row ? this.indexed([row])[0]! : null, body: row && row.parser > 0 ? row.body : null };
+    return { ok: true, ...this.readState(), repository: this.repository(), item: row ? this.indexed([row])[0]! : null, body: row ? row.body : null };
   }
 
+  /**
+   * An item's revisions, newest first, across every path it has had. From the walk's revisions
+   * when the walk is done; until then those and GitHub's commits of each path, within READ_WAIT_MS.
+   */
   async history(accountId: string, number: number, cursor?: string): Promise<HistoryResult> {
     this.bind(accountId);
     this.noteRead();
-    const row = this.deps.sql.exec<{ path: string }>("SELECT path FROM items WHERE number = ?", number).toArray()[0];
+    const row = this.store.exec<{ path: string }>("SELECT path FROM items WHERE number = ?", number)[0];
     if (!row) return { ok: false, error: "item_not_found" };
-    let page = 1;
+    let after: { at: string; sha: string } | null = null;
     if (cursor !== undefined) {
-      const p = decodeCursor(cursor, "p");
-      if (p === null || p < 1) return { ok: false, error: "invalid_cursor" };
-      page = p;
+      const c = decodeCursor(cursor);
+      if (!c || typeof c.a !== "string" || typeof c.s !== "string" || !/^[0-9a-f]{40}$/.test(c.s)) return { ok: false, error: "invalid_cursor" };
+      after = { at: c.a, sha: c.s };
     }
-    const gh = this.client();
-    const head = this.readState().head;
-    const repo = this.repo();
-    if (!gh || !head || !repo) return { ok: false, error: "unavailable", retryAfterMs: 5_000 };
-    const file = row.path.slice(row.path.indexOf("/") + 1);
-    try {
-      const lists = await Promise.all(["work", "done"].map((dir) => gh.commits({ sha: head, path: `${dir}/${file}`, page, perPage: HISTORY_PAGE })));
-      const seen = new Set<string>();
-      const revisions: Revision[] = [];
-      for (const c of lists.flat().sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))) {
-        if (seen.has(c.sha)) continue;
-        seen.add(c.sha);
-        revisions.push({
-          sha: c.sha,
-          url: `https://github.com/${repo.owner}/${repo.name}/commit/${c.sha}`,
-          at: c.at,
-          authorName: c.authorName,
-          summary: c.message.split(/\r?\n/, 1)[0]!.slice(0, 200),
-          sessionId: sessionTrailers(c.message)[0] ?? null,
-        });
+    const repo = this.repo()!;
+    const stored = this.store.exec<{ sha: string; at: string; author_name: string; summary: string; session_id: string | null } & Row>(
+      `SELECT sha, at, MIN(author_name) AS author_name, MIN(summary) AS summary, MIN(session_id) AS session_id FROM revisions
+       WHERE number = ? ${after ? "AND (at < ? OR (at = ? AND sha < ?))" : ""} GROUP BY sha, at ORDER BY at DESC, sha DESC LIMIT ?`,
+      number,
+      ...(after ? [after.at, after.at, after.sha] : []),
+      HISTORY_PAGE + 1,
+    );
+    const found = new Map<string, Revision>();
+    for (const r of stored) found.set(r.sha, { sha: r.sha, url: commitUrl(repo, r.sha), at: r.at, authorName: r.author_name, summary: r.summary, sessionId: r.session_id });
+    let more = stored.length > HISTORY_PAGE;
+
+    if (!this.walkDone()) {
+      const gh = this.client();
+      const head = this.readState().head;
+      if (!gh || !head || this.pausedUntil()) return { ok: false, error: "unavailable", retryAfterMs: Math.max(1000, this.pausedUntil() - this.now(), 5_000) };
+      const paths = this.pathsOf(number, row.path);
+      const fetched = within(
+        this.clock,
+        READ_WAIT_MS,
+        Promise.all(paths.map((path) => gh.commits({ sha: head, path, page: 1, perPage: HISTORY_PAGE + 1, ...(after ? { until: after.at } : {}) }))).then((lists) => lists as CommitInfo[][] | null),
+        () => null,
+      ).catch((error: unknown) => {
+        if (error instanceof GitHubGone || error instanceof GitHubPaused || error instanceof GitHubUnavailable) return null;
+        throw error;
+      });
+      const lists = await fetched;
+      if (!lists) return { ok: false, error: "unavailable", retryAfterMs: Math.max(1000, this.pausedUntil() - this.now(), 5_000) };
+      for (const list of lists) {
+        if (list.length > HISTORY_PAGE) more = true;
+        for (const c of list) {
+          const at = c.at ?? "";
+          if (after && !(at < after.at || (at === after.at && c.sha < after.sha))) continue;
+          if (found.has(c.sha)) continue;
+          const trailers = sessionTrailers(c.message);
+          found.set(c.sha, { sha: c.sha, url: commitUrl(repo, c.sha), at, authorName: c.authorName, summary: summaryOf(c.message), sessionId: trailers[0] ?? null });
+        }
       }
-      const more = lists.some((l) => l.length >= HISTORY_PAGE);
-      return { ok: true, ...this.readState(), revisions, nextCursor: more ? encodeCursor({ p: page + 1 }) : null };
-    } catch (error) {
-      if (error instanceof GitHubGone) this.problem(error.problem);
-      const retryAfterMs = error instanceof GitHubPaused ? Math.max(1000, error.until - this.now()) : 5_000;
-      return { ok: false, error: "unavailable", retryAfterMs };
     }
+    const all = [...found.values()].sort((a, b) => (a.at !== b.at ? (a.at < b.at ? 1 : -1) : a.sha < b.sha ? 1 : -1));
+    const revisions = all.slice(0, HISTORY_PAGE);
+    if (all.length > HISTORY_PAGE) more = true;
+    const last = revisions[revisions.length - 1];
+    return { ok: true, ...this.readState(), revisions, nextCursor: more && last ? encodeCursor({ a: last.at, s: last.sha }) : null };
   }
 
-  /** The alarm: continue a build, look while there are readers, walk. Returns when to come back. */
+  /** Every path the item has had: its files now, the paths of its revisions, its name in both folders. */
+  private pathsOf(number: number, path: string): string[] {
+    const paths = new Set<string>();
+    for (const r of this.store.exec<{ path: string }>("SELECT path FROM files WHERE number = ? UNION SELECT path FROM revisions WHERE number = ?", number, number)) paths.add(r.path);
+    const file = path.slice(path.indexOf("/") + 1);
+    for (const dir of DIRS) paths.add(`${dir}/${file}`);
+    return [...paths].sort();
+  }
+
+  /** The alarm: continue a build, look while there are readers or a problem is due, walk. Returns when to come back. */
   async alarm(): Promise<number | null> {
     if (!this.repo()) return null;
     await this.exclusive(async () => {
       const now = this.now();
       this.reparseBatch();
+      if (this.meta("problem") !== null) {
+        await this.look();
+        return;
+      }
       if (this.meta("build") !== null) {
         if (now - this.metaNumber("as_of") >= ALARM_EVERY_MS) await this.look();
         else await this.guard(() => this.fillOpen());
         return;
       }
       if (now - this.metaNumber("read_at") < READS_WINDOW_MS) await this.look();
-      else await this.guard(() => this.walkTick());
+      else await this.guard(() => this.walkStep(WALK_PAGES_PER_TICK, WALK_DETAILS_PER_TICK));
     });
     const now = this.now();
-    const pausedUntil = this.metaNumber("pause_until");
     let next: number | null = null;
-    if (this.meta("build") !== null || this.reparsing()) next = now + BUILD_STEP_MS;
-    else if (now - this.metaNumber("read_at") < READS_WINDOW_MS || this.meta("walk") !== null) next = now + ALARM_EVERY_MS;
-    if (next !== null && this.meta("problem") !== null && now - this.metaNumber("read_at") >= READS_WINDOW_MS) next = null;
-    if (next !== null && pausedUntil > next) next = pausedUntil;
+    if (this.meta("problem") !== null) next = Math.max(this.metaNumber("problem_retry_at"), now + BUILD_STEP_MS);
+    else if (this.meta("build") !== null || this.reparsing()) next = now + BUILD_STEP_MS;
+    else if (now - this.metaNumber("read_at") < READS_WINDOW_MS || !this.walkDone()) next = now + ALARM_EVERY_MS;
+    if (next !== null && this.pausedUntil() > next) next = this.pausedUntil();
     return next;
   }
 
   // ------------------------------------------------------------------ looking
 
-  /** Runs `fn` with GitHub failures recorded: a pause until it ends, a permanent failure as the problem. */
+  /**
+   * Runs `fn` with GitHub failures recorded: a pause until it ends (per resource), a permanent
+   * failure as the problem. A repository that is not found is looked for by its id first: renamed,
+   * it is followed and the next look carries on.
+   */
   private async guard(fn: () => Promise<void>): Promise<void> {
     try {
       await fn();
     } catch (error) {
-      if (error instanceof GitHubGone) this.problem(error.problem);
-      else if (error instanceof GitHubPaused) this.setMeta("pause_until", error.until);
-      else if (!(error instanceof GitHubUnavailable)) throw error;
+      if (error instanceof GitHubGone) {
+        if (error.problem === "repository_not_found" && (await this.relocate())) return;
+        this.setProblem(error.problem, error.message);
+      } else if (error instanceof GitHubPaused) {
+        this.setMeta(error.resource === "graphql" ? "pulls_pause_until" : "pause_until", error.until);
+      } else if (!(error instanceof GitHubUnavailable)) throw error;
     }
   }
 
-  private problem(problem: RepositoryProblem): void {
-    this.setMeta("problem", problem);
+  private setProblem(problem: RepositoryProblem, message: string): void {
+    const tries = this.meta("problem") !== null ? this.metaNumber("problem_tries") + 1 : 0;
+    this.store.transaction(() => {
+      if (this.meta("problem") !== problem || this.meta("problem_message") !== message) this.bump();
+      this.setMeta("problem", problem);
+      this.setMeta("problem_message", message);
+      this.setMeta("problem_tries", tries);
+      this.setMeta("problem_retry_at", this.now() + Math.min(PROBLEM_RETRY_MS * 2 ** tries, PROBLEM_RETRY_MAX_MS));
+    });
+  }
+
+  private clearProblem(): void {
+    if (this.meta("problem") === null) return;
+    for (const k of ["problem", "problem_message", "problem_tries", "problem_retry_at"]) this.setMeta(k, null);
+    this.bump();
+  }
+
+  /** The stored repository not found by name: found by id under another name, it is stored and true. */
+  private async relocate(): Promise<boolean> {
+    const repo = this.repo();
+    const gh = this.client();
+    if (!repo?.id || !gh) return false;
+    try {
+      const found = await gh.locate(repo.id);
+      if (!found || (found.owner === repo.owner && found.name === repo.name)) return false;
+      this.follow(repo, found);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The repository is now called `found`: store it; the projection stays (it is the same repository). */
+  private follow(repo: StoredRepo, found: { owner: string; name: string }): void {
+    this.store.transaction(() => {
+      this.setMeta("repo", JSON.stringify({ ...repo, owner: found.owner, name: found.name }));
+      this.bump();
+    });
+    this.github = null;
   }
 
   /** Checks the head and moves the projection to it; then one step of background work. */
@@ -415,33 +594,46 @@ export class WorkIndex {
     this.reparseBatch();
     const gh = this.client();
     if (!gh) return;
-    if (this.metaNumber("pause_until") > this.now()) return;
+    if (this.pausedUntil()) return;
+    if (this.meta("problem") !== null && this.metaNumber("problem_retry_at") > this.now()) return;
     this.setMeta("tried_at", this.now());
     await this.guard(async () => {
       const etag = this.meta("head_etag") ?? undefined;
       const head = await gh.head(etag);
-      this.setMeta("problem", null);
+      this.store.transaction(() => this.clearProblem());
+      if (gh.moved) {
+        const found = await gh.repository();
+        if (found.owner !== gh.repo.owner || found.name !== gh.repo.name) this.follow(this.repo()!, found);
+        gh.moved = false;
+      }
+      // One piece of GitHub work per look: a build or an advance, else a batch of the build, else a step of the walk.
+      let moved = false;
       if (head !== "unchanged") {
+        // Background work spends the organization's shared quota only when there is spare.
+        if (!gh.spare()) return;
         const cursor = this.meta("cursor");
-        const build = this.metaJson<{ head: string }>("build");
-        if (build) {
+        if (this.meta("build") !== null) {
           // A build in progress finishes at its head; the next look advances from there.
         } else if (cursor === null) {
           await this.build(gh, head.sha);
+          moved = true;
         } else if (cursor !== head.sha) {
-          const result = await this.advance(gh, cursor, head.sha);
-          if (result === "rebuild") await this.build(gh, head.sha);
+          if ((await this.advance(gh, cursor, head.sha)) === "rebuild") await this.build(gh, head.sha);
+          moved = true;
         }
         if (this.meta("cursor") === head.sha && head.etag) this.setMeta("head_etag", head.etag);
       }
       this.setMeta("as_of", this.now());
       if (this.meta("build") !== null) {
         await this.fillOpen();
-        if (this.meta("build") !== null) this.deps.waitUntil(this.deps.arm(this.now() + BUILD_STEP_MS));
-      } else if (this.meta("walk") !== null) {
-        await this.walkTick();
+        if (this.meta("build") !== null) this.deps.scheduler.waitUntil(this.deps.scheduler.arm(this.now() + BUILD_STEP_MS));
+      } else if (!moved && !this.walkDone()) {
+        await this.walkStep(1, WALK_DETAILS_PER_TICK);
       }
-      await this.refreshPulls(gh);
+    });
+    await this.guard(async () => {
+      const g = this.client();
+      if (g && this.meta("problem") === null) await this.refreshPulls(g);
     });
   }
 
@@ -452,192 +644,183 @@ export class WorkIndex {
     const root = await gh.tree(head);
     if (!root) throw new GitHubUnavailable(`GitHub has no tree for ${head}.`);
     const listing = new Map<string, { number: number; blob: string }>();
-    for (const dir of ["work", "done"] as const) {
+    const dirs: DirShas = { work: null, done: null };
+    for (const dir of DIRS) {
       const entry = root.entries.find((e) => e.name === dir && e.type === "tree");
       if (!entry) continue;
-      const tree = await gh.tree(entry.sha);
-      for (const e of tree?.entries ?? []) {
-        const path = `${dir}/${e.name}`;
-        const ip = e.type === "blob" ? itemPath(path) : null;
-        if (ip) listing.set(path, { number: ip.number, blob: e.sha });
-      }
+      dirs[dir] = entry.sha;
+      for (const [path, f] of await this.listDir(gh, dir, entry.sha)) listing.set(path, f);
     }
     const winners = pickWinners([...listing].map(([path, f]) => ({ path, ...f })));
-    const sql = this.deps.sql;
-    this.deps.transaction(() => {
-      sql.exec("DELETE FROM files");
-      for (const [path, f] of listing) sql.exec("INSERT INTO files (path, number, blob) VALUES (?, ?, ?)", path, f.number, f.blob);
-      const old = new Map(sql.exec<ItemRow & Row>("SELECT * FROM items").toArray().map((r) => [r.number, r]));
+    const store = this.store;
+    this.store.transaction(() => {
+      store.exec("DELETE FROM files");
+      for (const [path, f] of listing) store.exec("INSERT INTO files (path, number, blob) VALUES (?, ?, ?)", path, f.number, f.blob);
+      // The history may have been rewritten: what the walk learnt is learnt again from the new one.
+      // Links (the sessions that worked on an item) stay.
+      store.exec("DELETE FROM commits");
+      store.exec("DELETE FROM revisions");
+      const old = new Map(store.exec<{ number: number; path: string; blob: string; body: string; parser: number } & Row>("SELECT number, path, blob, body, parser FROM items").map((r) => [r.number, r]));
       for (const [number] of old) {
         if (!winners.has(number)) {
-          sql.exec("DELETE FROM items WHERE number = ?", number);
-          sql.exec("DELETE FROM links WHERE number = ?", number);
+          store.exec("DELETE FROM items WHERE number = ?", number);
+          store.exec("DELETE FROM links WHERE number = ?", number);
         }
       }
       for (const [number, w] of winners) {
         const ip = itemPath(w.path)!;
         const prev = old.get(number);
-        if (prev && prev.blob === w.blob) {
-          if (prev.path !== w.path) {
-            const moved = stageOf(prev.path) !== ip.stage;
-            sql.exec(
-              "UPDATE items SET path = ?, parsed = ?, closed_at = ?, closed_by = ? WHERE number = ?",
-              w.path,
-              prev.parser > 0 ? JSON.stringify(safeParse(ip, prev.body)) : JSON.stringify(pendingParse(ip)),
-              moved ? null : prev.closed_at,
-              moved ? null : prev.closed_by,
-              number,
-            );
-          }
-          continue;
-        }
-        if (prev) {
-          const moved = stageOf(prev.path) !== ip.stage;
-          sql.exec(
-            "UPDATE items SET path = ?, blob = ?, body = '', parsed = ?, parser = 0, updated_at = NULL, closed_at = ?, closed_by = ? WHERE number = ?",
-            w.path,
-            w.blob,
-            JSON.stringify(pendingParse(ip)),
-            moved ? null : prev.closed_at,
-            moved ? null : prev.closed_by,
-            number,
-          );
-        } else {
-          sql.exec("INSERT INTO items (number, path, blob, body, parsed, parser) VALUES (?, ?, ?, '', ?, 0)", number, w.path, w.blob, JSON.stringify(pendingParse(ip)));
-        }
+        const keep = prev && prev.blob === w.blob && prev.parser > 0;
+        store.exec(
+          `INSERT INTO items (number, path, stage, blob, body, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body, parsed = excluded.parsed,
+             parser = excluded.parser, author_name = NULL, author_email = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL, closed_by = NULL`,
+          number,
+          w.path,
+          ip.stage,
+          w.blob,
+          keep ? prev.body : "",
+          JSON.stringify(keep ? safeParse(ip, prev.body) : pendingParse(ip)),
+          keep ? PARSER_VERSION : 0,
+        );
       }
-      this.setMeta("cursor", null);
-      this.setMeta("head_etag", null);
-      this.setMeta("walk", null);
-      this.setMeta("build", JSON.stringify({ head }));
+      for (const k of ["cursor", "head_etag", "walk", "dirs"]) this.setMeta(k, null);
+      this.setMeta("build", JSON.stringify({ head, dirs }));
+      this.bump();
     });
   }
 
-  /** One batch of open items not read yet; the cursor is set when none is left. */
+  /** A folder's item files: path to number and blob. */
+  private async listDir(gh: WorkGitHub, dir: Dir, sha: string): Promise<Map<string, { number: number; blob: string }>> {
+    const out = new Map<string, { number: number; blob: string }>();
+    const tree = await gh.tree(sha);
+    if (!tree) throw new GitHubUnavailable(`GitHub has no tree ${sha}.`);
+    for (const e of tree.entries) {
+      const path = `${dir}/${e.name}`;
+      const ip = e.type === "blob" ? itemPath(path) : null;
+      if (ip) out.set(path, { number: ip.number, blob: e.sha });
+    }
+    return out;
+  }
+
+  /** One batch of open items not read yet; the cursor is set when none is left, and the walk starts. */
   private async fillOpen(): Promise<void> {
-    const build = this.metaJson<{ head: string }>("build");
+    const build = this.metaJson<{ head: string; dirs: DirShas }>("build");
     const gh = this.client();
-    if (!build || !gh) return;
-    const rows = this.deps.sql.exec<ItemRow & Row>("SELECT * FROM items WHERE parser = 0 AND path LIKE 'work/%' ORDER BY number LIMIT ?", FILL_BATCH).toArray();
-    await parallel(rows, (row) => this.fill(gh, row, build.head));
-    const left = this.deps.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM items WHERE parser = 0 AND path LIKE 'work/%'").toArray()[0]!.n;
+    if (!build || !gh || !gh.spare()) return;
+    const rows = this.store.exec<ItemRow & Row>(`SELECT ${ROW_COLUMNS} FROM items WHERE parser = 0 AND stage = 'open' ORDER BY number LIMIT ?`, FILL_BATCH);
+    await parallel(rows, (row) => this.fill(gh, row));
+    const left = this.store.exec<{ n: number }>("SELECT COUNT(*) AS n FROM items WHERE parser = 0 AND stage = 'open'")[0]!.n;
     if (left > 0) return;
-    this.deps.transaction(() => {
+    this.store.transaction(() => {
       this.setMeta("cursor", build.head);
+      this.setMeta("dirs", JSON.stringify(build.dirs));
       this.setMeta("build", null);
-      this.setMeta("walk", JSON.stringify({ head: build.head, dir: "work", page: 1, index: 0 } satisfies WalkState));
+      this.setMeta("walk", JSON.stringify({ tasks: DIRS.map((dir) => ({ dir, head: build.head, page: 1 })) } satisfies WalkState));
+      this.bump();
     });
   }
 
   /** Reads one row's body; written only if the row still has that blob. */
-  private async fill(gh: WorkGitHub, row: ItemRow, head: string | null): Promise<void> {
+  private async fill(gh: WorkGitHub, row: { number: number; path: string; blob: string }): Promise<void> {
     const ip = itemPath(row.path);
     if (!ip) return;
     const body = await gh.blob(row.blob);
-    let updatedAt = row.updated_at;
-    if (updatedAt === null && head !== null && stageOf(row.path) === "open") {
-      updatedAt = (await gh.commits({ sha: head, path: row.path, page: 1, perPage: 1 }))[0]?.at ?? null;
-    }
-    this.deps.sql.exec(
-      "UPDATE items SET body = ?, parsed = ?, parser = ?, updated_at = COALESCE(updated_at, ?) WHERE number = ? AND blob = ? AND path = ?",
-      body,
-      JSON.stringify(safeParse(ip, body)),
-      PARSER_VERSION,
-      updatedAt,
-      row.number,
-      row.blob,
-      row.path,
-    );
+    this.store.transaction(() => {
+      this.store.exec("UPDATE items SET body = ?, parsed = ?, parser = ? WHERE number = ? AND blob = ? AND path = ?", body, JSON.stringify(safeParse(ip, body)), PARSER_VERSION, row.number, row.blob, row.path);
+      this.bump();
+    });
   }
 
-  /** Closed items asked for before they were read: read them, waiting at most LAZY_WAIT_MS. */
-  private async fillLater(rows: ItemRow[]): Promise<void> {
+  /** Bodies asked for before they were read: read them (joining a read already running), within the quota. */
+  private fillLater(rows: { number: number; path: string; blob: string }[]): Promise<void> {
     const gh = this.client();
-    if (!gh || gh.paused()) return;
-    const todo = rows.filter((r) => !this.filling.has(r.number));
-    if (!todo.length) return;
-    for (const r of todo) this.filling.add(r.number);
-    const work = parallel(todo, (row) => this.guard(() => this.fill(gh, row, null))).finally(() => {
-      for (const r of todo) this.filling.delete(r.number);
-    });
-    this.deps.waitUntil(work);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([work, new Promise<void>((resolve) => (timer = setTimeout(resolve, LAZY_WAIT_MS)))]);
-    clearTimeout(timer);
+    if (!gh || this.pausedUntil() || !gh.spare()) return Promise.resolve();
+    const reads: Promise<void>[] = [];
+    const todo: typeof rows = [];
+    for (const r of rows) {
+      const running = this.filling.get(r.number);
+      if (running) reads.push(running);
+      else todo.push(r);
+    }
+    if (todo.length) {
+      const work = parallel(todo, (row) => this.guard(() => this.fill(gh, row)));
+      const done = work.finally(() => {
+        for (const r of todo) this.filling.delete(r.number);
+      });
+      for (const r of todo) this.filling.set(r.number, done);
+      this.deps.scheduler.waitUntil(done);
+      reads.push(done);
+    }
+    return Promise.all(reads).then(() => undefined);
   }
 
   // ------------------------------------------------------------------ advance
 
-  /** `base...head` applied in one transaction; "rebuild" when the head is not ahead of the cursor. */
+  /**
+   * From the cursor `base` to `head`: compare for ancestry (and its files when complete), else the
+   * folder trees; the changed blobs; one transaction. "rebuild" only when the head is not ahead.
+   */
   async advance(gh: WorkGitHub, base: string, head: string): Promise<"done" | "rebuild"> {
     const cmp = await gh.compare(base, head);
-    if (!cmp || cmp.status !== "ahead" || cmp.files.length >= COMPARE_FILES_MAX || cmp.totalCommits > cmp.commits.length) return "rebuild";
-    const commits = cmp.commits;
-    const newest = commits[commits.length - 1];
-    const isItemChange = (f: FileChange) => itemPath(f.filename) !== null || (f.previousFilename !== null && itemPath(f.previousFilename) !== null);
-    const changes = cmp.files.filter(isItemChange);
+    if (!cmp || (cmp.status !== "ahead" && cmp.status !== "identical")) return "rebuild";
 
-    // Which commit touched which file: the range's files for one commit; else per commit, for the
-    // commits with a trailer, and for all of them when an item was added or moved (authors, close dates).
-    const perCommit = new Map<string, FileChange[]>();
-    if (changes.length) {
-      if (commits.length === 1) perCommit.set(commits[0]!.sha, cmp.files);
-      else {
-        const moved = changes.some((f) => f.status === "added" || f.status === "renamed");
-        const wanted = commits.filter((c) => (moved && commits.length <= DETAIL_CAP) || sessionTrailers(c.message).length > 0).slice(-DETAIL_CAP);
-        for (const c of wanted) perCommit.set(c.sha, (await gh.commit(c.sha)).files);
+    // The item files that changed: path to its blob at the head, or null when it is gone.
+    const changes = new Map<string, string | null>();
+    const touchedDirs = new Set<Dir>();
+    let dirsNow: DirShas | null = null;
+    if (cmp.files.length < COMPARE_FILES_MAX) {
+      for (const f of cmp.files) {
+        for (const p of [f.filename, f.previousFilename]) {
+          const dir = p ? dirOf(p) : null;
+          if (dir) touchedDirs.add(dir);
+        }
+        if (f.status === "renamed" && f.previousFilename && itemPath(f.previousFilename)) changes.set(f.previousFilename, null);
+        if (itemPath(f.filename)) changes.set(f.filename, f.status === "removed" ? null : f.sha);
       }
-    }
-    const complete = perCommit.size === commits.length;
-
-    // Per new path: the newest commit that touched it, the one that added it, the one that closed it.
-    const touch = new Map<string, { last?: CommitInfo; added?: CommitInfo; closed?: CommitInfo }>();
-    for (const c of commits) {
-      for (const f of perCommit.get(c.sha) ?? []) {
-        const t = touch.get(f.filename) ?? {};
-        t.last = c;
-        const from = f.previousFilename ? itemPath(f.previousFilename) : null;
-        if (f.status === "added" || (f.status === "renamed" && !from)) t.added ??= c;
-        if (f.filename.startsWith("done/") && (f.status === "added" || (f.status === "renamed" && from?.stage !== "closed"))) t.closed = c;
-        touch.set(f.filename, t);
+    } else {
+      // Compare's file list may be cut: the folders' trees, only those whose sha moved.
+      const root = await gh.tree(head);
+      if (!root) throw new GitHubUnavailable(`GitHub has no tree for ${head}.`);
+      const stored = this.metaJson<DirShas>("dirs");
+      dirsNow = { work: null, done: null };
+      for (const dir of DIRS) {
+        const entry = root.entries.find((e) => e.name === dir && e.type === "tree");
+        dirsNow[dir] = entry?.sha ?? null;
+        if (stored && stored[dir] === dirsNow[dir]) continue;
+        touchedDirs.add(dir);
+        const now = entry ? await this.listDir(gh, dir, entry.sha) : new Map<string, { number: number; blob: string }>();
+        const before = new Map(this.store.exec<{ path: string; blob: string } & Row>("SELECT path, blob FROM files WHERE path LIKE ?", `${dir}/%`).map((r) => [r.path, r.blob]));
+        for (const path of before.keys()) if (!now.has(path)) changes.set(path, null);
+        for (const [path, f] of now) if (before.get(path) !== f.blob) changes.set(path, f.blob);
       }
     }
 
     // The files of the affected numbers after the range, and the row each number gets.
     const numbers = new Set<number>();
-    for (const f of changes) {
-      for (const p of [f.filename, f.previousFilename]) {
-        const ip = p ? itemPath(p) : null;
-        if (ip) numbers.add(ip.number);
-      }
-    }
+    for (const path of changes.keys()) numbers.add(itemPath(path)!.number);
     const files = new Map<string, { number: number; blob: string }>();
-    for (const n of numbers) {
-      for (const r of this.deps.sql.exec<{ path: string; blob: string } & Row>("SELECT path, blob FROM files WHERE number = ?", n).toArray()) files.set(r.path, { number: n, blob: r.blob });
+    for (const part of chunks([...numbers])) {
+      for (const r of this.store.exec<{ path: string; number: number; blob: string } & Row>(`SELECT path, number, blob FROM files WHERE number IN (${marks(part)})`, ...part)) {
+        files.set(r.path, { number: r.number, blob: r.blob });
+      }
     }
-    const removed = new Set<string>();
-    for (const f of changes) {
-      if (f.status === "removed" || f.status === "renamed") {
-        const gone = f.status === "removed" ? f.filename : f.previousFilename!;
-        files.delete(gone);
-        removed.add(gone);
-      }
-      if (f.status !== "removed") {
-        const ip = itemPath(f.filename);
-        if (ip && f.sha) {
-          files.set(f.filename, { number: ip.number, blob: f.sha });
-          removed.delete(f.filename);
-        }
-      }
+    for (const [path, blob] of changes) {
+      if (blob === null) files.delete(path);
+      else files.set(path, { number: itemPath(path)!.number, blob });
     }
     const winners = pickWinners([...files].map(([path, f]) => ({ path, ...f })));
-    const old = new Map<number, ItemRow>();
-    for (const n of numbers) {
-      const r = this.deps.sql.exec<ItemRow & Row>("SELECT * FROM items WHERE number = ?", n).toArray()[0];
-      if (r) old.set(n, r);
+    const old = new Map<number, { number: number; path: string; stage: string; blob: string; body: string; parser: number } & Row>();
+    for (const part of chunks([...numbers])) {
+      for (const r of this.store.exec<{ number: number; path: string; stage: string; blob: string; body: string; parser: number } & Row>(
+        `SELECT number, path, stage, blob, body, parser FROM items WHERE number IN (${marks(part)})`,
+        ...part,
+      )) {
+        old.set(r.number, r);
+      }
     }
 
-    // Bodies to read, before the transaction.
+    // Bodies to read, before the transaction: open items now, closed ones only when few.
     const needed = [...winners.values()].filter((w) => {
       const prev = old.get(w.number);
       return !prev || prev.blob !== w.blob || prev.parser === 0;
@@ -648,88 +831,68 @@ export class WorkIndex {
       bodies.set(w.blob, await gh.blob(w.blob));
     });
 
-    // Links: each trailer commit's item files.
-    const links: { number: number; sessionId: string; at: string }[] = [];
-    for (const c of commits) {
-      const trailers = sessionTrailers(c.message);
-      if (!trailers.length) continue;
-      for (const f of perCommit.get(c.sha) ?? []) {
-        const ip = itemPath(f.filename) ?? (f.previousFilename ? itemPath(f.previousFilename) : null);
-        if (!ip || !winners.has(ip.number)) continue;
-        for (const sessionId of trailers) links.push({ number: ip.number, sessionId, at: c.at });
-      }
-    }
+    // A range of one commit with every file listed: its details are compare's.
+    const only = cmp.totalCommits === 1 && cmp.commits.length === 1 && cmp.files.length < COMPARE_FILES_MAX ? cmp.commits[0]! : null;
 
-    const sql = this.deps.sql;
-    this.deps.transaction(() => {
-      for (const p of removed) sql.exec("DELETE FROM files WHERE path = ?", p);
-      for (const f of changes) {
-        const entry = files.get(f.filename);
-        if (entry) sql.exec("INSERT INTO files (path, number, blob) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET number = excluded.number, blob = excluded.blob", f.filename, entry.number, entry.blob);
+    const store = this.store;
+    this.store.transaction(() => {
+      for (const [path, blob] of changes) {
+        if (blob === null) store.exec("DELETE FROM files WHERE path = ?", path);
+        else store.exec("INSERT INTO files (path, number, blob) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET number = excluded.number, blob = excluded.blob", path, itemPath(path)!.number, blob);
       }
       for (const n of numbers) {
         const w = winners.get(n);
         const prev = old.get(n);
         if (!w) {
-          sql.exec("DELETE FROM items WHERE number = ?", n);
-          sql.exec("DELETE FROM links WHERE number = ?", n);
+          store.exec("DELETE FROM items WHERE number = ?", n);
+          store.exec("DELETE FROM links WHERE number = ?", n);
           continue;
         }
         const ip = itemPath(w.path)!;
-        const t = touch.get(w.path) ?? {};
-        const changed = !prev || prev.blob !== w.blob || prev.path !== w.path;
         const body = bodies.get(w.blob) ?? (prev && prev.blob === w.blob && prev.parser > 0 ? prev.body : null);
         const parsed = body !== null ? safeParse(ip, body) : pendingParse(ip);
-        const last = t.last ?? (complete ? undefined : newest);
-        const updatedAt = changed ? (last?.at ?? prev?.updated_at ?? null) : (prev?.updated_at ?? null);
-        let authorName = prev?.author_name ?? null;
-        let authorEmail = prev?.author_email ?? null;
-        let createdAt = prev?.created_at ?? null;
-        if (!prev && t.added) {
-          authorName = t.added.authorName;
-          authorEmail = t.added.authorEmail;
-          createdAt = t.added.at;
-        }
-        let closedAt = prev?.closed_at ?? null;
-        let closedBy = prev?.closed_by ?? null;
-        const wasOpen = !prev || stageOf(prev.path) === "open";
-        if (ip.stage === "open") {
-          closedAt = null;
-          closedBy = null;
-        } else if (wasOpen) {
-          const closer = t.closed ?? (complete ? t.last : newest);
-          closedAt = closer?.at ?? null;
-          closedBy = closer ? closerName(closer) : null;
-        }
-        sql.exec(
-          `INSERT INTO items (number, path, blob, body, parsed, parser, author_name, author_email, created_at, updated_at, closed_at, closed_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (number) DO UPDATE SET path = excluded.path, blob = excluded.blob, body = excluded.body, parsed = excluded.parsed,
-             parser = excluded.parser, author_name = excluded.author_name, author_email = excluded.author_email, created_at = excluded.created_at,
-             updated_at = excluded.updated_at, closed_at = excluded.closed_at, closed_by = excluded.closed_by`,
+        const changed = !prev || prev.blob !== w.blob || prev.path !== w.path;
+        const moved = !prev || prev.stage !== ip.stage;
+        // What changed is not dated yet; the walk dates it from the commit that did it.
+        store.exec(
+          `INSERT INTO items (number, path, stage, blob, body, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body,
+             parsed = excluded.parsed, parser = excluded.parser,
+             updated_at = CASE WHEN ? THEN NULL ELSE updated_at END,
+             closed_at = CASE WHEN ? THEN NULL ELSE closed_at END,
+             closed_by = CASE WHEN ? THEN NULL ELSE closed_by END`,
           n,
           w.path,
+          ip.stage,
           w.blob,
           body ?? "",
           JSON.stringify(parsed),
           body !== null ? PARSER_VERSION : 0,
-          authorName,
-          authorEmail,
-          createdAt,
-          updatedAt,
-          closedAt,
-          closedBy,
+          changed ? 1 : 0,
+          moved ? 1 : 0,
+          moved ? 1 : 0,
         );
       }
-      for (const l of links) this.link(l.number, l.sessionId, l.at);
+      const walk = this.walkState();
+      if (only) {
+        this.apply(only, cmp.files);
+        this.store.exec("UPDATE commits SET listed = ? WHERE sha = ?", [...touchedDirs].map((d) => `,${d},`).join(""), only.sha);
+      } else {
+        for (const dir of touchedDirs) addTask(walk, dir, head);
+      }
+      this.setMeta("walk", JSON.stringify(walk));
+      this.setMeta("dirs", dirsNow ? JSON.stringify(dirsNow) : null);
       this.setMeta("cursor", head);
       this.setMeta("as_of", this.now());
+      this.bump();
     });
+    // The range's commits: a page of each folder and a few details now, the rest from the alarm.
+    if (!only && touchedDirs.size) await this.walkStep(touchedDirs.size, ADVANCE_DETAILS);
     return "done";
   }
 
   private link(number: number, sessionId: string, at: string): void {
-    this.deps.sql.exec(
+    this.store.exec(
       "INSERT INTO links (number, session_id, last_at) VALUES (?, ?, ?) ON CONFLICT (number, session_id) DO UPDATE SET last_at = MAX(last_at, excluded.last_at)",
       number,
       sessionId,
@@ -739,82 +902,164 @@ export class WorkIndex {
 
   // ------------------------------------------------------------------ walk
 
+  private walkState(): WalkState {
+    return this.metaJson<WalkState>("walk") ?? { tasks: [] };
+  }
+
+  /** Nothing left to list or detail: the revisions are the whole history. */
+  private walkDone(): boolean {
+    if (this.meta("cursor") === null) return false;
+    if (this.walkState().tasks.length) return false;
+    return this.store.exec<{ n: number }>("SELECT COUNT(*) AS n FROM commits WHERE detailed = 0")[0]!.n === 0;
+  }
+
   /**
-   * A few commits of the walk over `work/` then `done/`, newest first, within the quota: links,
-   * authors (the commit that added the file), close dates and update dates the build could not know.
+   * Up to `pages` pages of folder commits, then up to `details` commits' files, newest first,
+   * while the quota is spare. Each commit's files are applied in one transaction.
    */
-  private async walkTick(): Promise<void> {
-    const walk = this.metaJson<WalkState>("walk");
+  private async walkStep(pages: number, details: number): Promise<void> {
     const gh = this.client();
-    if (!walk || !gh || !gh.spare()) return;
-    const page = await gh.commits({ sha: walk.head, path: walk.dir, page: walk.page, perPage: WALK_PAGE });
-    const slice = page.slice(walk.index, walk.index + WALK_COMMITS_PER_TICK);
-    const details: { commit: CommitInfo; files: FileChange[] }[] = [];
-    for (const c of slice) {
-      if (!gh.spare()) break;
-      details.push({ commit: c, files: (await gh.commit(c.sha)).files });
+    if (!gh) return;
+    for (let i = 0; i < pages && gh.spare(); i++) {
+      const walk = this.walkState();
+      const task = walk.tasks[0];
+      if (!task) break;
+      const list = await gh.commits({ sha: task.head, path: task.dir, page: task.page, perPage: PER_PAGE_MAX });
+      this.store.transaction(() => {
+        const now = this.walkState();
+        const t = now.tasks.find((x) => x.dir === task.dir && x.head === task.head && x.page === task.page);
+        if (!t) return;
+        const mark = `,${t.dir},`;
+        let done = list.length < PER_PAGE_MAX;
+        for (const c of list) {
+          const known = this.store.exec<{ listed: string }>("SELECT listed FROM commits WHERE sha = ?", c.sha)[0];
+          if (known?.listed.includes(mark)) {
+            done = true;
+            break;
+          }
+          this.store.exec(
+            `INSERT INTO commits (sha, at, author_name, author_email, message, detailed, listed) VALUES (?, ?, ?, ?, ?, 0, ?)
+             ON CONFLICT (sha) DO UPDATE SET listed = listed || excluded.listed`,
+            c.sha,
+            c.at,
+            c.authorName.slice(0, 200),
+            c.authorEmail,
+            c.message.slice(0, 10_000),
+            mark,
+          );
+        }
+        if (done) now.tasks.splice(now.tasks.indexOf(t), 1);
+        else t.page += 1;
+        this.setMeta("walk", JSON.stringify(now));
+      });
     }
-    const sql = this.deps.sql;
-    this.deps.transaction(() => {
-      for (const { commit, files } of details) {
-        const trailers = sessionTrailers(commit.message);
-        for (const f of files) {
-          const ip = itemPath(f.filename);
-          const from = f.previousFilename ? itemPath(f.previousFilename) : null;
-          const number = ip?.number ?? from?.number;
-          if (number === undefined) continue;
-          const row = sql.exec<ItemRow & Row>("SELECT * FROM items WHERE number = ?", number).toArray()[0];
-          if (!row) continue;
-          for (const sessionId of trailers) this.link(number, sessionId, commit.at);
-          if (ip && (f.status === "added" || (f.status === "renamed" && !from)) && (row.created_at === null || commit.at < row.created_at)) {
-            sql.exec("UPDATE items SET created_at = ?, author_name = ?, author_email = ? WHERE number = ?", commit.at, commit.authorName, commit.authorEmail, number);
-          }
-          if (ip?.stage === "closed" && row.closed_at === null && stageOf(row.path) === "closed" && (f.status === "added" || (f.status === "renamed" && from?.stage !== "closed"))) {
-            sql.exec("UPDATE items SET closed_at = ?, closed_by = ? WHERE number = ?", commit.at, closerName(commit), number);
-          }
-          if (row.updated_at === null && f.filename === row.path) sql.exec("UPDATE items SET updated_at = ? WHERE number = ?", commit.at, number);
+    const todo = this.store.exec<{ sha: string } & Row>("SELECT sha FROM commits WHERE detailed = 0 ORDER BY at DESC, sha DESC LIMIT ?", details);
+    for (const { sha } of todo) {
+      if (!gh.spare()) break;
+      const c = await gh.commit(sha);
+      this.store.transaction(() => {
+        this.apply(c, c.files);
+        this.bump();
+      });
+    }
+  }
+
+  /**
+   * One commit's item files: a revision of each item, its links, and the dates and names the
+   * commit settles (the add, the move into done/, the latest change). Order-free: the walk may
+   * see commits in any order.
+   */
+  private apply(c: CommitInfo, files: FileChange[]): void {
+    const store = this.store;
+    const trailers = sessionTrailers(c.message);
+    const at = c.at ?? "";
+    for (const f of files) {
+      const ip = itemPath(f.filename);
+      const from = f.previousFilename ? itemPath(f.previousFilename) : null;
+      for (const number of new Set([ip?.number, from?.number].filter((n): n is number => n !== undefined))) {
+        store.exec(
+          "INSERT INTO revisions (number, sha, path, at, author_name, summary, session_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+          number,
+          c.sha,
+          f.filename,
+          at,
+          c.authorName.slice(0, 200),
+          summaryOf(c.message),
+          trailers[0] ?? null,
+        );
+        const row = store.exec<{ path: string; stage: string; created_at: string | null; closed_at: string | null; updated_at: string | null } & Row>(
+          "SELECT path, stage, created_at, closed_at, updated_at FROM items WHERE number = ?",
+          number,
+        )[0];
+        if (!row) continue;
+        for (const sessionId of trailers) this.link(number, sessionId, at);
+        if (c.at === null) continue;
+        if (row.updated_at === null || c.at > row.updated_at) store.exec("UPDATE items SET updated_at = ? WHERE number = ?", c.at, number);
+        const mine = ip !== null && ip.number === number;
+        if (mine && (f.status === "added" || (f.status === "renamed" && !from)) && (row.created_at === null || c.at < row.created_at)) {
+          store.exec("UPDATE items SET created_at = ?, author_name = ?, author_email = ? WHERE number = ?", c.at, c.authorName.slice(0, 200), c.authorEmail, number);
+        }
+        const closes = mine && ip.stage === "closed" && (f.status === "added" || (f.status === "renamed" && from?.stage !== "closed"));
+        if (closes && row.stage === "closed" && (row.closed_at === null || c.at > row.closed_at)) {
+          store.exec("UPDATE items SET closed_at = ?, closed_by = ? WHERE number = ?", c.at, closerName(c), number);
         }
       }
-      let next: WalkState | null = { ...walk, index: walk.index + details.length };
-      if (next.index >= page.length) {
-        if (page.length >= WALK_PAGE) next = { ...walk, page: walk.page + 1, index: 0 };
-        else next = walk.dir === "work" ? { head: walk.head, dir: "done", page: 1, index: 0 } : null;
-      }
-      this.setMeta("walk", next ? JSON.stringify(next) : null);
-    });
+    }
+    store.exec(
+      `INSERT INTO commits (sha, at, author_name, author_email, message, detailed) VALUES (?, ?, ?, ?, ?, 1)
+       ON CONFLICT (sha) DO UPDATE SET detailed = 1`,
+      c.sha,
+      c.at,
+      c.authorName.slice(0, 200),
+      c.authorEmail,
+      c.message.slice(0, 10_000),
+    );
   }
 
   // ------------------------------------------------------------------ pull requests
 
-  /** At most every 5 minutes while read: the state of open items' pull requests not final yet. */
+  /**
+   * At most every 5 minutes while read: one query for the open items' pull requests asked longest
+   * ago (never asked first). Merged and closed are final; unreadable is asked again after a day.
+   * GraphQL has its own pause.
+   */
   private async refreshPulls(gh: WorkGitHub): Promise<void> {
     const now = this.now();
     if (now - this.metaNumber("read_at") >= READS_WINDOW_MS) return;
     if (now - this.metaNumber("pulls_at") < PULLS_EVERY_MS) return;
-    if (!gh.spare("graphql")) return;
-    const final = new Set(
-      this.deps.sql.exec<{ url: string }>("SELECT url FROM pulls WHERE state IN ('merged', 'closed', 'unreadable')").toArray().map((r) => r.url),
-    );
-    const urls = new Set<string>();
-    for (const r of this.deps.sql.exec<{ parsed: string }>("SELECT parsed FROM items WHERE path LIKE 'work/%' AND parser > 0").toArray()) {
-      for (const url of (JSON.parse(r.parsed) as ParsedItem).pullRequests) if (pullOf(url) && !final.has(url)) urls.add(url);
+    if (this.metaNumber("pulls_pause_until") > now || !gh.spare("graphql")) return;
+    const known = new Map(this.store.exec<{ url: string; state: string | null; checked_at: string } & Row>("SELECT url, state, checked_at FROM pulls").map((r) => [r.url, r]));
+    const recheck = new Date(now - UNREADABLE_RECHECK_MS).toISOString();
+    const due = new Map<string, string>();
+    for (const r of this.store.exec<{ parsed: string }>("SELECT parsed FROM items WHERE stage = 'open' AND parser > 0")) {
+      for (const url of (JSON.parse(r.parsed) as ParsedItem).pullRequests) {
+        if (!pullOf(url) || due.has(url)) continue;
+        const k = known.get(url);
+        if (k && (k.state === "merged" || k.state === "closed")) continue;
+        if (k && k.state === "unreadable" && k.checked_at > recheck) continue;
+        due.set(url, k?.checked_at ?? "");
+      }
     }
-    if (!urls.size) return;
+    if (!due.size) return;
+    const batch = [...due].sort((a, b) => (a[1] !== b[1] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1)).slice(0, PULLS_PER_QUERY).map(([url]) => url);
     this.setMeta("pulls_at", now);
     let states: Awaited<ReturnType<WorkGitHub["pulls"]>>;
     try {
-      states = await gh.pulls([...urls].slice(0, PULLS_PER_QUERY));
+      states = await gh.pulls(batch);
     } catch (error) {
-      // No pull request permission is not a problem with the repository: the links stay plain.
+      // Pull request state is decoration: no failure of it is a problem with the repository.
       if (error instanceof GitHubGone) return;
       throw error;
     }
     const at = new Date(now).toISOString();
-    this.deps.transaction(() => {
+    this.store.transaction(() => {
+      let changed = false;
       for (const [url, s] of states) {
         const state = s === "unreadable" ? "unreadable" : s.state;
         const title = s === "unreadable" ? null : s.title;
-        this.deps.sql.exec(
+        const k = known.get(url);
+        if (!k || k.state !== state || this.store.exec<{ title: string | null }>("SELECT title FROM pulls WHERE url = ?", url)[0]?.title !== title) changed = true;
+        this.store.exec(
           "INSERT INTO pulls (url, state, title, checked_at) VALUES (?, ?, ?, ?) ON CONFLICT (url) DO UPDATE SET state = excluded.state, title = excluded.title, checked_at = excluded.checked_at",
           url,
           state,
@@ -822,6 +1067,7 @@ export class WorkIndex {
           at,
         );
       }
+      if (changed) this.bump();
     });
   }
 
@@ -838,15 +1084,18 @@ export class WorkIndex {
    */
   private reparseBatch(): void {
     if (!this.reparsing()) return;
-    const rows = this.deps.sql
-      .exec<{ number: number; path: string; body: string } & Row>("SELECT number, path, body FROM items WHERE parser > 0 AND parser <> ? LIMIT ?", PARSER_VERSION, REPARSE_BATCH)
-      .toArray();
-    this.deps.transaction(() => {
+    const rows = this.store.exec<{ number: number; path: string; body: string } & Row>(
+      "SELECT number, path, body FROM items WHERE parser > 0 AND parser <> ? LIMIT ?",
+      PARSER_VERSION,
+      REPARSE_BATCH,
+    );
+    this.store.transaction(() => {
       for (const r of rows) {
         const ip = itemPath(r.path);
-        if (ip) this.deps.sql.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(safeParse(ip, r.body)), PARSER_VERSION, r.number);
+        if (ip) this.store.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(safeParse(ip, r.body)), PARSER_VERSION, r.number);
       }
       if (rows.length < REPARSE_BATCH) this.setMeta("parser_version", PARSER_VERSION);
+      this.bump();
     });
   }
 
@@ -855,28 +1104,37 @@ export class WorkIndex {
   private indexed(rows: ItemRow[]): IndexedItem[] {
     const repo = this.repo();
     if (!rows.length || !repo) return [];
-    const sql = this.deps.sql;
+    const store = this.store;
     const numbers = rows.map((r) => r.number);
-    const marks = numbers.map(() => "?").join(",");
     const others = new Map<number, string[]>();
-    for (const f of sql.exec<{ number: number; path: string } & Row>(`SELECT number, path FROM files WHERE number IN (${marks}) ORDER BY path`, ...numbers).toArray()) {
-      others.set(f.number, [...(others.get(f.number) ?? []), f.path]);
-    }
     const links = new Map<number, string[]>();
-    for (const l of sql.exec<{ number: number; session_id: string } & Row>(`SELECT number, session_id FROM links WHERE number IN (${marks}) ORDER BY last_at DESC, session_id`, ...numbers).toArray()) {
-      links.set(l.number, [...(links.get(l.number) ?? []), l.session_id]);
+    for (const part of chunks(numbers)) {
+      for (const f of store.exec<{ number: number; path: string } & Row>(`SELECT number, path FROM files WHERE number IN (${marks(part)}) ORDER BY path`, ...part)) {
+        others.set(f.number, [...(others.get(f.number) ?? []), f.path]);
+      }
+      for (const l of store.exec<{ number: number; session_id: string } & Row>(
+        `SELECT number, session_id FROM links WHERE number IN (${marks(part)}) ORDER BY last_at DESC, session_id`,
+        ...part,
+      )) {
+        links.set(l.number, [...(links.get(l.number) ?? []), l.session_id]);
+      }
     }
+    const parsedRows = rows.map((r) => ({ r, parsed: JSON.parse(r.parsed) as ParsedItem }));
+    const urls = [...new Set(parsedRows.flatMap((p) => p.parsed.pullRequests))];
     const pulls = new Map<string, { state: string | null; title: string | null }>();
-    for (const p of sql.exec<{ url: string; state: string | null; title: string | null } & Row>("SELECT url, state, title FROM pulls").toArray()) pulls.set(p.url, p);
-    return rows.map((r) => {
-      const stage = stageOf(r.path);
-      const parsed = JSON.parse(r.parsed) as ParsedItem;
+    for (const part of chunks(urls)) {
+      for (const p of store.exec<{ url: string; state: string | null; title: string | null } & Row>(`SELECT url, state, title FROM pulls WHERE url IN (${marks(part)})`, ...part)) pulls.set(p.url, p);
+    }
+    const blobBase = `https://github.com/${repo.owner}/${repo.name}/blob/${repo.branch.split("/").map(encodeURIComponent).join("/")}`;
+    return parsedRows.map(({ r, parsed }) => {
+      const stage = r.stage === "closed" ? "closed" : "open";
+      // S8: the hidden files are named, so a person can find and renumber them.
       const duplicates = (others.get(r.number) ?? []).filter((p) => p !== r.path).map((p) => `Another file has number ${r.number}: ${p}`);
       return {
         number: r.number,
         stage,
         path: r.path,
-        url: `https://github.com/${repo.owner}/${repo.name}/blob/${repo.branch.split("/").map(encodeURIComponent).join("/")}/${r.path.split("/").map(encodeURIComponent).join("/")}`,
+        url: `${blobBase}/${r.path.split("/").map(encodeURIComponent).join("/")}`,
         title: parsed.title,
         stateLine: parsed.stateLine,
         tags: parsed.tags,
@@ -905,6 +1163,17 @@ export class WorkIndex {
 
 function stageOf(path: string): "open" | "closed" {
   return path.startsWith("done/") ? "closed" : "open";
+}
+
+function dirOf(path: string): Dir | null {
+  return path.startsWith("work/") ? "work" : path.startsWith("done/") ? "done" : null;
+}
+
+/** A folder's range to list: a task not started yet takes the newer head (it covers the older), else a new task first. */
+function addTask(walk: WalkState, dir: Dir, head: string): void {
+  const waiting = walk.tasks.find((t) => t.dir === dir && t.page === 1);
+  if (waiting) waiting.head = head;
+  else walk.tasks.unshift({ dir, head, page: 1 });
 }
 
 /** The row of each number: its open file before a closed one, then the first path. */
@@ -945,32 +1214,33 @@ function closerName(c: CommitInfo): string | null {
   return (name.toLowerCase().endsWith(suffix) ? name.slice(0, -suffix.length) : name).trim() || null;
 }
 
-function refusal(problem: RepositoryProblem): string {
-  switch (problem) {
-    case "installation_removed":
-      return "The GitHub installation is not connected to this organization.";
-    case "installation_suspended":
-      return "The GitHub installation is suspended.";
-    case "repository_not_found":
-      return "The repository does not exist or the installation does not grant it.";
-    case "branch_not_found":
-      return "The repository has no such branch.";
-    case "access_denied":
-      return "The installation cannot read the repository's contents.";
-    case "github_app_not_configured":
-      return "The GitHub App is not configured.";
-  }
+function summaryOf(message: string): string {
+  const end = message.indexOf("\n");
+  return (end === -1 ? message : message.slice(0, end)).replace(/\r$/, "").slice(0, 200);
 }
 
-function encodeCursor(value: Record<string, number>): string {
+function commitUrl(repo: WorkRepo, sha: string): string {
+  return `https://github.com/${repo.owner}/${repo.name}/commit/${sha}`;
+}
+
+function marks(values: unknown[]): string {
+  return values.map(() => "?").join(",");
+}
+
+function chunks<T>(values: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < values.length; i += BIND_MAX) out.push(values.slice(i, i + BIND_MAX));
+  return out;
+}
+
+function encodeCursor(value: Record<string, number | string>): string {
   return btoa(JSON.stringify(value)).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
-function decodeCursor(cursor: string, key: string): number | null {
+function decodeCursor(cursor: string): Record<string, unknown> | null {
   try {
-    const text = atob(cursor.replace(/-/g, "+").replace(/_/g, "/"));
-    const value = (JSON.parse(text) as Record<string, unknown>)[key];
-    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    const value = JSON.parse(atob(cursor.replace(/-/g, "+").replace(/_/g, "/"))) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   } catch {
     return null;
   }

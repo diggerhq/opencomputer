@@ -3,15 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import type { Session } from "../src/computer/api-types.js";
 import type { ApiCaller, ApiRow } from "../src/computer/sessions-api.js";
-import { itemAttention } from "../src/computer/work/api.js";
-import { type SessionBrief, type WorkContextOp, workContext } from "../src/computer/work/briefs.js";
+import { branchName, itemAttention } from "../src/computer/work/api.js";
+import { type SessionBrief, type WorkContextOp, workContext, workStamp, workStampSetup } from "../src/computer/work/briefs.js";
 import type { TokenMinter } from "../src/computer/work/github.js";
-import { WorkIndex } from "../src/computer/work/index.js";
+import { REQUEST_TIMEOUT_MS } from "../src/computer/work/github.js";
+import { READ_WAIT_MS, WorkIndex } from "../src/computer/work/index.js";
 import type { WorkIndexRpc } from "../src/computer/work/index-contract.js";
 import { memberId } from "../src/computer/session-ids.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import { FakeRepo } from "./fixtures/fake-github-repo.js";
+import { FakeClock, indexStore } from "./fixtures/work-platform.js";
 
 /** Work tracking 3.10: the Work API's routes, scopes and composition in the Worker. */
 
@@ -36,6 +38,7 @@ function computer(sessions: FakeSession[]) {
   const sql = sqlStorage();
   sql.exec(`CREATE TABLE sessions (runner_key TEXT, session_id TEXT, owner_id TEXT, owner_user_id TEXT, owner_name TEXT, owner_email TEXT, updated_at INTEGER);
     CREATE TABLE people (slack_user_id TEXT PRIMARY KEY, dir TEXT, git_name TEXT, git_email TEXT, updated_at INTEGER);`);
+  workStampSetup(sql);
   for (const s of sessions) {
     sql.exec("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, 1)", s.row.key, s.row.sessionId, s.row.ownerId ?? null, s.row.ownerUserId, s.row.ownerName, s.row.ownerEmail ?? null);
   }
@@ -57,6 +60,7 @@ function computer(sessions: FakeSession[]) {
   const ops: WorkContextOp[] = [];
   const stub: ComputerApiStub = {
     computerApi: vi.fn(async (_account, caller, op) => {
+      if (op.op === "work.stamp") return workStamp(sql);
       if (op.op !== "work.context") throw new Error(`unexpected ${op.op}`);
       ops.push(op as WorkContextOp);
       return workContext({ sql, api }, caller, op as WorkContextOp);
@@ -68,8 +72,12 @@ function computer(sessions: FakeSession[]) {
 /** A Work index over a fake GitHub, as the binding answers it. */
 async function workIndex(repo: FakeRepo) {
   const pending: Promise<unknown>[] = [];
-  const account: TokenMinter = { mintGitHubInstallationToken: async () => ({ outcome: "minted", token: "ghs_test", expiresAt: "2099-01-01T00:00:00Z" }) };
-  const index = new WorkIndex({ sql: sqlStorage(), transaction: (fn) => fn(), account: () => account, arm: async () => {}, waitUntil: (p) => void pending.push(p), fetch: repo.fetch });
+  const account: TokenMinter = {
+    mintGitHubInstallationToken: async () => ({ outcome: "minted", token: "ghs_test", expiresAt: "2099-01-01T00:00:00Z" }),
+    getGitHubInstallation: () => ({ accountLogin: "acme" }),
+  };
+  const clock = new FakeClock();
+  const index = new WorkIndex({ store: indexStore(), clock, scheduler: { arm: async () => {}, waitUntil: (p) => void pending.push(p) }, account: () => account, fetch: repo.fetch });
   const rpc: WorkIndexRpc = {
     repository: (a) => index.getRepository(a),
     setRepository: (a, c, by) => index.setRepository(a, c, by),
@@ -77,11 +85,12 @@ async function workIndex(repo: FakeRepo) {
     item: (a, n) => index.item(a, n),
     history: (a, n, c) => index.history(a, n, c),
     poke: (a) => index.poke(a),
+    stamp: (a) => index.stamp(a),
   };
   const settle = async () => {
     while (pending.length) await Promise.allSettled(pending.splice(0));
   };
-  return { rpc, settle, env: { WORK_INDEX: { getByName: () => rpc } } };
+  return { rpc, settle, clock, index, env: { WORK_INDEX: { getByName: () => rpc } } };
 }
 
 function call(env: unknown, stub: ComputerApiStub, identity: RequestIdentity, method: string, path: string, init: { body?: string; headers?: Record<string, string> } = {}) {
@@ -167,7 +176,7 @@ describe("Work API scopes", () => {
 });
 
 describe("Work API requests", () => {
-  const env = { WORK_INDEX: { getByName: () => ({ repository: async () => null, setRepository: vi.fn(async (_a: string, c: unknown) => ({ ok: true, value: c })), items: async () => ({ ok: false, error: "invalid_cursor" }), item: async () => ({ item: null, body: null }) }) } };
+  const env = { WORK_INDEX: { getByName: () => ({ repository: async () => null, setRepository: vi.fn(async (_a: string, c: unknown) => ({ ok: true, value: c })), items: async () => ({ ok: false, error: "invalid_cursor" }), item: async () => ({ ok: true, item: null, body: null, asOf: null }) }) } };
   const stub: ComputerApiStub = { computerApi: vi.fn() };
   const err = async (res: Response) => ({ status: res.status, ...(await json(res)).error });
 
@@ -204,7 +213,7 @@ describe("Work API composition", () => {
     expect(res.status).toBe(200);
     const page = await json(res);
     expect(Object.keys(page)).toEqual(["repository", "head", "asOf", "building", "items"]);
-    expect(page.repository).toEqual({ installationId: "12", owner: "acme", name: "knowledge", branch: "main", problem: null });
+    expect(page.repository).toEqual({ installationId: "12", owner: "acme", name: "knowledge", branch: "main", problem: null, problemMessage: null });
     expect(page.building).toBe(false);
     const [one, two, four] = page.items;
 
@@ -250,6 +259,77 @@ describe("Work API composition", () => {
     expect(moved.status).toBe(200);
   });
 
+  it("answers an unchanged poll from the stamps alone: no list read, no composition; Work-As-Of on 200 and 304", async () => {
+    const { w, c } = await board();
+    const first = await call(w.env, c.stub, person, "GET", "/work/items?stage=open");
+    const asOf = first.headers.get("work-as-of");
+    expect(asOf).toMatch(/^\d{4}-\d\d-\d\dT/);
+    expect(asOf).toBe((await json(first)).asOf);
+    const items = vi.spyOn(w.index, "items");
+    const ops = c.ops.length;
+    const again = await call(w.env, c.stub, person, "GET", "/work/items?stage=open", { headers: { "if-none-match": first.headers.get("etag")! } });
+    expect(again.status).toBe(304);
+    expect(again.headers.get("work-as-of")).toBe(asOf);
+    expect(items).not.toHaveBeenCalled();
+    expect(c.ops.length).toBe(ops);
+    // One item and its history carry it too.
+    expect((await call(w.env, c.stub, person, "GET", "/work/items/1")).headers.get("work-as-of")).toBe(asOf);
+  });
+
+  it("moves the ETag on any write to sessions or people, also one that leaves updated_at alone", async () => {
+    const { w, c } = await board();
+    const etag = (await call(w.env, c.stub, person, "GET", "/work/items?stage=open")).headers.get("etag")!;
+    c.sql.exec("UPDATE sessions SET owner_name = 'Mia' WHERE session_id = ?", SID.mine);
+    const renamed = await call(w.env, c.stub, person, "GET", "/work/items?stage=open", { headers: { "if-none-match": etag } });
+    expect(renamed.status).toBe(200);
+    const next = renamed.headers.get("etag")!;
+    expect(next).not.toBe(etag);
+    c.sql.exec("UPDATE people SET git_name = 'Cy Two' WHERE slack_user_id = 'U_CY'");
+    expect((await call(w.env, c.stub, person, "GET", "/work/items?stage=open", { headers: { "if-none-match": next } })).status).toBe(200);
+  });
+
+  it("finds a person by email through an index, not a scan", () => {
+    const { sql } = computer([]);
+    const plan = (q: string) => (sql.exec(`EXPLAIN QUERY PLAN ${q}`, "x@acme.test").toArray() as { detail: string }[]).map((r) => r.detail).join("; ");
+    expect(plan("SELECT owner_user_id FROM sessions WHERE lower(owner_email) = ? AND owner_user_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1")).toMatch(/USING INDEX sessions_owner_email_lower/);
+    expect(plan("SELECT slack_user_id FROM people p WHERE lower(p.git_email) = ? LIMIT 1")).toMatch(/USING INDEX people_git_email_lower/);
+    expect(plan("SELECT owner_email FROM sessions WHERE owner_user_id = ?")).toMatch(/USING INDEX sessions_owner_user/);
+  });
+
+  it("gives a null updatedAt until the commit is known, never 1970", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": doc(1, "A") });
+    const w = await workIndex(repo);
+    const c = computer([]);
+    expect((await call(w.env, c.stub, person, "PUT", "/work/repository", { body: JSON.stringify({ installationId: 12, owner: "acme", name: "knowledge" }) })).status).toBe(200);
+    await w.settle();
+    const page = await json(await call(w.env, c.stub, person, "GET", "/work/items?stage=open"));
+    expect(page.items[0].updatedAt).toBeNull();
+    expect(page.items[0].createdAt).toBeNull();
+  });
+
+  it("answers 503 with a retry hint when a closed item's body does not come from GitHub in time", async () => {
+    const { repo, w, c } = await board();
+    repo.hangNext = 1;
+    const pending = call(w.env, c.stub, person, "GET", "/work/items/3");
+    await new Promise((resolve) => setImmediate(resolve));
+    w.clock.tick(READ_WAIT_MS);
+    const res = await pending;
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect((await json(res)).error).toMatchObject({ code: "unavailable", retryAfterMs: expect.any(Number) });
+    w.clock.tick(REQUEST_TIMEOUT_MS);
+    await w.settle();
+    expect((await call(w.env, c.stub, person, "GET", "/work/items/3")).status).toBe(200);
+  });
+
+  it("refuses a repository outside the installation's account", async () => {
+    const w = await workIndex(new FakeRepo({}));
+    const c = computer([]);
+    const res = await call(w.env, c.stub, person, "PUT", "/work/repository", { body: JSON.stringify({ installationId: 12, owner: "elsewhere", name: "knowledge" }) });
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "invalid_request", field: "owner", reason: "owner_mismatch" });
+  });
+
   it("pages closed items and answers one item with its body", async () => {
     const { w, c } = await board();
     const closed = await json(await call(w.env, c.stub, person, "GET", "/work/items?stage=closed&limit=10"));
@@ -271,6 +351,15 @@ describe("Work API composition", () => {
     expect(update.sessionId).toBe(SID.slack);
     const bo = await json(await call(w.env, c.stub, { ...person, userId: "user_bo" } as RequestIdentity, "GET", "/work/items/2/history"));
     expect(bo.revisions.find((r: { summary: string }) => r.summary === "Update 2").sessionId).toBeNull();
+  });
+});
+
+describe("branchName", () => {
+  it("follows git check-ref-format for a branch", () => {
+    for (const ok of ["main", "trunk", "feat/work-index", "release-1.2", "a_b", "x@y", "ü"]) expect(branchName(ok), ok).toBe(true);
+    for (const bad of ["", "-x", "a..b", "a/", "/a", "a//b", "a.lock", "a/b.lock", ".a", "a/.b", "a.", "a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "@", "a@{b", "a\u0001b", "a\u007fb", "x".repeat(256)]) {
+      expect(branchName(bad), JSON.stringify(bad)).toBe(false);
+    }
   });
 });
 

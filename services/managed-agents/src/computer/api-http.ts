@@ -25,14 +25,14 @@ import type { LogReadRefusal, SessionLogRpc } from "./session-log-contract.js";
 import { isSessionId, memberId } from "./session-ids.js";
 import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
 import type { SecretsApiOp } from "./secrets-store.js";
-import type { WorkContextOp } from "./work/briefs.js";
+import type { WorkContextOp, WorkStampOp } from "./work/briefs.js";
 import { type WorkRoute, workApi } from "./work/api.js";
 import type { WorkIndexRpc } from "./work/index-contract.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
-  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp): Promise<ApiReply>;
+  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp): Promise<ApiReply>;
 }
 
 const BODY_MAX_BYTES = 512 * 1024;
@@ -398,6 +398,7 @@ async function routeApi(
     );
     const response = out.of(reply);
     if (reply.etag) response.headers.set("etag", reply.etag);
+    if (reply.asOf) response.headers.set("work-as-of", reply.asOf);
     return response;
   }
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });

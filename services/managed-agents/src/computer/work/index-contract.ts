@@ -1,7 +1,7 @@
 // The Work index's RPC surface (tech design 3.6, "Interface"), called only by the Work API in the
 // stateless Worker (work/api.ts) and by the Computer object (`knowledgeRepository`). Every call
 // names the organization (the object is addressed by its account id, like COMPUTERS); every read
-// result carries `{ head, asOf, building, problem }`.
+// result carries `{ head, asOf, building, version, problem, problemMessage }`.
 //
 // Close and Reopen (3.9, build step 5) slot in beside `setRepository`: writes that run inside the
 // index's one-at-a-time chain and answer a `WorkWrite`.
@@ -18,8 +18,10 @@ export interface Repository {
   owner: string;
   name: string;
   branch: string;
-  /** Set when the repository can no longer be read; the screens send the person to settings. */
+  /** Set when the repository can no longer be read; the screens send the person to settings. A stable code. */
   problem: RepositoryProblem | null;
+  /** The problem in words, for people; null without a problem. */
+  problemMessage: string | null;
 }
 
 /** What `PUT /work/repository` asks for; the branch defaults to the repository's default branch. */
@@ -45,7 +47,17 @@ export interface ReadState {
   asOf: string | null;
   /** True while the open items of a build are still being read. */
   building: boolean;
+  /** Moves whenever anything a list shows changes (rows, pull request state, the problem). */
+  version: number;
   problem: RepositoryProblem | null;
+  problemMessage: string | null;
+}
+
+/** What the open list's ETag is made of, read without composing the list. */
+export interface OpenStamp {
+  head: string | null;
+  asOf: string | null;
+  version: number;
 }
 
 /** An item as the index holds it, before the Worker joins sessions and people. */
@@ -87,7 +99,10 @@ export type ItemsResult =
   | (ReadState & { ok: true; repository: Repository | null; items: IndexedItem[]; nextCursor: string | null })
   | { ok: false; error: "invalid_cursor" };
 
-export type ItemResult = ReadState & { repository: Repository | null; item: IndexedItem | null; body: string | null };
+export type ItemResult =
+  | (ReadState & { ok: true; repository: Repository | null; item: IndexedItem | null; body: string | null })
+  /** The body is not read yet and GitHub did not give it within the read's wait. */
+  | { ok: false; error: "unavailable"; retryAfterMs: number };
 
 export interface Revision {
   sha: string;
@@ -112,4 +127,5 @@ export interface WorkIndexRpc {
   item(accountId: string, number: number): Promise<ItemResult>;
   history(accountId: string, number: number, cursor?: string): Promise<HistoryResult>;
   poke(accountId: string): Promise<void>;
+  stamp(accountId: string): Promise<OpenStamp>;
 }
