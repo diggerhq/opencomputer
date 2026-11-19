@@ -67,6 +67,8 @@ const HISTORY_PAGE = 30;
 const CLOSED_LIMIT_DEFAULT = 50;
 const CLOSED_LIMIT_MAX = 100;
 const FETCH_PARALLEL = 6;
+/** Stored bodies re-parsed per step after PARSER_VERSION changes. */
+export const REPARSE_BATCH = 100;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
@@ -136,7 +138,6 @@ export class WorkIndex {
   constructor(private readonly deps: WorkIndexDeps) {
     this.now = deps.now ?? Date.now;
     deps.sql.exec(SCHEMA);
-    this.reparse();
   }
 
   // ------------------------------------------------------------------ meta
@@ -226,7 +227,7 @@ export class WorkIndex {
     this.setMeta("read_at", now);
     if (!this.repo()) return;
     const seen = Math.max(this.metaNumber("as_of"), this.metaNumber("tried_at"));
-    if (now - seen > LOOK_AFTER_MS) this.deps.waitUntil(this.kick());
+    if (now - seen > LOOK_AFTER_MS || this.reparsing()) this.deps.waitUntil(this.kick());
     this.deps.waitUntil(this.deps.arm(now + ALARM_EVERY_MS));
   }
 
@@ -373,6 +374,7 @@ export class WorkIndex {
     if (!this.repo()) return null;
     await this.exclusive(async () => {
       const now = this.now();
+      this.reparseBatch();
       if (this.meta("build") !== null) {
         if (now - this.metaNumber("as_of") >= ALARM_EVERY_MS) await this.look();
         else await this.guard(() => this.fillOpen());
@@ -384,7 +386,7 @@ export class WorkIndex {
     const now = this.now();
     const pausedUntil = this.metaNumber("pause_until");
     let next: number | null = null;
-    if (this.meta("build") !== null) next = now + BUILD_STEP_MS;
+    if (this.meta("build") !== null || this.reparsing()) next = now + BUILD_STEP_MS;
     else if (now - this.metaNumber("read_at") < READS_WINDOW_MS || this.meta("walk") !== null) next = now + ALARM_EVERY_MS;
     if (next !== null && this.meta("problem") !== null && now - this.metaNumber("read_at") >= READS_WINDOW_MS) next = null;
     if (next !== null && pausedUntil > next) next = pausedUntil;
@@ -410,6 +412,7 @@ export class WorkIndex {
 
   /** Checks the head and moves the projection to it; then one step of background work. */
   private async look(): Promise<void> {
+    this.reparseBatch();
     const gh = this.client();
     if (!gh) return;
     if (this.metaNumber("pause_until") > this.now()) return;
@@ -480,7 +483,7 @@ export class WorkIndex {
             sql.exec(
               "UPDATE items SET path = ?, parsed = ?, closed_at = ?, closed_by = ? WHERE number = ?",
               w.path,
-              prev.parser > 0 ? JSON.stringify(parseItem(ip, prev.body)) : JSON.stringify(pendingParse(ip)),
+              prev.parser > 0 ? JSON.stringify(safeParse(ip, prev.body)) : JSON.stringify(pendingParse(ip)),
               moved ? null : prev.closed_at,
               moved ? null : prev.closed_by,
               number,
@@ -538,7 +541,7 @@ export class WorkIndex {
     this.deps.sql.exec(
       "UPDATE items SET body = ?, parsed = ?, parser = ?, updated_at = COALESCE(updated_at, ?) WHERE number = ? AND blob = ? AND path = ?",
       body,
-      JSON.stringify(parseItem(ip, body)),
+      JSON.stringify(safeParse(ip, body)),
       PARSER_VERSION,
       updatedAt,
       row.number,
@@ -676,7 +679,7 @@ export class WorkIndex {
         const t = touch.get(w.path) ?? {};
         const changed = !prev || prev.blob !== w.blob || prev.path !== w.path;
         const body = bodies.get(w.blob) ?? (prev && prev.blob === w.blob && prev.parser > 0 ? prev.body : null);
-        const parsed = body !== null ? parseItem(ip, body) : pendingParse(ip);
+        const parsed = body !== null ? safeParse(ip, body) : pendingParse(ip);
         const last = t.last ?? (complete ? undefined : newest);
         const updatedAt = changed ? (last?.at ?? prev?.updated_at ?? null) : (prev?.updated_at ?? null);
         let authorName = prev?.author_name ?? null;
@@ -824,15 +827,26 @@ export class WorkIndex {
 
   // ------------------------------------------------------------------ parser version
 
-  /** A new parser version re-parses every stored body, with no GitHub call. */
-  private reparse(): void {
-    if (this.meta("parser_version") === String(PARSER_VERSION)) return;
+  private reparsing(): boolean {
+    return this.meta("parser_version") !== String(PARSER_VERSION);
+  }
+
+  /**
+   * After a new parser version, one batch of stored bodies re-parsed, with no GitHub call. Run by
+   * the look and the alarm, never while the object starts: a parser fault cannot stop it starting,
+   * and reads show the earlier fields until the batch reaches them.
+   */
+  private reparseBatch(): void {
+    if (!this.reparsing()) return;
+    const rows = this.deps.sql
+      .exec<{ number: number; path: string; body: string } & Row>("SELECT number, path, body FROM items WHERE parser > 0 AND parser <> ? LIMIT ?", PARSER_VERSION, REPARSE_BATCH)
+      .toArray();
     this.deps.transaction(() => {
-      for (const r of this.deps.sql.exec<{ number: number; path: string; body: string } & Row>("SELECT number, path, body FROM items WHERE parser > 0").toArray()) {
+      for (const r of rows) {
         const ip = itemPath(r.path);
-        if (ip) this.deps.sql.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(parseItem(ip, r.body)), PARSER_VERSION, r.number);
+        if (ip) this.deps.sql.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(safeParse(ip, r.body)), PARSER_VERSION, r.number);
       }
-      this.setMeta("parser_version", PARSER_VERSION);
+      if (rows.length < REPARSE_BATCH) this.setMeta("parser_version", PARSER_VERSION);
     });
   }
 
@@ -913,10 +927,22 @@ function pendingParse(ip: ItemPath): ParsedItem {
   return { title: slugTitle(ip.slug), stateLine: null, tags: [], owner: null, left: null, boxes: 0, pullRequests: [], warnings: [] };
 }
 
+/** The parser never throws by design; if it does, the row keeps its slug and says so. */
+function safeParse(ip: ItemPath, body: string): ParsedItem {
+  try {
+    return parseItem(ip, body);
+  } catch {
+    return { ...pendingParse(ip), warnings: ["The file could not be read."] };
+  }
+}
+
 /** Who closed: the commit's author, or null when a session made the commit (it says "closed in a session"). */
 function closerName(c: CommitInfo): string | null {
   if (sessionTrailers(c.message).length) return null;
-  return c.authorName.replace(/\s+via Computer$/i, "").trim() || null;
+  // By hand, not `/\s+via Computer$/`: an unanchored `\s+` backtracks on a run of spaces.
+  const name = c.authorName.slice(0, 200).trim();
+  const suffix = " via computer";
+  return (name.toLowerCase().endsWith(suffix) ? name.slice(0, -suffix.length) : name).trim() || null;
 }
 
 function refusal(problem: RepositoryProblem): string {

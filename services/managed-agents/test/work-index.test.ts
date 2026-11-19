@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { TokenMinter } from "../src/computer/work/github.js";
-import { ALARM_EVERY_MS, FILL_BATCH, LOOK_AFTER_MS, PULLS_EVERY_MS, WorkIndex } from "../src/computer/work/index.js";
+import { ALARM_EVERY_MS, FILL_BATCH, LOOK_AFTER_MS, PULLS_EVERY_MS, REPARSE_BATCH, WorkIndex } from "../src/computer/work/index.js";
 import type { IndexedItem, ItemsResult } from "../src/computer/work/index-contract.js";
+import { PARSER_VERSION } from "../src/computer/work/item.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import { FakeRepo } from "./fixtures/fake-github-repo.js";
 
@@ -445,16 +446,29 @@ describe("setRepository", () => {
 });
 
 describe("parser version", () => {
-  it("re-parses stored bodies with no GitHub call", async () => {
-    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+  it("re-parses stored bodies in batches behind the reads, never while the object starts, with no GitHub call", async () => {
+    const files: Record<string, string> = {};
+    for (let n = 1; n <= REPARSE_BATCH + 20; n++) files[`work/${n}-item.md`] = item(n, `Item ${n}`);
+    const repo = new FakeRepo(files);
     const s = await connect(repo);
-    s.sql.exec("UPDATE items SET parsed = ?", JSON.stringify({ title: "stale", stateLine: null, tags: [], owner: null, left: null, boxes: 0, pullRequests: [], warnings: [] }));
+    s.tick(11 * 60_000);
+    await s.drain();
+    const stale = JSON.stringify({ title: "stale", stateLine: null, tags: [], owner: null, left: null, boxes: 0, pullRequests: [], warnings: [] });
+    // Rows of another parser version.
+    s.sql.exec("UPDATE items SET parsed = ?, parser = ?", stale, PARSER_VERSION + 1);
     s.sql.exec("UPDATE meta SET v = '0' WHERE k = 'parser_version'");
     repo.take();
     const again = setup(repo, { sql: s.sql });
-    const r = await again.index.items(ORG, { stage: "open" });
-    expect(r.ok && r.items[0]!.title).toBe("A");
-    expect(repo.take()).toEqual([]);
+    // Starting parses nothing: the read answers the stored fields, and the batch runs behind it.
+    const first = await again.index.items(ORG, { stage: "open" });
+    expect(first.ok && first.items[0]!.title).toBe("stale");
+    await again.settle();
+    let titles = (await open(again)).items.map((i) => i.title);
+    expect(titles.filter((t) => t === "stale")).toHaveLength(20);
+    await again.index.alarm();
+    titles = (await open(again)).items.map((i) => i.title);
+    expect(titles.filter((t) => t === "stale")).toHaveLength(0);
+    expect(repo.take().filter((l) => !l.endsWith("/git/ref/heads/main"))).toEqual([]);
   });
 });
 

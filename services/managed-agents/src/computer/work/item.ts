@@ -12,6 +12,12 @@ export const PARSER_VERSION = 1;
 /** Characters kept of the state line. */
 export const STATE_LINE_MAX = 200;
 
+/** Characters of a body that are read; the rest is ignored with a warning. */
+export const BODY_MAX = 1_000_000;
+
+/** Characters of one line that are read. */
+export const LINE_MAX = 10_000;
+
 export type Stage = "open" | "closed";
 
 /** An item's place in the repository: only `NN-slug.md` directly under `work/` or `done/`. */
@@ -52,7 +58,9 @@ export function slugTitle(slug: string): string {
   return slug;
 }
 
-const EMAIL = /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/;
+// Every pattern below is anchored and has no nested or adjacent overlapping repetition, so it runs
+// in time linear in the line; lines are cut to LINE_MAX first. What a pattern could not do in
+// linear time (headings, emails, trailing punctuation) is done by hand.
 const CHECKBOX = /^\s*[-*+]\s+\[([ xX])\]/;
 const KEY_VALUE = /^[A-Za-z][A-Za-z0-9 _-]{0,40}:(\s|$)/;
 const URL_IN_TEXT = /https?:\/\/[^\s<>()[\]"'`]+/g;
@@ -60,7 +68,19 @@ const URL_IN_TEXT = /https?:\/\/[^\s<>()[\]"'`]+/g;
 /** One file's fields. `path` gives the stage and the slug (the title when there is no heading). */
 export function parseItem(path: ItemPath, body: string): ParsedItem {
   const warnings: string[] = [];
+  if (body.length > BODY_MAX) {
+    warnings.push(`The file is longer than ${BODY_MAX} characters; only the start is read.`);
+    body = body.slice(0, BODY_MAX);
+  }
   const lines = body.replace(/^﻿/, "").split(/\r?\n/);
+  let long = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.length > LINE_MAX) {
+      lines[i] = lines[i]!.slice(0, LINE_MAX);
+      long = true;
+    }
+  }
+  if (long) warnings.push(`A line is longer than ${LINE_MAX} characters; only its start is read.`);
 
   // Frontmatter: `---` on the first line, closed by the next `---`.
   let start = 0;
@@ -79,7 +99,7 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
         const value = unquote(kv[2]!.trim());
         if (key === "owner") {
           if (!value) continue;
-          if (EMAIL.test(value)) owner = value.toLowerCase();
+          if (isEmail(value)) owner = value.toLowerCase();
           else warnings.push(`owner is not one email: ${value.slice(0, 80)}`);
         } else if (key === "tags") {
           tags = [...new Set(value.replace(/^\[|\]$/g, "").split(",").map((t) => unquote(t.trim()).toLowerCase()).filter(Boolean))];
@@ -113,10 +133,9 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
       if (inLeft) leftContent = true;
       continue;
     }
-    const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(trimmed);
-    if (heading && /^\s{0,3}#/.test(line)) {
-      const level = heading[1]!.length;
-      const text = heading[2]!;
+    const heading = headingOf(line);
+    if (heading) {
+      const { level, text } = heading;
       if (inLeft && level <= 2) inLeft = false;
       if (level === 1 && title === null) {
         title = text.replace(/^\d+\s*[.:)\-–—]?\s*/, "").trim() || text;
@@ -140,7 +159,7 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
     }
     if (/^PR:/i.test(trimmed)) {
       for (const url of trimmed.slice(3).match(URL_IN_TEXT) ?? []) {
-        const clean = url.replace(/[.,;:!?]+$/, "");
+        const clean = trimEnd(url, ".,;:!?");
         if (!pullRequests.includes(clean)) pullRequests.push(clean);
       }
     }
@@ -176,7 +195,44 @@ function cut(text: string): string {
 }
 
 function unquote(value: string): string {
-  return /^(["']).*\1$/.test(value) && value.length >= 2 ? value.slice(1, -1) : value;
+  const q = value[0];
+  return value.length >= 2 && (q === '"' || q === "'") && value[value.length - 1] === q ? value.slice(1, -1) : value;
+}
+
+/**
+ * An ATX heading (up to three spaces, one to six `#`, then a space or the end), its closing `#`s
+ * removed. By hand: a pattern for the optional closing sequence backtracks on long lines.
+ */
+export function headingOf(line: string): { level: number; text: string } | null {
+  let i = 0;
+  while (i < 3 && line[i] === " ") i++;
+  let level = 0;
+  while (line[i + level] === "#") level++;
+  if (level < 1 || level > 6) return null;
+  const after = line[i + level];
+  if (after !== undefined && after !== " " && after !== "\t") return null;
+  let text = line.slice(i + level).trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "#") end--;
+  // A closing run counts only when it is the whole text or follows a space.
+  if (end < text.length && (end === 0 || text[end - 1] === " " || text[end - 1] === "\t")) text = text.slice(0, end).trim();
+  return { level, text };
+}
+
+/** One address: no spaces or separators, one `@`, a dot inside the domain. */
+function isEmail(value: string): boolean {
+  if (value.length > 254 || /[\s,;<>]/.test(value)) return false;
+  const at = value.indexOf("@");
+  if (at < 1 || at !== value.lastIndexOf("@")) return false;
+  const domain = value.slice(at + 1);
+  const dot = domain.indexOf(".");
+  return dot > 0 && !domain.endsWith(".");
+}
+
+function trimEnd(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text[end - 1]!)) end--;
+  return text.slice(0, end);
 }
 
 /** The `Session:` trailers of a commit message (the knowledge clone's hook writes one; 3.4). */

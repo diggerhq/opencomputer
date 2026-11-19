@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { itemPath, parseItem, readyToClose, sessionTrailers, STATE_LINE_MAX, type ItemPath } from "../src/computer/work/item.js";
+import {
+  BODY_MAX,
+  headingOf,
+  itemPath,
+  LINE_MAX,
+  parseItem,
+  readyToClose,
+  sessionTrailers,
+  STATE_LINE_MAX,
+  type ItemPath,
+} from "../src/computer/work/item.js";
 
 /** Work tracking 3.2: an item file read by hand, never rejected. */
 
@@ -120,6 +130,57 @@ describe("parseItem", () => {
     expect(p.owner).toBe("a@b.co");
     expect(p.title).toBe("T");
     expect(p.stateLine).toBe("line");
+  });
+});
+
+describe("parseItem on adversarial input", () => {
+  const SIZE = 200 * 1024;
+  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
+  // Each is one 200 KB line (or a body of them) shaped against a pattern the parser could use.
+  const bodies: Record<string, string> = {
+    "a heading padded with spaces": `# a${" ".repeat(SIZE / 2)}#${" ".repeat(SIZE / 2)}x`,
+    "a heading of hashes and spaces": `# ${fill("# ")}x`,
+    "an owner of dots": `---\nowner: a@${fill("b.")}!\n---\n# T\n`,
+    "a PR line of dots": `# T\nPR: https://x${fill(".")}a\n`,
+    "a Key: value prefix": `# T\n${fill("a ")}`,
+    "brackets": `# T\n${fill("[")}`,
+    "brackets and parens": `# T\n${fill("[a](")}`,
+    "backticks and stars": `# T\n${fill("`*_")}`,
+    "a title of digits": `# ${fill("1 ")}`,
+    "many short lines": fill("# a #\n- [ ] b\nPR: https://c.d/e.\n| f |\n> g\nKey: h\n"),
+    "a frontmatter of keys": `---\n${fill("a: b\n")}`,
+    "an unclosed comment": `# T\n<!--${fill(" x")}`,
+  };
+
+  for (const [name, body] of Object.entries(bodies)) {
+    it(`parses ${name} in under 50 ms`, () => {
+      parse(body);
+      const started = performance.now();
+      parse(body);
+      expect(performance.now() - started).toBeLessThan(50);
+    });
+  }
+
+  it("cuts a body and a line that are too long, with a warning", () => {
+    const p = parse(`# T\n${"x".repeat(LINE_MAX + 10)}\n${"y\n".repeat(BODY_MAX / 2)}`);
+    expect(p.warnings).toContain(`The file is longer than ${BODY_MAX} characters; only the start is read.`);
+    expect(p.warnings).toContain(`A line is longer than ${LINE_MAX} characters; only its start is read.`);
+  });
+
+  it("reads headings by hand as before", () => {
+    expect(headingOf("# T")).toEqual({ level: 1, text: "T" });
+    expect(headingOf("   ## Left ##  ")).toEqual({ level: 2, text: "Left" });
+    expect(headingOf("## C# ")).toEqual({ level: 2, text: "C#" });
+    expect(headingOf("#hashtag")).toBeNull();
+    expect(headingOf("    # indented code")).toBeNull();
+    expect(headingOf("####### seven")).toBeNull();
+  });
+
+  it("still reads one owner email and refuses others", () => {
+    expect(parse("---\nowner: a.b@c.example.com\n---\n# T\n").owner).toBe("a.b@c.example.com");
+    for (const bad of ["a@b", "a@b.", "@b.co", "a@b@c.co", "a b@c.co"]) {
+      expect(parse(`---\nowner: ${bad}\n---\n# T\n`).owner).toBeNull();
+    }
   });
 });
 
