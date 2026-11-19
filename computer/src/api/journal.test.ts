@@ -5,7 +5,8 @@ import { Schema } from 'effect';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ApiActor } from '../protocol.js';
 import { mintId } from '../session-ids.js';
-import { ensureJournalDir, Journal, journalPath, readJournalFile } from './journal.js';
+import { ensureSessionJournalDir, Journal, journalPath, readJournalFile } from './journal.js';
+import { readCheckpoint } from './journal-checkpoint.js';
 import { EVENT_DATA, Event } from './schema-events.js';
 
 const ann: ApiActor = { id: 'usr_ann', name: null, via: 'api', client: 'test/1' };
@@ -24,18 +25,83 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-'));
   sid = mintId('cs');
   file = journalPath(dir, sid);
-  ensureJournalDir(dir);
+  ensureSessionJournalDir(dir, sid);
 });
 afterEach(async () => {
   for (const j of open.splice(0)) await j.release();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('journalPath / ensureJournalDir', () => {
-  it('puts journals under <data>/journals with a setgid, group-writable dir', () => {
-    expect(file).toBe(path.join(dir, 'journals', `${sid}.jsonl`));
-    expect(fs.statSync(path.join(dir, 'journals')).mode & 0o7777).toBe(0o2770);
+describe('journalPath / ensureSessionJournalDir', () => {
+  it('puts a journal in its session\'s own setgid, group-writable directory under <data>/journals (work 103 C8)', () => {
+    expect(file).toBe(path.join(dir, 'journals', sid, `${sid}.jsonl`));
+    expect(fs.statSync(path.join(dir, 'journals')).mode & 0o7777).toBe(0o2750);
+    expect(fs.statSync(path.join(dir, 'journals', sid)).mode & 0o7777).toBe(0o2770);
     expect(() => journalPath(dir, '../x')).toThrow();
+    expect(() => ensureSessionJournalDir(dir, '../x')).toThrow();
+    // Pure: naming a journal makes nothing.
+    const other = mintId('cs');
+    journalPath(dir, other);
+    expect(fs.existsSync(path.join(dir, 'journals', other))).toBe(false);
+  });
+
+  it('refuses a session directory that is a link', () => {
+    const other = mintId('cs');
+    fs.symlinkSync(os.tmpdir(), path.join(dir, 'journals', other));
+    expect(() => ensureSessionJournalDir(dir, other)).toThrow(/not a directory/);
+  });
+});
+
+describe('a journal its session could have replaced (work 103, trust rule 4)', () => {
+  const epochLine = (sessionId: string, epoch = 1) => `${JSON.stringify({ k: 'epoch', sessionId, epoch, startSeq: 1, through: 0, at: 0 })}\n`;
+  const ev = (sessionId: string, seq: number) => `${JSON.stringify({ id: `ev_${seq}`, seq, createdAt: '', sessionId, turnId: null, type: 'x', actor: null, data: {} })}\n`;
+
+  it('a symlinked journal is refused: not opened for writing, and read as no journal', async () => {
+    const target = path.join(dir, 'elsewhere.jsonl');
+    fs.writeFileSync(target, epochLine(sid) + ev(sid, 1));
+    fs.symlinkSync(target, file);
+    await expect(Journal.open(file, { sessionId: sid, epoch: 1, lastSeq: 0 })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(readJournalFile(file, 0)).toEqual({ epoch: 0, startSeq: 0, through: 0, lastSeq: 0, events: [] });
+    expect(fs.readFileSync(target, 'utf8')).toBe(epochLine(sid) + ev(sid, 1)); // untouched
+    // A dangling link is not created through either.
+    fs.rmSync(file);
+    fs.symlinkSync(path.join(dir, 'made.jsonl'), file);
+    await expect(Journal.open(file, { sessionId: sid, epoch: 1, lastSeq: 0 })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(fs.existsSync(path.join(dir, 'made.jsonl'))).toBe(false);
+  });
+
+  it('something that is not a regular file is refused', async () => {
+    fs.mkdirSync(file);
+    await expect(Journal.open(file, { sessionId: sid, epoch: 1, lastSeq: 0 })).rejects.toThrow();
+    expect(readJournalFile(file, 0).events).toEqual([]);
+  });
+
+  it('a symlinked checkpoint is not read', async () => {
+    const a = await take();
+    for (let i = 0; i < 5; i++) status(a, null, `s${i}`);
+    a.checkpoint(null);
+    const fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    expect(readCheckpoint(file, fd, size, { fold: false }).ck?.lastSeq).toBe(5);
+    const real = `${file}.ckpt.real`;
+    fs.renameSync(`${file}.ckpt`, real);
+    fs.symlinkSync(real, `${file}.ckpt`);
+    expect(readCheckpoint(file, fd, size, { fold: false })).toEqual({ offset: 0, bytes: 0 });
+    fs.closeSync(fd);
+    expect(readJournalFile(file, 0).lastSeq).toBe(5); // read whole, from the journal
+  });
+
+  it('a line naming another session is skipped by the unlocked reader and by an open', async () => {
+    const other = mintId('cs');
+    fs.writeFileSync(file, epochLine(sid) + ev(sid, 1) + epochLine(other, 9) + ev(other, 2) + ev(other, 3) + ev(sid, 2));
+    const r = readJournalFile(file, 0);
+    expect(r).toMatchObject({ epoch: 1, lastSeq: 2 });
+    expect(r.events.map((e) => [e.sessionId, e.seq])).toEqual([[sid, 1], [sid, 2]]);
+    const j = await take();
+    expect(j.epoch).toBe(1);
+    expect(j.lastSeq).toBe(2);
+    expect(j.read(0, 10).map((e) => [e.sessionId, e.seq])).toEqual([[sid, 1], [sid, 2]]);
+    expect(status(j, null, 'next').seq).toBe(3);
   });
 });
 

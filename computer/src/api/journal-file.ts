@@ -13,10 +13,15 @@
 //   under a new epoch and wrote past the old end), is rescanned from the start; `forgetJournalFile` drops a file's state outright (the host
 //   calls it when it rewrites a journal itself).
 // - Only complete lines count: a torn last line is read once it is whole.
+// - The file is in a directory its session can write (work 103, trust rule 4):
+//   it is opened without following a link and must be a regular file, else it
+//   reads as no journal; a line naming a session other than the directory's
+//   is skipped.
 
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, fstatSync, readSync } from 'node:fs';
 import type { JournalEvent } from '../protocol.js';
 import { readCheckpoint } from './journal-checkpoint.js';
+import { OPEN, openRegular, sessionOfJournal } from './journal-dir.js';
 
 const INDEX_EVERY = 64;
 const CHUNK = 256 * 1024;
@@ -48,8 +53,11 @@ export function forgetJournalFile(file: string): void {
 
 type OnLine = (v: Record<string, unknown>, offset: number, end: number) => boolean | void;
 
+/** A line that says whose it is, and it is not `sessionId`'s. */
+const foreign = (v: Record<string, unknown>, sessionId: string | undefined) => !!sessionId && typeof v.sessionId === 'string' && v.sessionId !== sessionId;
+
 /** Each complete line of `buf` (as parsed JSON) with its offset from `base` and its end; returns the offset after the last newline. */
-function eachLine(buf: Buffer, base: number, f: OnLine): number {
+function eachLine(buf: Buffer, base: number, f: OnLine, sessionId?: string): number {
   let at = 0;
   for (let nl = buf.indexOf(10, at); nl >= 0; at = nl + 1, nl = buf.indexOf(10, at)) {
     if (nl === at) continue;
@@ -59,6 +67,7 @@ function eachLine(buf: Buffer, base: number, f: OnLine): number {
     } catch {
       continue; // a line we cannot parse is skipped, never fatal
     }
+    if (foreign(v, sessionId)) continue;
     if (f(v, base + at, base + nl + 1) === false) return base + nl + 1;
   }
   return base + at;
@@ -66,8 +75,8 @@ function eachLine(buf: Buffer, base: number, f: OnLine): number {
 
 const isEvent = (v: Record<string, unknown>): v is Record<string, unknown> & JournalEvent => typeof v.seq === 'number' && v.k === undefined;
 
-/** Read `fd` from `from` to `to` in chunks, handing complete lines to `f`; stops when `f` returns false. Returns the offset reached. */
-export function scanRange(fd: number, from: number, to: number, f: OnLine): number {
+/** Read `fd` from `from` to `to` in chunks, handing complete lines to `f` (but none naming a session other than `sessionId`, when given); stops when `f` returns false. Returns the offset reached. */
+export function scanRange(fd: number, from: number, to: number, f: OnLine, sessionId?: string): number {
   const buf = Buffer.allocUnsafe(CHUNK);
   let carry = Buffer.alloc(0);
   let pos = from;
@@ -85,7 +94,7 @@ export function scanRange(fd: number, from: number, to: number, f: OnLine): numb
     }
     const end = eachLine(chunk.subarray(0, lastNl + 1), base, (v, o, e) => {
       if (f(v, o, e) === false) return (stopped = true), false;
-    });
+    }, sessionId);
     if (stopped) return end;
     base += lastNl + 1;
     carry = Buffer.from(chunk.subarray(lastNl + 1));
@@ -94,11 +103,11 @@ export function scanRange(fd: number, from: number, to: number, f: OnLine): numb
 }
 
 /** Bring `file`'s state up to date with what it holds now. */
-function refresh(file: string, fd: number): FileState {
+function refresh(file: string, fd: number, sessionId: string | undefined): FileState {
   const st = fstatSync(fd);
   let s = files.get(file);
   if (!s || s.ino !== st.ino || st.size < s.scanned || !markHolds(fd, s)) {
-    const { ck } = readCheckpoint(file, fd, st.size, { fold: false });
+    const { ck } = readCheckpoint(file, fd, st.size, { sessionId, fold: false });
     s = ck
       ? { ino: st.ino, scanned: ck.offset, epoch: ck.epoch, startSeq: ck.startSeq, through: ck.through, lastSeq: ck.lastSeq, index: ck.index, mark: markAt(fd, ck.offset) }
       : { ino: st.ino, scanned: 0, epoch: 0, startSeq: 0, through: 0, lastSeq: 0, index: [], mark: Buffer.alloc(0) };
@@ -117,7 +126,7 @@ function refresh(file: string, fd: number): FileState {
         if (!last || v.seq - last[0] >= INDEX_EVERY) state.index.push([v.seq, offset]);
         state.lastSeq = v.seq;
       }
-    });
+    }, sessionId);
     state.mark = markAt(fd, state.scanned);
   }
   return s;
@@ -151,12 +160,13 @@ export interface JournalFileRead {
 export function readJournalFile(file: string, after: number, limit = 500): JournalFileRead {
   let fd: number;
   try {
-    fd = openSync(file, 'r');
+    fd = openRegular(file, OPEN.read);
   } catch {
     return { epoch: 0, startSeq: 0, through: 0, lastSeq: 0, events: [] };
   }
   try {
-    const s = refresh(file, fd);
+    const sessionId = sessionOfJournal(file);
+    const s = refresh(file, fd, sessionId);
     const events: JournalEvent[] = [];
     const head = { epoch: s.epoch, startSeq: s.startSeq, through: s.through, lastSeq: s.lastSeq };
     if (limit <= 0 || after >= s.lastSeq) return { ...head, events };
@@ -172,7 +182,7 @@ export function readJournalFile(file: string, after: number, limit = 500): Journ
       while (events.length && events[events.length - 1].seq >= v.seq) events.pop();
       events.push(v);
       if (events.length >= limit) return false;
-    });
+    }, sessionId);
     return { ...head, events };
   } finally {
     closeSync(fd);
