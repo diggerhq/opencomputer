@@ -167,24 +167,36 @@ function preview(input: unknown): string | null {
 
 // An open ask, answerable here: approve or deny a tool call, or answer the
 // agent's questions. A secret is set privately, so it points to Secrets.
+// `hideTitle` leaves out the ask's title where the page already heads with it;
+// `onAnswered` runs once an answer or a skip is accepted.
 export function AskCard({
   ask,
   session,
   showSession,
+  hideTitle,
+  onAnswered,
 }: {
   ask: Ask
   session?: Session
   showSession?: boolean
+  hideTitle?: boolean
+  onAnswered?: () => void
 }) {
   const qc = useQueryClient()
   const answer = useMutation({
     mutationFn: (a: AskAnswer) => answerAsk(ask.sessionId, ask.id, a),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: sessionKeys.all }),
+    onSuccess: () => {
+      onAnswered?.()
+      void qc.invalidateQueries({ queryKey: sessionKeys.all })
+    },
     onError: (e) => notifyError('Could not answer', e),
   })
   const dismiss = useMutation({
     mutationFn: () => dismissAsk(ask.sessionId, ask.id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: sessionKeys.all }),
+    onSuccess: () => {
+      onAnswered?.()
+      void qc.invalidateQueries({ queryKey: sessionKeys.all })
+    },
     onError: (e) => notifyError('Could not dismiss', e),
   })
   const busy = answer.isPending || dismiss.isPending
@@ -203,12 +215,14 @@ export function AskCard({
       {ask.kind === 'approval' ? (
         <ApprovalBody
           ask={ask}
+          hideTitle={hideTitle}
           busy={busy}
           onAnswer={(a) => answer.mutate(a)}
         />
       ) : ask.kind === 'question' ? (
         <QuestionBody
           ask={ask}
+          hideTitle={hideTitle}
           busy={busy}
           onAnswer={(a) => answer.mutate(a)}
           onDismiss={() => dismiss.mutate()}
@@ -230,17 +244,21 @@ export function AskCard({
 
 function ApprovalBody({
   ask,
+  hideTitle,
   busy,
   onAnswer,
 }: {
   ask: Ask
+  hideTitle?: boolean
   busy: boolean
   onAnswer: (a: AskAnswer) => void
 }) {
   const detail = preview(ask.approval?.input)
   return (
     <div className="space-y-2">
-      <p className="text-sm font-medium">{askTitle(ask)}</p>
+      {hideTitle ? null : (
+        <p className="text-sm font-medium">{askTitle(ask)}</p>
+      )}
       {detail ? (
         <pre className="bg-muted text-muted-foreground max-h-40 overflow-auto rounded-md px-2.5 py-1.5 font-mono text-xs whitespace-pre-wrap">
           {detail}
@@ -282,11 +300,13 @@ function ApprovalBody({
 
 function QuestionBody({
   ask,
+  hideTitle,
   busy,
   onAnswer,
   onDismiss,
 }: {
   ask: Ask
+  hideTitle?: boolean
   busy: boolean
   onAnswer: (a: AskAnswer) => void
   onDismiss: () => void
@@ -312,7 +332,10 @@ function QuestionBody({
     <div className="space-y-3">
       {questions.map((q) => (
         <div key={q.id} className="space-y-1.5">
-          <p className="text-sm font-medium">{q.text || q.header}</p>
+          {/* The headline is the first question's text: one question needs no repeat. */}
+          {hideTitle && questions.length === 1 ? null : (
+            <p className="text-sm font-medium">{q.text || q.header}</p>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {q.options.map((o) => {
               const on = choices[q.id]?.includes(o.label)
