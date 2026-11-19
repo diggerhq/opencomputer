@@ -1,12 +1,27 @@
 name: Computer image
 
 # The session image of a computer (computer/deploy/image, work 103), built for
-# linux/amd64 and pushed to ghcr.io/diggerhq/computer-session:<tag>. The tag is
-# the git tree hash of computer/deploy/image, a content address: a build is
-# skipped when its tag exists, a branch's image harms nothing, and a test
-# computer on that branch finds it. Runs on a push to any branch (never a tag:
-# path filters are not evaluated for tag pushes, hence `branches`) and by hand
-# (workflow_dispatch, for a branch whose pushes did not touch these paths); a
+# linux/amd64 and pushed to ghcr.io/diggerhq/computer-session. <tree> below is
+# the git tree hash of computer/deploy/image.
+#
+#   main            pushes :<tree>, the image releases run
+#   another branch  pushes :branch-<tree>, for test computers only
+#
+# A tag proves nothing by itself: the token of any run, on any branch, can
+# push any tag of the package, and this file is not part of the tree. So every
+# pushed image gets GitHub's build provenance attestation (signed with the
+# run's identity: this workflow, this ref, this commit), and nothing trusts a
+# tag without it. computer/deploy/image-pin.sh is the one check: the release
+# pipeline runs it to pin a release to the digest main built for its tree, and
+# a computer pulls by that digest. Here it decides whether main still has to
+# build (an image under :<tree> that main did not build, or built from another
+# tree, is built again and pushed over), and it checks each build after the
+# push, on a branch too, so the release pipeline's check runs before a merge.
+#
+# A branch skips the build when :branch-<tree> exists, whoever pushed it.
+# Runs on a push to any branch (never a tag: path filters are not evaluated
+# for tag pushes, hence `branches`) and by hand (workflow_dispatch, for a
+# branch whose pushes did not touch these paths, or to build again on main); a
 # pull request from a fork builds and tests without pushing. The only
 # credential is GITHUB_TOKEN.
 
@@ -16,10 +31,12 @@ on:
     branches: ['**']
     paths:
       - computer/deploy/image/**
+      - computer/deploy/image-pin.sh
       - .github/workflows/computer-image.yml
   pull_request:
     paths:
       - computer/deploy/image/**
+      - computer/deploy/image-pin.sh
       - .github/workflows/computer-image.yml
 
 permissions:
@@ -39,6 +56,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       tree: ${{ steps.tag.outputs.tree }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +64,11 @@ jobs:
 
       - name: Tag
         id: tag
-        run: echo "tree=$(git rev-parse "HEAD:$CONTEXT")" >> "$GITHUB_OUTPUT"
+        run: |
+          tree="$(git rev-parse "HEAD:$CONTEXT")"
+          # refs/heads/main as in computer/deploy/image-pin.sh, which decides what a release runs.
+          if [[ $GITHUB_REF == refs/heads/main ]]; then tag="$tree"; else tag="branch-$tree"; fi
+          printf 'tree=%s\ntag=%s\n' "$tree" "$tag" >> "$GITHUB_OUTPUT"
 
   image:
     name: Build and push
@@ -56,10 +78,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The attestation: the run's identity token signs it, and GitHub stores it.
+      id-token: write
+      attestations: write
     # One build per tag at a time, whatever the branch: the second finds the
     # tag and skips. A pull request never pushes, so it has a group of its own.
     concurrency:
-      group: computer-image-${{ github.event_name == 'pull_request' && github.run_id || needs.tag.outputs.tree }}
+      group: computer-image-${{ github.event_name == 'pull_request' && github.run_id || needs.tag.outputs.tag }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -70,10 +95,11 @@ jobs:
         id: tag
         env:
           TREE: ${{ needs.tag.outputs.tree }}
+          TAG: ${{ needs.tag.outputs.tag }}
         run: |
           # The checkout is the one the tag job hashed.
           test "$(git rev-parse "HEAD:$CONTEXT")" = "$TREE"
-          echo "ref=$IMAGE:$TREE" >> "$GITHUB_OUTPUT"
+          echo "ref=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
@@ -81,15 +107,30 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Is the tag there already?
+      - name: Is the image there already?
         id: exists
         env:
           REF: ${{ steps.tag.outputs.ref }}
+          TREE: ${{ needs.tag.outputs.tree }}
           EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            # On main "there" means built here, by main, from this tree. Anything
+            # else under the tag (a branch can push it) is built again and pushed
+            # over; so is an image this could not check, which costs one build.
+            if pin="$(computer/deploy/image-pin.sh "$TREE")"; then
+              echo "$REF is $pin, built by main; nothing to build"
+              echo "found=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$REF is not an image main built from this tree; building"
+              echo "found=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
           # Missing only when the registry says so. Any other failure (a 5xx,
           # a timeout, a refused login) must not lead to a build that pushes
-          # over a tag that may exist: the tag is a content address.
+          # over a tag a test computer may be running.
           if err="$(docker manifest inspect "$REF" 2>&1 >/dev/null)"; then
             echo "$REF exists; nothing to build"
             echo "found=true" >> "$GITHUB_OUTPUT"
@@ -138,7 +179,32 @@ jobs:
           test "$code" = 71
 
       - name: Push
+        id: push
         if: github.event_name != 'pull_request' && steps.exists.outputs.found == 'false'
         env:
           REF: ${{ steps.tag.outputs.ref }}
-        run: docker push "$REF"
+        run: |
+          docker push "$REF"
+          # What the tag names in the registry now: the digest computers pull by.
+          manifest="$(docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}')"
+          digest="$(jq -r .digest <<<"$manifest")"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest
+        if: steps.push.outputs.digest != ''
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+
+      # The release pipeline's own check, on what this run pushed: on main the
+      # line a release is pinned to, on a branch the same check for its test image.
+      - name: Pin
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || steps.push.outputs.digest != '')
+        env:
+          TREE: ${{ needs.tag.outputs.tree }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pin="$(computer/deploy/image-pin.sh "$TREE" "$GITHUB_REF")"
+          echo "\`$pin\` (tree \`$TREE\`, $GITHUB_REF)" | tee -a "$GITHUB_STEP_SUMMARY"
