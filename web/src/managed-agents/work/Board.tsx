@@ -23,6 +23,7 @@ import { timeAgo } from '../computer-sessions/transcript'
 import {
   getClosedItems,
   getOpenItems,
+  keepOpenItems,
   useOrg,
   workKeys,
   type Item,
@@ -70,10 +71,10 @@ function useOpenItems() {
     queryFn: async () => {
       const prev = qc.getQueryData<OpenItemsPoll>(key)
       const next = await getOpenItems(prev?.etag ?? null)
-      if (next) return next
-      if (prev) return prev
+      if (prev) return keepOpenItems(prev, next)
+      if (!('notModified' in next)) return next
       // A 304 with nothing cached cannot happen (no ETag was sent); ask again.
-      return (await getOpenItems(null))!
+      return (await getOpenItems(null)) as OpenItemsPoll
     },
     refetchInterval: OPEN_POLL_MS,
     retry: (count, error) =>

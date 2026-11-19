@@ -419,3 +419,25 @@ export function workMock(
   }
   return undefined
 }
+
+/**
+ * The open-items poll as the server answers it, headers included: an ETag
+ * over the page without `asOf`, a 304 when the caller's ETag still matches,
+ * and the index's `Work-As-Of` on both.
+ */
+export function workOpenItemsResponse(ifNoneMatch: string | null): Response {
+  const page = workMock(`${PREFIX}/items?stage=open`, 'GET', undefined) as Json
+  const { asOf, ...rest } = page
+  const etag = `"${hash(JSON.stringify(rest))}"`
+  const headers = new Headers({ ETag: etag })
+  if (typeof asOf === 'string') headers.set('Work-As-Of', asOf)
+  if (ifNoneMatch === etag) return new Response(null, { status: 304, headers })
+  headers.set('Content-Type', 'application/json')
+  return new Response(JSON.stringify(page), { status: 200, headers })
+}
+
+function hash(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i)
+  return (h >>> 0).toString(16)
+}

@@ -161,31 +161,47 @@ export function putRepository(choice: RepositoryChoice) {
 /** What the open-items poll keeps: the page and the ETag it came with. */
 export type OpenItemsPoll = { etag: string | null; page: OpenItems }
 
+/** A 304: the page is unchanged, but the index was read again at `asOf`. */
+export type OpenItemsUnchanged = { notModified: true; asOf: string | null }
+
+// The server sends how fresh its index is on every answer, 200 or 304, so a
+// quiet board does not drift into "As of N ago" while nothing changes.
+const AS_OF_HEADER = 'Work-As-Of'
+
 /**
  * All open items. With the ETag of the last answer the server says 304 when
- * nothing changed (head and attention unchanged); that returns null, and the
- * caller keeps what it has.
+ * nothing changed; that returns only the new `asOf`, and the caller keeps the
+ * page it has (`keepOpenItems`).
  */
 export async function getOpenItems(
   etag: string | null,
-): Promise<OpenItemsPoll | null> {
+): Promise<OpenItemsPoll | OpenItemsUnchanged> {
   const path = `${PREFIX}/items?stage=open`
+  const init = etag ? { headers: { 'If-None-Match': etag } } : {}
+  let res: Response
   if (import.meta.env.VITE_PREVIEW === '1') {
-    return {
-      etag: null,
-      page: await apiFetch(path, undefined, OpenItemsSchema),
-    }
+    const { workOpenItemsResponse } = await import('@/api/mock-work')
+    res = workOpenItemsResponse(etag)
+  } else {
+    res = await apiFetchResponse(path, init, '/api')
   }
-  const res = await apiFetchResponse(
-    path,
-    etag ? { headers: { 'If-None-Match': etag } } : {},
-    '/api',
-  )
-  if (res.status === 304) return null
+  const asOf = res.headers.get(AS_OF_HEADER)
+  if (res.status === 304) return { notModified: true, asOf }
+  const page = validate(OpenItemsSchema, await res.json(), path)
   return {
     etag: res.headers.get('ETag'),
-    page: validate(OpenItemsSchema, await res.json(), path),
+    page: asOf ? { ...page, asOf } : page,
   }
+}
+
+/** The poll's next value: a new page, or the old one with the new `asOf`. */
+export function keepOpenItems(
+  prev: OpenItemsPoll,
+  next: OpenItemsPoll | OpenItemsUnchanged,
+): OpenItemsPoll {
+  if (!('notModified' in next)) return next
+  if (!next.asOf || next.asOf === prev.page.asOf) return prev
+  return { ...prev, page: { ...prev.page, asOf: next.asOf } }
 }
 
 export function getClosedItems(cursor: string | undefined, limit = 50) {
