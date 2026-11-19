@@ -443,6 +443,8 @@ function writeConfigs(stack, { bootstrap }) {
         { name: "COMPUTERS", class_name: "ComputerDurableObject" },
         // Work 084: one per computer session, the sessions API's copy of its event log.
         { name: "SESSION_LOG", class_name: "SessionLogDurableObject" },
+        // Work tracking: one per organization, the index of its knowledge repository's work items.
+        { name: "WORK_INDEX", class_name: "WorkIndexDurableObject" },
       ],
     },
     migrations: [
@@ -455,6 +457,7 @@ function writeConfigs(stack, { bootstrap }) {
       { tag: "v4", new_sqlite_classes: ["ProjectDatabaseDurableObject"] },
       { tag: "v5", new_sqlite_classes: ["ComputerDurableObject"] },
       { tag: "v6", new_sqlite_classes: ["SessionLogDurableObject"] },
+      { tag: "v7", new_sqlite_classes: ["WorkIndexDurableObject"] },
     ],
     observability,
   });

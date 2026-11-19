@@ -147,6 +147,7 @@ import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
 import { type WorkContextOp, type WorkStampOp, workContext, workStamp, workStampSetup } from "./work/briefs.js";
+import { knowledgeRepository } from "./work/index-do.js";
 import { AccessStore } from "./access-store.js";
 import { AccessFlow } from "./access-flow.js";
 import { AccessUi } from "./access-ui.js";
@@ -376,6 +377,8 @@ export const SLACK_STRANDED_MS = 60_000;
 const SLACK_FALLBACK_MS = 1_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
+/** The Work index answers from its own storage; a slow one must not hold up `welcome`. */
+const KNOWLEDGE_TIMEOUT_MS = 2_000;
 /** How often a delivery may re-read the organization's repositories (work 052). */
 const DEFINITION_RECHECK_MS = 60_000;
 
@@ -3886,7 +3889,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
           new Promise<null>((resolve) => setTimeout(() => resolve(null), DEFINITION_TIMEOUT_MS)),
         ]);
         if (fresh) {
-          const definition = workspaceDefinition("organization", fresh);
+          const definition = workspaceDefinition("organization", fresh, await this.knowledge());
           const changed = JSON.stringify(definition) !== this.setting("definition");
           this.put("definition", JSON.stringify(definition));
           span.end({ outcome: "completed", data: { ...data(), repos: fresh.length, changed, timed_out: false } });
@@ -3900,6 +3903,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       const cached = this.setting("definition");
       return cached ? (JSON.parse(cached) as WorkspaceDefinition) : null;
     });
+  }
+
+  /**
+   * The organization's knowledge repository (`owner/name`) from the Work index
+   * (work tracking, design 3.1), or none. An index that does not answer in
+   * time keeps the last answer, so the definition does not flap.
+   */
+  private async knowledge(): Promise<string | undefined> {
+    try {
+      const repository = await Promise.race([
+        knowledgeRepository(this.env, this.accountId()),
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), KNOWLEDGE_TIMEOUT_MS)),
+      ]);
+      if (repository !== undefined) this.put("knowledge", repository ? `${repository.owner}/${repository.name}` : "");
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.knowledge_lookup_failed", message: errorText(error) }));
+    }
+    return this.setting("knowledge") || undefined;
   }
 
   /** A host's `token`: from the installation that owns the requested repositories, narrowed to them. */
