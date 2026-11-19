@@ -1,7 +1,8 @@
-# Computer runbook: the client relay (work 084)
+# Computer runbook: the client relay (work 084) and the model proxy (work 097)
 
 What runs on a computer for the Computer API's WebSocket and `/files`, where
-its logs are, and how to find why a client cannot connect. Commands run as
+its logs are, and how to find why a client cannot connect. The model proxy,
+which every session's model requests go through, is [at the end](#the-model-proxy-work-097). Commands run as
 root on the computer (Azure Run Command or a shell through the host).
 
 ## The pieces
@@ -106,3 +107,38 @@ systemctl stop slack-presence-wire        # the API's live wire is down; HTTP re
 A release rollback (`self-update.sh` to an older commit) restarts the relay
 with that release's bundle. The relay keeps no state of its own: restarting it
 never loses an event.
+
+## The model proxy (work 097)
+
+`oc-modelproxy.service`, user `modelproxy`, `/usr/local/libexec/oc-modelproxy`
+(`modelproxy/`, its README). `deploy/vm/modelproxy.sh install` puts it there on
+every provision and code-only update, from the release (`deploy/bundle.sh`
+builds the binary into it; nothing is compiled on a computer), with the
+shipped profiles in `/etc/oc-modelproxy/profiles.d/`. Before it installs
+anything it runs the new binary's `-check` on the profile set it would serve;
+on a failure nothing changes and the installed proxy keeps serving.
+
+| Socket | Owner | Who |
+|---|---|---|
+| `/run/oc-modelproxy/api.sock` | `modelproxy:agent` 0660 | the sessions' model clients (the host's `SP_MODEL_SOCKET`) |
+| `/run/oc-modelproxy/control.sock` | `modelproxy:sp-host` 0660 | the host only (`SP_MODEL_PROXY`, set by `sp-host.sh migrate`) |
+
+Both are socket units, so a restart refuses no connection. A new binary or
+profile is a handoff (`systemctl reload oc-modelproxy`: SIGUSR2, a replacement
+with the same command line, the old process drains up to 630 s); only a
+changed unit file restarts it. A reload during a drain is ignored: the new
+binary waits for the next one. Files in `profiles.d` that a release does not
+ship are kept and checked with the rest.
+
+```sh
+systemctl status oc-modelproxy oc-modelproxy-api.socket oc-modelproxy-control.socket
+journalctl -u oc-modelproxy -n 200 --no-pager            # JSON lines: ready, bound, denied, handoff
+/usr/local/libexec/oc-modelproxy -version                # the release commit it was built from
+/usr/local/libexec/oc-modelproxy -check -profiles /etc/oc-modelproxy/profiles.d
+journalctl -u slack-presence-host | grep -i 'model proxy'   # the host's side: down for 30 s, rebinds
+```
+
+No proxy (not installed, or the host has no `SP_MODEL_PROXY`, as on a
+computer not migrated to `sp-host`): the host logs an error and no session
+starts; the person sees "This computer's model proxy is not running." A
+session bound to no credential gets the host's reason in the thread.

@@ -183,9 +183,14 @@ describe("computer thread access", () => {
 
   it("reads for a guest only when they are in the channel, and fails closed on an unknown person", async () => {
     const s = await withSession("org_threads_guest", "T0TH5");
-    expect((await s.say(`<${PUBLIC}>`, { user: "UGUEST" })).msg.linked[0]).toEqual({ url: PUBLIC, ok: false, reason: "a guest who asked is not in that channel" });
-    expect((await s.say(`<${PUBLIC}>`, { user: "UGUESTIN" })).msg.linked[0]).toMatchObject({ ok: true });
-    expect((await s.say(`<${PUBLIC}>`, { user: "UNOBODY" })).msg.linked[0]).toMatchObject({ ok: false, reason: "could not confirm who asked can see that channel" });
+    // Work 112: only full members drive someone else's session, so each starts a session of their own.
+    const own = async (user: string, ts: string) => {
+      await slackEvent(s.org, s.team, s.channel, { type: "app_mention", user, text: `<@UBOT> <${PUBLIC}>`, ts });
+      return until(() => s.frames.find((frame) => frame.t === "deliver" && frame.msg.ts === ts), (found) => !!found, `the delivery of ${ts}`);
+    };
+    expect((await own("UGUEST", "1700000101.000100")).msg.linked[0]).toEqual({ url: PUBLIC, ok: false, reason: "a guest who asked is not in that channel" });
+    expect((await own("UGUESTIN", "1700000102.000100")).msg.linked[0]).toMatchObject({ ok: true });
+    expect((await own("UNOBODY", "1700000103.000100")).msg.linked[0]).toMatchObject({ ok: false, reason: "could not confirm who asked can see that channel" });
     s.socket.close();
   });
 

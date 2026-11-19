@@ -12,7 +12,7 @@ import { send } from '../ipc.js';
 
 export type RunnerCall =
   | { t: 'deliver'; msg: Delivery; trace?: TraceContext }
-  | { t: 'action'; promptId: string; value: string; userId: string }
+  | { t: 'action'; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
   | { t: 'stop' }
   | { t: 'claim'; session: SessionSpec & { forkPath: string }; api?: RunnerApi };
 

@@ -1,10 +1,12 @@
 // The gateway's SQLite tables (work 045): sessions, people, hosts, Slack event
-// de-duplication and the outbox for hosts that are offline. Everything the
+// de-duplication and the outbox for hosts that are offline; session roles'
+// tables are access-store.ts's (work 112). Everything the
 // gateway must remember across a redeploy lives here; nothing per runner.
 
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { Delivery, SlackPerson, SessionReport, SlackSessionSpec, SessionStatus } from '../protocol.js';
+import { AccessStore } from './access-store.js';
 
 export interface SessionRow {
   spec: SlackSessionSpec;
@@ -17,7 +19,7 @@ export interface SessionRow {
 /** A message waiting for a host: replayed in order when one connects. */
 export type Queued =
   | { t: 'deliver'; key: string; msg: Delivery }
-  | { t: 'action'; key: string; promptId: string; value: string; userId: string };
+  | { t: 'action'; key: string; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' };
 
 const EVENT_TTL_MS = 60 * 60 * 1000;
 const OUTBOX_TTL_MS = 24 * 60 * 60 * 1000;
@@ -39,7 +41,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, msg TEXT NOT NULL, at INTEGER NOT NULL);
     `);
+    this.access = new AccessStore(this.db);
   }
+
+  /** Session roles (work 112): drivers, held context, requests to drive, the org default. */
+  readonly access: AccessStore;
 
   // ---- sessions
 

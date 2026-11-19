@@ -1,0 +1,1 @@
+{"t":"event","name":"model.binding","at":1792520091000,"outcome":"completed","session_key":"T0/C0/1700000000.000100","profile":"openai-key","data":{"action":"bind","caller":"abc123","mode":"profile","key":"k1"}}
