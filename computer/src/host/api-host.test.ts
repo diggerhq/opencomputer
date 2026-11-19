@@ -1,11 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiClient } from '../api/socket.js';
+import { loadResult, saveResult } from '../api/subagent-results.js';
+import { openLog, turn } from '../api/testing.js';
 import { type CallOutcome, RECORD_METHOD, type SubscribeOptions } from '../api/writer.js';
 import type { ApiActor, GatewayToHost, HostToGateway, JournalEvent, SessionSpec } from '../protocol.js';
 import { apiHost, type ApiHostDeps, type StartOptions, type WireHooks, type WireLinkLike } from './api-host.js';
+import { mintId } from '../session-ids.js';
 import { subagentsRunning } from './runner-api.js';
 
 const S = 'cs_0000000000000001';
@@ -179,7 +182,8 @@ describe('apiHost', () => {
     expect(t.host.handedOff).toBe(true);
     expect(ra).toMatchObject({ sessionId: S, epoch: 3, lastSeq: 7, socket: path.join(t.root, 'runners', 'beef.api.sock') });
     expect(ra?.token).toHaveLength(43);
-    expect(ra?.journal).toBe(path.join(t.root, 'data', 'journals', `${S}.jsonl`));
+    expect(ra?.journal).toBe(path.join(t.root, 'data', 'journals', S, `${S}.jsonl`));
+    expect(statSync(path.dirname(ra!.journal)).mode & 0o7777).toBe(0o2770); // made for the runner, which cannot
     // A call while the runner starts waits for it, then goes to it.
     t.a.onGateway(api('a2', 'sessions.get'));
     await tick(5);
@@ -222,8 +226,8 @@ describe('apiHost', () => {
       let hooks: WireHooks | undefined;
       const t = setup({ wire: async (h) => ((hooks = h), { setKey() {}, setAccess() {}, setAdmins() {}, revoked() {}, moved() {}, close: async () => {} }) });
       // A session that ran before this host booted: its journal is on disk, its spec is not in memory.
-      mkdirSync(path.join(t.root, 'data', 'journals'), { recursive: true });
-      writeFileSync(path.join(t.root, 'data', 'journals', `${S}.jsonl`), '');
+      mkdirSync(path.join(t.root, 'data', 'journals', S), { recursive: true });
+      writeFileSync(path.join(t.root, 'data', 'journals', S, `${S}.jsonl`), '');
       t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
       await vi.advanceTimersByTimeAsync(0);
       expect(await hooks!.where(S)).toMatchObject({ writer: 'host' });
@@ -283,7 +287,7 @@ describe('apiHost', () => {
   it('at boot mirrors what the scan left in journals no writer holds, once the gateway speaks v4', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'apihost-'));
     dirs.push(root);
-    const jdir = path.join(root, 'data', 'journals');
+    const jdir = path.join(root, 'data', 'journals', S);
     mkdirSync(jdir, { recursive: true });
     const ev = (seq: number) => JSON.stringify({ id: `ev_${seq}`, seq, createdAt: '', sessionId: S, turnId: null, type: 'turn.failed', actor: null, data: {} });
     writeFileSync(path.join(jdir, `${S}.jsonl`), `${JSON.stringify({ k: 'epoch', sessionId: S, epoch: 2, startSeq: 1, at: 0 })}\n${ev(1)}\n${ev(2)}\n`);
@@ -297,6 +301,53 @@ describe('apiHost', () => {
     expect(t.a.bridge.state(S)).toBeUndefined();
     expect(existsSync(path.join(root, 'data', 'journals'))).toBe(true);
     await t.a.stop();
+  });
+});
+
+describe('journals from before the directory per session (work 103 C8)', () => {
+  it('are moved once at host start, read by the hello and the boot scan, and still there after a restart; a new session writes nested', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'apihost-'));
+    dirs.push(root);
+    const dataDir = path.join(root, 'data');
+    const jdir = path.join(dataDir, 'journals');
+    mkdirSync(jdir, { recursive: true });
+    // An old host's session, as it left it: journal, checkpoint and a result directly in journals/.
+    const flat = path.join(jdir, `${S}.jsonl`);
+    const old = await openLog(flat, S, { epoch: 2 });
+    turn(old);
+    old.checkpoint();
+    const sa = mintId('sa');
+    saveResult(flat, sa, 'whole');
+    await old.release();
+    const nested = path.join(jdir, S, `${S}.jsonl`);
+
+    const first = setup({ dataDir, scan: undefined });
+    expect(readdirSync(jdir)).toEqual([S]);
+    expect(readdirSync(path.join(jdir, S)).sort()).toEqual([`${S}.jsonl`, `${S}.jsonl.ckpt`, `${S}.jsonl.results`]);
+    expect(first.a.journals()).toMatchObject([{ sessionId: S, epoch: 2, lastSeq: 4 }]);
+    const found = await first.a.boot();
+    expect(found).toMatchObject([{ sessionId: S, file: nested, epoch: 2 }]);
+    const settled = found[0].lastSeq;
+    await first.a.stop();
+
+    // The host restarts: nothing is flat, nothing moves, the same journal is read.
+    const second = setup({ dataDir, scan: undefined });
+    expect(readdirSync(jdir)).toEqual([S]);
+    expect(second.a.journals()).toMatchObject([{ sessionId: S, epoch: 2, lastSeq: settled }]);
+    expect(await second.a.boot()).toMatchObject([{ sessionId: S, file: nested, lastSeq: settled }]);
+    expect(loadResult(nested, sa)).toBe('whole');
+    // A runner minted for it, and one for a session with no journal yet, are given the nested path, in a directory that exists.
+    second.a.onGateway(welcome(4));
+    expect((await second.a.mint(spec, 'beef'))?.journal).toBe(nested);
+    const S2 = mintId('cs');
+    const fresh = await second.a.mint({ ...spec, sessionId: S2, key: 'k2' }, 'cafe');
+    expect(fresh?.journal).toBe(path.join(jdir, S2, `${S2}.jsonl`));
+    const log = await openLog(fresh!.journal, S2);
+    turn(log);
+    await log.release();
+    expect(readdirSync(jdir).sort()).toEqual([S, S2].sort());
+    expect(second.a.journals().map((j) => j.sessionId).sort()).toEqual([S, S2].sort());
+    await second.a.stop();
   });
 });
 

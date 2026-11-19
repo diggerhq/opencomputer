@@ -7,7 +7,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSyn
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ensureJournalDir, Journal, journalPath, readJournalFile } from '../api/journal.js';
+import { ensureSessionJournalDir, Journal, journalPath, readJournalFile } from '../api/journal.js';
 import type { ApiClient } from '../api/socket.js';
 import type { SubscribeOptions } from '../api/writer.js';
 import type { ApiActor, GatewayToHost, HostToGateway, JournalEvent, SessionSpec } from '../protocol.js';
@@ -108,7 +108,7 @@ describe('epoch adoption (recovery-fix)', () => {
     dirs.push(root);
     const dataDir = path.join(root, 'data');
     const file = journalPath(dataDir, S);
-    ensureJournalDir(dataDir);
+    ensureSessionJournalDir(dataDir, S);
     mkdirSync(path.join(root, 'runners'));
     const runner = await fakeRunner(file);
     const dO = fakeDo();
@@ -197,7 +197,7 @@ describe('epoch adoption (recovery-fix)', () => {
     dirs.push(root);
     const dataDir = path.join(root, 'data');
     const file = journalPath(dataDir, S);
-    ensureJournalDir(dataDir);
+    ensureSessionJournalDir(dataDir, S);
     mkdirSync(path.join(root, 'runners'));
     const runner = await fakeRunner(file);
     const dO = fakeDo();
@@ -407,7 +407,7 @@ describe('epoch adoption (recovery-fix)', () => {
     dirs.push(root);
     const dataDir = path.join(root, 'data');
     const file = journalPath(dataDir, S);
-    ensureJournalDir(dataDir);
+    ensureSessionJournalDir(dataDir, S);
     const dO = fakeDo();
     for (const type of ['message.received', 'turn.started', 'tool.started']) dO.log.push({ id: `ev_${type}`, seq: dO.log.length + 1, createdAt: '2026-10-26T00:00:00.000Z', sessionId: S, turnId: 'tn_1', type, actor: null, data: {} });
     const frame = dO.recover(3);
@@ -431,7 +431,7 @@ describe('epoch adoption (recovery-fix)', () => {
     dirs.push(root);
     const dataDir = path.join(root, 'data');
     const file = journalPath(dataDir, S);
-    ensureJournalDir(dataDir);
+    ensureSessionJournalDir(dataDir, S);
     const ev = (seq: number) => `${JSON.stringify({ id: `ev_${seq}`, seq, createdAt: '2026-10-26T00:00:00.000Z', sessionId: S, turnId: null, type: 'runtime.suspended', actor: null, data: {} })}\n`;
     appendFileSync(file, `${JSON.stringify({ k: 'epoch', sessionId: S, epoch: 1, startSeq: 1, at: 0 })}\n${ev(1)}${ev(2)}`);
     const a = apiHost({ dataDir, stateDir: path.join(root, 'state'), runDir: path.join(root, 'run'), runnersDir: root, send: () => true, start: async () => 'idle', scan: async () => [], flushMs: 1 });

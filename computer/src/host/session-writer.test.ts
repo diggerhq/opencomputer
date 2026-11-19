@@ -3,7 +3,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiDelivery, JournalEvent } from '../protocol.js';
 import { mintId } from '../session-ids.js';
-import { journalPath } from '../api/journal.js';
+import { ensureSessionJournalDir, journalPath } from '../api/journal.js';
 import { dialApi } from '../api/socket.js';
 import { ANN, ANN_CTX, askOf, assertEvent, openLog, subagentOf, tempSession, turn } from '../api/testing.js';
 import { HostSessionWriter, QUEUE_MAX, scanJournals } from './session-writer.js';
@@ -237,13 +237,14 @@ describe('scanJournals', () => {
 
     // A second, locked journal (a running runner's) is skipped.
     const other = mintId('cs');
+    ensureSessionJournalDir(t.dir, other);
     const held = await openLog(journalPath(t.dir, other), other);
     turn(held);
     cleanups.push(() => held.release());
     const before = log.lastSeq;
     await log.release();
 
-    const dir = path.dirname(t.file);
+    const dir = path.join(t.dir, 'journals');
     const r1 = await scanJournals(dir, { owner });
     const mine = r1.find((r) => r.sessionId === t.sessionId);
     expect(r1.find((r) => r.sessionId === other)?.skipped).toBe('locked');
@@ -269,7 +270,12 @@ describe('scanJournals', () => {
     expect(await scanJournals('/nonexistent/dir')).toEqual([]);
     const t = tempSession();
     cleanups.push(t.cleanup);
+    const journals = path.join(t.dir, 'journals');
+    fs.writeFileSync(path.join(journals, 'notes.txt'), 'x');
     fs.writeFileSync(path.join(path.dirname(t.file), 'notes.txt'), 'x');
-    expect(await scanJournals(path.dirname(t.file))).toEqual([]);
+    // A journal directly in journals/ (the layout before work 103) is not one, nor is a directory that is not a session's.
+    fs.writeFileSync(path.join(journals, `${t.sessionId}.jsonl`), `${JSON.stringify({ k: 'epoch', sessionId: t.sessionId, epoch: 1, startSeq: 1, at: 0 })}\n`);
+    fs.mkdirSync(path.join(journals, 'other'));
+    expect(await scanJournals(journals)).toEqual([]);
   });
 });

@@ -26,7 +26,7 @@
 // - Host session-writers stay open until a runner takes their session over
 //   (v1: never released for idleness; a few fds per suspended session).
 
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type {
   ApiSessionStatus, Delivery, GatewayToHost, HostCredentials, HostToGateway, JournalReport, ModelRoute, Person,
@@ -35,7 +35,9 @@ import type {
 import { HOST_RUN } from '../protocol.js';
 import { apiError, RECORD_METHOD } from '../api/writer.js';
 import { createdOf } from '../api/created.js';
-import { ensureJournalDir, forgetJournalFile, Journal, journalPath, readJournalFile } from '../api/journal.js';
+import { ensureJournalDir, ensureSessionJournalDir, forgetJournalFile, Journal, journalPath, readJournalFile } from '../api/journal.js';
+import { moveFlatJournals, moveFlatSessionLogged } from './journal-flat-move.js';
+import { journalReports } from './journal-reports.js';
 import { type HostWriterOptions, HostSessionWriter, scanJournals } from './session-writer.js';
 import { isSessionId } from '../session-ids.js';
 import { runnersDir as runnersDirOf } from '../ipc.js';
@@ -109,6 +111,7 @@ const ownerOf = (p: Person | undefined) => ({ id: p?.userId ?? p?.slackUserId ??
 export function apiHost(d: ApiHostDeps) {
   const runnersDir = d.runnersDir ?? runnersDirOf(HOST_RUN);
   const journals = path.join(d.dataDir, 'journals');
+  moveFlatJournals(d.dataDir); // before anything below lists or reads a journal (work 103 C8; goes in its step 12)
   const tokens = runnerApis(path.join(d.runDir, 'runners.json'));
   const acks = mirrorAcks(path.join(d.stateDir, 'mirror-acks.json'));
   const meter = d.meter ?? (d.telemetry && apiMeter(d.telemetry, { journals }));
@@ -118,8 +121,7 @@ export function apiHost(d: ApiHostDeps) {
   const specs = new Map<string, SessionSpec>();
   /** The log's epoch and the DO's lastSeq, as the last frame said. */
   const logs = new Map<string, { epoch: number; lastSeq: number }>();
-  /** The hello's view of each journal on disk, by the file's inode, size and mtime: read again only once it changed. */
-  let onDisk = new Map<string, { stat: string; report: JournalReport | null }>();
+  const reports = journalReports(journals, (sessionId) => logs.get(sessionId)?.epoch);
   /** The runner serving each session (its RunnerApi), and a port to it. */
   const live = new Map<string, { runnerId: string; api: RunnerApi; port: ReturnType<typeof remotePort> }>();
   const hostWriters = new Map<string, { w: Promise<HostWriter>; socket: string; token: string; epoch: number }>();
@@ -187,6 +189,8 @@ export function apiHost(d: ApiHostDeps) {
     const spec = specs.get(sessionId);
     const journal = journalPath(d.dataDir, sessionId);
     if (!spec && !existsSync(journal)) return undefined;
+    ensureSessionJournalDir(d.dataDir, sessionId);
+    moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
     const { epoch, lastSeq } = logOf(sessionId);
     const h = { socket: apiSocketFor(sessionId, runnersDir), token: mintToken(), epoch, w: undefined as unknown as Promise<HostWriter> };
     h.w = openHostWriter({
@@ -319,7 +323,8 @@ export function apiHost(d: ApiHostDeps) {
       const r = live.get(sessionId);
       if (r && !retired.has(r.runnerId)) retired.add(r.runnerId), (retiredRunner = true), await d.retire?.(r.runnerId);
       await handOff(sessionId);
-      ensureJournalDir(d.dataDir);
+      ensureSessionJournalDir(d.dataDir, sessionId);
+      moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
       const j = await Journal.open(file, { sessionId, epoch: m.epoch, lastSeq: m.lastSeq, epochStartSeq: m.startSeq, tail: m.tail, waitMs: fail ? 0 : (d.lockWaitMs ?? 10_000) });
       await j.release();
       forgetJournalFile(file);
@@ -467,6 +472,8 @@ export function apiHost(d: ApiHostDeps) {
       await handOff(sessionId);
       relay.moved(sessionId);
       const { epoch, lastSeq } = logOf(sessionId);
+      ensureSessionJournalDir(d.dataDir, sessionId); // the runner opens the journal there and cannot make the directory itself
+      moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
       const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, runnersDir), token: mintToken() };
       tokens.set(runnerId, api);
       return api;
@@ -515,34 +522,7 @@ export function apiHost(d: ApiHostDeps) {
     },
 
     /** For the gateway hello: every journal on disk, its epoch and last seq (so the gateway sends `epoch` where it is ahead). */
-    journals(): JournalReport[] {
-      let names: string[] = [];
-      try {
-        names = readdirSync(journals);
-      } catch {}
-      // A hello per gateway connect: a file unchanged since the last is not read again (past journal-file.ts's
-      // 512 files, its least recently read state is gone and each hello would rescan them, 084 perf fix 6).
-      const seen = new Map<string, { stat: string; report: JournalReport | null }>();
-      for (const n of names) {
-        const sessionId = n.replace(/\.jsonl$/, '');
-        if (!n.endsWith('.jsonl') || !isSessionId(sessionId)) continue;
-        const file = path.join(journals, n);
-        const st = statSync(file, { throwIfNoEntry: false });
-        if (!st) continue;
-        const stat = `${st.ino}:${st.size}:${st.mtimeMs}`;
-        const was = onDisk.get(sessionId);
-        if (was?.stat === stat) {
-          seen.set(sessionId, was);
-          continue;
-        }
-        const { epoch, startSeq, lastSeq } = readJournalFile(file, Number.MAX_SAFE_INTEGER, 0);
-        // Epoch 0 with events: an adoption into a new file torn before its epoch line (the gateway resends `epoch`).
-        const report = epoch ? { sessionId, epoch, startSeq, lastSeq } : lastSeq ? { sessionId, epoch: 0, startSeq: 0, lastSeq } : null;
-        seen.set(sessionId, { stat, report });
-      }
-      onDisk = seen;
-      return [...seen.values()].flatMap(({ report: r }) => (!r ? [] : !r.epoch ? [r] : [{ ...r, epoch: Math.max(r.epoch, logs.get(r.sessionId)?.epoch ?? 0) }]));
-    },
+    journals: (): JournalReport[] => reports(),
 
     /** After rediscovery: forget the tokens of runners that did not come back. */
     rediscovered(liveRunners: Set<string>) {
