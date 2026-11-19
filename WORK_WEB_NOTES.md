@@ -77,3 +77,47 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
 ## Preview mock
 
 `web/src/api/mock-work.ts` holds invented data. Pick a scenario with `?work=none|empty|mine-empty|building|problem|missing`.
+
+## Visual pass
+
+A second pass on arrangement and type only; what the screens show and do is
+unchanged. It stays in the dashboard's family: Inter, `text-sm` (14/20) for
+names and `text-xs` (12/16 or 12/20) for everything quiet, the warm neutral
+tokens, 1px `border` lines, `rounded-lg` panels. The benchmark is the calm and
+regularity of Linear's board and issue page, not its features.
+
+- Grid: three equal stage lanes on one grid (`lg:grid-cols-3`), one stack of
+  cards each. Each lane is a tinted region (`bg-muted/50`, darker than the
+  shell in the dark theme) that runs the full height of the board, with its
+  header inside it, so the three stages read as three regions at a glance.
+  Lanes are 16px apart; cards inside a lane are 8px apart. Below `lg` the
+  lanes stack.
+- Lane header: stage name (`text-sm` medium) and count (muted, tabular) on the
+  left; the note on the right (`text-xs` muted). The "N need you" note is the
+  one place the header uses the amber accent.
+- Card anatomy, fixed order, three tiers:
+  1. Identity line (`text-xs`, muted, 20px): number, at most two tags and
+     "+n", then on the right the doc-problem and unpublished icons and the
+     owner's avatar.
+  2. Title (`text-sm` medium, 20px lines, at most two lines), then the state
+     line (`text-xs` muted, 20px lines, at most two lines; left out when the
+     doc has none).
+  3. Activity line (`text-xs`, muted, 20px): the attention marker on the
+     left (or "Closed by X" on a closed card); on the right a pull-request
+     icon with one dot per pull request (state on hover), the session count
+     with an icon, and the age, right-aligned and tabular.
+- Spacing: 12px card padding; 8px between tiers, 4px between title and state.
+  Every line box is 20px, so cards differ in height only by whole lines.
+- Tags: sans, 11px, hairline border, no fill, instead of filled monospace
+  pills. Two at most on a card; the rest are counted and listed on hover.
+- Colour: only "needs you" is coloured (amber). Doc problems and unpublished
+  changes are grey icons on the card (words and colour on the item page).
+  Pull request dots keep their state colours, as the spec asks for state.
+- Stale: the card loses its raised surface and sits flat on the lane, its
+  text dimmed; the age says "no change in N days".
+- Item page: a metadata line with dot separators; the doc at 68ch with 32px
+  before each section heading; task lists without bullets and with drawn
+  boxes, done items muted; the aside starts on the same line as the doc and
+  is set off by a rule; History is a timeline with dots centred on the
+  summary's first line and a single meta line (author · age · session ·
+  commit).
