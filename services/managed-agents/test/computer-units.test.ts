@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, publicError, sizeFor, sizeShape } from "../src/computer/config.js";
+import { gatewayUrl, sizeFor } from "../src/computer/config.js";
+import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
 import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
 import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
@@ -67,7 +68,7 @@ describe("host tokens", () => {
 });
 
 describe("computer config and vocabulary", () => {
-  it("sizes by plan and describes sizes without naming them", () => {
+  it("sizes by plan", () => {
     const env = { ACCOUNTS: {} as DurableObjectNamespace };
     expect(sizeFor(env, "default")).toBe("Standard_D2as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
@@ -76,9 +77,6 @@ describe("computer config and vocabulary", () => {
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7" }, "max")).toBe("Standard_D4as_v7");
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7", COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "" }, "max")).toBe("Standard_D2as_v7");
-    expect(sizeShape("Standard_D2as_v7")).toEqual({ vcpus: 2, memoryGiB: 8 });
-    expect(sizeShape("Standard_E4as_v7")).toEqual({ vcpus: 4, memoryGiB: 32 });
-    expect(sizeShape("Standard_D16as_v7")).toEqual({ vcpus: 16, memoryGiB: 64 });
   });
 
   it("builds the gateway URL the host dials", () => {
@@ -88,14 +86,30 @@ describe("computer config and vocabulary", () => {
     expect(gatewayUrl("https://x.dev/", "a:b")).toBe("wss://x.dev/v1/computer/host?organizationId=a%3Ab");
   });
 
-  it("keeps cloud details out of public errors", () => {
-    for (const raw of [
-      "computers are not configured: missing AZURE_COMPUTER_SUBNET_ID",
-      "VM provisioning failed: Allocation failed in eastus for Standard_D2as_v7",
-      "PUT Microsoft.Compute/virtualMachines/oc-org-1: 400 InvalidParameter",
-    ]) {
-      expect(publicError(raw)).not.toMatch(/azure|eastus|Standard_|Microsoft|oc-org/i);
+  // Work 111: one catalog of sentences, for the dashboard and for Slack.
+  it("says whose side a failure is on and that the files are safe, and names no cloud", () => {
+    for (const code of FAILURE_CODES) {
+      for (const text of [failureMessage(code), failureNotice(code, "https://app.opencomputer.dev")]) {
+        expect(text).not.toMatch(/azure|eastus|Standard_|Microsoft|oc-org|zone|quota|\{page\}|undefined/i);
+        if (code !== "not_configured") expect(text).toContain("This is on our side, not your plan or billing, and your files are safe.");
+      }
     }
+    expect(failureMessage("capacity")).toBe(
+      "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Try again later.",
+    );
+  });
+
+  it("tells a thread why its message waits, and where to try again when that can help", () => {
+    expect(failureNotice("capacity", "https://app.opencomputer.dev")).toBe(
+      "Our cloud provider has no machine free for your computer right now. This is on our side, not your plan or billing, and your files are safe. Your message is waiting. Open the Computer page on app.opencomputer.dev to try again later.",
+    );
+    expect(failureNotice("inconsistent", "https://app.opencomputer.dev")).toMatch(/Your message is waiting\. Trying again will not fix it: contact support\.$/);
+    expect(failureNotice("not_configured", "http://localhost:8787")).toBe("Computers are not available yet. Your message is waiting.");
+  });
+
+  it("gives a code it does not know the general sentence", () => {
+    expect(failureMessage(null)).toBe(failureMessage("internal"));
+    expect(failureMessage("from_a_newer_version")).toBe(failureMessage("internal"));
   });
 });
 
@@ -326,6 +340,15 @@ describe("Slack", () => {
       teamId: "T",
       channelId: "C",
       threadTs: "1.1",
+      eventId: "E",
+    });
+    // Work 112: who pressed stop.
+    expect(parseSlackEnvelope({ type: "event_callback", event_id: "E", team_id: "T", event: { type: "agent_session_stopped", channel: "C", thread_ts: "1.1", user: "U1" } })).toEqual({
+      kind: "stop",
+      teamId: "T",
+      channelId: "C",
+      threadTs: "1.1",
+      userId: "U1",
       eventId: "E",
     });
   });
@@ -610,7 +633,7 @@ describe("thread links (work 049 L3)", () => {
       }
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const ref = { url: "u", host: "acme.slack.com", channel: "C0PUB", ts: "1700000001.000100" };
     const slow = await access.read(ref, { owner: "U1", destination: "C0PUB", deadline: Date.now() + 50 });
     expect(slow).toMatchObject({ ok: false, reason: "reading it took too long; ask again to retry" });
@@ -631,7 +654,7 @@ describe("thread links (work 049 L3)", () => {
       }
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const linked = await access.read(
       { url: "u", host: "acme.slack.com", channel: "C0PUB", ts: "1700000001.000205", threadTs: "1700000001.000100" },
       { owner: "U1", destination: "C0PUB" },
@@ -662,7 +685,7 @@ describe("thread links (work 049 L3)", () => {
         };
       return { ok: false, error: "unexpected" };
     });
-    const access = new ThreadAccess(slack as never);
+    const access = new ThreadAccess(slack as never, "T0ACME");
     const ref = { url: "", channel: "C0PUB", ts: "1700000001.000300", threadTs: "1700000001.000100" };
     const linked = await access.read(ref, { owner: "U1", destination: "C0PUB" }, ref.ts);
     if (!linked.ok) throw new Error(linked.reason);

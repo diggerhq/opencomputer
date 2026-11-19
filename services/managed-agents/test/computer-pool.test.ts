@@ -2,7 +2,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import type { AdoptedComputer, LifecycleReply } from "../src/computer/lifecycle.js";
 import { isPoolId, newPoolId, ownerTag } from "../src/computer/names.js";
-import { ComputerPool, MAX_PROVISIONING, PROVISION_TIMEOUT_MS, REFILL_INTERVAL_MS, poolSize } from "../src/computer/pool.js";
+import {
+  ComputerPool,
+  MAX_PROVISIONING,
+  PROVISION_TIMEOUT_MS,
+  REFILL_BACKOFF_MAX_MS,
+  REFILL_INTERVAL_MS,
+  poolSize,
+  refillBackoffMs,
+} from "../src/computer/pool.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /** A slot's ComputerDurableObject, in memory: started computers become ready when the test says so. */
@@ -126,26 +134,99 @@ describe("warm pool", () => {
     slots.get(failed!)!.state = "failed";
     await pool.refill();
     expect(slots.get(failed!)!.retired).toBe(true);
-    expect(pool.slots().map((slot) => slot.poolId)).not.toContain(failed);
+    // It stays in the table, retiring, until its computer is deleted.
+    expect(pool.slots().find((slot) => slot.poolId === failed)?.state).toBe("retiring");
+    slots.get(failed!)!.state = "deleted";
     now += PROVISION_TIMEOUT_MS + 1;
     slots.get(slow!)!.state = "ready";
     await pool.refill();
     expect(slots.get(slow!)!.retired).toBe(true);
+    expect(pool.slots().map((slot) => slot.poolId)).not.toContain(failed);
+    slots.get(slow!)!.state = "deleted";
 
+    now += REFILL_BACKOFF_MAX_MS;
+    await pool.refill();
     await bootAll();
     await pool.refill();
     await bootAll();
     expect(states()).toEqual(["warm", "warm"]);
     target = 0;
+    expect(await pool.refill()).toBe(now + REFILL_INTERVAL_MS);
+    expect(states()).toEqual(["retiring", "retiring"]);
+    expect([...slots.values()].filter((slot) => !slot.retired)).toEqual([]);
+    for (const slot of slots.values()) slot.state = "deleted";
     expect(await pool.refill()).toBeNull();
     expect(pool.slots()).toEqual([]);
-    expect([...slots.values()].filter((slot) => !slot.retired)).toEqual([]);
+  });
+
+  it("asks a retiring slot to delete again when its delete stopped, and keeps it until it is gone", async () => {
+    target = 1;
+    await pool.refill();
+    const [poolId] = [...slots.keys()];
+    const slot = slots.get(poolId!)!;
+    slot.state = "failed";
+    await pool.refill();
+    expect(slot).toMatchObject({ retired: true, state: "deleting" });
+    // The delete gave up (the lifecycle row is failed again): nothing else would come back for its VM and disks.
+    Object.assign(slot, { retired: false, state: "failed" });
+    await pool.refill();
+    expect(slot).toMatchObject({ retired: true, state: "deleting" });
+    expect(pool.slots().find((each) => each.poolId === poolId)?.state).toBe("retiring");
+    slot.state = "deleted";
+    await pool.refill();
+    expect(pool.slots().map((each) => each.poolId)).not.toContain(poolId);
+  });
+
+  it("backs off while pool computers fail to start: one at a time, doubling to a cap, until one comes up", async () => {
+    target = 5;
+    const started = () => slots.size;
+    /** Runs the alarm every minute for `minutes`, failing whatever is provisioning. */
+    const failFor = async (minutes: number) => {
+      for (let minute = 0; minute < minutes; minute += 1) {
+        for (const slot of slots.values()) if (slot.state === "provisioning") slot.state = "failed";
+        await pool.refill();
+        for (const slot of slots.values()) if (slot.state === "deleting") slot.state = "deleted";
+        now += REFILL_INTERVAL_MS;
+      }
+    };
+    await pool.refill();
+    expect(started()).toBe(MAX_PROVISIONING);
+    // Three failures at once: the next start waits 8 minutes, then 16, then 30 each time.
+    await failFor(1);
+    expect(pool.health()).toMatchObject({ failures: 3 });
+    expect(refillBackoffMs(3)).toBe(8 * 60_000);
+    await failFor(7);
+    expect(started()).toBe(MAX_PROVISIONING);
+    await failFor(1);
+    expect(started()).toBe(MAX_PROVISIONING + 1);
+    const before = started();
+    await failFor(4 * 60);
+    // Without backoff this would be 240 starts (720 VMs and disks created and deleted).
+    expect(started() - before).toBeLessThanOrEqual(4 * 60 / 30 + 1);
+    expect(pool.health().failures).toBeGreaterThan(5);
+    expect(refillBackoffMs(pool.health().failures)).toBe(REFILL_BACKOFF_MAX_MS);
+
+    // The next one comes up: the pool is healthy again and refills at full speed.
+    now = pool.health().retryAt;
+    await pool.refill();
+    await bootAll();
+    expect(pool.health()).toEqual({ failures: 0, retryAt: 0 });
+    await pool.refill();
+    expect(states()).toEqual(["provisioning", "provisioning", "provisioning", "warm"]);
   });
 
   it("starts nothing while computers are not configured", async () => {
     startReply = { status: 503, error: "computers are not configured: missing AZURE_CLIENT_ID" };
     expect(await pool.refill()).toBe(now + REFILL_INTERVAL_MS);
     expect(pool.slots()).toEqual([]);
+    // And does not ask again every minute.
+    now += REFILL_INTERVAL_MS;
+    startReply = { status: 202 };
+    await pool.refill();
+    expect(pool.slots()).toEqual([]);
+    now += REFILL_INTERVAL_MS;
+    await pool.refill();
+    expect(states()).toEqual(["provisioning"]);
   });
 
   it("claims a warm slot atomically: two concurrent claims get different computers", async () => {

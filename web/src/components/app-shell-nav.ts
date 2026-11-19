@@ -131,6 +131,12 @@ export function managedAgentsNav(options: {
         ...(options.computerEnabled
           ? [
               { to: '/computer', label: 'Computer', icon: Computer, end: true },
+              {
+                to: '/computer/sessions',
+                label: 'Sessions',
+                icon: MessagesSquare,
+                preview: true,
+              },
               { to: '/computer/secrets', label: 'Secrets', icon: KeyRound },
             ]
           : []),

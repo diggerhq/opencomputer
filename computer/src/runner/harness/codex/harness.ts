@@ -62,8 +62,8 @@ export const CODEX_CAPS: Capabilities = {
 export interface CodexOptions {
   /** The `codex` launcher (SP_CODEX_BIN). */
   bin: string;
-  /** oc-modelproxy's socket (SP_MODEL_SOCKET); absent or missing, Codex has no model and fails to start. */
-  socket?: string;
+  /** The model proxy's API socket and placeholder, from the session's route (work 097 C4), read at each start; absent or missing, Codex has no model and fails to start. */
+  endpoint(): { unixSocket: string; placeholder: string } | undefined;
   /** Where sessions' CODEX_HOMEs live: a directory the runner's user owns (main.ts: under its HOME). */
   root: string;
   /** Attest each loopback peer's cgroup (loopback.ts); false only where runners are not systemd units (SP_CODEX_PEER_CHECK=off). */
@@ -176,8 +176,9 @@ export class CodexHarness implements Harness {
   private async boot(spec: StartSpec, o: CodexOptions) {
     const t0 = performance.now();
     // Codex reaches a model only through the proxy (no credential of its own): no socket, no Codex.
-    if (!o.socket || !existsSync(o.socket)) throw new HarnessFailed({ reason: 'exit', message: 'harness unavailable: codex (this computer has no model proxy)' });
-    const { port } = await loopback(o.socket, { peerCheck: o.peerCheck, checked: o.peerChecked });
+    const model = o.endpoint();
+    if (!model || !existsSync(model.unixSocket)) throw new HarnessFailed({ reason: 'exit', message: 'harness unavailable: codex (this computer has no model proxy)' });
+    const { port } = await loopback(model.unixSocket, { peerCheck: o.peerCheck, checked: o.peerChecked });
     if (this.closed) throw new HarnessFailed({ reason: 'exit', message: 'closed before it started' });
     const home = codexHome(o.root, o.sessionKey);
     writeHome(home, configToml({ model: this.model, port, cwd: spec.cwd }));
@@ -185,7 +186,7 @@ export class CodexHarness implements Harness {
       bin: o.bin,
       args: ['app-server'],
       cwd: spec.cwd,
-      env: spawnEnv(o.env, { home, envFile: o.envFile }),
+      env: spawnEnv(o.env, { home, envFile: o.envFile, placeholder: model.placeholder }),
       onNotification: (m, p) => this.note(m, p),
       onRequest: (m, p, id) => this.served.request(m, p, id),
       onClose: (why) => {

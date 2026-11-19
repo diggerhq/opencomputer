@@ -33,10 +33,10 @@ describe('launchCommand', () => {
   };
 
   it('pins every runner variable, empty when the host has none', () => {
-    const vars = setenv({ PATH: '/bin', SP_MODEL_SOCKET: '/run/m.sock' });
+    const vars = setenv({ PATH: '/bin', SP_COMPACT_AT: '0.8' });
     for (const k of RUNNER_ENV) expect(vars.has(k), k).toBe(true);
     expect(vars.get('PATH')).toBe('/bin');
-    expect(vars.get('SP_MODEL_SOCKET')).toBe('/run/m.sock');
+    expect(vars.get('SP_COMPACT_AT')).toBe('0.8');
     // Empty, not absent: absent would let the user manager's environment (set by any session) through.
     expect(vars.get('SP_CODEX_BIN')).toBe('');
   });
@@ -56,8 +56,8 @@ describe('launchCommand', () => {
 
 describe('dropEmpty', () => {
   it('unsets runner variables the host set empty, and only those', () => {
-    const env: NodeJS.ProcessEnv = { SP_CODEX_BIN: '', SP_MODEL_SOCKET: '/m', OTHER: '' };
+    const env: NodeJS.ProcessEnv = { SP_CODEX_BIN: '', SP_COMPACT_AT: '0.8', OTHER: '' };
     dropEmpty(env);
-    expect(env).toEqual({ SP_MODEL_SOCKET: '/m', OTHER: '' });
+    expect(env).toEqual({ SP_COMPACT_AT: '0.8', OTHER: '' });
   });
 });

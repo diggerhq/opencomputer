@@ -292,3 +292,22 @@ describe('Session: the end of a turn is off the pump (work 068 2f)', () => {
     expect(t.busy).toEqual([true, true, false]);
   });
 });
+
+describe('Session: who prompts wait on (work 112)', () => {
+  it('a driver’s message sets `driver`; the owner’s clears it; a participant’s command leaves it', async () => {
+    const t = session();
+    await t.sess.send('hi', 'U2', [], true, undefined, 'driver');
+    expect(t.sess.driver).toBe('U2');
+    await t.sess.send('!status', 'U3', [], true, undefined, 'participant');
+    expect(t.sess.driver).toBe('U2');
+    await t.sess.send('more', 'U1', [], true, undefined, 'owner');
+    expect(t.sess.driver).toBeUndefined();
+  });
+
+  it('a fresh session’s intro carries the Access button', async () => {
+    const t = session({ fresh: true });
+    await t.sess.send('hi', 'U1');
+    await settle();
+    expect(JSON.stringify(t.of('chat.postMessage')[0].args.blocks)).toContain('"action_id":"ac:aw:open"');
+  });
+});
