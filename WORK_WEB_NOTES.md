@@ -16,9 +16,12 @@ add fields without breaking the screens.
   - Body: `{installationId, owner, name, branch}`.
   - Returns `{repository}`.
   - Sends an `Idempotency-Key` header.
-  - `installationId` is the installation `id` string that `GET /managed-agents/computer` lists under `github.installations`.
-  - `owner` is that installation's `accountLogin`.
-  - The repository `name` is typed by hand, because no endpoint lists the repositories a computer installation can reach.
+  - The picker sends the chosen installation's `id`, the repository's `owner` and `name`, and its `defaultBranch` as `branch`. There is no branch input.
+- `GET /work/repositories` returns `{installations: [{id, accountLogin, accountType, settingsUrl, repositories: [{id, owner, name, private, defaultBranch, pushedAt}], truncated, problem, problemMessage}]}`, repositories already sorted most recently pushed first.
+  - The picker (`RepositorySetting.tsx`) follows the "import a repository" pattern: an account select when there is more than one installation, a search that filters by name as you type, a refresh button, and a list of about six rows that scrolls, each with a lock when private, the pushed time and Select. The current choice shows as Selected.
+  - The list is read again whenever the window regains focus (`refetchOnWindowFocus: 'always'`, past the 30 s default `staleTime`), so coming back from GitHub after granting access shows the new repository.
+  - Under the list, "Adjust GitHub App access" opens the installation's `settingsUrl` in a new tab.
+  - When the list loads with no installation, the "Connect GitHub" state shows, as before.
 - `Repository` is `{installationId: string|number, owner, name, branch, problem?: string|null, problemMessage?: string|null}`.
   - A non-empty `problem` means the repository cannot be read; the board then says so and links to settings.
   - `problem` is a stable code (`access_denied`, `repository_not_found`, `installation_removed`, `installation_suspended`, `branch_not_found`, `github_app_not_configured`). The code is never shown: the web shows `problemMessage` when present, else its own sentence for a known code (`repositoryProblem` in `board.ts`), else a general one.
@@ -75,6 +78,7 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
   - unknown: outline
 - Where things live:
   - The repository setting is on the Computer page (`/computer#work-repository`), after "Your agent", and is also embedded in the board's no-repository state.
+  - The board's header names the repository it reads as a quiet link to that setting; when the repository has a problem the link reads "Settings".
   - The rail gains one link, "Board" (`/computer/work`). It is shown unconditionally like Secrets; the page itself redirects when the organization has no computer.
 
 ## Preview mock
@@ -83,6 +87,7 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
 
 - The open-items poll goes through `workOpenItemsResponse`, which answers as the server does: an ETag over the page without `asOf`, a 304 while that ETag matches, and `Work-As-Of` on both.
 - `problem` sends `access_denied` with a `problemMessage`.
+- `/repositories` lists eight repositories under `acme` and two under `acme-labs`, the preview's two installations. `?work=none` opens the picker.
 - Item 31 has an unknown `updatedAt`; closed item 8 has no `closedAt` or `closedBy`.
 - An unknown item number answers 404 `item_not_found`.
 

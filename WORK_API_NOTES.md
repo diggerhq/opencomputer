@@ -9,6 +9,12 @@ Build step 3, the service side. This file covers the shapes and headers, how the
   - `problemMessage` is GitHub's words, for people.
 - `GET /work/repository` returns `{ repository: Repository | null }`.
 - `PUT /work/repository` returns the same shape.
+- `GET /work/repositories` returns, for the repository picker, `{ installations: [{ id, accountLogin, accountType, settingsUrl, repositories: [{ id, owner, name, private, defaultBranch, pushedAt: string | null }], truncated, problem, problemMessage }] }`.
+  - One entry per active GitHub installation of the organization, in one call. `id` is the value `PUT /work/repository` takes as `installationId`.
+  - `settingsUrl` is the installation's page on GitHub (`/organizations/<login>/settings/installations/<id>`, or `/settings/installations/<id>` for a user), built here so the web derives nothing.
+  - Repositories are sorted by `pushedAt`, newest first, never-pushed last, then by name. At most 500 per installation are read; `truncated` says more exist. The cap applies in GitHub's order, before the sort, so with more than 500 the newest may be among those left out.
+  - An installation GitHub reports gone or suspended comes back with its `problem` and no repositories. GitHub not answering is 503 `unavailable`.
+  - Nothing is stored and the index's write chain is not used; the installation tokens are cached as for the index's own reads. Scope: `work:read`.
 - `GET /work/items?stage=open` returns `{ repository, head, asOf, building, items: Item[] }`, with an `ETag` header.
 - `GET /work/items?stage=closed[&cursor&limit]` returns `{ items: Item[], nextCursor: string | null }`.
 - `GET /work/items/{n}` returns `{ item: Item, body: string }`.
@@ -168,6 +174,7 @@ Measured with the fake GitHub in `work-index.test.ts`. The fake enforces the rea
 | Operation | Calls |
 | --- | --- |
 | PUT repository | 2: the repository and the branch ref. |
+| GET repositories | 1 page of 100 per installation, up to 5 (500 repositories), plus a token when none is cached. |
 | First build, 150 open + 500 closed | 154: 1 ref + 3 trees + 150 blobs. No commit calls. |
 | Walk after that build | 5: 2 folder listings, then 3 pages of the import commit's 650 files. |
 | Advance over 500 commits (400 non-item files, 100 item edits) | 115: 1 ref + 1 compare + 2 trees (root, `work/`) + 100 blobs + 1 listing page + 10 details. No rebuild. |
