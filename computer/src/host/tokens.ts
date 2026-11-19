@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { GitHubToken, HostToGateway, TokenKind } from '../protocol.js';
-import { lines } from '../ipc.js';
+import { type RunRoot, lines, tokenSocketFor } from '../ipc.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 
 export interface TokenRelay {
@@ -30,22 +30,30 @@ export interface TokenRelay {
    * `session`: the session asking, for a runner's own socket; a `sessionKey` in the request is ignored.
    */
   serve(socket: string, session?: () => string | undefined): net.Server;
-  /** A runner's own token socket in the runners' directory, for the session it serves now; closed when its socket closes. */
-  serveRunner(id: string, runner: net.Socket, session: () => string | undefined): void;
+  /**
+   * A runner's own token socket below its run root (`tokenSocketFor`); `session` is the host's word for who asks.
+   * Idempotent per id; the caller closes it when the runner is gone. The directory is the caller's to make (`freshTokenDir`).
+   */
+  serveRunner(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
 }
 
 /**
- * `ask` sends to the gateway and returns false when it is not connected.
- * `runnerDir`: where runners' own sockets go, emptied and made again here. Only the host writes there, so a session
- * cannot put its own socket in another's place; 02750 keeps SP_RUN's setgid group on the sockets, so runners running
- * as another user (work 077) can still reach their own.
+ * Empty and make again the directory of a run root's token sockets, once at host start. Only the host writes there,
+ * so a session cannot put its own socket in another's place; 02750 keeps SP_RUN's setgid group on the sockets, so
+ * runners running as another user (work 077) can still reach their own.
  */
-export function tokenRelay(ask: (m: Extract<HostToGateway, { t: 'token' }>) => boolean, tm: Telemetry, runnerDir?: string): TokenRelay {
-  if (runnerDir) {
-    rmSync(runnerDir, { recursive: true, force: true });
-    mkdirSync(runnerDir, { recursive: true });
-    chmodSync(runnerDir, 0o2750);
-  }
+export function freshTokenDir(run: RunRoot) {
+  const dir = path.dirname(tokenSocketFor(run, 'x'));
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o2750);
+  return dir;
+}
+
+/** `ask` sends to the gateway and returns false when it is not connected. */
+export function tokenRelay(ask: (m: Extract<HostToGateway, { t: 'token' }>) => boolean, tm: Telemetry): TokenRelay {
+  /** The runners' sockets being served, by path. */
+  const served = new Map<string, { close(): void }>();
   const waiters = new Map<string, (m: { result?: GitHubToken; error?: string }) => void>();
   const tokens = new Map<string, Promise<GitHubToken>>();
 
@@ -92,10 +100,14 @@ export function tokenRelay(ask: (m: Extract<HostToGateway, { t: 'token' }>) => b
   const relay: TokenRelay = {
     request,
     answer: (m) => waiters.get(m.id)?.(m),
-    serveRunner(id, runner, session) {
-      if (!runnerDir) throw new Error('no runner token directory');
-      const server = relay.serve(path.join(runnerDir, `${id}.sock`), session);
-      runner.once('close', () => server.close());
+    serveRunner(run, id, session) {
+      const socket = tokenSocketFor(run, id);
+      const open = served.get(socket);
+      if (open) return open;
+      const server = relay.serve(socket, session);
+      const handle = { close: () => void (served.get(socket) === handle && (served.delete(socket), server.close())) };
+      served.set(socket, handle);
+      return handle;
     },
     serve(socket, session) {
       rmSync(socket, { force: true });

@@ -25,11 +25,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RunnerApi, SessionReport } from '../protocol.js';
-import { RUNNERS_DIR } from '../ipc.js';
 
 /** The suffix of every API socket; rediscover skips these. */
 export const API_SOCK = '.api.sock';
-export const apiSocketFor = (name: string, dir = RUNNERS_DIR) => path.join(dir, `${name}${API_SOCK}`);
+export const apiSocketFor = (name: string, dir: string) => path.join(dir, `${name}${API_SOCK}`);
 export const mintToken = () => randomBytes(32).toString('base64url');
 
 /** Stores with a write still due, flushed synchronously when the process exits. */
