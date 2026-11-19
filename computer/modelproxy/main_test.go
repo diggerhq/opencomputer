@@ -8,7 +8,7 @@ import (
 
 func TestParseFlags(t *testing.T) {
 	cfg, mode, err := parseFlags(nil)
-	if err != nil || mode != modeServe || cfg.identity != "cgroup" || cfg.maxInflightPerCaller != 32 {
+	if err != nil || mode != modeServe || cfg.identity != "cgroup" || cfg.callerUID != anyUID || cfg.maxInflightPerCaller != 32 {
 		t.Fatalf("defaults: %+v %v %v", cfg, mode, err)
 	}
 	if _, mode, err := parseFlags([]string{"-version"}); err != nil || mode != modeVersion {

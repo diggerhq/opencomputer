@@ -3,7 +3,7 @@
 // before the session starts. The runner offers it as a tool of the in-process
 // `calvin` MCP server (see session.ts); the request goes runner → host, which
 // clones if needed and adds a worktree on the session's branch
-// (workspaces/index.ts checkoutRepos). The fork's AGENTS.md lists what exists.
+// (workspaces/fork.ts checkoutRepos). The fork's AGENTS.md lists what exists.
 
 import { tool } from './tool.js';
 import { z } from 'zod';

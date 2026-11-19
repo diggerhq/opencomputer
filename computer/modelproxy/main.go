@@ -39,6 +39,7 @@ type config struct {
 	profilesDir              string
 	placeholder              string
 	identity                 string // cgroup | single
+	callerUID                int    // -identity=cgroup: the only uid a caller may have; anyUID: any
 	bindingsFile             string
 	hold, drain              time.Duration
 	maxInflightPerCaller     int
@@ -122,6 +123,7 @@ func parseFlags(args []string) (config, runMode, error) {
 	fs.StringVar(&cfg.profilesDir, "profiles", "/etc/oc-modelproxy/profiles.d", "directory of profile files (*.json)")
 	fs.StringVar(&cfg.placeholder, "placeholder", "ssh-placeholder", "the only credential a caller may send: `Authorization: Bearer <it>` or `x-api-key: <it>`")
 	fs.StringVar(&cfg.identity, "identity", "cgroup", "how a caller is named: cgroup (<id> of its sp-runner-<id>.service unit) or single (every caller is "+singleCaller+")")
+	fs.IntVar(&cfg.callerUID, "caller-uid", anyUID, "with -identity=cgroup, the only uid a caller may have (the sessions' user); -1: any")
 	fs.StringVar(&cfg.bindingsFile, "bindings-file", "/run/oc-modelproxy/profile-bindings.json", "persisted bindings, without their variables (empty: do not persist)")
 	fs.DurationVar(&cfg.hold, "hold-timeout", 10*time.Second, "how long a request waits for its caller's credential, and then for a free upstream connection")
 	fs.DurationVar(&cfg.drain, "drain-timeout", 630*time.Second, "on SIGTERM or after a handoff, how long in-flight streams may finish")
@@ -153,7 +155,7 @@ func run(cfg config) error {
 	var resolve Resolver
 	switch cfg.identity {
 	case "cgroup":
-		resolve = peerResolver(cmp.Or(cfg.procRoot, "/proc"))
+		resolve = peerResolver(cmp.Or(cfg.procRoot, "/proc"), cfg.callerUID)
 	case "single":
 		resolve = singleResolver
 	default:
