@@ -50,7 +50,7 @@ A credential without a scope list has every scope.
 | Scope | Operations |
 | --- | --- |
 | `sessions:read` | `sessions.attach`, `sessions.get`, `turns.get`, `events.list`, `asks.list`, `asks.get`, `subagents.list`, `subagents.get`, `subagents.stop`, file listing and download |
-| `sessions:write` | `turns.send`, `turns.cancel`, `sessions.update`, `sessions.interrupt`, `sessions.compact`, `sessions.suspend`, `sessions.resume`, file upload |
+| `sessions:write` | `turns.send`, `turns.cancel`, `sessions.update`, `sessions.interrupt`, `sessions.compact`, `sessions.suspend`, `sessions.resume`, setting a session aside, file upload |
 | `asks:answer` | `asks.answer`, `asks.dismiss` |
 | `terminals` | `terminals.open`, `terminals.resize`, `terminals.eof`, `terminals.close` |
 
@@ -62,6 +62,7 @@ A scope may also name sessions (`sessionIds`), be read-only (`readOnly`) and exp
 | Credential expired or revoked | Its connections close with `4001` |
 | Caller is not the session's owner and not on its member list | `session_not_found` on every operation. A null member list means the whole organization |
 | Terminal opened by someone other than the owner or an admin | `forbidden`, `reason: "terminal_owner_only"` |
+| Session set aside by someone other than its owner | `forbidden`, `reason: "aside_owner_only"` |
 
 ## Session journal
 

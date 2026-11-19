@@ -41,6 +41,8 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["GET"]),
     pattern: route(`/sessions/${SEG}/capabilities`),
   },
+  // Set aside (docs/api/sessions.mdx).
+  { methods: new Set(["PUT", "DELETE"]), pattern: route(`/sessions/${SEG}/aside`) },
   {
     methods: new Set(["POST"]),
     pattern: route(`/sessions/${SEG}/(?:interrupt|compact|suspend|resume)`),

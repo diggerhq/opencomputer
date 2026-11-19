@@ -67,6 +67,7 @@ export function computerApiRouteFamily(suffix: string): string {
   if (parts.length <= 3) return "sessions";
   switch (third) {
     case "capabilities":
+    case "aside":
       return "sessions";
     case "interrupt":
     case "compact":
