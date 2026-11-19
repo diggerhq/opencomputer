@@ -37,6 +37,7 @@ import {
   plural,
   readyToClose,
   repositoryName,
+  repositoryProblem,
   staleDays,
   type Filters,
   type Tab,
@@ -188,7 +189,7 @@ export function Board() {
       status={
         <IndexStatus
           repository={repositoryName(page.repository)}
-          problem={page.repository.problem ?? null}
+          problem={repositoryProblem(page.repository)}
           building={page.building}
           asOf={page.asOf}
         />
@@ -394,7 +395,7 @@ function IndexStatus({
       {problem ? (
         <>
           <span className="text-status-error">
-            Cannot read {repository}: {problem}.
+            Cannot read {repository}. {problem}
           </span>
           <Link
             to="/computer#work-repository"

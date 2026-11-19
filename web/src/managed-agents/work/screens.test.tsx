@@ -250,13 +250,18 @@ describe('board', () => {
   it('sends a repository problem to settings', async () => {
     workApi.getOpenItems.mockResolvedValue(
       openPage(items, {
-        repository: { ...repository, problem: 'access was removed' },
+        repository: {
+          ...repository,
+          problem: 'access_denied',
+          problemMessage: 'GitHub refused access to the repository.',
+        },
       }),
     )
     await render('/computer/work')
     expect(container.textContent).toContain(
-      'Cannot read acme/knowledge: access was removed.',
+      'Cannot read acme/knowledge. GitHub refused access to the repository.',
     )
+    expect(container.textContent).not.toContain('access_denied')
     expect(
       container.querySelector('a[href="/computer#work-repository"]'),
     ).not.toBeNull()

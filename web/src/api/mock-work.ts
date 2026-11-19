@@ -32,6 +32,7 @@ const repo = {
   name: 'knowledge',
   branch: 'main',
   problem: null as string | null,
+  problemMessage: null as string | null,
 }
 let repository: typeof repo | null = repo
 
@@ -374,13 +375,18 @@ export function workMock(
     s === 'none'
       ? null
       : s === 'problem' && repository
-        ? { ...repository, problem: 'the GitHub app no longer has access' }
+        ? {
+            ...repository,
+            problem: 'access_denied',
+            problemMessage:
+              "The installation cannot read the repository's contents.",
+          }
         : repository
 
   if (rest === '/repository') {
     if (method === 'PUT') {
       const body = JSON.parse(typeof input === 'string' ? input : '{}') as Json
-      repository = { ...repo, ...body, problem: null }
+      repository = { ...repo, ...body, problem: null, problemMessage: null }
       return { repository }
     }
     return { repository: current }

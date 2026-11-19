@@ -13,7 +13,7 @@ import {
   workKeys,
   type Repository,
 } from './api'
-import { repositoryName } from './board'
+import { repositoryName, repositoryProblem } from './board'
 
 // Which repository holds the organization's working docs (tech design 3.1):
 // one per organization, chosen from what its GitHub connection can reach.
@@ -59,7 +59,9 @@ export function WorkRepositorySetting({ id }: { id?: string }) {
                 </span>
               </p>
               {current.problem ? (
-                <p className="text-status-error">{current.problem}</p>
+                <p className="text-status-error">
+                  {repositoryProblem(current)}
+                </p>
               ) : (
                 <p className="text-muted-foreground">
                   Tracked items live here and show on the{' '}

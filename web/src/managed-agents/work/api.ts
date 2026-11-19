@@ -26,8 +26,11 @@ export const RepositorySchema = z.looseObject({
   name: z.string(),
   branch: z.string(),
   // Set when the repository can no longer be read (installation removed,
-  // repository deleted, renamed or no longer granted; tech design 3.6).
+  // repository deleted, renamed or no longer granted; tech design 3.6): a
+  // stable code such as `access_denied` or `repository_not_found`, and the
+  // server's sentence for a person. See `repositoryProblem` in board.ts.
   problem: z.string().nullable().optional(),
+  problemMessage: z.string().nullable().optional(),
 })
 export type Repository = z.infer<typeof RepositorySchema>
 
