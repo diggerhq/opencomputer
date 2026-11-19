@@ -23,6 +23,7 @@ import {
   Plus,
   Search,
   Settings,
+  SquareKanban,
   Sun,
   Plug,
 } from 'lucide-react'
@@ -170,6 +171,9 @@ function Rail() {
           <MessagesSquare className="size-4" aria-hidden />
         </RailLink>
       ) : null}
+      <RailLink to="/computer/work" label="Board">
+        <SquareKanban className="size-4" aria-hidden />
+      </RailLink>
       <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
