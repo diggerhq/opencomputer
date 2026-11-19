@@ -426,6 +426,18 @@ then on. When a fork lacks some of the definition's repositories, its
 `AGENTS.md` gains a "Repositories in this workspace" index of all of them,
 using the optional `description`, `language` and `pushedAt` fields.
 
+At most one repository may carry `"role": "knowledge"`: the organization's
+knowledge repository, where work items live (`work/NN-slug.md`, closed ones
+in `done/`). It is always cloned eagerly. Every fork's `AGENTS.md` gains a
+"Work tracking" section naming it, with the conventions for items
+(`src/workspaces/knowledge.ts`). On every sync the host installs the
+`hooks/knowledge/` git hooks in its clone, and so in every session's
+worktree of it; it removes them from any other clone. `prepare-commit-msg`
+adds a `Session: <id>` trailer from `SP_SESSION_ID`. `pre-push` refuses a
+push that gives two items one number, names the number to take instead, and
+warns about malformed items. A hook of the same name that is not ours is
+left in place and reported as a housekeeping problem.
+
 A gateway may send the definition instead, in `welcome.definition` (an
 organization's computer, work 052): the host validates it, keeps it in
 `<SP_DATA>/definition.json` and from then on uses it in place of
@@ -443,6 +455,8 @@ git config --global credential.https://github.com.useHttpPath true
 
 and put `bin/` first on runners' `PATH` for the `gh` shim (set `SP_REAL_GH` if
 the real `gh` is not on `PATH`). Runners need `SP_RUN` and `SP_SESSION_KEY`.
+The agent's shell commands get `SP_SESSION_KEY` and `SP_SESSION_ID` (the
+session's id, else its key) with the session's secrets, on both harnesses.
 
 ## Configuration
 
@@ -584,5 +598,6 @@ src/
 scripts/            `npm run check` helpers: file-size ratchet, import boundaries
 bin/                git credential helper and gh shim for hosts; ws-*.sh, the git sequences of src/workspaces
 definitions/        workspace definitions (computer.json + its root AGENTS.md)
+hooks/knowledge/    git hooks the host installs in the knowledge repository's clone
 deploy/             gateway image entrypoint, VM provisioning, runbook
 ```

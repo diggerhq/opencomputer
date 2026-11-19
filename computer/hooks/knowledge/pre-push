@@ -1,0 +1,102 @@
+#!/bin/sh
+# opencomputer-knowledge-hook: installed by the computer's host in the clone of
+# the organization's knowledge repository (src/workspaces/knowledge-hooks.ts),
+# and replaced by it on every housekeeping pass: edits here do not last.
+#
+# Item numbers are unique. An item is a file `NN-slug.md` directly under
+# work/ or done/ (directories there are ignored), and its number, the leading
+# digits, is its identity. A push is refused when the tree it pushes to a
+# branch has more items with one number than the remote's head has: a push is
+# a compare-and-swap on that head, so this is a real uniqueness check, and
+# numbers already shared upstream (history) never block anyone. The message
+# names the number to take instead.
+#
+# It also prints warnings, never refusals, for item files the push adds or
+# changes: the cheap part of the Work index's parser (title, owner, `## Left`).
+#
+# Fails open: an error of this hook's own (a git or awk failure) refuses nothing.
+
+zero() { case $1 in *[!0]*) return 1 ;; esac; }
+
+# `<number>\t<path>` for every item file of commit $1.
+items() {
+  git -c core.quotePath=false ls-tree --full-tree "$1" -- work/ done/ 2>/dev/null | awk -F'\t' '
+    $1 ~ / blob / {
+      name = $2; sub(/^[^\/]*\//, "", name)
+      if (name ~ /^[0-9]+-[^\/]*\.md$/) { match(name, /^[0-9]+/); print (substr(name, 1, RLENGTH) + 0) "\t" $2 }
+    }'
+}
+
+# Exit 1, with a message, if commit $1 has duplicate numbers that the base commit $2 (may be empty) has fewer of.
+check() {
+  { [ -z "$2" ] || items "$2"; echo '--'; items "$1"; } | awk -F'\t' '
+    !pushed && $0 == "--" { pushed = 1; next }
+    !pushed { before[$1 + 0]++; old[$2] = 1; next }
+    { n = $1 + 0; count[n]++; path[n, count[n]] = $2; if (n > max) max = n }
+    END {
+      k = 0
+      for (n in count) if (count[n] > 1 && count[n] > before[n] + 0) dup[++k] = n + 0
+      for (i = 2; i <= k; i++) for (j = i; j > 1 && dup[j - 1] > dup[j]; j--) { t = dup[j]; dup[j] = dup[j - 1]; dup[j - 1] = t }
+      free = max + 1
+      for (i = 1; i <= k; i++) {
+        n = dup[i]; taken = ""
+        for (j = 1; j <= count[n]; j++) if ((path[n, j]) in old) { taken = path[n, j]; break }
+        if (taken == "") taken = path[n, 1]
+        for (j = 1; j <= count[n]; j++) {
+          p = path[n, j]
+          if (p == taken || (p in old)) continue
+          if (!said) print "pre-push: refused: two items under work/ and done/ have one number." > "/dev/stderr"
+          said = 1
+          print "  " n " is taken by " taken ", renumber yours (" p ") to " free > "/dev/stderr"
+          free++
+        }
+      }
+      if (said) {
+        print "Rename the file (git mv), put the new number in its # title, commit, and push again." > "/dev/stderr"
+        exit 1
+      }
+    }'
+  # Only the refusal above is 1; anything else (an awk error) refuses nothing.
+  [ $? -ne 1 ]
+}
+
+# Warnings for the item files commit $1 adds or changes since $2 (none without a base: that would be every file).
+warn() {
+  [ -n "$2" ] || return 0
+  git -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM "$2" "$1" -- ':/work' ':/done' 2>/dev/null | head -n 50 |
+    while IFS= read -r p; do
+      case $p in */*/*) continue ;; *.md) ;; *) continue ;; esac
+      case ${p#*/} in
+        [0-9]*-*.md) ;;
+        *) echo "pre-push: warning: $p is not an item; items are named NN-slug.md" >&2; continue ;;
+      esac
+      git cat-file blob "$1:$p" 2>/dev/null | awk -v p="$p" '
+        NR == 1 && $0 == "---" { front = 1; next }
+        front && $0 == "---" { front = 0; next }
+        front && /^owner:/ { o = $0; sub(/^owner:[ \t]*/, "", o); sub(/[ \t]+$/, "", o); if (o != "" && o !~ /^[^@ \t,]+@[^@ \t,]+$/) bad_owner = 1; next }
+        front { next }
+        !title && /^# / { title = 1 }
+        /^## / { in_left = ($0 ~ /^## Left[ \t]*$/); if (in_left) left = 1; next }
+        in_left && /^[ \t]*[-*] \[[ xX]\]/ { boxes = 1 }
+        END {
+          if (!title) print "pre-push: warning: " p " has no \"# \" title; the board shows its slug"
+          if (bad_owner) print "pre-push: warning: " p ": owner is not one email address"
+          if (left && !boxes) print "pre-push: warning: " p ": \"## Left\" has no checkboxes; the item reads as in progress"
+        }' >&2
+    done
+}
+
+status=0
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  case $remote_ref in refs/heads/*) ;; *) continue ;; esac
+  zero "$local_sha" && continue # a deletion
+  base=
+  if ! zero "$remote_sha" && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    base=$remote_sha
+  else
+    base=$(git rev-parse -q --verify "refs/remotes/$1/HEAD^{commit}" 2>/dev/null) || base=
+  fi
+  check "$local_sha" "$base" || status=1
+  warn "$local_sha" "$base"
+done
+exit $status

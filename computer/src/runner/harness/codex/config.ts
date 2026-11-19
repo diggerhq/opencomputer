@@ -34,8 +34,8 @@ export const PROVIDER = 'calvin';
  * PASS_ENV that a command needs (and the locale and terminal, when set); then the
  * git identity runner/main.ts sets; then what bin/ reads: gh's and opencomputer's
  * real binaries, the token socket's directory (git-credential-slack-presence), and
- * the files socket (calvin-send-file). SP_SESSION_KEY and the git author come with
- * the session's secrets (BASH_ENV), as for Claude.
+ * the files socket (calvin-send-file). SP_SESSION_KEY, SP_SESSION_ID and the git
+ * author come with the session's secrets (BASH_ENV), as for Claude.
  */
 export const CHILD_ENV = [
   'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TZ', 'TMPDIR',

@@ -21,6 +21,13 @@ export interface WorkspaceRepo {
    * when a session checks it out. No session ever waits on an eager clone.
    */
   clone?: 'eager' | 'lazy';
+  /**
+   * `knowledge`: the organization's knowledge repository (work tracking, at
+   * most one per definition). Always cloned eagerly whatever `clone` says; the
+   * host installs its git hooks in the clone (knowledge-hooks.ts) and names it
+   * in each fork's AGENTS.md (knowledge.ts).
+   */
+  role?: 'knowledge';
   /** For the repository index in a fork's AGENTS.md: GitHub's description, main language, last push (ISO). */
   description?: string;
   language?: string;
