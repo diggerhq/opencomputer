@@ -454,11 +454,26 @@ function Conversation({
   }, [events, turnId])
   const earlier = page.data?.earlierTurns?.length ?? 0
 
+  // Kept scrolled to the end while it grows or the window changes, unless
+  // the person has scrolled up to read.
   const scroller = useRef<HTMLDivElement>(null)
+  const pinned = useRef(true)
   useLayoutEffect(() => {
     const el = scroller.current
     if (el) el.scrollTop = el.scrollHeight
+    pinned.current = true
   }, [before.length, after.length])
+  useEffect(() => {
+    const el = scroller.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const pin = () => {
+      if (pinned.current) el.scrollTop = el.scrollHeight
+    }
+    const ro = new ResizeObserver(pin)
+    ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => ro.disconnect()
+  }, [])
 
   const items = (list: typeof before) =>
     list.map((item, i) => (
@@ -474,6 +489,10 @@ function Conversation({
     <section
       aria-label="Conversation"
       ref={scroller}
+      onScroll={(e) => {
+        const el = e.currentTarget
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+      }}
       className="-mx-2 mt-2 min-h-0 flex-1 overflow-y-auto [mask-image:linear-gradient(to_bottom,transparent,black_24px)] px-2"
     >
       <div className="flex min-h-full flex-col justify-end gap-5 pt-6 pb-1">

@@ -202,7 +202,7 @@ export function AnswerDock({
         className="min-h-11 resize-none border-0 bg-transparent px-4 pt-3 pb-1 leading-5 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
 
-      <div className="flex items-center gap-2 px-2 pb-2">
+      <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
         {gone ? null : (
           <Button
             size="sm"
@@ -214,7 +214,7 @@ export function AnswerDock({
             {entry.aside ? 'Bring back' : 'Set aside'}
           </Button>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2 max-sm:has-[>button:nth-of-type(2)]:w-full max-sm:[&>button]:flex-auto">
           {act.isError ? (
             <p
               role="alert"
@@ -368,16 +368,14 @@ function Options({
   const box = question.multiSelect
   return (
     <fieldset className="space-y-2">
-      {titled || box ? (
-        <legend className="text-muted-foreground mb-2 flex gap-2 text-xs">
-          {titled ? (
-            <span className="text-foreground font-medium">
-              {question.text || question.header}
-            </span>
-          ) : null}
-          {box ? <span>Choose any</span> : null}
-        </legend>
-      ) : null}
+      <legend className="text-muted-foreground mb-2 flex gap-2 text-xs">
+        {titled ? (
+          <span className="text-foreground font-medium">
+            {question.text || question.header}
+          </span>
+        ) : null}
+        <span>{box ? 'Choose any' : 'Choose one'}</span>
+      </legend>
       <div className="divide-y overflow-hidden rounded-lg border">
         {question.options.map((o) => {
           const on = chosen.includes(o.label)
