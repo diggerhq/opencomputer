@@ -8,6 +8,7 @@ import {
   parseItem,
   readyToClose,
   sessionTrailers,
+  plain,
   STATE_LINE_MAX,
   type ItemPath,
 } from "../src/computer/work/item.js";
@@ -37,6 +38,7 @@ describe("parseItem", () => {
       "# 7. The board API",
       "",
       "Status: in progress",
+      "",
       "Routes are in; composition next.",
       "",
       "PR: https://github.com/o/r/pull/3, https://github.com/o/r/pull/4.",
@@ -85,16 +87,72 @@ describe("parseItem", () => {
     expect(p.tags).toEqual(["x", "y"]);
   });
 
-  it("cuts the state line, skips headings and Key: value lines", () => {
+  it("cuts the state line at a word with an ellipsis, skips headings and Key: value lines", () => {
     const long = "x".repeat(STATE_LINE_MAX + 50);
-    expect(parse(`# T\n## Sub\nOwner: me\n${long}\n`).stateLine).toBe("x".repeat(STATE_LINE_MAX));
+    expect(parse(`# T\n## Sub\nOwner: me\n\n${long}\n`).stateLine).toBe(`${"x".repeat(STATE_LINE_MAX - 1)}…`);
+    const words = parse(`# T\n\n${"word ".repeat(60)}\n`).stateLine!;
+    expect(words.length).toBeLessThanOrEqual(STATE_LINE_MAX);
+    expect(words.endsWith("word…")).toBe(true);
     expect(parse("# T\n\nhttps://example.com is the link\n").stateLine).toBe("https://example.com is the link");
   });
 
-  it("removes a leading number from the title only", () => {
-    expect(parse("# 12 - Ship it\n").title).toBe("Ship it");
-    expect(parse("# 2026 plans\n").title).toBe("plans");
-    expect(parse("# 42\n").title).toBe("42");
+  it("skips a wrapped Key: value field as one paragraph", () => {
+    const p = parse("# T\n\nOwns: the board API and\nits routes, wrapped.\nImplementation: here\n\nThe real state.\n");
+    expect(p.stateLine).toBe("The real state.");
+  });
+
+  it("skips tables, quotes, lists, HTML comments, images, breaks and setext headings", () => {
+    const body = [
+      "# T",
+      "| a | b |",
+      "| --- | --- |",
+      "",
+      "> quoted",
+      "> more",
+      "",
+      "- item",
+      "  wrapped item",
+      "1. step",
+      "",
+      "<!-- a comment",
+      "Not state, inside the comment.",
+      "-->",
+      "<div>html</div>",
+      "![shot](x.png)",
+      "",
+      "---",
+      "",
+      "Setext heading",
+      "---",
+      "",
+      "The state.",
+    ].join("\n");
+    expect(parse(body).stateLine).toBe("The state.");
+  });
+
+  it("joins a hard-wrapped paragraph and ends it at a blank line or a block", () => {
+    expect(parse("# T\n\nRoutes are in;\ncomposition is\nnext.\n\nLater.\n").stateLine).toBe("Routes are in; composition is next.");
+    expect(parse("# T\nFirst part\n- a list\n").stateLine).toBe("First part");
+    expect(parse("# T\nFirst part\n## Next\nother\n").stateLine).toBe("First part");
+  });
+
+  it("strips inline markdown from the state line and the title", () => {
+    const p = parse("# The `board` **API**\n\nSee [the PR](https://github.com/o/r/pull/1) and ![img](x.png) ~~old~~ `code`.\n");
+    expect(p.title).toBe("The board API");
+    expect(p.stateLine).toBe("See the PR and img old code.");
+    expect(plain("#__build-igor and __init__")).toBe("#__build-igor and __init__");
+    expect(plain("[a [b](c")).toBe("[a [b](c");
+  });
+
+  it("removes only the file's own number from the title, and only before a separator", () => {
+    const n = (number: number): ItemPath => ({ number, stage: "open", slug: "s" });
+    expect(parse("# 12 - Ship it\n", n(12)).title).toBe("Ship it");
+    expect(parse("# 012 — Ship it\n", n(12)).title).toBe("Ship it");
+    expect(parse("# 12: Ship it\n", n(12)).title).toBe("Ship it");
+    expect(parse("# 12 - Ship it\n", n(13)).title).toBe("12 - Ship it");
+    expect(parse("# 2026 plans\n", n(2026)).title).toBe("2026 plans");
+    expect(parse("# 3D printing\n", n(3)).title).toBe("3D printing");
+    expect(parse("# 42\n", n(42)).title).toBe("42");
     expect(parse("# Release v2\n").title).toBe("Release v2");
   });
 

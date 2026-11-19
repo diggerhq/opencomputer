@@ -7,7 +7,7 @@
 // it survives a retitle, a new slug and the move to `done/`.
 
 /** Bump when a rule below changes: the index re-parses every stored body. */
-export const PARSER_VERSION = 1;
+export const PARSER_VERSION = 2;
 
 /** Characters kept of the state line. */
 export const STATE_LINE_MAX = 200;
@@ -17,6 +17,9 @@ export const BODY_MAX = 1_000_000;
 
 /** Characters of one line that are read. */
 export const LINE_MAX = 10_000;
+
+/** Characters of the state paragraph gathered before it is made plain and cut. */
+const PARAGRAPH_MAX = 2_000;
 
 export type Stage = "open" | "closed";
 
@@ -118,6 +121,16 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
   let leftContent = false;
   const pullRequests: string[] = [];
   let fence: string | null = null;
+  let comment = false;
+  // The state line is the first paragraph of prose after the title: a paragraph that starts as a
+  // `Key: value` field, a list, a table, a quote or HTML is skipped whole, up to the blank line.
+  let paragraph: "none" | "skip" | "text" = "none";
+  let stateDone = false;
+  let stateText = "";
+  const endParagraph = () => {
+    if (paragraph === "text") stateDone = true;
+    paragraph = "none";
+  };
 
   for (let i = start; i < lines.length; i++) {
     const line = lines[i]!;
@@ -128,17 +141,28 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
       if (inLeft) leftContent = true;
       continue;
     }
+    if (comment) {
+      if (trimmed.includes("-->")) comment = false;
+      continue;
+    }
+    if (trimmed.startsWith("<!--")) {
+      endParagraph();
+      comment = !trimmed.includes("-->", 4);
+      continue;
+    }
     if (fenceMark) {
+      endParagraph();
       fence = fenceMark;
       if (inLeft) leftContent = true;
       continue;
     }
     const heading = headingOf(line);
     if (heading) {
+      endParagraph();
       const { level, text } = heading;
       if (inLeft && level <= 2) inLeft = false;
-      if (level === 1 && title === null) {
-        title = text.replace(/^\d+\s*[.:)\-–—]?\s*/, "").trim() || text;
+      if (level === 1 && title === null && text) {
+        title = plain(stripNumber(text, path.number)).trim() || text;
         titleAt = i;
       } else if (level === 2 && /^left\s*:?$/i.test(text)) {
         leftHeadings += 1;
@@ -163,10 +187,23 @@ export function parseItem(path: ItemPath, body: string): ParsedItem {
         if (!pullRequests.includes(clean)) pullRequests.push(clean);
       }
     }
-    if (titleAt >= 0 && i > titleAt && stateLine === null && trimmed && !KEY_VALUE.test(trimmed)) {
-      stateLine = cut(trimmed);
+    if (!trimmed) {
+      endParagraph();
+    } else if (titleAt >= 0 && !stateDone) {
+      if (paragraph === "none") paragraph = skipsParagraph(trimmed) ? "skip" : "text";
+      else if (paragraph === "text" && SETEXT.test(trimmed)) {
+        // The paragraph was a heading.
+        stateText = "";
+        paragraph = "none";
+        continue;
+      } else if (paragraph === "text" && interrupts(trimmed)) {
+        endParagraph();
+        continue;
+      }
+      if (paragraph === "text" && stateText.length < PARAGRAPH_MAX) stateText += (stateText ? " " : "") + trimmed;
     }
   }
+  if (stateText) stateLine = cut(plain(stateText.slice(0, PARAGRAPH_MAX)).replace(/\s+/g, " ").trim()) || null;
 
   if (title === null) warnings.push("There is no # title.");
   if (leftHeadings > 0 && !leftContent) warnings.push("## Left is empty.");
@@ -190,8 +227,85 @@ export function readyToClose(stage: Stage, parsed: Pick<ParsedItem, "left" | "bo
   return stage === "open" && parsed.boxes > 0 && parsed.left === 0;
 }
 
+const SETEXT = /^(=+|-+)$/;
+const LIST_ITEM = /^([-*+]|\d{1,9}[.)])(\s|$)/;
+
+/** A line that starts a block which is not prose. */
+function skipsParagraph(line: string): boolean {
+  return KEY_VALUE.test(line) || interrupts(line) || line.startsWith("<") || line.startsWith("![") || isBreak(line);
+}
+
+/** A line that ends a paragraph of prose without a blank line before it. */
+function interrupts(line: string): boolean {
+  return line.startsWith("|") || line.startsWith(">") || LIST_ITEM.test(line) || line.startsWith("<!--");
+}
+
+/** A thematic break: three or more of one of `-`, `*`, `_`, spaces between allowed. */
+function isBreak(line: string): boolean {
+  const mark = line[0];
+  if (mark !== "-" && mark !== "*" && mark !== "_") return false;
+  let n = 0;
+  for (const c of line) {
+    if (c === mark) n++;
+    else if (c !== " " && c !== "\t") return false;
+  }
+  return n >= 3;
+}
+
+/** The title without the file's own number, when a separator follows it: `# 12 - Ship it`. */
+function stripNumber(text: string, number: number): string {
+  let i = 0;
+  while (i < text.length && text[i]! >= "0" && text[i]! <= "9") i++;
+  if (i === 0 || i > 9 || Number(text.slice(0, i)) !== number) return text;
+  let j = i;
+  while (text[j] === " ") j++;
+  const separator = text[j];
+  if (separator === undefined || !".:)-–—".includes(separator)) return text;
+  return text.slice(j + 1).trim() || text;
+}
+
+/**
+ * Inline markdown as text: a link or image as its text, code ticks and `**`/`~~` marks dropped.
+ * One pass; a bracket's partner is looked for once (the found position is reused), so it is linear.
+ */
+export function plain(md: string): string {
+  let out = "";
+  let closeBracket = -2;
+  let closeParen = -2;
+  for (let i = 0; i < md.length; i++) {
+    const c = md[i]!;
+    if (c === "!" && md[i + 1] === "[") continue;
+    if (c === "[") {
+      if (closeBracket !== -1 && closeBracket < i) closeBracket = md.indexOf("]", i + 1);
+      if (closeBracket > i && md[closeBracket + 1] === "(") {
+        if (closeParen !== -1 && closeParen < closeBracket) closeParen = md.indexOf(")", closeBracket + 2);
+        if (closeParen > closeBracket) {
+          // The text holds no "]", so this inner pass meets no link and stays linear.
+          out += plain(md.slice(i + 1, closeBracket));
+          i = closeParen;
+          continue;
+        }
+      }
+      out += c;
+      continue;
+    }
+    if (c === "`") continue;
+    // `__` is left: it is also part of names (`#__build`, `__init__`).
+    if ((c === "*" || c === "~") && md[i + 1] === c) {
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** At most STATE_LINE_MAX characters, cut at a word when one is near, with an ellipsis. */
 function cut(text: string): string {
-  return text.length > STATE_LINE_MAX ? text.slice(0, STATE_LINE_MAX) : text;
+  if (text.length <= STATE_LINE_MAX) return text;
+  const room = text.slice(0, STATE_LINE_MAX - 1);
+  const space = room.lastIndexOf(" ");
+  return `${(space > STATE_LINE_MAX * 0.6 ? room.slice(0, space) : room).trimEnd()}…`;
 }
 
 function unquote(value: string): string {
