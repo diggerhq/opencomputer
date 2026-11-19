@@ -54,6 +54,12 @@
 #                     from these and start the host agent. Otherwise an existing
 #                     host.env is kept, and without one the agent is installed
 #                     but not started.
+#   SP_IMAGE_BRANCH   1: a test computer only. Build a release that has no
+#                     deploy/image.pin (a checkout of a branch, not a published
+#                     release) and run it with the session image CI pushed for
+#                     that branch, ghcr.io/diggerhq/computer-session:branch-<tree>,
+#                     which anyone who can push a branch can replace. Without
+#                     it such a release is refused (deploy/vm/sandbox.sh).
 #   SP_TELEMETRY_URL, SP_TELEMETRY_CREDENTIAL, SP_REGION, SP_SUBSTRATE
 #                     optional, written to host.env with the above when set:
 #                     the telemetry collector and this host's signed credential
@@ -519,7 +525,7 @@ if [[ ! -f $release/.sp-ready ]]; then
   [[ -d $release/bin ]] && chmod 0755 "$release"/bin/* 2>/dev/null || true
   printf 'SP_VERSION=%s\n' "$sha" > "$release/.sp-version.env"
   # The session image this release runs with and its ABI (work 103): SP_IMAGE, SP_IMAGE_ABI.
-  bash "$release/deploy/vm/sandbox.sh" version-env "$release" >> "$release/.sp-version.env"
+  SP_IMAGE_BRANCH="${SP_IMAGE_BRANCH:-}" bash "$release/deploy/vm/sandbox.sh" version-env "$release" >> "$release/.sp-version.env"
   touch "$release/.sp-ready"
 fi
 
@@ -547,7 +553,9 @@ done
 
 # Prune old releases: superseded more than 2 days ago (runners idle-exit after
 # 2 h, so none should still run from it) and not named in any process's command
-# line or environment (a runner still started from it).
+# line or environment (a runner still started from it). A session can put a
+# release's path in a command line of its own and so keep that directory (disk,
+# nothing else): the price of never deleting code under a runner that lives.
 for r in "$SP_RELEASES"/*/; do
   r="${r%/}"
   [[ $r == "$(readlink -f "$SP_CURRENT")" ]] && continue
