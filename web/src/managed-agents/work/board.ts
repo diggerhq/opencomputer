@@ -1,4 +1,10 @@
-import type { Item, PullRequest, PullState, Repository } from './api'
+import type {
+  Item,
+  PullRequest,
+  PullState,
+  Repository,
+  SessionStatus,
+} from './api'
 
 // How the board lays out what the API returns (ux-spec 4.1). Nothing here
 // decides a stage, readiness or attention: those are the item's own fields.
@@ -111,6 +117,20 @@ export function personName(p: { name: string | null; email: string }) {
 
 export function plural(n: number, one: string, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`
+}
+
+// The sessions screens' words, lower case; "waiting" says what it waits for,
+// because the session may be someone else's.
+const SESSION_STATUS_WORD: Record<SessionStatus, string> = {
+  starting: 'starting',
+  running: 'working',
+  waiting: 'waiting for an answer',
+  idle: 'idle',
+  suspended: 'asleep',
+}
+
+export function sessionStatusWord(status: SessionStatus) {
+  return SESSION_STATUS_WORD[status] ?? status
 }
 
 export function pullStateWord(state: PullState) {

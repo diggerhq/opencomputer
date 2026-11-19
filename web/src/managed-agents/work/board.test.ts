@@ -10,6 +10,7 @@ import {
   readyToClose,
   repositoryProblem,
   resolveAgainst,
+  sessionStatusWord,
   staleDays,
 } from './board'
 import { makeItem, minutesAgo, NOW } from './fixtures'
@@ -130,6 +131,14 @@ describe('card wording', () => {
     )
     expect(staleDays(makeItem({ updatedAt: minutesAgo(DAY) }), NOW)).toBeNull()
     expect(staleDays(makeItem({ updatedAt: null }), NOW)).toBeNull()
+  })
+
+  it('words a session status the way the sessions screens do', () => {
+    expect(sessionStatusWord('running')).toBe('working')
+    expect(sessionStatusWord('starting')).toBe('starting')
+    expect(sessionStatusWord('waiting')).toBe('waiting for an answer')
+    expect(sessionStatusWord('idle')).toBe('idle')
+    expect(sessionStatusWord('suspended')).toBe('asleep')
   })
 
   it('names a pull request by its number', () => {

@@ -344,6 +344,7 @@ describe('item page', () => {
     expect(
       container.querySelector('a[href="/computer/sessions/cs_1"]')?.textContent,
     ).toBe('Meter minutes')
+    expect(container.textContent).toContain('Igor · idle')
     expect(container.textContent).toContain('#41 Meter')
     expect(container.textContent).toContain('merged')
     expect(workApi.getHistory).not.toHaveBeenCalled()

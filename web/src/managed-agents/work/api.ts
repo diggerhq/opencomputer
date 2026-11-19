@@ -53,13 +53,21 @@ export const AttentionSchema = z.looseObject({
 })
 export type Attention = z.infer<typeof AttentionSchema>
 
+export const SessionStatusSchema = z.enum([
+  'starting',
+  'running',
+  'waiting',
+  'idle',
+  'suspended',
+])
+export type SessionStatus = z.infer<typeof SessionStatusSchema>
+
 const ItemSessionSchema = z.looseObject({
   id: z.string(),
   title: z.string().nullable(),
   ownerName: z.string().nullable(),
-  // Not in the contract (3.10 lists id, title, ownerName): the session's
-  // lifecycle status, shown when the server sends it. See WORK_WEB_NOTES.md.
-  status: z.string().nullable().optional(),
+  // The session's lifecycle status, as the sessions API names it.
+  status: SessionStatusSchema,
 })
 export type ItemSession = z.infer<typeof ItemSessionSchema>
 

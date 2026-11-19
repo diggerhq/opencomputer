@@ -30,6 +30,7 @@ import {
   pullLabel,
   pullStateWord,
   resolveAgainst,
+  sessionStatusWord,
 } from './board'
 import {
   AttentionMark,
@@ -332,7 +333,7 @@ function Details({ item }: { item: Item }) {
             {item.sessions.map((s) => (
               <li key={s.id} className="flex items-start gap-2">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                  {s.status ? <StatusDot status={s.status} /> : null}
+                  <StatusDot status={s.status} />
                 </span>
                 <div className="min-w-0">
                   <Link
@@ -342,7 +343,9 @@ function Details({ item }: { item: Item }) {
                     {s.title || 'Untitled session'}
                   </Link>
                   <p className="text-muted-foreground text-xs leading-4">
-                    {[s.ownerName, s.status].filter(Boolean).join(' · ')}
+                    {[s.ownerName, sessionStatusWord(s.status)]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </p>
                 </div>
               </li>
