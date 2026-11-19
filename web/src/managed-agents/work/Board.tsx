@@ -5,7 +5,14 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import { FileText, Loader2, Search, SquareKanban, X } from 'lucide-react'
+import {
+  FileText,
+  Loader2,
+  MessagesSquare,
+  Search,
+  SquareKanban,
+  X,
+} from 'lucide-react'
 import { ApiError } from '@/api/errors'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
@@ -37,7 +44,7 @@ import {
 import {
   AttentionMark,
   Avatar,
-  PullChip,
+  PullDots,
   Tag,
   UnpublishedMark,
   WarningMark,
@@ -216,21 +223,19 @@ export function Board() {
           />
         </Panel>
       ) : (
-        <div className="grid gap-x-6 gap-y-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid gap-4 lg:grid-cols-3">
           <Column
             title="In progress"
             count={progress.length}
-            note={needYou ? `${needYou} need you` : null}
-            wide
+            note={
+              needYou ? `${needYou} need${needYou === 1 ? 's' : ''} you` : null
+            }
+            accent={needYou > 0}
+            empty={page.building ? 'Reading the working docs…' : undefined}
           >
             {progress.map((i) => (
               <Card key={i.number} item={i} onTag={(t) => setParam('tag', t)} />
             ))}
-            {page.building && !progress.length ? (
-              <p className="text-muted-foreground text-xs">
-                Reading the working docs…
-              </p>
-            ) : null}
           </Column>
           <Column
             title="Ready to close"
@@ -311,13 +316,15 @@ function BoardFrame({
 }) {
   return (
     <div>
-      <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
-        <h1 className="text-xl font-semibold tracking-tight">Board</h1>
+      <header className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-3">
+        <h1 className="mr-1 text-xl leading-8 font-semibold tracking-tight">
+          Board
+        </h1>
         {tab && onTab ? (
           <div
             role="tablist"
             aria-label="Whose items"
-            className="bg-muted flex rounded-md p-0.5"
+            className="bg-muted flex h-8 items-center rounded-md p-0.5"
           >
             {(['mine', 'everyone'] as const).map((t) => (
               <button
@@ -327,14 +334,26 @@ function BoardFrame({
                 aria-selected={tab === t}
                 onClick={() => onTab(t)}
                 className={cn(
-                  'text-muted-foreground rounded px-3 py-1 text-sm transition-colors',
-                  tab === t && 'bg-background text-foreground shadow-xs',
+                  'text-muted-foreground hover:text-foreground h-7 rounded-[5px] px-3 text-sm transition-colors',
+                  tab === t && 'bg-panel text-foreground shadow-xs',
                 )}
               >
                 {t === 'mine' ? 'Mine' : 'Everyone'}
               </button>
             ))}
           </div>
+        ) : null}
+        <div className="min-w-0 flex-1">{status}</div>
+        {tag && onClearTag ? (
+          <button
+            type="button"
+            onClick={onClearTag}
+            className="bg-foreground text-background inline-flex h-6 items-center gap-1 rounded-sm pr-1.5 pl-2 text-xs"
+            aria-label={`Clear the tag filter ${tag}`}
+          >
+            {tag}
+            <X className="size-3" aria-hidden />
+          </button>
         ) : null}
         {onQ ? (
           <div className="relative w-full sm:w-64">
@@ -348,23 +367,10 @@ function BoardFrame({
               onKeyDown={(e) => e.key === 'Escape' && onQ('')}
               placeholder="Filter by title or state"
               aria-label="Filter by title or state"
-              className="border-input placeholder:text-muted-foreground focus-visible:border-ring/60 h-8 w-full rounded-md border bg-transparent pr-2 pl-8 text-sm outline-none"
+              className="border-input bg-panel placeholder:text-muted-foreground focus-visible:border-ring/60 h-8 w-full rounded-md border pr-2 pl-8 text-sm outline-none"
             />
           </div>
         ) : null}
-        {tag && onClearTag ? (
-          <button
-            type="button"
-            onClick={onClearTag}
-            className="bg-foreground text-background inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px]"
-            aria-label={`Clear the tag filter ${tag}`}
-          >
-            {tag}
-            <X className="size-3" aria-hidden />
-          </button>
-        ) : null}
-        <div className="flex-1" />
-        {status}
       </header>
       {children}
     </div>
@@ -409,37 +415,60 @@ function IndexStatus({
   )
 }
 
+/** A stage: a tinted lane with its header inside, one stack of cards. */
 function Column({
   title,
   count,
   note,
-  wide,
+  accent,
+  empty = 'None',
   footer,
   children,
 }: {
   title: string
   count: number
   note: string | null
-  wide?: boolean
+  // The note is the amber "N need you".
+  accent?: boolean
+  // What an empty lane says.
+  empty?: string
   footer?: ReactNode
   children: ReactNode
 }) {
   return (
-    <section aria-label={title} className="min-w-0">
-      <h2 className="mb-3 flex items-baseline gap-1.5 text-sm">
+    <section
+      aria-label={title}
+      className="bg-muted/60 flex min-w-0 flex-col rounded-xl p-2 dark:bg-black/15"
+    >
+      <h2 className="flex h-9 items-center gap-2 px-[13px] pb-1 text-sm">
         <span className="font-medium">{title}</span>
         <span className="text-muted-foreground tabular-nums">{count}</span>
         {note ? (
-          <span className="text-muted-foreground text-xs">· {note}</span>
+          <span
+            className={cn(
+              'ml-auto truncate text-xs',
+              accent
+                ? 'font-medium text-amber-700 dark:text-amber-400'
+                : 'text-muted-foreground',
+            )}
+          >
+            {note}
+          </span>
         ) : null}
       </h2>
-      <div className={cn('grid items-start gap-3', wide && 'xl:grid-cols-2')}>
-        {children}
-      </div>
-      {footer ? <div className="mt-3">{footer}</div> : null}
+      <div className="flex flex-col gap-2">{children}</div>
+      {count === 0 ? (
+        <p className="text-muted-foreground px-[13px] py-2 text-xs">{empty}</p>
+      ) : null}
+      {footer ? <div className="px-[13px] pt-3 pb-1">{footer}</div> : null}
     </section>
   )
 }
+
+// A card has one anatomy whatever it carries (WORK_WEB_NOTES "Visual pass"):
+// an identity line, the title and state, and an activity line. Every line box
+// is 20px, so cards differ only by whole lines.
+const MAX_TAGS = 2
 
 export function Card({
   item,
@@ -453,49 +482,80 @@ export function Card({
 }) {
   const stale = staleDays(item)
   const closed = item.stage === 'closed'
+  const shownTags = item.tags.slice(0, MAX_TAGS)
+  const moreTags = item.tags.slice(MAX_TAGS)
+  const sessions = item.sessions.length
   return (
     <article
       className={cn(
-        'bg-panel hover:border-foreground/20 relative rounded-lg border p-3.5 transition-colors',
-        stale !== null && 'bg-muted/40 border-dashed opacity-75',
+        'group/card relative rounded-lg border p-3 transition-colors',
+        stale !== null
+          ? 'border-foreground/15 hover:border-foreground/30 border-dashed bg-transparent'
+          : 'bg-panel hover:border-foreground/20 shadow-[0_1px_1px_0_rgb(20_19_17/0.03)]',
       )}
     >
-      <h3 className="flex items-start gap-1.5 text-sm leading-5 font-medium">
-        <span className="text-muted-foreground font-normal tabular-nums">
-          {item.number}
+      <div className="text-muted-foreground flex h-5 items-center gap-1.5 text-xs">
+        <span className="mr-0.5 font-medium tabular-nums">{item.number}</span>
+        {shownTags.map((t) => (
+          <Tag key={t} tag={t} onClick={() => onTag(t)} />
+        ))}
+        {moreTags.length ? (
+          <span
+            className="relative z-10 shrink-0 text-[11px] tabular-nums"
+            title={moreTags.join(', ')}
+          >
+            +{moreTags.length}
+          </span>
+        ) : null}
+        <span className="ml-auto flex shrink-0 items-center gap-2 pl-1">
+          <WarningMark warnings={item.warnings} quiet />
+          {item.unpublished ? <UnpublishedMark quiet /> : null}
+          {item.owner ? <Avatar person={item.owner} /> : null}
         </span>
+      </div>
+      <h3
+        className={cn(
+          'mt-2 line-clamp-2 text-sm leading-5 font-medium text-pretty',
+          (closed || stale !== null) && 'text-muted-foreground',
+        )}
+      >
         <Link
           to={`/computer/work/${item.number}`}
-          className={cn(
-            'min-w-0 flex-1 after:absolute after:inset-0 after:rounded-lg',
-            closed && 'text-muted-foreground',
-          )}
+          className="after:absolute after:inset-0 after:rounded-lg"
         >
           {item.title}
         </Link>
-        <WarningMark warnings={item.warnings} />
       </h3>
       {item.stateLine ? (
-        <p className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5">
+        <p className="text-muted-foreground mt-1 line-clamp-2 text-xs leading-5 text-pretty">
           {item.stateLine}
         </p>
       ) : null}
-      {item.tags.length ? (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {item.tags.map((t) => (
-            <Tag key={t} tag={t} onClick={() => onTag(t)} />
-          ))}
+      <div className="text-muted-foreground mt-3 flex h-5 items-center gap-3 text-xs">
+        <div className="flex min-w-0 flex-1 items-center">
+          {closed ? (
+            <span className="truncate">
+              {item.closedBy ? `Closed by ${item.closedBy}` : 'Closed'}
+            </span>
+          ) : (
+            <AttentionMark item={item} />
+          )}
         </div>
-      ) : null}
-      <div className="text-muted-foreground mt-2.5 flex flex-wrap items-center gap-1.5 text-xs">
-        {item.owner ? <Avatar person={item.owner} /> : null}
-        {item.pullRequests.map((pr) => (
-          <PullChip key={pr.url} pr={pr} />
-        ))}
-        {item.sessions.length ? (
-          <span>{plural(item.sessions.length, 'session')}</span>
+        {children ? <div className="relative z-10">{children}</div> : null}
+        <PullDots prs={item.pullRequests} />
+        {sessions ? (
+          <span
+            className="inline-flex items-center gap-1 tabular-nums"
+            title={plural(sessions, 'session')}
+          >
+            <MessagesSquare className="size-3.5" aria-hidden />
+            {sessions}
+            <span className="sr-only">
+              {sessions === 1 ? ' session' : ' sessions'}
+            </span>
+          </span>
         ) : null}
-        <span className="ml-auto tabular-nums" title={item.updatedAt}>
+        <span className="shrink-0 tabular-nums" title={item.updatedAt}>
           {stale !== null
             ? `no change in ${stale} days`
             : timeAgo(
@@ -503,19 +563,6 @@ export function Card({
               )}
         </span>
       </div>
-      {item.unpublished ? <UnpublishedMark className="mt-2" /> : null}
-      {closed || item.attention || children ? (
-        <div className="mt-2.5 flex min-h-5 items-center gap-2 border-t border-dashed pt-2.5">
-          {closed ? (
-            <span className="text-muted-foreground text-xs">
-              {item.closedBy ? `Closed by ${item.closedBy}` : 'Closed'}
-            </span>
-          ) : (
-            <AttentionMark item={item} />
-          )}
-          <div className="relative z-10 ml-auto">{children}</div>
-        </div>
-      ) : null}
     </article>
   )
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { AlertTriangle, CloudOff } from 'lucide-react'
+import { AlertTriangle, CloudOff, GitPullRequest } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { timeAgo } from '../computer-sessions/transcript'
 import type { Item, Person, PullRequest, PullState } from './api'
@@ -38,11 +38,17 @@ export function Tag({
   active?: boolean
 }) {
   const className = cn(
-    'bg-muted text-muted-foreground relative z-10 rounded px-1.5 py-0.5 font-mono text-[11px] leading-4',
-    onClick && 'hover:text-foreground cursor-pointer transition-colors',
-    active && 'bg-foreground text-background hover:text-background',
+    'text-muted-foreground relative z-10 inline-flex h-[18px] max-w-32 shrink-0 items-center truncate rounded-sm border px-1.5 text-[11px] leading-none',
+    onClick &&
+      'hover:text-foreground hover:border-foreground/25 cursor-pointer transition-colors',
+    active && 'bg-foreground text-background border-foreground',
   )
-  if (!onClick) return <span className={className}>{tag}</span>
+  if (!onClick)
+    return (
+      <span className={className}>
+        <span className="truncate">{tag}</span>
+      </span>
+    )
   return (
     <button
       type="button"
@@ -50,7 +56,7 @@ export function Tag({
       title={`Show items tagged ${tag}`}
       onClick={onClick}
     >
-      {tag}
+      <span className="truncate">{tag}</span>
     </button>
   )
 }
@@ -62,32 +68,50 @@ const PULL_DOT: Record<NonNullable<PullState>, string> = {
   closed: 'bg-status-error',
 }
 
-export function PullDot({ state }: { state: PullState }) {
+export function PullDot({
+  state,
+  className,
+}: {
+  state: PullState
+  className?: string
+}) {
   return (
     <span
       aria-hidden
       className={cn(
         'inline-block size-1.5 shrink-0 rounded-full',
-        state ? PULL_DOT[state] : 'border-muted-foreground/60 border',
+        state ? PULL_DOT[state] : 'border-muted-foreground/70 border',
+        className,
       )}
     />
   )
 }
 
-/** A pull request as a quiet link with its state; always to GitHub. */
-export function PullChip({ pr }: { pr: PullRequest }) {
+/** One dot per pull request, each a link to GitHub; number and state on hover. */
+export function PullDots({ prs }: { prs: PullRequest[] }) {
+  if (!prs.length) return null
   return (
-    <a
-      href={pr.url}
-      target="_blank"
-      rel="noreferrer"
-      title={[pr.title, pullStateWord(pr.state)].filter(Boolean).join(' · ')}
-      className="text-muted-foreground hover:text-foreground relative z-10 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs tabular-nums transition-colors"
-    >
-      <PullDot state={pr.state} />
-      {pullLabel(pr)}
-      {pr.state === 'draft' ? <span>· draft</span> : null}
-    </a>
+    <span className="inline-flex items-center gap-1">
+      <GitPullRequest className="size-3.5" aria-hidden />
+      {prs.map((pr) => {
+        const label = [pullLabel(pr), pr.title, pullStateWord(pr.state)]
+          .filter(Boolean)
+          .join(' · ')
+        return (
+          <a
+            key={pr.url}
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={label}
+            aria-label={label}
+            className="relative z-10 -m-0.5 inline-flex p-0.5 hover:opacity-70"
+          >
+            <PullDot state={pr.state} className="size-2" />
+          </a>
+        )
+      })}
+    </span>
   )
 }
 
@@ -118,7 +142,7 @@ export function AttentionMark({
           label.needsYou
             ? 'bg-amber-500'
             : item.attention?.state === 'working'
-              ? 'bg-status-running/60 animate-pulse'
+              ? 'bg-muted-foreground/50 animate-pulse'
               : 'bg-muted-foreground/50',
         )}
       />
@@ -127,8 +151,17 @@ export function AttentionMark({
   )
 }
 
-/** What the parser could not read in the doc: a small mark, the details on hover. */
-export function WarningMark({ warnings }: { warnings: string[] }) {
+/**
+ * What the parser could not read in the doc: a small mark, the details on
+ * hover. Grey on a card (only "needs you" is coloured there).
+ */
+export function WarningMark({
+  warnings,
+  quiet,
+}: {
+  warnings: string[]
+  quiet?: boolean
+}) {
   if (!warnings.length) return null
   const text = `The doc has ${warnings.length === 1 ? 'a problem' : `${warnings.length} problems`}: ${warnings.join('; ')}`
   return (
@@ -136,17 +169,41 @@ export function WarningMark({ warnings }: { warnings: string[] }) {
       title={text}
       aria-label={text}
       role="img"
-      className="text-status-pending relative z-10 inline-flex"
+      className={cn(
+        'relative z-10 inline-flex',
+        quiet ? 'text-muted-foreground' : 'text-status-pending',
+      )}
     >
       <AlertTriangle className="size-3.5" aria-hidden />
     </span>
   )
 }
 
-export function UnpublishedMark({ className }: { className?: string }) {
+const UNPUBLISHED =
+  'A session has changes to this doc that are not on GitHub yet'
+
+/** The words on the item page; just the icon, in grey, on a card. */
+export function UnpublishedMark({
+  quiet,
+  className,
+}: {
+  quiet?: boolean
+  className?: string
+}) {
+  if (quiet)
+    return (
+      <span
+        title={UNPUBLISHED}
+        aria-label="Unpublished changes"
+        role="img"
+        className={cn('relative z-10 inline-flex', className)}
+      >
+        <CloudOff className="size-3.5" aria-hidden />
+      </span>
+    )
   return (
     <span
-      title="A session has changes to this doc that are not on GitHub yet"
+      title={UNPUBLISHED}
       className={cn(
         'text-status-pending inline-flex items-center gap-1 text-xs',
         className,
