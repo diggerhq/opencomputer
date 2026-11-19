@@ -109,7 +109,9 @@ export async function apiFetchResponse(
     throw new ApiError('Unauthorized', 401)
   }
 
-  if (!res.ok) {
+  // A 304 answers a conditional request the caller made (If-None-Match), so
+  // it goes back to that caller, which keeps what it already has.
+  if (!res.ok && res.status !== 304) {
     const body: unknown = await res.json().catch(() => ({}))
     throw new ApiError(
       errorMessage(body, res.status),
