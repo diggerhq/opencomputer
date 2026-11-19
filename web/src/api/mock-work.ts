@@ -193,8 +193,10 @@ const open: Json[] = [
     author: priya,
     left: 6,
   }),
+  // The index has not read its last commit yet: no time on the card.
   item(31, 'Look into the flaky end-to-end test', {
     updated: 2 * D,
+    updatedAt: null,
     stateLine: null,
     owner: null,
     author: sam,
@@ -273,7 +275,8 @@ const closed: Json[] = [
     tags: ['billing'],
     owner: sam,
     left: 0,
-    closedAt: ago(30 * D),
+    // Closed, but when and by whom is not known yet: just "Closed".
+    closedAt: null,
     closedBy: null,
   }),
 ]
@@ -322,7 +325,7 @@ const revisions = (it: Json) => [
   {
     sha: '9f2c1a7e4b3d2c1a0f9e8d7c6b5a4f3e2d1c0b9a',
     url: 'https://github.com/acme/knowledge/commit/9f2c1a7',
-    at: String(it.updatedAt),
+    at: (it.updatedAt as string | null) ?? ago(H),
     authorName: 'Computer for Igor',
     summary: 'Record the price-table question; metering merged',
     sessionId: S1,

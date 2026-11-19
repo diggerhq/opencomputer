@@ -44,6 +44,22 @@ describe('board columns', () => {
     expect(inProgress(items).map((i) => i.number)).toEqual([2, 3, 1])
   })
 
+  it('puts an item with no known change last within its group', () => {
+    const needsYou = {
+      state: 'needs_you' as const,
+      name: null,
+      since: minutesAgo(1),
+    }
+    const items = [
+      makeItem({ number: 1, updatedAt: null }),
+      makeItem({ number: 2, updatedAt: minutesAgo(500) }),
+      makeItem({ number: 3, updatedAt: null, attention: needsYou }),
+      makeItem({ number: 4, updatedAt: minutesAgo(5), attention: needsYou }),
+      makeItem({ number: 5, updatedAt: minutesAgo(1) }),
+    ]
+    expect(inProgress(items).map((i) => i.number)).toEqual([4, 3, 5, 2, 1])
+  })
+
   it('shows closed items of the last seven days unless older are asked for', () => {
     const items = [
       makeItem({ number: 1, stage: 'closed', closedAt: minutesAgo(2 * DAY) }),
@@ -113,6 +129,7 @@ describe('card wording', () => {
       20,
     )
     expect(staleDays(makeItem({ updatedAt: minutesAgo(DAY) }), NOW)).toBeNull()
+    expect(staleDays(makeItem({ updatedAt: null }), NOW)).toBeNull()
   })
 
   it('names a pull request by its number', () => {

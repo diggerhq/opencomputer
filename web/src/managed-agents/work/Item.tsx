@@ -191,6 +191,8 @@ function Breadcrumb({ number }: { number: number | null }) {
 
 function ItemHeader({ item }: { item: Item }) {
   const closed = item.stage === 'closed'
+  // Null when not known yet: then no time is shown.
+  const when = closed ? (item.closedAt ?? item.updatedAt) : item.updatedAt
   return (
     <header className="border-b pb-5">
       <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
@@ -246,14 +248,11 @@ function ItemHeader({ item }: { item: Item }) {
                 {item.closedBy ? `closed by ${item.closedBy}` : 'closed'}
               </span>
             ) : null}
-            <span
-              title={(closed ? item.closedAt : null) ?? item.updatedAt}
-              className="tabular-nums"
-            >
-              {closed
-                ? timeAgo(item.closedAt ?? item.updatedAt)
-                : `changed ${timeAgo(item.updatedAt)}`}
-            </span>
+            {when ? (
+              <span title={when} className="tabular-nums">
+                {closed ? timeAgo(when) : `changed ${timeAgo(when)}`}
+              </span>
+            ) : null}
             {!closed && item.attention ? <AttentionMark item={item} /> : null}
             {item.warnings.length ? (
               <span className="inline-flex items-center gap-1">

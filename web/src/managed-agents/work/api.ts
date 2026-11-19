@@ -81,8 +81,10 @@ export const ItemSchema = z.looseObject({
   attention: AttentionSchema.nullable(),
   sessions: z.array(ItemSessionSchema),
   unpublished: z.boolean(),
-  updatedAt: z.string(),
+  // Null while the index has not read the doc's last commit yet.
+  updatedAt: z.string().nullable(),
   createdAt: z.string().nullable(),
+  // Both may be null on a closed item, when not known yet.
   closedAt: z.string().nullable(),
   closedBy: z.string().nullable(),
 })

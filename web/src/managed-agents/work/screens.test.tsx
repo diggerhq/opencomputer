@@ -267,6 +267,40 @@ describe('board', () => {
     ).not.toBeNull()
   })
 
+  it('shows no time where the last change or the closing is not known', async () => {
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([
+        makeItem({
+          number: 7,
+          title: 'Unknown age',
+          mine: true,
+          updatedAt: null,
+        }),
+      ]),
+    )
+    workApi.getClosedItems.mockResolvedValue({
+      items: [
+        makeItem({
+          number: 8,
+          title: 'Closed, details unknown',
+          stage: 'closed',
+          mine: true,
+          updatedAt: null,
+          closedAt: null,
+          closedBy: null,
+        }),
+      ],
+      nextCursor: null,
+    })
+    await render('/computer/work?older=1')
+    const open = column('In progress').querySelector('article')!
+    expect(open.textContent).not.toMatch(/no change in|\d+d|Jan/)
+    expect(open.querySelector('[title]')).toBeNull()
+    const done = column('Closed').querySelector('article')!
+    expect(done.textContent).toContain('Closed')
+    expect(done.textContent).not.toContain('Closed by')
+  })
+
   it('offers no Close or Reopen yet', async () => {
     workApi.getOpenItems.mockResolvedValue(openPage(items))
     await render('/computer/work')
@@ -322,6 +356,36 @@ describe('item page', () => {
     })
     await render('/computer/work/12')
     expect(container.querySelector('header')?.textContent).toContain('no owner')
+  })
+
+  it('shows just "closed" when who and when are not known', async () => {
+    workApi.getItem.mockResolvedValue({
+      item: {
+        ...item,
+        stage: 'closed',
+        updatedAt: null,
+        closedAt: null,
+        closedBy: null,
+      },
+      body: 'x',
+    })
+    await render('/computer/work/12')
+    const header = container.querySelector('header')!.textContent
+    expect(header).toContain('Closed')
+    expect(header).toContain('closed')
+    expect(header).not.toContain('closed by')
+    expect(header).not.toContain('changed')
+  })
+
+  it('shows no change time on an open item before it is known', async () => {
+    workApi.getItem.mockResolvedValue({
+      item: { ...item, updatedAt: null },
+      body: 'x',
+    })
+    await render('/computer/work/12')
+    expect(container.querySelector('header')!.textContent).not.toContain(
+      'changed',
+    )
   })
 
   it('lists the changes on the History tab', async () => {

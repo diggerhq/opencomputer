@@ -25,12 +25,24 @@ export function matches(item: Item, f: Filters): boolean {
   )
 }
 
+// Newest change first; an item whose last change is not known yet goes last.
+const latestFirst = (a: Item, b: Item) =>
+  a.updatedAt === b.updatedAt
+    ? 0
+    : a.updatedAt === null
+      ? 1
+      : b.updatedAt === null
+        ? -1
+        : b.updatedAt.localeCompare(a.updatedAt)
+
 const needsYouFirst = (a: Item, b: Item) =>
   (a.attention?.state === 'needs_you' ? 0 : 1) -
-    (b.attention?.state === 'needs_you' ? 0 : 1) ||
-  b.updatedAt.localeCompare(a.updatedAt)
+    (b.attention?.state === 'needs_you' ? 0 : 1) || latestFirst(a, b)
 
-/** In progress: the cards that need the viewer first, then by last change. */
+/**
+ * In progress: the cards that need the viewer first, then by last change
+ * (unknown last, within each group).
+ */
 export function inProgress(items: Item[]): Item[] {
   return items
     .filter((i) => i.stage === 'open' && !i.readyToClose)
@@ -62,7 +74,7 @@ export function closedShown(
 
 /** Days since the last change, when that makes the card stale; else null. */
 export function staleDays(item: Item, now = Date.now()): number | null {
-  if (item.stage !== 'open') return null
+  if (item.stage !== 'open' || item.updatedAt === null) return null
   const days = Math.floor((now - new Date(item.updatedAt).getTime()) / DAY)
   return days >= STALE_DAYS ? days : null
 }

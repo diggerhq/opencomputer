@@ -487,6 +487,8 @@ export function Card({
   const shownTags = item.tags.slice(0, MAX_TAGS)
   const moreTags = item.tags.slice(MAX_TAGS)
   const sessions = item.sessions.length
+  // When it last changed, or closed; unknown yet shows nothing.
+  const when = closed ? (item.closedAt ?? item.updatedAt) : item.updatedAt
   return (
     <article
       className={cn(
@@ -557,13 +559,11 @@ export function Card({
             </span>
           </span>
         ) : null}
-        <span className="shrink-0 tabular-nums" title={item.updatedAt}>
-          {stale !== null
-            ? `no change in ${stale} days`
-            : timeAgo(
-                closed ? (item.closedAt ?? item.updatedAt) : item.updatedAt,
-              )}
-        </span>
+        {stale !== null || when ? (
+          <span className="shrink-0 tabular-nums" title={when ?? undefined}>
+            {stale !== null ? `no change in ${stale} days` : timeAgo(when)}
+          </span>
+        ) : null}
       </div>
     </article>
   )
