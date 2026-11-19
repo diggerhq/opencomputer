@@ -226,7 +226,7 @@ const hooks: SessionHooks = {
   },
   output: () => clearFeedback(),
   spawn,
-  threads: { read: readThread, post: postThread },
+  threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
   previews: {
     preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
     unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),

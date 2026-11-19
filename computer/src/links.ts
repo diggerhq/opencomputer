@@ -27,9 +27,8 @@ export interface LinkedMessage {
   name: string;
   ts: string;
   text: string;
+  /** The names of its files. Those the session also gets are in the link's `attached`. */
   files?: string[];
-  /** The same files as Slack gives them, for the runner to download (`linkedFiles`). */
-  slackFiles?: SlackFile[];
   /** The message the link points at, when it is a reply in a thread. */
   linked?: boolean;
   /** Replies left out just before this one (a trailing entry with only this set ends the list). */
@@ -47,6 +46,8 @@ export type Linked =
       ok: true;
       where: string;
       messages: LinkedMessage[];
+      /** The files of `messages` handed to the session, oldest first (`attachable`). */
+      attached?: LinkedFile[];
       omitted?: number;
       unread?: boolean;
       here?: boolean;
@@ -54,6 +55,12 @@ export type Linked =
       context?: boolean;
     }
   | { url: string; ok: false; reason: string; here?: boolean };
+
+/** A file of a linked message that the session gets, downloaded like an upload of its own. */
+export interface LinkedFile extends SlackFile {
+  /** Who posted the message it was in. */
+  from: string;
+}
 
 export interface Permalink {
   url: string;
@@ -213,7 +220,7 @@ export function linkResolver() {
       name: name(m),
       ts: m.ts,
       text: cap(decodeSlack(String(m.text ?? '').replace(/<@([UW][A-Z0-9]+)(\|[^>]*)?>/g, (_, id) => `@${dir.get(id)?.name ?? id}`))),
-      ...(m.files?.length ? { files: m.files.map((f: any) => f.name ?? f.id), slackFiles: m.files.map(slackFile) } : {}),
+      ...(m.files?.length ? { files: m.files.map((f: any) => f.name ?? f.id) } : {}),
       ...(link.threadTs && m.ts === link.ts && m.ts !== link.threadTs ? { linked: true } : {}),
     });
 
@@ -242,7 +249,10 @@ export function linkResolver() {
     // Past MAX_READ the newest replies were never fetched: say so rather than pass older ones off as the end.
     const unread = !!cursor && !reached;
     const omitted = Math.max(replies.length, Number(all[0].reply_count) || 0) - keep.size;
-    return { messages, ...(omitted ? { omitted } : {}), ...(unread ? { unread } : {}) };
+    // Only of the messages shown: a file of a reply left out would have no message to belong to.
+    const shown = new Set(messages.map((m) => m.ts));
+    const attached = attachedOf(all.filter((m) => shown.has(m.ts)).map((m) => ({ from: name(m), files: m.files })));
+    return { messages, ...attached, ...(omitted ? { omitted } : {}), ...(unread ? { unread } : {}) };
   }
 
   const refusal =
@@ -321,7 +331,7 @@ const TAG = 'slack_linked_thread';
  * after normalizing lookalikes (fullwidth brackets, zero-width characters),
  * comes back unchanged.
  */
-function defang(s: string): string {
+export function defang(s: string): string {
   const tag = new RegExp(`<(/?)(${TAG})`, 'gi');
   const plain = s.normalize('NFKC').replace(/[\u00AD\u180E\u200B-\u200F\u2060-\u2064\uFEFF]/g, '');
   return tag.test(plain) ? plain.replace(tag, '‹$1$2') : s;
@@ -361,36 +371,48 @@ export function forwarded(attachments: SharedAttachment[] | undefined): Linked[]
           name: a.author_name ?? a.author_subname ?? 'someone',
           ts: a.ts ?? '',
           text: cap(decodeSlack(a.text || a.fallback || '')),
-          ...(a.files?.length
-            ? { files: a.files.map((f) => f.name ?? f.title ?? 'file'), slackFiles: a.files.filter((f) => f.id).map(slackFile) }
-            : {}),
+          ...(a.files?.length ? { files: a.files.map((f) => f.name ?? f.title ?? 'file') } : {}),
         },
       ],
+      ...attachedOf([{ from: a.author_name ?? a.author_subname ?? 'someone', files: a.files }]),
     }));
 }
 
-/** Files a linked thread or forward is downloaded with: at most this many per message. */
-export const MAX_LINKED_FILES = 10;
-
-function slackFile(f: any): SlackFile {
-  const { id, name, mimetype, size, url_private, url_private_download } = f;
-  return { id, name, mimetype, size, url_private, url_private_download };
-}
+/** Files handed over per linked thread or forward: the newest few, each small enough to be worth fetching unasked. */
+export const MAX_LINKED_FILES = 5;
+const MAX_LINKED_FILE_BYTES = 20 * 1024 * 1024;
 
 /**
- * The files in linked threads and forwards that were shared with the session,
- * newest first, so a screenshot posted with the link's last message is the one
- * kept: the runner downloads them as it does the message's own files.
+ * The files of a linked thread's messages (oldest first) that go to the
+ * session. The person linked the thread, not each file, so the budget is
+ * tighter than for an upload: only files Slack offers a download for (not a
+ * deleted one, nor one of another organization) and says are small. The rest
+ * stay names in the block, marked as not attached.
  */
-export function linkedFiles(linked: Linked[] | undefined): SlackFile[] {
-  const seen = new Set<string>();
-  const out: SlackFile[] = [];
-  for (const l of [...(linked ?? [])].reverse()) {
-    if (!l.ok) continue;
-    for (const m of [...l.messages].reverse())
-      for (const f of m.slackFiles ?? []) if (f.id && !seen.has(f.id) && out.length < MAX_LINKED_FILES) seen.add(f.id), out.push(f);
-  }
-  return out;
+function attachable(messages: { from: string; files?: any[] }[]): LinkedFile[] {
+  return messages
+    .flatMap((m) => (m.files ?? []).map((f) => ({ f, from: m.from })))
+    .filter(({ f }) => f?.id && (f.url_private_download ?? f.url_private) && typeof f.size === 'number' && f.size <= MAX_LINKED_FILE_BYTES)
+    .slice(-MAX_LINKED_FILES)
+    .map(({ f, from }) => ({
+      id: f.id,
+      name: f.name,
+      mimetype: f.mimetype,
+      size: f.size,
+      url_private: f.url_private,
+      url_private_download: f.url_private_download,
+      from,
+    }));
+}
+
+function attachedOf(messages: Parameters<typeof attachable>[0]) {
+  const attached = attachable(messages);
+  return attached.length ? { attached } : {};
+}
+
+/** Every file handed over with these links, for `fetchAttachments`: `from` says whose message and where. */
+export function linkedFiles(linked: Linked[] | undefined): LinkedFile[] {
+  return (linked ?? []).flatMap((l) => (l.ok ? (l.attached ?? []).map((f) => ({ ...f, from: l.where ? `${f.from} in ${l.where}` : f.from })) : []));
 }
 
 /** The message text with each linked thread (or the reason it isn't shared) after it, for the model. */
@@ -406,10 +428,11 @@ export function linkedBlock(l: Linked, asked = false): string {
   if (!l.ok) return `[${asked ? 'Slack thread' : 'Linked Slack message'} ${l.url} is not shared with you: ${l.reason}.]`;
   const id = randomBytes(4).toString('hex');
   const time = (ts: string) => new Date(Number(ts) * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const attached = new Set(l.attached?.map((f) => f.name ?? f.id));
   const lines = l.messages.map((m) => {
     const gap = m.skipped ? `[${m.skipped} ${m.skipped === 1 ? 'reply' : 'replies'} left out]` : '';
     if (!m.ts && !m.text) return gap;
-    const files = m.files?.length ? ` [files: ${m.files.map(defang).join(', ')}]` : '';
+    const files = m.files?.length ? ` [files: ${m.files.map((f) => defang(f) + (attached.has(f) ? '' : ' (not attached)')).join(', ')}]` : '';
     const mark = m.linked ? ' (the linked message)' : '';
     return `${gap ? gap + '\n' : ''}${m.ts ? `[${time(m.ts)}] ` : ''}${defang(m.name)}${mark}: ${defang(m.text)}${files}`;
   });

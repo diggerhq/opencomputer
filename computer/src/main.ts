@@ -21,7 +21,7 @@ import { panels } from './runner/agents.js';
 import { ensureWorkdir } from './workspace.js';
 import { addressed, decodeSlack } from './slack-text.js';
 import { fetchAttachments, type SlackFile } from './runner/attachments.js';
-import { linkedFiles, linkResolver, withLinked } from './links.js';
+import { forwarded, linkedFiles, linkResolver, type SharedAttachment, withLinked } from './links.js';
 import { log } from './log.js';
 import { decodeActionId, type PermissionMode } from './protocol.js';
 import { takeTier } from './tiers.js';
@@ -113,6 +113,7 @@ interface Msg {
   text?: string;
   channel_type?: string;
   files?: SlackFile[];
+  attachments?: SharedAttachment[];
 }
 
 const seen = new Set<string>();
@@ -139,7 +140,7 @@ async function route(m: Msg, ctx: Ctx, mentioned: boolean) {
   const a = addressed(m.text ?? '', botUserId, env.SLACK_APP_NAME ?? 'Computer');
   mentioned ||= a.mentioned;
   const text = decodeSlack(a.text).trim();
-  if (!text && !m.files?.length) return;
+  if (!text && !m.files?.length && !forwarded(m.attachments).length) return;
 
   const existing =
     sessionFor(m.channel, client) ?? (m.thread_ts ? sessionFor(`${m.channel}:${m.thread_ts}`, client) : undefined);
@@ -179,7 +180,7 @@ async function deliver(s: Session, m: Msg, text: string, mentioned = true, midTh
   if (s.isBusy) void s.client.reactions.add({ channel: m.channel, timestamp: m.ts, name: 'eyes' }).catch(() => {});
   // One machine has no people table: whoever posts is the owner for the link check (work 049).
   const req = { text, poster: m.user!, owner: m.user!, destination: m.channel };
-  const linked = await resolveLinks(s.client, req);
+  const linked = [...forwarded(m.attachments), ...(await resolveLinks(s.client, req))];
   // Mentioned mid-thread: the replies above, so the new session sees what it was asked about.
   if (midThread) linked.unshift(await resolveLinks.thread(s.client, req, m.thread_ts!, m.ts));
   const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], s.client.token ?? env.SLACK_BOT_TOKEN, s.info.key);

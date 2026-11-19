@@ -15,7 +15,7 @@ function served(decide: (name: string, input: Wire, ask: GateAsk) => GateDecisio
     gate: async (name: string, input: Wire, ask: GateAsk) => (asks.push({ name, input, ask }), decide(name, input, ask)),
   };
   const read = async () => ({ ok: true, messages: [{ name: 'a', ts: '1', text: 'hello' }] }) as Wire;
-  const s = new Served({ cwd: () => '/w', hooks: { threads: { read, post: read } }, sendFile: (async () => ({})) as Wire, postCard: (async () => ({})) as Wire }, host);
+  const s = new Served({ cwd: () => '/w', hooks: { threads: { read, post: read, attach: async () => [] } }, sendFile: (async () => ({})) as Wire, postCard: (async () => ({})) as Wire }, host);
   return { s, host, asks };
 }
 const allow: GateDecision = { behavior: 'allow', updatedInput: {} };
