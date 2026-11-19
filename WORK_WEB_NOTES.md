@@ -87,7 +87,7 @@ tokens, 1px `border` lines, `rounded-lg` panels. The benchmark is the calm and
 regularity of Linear's board and issue page, not its features.
 
 - Grid: three equal stage lanes on one grid (`lg:grid-cols-3`), one stack of
-  cards each. Each lane is a tinted region (`bg-muted/50`, darker than the
+  cards each. Each lane is a tinted region (`bg-muted/60`, darker than the
   shell in the dark theme) that runs the full height of the board, with its
   header inside it, so the three stages read as three regions at a glance.
   Lanes are 16px apart; cards inside a lane are 8px apart. Below `lg` the
@@ -107,17 +107,23 @@ regularity of Linear's board and issue page, not its features.
      icon with one dot per pull request (state on hover), the session count
      with an icon, and the age, right-aligned and tabular.
 - Spacing: 12px card padding; 8px between tiers, 4px between title and state.
+  The activity line sits 12px below the text above it.
   Every line box is 20px, so cards differ in height only by whole lines.
 - Tags: sans, 11px, hairline border, no fill, instead of filled monospace
   pills. Two at most on a card; the rest are counted and listed on hover.
 - Colour: only "needs you" is coloured (amber). Doc problems and unpublished
   changes are grey icons on the card (words and colour on the item page).
   Pull request dots keep their state colours, as the spec asks for state.
-- Stale: the card loses its raised surface and sits flat on the lane, its
-  text dimmed; the age says "no change in N days".
-- Item page: a metadata line with dot separators; the doc at 68ch with 32px
-  before each section heading; task lists without bullets and with drawn
-  boxes, done items muted; the aside starts on the same line as the doc and
-  is set off by a rule; History is a timeline with dots centred on the
-  summary's first line and a single meta line (author · age · session ·
-  commit).
+- Stale: the card loses its raised surface and sits flat on the lane with a
+  dashed border, its title dimmed; the age says "no change in N days".
+- Item page: a neutral stage pill, then one metadata line with dot
+  separators (a dot that wraps to the start of a line is clipped away). Only
+  "needs you" and the doc problem keep their colour there; "unpublished
+  changes" is grey with words. The doc is held to 42rem with 32px before each
+  section heading; task lists have drawn boxes instead of bullets, and done
+  items are muted. The aside is 20rem, set off by a rule, and sticky. In
+  Details, session and pull request dots sit in a 20px column that lines up
+  with the People avatars. History is a timeline: a hollow dot on the
+  summary's first line, the age on the right of that line, then a single
+  non-wrapping meta line (author · session · commit) where only the author
+  truncates.
