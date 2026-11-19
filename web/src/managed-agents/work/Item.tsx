@@ -80,20 +80,37 @@ export function ItemView() {
   })
 
   if (!valid || item.isError) {
-    const missing =
-      !valid || (item.error instanceof ApiError && item.error.status === 404)
+    const status = item.error instanceof ApiError ? item.error.status : null
+    // The server's 404 for a number it does not track; any other 404 means
+    // the routes are not there yet, as on the board.
+    const noItem =
+      !valid ||
+      (status === 404 &&
+        item.error instanceof ApiError &&
+        item.error.type === 'item_not_found')
+    const { title, description } = noItem
+      ? {
+          title: valid ? `No item ${number}` : 'No such item',
+          description:
+            'Nothing tracked has this number. It may have been removed from the working docs.',
+        }
+      : status === 404
+        ? {
+            title: 'The board is not available yet',
+            description: 'Tracked work is coming to this organization soon.',
+          }
+        : {
+            title: 'Could not load this item',
+            description: 'Try loading this page again.',
+          }
     return (
       <div>
         <Breadcrumb number={valid ? number : null} />
         <Panel>
           <EmptyState
             icon={FileText}
-            title={missing ? 'No such item' : 'Could not load this item'}
-            description={
-              missing
-                ? 'It may have been renamed, or tracked work is not available here yet.'
-                : 'Try loading this page again.'
-            }
+            title={title}
+            description={description}
             action={
               <Link
                 to="/computer/work"

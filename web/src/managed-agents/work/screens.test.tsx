@@ -418,9 +418,22 @@ describe('item page', () => {
     ).toContain('abcdef1')
   })
 
-  it('says when there is no such item', async () => {
+  it('says when there is no such item, with a way back', async () => {
+    workApi.getItem.mockRejectedValue(
+      new ApiError('No such item.', 404, 'item_not_found'),
+    )
+    await render('/computer/work/123')
+    expect(container.textContent).toContain('No item 123')
+    const back = [...container.querySelectorAll('a')].find(
+      (a) => a.textContent === 'Back to the board',
+    )
+    expect(back?.getAttribute('href')).toBe('/computer/work')
+  })
+
+  it('reads any other 404 as not available yet', async () => {
     workApi.getItem.mockRejectedValue(new ApiError('Not found', 404))
     await render('/computer/work/99')
-    expect(container.textContent).toContain('No such item')
+    expect(container.textContent).toContain('The board is not available yet')
+    expect(container.textContent).not.toContain('No item')
   })
 })

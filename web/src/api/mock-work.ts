@@ -416,7 +416,8 @@ export function workMock(
   const m = rest.match(/^\/items\/(\d+)(\/history)?$/)
   if (m) {
     const it = [...open, ...closed].find((i) => i.number === Number(m[1]))
-    if (!it || !current) throw new ApiError('Not found', 404)
+    if (!it || !current)
+      throw new ApiError('No such item.', 404, 'item_not_found')
     if (m[2]) return { revisions: revisions(it), nextCursor: null }
     return { item: it, body: body(it) }
   }
