@@ -17,6 +17,7 @@ import {
   type SessionSettings,
 } from '../computer-sessions-api'
 import { askTitle, isBusy, sessionTitle, useCapabilities } from './state'
+import { ApprovalDetail } from './ask-detail'
 
 export function StatusDot({
   status,
@@ -153,18 +154,6 @@ function modeLabel(mode: string) {
   }
 }
 
-function preview(input: unknown): string | null {
-  if (input === undefined || input === null) return null
-  if (typeof input === 'object') {
-    const o = input as Record<string, unknown>
-    for (const k of ['command', 'file_path', 'path', 'url', 'query']) {
-      if (typeof o[k] === 'string') return o[k]
-    }
-  }
-  const s = typeof input === 'string' ? input : JSON.stringify(input, null, 2)
-  return s.length > 600 ? `${s.slice(0, 600)}…` : s
-}
-
 // An open ask, answerable here: approve or deny a tool call, or answer the
 // agent's questions. A secret is set privately, so it points to Secrets.
 // `hideTitle` leaves out the ask's title where the page already heads with it;
@@ -253,17 +242,12 @@ function ApprovalBody({
   busy: boolean
   onAnswer: (a: AskAnswer) => void
 }) {
-  const detail = preview(ask.approval?.input)
   return (
     <div className="space-y-2">
       {hideTitle ? null : (
         <p className="text-sm font-medium">{askTitle(ask)}</p>
       )}
-      {detail ? (
-        <pre className="bg-muted text-muted-foreground max-h-40 overflow-auto rounded-md px-2.5 py-1.5 font-mono text-xs whitespace-pre-wrap">
-          {detail}
-        </pre>
-      ) : null}
+      <ApprovalDetail ask={ask} />
       <div className="flex flex-wrap gap-1.5">
         <Button
           size="sm"
