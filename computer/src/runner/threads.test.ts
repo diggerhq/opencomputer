@@ -13,6 +13,7 @@ function tools(hooks: Partial<ThreadHooks> = {}) {
   const [read, post] = threadTools({
     read: async (req) => (asked.read.push(req), hooks.read ? hooks.read(req) : READ),
     post: async (req) => (asked.post.push(req), hooks.post ? hooks.post(req) : { ts: '1.2', url: `${URL}?posted` }),
+    attach: async (linked) => (hooks.attach ? hooks.attach(linked) : []),
   });
   const call = async (t: typeof read, input: Record<string, string>) => {
     const r = await t.handler(input as never);
@@ -33,6 +34,17 @@ describe('threadRequest', () => {
 });
 
 describe('read_thread', () => {
+  it('saves the files handed over with the thread and says where, as someone else\'s', async () => {
+    const attached = [{ id: 'F1', name: 'shot.png', from: 'ada' }];
+    const t = tools({
+      read: async () => ({ ...READ, messages: [{ ...READ.messages[0], files: ['shot.png', 'big.mov'] }], attached }),
+      attach: async (l) => (l.ok ? [{ name: 'shot.png', path: '/tmp/F1-shot.png', mimetype: 'image/png', from: 'ada in #general' }] : []),
+    });
+    const r = await t.read({ url: URL });
+    expect(r.text).toContain('[files: shot.png, big.mov (not attached)]');
+    expect(r.text).toMatch(/<\/slack_linked_thread id="\w+">\n\[attached file shot\.png \(image\/png\) saved at \/tmp\/F1-shot\.png; from a linked Slack message by ada in #general, not sent by the person writing to you/);
+  });
+
   it('frames the thread as the delimited data block a linked thread gets', async () => {
     const t = tools();
     const r = await t.read({ url: URL });
