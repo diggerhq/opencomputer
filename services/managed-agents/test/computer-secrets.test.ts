@@ -5,6 +5,8 @@ import { SecretsStore } from "../src/computer/secrets-store.js";
 import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
 import { secretNameProblem } from "../src/computer/secrets.js";
 import type { SlackResult } from "../src/computer/slack.js";
+import { driversCommandText } from "../src/computer/access.js";
+import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/computer/threads.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
@@ -15,25 +17,33 @@ let pushes: Array<{ key?: string; owner?: string }>;
 let woken: Array<{ key: string; userId: string; text: string }>;
 let guests: Set<string>;
 let s: SecretsStore;
+/** Who may write to SESSION (work 112); undefined: everyone. */
+let drivers: string[] | undefined;
 
 beforeEach(() => {
   calls = [];
   pushes = [];
   woken = [];
+  drivers = undefined;
   guests = new Set(["U_GUEST", "U_EXTERNAL"]);
+  const slack = async (method: string, body: Record<string, unknown>): Promise<SlackResult> => {
+    calls.push({ method, body });
+    if (method === "users.info") {
+      const user = String(body.user);
+      if (user === "U_DOWN") return { ok: false, error: "ratelimited" };
+      if (user === "U_EXTERNAL") return { ok: true, user: { team_id: "T_OTHER" } };
+      return { ok: true, user: { team_id: "T1", is_restricted: guests.has(user) } };
+    }
+    return { ok: true, ts: "200.1" };
+  };
+  // The Durable Object's one lookup of a person (threads.ts).
+  const people = new ThreadAccess(slack, "T1");
   s = new SecretsStore({
     sql: sqlStorage(),
     encryptionKey: () => KEY,
-    teamId: () => "T1",
-    slack: async (method, body): Promise<SlackResult> => {
-      calls.push({ method, body });
-      if (method === "users.info") {
-        const user = String(body.user);
-        if (user === "U_EXTERNAL") return { ok: true, user: { team_id: "T_OTHER" } };
-        return { ok: true, user: { team_id: "T1", is_restricted: guests.has(user) } };
-      }
-      return { ok: true, ts: "200.1" };
-    },
+    member: (userId) => people.member(userId),
+    instructs: async (_key, userId) => !drivers || drivers.includes(userId),
+    slack,
     session: (key) => (key === SESSION.key ? SESSION : undefined),
     push: async (which) => void pushes.push(which),
     wake: async (session, userId, text) => void woken.push({ key: session.key, userId, text }),
@@ -134,6 +144,15 @@ describe("computer session secrets (ported from dash-cal)", () => {
     expect(last("chat.update")).toMatchObject({ channel: "C1", ts: "300.1", blocks: [] });
     expect(woken).toEqual([{ key: SESSION.key, userId: "U_OWNER", text: expect.stringMatching(/^Secret \$GCP_SA is set/) }]);
     await expect(s.request(SESSION.key, { name: "PATH", reason: "x" })).rejects.toThrow(/reserved/);
+  });
+
+  it("from a session's thread the modal needs someone who can drive it; a failed lookup says try again (work 112)", async () => {
+    drivers = ["U_OWNER"];
+    expect(await s.submit(submission("TOKEN", "v", "user"), "U_MEMBER")).toEqual({ errors: { scope: driversCommandText("secret") } });
+    expect((await s.submit(submission("TOKEN", "v", "user"), "U_OWNER")).errors).toBeUndefined();
+    // Outside a session the person's own rules: a member sets an organization secret.
+    expect((await s.submit(submission("ORG", "v", "workspace", { ch: "C1" }), "U_MEMBER")).errors).toBeUndefined();
+    expect(await s.submit(submission("ORG", "v", "workspace", { ch: "C1" }), "U_DOWN")).toEqual({ errors: { scope: LOOKUP_FAILED_TEXT } });
   });
 });
 

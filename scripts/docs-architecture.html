@@ -1,0 +1,57 @@
+<!doctype html><html><head>
+<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1200px;height:740px;background:#f3f3f1;font-family:Inter,sans-serif;color:#131311;position:relative}
+.k{font-family:'Geist Mono',monospace;font-size:13px;letter-spacing:.12em;text-transform:uppercase}
+.box{position:absolute;border:1.5px solid #131311;background:#fff;border-radius:6px}
+.t{font-size:22px;font-weight:600;letter-spacing:-.01em}
+.s{font-size:15px;color:#6b6b66;margin-top:6px;line-height:1.35}
+.lbl{position:absolute;font-family:'Geist Mono',monospace;font-size:12.5px;color:#6b6b66;background:#f3f3f1;padding:0 6px}
+.vm{position:absolute;left:250px;top:80px;width:910px;height:470px;border:1.5px solid #131311;border-radius:8px;background:#ececE9}
+.vm .lbl{background:#ececE9}
+.sess{position:absolute;width:180px;height:118px;border:1.5px dashed #8f8f89;border-radius:6px;background:#fff;padding:14px}
+.sess .t{font-size:18px}
+.disk{position:absolute;left:290px;width:392px;bottom:22px;height:58px;border:1.5px solid #131311;border-radius:6px;background:#131311;color:#f3f3f1;display:flex;align-items:center;padding:0 18px;justify-content:space-between}
+</style></head><body>
+<div class="k" style="position:absolute;left:60px;top:30px">— How it works</div>
+
+<div class="box" style="left:40px;top:134px;width:160px;height:100px;padding:18px">
+  <div class="t">Slack</div><div class="s">@computer &lt;task&gt;</div></div>
+
+<div class="vm">
+  <div class="k" style="position:absolute;left:24px;top:20px">Your VM</div>
+  <div class="box" style="left:24px;top:56px;width:220px;height:96px;padding:16px 18px">
+    <div class="t">Gateway</div>
+    <div class="s">Slack, web, API, CLI</div></div>
+  <div class="box" style="left:290px;top:56px;width:596px;height:96px;padding:16px 18px">
+    <div class="t">Host agent</div>
+    <div class="s">Takes work from the gateway, runs a session per thread</div></div>
+  <div class="sess" style="left:290px;top:206px"><div class="t">Claude Code</div><div class="s" style="font-size:13px">session</div><div class="k" style="position:absolute;bottom:12px;font-size:10px;color:#6b6b66">rootless podman</div></div>
+  <div class="sess" style="left:498px;top:206px"><div class="t">Codex</div><div class="s" style="font-size:13px">session</div><div class="k" style="position:absolute;bottom:12px;font-size:10px;color:#6b6b66">rootless podman</div></div>
+  <div class="sess" style="left:706px;top:206px"><div class="t">OpenCode</div><div class="s" style="font-size:13px">session</div><div class="k" style="position:absolute;bottom:12px;font-size:10px;color:#6b6b66">rootless podman</div></div>
+  <div class="disk"><span style="font-size:17px;font-weight:600">Local disk</span><span class="k" style="font-size:11px;color:#bdbdb7">state written here first</span></div>
+</div>
+
+<div class="box" style="left:540px;top:600px;width:280px;height:96px;padding:16px 18px">
+  <div class="t" style="font-size:20px">Git-backed store</div><div class="s">durable session copies</div></div>
+
+<div class="box" style="left:880px;top:600px;width:280px;height:96px;padding:16px 18px;border-style:dashed">
+  <div class="k" style="font-size:11px;color:#6b6b66">Optional</div>
+  <div class="t" style="font-size:20px;margin-top:4px">External sandbox</div>
+  <div class="s" style="font-size:13px;margin-top:2px">heavy builds, preview environments</div></div>
+
+<svg width="1200" height="740" style="position:absolute;left:0;top:0;pointer-events:none">
+ <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#131311"/></marker></defs>
+ <line x1="200" y1="184" x2="270" y2="184" stroke="#131311" stroke-width="1.5" marker-end="url(#a)"/>
+ <line x1="540" y1="184" x2="498" y2="184" stroke="#131311" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+ <line x1="630" y1="232" x2="630" y2="282" stroke="#131311" stroke-width="1.5" marker-end="url(#a)"/>
+ <line x1="838" y1="232" x2="838" y2="282" stroke="#131311" stroke-width="1.5" marker-end="url(#a)"/>
+ <line x1="1046" y1="232" x2="1046" y2="282" stroke="#131311" stroke-width="1.5" marker-end="url(#a)"/>
+ <line x1="680" y1="528" x2="680" y2="596" stroke="#131311" stroke-width="1.5" marker-end="url(#a)"/>
+ <line x1="1046" y1="404" x2="1046" y2="596" stroke="#131311" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+</svg>
+<div class="lbl" style="left:202px;top:160px">events</div>
+<div class="lbl" style="left:688px;top:562px">persist</div>
+<div class="lbl" style="left:1054px;top:470px;background:#ececE9">delegate</div>
+</body></html>

@@ -3,8 +3,7 @@ import { BrainCircuit, Database, KeySquare, Plug } from 'lucide-react'
 import { managedAgentsNav } from './app-shell-nav'
 
 describe('managed agents navigation', () => {
-  const defaults = {
-  }
+  const defaults = {}
 
   it('links Automations to its own page', () => {
     const nav = managedAgentsNav({
@@ -12,15 +11,16 @@ describe('managed agents navigation', () => {
       computerEnabled: true,
     })
     expect(nav.map((group) => group.items.map((item) => item.label))).toEqual([
-      ['Computer', 'Secrets', 'Automations'],
+      ['Computer', 'Sessions', 'Secrets', 'Automations'],
       ['Connections'],
     ])
     expect(nav[0]?.items[0]).toMatchObject({
       to: '/computer',
       label: 'Computer',
     })
-    expect(nav[0]?.items[1]).toMatchObject({ to: '/computer/secrets' })
-    expect(nav[0]?.items[2]).toMatchObject({ to: '/automations' })
+    expect(nav[0]?.items[1]).toMatchObject({ to: '/computer/sessions' })
+    expect(nav[0]?.items[2]).toMatchObject({ to: '/computer/secrets' })
+    expect(nav[0]?.items[3]).toMatchObject({ to: '/automations' })
     expect(nav[1]?.items[0]).toMatchObject({
       to: '/managed-agents/connections',
       label: 'Connections',
@@ -33,7 +33,10 @@ describe('managed agents navigation', () => {
       managedAgentsNav({ ...defaults, computerEnabled: true }).map((group) =>
         group.items.map((item) => item.label),
       ),
-    ).toEqual([['Computer', 'Secrets', 'Automations'], ['Connections']])
+    ).toEqual([
+      ['Computer', 'Sessions', 'Secrets', 'Automations'],
+      ['Connections'],
+    ])
   })
 
   it('hides the computer from organizations without it (rollout flag)', () => {

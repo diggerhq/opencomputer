@@ -18,7 +18,7 @@ function rig(sock: net.Socket) {
     tm: createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} }),
     sandbox,
     serveTokens: () => ({ close: () => void log.push('tokens closed') }),
-    creds: () => undefined, forRunner: () => undefined,
+    creds: () => undefined, models: { up: true, forRunner: () => undefined },
     register: () => void log.push('registered'), closed: () => {}, message: () => {}, exit: () => void log.push('exit sent'),
   } as unknown as StartDeps;
   return { log, start: () => runnerStarts(d).startRunner(spec, {}) };

@@ -1,7 +1,9 @@
 // End-to-end check of sessions in containers (work 103), on a computer: the
 // host agent with SP_LAUNCH=podman against a fake gateway in this process,
 // runners rendering to a fake Slack client (SP_FAKE_SLACK=1, read back with
-// `podman logs`). No model call: every delivery is `!status`.
+// `podman logs`). No model call: every delivery is `!status`; the host still
+// binds every runner at the computer's model proxy (SP_MODEL_PROXY, default
+// its installed control socket), without which no session starts.
 //
 // It checks a new thread (record, container, unit, cgroup, run directory,
 // token socket, the report's path), a warm delivery, the idle exit (container
@@ -48,7 +50,7 @@ import { sandboxRecords } from '../host/sandbox/records.js';
 import { sandboxScripts } from '../host/sandbox/scripts.js';
 import { sandboxWorkspaces } from '../host/sandbox/workspace.js';
 import { runnersDir, sandboxRunFor, secretsFor, socketFor, tokenSocketFor } from '../ipc.js';
-import type { GatewayToHost, HostToGateway, Person, SessionSpec, TraceContext, WorkspaceDefinition } from '../protocol.js';
+import { type GatewayToHost, type HostToGateway, MODEL_SOCKET, type Person, type SessionSpec, type TraceContext, type WorkspaceDefinition } from '../protocol.js';
 import { createTelemetry } from '../telemetry/emitter.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
@@ -59,6 +61,8 @@ const KEEP = process.argv.includes('--keep');
 const RUN = process.env.SP_RUN ?? '/run/slack-presence';
 const DATA = process.env.SP_DATA ?? '/data';
 const IDLE_MS = 20_000;
+const MODEL_PROXY = process.env.SP_MODEL_PROXY ?? '/run/oc-modelproxy/control.sock';
+const MODEL_API = process.env.SP_MODEL_SOCKET ?? MODEL_SOCKET;
 /** Hours a stopped thread's build directories stay: 9 s here, less than a thread's idle time. */
 const ARTIFACTS_IDLE_HOURS = 0.0025;
 const NOW = Date.now() / 1000;
@@ -100,6 +104,7 @@ try {
 } catch {
   // not active: the directories are ours for the run
 }
+if (!existsSync(MODEL_PROXY) || !existsSync(MODEL_API)) refuse(`no model proxy at ${MODEL_PROXY} and ${MODEL_API}: without it no session starts (deploy/vm/modelproxy.sh install, or SP_MODEL_PROXY and SP_MODEL_SOCKET)`);
 const as = asRunner(user.sudo);
 const podman = (args: string[], timeoutMs = 30_000) => as.podman(args, { timeoutMs });
 const mnt = mounts({ as, root: ROOT, dataDir: DATA });
@@ -196,7 +201,7 @@ function startHost(): ChildProcess {
   const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check',
-      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
+      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_MODEL_PROXY: MODEL_PROXY, SP_MODEL_SOCKET: MODEL_API, SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
       SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -341,6 +346,8 @@ try {
   const seen = (await A1.inside('id -u; echo $SP_RUN')).split('\n').join(' ');
   check(seen === `1500 ${run}`, `inside: uid 1500, SP_RUN its own run directory (${seen})`);
   check(readlinkSync(path.join(run, 'token.sock')) === path.relative(run, tokenSocketFor(run, id)), `token.sock in its run directory links to ${path.relative(run, tokenSocketFor(run, id))}`);
+  check((await A1.inside(`test -S ${MODEL_API} && test ! -e ${path.join(path.dirname(MODEL_API), 'control.sock')} && echo yes`).catch(() => '')) === 'yes',
+    `inside, the model proxy's API socket ${MODEL_API} is there and its control socket is not`);
   const tk = await A1.askToken();
   check(tk.startsWith('ghs_fake') && tokenSessions.at(-1) === A1.key, `a token asked for inside, naming another session, is asked of the gateway for this one (${tk}, ${JSON.stringify(tokenSessions)})`);
   const l1 = launched(d1.trace) ?? (await until(() => launched(d1.trace), 10_000));

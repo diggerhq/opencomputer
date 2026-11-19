@@ -3,7 +3,7 @@ import type { SpareReport } from '../protocol.js';
 import { Pool } from './pool.js';
 
 type R = { spare?: SpareReport; name: string };
-const spare = (name: string, s: Partial<SpareReport> = {}): R => ({ name, spare: { id: name, ready: true, version: 'v1', credential: 'fp', ...s } });
+const spare = (name: string, s: Partial<SpareReport> = {}): R => ({ name, spare: { id: name, ready: true, version: 'v1', kind: 'fp', ...s } });
 
 function pool(size = 2) {
   let t = 0;
@@ -32,7 +32,7 @@ describe('Pool', () => {
     expect(launches).toHaveLength(0);
   });
 
-  it('launches up to size, counting spares still launching, and only with a credential', () => {
+  it('launches up to size, counting spares still launching, and only with a route', () => {
     const { p, launches } = pool(2);
     p.fill(false);
     expect(launches).toHaveLength(0);
@@ -45,24 +45,24 @@ describe('Pool', () => {
     expect(launches).toHaveLength(2);
   });
 
-  it('gives a ready spare of this release with the delivery credential, once', () => {
+  it('gives a ready spare of this release of the session’s kind, once', () => {
     const { p } = pool();
     const a = spare('a', { ready: false });
-    const b = spare('b', { credential: 'other' });
+    const b = spare('b', { kind: 'other' });
     const c = spare('c', { version: 'v0' });
     for (const r of [a, b, c]) p.add(r);
-    expect(p.take('fp')).toBe('credential');
-    expect(p.take(undefined)).toBe('credential');
+    expect(p.take('fp')).toBe('kind');
+    expect(p.take(undefined)).toBe('kind');
     a.spare!.ready = true;
     expect(p.take('fp')).toBe(a);
-    expect(p.take('fp')).toBe('credential');
+    expect(p.take('fp')).toBe('kind');
     expect(pool().p.take('fp')).toBe('none');
   });
 
-  it('gives Codex a ready spare whatever its credential', () => {
+  it('gives Codex a ready spare whatever its kind', () => {
     const { p } = pool();
     const a = spare('a', { ready: false });
-    const b = spare('b', { credential: 'other' });
+    const b = spare('b', { kind: 'other' });
     for (const r of [a, b]) p.add(r);
     expect(p.take(undefined, true)).toBe(b);
     expect(p.take(undefined, true)).toBe('none');
