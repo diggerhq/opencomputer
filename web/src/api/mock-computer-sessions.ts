@@ -2,6 +2,8 @@
 // mockFetch under VITE_PREVIEW. Times are relative to now so the sidebar reads
 // naturally; sending a message plays back a short canned turn.
 
+import { ApiError } from './errors'
+
 type Json = Record<string, unknown>
 
 const now = () => Date.now()
@@ -147,30 +149,85 @@ const done: [string, Json] = [
   { text: null, durationMs: 1, silent: false },
 ]
 
-function approvalAsk(s: MockSession, title: string, command: string): Json {
+// An open ask as the computer records it (computer-api.v1 `Ask`).
+function openAsk(
+  s: MockSession,
+  minAgo: number,
+  turnId: string,
+  fields: Pick<Json, 'kind'> & Json,
+): Json {
   return {
     id: nextId('ak'),
     sessionId: s.id,
-    turnId: 'tn_preview',
-    kind: 'approval',
+    turnId,
     status: 'open',
-    createdAt: ago(3),
+    createdAt: ago(minAgo),
     closedAt: null,
     closedBy: null,
     answer: null,
-    approval: {
-      toolName: 'Bash',
-      callId: 'call_x',
-      input: { command },
-      title,
-      alwaysAllows: 'Bash(psql:*)',
-    },
+    approval: null,
     question: null,
     secret: null,
+    ...fields,
   }
 }
 
+// An approval as Claude Code or Codex asks it: `input` is the tool's own
+// input, `title` Claude Code's permission title or "Claude wants to use X",
+// `alwaysAllows` the rule "Allow for this session" adds (null when it cannot
+// be remembered).
+function approvalAsk(
+  s: MockSession,
+  minAgo: number,
+  turnId: string,
+  toolName: string,
+  input: Json,
+  alwaysAllows: string | null = toolName,
+): Json {
+  return openAsk(s, minAgo, turnId, {
+    kind: 'approval',
+    approval: {
+      toolName,
+      callId: nextId('call'),
+      input,
+      title:
+        toolName === 'ExitPlanMode'
+          ? 'Plan ready for review'
+          : `Claude wants to use ${toolName}`,
+      alwaysAllows,
+    },
+  })
+}
+
+function questionAsk(
+  s: MockSession,
+  minAgo: number,
+  turnId: string,
+  text: string,
+  options: Array<[string, string | null]>,
+  multiSelect = false,
+): Json {
+  return openAsk(s, minAgo, turnId, {
+    kind: 'question',
+    question: {
+      questions: [
+        {
+          id: 'q1',
+          header: text.split(' ').slice(0, 2).join(' '),
+          text,
+          multiSelect,
+          options: options.map(([label, description]) => ({
+            label,
+            description,
+          })),
+        },
+      ],
+    },
+  })
+}
+
 function seed() {
+  // Approval: a short shell command.
   const rotate = session(
     'Rotate the staging database password',
     'waiting',
@@ -178,12 +235,11 @@ function seed() {
     'dashboard',
     'Ready to rotate the password and update the secret.',
   )
-  const ask = approvalAsk(
-    rotate,
-    'Run psql on staging',
-    'psql $STAGING_URL -c "ALTER ROLE app PASSWORD \'…\'"',
-  )
-  ask.turnId = 'tn_rotate_2'
+  const ask = approvalAsk(rotate, 3, 'tn_rotate_2', 'Bash', {
+    command: `psql "$STAGING_URL" -c "ALTER ROLE app WITH PASSWORD '$NEW_PASSWORD'"`,
+    description: 'Set a new password on the app role in staging',
+    timeout: 60000,
+  })
   rotate.asks = [ask]
   history(
     rotate,
@@ -210,6 +266,7 @@ function seed() {
     'tn_rotate_2',
   )
 
+  // Question, three options, one answer.
   const charts = session(
     'Pick a chart library for the usage page',
     'waiting',
@@ -217,41 +274,28 @@ function seed() {
     'slack',
     null,
   )
-  const question = {
-    id: nextId('ak'),
-    sessionId: charts.id,
-    turnId: 'tn_preview',
-    kind: 'question',
-    status: 'open',
-    createdAt: ago(18),
-    closedAt: null,
-    closedBy: null,
-    answer: null,
-    approval: null,
-    question: {
-      questions: [
-        {
-          id: 'q1',
-          header: 'Library',
-          text: 'Which chart library should the usage page use?',
-          multiSelect: false,
-          options: [
-            { label: 'Recharts', description: 'Already in the bundle' },
-            { label: 'visx', description: 'Lower level, smaller' },
-            { label: 'ECharts', description: 'Heavier, more chart types' },
-          ],
-        },
-      ],
-    },
-    secret: null,
-  }
+  const question = questionAsk(
+    charts,
+    18,
+    'tn_preview',
+    'Which chart library should the usage page use?',
+    [
+      ['Recharts', 'Already in the bundle'],
+      ['visx', 'Lower level, smaller'],
+      ['ECharts', 'Heavier, more chart types'],
+    ],
+  )
   charts.asks = [question]
   history(charts, 18, [
     said('Add a daily usage chart to the billing page', viaSlack),
     ...tool('Read web/src/pages/Billing.tsx', 'Read'),
+    reply(
+      'The billing page has room for one chart above the invoices table. Three libraries fit; Recharts is already in the bundle, so it adds nothing to the download.',
+    ),
     ['ask.opened', { ask: question }],
   ])
 
+  // Secret request.
   const docs = session(
     'Deploy the docs preview',
     'waiting',
@@ -259,26 +303,258 @@ function seed() {
     'dashboard',
     null,
   )
-  const secret = {
-    id: nextId('ak'),
-    sessionId: docs.id,
-    turnId: 'tn_preview',
+  const secret = openAsk(docs, 40, 'tn_preview', {
     kind: 'secret',
-    status: 'open',
-    createdAt: ago(40),
-    closedAt: null,
-    closedBy: null,
-    answer: null,
-    approval: null,
-    question: null,
-    secret: { name: 'VERCEL_TOKEN' },
-  }
+    secret: {
+      name: 'VERCEL_TOKEN',
+      purpose: 'To deploy the docs site to a Vercel preview with the CLI.',
+      file: false,
+    },
+  })
   docs.asks = [secret]
   history(docs, 40, [
     said('Deploy a preview of the docs site for the Sessions launch.'),
     ...tool('Read docs/vercel.json', 'Read'),
     reply('The deploy needs a Vercel token, and none is set.'),
     ['ask.opened', { ask: secret }],
+  ])
+
+  // Approval: a long multi-line command, from Codex (which gives the cwd).
+  const backfill = session(
+    'Backfill usage rows for October after the meter outage on the EU cluster',
+    'waiting',
+    7,
+    'slack',
+    null,
+  )
+  const long = approvalAsk(backfill, 7, 'tn_preview', 'Bash', {
+    command: [
+      'set -euo pipefail',
+      'for day in $(seq -w 1 31); do',
+      '  psql "$EU_REPLICA_URL" -At -c "',
+      '    INSERT INTO usage_daily (org_id, day, cpu_seconds, gb_hours)',
+      "    SELECT org_id, DATE '2026-10-$day', sum(cpu_seconds), sum(gb_hours)",
+      '    FROM meter_events',
+      "    WHERE ts >= '2026-10-$day' AND ts < DATE '2026-10-$day' + 1",
+      '    GROUP BY org_id',
+      '    ON CONFLICT (org_id, day) DO UPDATE SET cpu_seconds = EXCLUDED.cpu_seconds, gb_hours = EXCLUDED.gb_hours;"',
+      '  echo "backfilled 2026-10-$day"',
+      'done',
+    ].join('\n'),
+    cwd: '/workspace/opencomputer/services/billing',
+  })
+  backfill.asks = [long]
+  history(backfill, 7, [
+    said(
+      'The meter was down on eu-1 from Oct 3 to Oct 9; backfill usage_daily from meter_events.',
+      viaSlack,
+    ),
+    ...tool('Read services/billing/schema.sql', 'Read'),
+    ...tool('psql "$EU_REPLICA_URL" -c "select count(*) from meter_events"'),
+    reply(
+      'meter_events has every event for October, so `usage_daily` can be rebuilt from it. The upsert below is idempotent: days that were already right are rewritten with the same numbers.',
+    ),
+    ['ask.opened', { ask: long }],
+  ])
+
+  // Approval: a file edit.
+  const limits = session(
+    'Raise the public API rate limit for enterprise keys',
+    'waiting',
+    12,
+    'dashboard',
+    null,
+  )
+  const edit = approvalAsk(limits, 12, 'tn_preview', 'Edit', {
+    file_path: '/workspace/opencomputer/internal/api/ratelimit.go',
+    old_string: '\tcase PlanEnterprise:\n\t\treturn 600 // requests a minute',
+    new_string:
+      '\tcase PlanEnterprise:\n\t\treturn 3000 // requests a minute, per key\n\tcase PlanEnterpriseTrial:\n\t\treturn 600',
+  })
+  limits.asks = [edit]
+  history(limits, 12, [
+    said('Enterprise keys should get 3000 requests a minute.'),
+    ...tool('Read internal/api/ratelimit.go', 'Read'),
+    reply(
+      'The limit is per plan in `limitFor`. I will raise enterprise to 3000 and keep trials at 600.',
+    ),
+    ['ask.opened', { ask: edit }],
+  ])
+
+  // Approval: a tool that is not a shell (an MCP server's).
+  const merge = session(
+    'Merge the Sessions launch docs',
+    'waiting',
+    25,
+    'slack',
+    null,
+  )
+  const mcp = approvalAsk(
+    merge,
+    25,
+    'tn_preview',
+    'mcp__github__merge_pull_request',
+    {
+      owner: 'diggerhq',
+      repo: 'opencomputer',
+      pull_number: 4188,
+      merge_method: 'squash',
+      commit_title: 'docs: sessions launch (#4188)',
+    },
+    null,
+  )
+  merge.asks = [mcp]
+  history(merge, 25, [
+    said('Once the checks pass, merge the launch docs PR.', viaSlack),
+    ...tool('gh pr checks 4188'),
+    reply('All 14 checks passed and it has one approval.'),
+    ['ask.opened', { ask: mcp }],
+  ])
+
+  // Question, two options.
+  const flag = session(
+    'Turn on usage-based billing for new orgs',
+    'waiting',
+    31,
+    'dashboard',
+    null,
+  )
+  const two = questionAsk(
+    flag,
+    31,
+    'tn_preview',
+    'Roll out to every new org at once, or 10% first?',
+    [
+      ['Everyone at once', 'Simpler; the flag can still be turned off'],
+      ['10% first', 'Watch invoices for a week, then widen'],
+    ],
+  )
+  flag.asks = [two]
+  history(flag, 31, [
+    said('Turn on usage-based billing for orgs created from today.'),
+    ...tool('Read internal/billing/flags.go', 'Read'),
+    reply(
+      'The flag `usage_billing_new_orgs` exists and is off. It can take a percentage.',
+    ),
+    ['ask.opened', { ask: two }],
+  ])
+
+  // Question, five options, any number of answers.
+  const regions = session(
+    'Pick regions for the EU data residency beta',
+    'waiting',
+    55,
+    'slack',
+    null,
+  )
+  const five = questionAsk(
+    regions,
+    55,
+    'tn_preview',
+    'Which regions should the beta run in?',
+    [
+      ['Frankfurt', 'eu-central-1; most beta customers are in Germany'],
+      ['Ireland', 'eu-west-1; cheapest of the five'],
+      ['Paris', 'eu-west-3'],
+      ['Stockholm', 'eu-north-1; lowest carbon'],
+      ['Milan', 'eu-south-1; no GPU capacity yet'],
+    ],
+    true,
+  )
+  regions.asks = [five]
+  history(regions, 55, [
+    said('Set up the EU data residency beta.', viaSlack),
+    ...tool('Read deploy/regions.yaml', 'Read'),
+    reply('Five EU regions have capacity for workers today.'),
+    ['ask.opened', { ask: five }],
+  ])
+
+  // A plain reply: the turn ended in text that needs the person
+  // (attention.reason = reply, tech design 3.7).
+  const pricing = session(
+    'Compare the cost of the three sandbox sizes on the new hosts',
+    'waiting',
+    64,
+    'dashboard',
+    'Here is the comparison. Shall I update the pricing page?',
+    {
+      attention: {
+        reason: 'reply',
+        ref: 'tn_pricing',
+        line: 'Shall I update the pricing page with the new sizes?',
+        at: ago(64),
+      },
+    },
+  )
+  history(
+    pricing,
+    64,
+    [
+      said('Compare what the three sandbox sizes cost us on the new hosts.'),
+      ...tool('Query PostHog: sandbox hours by size', 'mcp__posthog__query'),
+      ...tool('Read internal/billing/prices.go', 'Read'),
+      reply(
+        [
+          'Here is what each size costs us per hour on the new hosts, against what we charge:',
+          '',
+          '| Size | vCPU | Memory | Cost / h | Price / h | Margin |',
+          '| --- | --- | --- | --- | --- | --- |',
+          '| Small | 1 | 2 GB | $0.011 | $0.025 | 56% |',
+          '| Medium | 2 | 4 GB | $0.019 | $0.050 | 62% |',
+          '| Large | 4 | 8 GB | $0.034 | $0.100 | 66% |',
+          '',
+          'The prices live in one table:',
+          '',
+          '```go',
+          'var hourly = map[Size]Cents{',
+          '\tSmall:  2.5,',
+          '\tMedium: 5.0,',
+          '\tLarge:  10.0,',
+          '}',
+          '```',
+          '',
+          'Margins went up 9 points on average because the new hosts pack more sandboxes per machine. Small is the one size under 60%.',
+          '',
+          'Shall I update the pricing page with the new sizes, or keep the current prices and only change the copy?',
+        ].join('\n'),
+      ),
+      done,
+    ],
+    'tn_pricing',
+  )
+
+  // Set aside earlier: a plan to review.
+  const plan = session(
+    'Move session titles to a fast model',
+    'waiting',
+    90,
+    'dashboard',
+    null,
+  )
+  const planAsk = approvalAsk(
+    plan,
+    90,
+    'tn_preview',
+    'ExitPlanMode',
+    {
+      plan: [
+        '## Titles from a fast model',
+        '',
+        '1. Add `titleModel` to the runner config, defaulting to Haiku.',
+        '2. Call it once, after the first turn, with the first message only.',
+        '3. Keep the current title when the call fails or takes over 10 s.',
+        '4. Tests: a failing model keeps the old title; a slow one is cut off.',
+      ].join('\n'),
+    },
+    'acceptEdits',
+  )
+  plan.asks = [planAsk]
+  plan.asideRef = planAsk.id as string
+  history(plan, 90, [
+    said('Plan how to make session titles cheaper. Do not change code yet.'),
+    ...tool('Read computer/src/runner/harness/claude/title.ts', 'Read'),
+    reply('Titles start a one-shot Claude Code today. The plan is below.'),
+    ['ask.opened', { ask: planAsk }],
   ])
 
   const flaky = session(
@@ -573,6 +849,10 @@ export function computerSessionsMock(
   if (sub === '/turns' && method === 'POST') {
     const text = typeof input.input === 'string' ? input.input : ''
     // Steering a waiting session answers its open asks with the message.
+    // Preview of a failed send: a message containing "[offline]" is refused.
+    if (text.includes('[offline]'))
+      return Promise.reject(new ApiError('Network error', 503))
+    s.attention = null
     if (input.ifBusy === 'steer') {
       for (const ask of s.asks.filter((a) => a.status === 'open')) {
         Object.assign(ask, {
@@ -613,6 +893,7 @@ export function computerSessionsMock(
       answer: input,
     })
     s.asks = []
+    s.attention = null
     emit(s, 'ask.closed', { ask })
     playTurn(s, 'continue after your answer')
     return { ask, seq: s.lastSeq }
