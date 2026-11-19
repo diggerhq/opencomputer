@@ -16,20 +16,16 @@ const workApi = vi.hoisted(() => ({
   getHistory: vi.fn(),
   getRepository: vi.fn(),
   putRepository: vi.fn(),
+  getRepositories: vi.fn(),
 }))
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
   ...workApi,
 }))
-vi.mock('../computer-api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../computer-api')>()),
-  getComputer: vi.fn().mockResolvedValue({
-    github: { installations: [{ id: '1', accountLogin: 'acme' }] },
-  }),
-}))
 
 const { Board } = await import('./Board')
 const { ItemView } = await import('./Item')
+const { WorkRepositorySetting } = await import('./RepositorySetting')
 
 const repository = {
   installationId: '1',
@@ -95,12 +91,20 @@ async function render(url: string) {
             <Routes>
               <Route path="/computer/work" element={<Board />} />
               <Route path="/computer/work/:number" element={<ItemView />} />
+              <Route path="/computer" element={<WorkRepositorySetting />} />
             </Routes>
           </MemoryRouter>
         </QueryClientProvider>
       </AuthContext.Provider>,
     )
   })
+  await settle()
+}
+
+// Flushes until nothing is loading (the repository setting loads in two
+// steps: the choice, then the picker's list).
+async function settle() {
+  await flush()
   for (let i = 0; i < 50 && container.querySelector('[role="status"]'); i++) {
     await flush()
   }
@@ -245,6 +249,15 @@ describe('board', () => {
     workApi.getOpenItems.mockRejectedValue(new ApiError('Not found', 404))
     await render('/computer/work')
     expect(container.textContent).toContain('The board is not available yet')
+  })
+
+  it('names the repository it reads, quietly linked to settings', async () => {
+    workApi.getOpenItems.mockResolvedValue(openPage(items))
+    await render('/computer/work')
+    expect(
+      container.querySelector('a[href="/computer#work-repository"]')
+        ?.textContent,
+    ).toBe('acme/knowledge')
   })
 
   it('sends a repository problem to settings', async () => {
@@ -435,5 +448,151 @@ describe('item page', () => {
     await render('/computer/work/99')
     expect(container.textContent).toContain('The board is not available yet')
     expect(container.textContent).not.toContain('No item')
+  })
+})
+
+const granted = (
+  name: string,
+  pushedAt: string | null,
+  over: Record<string, unknown> = {},
+) => ({
+  id: name.length,
+  owner: 'acme',
+  name,
+  private: false,
+  defaultBranch: 'main',
+  pushedAt,
+  ...over,
+})
+const acme = {
+  id: '1',
+  accountLogin: 'acme',
+  accountType: 'Organization',
+  settingsUrl:
+    'https://github.com/organizations/acme/settings/installations/41',
+  repositories: [
+    granted('app', minutesAgo(5), { private: true }),
+    granted('knowledge', minutesAgo(180)),
+    granted('website', minutesAgo(4000), { defaultBranch: 'trunk' }),
+  ],
+  truncated: false,
+  problem: null,
+  problemMessage: null,
+}
+
+function rows() {
+  return [...container.querySelectorAll('ul[aria-label="Repositories"] li')]
+    .map((li) => li.querySelector('.font-medium')?.textContent)
+    .filter(Boolean)
+}
+
+function type(el: HTMLInputElement, value: string) {
+  act(() => {
+    // Through the prototype's setter, so React sees a change.
+    Reflect.set(HTMLInputElement.prototype, 'value', value, el)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+describe('repository picker', () => {
+  beforeEach(() => {
+    workApi.getRepositories.mockResolvedValue([acme])
+  })
+
+  it('lists what GitHub grants, in the order the server sends', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    await render('/computer')
+    expect(rows()).toEqual(['app', 'knowledge', 'website'])
+    expect(container.querySelector('[aria-label="Private"]')).not.toBeNull()
+    expect(container.textContent).toContain('5 min ago')
+    // One installation: no account select.
+    expect(container.querySelector('#work-repo-account')).toBeNull()
+    const access = [...container.querySelectorAll('a')].find((a) =>
+      a.textContent?.includes('Adjust GitHub App access'),
+    )
+    expect(access?.getAttribute('href')).toBe(acme.settingsUrl)
+    expect(access?.getAttribute('target')).toBe('_blank')
+  })
+
+  it('filters by name as you type', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    await render('/computer')
+    const search = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Search repositories"]',
+    )!
+    type(search, 'WEB')
+    expect(rows()).toEqual(['website'])
+    type(search, 'nothing')
+    expect(container.textContent).toContain('No repository matches')
+  })
+
+  it('saves a selected repository on its default branch', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    workApi.putRepository.mockResolvedValue({
+      ...repository,
+      name: 'website',
+      branch: 'trunk',
+    })
+    await render('/computer')
+    click(container.querySelector('button[aria-label="Select website"]'))
+    await flush()
+    expect(workApi.putRepository).toHaveBeenCalledWith({
+      installationId: '1',
+      owner: 'acme',
+      name: 'website',
+      branch: 'trunk',
+    })
+  })
+
+  it('marks the current choice on Change, and Cancel goes back', async () => {
+    workApi.getRepository.mockResolvedValue(repository)
+    await render('/computer')
+    expect(workApi.getRepositories).not.toHaveBeenCalled()
+    click(
+      [...container.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Change',
+      ),
+    )
+    await settle()
+    const knowledge = [
+      ...container.querySelectorAll('ul[aria-label="Repositories"] li'),
+    ].find((li) => li.textContent?.includes('knowledge'))!
+    expect(knowledge.textContent).toContain('Selected')
+    expect(knowledge.querySelector('button')).toBeNull()
+    click(
+      [...container.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Cancel',
+      ),
+    )
+    expect(container.querySelector('ul[aria-label="Repositories"]')).toBeNull()
+  })
+
+  it('says when GitHub could not list, with a way to try again', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    workApi.getRepositories.mockRejectedValue(
+      new ApiError('GitHub is unavailable', 503),
+    )
+    await render('/computer')
+    expect(container.textContent).toContain(
+      'Could not load the repositories from GitHub.',
+    )
+    workApi.getRepositories.mockResolvedValue([acme])
+    click(
+      [...container.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Try again',
+      ),
+    )
+    await settle()
+    expect(rows()).toEqual(['app', 'knowledge', 'website'])
+  })
+
+  it('asks to connect GitHub when no installation grants anything', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    workApi.getRepositories.mockResolvedValue([])
+    await render('/computer')
+    expect(
+      container.querySelector('a[href="/managed-agents/connections"]')
+        ?.textContent,
+    ).toBe('Connect GitHub')
   })
 })

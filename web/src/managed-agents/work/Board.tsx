@@ -410,9 +410,21 @@ function IndexStatus({
           <Loader2 className="size-3 animate-spin" aria-hidden />
           Reading {repository}…
         </span>
-      ) : indexIsOld(asOf) ? (
-        <span title={asOf ?? undefined}>As of {timeAgo(asOf)} ago</span>
-      ) : null}
+      ) : (
+        <>
+          {/* Quiet: where the board reads from, and the way to change it. */}
+          <Link
+            to="/computer#work-repository"
+            title="Change the working docs repository"
+            className="hover:text-foreground"
+          >
+            {repository}
+          </Link>
+          {indexIsOld(asOf) ? (
+            <span title={asOf ?? undefined}>· As of {timeAgo(asOf)} ago</span>
+          ) : null}
+        </>
+      )}
     </p>
   )
 }
