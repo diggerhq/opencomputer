@@ -1,0 +1,86 @@
+---
+title: "Files"
+description: "File routes act on one session's workspace over HTTP only, as the agent's Unix user; directories move as tar archives"
+---
+
+The relay serves the file routes. `opc push` and `opc pull` are clients for upload and download.
+
+| Operation | Relay route | API route | Scope |
+| --- | --- | --- | --- |
+| List | `GET /files/{id}/files` | `GET /sessions/{id}/workspace/files` | `sessions:read` |
+| Read one file | `GET /files/{id}/file` | `GET /sessions/{id}/workspace/file` | `sessions:read` |
+| Download an archive | `GET /files/{id}/archive` | `GET /sessions/{id}/workspace/archive` | `sessions:read` |
+| Upload an archive | `PUT /files/{id}/archive` | `PUT /sessions/{id}/workspace/archive` | `sessions:write` |
+
+Every `path` is relative to the workspace. Errors are JSON, `{"error": {...}}`.
+
+| Error | Cause |
+| --- | --- |
+| `404 session_not_found` | The member has no access to the session |
+| `400 invalid_path` | An absolute path, a `..` segment, or a path that resolves outside the workspace through a symlink |
+| `404 path_not_found` | The path does not exist |
+
+## List
+
+```
+GET /files/cs_0123456789abcdef/files?path=myrepo/src&depth=2&limit=100
+```
+
+`depth` is 1 to 10 and `limit` 1 to 100. The result is `path`, `entries` and `nextCursor`; pass `nextCursor` back as `cursor`. Each entry has:
+
+| Field | Meaning |
+| --- | --- |
+| `path` | Relative to the workspace |
+| `type` | `file`, `dir` or `symlink` |
+| `bytes` | Size, or null |
+| `modifiedAt` | Modification time |
+| `pushedAt`, `pushedBy` | On an uploaded top-level directory: when and by whom |
+
+## Read one file
+
+`GET /files/{id}/file?path=<file>` returns the bytes with `Content-Type`, `Content-Length` and an `ETag`.
+
+| Case | Result |
+| --- | --- |
+| `If-None-Match` equals the `ETag` | `304` |
+| File over 100 MiB | `413 too_large`. Download it in an archive |
+
+## Download an archive
+
+`GET /files/{id}/archive?path=<directory or file>` streams a tar archive (`application/x-tar`). With `Accept-Encoding: zstd` or `gzip` the stream is compressed and `Content-Encoding` says how; zstd is preferred when both are offered.
+
+## Upload an archive
+
+`PUT /files/{id}/archive?path=<name>` with a tar stream as the body unpacks the archive as one directory named `name` at the top of the workspace, beside the repositories.
+
+```bash
+tar -cf - -C ./fixtures . | zstd | curl -X PUT \
+  -H "Content-Encoding: zstd" -H "Idempotency-Key: fixtures-1" \
+  --data-binary @- "$BASE/files/cs_0123456789abcdef/archive?path=fixtures"
+```
+
+The example leaves out [authentication](/api/overview#authentication).
+
+| Item | Rule |
+| --- | --- |
+| `name` | One path level: letters, digits, `.`, `-` and `_`, up to 255 characters, not starting with `.` |
+| `Content-Encoding` | `zstd`, `gzip` or absent |
+| `name` uploaded before | Replaced |
+| `Idempotency-Key` repeated by the same member to the same session | The first response, without reading the body. The relay keeps keys 24 hours in memory; a relay restart forgets them |
+
+The response is `{"upload": {"path", "files", "bytes", "replaced"}, "seq"}`.
+
+| Field | Meaning |
+| --- | --- |
+| `replaced` | Null, or the `pushedAt` and `pushedBy` of the upload it replaced |
+| `seq` | That of the `files.pushed` event the upload records. In the event, `replaced` is a boolean |
+
+A failed upload changes nothing.
+
+| Error | Cause |
+| --- | --- |
+| `400 invalid_archive` | Absolute paths, `..` segments, hard links, device files, FIFOs, a symlink that points outside the archive, an entry beneath a symlink the archive created, or a body that is not tar |
+| `413 too_large` | More than 1 GiB of file content or 100,000 entries |
+| `409 path_exists` | `name` exists and was not created by an upload |
+
+{/* Sources: computer/src/wire/files.ts (routes, parameters, encodings, ETag, idempotency, UPLOAD_NAME); computer/src/host/workspace-files.ts (path rules, ListEntry, Upload, path_exists, rename into place, runner user, FILE_MAX_BYTES); computer/src/host/tar-check.ts (invalid_archive, too_large); computer/src/host/wire-link.ts (files.pushed, upload result); computer/src/wire/limits.ts; computer/src/wire/edge-auth.ts (scopes); opc/src/cmd/push.rs and pull.rs (workspace/archive routes) */}

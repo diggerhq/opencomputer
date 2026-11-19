@@ -16,6 +16,8 @@ const CAPABILITIES: Capabilities = {
     { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', efforts: ['low', 'medium', 'high'], contextWindow: 200_000, default: false },
     { id: 'claude-fable-5-2', name: 'Claude Fable 5.2', efforts: EFFORTS, contextWindow: 1_000_000, default: false },
     { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', efforts: EFFORTS, contextWindow: 1_000_000, default: false },
+    { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol (Codex)', efforts: ['low', 'medium', 'high', 'xhigh'], contextWindow: 400_000, default: false },
+    { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra (Codex)', efforts: ['low', 'medium', 'high', 'xhigh'], contextWindow: 400_000, default: false },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Codex)', efforts: ['low', 'medium', 'high', 'xhigh'], contextWindow: 400_000, default: false },
   ],
   modes: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],

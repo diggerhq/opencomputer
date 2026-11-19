@@ -20,8 +20,12 @@
 //   whoever (a Slack `!!`) interrupted it before;
 // - an API answer to an ask resolves its prompt exactly as a button would
 //   (asks.ts, prompts.ts); a stop of a subagent is the panel's Stop button;
-// - Slack sees what it saw before: nothing here posts to it beyond what the
-//   session's own commands (a model switch) say.
+// - Slack sees what it saw before, plus the words: a message into a Slack
+//   session from anywhere else (the dashboard, the CLI, the API) is posted
+//   into its thread before the session takes it, so the thread reads as the
+//   whole conversation: the owner's own words under their Slack name and photo
+//   when the app has `chat:write.customize`, anyone else's quoted under their name. Nothing else here posts
+//   to it beyond what the session's own commands (a model switch) say.
 
 import { log } from '../../log.js';
 import { mintId } from '../../session-ids.js';
@@ -63,6 +67,24 @@ const fail = (code: string, message: string, status: number, extra: Record<strin
   error: apiError(code, message, status, { retryable: status >= 500, ...extra }),
 });
 const actorOf = (a: ApiActor): Actor => ({ ...a, name: a.name ?? a.id });
+/** A person's name for the API: their own, else their git author name without the " via Computer" commits carry. */
+export const personName = (p: Person): string => p.name ?? p.gitName.replace(/ via Computer$/, '');
+
+/** Longest echo of a message into Slack; the rest is cut. */
+export const ECHO_MAX = 3_000;
+const VIA: Record<string, string> = { dashboard: 'the web', opc: 'the CLI', api: 'the API' };
+
+/** A message from outside Slack as posted under its sender's own name: the words, cut, mentions inert. */
+export function echoPlain(text: string): string {
+  const cut = text.length > ECHO_MAX ? `${text.slice(0, ECHO_MAX)}…` : text;
+  return cut.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** A message from outside Slack as its thread shows it: the sender, where from, and the words quoted (mentions inert). */
+export function echoText(text: string, actor: Actor): string {
+  const quoted = echoPlain(text).split('\n').map((l) => `> ${l}`).join('\n');
+  return `*${actor.name}* from ${VIA[actor.via] ?? actor.via}:\n${quoted}`;
+}
 
 export class SessionApi implements Writer {
   readonly tap: Tap;
@@ -104,6 +126,16 @@ export class SessionApi implements Writer {
         };
   }
 
+  /** A person set the title over the API (kept in the session's info, across restarts): the computer's naming (work 093) leaves it alone. */
+  get renamed(): boolean {
+    return !!this.session.info.renamed;
+  }
+
+  /** The computer named the session (work 093): the journal says so, and the session list follows. */
+  named(from: string, to: string) {
+    this.log.append('session.updated', { changes: { title: { from, to } } }, { actor: null });
+  }
+
   get sessionId() {
     return this.log.sessionId;
   }
@@ -122,7 +154,7 @@ export class SessionApi implements Writer {
   /** A Slack user as the API names people: the owner by their member id, anyone else by their Slack id. */
   private slackActor(u: string | undefined): Actor {
     const owner = this.o.owner;
-    if (!u || u === owner.slackUserId) return { id: owner.userId ?? owner.slackUserId ?? 'owner', name: owner.name ?? owner.gitName, via: 'slack', client: null };
+    if (!u || u === owner.slackUserId) return { id: owner.userId ?? owner.slackUserId ?? 'owner', name: personName(owner), via: 'slack', client: null };
     return { id: u, name: u, via: 'slack', client: null };
   }
 
@@ -168,6 +200,7 @@ export class SessionApi implements Writer {
 
   /** A message into the session, as `turns.send` (and a Delivery.api) has it. */
   async send(text: string, actor: Actor, ifBusy: IfBusy): Promise<CallOutcome> {
+    await this.echo(text, actor);
     if (!this.busy && !this.queue.length) return this.start({ turnId: mintId('tn'), text, actor }, { ifBusy });
     const cur = this.tap.cur;
     if (ifBusy === 'interrupt') return this.interruptWith(text, actor);
@@ -185,17 +218,32 @@ export class SessionApi implements Writer {
   }
 
   /** A Delivery.api: one the host's writer recorded while no runner ran (`turnId`) starts in that turn, in order; another is a `turns.send`. */
-  deliver(text: string, d: ApiDelivery): Promise<CallOutcome> {
+  async deliver(text: string, d: ApiDelivery): Promise<CallOutcome> {
     const actor = actorOf(d.actor);
     if (!d.turnId) {
       const ctx = { actor: d.actor, member: d.member, idempotencyKey: d.idempotencyKey };
       return idempotent(this.log, 'turns.send', { sessionId: this.sessionId, input: text, ifBusy: d.ifBusy }, ctx, () => this.send(text, actor, d.ifBusy));
     }
     const t = this.log.fold.turn(d.turnId);
-    if (!this.taken.has(d.turnId) && (!t || t.status === 'queued')) this.queue.push({ turnId: d.turnId, text, actor });
+    if (!this.taken.has(d.turnId) && (!t || t.status === 'queued')) {
+      this.taken.add(d.turnId);
+      await this.echo(text, actor);
+      this.queue.push({ turnId: d.turnId, text, actor });
+    }
     this.taken.add(d.turnId);
     this.idle();
-    return Promise.resolve(this.sent(d.turnId, 'queued'));
+    return this.sent(d.turnId, 'queued');
+  }
+
+  /** A message from outside Slack, into a Slack session's thread (never throws: `say` logs Slack's refusals). The owner's
+   * own words post under their Slack name and photo when the app may (`chat:write.customize`); anyone else's, quoted. */
+  private async echo(text: string, actor: Actor) {
+    if (actor.via === 'slack' || !this.session.thread.slack) return;
+    const { owner } = this.o;
+    if (owner.slackUserId && actor.id === owner.userId && (await this.session.thread.sayAs(owner.slackUserId, echoPlain(text)))) return;
+    // A message over the wire carries only the member id: the owner's own name is known here; anyone else's is not.
+    const name = actor.id === owner.userId ? personName(owner) : actor.name === actor.id ? 'Someone' : actor.name;
+    await this.session.thread.say(echoText(text, { ...actor, name }));
   }
 
   private async start(w: Waiting, from: Omit<SentFrom, 'actor' | 'turnId'>): Promise<CallOutcome> {
@@ -286,7 +334,7 @@ export class SessionApi implements Writer {
         if (p.effort !== undefined && p.effort !== s.info.effort) await switchEffort(s, p.effort as EffortLevel);
         if (p.speed !== undefined && p.speed !== s.info.speed) await switchSpeed(s, p.speed);
         const changes: Record<string, { from: unknown; to: unknown }> = {};
-        if (p.title !== undefined && p.title !== s.info.title) (changes.title = { from: s.info.title, to: p.title }), (s.info.title = p.title), s.persist();
+        if (p.title !== undefined && p.title !== s.info.title) (changes.title = { from: s.info.title, to: p.title }), (s.info.title = p.title), (s.info.renamed = true), s.persist();
         const cur = fold.session();
         if (p.archived !== undefined && p.archived !== cur.archived) changes.archived = { from: cur.archived, to: p.archived };
         for (const [k, v] of Object.entries(p.metadata ?? {})) if ((cur.metadata[k] ?? null) !== v) changes[`metadata.${k}`] = { from: cur.metadata[k] ?? null, to: v };

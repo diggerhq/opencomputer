@@ -26,13 +26,13 @@ afterEach(async () => {
 });
 
 /** `before`: what the journal holds when the runner attaches (it then resumes, as attachApi does). */
-async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void) {
+async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[] } = {}) {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'], now: new Date('2026-10-26T00:00:00Z') });
   const T = await import('./testing.js');
   const { SessionApi } = await import('./api.js');
   const rec: unknown[] = [];
-  const t = T.fakeSession(rec);
+  const t = T.fakeSession(rec, o);
   const tmp = tempSession();
   const log = await openLog(tmp.file, tmp.sessionId);
   before?.(log);
@@ -75,6 +75,46 @@ describe('SessionApi', () => {
     expect(started).toEqual([a.turn.id, b.turn.id]);
     expect(w.log.fold.turn(b.turn.id)?.input).toBe('second');
     for (const e of w.events()) assertEvent(e);
+  });
+
+  it('a message from outside Slack is quoted into the thread under its sender, before the turn; one from Slack is not', async () => {
+    const w = await world();
+    const posts = () =>
+      w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: { text: string } }).args.text);
+    const web = { actor: { ...BOB.actor, via: 'dashboard' as const }, member: 'usr_bob' };
+    result(await w.call('turns.send', { input: 'ship it\n<!channel> & go' }, web));
+    expect(posts()[0]).toBe('*Bob* from the web:\n> ship it\n> &lt;!channel&gt; &amp; go');
+    const at = w.rec.findIndex((r) => (r as { slack?: string }).slack === 'chat.postMessage');
+    expect(w.rec.findIndex((r) => (r as { harness?: string }).harness === 'send')).toBeGreaterThan(at);
+    await w.t.feed(w.T.first(), w.T.done());
+    result(await w.call('turns.send', { input: 'from slack' }, { actor: { ...BOB.actor, via: 'slack' as const }, member: 'usr_bob' }));
+    expect(posts().filter((t) => t.includes('from slack'))).toEqual([]);
+  });
+
+  it("the owner's message from the web posts under their own Slack name and photo when the app may; without the scope, quoted", async () => {
+    const posted = async (scopes: string[], who: typeof ANN_CTX) => {
+      const w = await world(undefined, { scopes });
+      result(await w.call('turns.send', { input: 'ship <it>' }, { ...who, actor: { ...who.actor, via: 'dashboard' as const } }));
+      return w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: object }).args);
+    };
+    expect(await posted(['chat:write', 'chat:write.customize'], ANN_CTX)).toEqual([
+      expect.objectContaining({ text: 'ship &lt;it&gt;', username: 'name-U1', icon_url: 'https://img/U1' }),
+    ]);
+    expect(await posted(['chat:write', 'chat:write.customize'], BOB)).toEqual([expect.objectContaining({ text: '*Bob* from the web:\n> ship &lt;it&gt;' })]);
+    const [plain] = await posted(['chat:write'], ANN_CTX);
+    expect(plain).not.toHaveProperty('username');
+    expect(plain).toMatchObject({ text: expect.stringContaining('from the web:\n> ship &lt;it&gt;') });
+  });
+
+  it('a message over the wire carries only the member id: quoted under the owner\'s name, or "Someone", never the id', async () => {
+    const w = await world();
+    const posts = () =>
+      w.rec.filter((r) => (r as { slack?: string }).slack === 'chat.postMessage').map((r) => (r as { args: { text: string } }).args.text);
+    const wire = (id: string) => ({ actor: { id, name: null, via: 'dashboard' as const, client: null }, member: id });
+    result(await w.call('turns.send', { input: 'one' }, wire(OWNER.userId)));
+    await w.t.feed(w.T.first(), w.T.done());
+    result(await w.call('turns.send', { input: 'two' }, wire('usr_bob')));
+    expect(posts()).toEqual(['*Ann* from the web:\n> one', '*Someone* from the web:\n> two']);
   });
 
   it('one idempotency key gives one turn', async () => {
@@ -333,6 +373,20 @@ describe('SessionApi', () => {
     expect(r.session.status).toBe('suspended');
     expect(w.of('runtime.suspended').map((e) => e.data)).toEqual([{ reason: 'requested' }]);
     expect(w.suspended.n).toBe(1);
+    for (const e of w.events()) assertEvent(e);
+  });
+
+  it('the computer naming a session journals the title; a person renaming it marks it renamed', async () => {
+    const w = await world();
+    expect(w.api.renamed).toBe(false);
+    w.api.named('golden', 'Sea poem');
+    const named = w.of('session.updated').at(-1)!;
+    expect(named.data).toEqual({ changes: { title: { from: 'golden', to: 'Sea poem' } } });
+    expect(named.actor).toBeNull();
+    result(await w.call('sessions.update', { title: 'Mine' }));
+    expect(w.api.renamed).toBe(true);
+    // Kept in the session's info, so it outlasts this runner.
+    expect(w.t.sess.info.renamed).toBe(true);
     for (const e of w.events()) assertEvent(e);
   });
 

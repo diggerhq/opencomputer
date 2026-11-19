@@ -35,6 +35,8 @@ export interface PromptHost {
   readonly asks?: Asks;
   /** The prompt a typed reply answers, by prompt id. */
   openPrompt?: string;
+  /** Work 112: the driver whose message started the current turn; undefined for the owner's (or an older gateway's). */
+  readonly driver?: string;
   patchTask(id: string, patch: Partial<Task>): void;
   /** Finalize the live message; what follows continues in a new one below. */
   rotate(): void;
@@ -52,7 +54,21 @@ export interface Pending {
   askId?: string;
   /** A Slack typed reply now would answer it (one question left), not decline it. */
   answersText?(): boolean;
+  /** Work 112: the driver it waits on, read from the session when it was created; undefined: the owner's. */
+  asked?: string;
 }
+
+/**
+ * Work 112: whether a button click may answer `p`. A click with `role` `driver`
+ * from someone other than the driver it waits on is refused (`not-asked`); the
+ * owner, and a click without a role (an older gateway, the API), answer as before.
+ */
+export function mayAnswer(p: Pick<Pending, 'asked'>, role: 'owner' | 'driver' | undefined, userId: string): boolean {
+  return role !== 'driver' || p.asked === userId;
+}
+
+/** The line under a prompt's buttons; `Waiting on <@asked> · ` first when a driver's message caused it. */
+export const waitingLine = (asked: string | undefined, text: string) => (asked ? `Waiting on <@${asked}> · ${text}` : text);
 
 /** Open prompts (permission / question) waiting on a Slack button, by prompt id. */
 export const prompts = new Map<string, Pending>();
@@ -86,6 +102,7 @@ const MODE_LABEL: Record<string, string> = { acceptEdits: 'auto-accepting edits'
 
 export async function permissionPrompt(host: PromptHost, name: string, input: Record<string, unknown>, ask: GateAsk): Promise<GateDecision> {
   const pid = randomUUID().slice(0, 8);
+  const asked = host.driver;
   const isPlan = ask.kind === 'plan';
   if (!isPlan) host.patchTask(ask.id, { details: 'waiting for approval ↓', waiting: true });
   const title = isPlan
@@ -132,7 +149,7 @@ export async function permissionPrompt(host: PromptHost, name: string, input: Re
         ...(b.style ? { style: b.style } : {}),
       })),
     },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: 'or reply here to decline and say what to do instead' }] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: waitingLine(asked, 'or reply here to decline and say what to do instead') }] },
   ]);
 
   return new Promise<GateDecision>((resolve) => {
@@ -194,6 +211,7 @@ export async function permissionPrompt(host: PromptHost, name: string, input: Re
       session: host,
       onAction: (value, user) => act(value, user),
       askId: tracked?.id,
+      asked,
       onText: async (text, user, reply) => {
         await declined(text, user, undefined, reply);
         host.rotate(); // the reply is now below; continue under it
@@ -219,6 +237,7 @@ export async function questionPrompt(
   signal: AbortSignal,
 ): Promise<GateDecision> {
   const pid = randomUUID().slice(0, 8);
+  const asked = host.driver;
   host.patchTask(toolUseID, { details: 'waiting for your answer ↓', waiting: true });
   const qs = input.questions ?? [];
   const answers: Record<string, string> = {};
@@ -272,7 +291,7 @@ export async function questionPrompt(
   let lastUser: string | undefined;
   const ts = await host.thread.post(qs[0]?.question ?? 'Question', [
     ...render(),
-    { type: 'context', elements: [{ type: 'mrkdwn', text: 'or reply here with your own answer' }] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: waitingLine(asked, 'or reply here with your own answer') }] },
   ]);
 
   return new Promise<GateDecision>((resolve) => {
@@ -318,6 +337,7 @@ export async function questionPrompt(
       // Claude as the user's words, so a side remark ("what's the status?")
       // never becomes an answer.
       askId: tracked?.id,
+      asked,
       answersText: () => qs.filter((q) => !answers[q.question]).length <= 1,
       onText: async (text, user, reply) => {
         lastUser = user;
