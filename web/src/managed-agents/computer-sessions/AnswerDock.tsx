@@ -367,8 +367,8 @@ function Options({
 }) {
   const box = question.multiSelect
   return (
-    <fieldset className="space-y-2">
-      <legend className="text-muted-foreground mb-2 flex gap-2 text-xs">
+    <fieldset>
+      <legend className="text-muted-foreground mb-1.5 flex gap-2 text-xs">
         {titled ? (
           <span className="text-foreground font-medium">
             {question.text || question.header}
@@ -376,7 +376,7 @@ function Options({
         ) : null}
         <span>{box ? 'Choose any' : 'Choose one'}</span>
       </legend>
-      <div className="divide-y overflow-hidden rounded-lg border">
+      <div className="-mx-2 space-y-px">
         {question.options.map((o) => {
           const on = chosen.includes(o.label)
           return (
@@ -387,7 +387,7 @@ function Options({
               aria-pressed={box || !titled ? on : undefined}
               onClick={() => onPick(o.label)}
               className={cn(
-                'group/opt hover:bg-muted/60 flex w-full items-start gap-3 px-3 py-2 text-left text-sm transition-colors disabled:opacity-60',
+                'group/opt hover:bg-muted/60 flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-colors disabled:opacity-60',
                 on && 'bg-muted',
               )}
             >
