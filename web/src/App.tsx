@@ -28,6 +28,8 @@ const ComputerSession = lazy(
 const ComputerTriage = lazy(
   () => import('./managed-agents/computer-sessions/Triage'),
 )
+const WorkBoard = lazy(() => import('./managed-agents/work/Board'))
+const WorkItem = lazy(() => import('./managed-agents/work/Item'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
@@ -137,6 +139,8 @@ export default function App() {
               path="computer/secrets"
               element={<ManagedComputerSecrets />}
             />
+            <Route path="computer/work" element={<WorkBoard />} />
+            <Route path="computer/work/:number" element={<WorkItem />} />
             <Route path="automations" element={<ManagedAgentsHome list />} />
             <Route
               path="model-access/callback"
