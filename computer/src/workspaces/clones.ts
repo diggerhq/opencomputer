@@ -19,6 +19,7 @@ import { HOST_DATA, type Person } from '../protocol.js';
 import { type Definition, isLazy, loadDefinition, type RepoDef } from './definition.js';
 import { command, copyFile, mkdir, rename, rm, writeFile } from './as-runner.js';
 import { Freshness, keyedQueue } from './fetch-schedule.js';
+import { syncKnowledgeHooks } from './knowledge-hooks.js';
 
 const exec = promisify(execFile);
 
@@ -152,7 +153,10 @@ export async function ensureWorkspace(person: Person): Promise<void> {
     def.repos
       .filter((r) => !r.unpublished && !isLazy(r))
       .map((r) =>
-        cloneRepo(path.join(ws, r.name), r).catch((e) => {
+        (async () => {
+          await cloneRepo(path.join(ws, r.name), r);
+          await syncKnowledgeHooks(path.join(ws, r.name), r);
+        })().catch((e) => {
           failed.push(`${r.name}: ${errText(e)}`);
         }),
       ),

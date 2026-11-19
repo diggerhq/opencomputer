@@ -21,6 +21,7 @@ import {
   HOUSEKEEPING_FETCHES, isClone, observe, observed, ok, personRoot, serial, workspaceDir,
 } from './clones.js';
 import { limit } from './fetch-schedule.js';
+import { syncKnowledgeHooks } from './knowledge-hooks.js';
 import { pruneIdleArtifacts } from './idle.js';
 import { pruneForks } from './prune.js';
 
@@ -54,6 +55,7 @@ async function syncRepo(person: Person, repo: RepoDef, trigger: FetchTrigger): P
     await cloneRepo(clone, repo);
     const b = await defaultBranch(clone, repo);
     const problems: string[] = [];
+    await syncKnowledgeHooks(clone, repo).catch((e) => problems.push(`hooks: ${errText(e)}`));
     let fetchError: string | undefined;
     let ms = 0;
     await housekeepingFetch(() =>

@@ -1,0 +1,21 @@
+#!/bin/sh
+# opencomputer-knowledge-hook: installed by the computer's host in the clone of
+# the organization's knowledge repository (src/workspaces/knowledge-hooks.ts),
+# and replaced by it on every housekeeping pass: edits here do not last.
+#
+# Adds a `Session: <id>` trailer from $SP_SESSION_ID, which the runner exports
+# for every session, so the Work index can link the session to the items the
+# commit touches. Nothing without the variable; never twice for one session
+# (an amend or a rebase keeps the trailer it has). It never fails a commit:
+# every path exits 0.
+
+id=${SP_SESSION_ID-}
+[ -n "$id" ] || exit 0
+# A session id or key (`cs_…`, `C0B:1791.82`): nothing that could break the message.
+case $id in *[!A-Za-z0-9._:-]*) exit 0 ;; esac
+msg=$1
+[ -n "$msg" ] && [ -f "$msg" ] || exit 0
+# Nothing written yet (an editor will open next): leave it, so an empty message still aborts the commit.
+[ -n "$(git stripspace --strip-comments <"$msg" 2>/dev/null)" ] || exit 0
+git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Session: $id" "$msg" >/dev/null 2>&1
+exit 0
