@@ -139,6 +139,36 @@ const RepositoryResultSchema = z.looseObject({
   repository: RepositorySchema.nullable(),
 })
 
+const GrantedRepositorySchema = z.looseObject({
+  id: z.number(),
+  owner: z.string(),
+  name: z.string(),
+  private: z.boolean(),
+  defaultBranch: z.string(),
+  // Null for a repository never pushed to.
+  pushedAt: z.string().nullable(),
+})
+export type GrantedRepository = z.infer<typeof GrantedRepositorySchema>
+
+// One of the organization's GitHub installations and the repositories it
+// grants, most recently pushed first (the server's order). `settingsUrl` is
+// the installation's page on GitHub, where a person grants it more.
+const GrantingInstallationSchema = z.looseObject({
+  id: z.string(),
+  accountLogin: z.string(),
+  accountType: z.string(),
+  settingsUrl: z.string(),
+  repositories: z.array(GrantedRepositorySchema),
+  truncated: z.boolean(),
+  problem: z.string().nullable(),
+  problemMessage: z.string().nullable(),
+})
+export type GrantingInstallation = z.infer<typeof GrantingInstallationSchema>
+
+const RepositoriesSchema = z.looseObject({
+  installations: z.array(GrantingInstallationSchema),
+})
+
 export type RepositoryChoice = {
   installationId: string | number
   owner: string
@@ -166,6 +196,16 @@ export function putRepository(choice: RepositoryChoice) {
     RepositoryResultSchema,
     '/api',
   ).then((r) => r.repository)
+}
+
+/** What each of the organization's GitHub installations grants, for the picker. */
+export function getRepositories() {
+  return apiFetch(
+    `${PREFIX}/repositories`,
+    undefined,
+    RepositoriesSchema,
+    '/api',
+  ).then((r) => r.installations)
 }
 
 /** What the open-items poll keeps: the page and the ETag it came with. */
@@ -251,6 +291,7 @@ export function getHistory(number: number, cursor: string | undefined) {
 export const workKeys = {
   all: ['work'] as const,
   repository: (org: string) => ['work', org, 'repository'] as const,
+  repositories: (org: string) => ['work', org, 'repositories'] as const,
   open: (org: string) => ['work', org, 'items', 'open'] as const,
   closed: (org: string) => ['work', org, 'items', 'closed'] as const,
   item: (org: string, n: number) => ['work', org, 'item', n] as const,

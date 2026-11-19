@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getOpenItems,
+  getRepositories,
   keepOpenItems,
   putRepository,
   type OpenItemsPoll,
@@ -113,5 +114,42 @@ describe('repository setting', () => {
     expect(
       (init.headers as Record<string, string>)['Idempotency-Key'],
     ).toBeTruthy()
+  })
+})
+
+describe('repositories the installations grant', () => {
+  it('reads them for the picker', async () => {
+    const installations = [
+      {
+        id: '1',
+        accountLogin: 'acme',
+        accountType: 'Organization',
+        settingsUrl:
+          'https://github.com/organizations/acme/settings/installations/41',
+        repositories: [
+          {
+            id: 7,
+            owner: 'acme',
+            name: 'knowledge',
+            private: true,
+            defaultBranch: 'main',
+            pushedAt: null,
+          },
+        ],
+        truncated: false,
+        problem: null,
+        problemMessage: null,
+      },
+    ]
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ installations }), { status: 200 }),
+      )
+    vi.stubGlobal('fetch', fetch)
+    expect(await getRepositories()).toEqual(installations)
+    expect(fetch.mock.calls[0][0]).toBe(
+      '/api/managed-agents/computer/work/repositories',
+    )
   })
 })

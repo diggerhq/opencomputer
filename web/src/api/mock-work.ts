@@ -36,6 +36,57 @@ const repo = {
 }
 let repository: typeof repo | null = repo
 
+// What the preview's GitHub installations grant (the computer mock's acme and
+// acme-labs), most recently pushed first as the server sends them.
+const granted = (
+  owner: string,
+  list: [name: string, isPrivate: boolean, pushed: number | null][],
+) =>
+  list.map(([name, isPrivate, pushed], i) => ({
+    id: (owner === 'acme' ? 1000 : 2000) + i,
+    owner,
+    name,
+    private: isPrivate,
+    defaultBranch: name === 'legacy-site' ? 'master' : 'main',
+    pushedAt: pushed === null ? null : ago(pushed),
+  }))
+const granting = [
+  {
+    id: '1',
+    accountLogin: 'acme',
+    accountType: 'Organization',
+    settingsUrl:
+      'https://github.com/organizations/acme/settings/installations/41000001',
+    repositories: granted('acme', [
+      ['app', true, 12],
+      ['knowledge', true, 3 * H],
+      ['infra', true, 26 * H],
+      ['docs', false, 3 * D],
+      ['design-system', false, 9 * D],
+      ['mobile', true, 21 * D],
+      ['legacy-site', false, 140 * D],
+      ['scratch', true, null],
+    ]),
+    truncated: false,
+    problem: null,
+    problemMessage: null,
+  },
+  {
+    id: '2',
+    accountLogin: 'acme-labs',
+    accountType: 'Organization',
+    settingsUrl:
+      'https://github.com/organizations/acme-labs/settings/installations/41000002',
+    repositories: granted('acme-labs', [
+      ['experiments', true, 2 * D],
+      ['notes', false, 30 * D],
+    ]),
+    truncated: false,
+    problem: null,
+    problemMessage: null,
+  },
+]
+
 const pr = (n: number, state: string | null, title: string) => ({
   url: `https://github.com/acme/app/pull/${n}`,
   state,
@@ -393,6 +444,9 @@ export function workMock(
       return { repository }
     }
     return { repository: current }
+  }
+  if (rest === '/repositories' && method === 'GET') {
+    return { installations: granting }
   }
   const mineEmpty = s === 'mine-empty'
   const visible = (list: Json[]) =>
