@@ -197,6 +197,8 @@ export const Session = Schema.Struct({
   title: Schema.String,
   status: SessionStatus,
   archived: Schema.Boolean,
+  /** Set aside by its owner in triage, until something newer needs them. The server's; a computer's own fold says false. */
+  aside: Schema.Boolean,
   owner: Person,
   origin: Origin,
   settings: Settings,

@@ -2676,6 +2676,9 @@
         "archived": {
           "type": "boolean"
         },
+        "aside": {
+          "type": "boolean"
+        },
         "owner": {
           "$ref": "#/$defs/Person"
         },
@@ -2837,6 +2840,7 @@
         "title",
         "status",
         "archived",
+        "aside",
         "owner",
         "origin",
         "settings",
