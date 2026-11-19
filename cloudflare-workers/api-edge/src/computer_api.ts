@@ -167,6 +167,8 @@ const API_RESPONSE_HEADERS = [
   "x-opc-latest",
   "retry-after",
   "etag",
+  // When the Work index last saw the branch head (work tracking 3.10), on 200 and 304.
+  "work-as-of",
 ];
 
 /** Request headers passed to the wire Worker, beside the caller's key. */
@@ -312,7 +314,7 @@ const CORS_ALLOW_HEADERS =
   "authorization, content-type, idempotency-key, x-request-id, if-none-match";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
-  "server-timing, x-request-id, x-opc-latest, retry-after, etag";
+  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";
 
 /**
  * Whether a browser origin may call the computer API: the edge's own origin

@@ -434,6 +434,7 @@ describe("computer API proxy to blue", () => {
           "x-opc-latest": "0.9.0",
           etag: '"v1"',
           "retry-after": "1",
+          "work-as-of": "2026-11-19T10:00:00.000Z",
           "set-cookie": "nope=1",
         },
       }),
@@ -462,6 +463,7 @@ describe("computer API proxy to blue", () => {
       ["x-opc-latest", "0.9.0"],
       ["etag", '"v1"'],
       ["retry-after", "1"],
+      ["work-as-of", "2026-11-19T10:00:00.000Z"],
     ]) {
       expect(res.headers.get(name)).toBe(value);
     }
@@ -602,7 +604,7 @@ describe("computer API proxy to blue", () => {
   it("returns a 304 with no body", async () => {
     const db = new FakeDB();
     const key = await addKey(db);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 304, headers: { etag: '"v1"' } })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 304, headers: { etag: '"v1"', "work-as-of": "2026-11-19T10:00:00.000Z" } })));
     const res = await worker.fetch(
       api("/sessions/cs_1", { headers: { "x-api-key": key, "if-none-match": '"v1"' } }),
       testEnv(db),
@@ -610,6 +612,7 @@ describe("computer API proxy to blue", () => {
     );
     expect(res.status).toBe(304);
     expect(res.headers.get("etag")).toBe('"v1"');
+    expect(res.headers.get("work-as-of")).toBe("2026-11-19T10:00:00.000Z");
   });
 
   it("keeps the dashboard mount's computer list on the dashboard family", async () => {
@@ -790,7 +793,7 @@ describe("computer API CORS", () => {
     );
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-expose-headers")).toBe(
-      "server-timing, x-request-id, x-opc-latest, retry-after, etag",
+      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of",
     );
     expect(res.headers.get("server-timing")).toBe("x;dur=1");
   });
