@@ -8,7 +8,7 @@ const run = `/run/slack-presence/sandbox/${id}`;
 
 describe('podman argv (work 103, "Podman commands")', () => {
   it('create is the specified command, word for word', () => {
-    expect(createArgs({ id, run, dataDir: '/data', image: 'ghcr.io/diggerhq/computer-session:abc', abi: '1' }).join('\n')).toBe(`create
+    expect(createArgs({ id, run, dataDir: '/data', image: 'ghcr.io/diggerhq/computer-session:abc', abi: '1', modelSocket: '/run/oc-modelproxy/api.sock' }).join('\n')).toBe(`create
 --name
 sp-runner-${id}
 --hostname
@@ -52,14 +52,14 @@ sp-home-${id}:/home/agent
 -v
 ${run}:${run}
 -v
-/run/oc-modelproxy/api:/run/oc-modelproxy/api
+/run/oc-modelproxy/api.sock:/run/oc-modelproxy/api.sock
 -v
 /opt/slack-presence:/opt/slack-presence:ro
 ghcr.io/diggerhq/computer-session:abc`);
   });
 
   it('create mounts no workspace, no clone and nothing else of the model proxy', () => {
-    const binds = createArgs({ id, run, dataDir: '/data', image: 'i', abi: '2' }).flatMap((a, i, all) => (all[i - 1] === '-v' ? [a] : []));
+    const binds = createArgs({ id, run, dataDir: '/data', image: 'i', abi: '2', modelSocket: '/run/oc-modelproxy/api.sock' }).flatMap((a, i, all) => (all[i - 1] === '-v' ? [a] : []));
     expect(binds).toHaveLength(4);
     expect(binds.some((b) => /people|sessions|control\.sock|bindings/.test(b))).toBe(false);
   });

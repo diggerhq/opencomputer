@@ -1,4 +1,4 @@
-import { lazy } from 'react'
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -15,6 +15,15 @@ const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
 const ManagedComputerSecrets = lazy(
   () => import('./managed-agents/ComputerSecrets'),
+)
+const ComputerSessionsLayout = lazy(
+  () => import('./managed-agents/computer-sessions/Layout'),
+)
+const ComputerSessionsHome = lazy(
+  () => import('./managed-agents/computer-sessions/Home'),
+)
+const ComputerSession = lazy(
+  () => import('./managed-agents/computer-sessions/Session'),
 )
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
@@ -73,24 +82,8 @@ export default function App() {
             <Route path="security" element={<ManagedSecurityOnboarding />} />
             <Route path="getting-started" element={<ManagedAgentsHome />} />
             <Route path="computer" element={<ManagedComputer />} />
-            <Route
-              path="computer/secrets"
-              element={<ManagedComputerSecrets />}
-            />
-            <Route path="automations" element={<ManagedAgentsHome list />} />
-            <Route
-              path="model-access/callback"
-              element={<ModelAccessCallback />}
-            />
-            <Route
-              path="managed-agents/connections"
-              element={<ManagedAgentConnections />}
-            />
-            <Route
-              path="managed-agents/new"
-              element={<Navigate to="/new" replace />}
-            />
-            <Route path="new" element={<NewProject />} />
+            {/* Projects keep the old shell for now: their pages lean on its
+                sidebar and environment switcher. */}
             <Route
               path="projects/:projectId"
               element={<ManagedProjectDetail />}
@@ -119,6 +112,41 @@ export default function App() {
               path="managed-agents/:agentId"
               element={<ManagedAgentDetail />}
             />
+          </Route>
+          {/* The computer's sessions are their own full-screen view, with
+              their own rail and sidebar (work 107); every other page opens in
+              the same rail, without the sessions sidebar. */}
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <ComputerSessionsLayout />
+              </Suspense>
+            }
+          >
+            <Route path="computer/sessions">
+              <Route index element={<ComputerSessionsHome />} />
+              {/* The same home, for a phone, where the index is the list. */}
+              <Route path="new" element={<ComputerSessionsHome />} />
+              <Route path=":id" element={<ComputerSession />} />
+            </Route>
+            <Route
+              path="computer/secrets"
+              element={<ManagedComputerSecrets />}
+            />
+            <Route path="automations" element={<ManagedAgentsHome list />} />
+            <Route
+              path="model-access/callback"
+              element={<ModelAccessCallback />}
+            />
+            <Route
+              path="managed-agents/connections"
+              element={<ManagedAgentConnections />}
+            />
+            <Route
+              path="managed-agents/new"
+              element={<Navigate to="/new" replace />}
+            />
+            <Route path="new" element={<NewProject />} />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />

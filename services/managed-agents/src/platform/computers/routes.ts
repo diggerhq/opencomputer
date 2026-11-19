@@ -47,7 +47,9 @@ function summary(resource: ArmResource | null): CloudResource | null {
       ? { vmSize: resource.properties.hardwareProfile.vmSize }
       : {}),
     ...(resource.properties?.diskSizeGB !== undefined ? { diskSizeGB: resource.properties.diskSizeGB } : {}),
-    ...(failure ? { failure: failure.message ?? failure.code ?? null } : {}),
+    ...(resource.zones?.[0] ? { zone: resource.zones[0] } : {}),
+    // `ProvisioningState/failed/ZonalAllocationFailed`: the last part is ARM's error code.
+    ...(failure ? { failure: failure.message ?? failure.code ?? null, failureCode: failure.code?.split("/")[2] ?? null } : {}),
   };
 }
 

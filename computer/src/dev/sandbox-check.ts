@@ -1,7 +1,9 @@
 // End-to-end check of sessions in containers (work 103), on a computer: the
 // host agent with SP_LAUNCH=podman against a fake gateway in this process,
 // runners rendering to a fake Slack client (SP_FAKE_SLACK=1, read back with
-// `podman logs`). No model call: every delivery is `!status`.
+// `podman logs`). No model call: every delivery is `!status`; the host still
+// binds every runner at the computer's model proxy (SP_MODEL_PROXY, default
+// its installed control socket), without which no session starts.
 //
 // It checks a new thread (record, container, unit, cgroup, run directory,
 // token socket, the report's path), a warm delivery, the idle exit (container
@@ -33,7 +35,7 @@ import { asRunner } from '../host/sandbox/podman.js';
 import { containerName, unitName, unshareRmArgs, volumeName } from '../host/sandbox/podman-args.js';
 import { sandboxRecords } from '../host/sandbox/records.js';
 import { runnersDir, sandboxRunFor, secretsFor, socketFor, tokenSocketFor } from '../ipc.js';
-import type { GatewayToHost, HostToGateway, SessionSpec, TraceContext } from '../protocol.js';
+import { type GatewayToHost, type HostToGateway, MODEL_SOCKET, type SessionSpec, type TraceContext } from '../protocol.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -43,6 +45,8 @@ const DATA = process.env.SP_DATA ?? '/data';
 const PERSON = 'sandbox-check';
 const KEY = `C_SANDBOX:${Date.now() / 1000}`;
 const IDLE_MS = 8000;
+const MODEL_PROXY = process.env.SP_MODEL_PROXY ?? '/run/oc-modelproxy/control.sock';
+const MODEL_API = process.env.SP_MODEL_SOCKET ?? MODEL_SOCKET;
 
 const t0 = Date.now();
 const say = (...a: unknown[]) => console.log(`+${((Date.now() - t0) / 1000).toFixed(1)}s`, ...a);
@@ -72,6 +76,7 @@ try {
 } catch {
   // not active: the directories are ours for the run
 }
+if (!existsSync(MODEL_PROXY) || !existsSync(MODEL_API)) refuse(`no model proxy at ${MODEL_PROXY} and ${MODEL_API}: without it no session starts (deploy/vm/modelproxy.sh install, or SP_MODEL_PROXY and SP_MODEL_SOCKET)`);
 const as = asRunner(user.sudo);
 const podman = (args: string[], timeoutMs = 30_000) => as.podman(args, { timeoutMs });
 /** Read anew at every use: the host writes the records. */
@@ -133,7 +138,7 @@ function startHost(): ChildProcess {
   const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check',
-      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1',
+      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_MODEL_PROXY: MODEL_PROXY, SP_MODEL_SOCKET: MODEL_API,
       SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -189,6 +194,8 @@ try {
   const seen = (await inside(id, 'id -u; echo $SP_RUN')).split('\n').join(' ');
   check(seen === `1500 ${run}`, `inside: uid 1500, SP_RUN its own run directory (${seen})`);
   check(readlinkSync(path.join(run, 'token.sock')) === path.relative(run, tokenSocketFor(run, id)), `token.sock in its run directory links to ${path.relative(run, tokenSocketFor(run, id))}`);
+  check((await inside(id, `test -S ${MODEL_API} && test ! -e ${path.join(path.dirname(MODEL_API), 'control.sock')} && echo yes`).catch(() => '')) === 'yes',
+    `inside, the model proxy's API socket ${MODEL_API} is there and its control socket is not`);
   const tk = await askToken(id);
   check(tk.startsWith('ghs_fake') && tokenSessions.at(-1) === KEY, `a token asked for inside, naming another session, is asked of the gateway for this one (${tk}, ${JSON.stringify(tokenSessions)})`);
   const l1 = launched(d1.trace) ?? (await until(() => launched(d1.trace), 10_000));

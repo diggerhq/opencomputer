@@ -9,14 +9,15 @@
 //   start may change goes through boot.env (boot-env.ts), never through argv.
 // - The paths are the same inside and outside the container; the workspace is
 //   the one exception and is not mounted here.
+// - Of the model proxy a container gets its API socket alone, the file and
+//   not its directory: the control socket beside it stays outside. Create
+//   fails while that socket is absent, and without the proxy no session starts.
 
 import path from 'node:path';
 import { type RunRoot, previewSocketFor, tokenSocketFor } from '../../ipc.js';
 
 /** The user every session runs as, inside and outside (the image's `agent`). */
 export const SESSION_USER = '1500:1500';
-/** The only directory of the model proxy a session sees: its API socket, nothing else. */
-export const MODEL_PROXY_DIR = '/run/oc-modelproxy/api';
 /** Where releases live, mounted read-only at the same path. */
 export const RELEASES_DIR = '/opt/slack-presence';
 
@@ -34,6 +35,8 @@ export interface CreateSpec {
   /** SP_IMAGE and SP_IMAGE_ABI. */
   image: string;
   abi: string;
+  /** The model proxy's API socket (the host's SP_MODEL_SOCKET): the one thing of the proxy's a session sees. */
+  modelSocket: string;
 }
 
 export function createArgs(c: CreateSpec): string[] {
@@ -56,7 +59,7 @@ export function createArgs(c: CreateSpec): string[] {
     '--env', `SP_PREVIEW_SOCKET=${previewSocketFor(c.run, c.id)}`,
     '-v', `${volumeName(c.id)}:/home/agent`,
     '-v', `${c.run}:${c.run}`,
-    '-v', `${MODEL_PROXY_DIR}:${MODEL_PROXY_DIR}`,
+    '-v', `${c.modelSocket}:${c.modelSocket}`,
     '-v', `${RELEASES_DIR}:${RELEASES_DIR}:ro`,
     c.image,
   ];

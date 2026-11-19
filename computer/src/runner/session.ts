@@ -26,7 +26,7 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
+import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
 import type { ThreadHooks } from './threads.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
@@ -49,6 +49,7 @@ import type { TurnEvents } from './turn-events.js';
 import { Compaction } from './compaction.js';
 import { effortOf, speedOf, switchModel } from './model-switch.js';
 import { TurnCloser } from './turn-close.js';
+import { HeldSteer } from './held-steer.js';
 
 export { SILENT, prompts };
 
@@ -61,6 +62,8 @@ export interface SessionInfo {
   teamId?: string;
   cwd: string;
   title: string;
+  /** A person set the title (the API's sessions.update): the computer's naming (work 093) leaves it alone. */
+  renamed?: boolean;
   mode: PermissionMode;
   model?: string;
   effort?: EffortLevel; // `!effort` (model-switch.ts); DEFAULT_EFFORT without
@@ -127,6 +130,7 @@ export class Session {
     (s) => this.hooks.secrets?.redact(s) ?? s,
   );
   private tools = new Map<string, { name: string; input: any }>();
+  private heldSteer = new HeldSteer({ running: () => this.timeline.longestRunning(), say: (t) => this.say(t) });
   private thinking = new ThinkingCards(this.timeline, () => this.hooks.turns?.thinkingShown());
   readonly compaction = new Compaction(this.timeline, (f) => this.hooks.turns?.compacted(f), () => this.busy);
   readonly shadow: Compactor;
@@ -148,7 +152,9 @@ export class Session {
   private addressed = true;
   /** The prompt a typed reply answers (prompts.ts), by prompt id. */
   openPrompt?: string;
-  maxModel?: string; // a Claude subscription's ceiling (work 077, subscription.ts): `!model` stays at or below it
+  /** Work 112: the last sender when the gateway said they drive (not own) it; prompts wait on them. A participant's `!stop` leaves it. */
+  driver?: string;
+  maxModel?: string; // the route's model ceiling (model-access.ts): `!model` stays at or below it
   private costUsd = 0;
   private ctxTokens = 0;
   /** Whether the current model message already arrived as deltas. */
@@ -174,14 +180,10 @@ export class Session {
   get client() { return this.thread.client; }
   set client(c: WebClient) { this.thread.client = c; }
 
-  get isBusy() {
-    return this.busy;
-  }
+  get isBusy() { return this.busy; }
 
   /** The thread's id in a copyable form: the fork directory and branch suffix (`sp/<id>`). */
-  get threadId() {
-    return safeKey(this.info.key);
-  }
+  get threadId() { return safeKey(this.info.key); }
 
   private get out(): Segment {
     if (this.seg?.full) this.rotate();
@@ -200,9 +202,10 @@ export class Session {
    * side by side; the message goes to the model once names and attachments
    * are in, and output waits for the intro only to be posted below it.
    */
-  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom) {
+  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom, role?: Delivery['role']) {
     this.shadow.cancel();
     this.info.userId = userId ?? this.info.userId;
+    if (role !== 'participant') this.driver = role === 'driver' ? userId : undefined;
     const urgent = raw.startsWith('!!');
     const { tier, rest: typed } = takeTier(urgent ? raw.slice(2).trim() : raw);
     const intro = this.intro();
@@ -225,7 +228,7 @@ export class Session {
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
     // Mid-turn messages land at the next tool boundary, like Claude Code's queue.
     Effect.runSync(h.send({ text, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
-    this.hooks.turns?.pushed(this.busy && !urgent);
+    this.hooks.turns?.pushed(this.busy && !urgent), this.busy && !urgent && this.heldSteer.arm();
     if (!this.busy) this.addressed = mentioned === undefined || mentioned === true;
     // An addressed turn's message opens now, before the model answers (work 068); a steer's output follows its turn's.
     if (!this.busy && this.addressed) this.timeline.open();
@@ -271,8 +274,8 @@ export class Session {
   /**
    * Start the harness before the first message, so its start-up (230–450 ms)
    * is off the turn. It copies the environment at spawn, so call it once the
-   * Claude credentials are in place; `renew` replaces a harness no message
-   * went into yet (the credentials changed since it started).
+   * model environment is set (runner/model-access.ts); `renew` replaces a
+   * harness no message went into yet (that environment changed since it started).
    */
   prewarm(renew = false) {
     if (renew) this.shadow.cancel();
@@ -331,11 +334,7 @@ export class Session {
   private async pump(run: Running) {
     const record = (e: HarnessEvent) => {
       this.hooks.turns?.event(e), this.hooks.event?.(e), this.hooks.api?.event(e), this.compaction.observe(e);
-      try {
-        this.onEvent(e);
-      } catch (err) {
-        log.error('onEvent', err);
-      }
+      try { this.onEvent(e); } catch (err) { log.error('onEvent', err); }
     };
     try {
       await Effect.runPromise(Stream.runForEach(run.harness.events, (e) => Effect.sync(() => record(e))));
@@ -421,7 +420,7 @@ export class Session {
       case 'tool':
         return this.onTool(e);
       case 'tool_result':
-        return this.onToolResult(e);
+        return this.heldSteer.cancel(), this.onToolResult(e);
       case 'task':
         return this.onTask(e);
       case 'turn_ended':
@@ -517,7 +516,7 @@ export class Session {
     const silent = this.silent && !this.spoke && !failure;
     const reason = failure && (failure === 'error_during_execution' ? 'interrupted' : failure); // Claude Code's word for a stop (or a failure)
     this.hooks.turns?.ended(silent, failure), this.hooks.api?.ended(failure);
-    clearInterval(this.ticker);
+    clearInterval(this.ticker), this.heldSteer.cancel();
     this.thinking.clear();
     this.timeline.endTurn(reason);
     this.history = this.held = undefined;
@@ -582,7 +581,7 @@ export class Session {
 
   /** A brand-new session's first reply, above any output (thread.ts); posted once, never throws. */
   private intro() {
-    if (this.fresh) this.introducing ??= this.timed('intro', this.thread.intro(this.threadId));
+    if (this.fresh) this.introducing ??= this.timed('intro', this.thread.intro(this.threadId, this.info.key));
     return this.introducing;
   }
 

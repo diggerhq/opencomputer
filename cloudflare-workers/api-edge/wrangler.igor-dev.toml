@@ -1,4 +1,4 @@
-# api-edge — `igor-dev` personal dev edge in **Mo's CF account (b8f23cb8)**.
+# api-edge — `igor-dev` personal dev edge in **Mo's CF account**.
 # A prod-mirror of the api-edge Worker sitting in front of Igor's GCP dev box:
 # one worker that serves the dashboard SPA from [assets] AND handles /auth
 # (WorkOS) + /api/dashboard (edge-native, read from D1) — the
@@ -27,7 +27,8 @@ name = "opencomputer-api-edge-igor-dev"
 main = "src/index.ts"
 compatibility_date = "2026-04-28"
 compatibility_flags = ["nodejs_compat"]
-account_id = "b8f23cb87a7a6c64040d3134643da448"
+# No account_id: set CLOUDFLARE_ACCOUNT_ID to Mo's account (kept out of this
+# public repository).
 
 # Dashboard SPA assets (built from web/, staged into ./assets — gitignored).
 # Worker runs first on every request, handles /api,/auth,/webhooks, then falls

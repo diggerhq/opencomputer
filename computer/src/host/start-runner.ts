@@ -38,10 +38,10 @@ import { type RunRoot, lines, send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 import type { Dimensions } from '../telemetry/envelope.js';
-import { credentialFingerprint } from '../credential-fingerprint.js';
 import { adoption, type First } from './adoption.js';
 import { claimSpare } from './claim.js';
 import { coldStart, forkFor } from './cold-start.js';
+import { type HostModelAccess, PROXY_DOWN } from './model-access.js';
 import type { Pool } from './pool.js';
 import { callRunner as call } from './runner-call.js';
 import { awaitRunner, launchProcess, launchRunner } from './runner-sockets.js';
@@ -64,6 +64,8 @@ export interface Runner {
   lastDelivery: number;
   connectedAt: number;
   exiting?: boolean;
+  /** Told to exit for its session's new route (model-access.ts): a delivery waits for it to go and starts another. */
+  switching?: boolean;
   /** Set by a launch, taken by the delivery that caused it: the path is not `warm`. */
   cold?: ColdStart;
   /** The last trace forwarded (also in `<key>.trace.json`), for `turn.abandoned`. */
@@ -86,10 +88,8 @@ export interface StartDeps {
   pool: Pool<Runner>;
   /** The organization's credentials as the gateway last sent them. */
   creds(): HostCredentials | undefined;
-  /** Credentials as `key`'s runner gets them (model-access.ts). */
-  forRunner(key: string, c: HostCredentials | undefined, harness?: HarnessName): HostCredentials | undefined;
-  /** The session's model route (model-access.ts `routes.mode`). */
-  routeMode(key: string): string;
+  /** The host's model access (model-access.ts, work 097): every runner and spare is bound at the model proxy through it. */
+  models: Pick<HostModelAccess, 'up' | 'canSpare' | 'kind' | 'spare' | 'claim' | 'closed' | 'forRunner'>;
   /** Work 084: the session's journal, socket and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string): Promise<RunnerApi | undefined>;
   /** The runner's own token socket below its run root, naming the session it serves now (tokens.ts). */
@@ -99,8 +99,8 @@ export interface StartDeps {
   fillPool(): void;
   /** Run a fork so its workspace events join the delivery's trace. */
   inFork<T>(f: Dimensions, fn: () => Promise<T>): Promise<T>;
-  /** The runner serves its session from now on. */
-  register(r: Runner): void;
+  /** The runner serves its session from now on; `found`: it was running already when the host started. */
+  register(r: Runner, found?: boolean): void;
   /** Its socket closed. */
   closed(r: Runner): void;
   /** A message from an adopted runner. */
@@ -130,13 +130,13 @@ export function runnerStarts(d: StartDeps) {
       const take = (m?: First) => {
         if (m?.t === 'report') (r.key = m.report.key), (r.harness ??= m.report.harness);
         if (m?.t === 'spare') r.spare = m.spare;
-        if (r.key) d.register(r);
+        if (r.key) d.register(r, !!o.verify);
         else {
           d.pool.add(r);
           d.pool.changed(r);
         }
         sock.on('close', () => d.closed(r));
-        const c = o.first ?? d.forRunner(r.key, d.creds(), r.harness);
+        const c = o.first ?? d.models.forRunner(r.key, d.creds(), r.harness);
         if (c) send(sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
         resolve(r);
       };
@@ -176,21 +176,22 @@ export function runnerStarts(d: StartDeps) {
   }
 
   async function startRunner(spec: SessionSpec, f: Dimensions, first?: HostCredentials): Promise<Runner> {
+    if (!d.models.up) throw new Error(PROXY_DOWN);
     if (d.sandbox) return startSandboxed(d.sandbox, spec, f, first);
     let existing = spec.forkPath && existsSync(spec.forkPath) && forkComplete(spec.forkPath) ? spec.forkPath : undefined;
     // A new session in a prepared workspace may take a spare (work 069); a resumed one starts cold, to resume.
-    // Claude takes one on the managed route, whose credential spares park with; Codex (work 082) on its ChatGPT subscription.
+    // Claude takes one of its route's spare kind (C6); Codex (work 082) any.
     const codex = spec.harness === 'codex';
-    if (d.pool.enabled && !spec.sdkSessionId && workspacesEnabled() && workspacePrepared(spec.owner)
-      && d.routeMode(spec.key) === (codex ? 'subscription' : 'managed')) {
+    if (d.pool.enabled && !spec.sdkSessionId && workspacesEnabled() && workspacePrepared(spec.owner) && d.models.canSpare()) {
       const t0 = Date.now();
       const got = await claimSpare<Runner>({
         // Refill as soon as the spare is ours: the fork and the claim take seconds, in which another session may arrive.
-        take: () => { const t = d.pool.take(credentialFingerprint(first) ?? credentialFingerprint(d.creds()), codex); d.fillPool(); return t; },
+        take: () => { const t = d.pool.take(d.models.kind(spec.key, 'claude'), codex); d.fillPool(); return t; },
         fork: async () => existing ?? d.inFork(f, () => forkFor(tm, spec, f)),
         claim: async (r, forkPath) => {
-          // Claude's credential goes first, as its parked Claude Code has it; a Codex claim drops the spare's, so the session's follow.
-          const c = codex ? (first ?? d.forRunner(spec.key, d.creds(), 'codex')) : first;
+          // Bound to the session first (C6); Claude's credentials go before the claim, Codex's after (its claim drops the spare's).
+          await d.models.claim(r.id, spec.key, spec.harness ?? 'claude');
+          const c = first ?? d.models.forRunner(spec.key, d.creds(), spec.harness ?? 'claude');
           if (c && !codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
           await call(r, { t: 'claim', session: { ...spec, forkPath }, api: await d.mint(spec, r.id) }, 5000);
           if (c && codex) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
@@ -246,10 +247,12 @@ export function runnerStarts(d: StartDeps) {
     return r;
   }
 
-  /** Start a spare for the pool: a runner with no session, which parks a Claude Code once it has credentials (a Codex claim replaces it). */
+  /** Start a spare for the pool, bound to `models.claude` first: a runner with no session, which parks a Claude Code once it has credentials. */
   async function launchSpare() {
     const id = newRunnerId();
-    await adopt(id, await launchRunner({ id, socket: socketFor(d.run, id), version: d.version }, d.launch));
+    await d.models.spare(id);
+    await launchRunner({ id, socket: socketFor(d.run, id), version: d.version }, d.launch).then((sock) => adopt(id, sock))
+      .catch((e) => (d.models.closed('', id), Promise.reject(e)));
     tm.emit('pool.spare_started', { data: { launch_mode: d.launch.mode } });
   }
 
