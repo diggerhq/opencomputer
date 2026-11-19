@@ -225,5 +225,5 @@ export interface ApiErrorBody {
 }
 
 /** The API key scopes (authentication.mdx#scopes). */
-export const API_SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals"] as const;
+export const API_SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals", "work:read", "work:write"] as const;
 export type ApiScope = (typeof API_SCOPES)[number];

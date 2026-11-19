@@ -279,7 +279,7 @@ export const CATALOG = {
   // One per revoke (Q9): known to this computer, and the host told (protocol v4 `revoked`).
   'keys.revoked': gateway('key_id', 'known', 'host_told'),
   // One per blue /v1/computer API request (Q3 delivery, Q4): route (closed: sessions turns asks subagents control
-  // events workspace secrets tickets other), op (the API op), duration_ms = the request's time in blue; do_ms/log_ms:
+  // events workspace secrets tickets work other), op (the API op), duration_ms = the request's time in blue; do_ms/log_ms:
   // awaiting the Computer DO / the SessionLog; wait_ms: a long-poll's asked wait; events/empty: events.list's page;
   // oldest_age_ms/newest_age_ms: now − createdAt of its first/last event (delivery freshness).
   'httpapi.request': gateway(

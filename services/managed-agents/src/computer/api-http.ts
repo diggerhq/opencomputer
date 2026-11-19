@@ -26,6 +26,8 @@ import { isSessionId, memberId } from "./session-ids.js";
 import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import type { WorkContextOp } from "./work/briefs.js";
+import { type WorkRoute, workApi } from "./work/api.js";
+import type { WorkIndexRpc } from "./work/index-contract.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
@@ -63,6 +65,15 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (p[0] === "me" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) return { op: "secrets" };
   // The same for every session, so the new-session screen can read it before there is one.
   if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
+  // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
+  if (p[0] === "work") {
+    if (p[1] === "repository" && p.length === 2) return method === "GET" ? { op: "work.repository.get" } : method === "PUT" ? { op: "work.repository.put" } : null;
+    if (p[1] !== "items") return null;
+    if (is("GET", 2)) return { op: "work.items" };
+    if (is("GET", 3)) return { op: "work.item", sub: p[2] };
+    if (is("GET", 4) && p[3] === "history") return { op: "work.history", sub: p[2] };
+    return null;
+  }
   if (p[0] !== "sessions") return null;
   if (p.length === 1) return method === "GET" ? { op: "list" } : method === "POST" ? { op: "create" } : null;
   const sessionId = p[1]!;
@@ -98,6 +109,8 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
+  if (op === "work.repository.put") return "work:write";
+  if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
   return "sessions:write";
 }
@@ -133,7 +146,7 @@ class Reply {
       "x-request-id": this.requestId,
       "server-timing": `blue;dur=${(performance.now() - this.started).toFixed(1)}`,
     });
-    return new Response(status === 204 ? null : JSON.stringify(body), { status, headers });
+    return new Response(status === 204 || status === 304 ? null : JSON.stringify(body), { status, headers });
   }
 
   error(status: number, code: string, message: string, extra: Record<string, unknown> = {}): Response {
@@ -245,6 +258,7 @@ export function routeFamily(op: string): string {
   if (op.startsWith("subagents.")) return "subagents";
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
+  if (op.startsWith("work.")) return "work";
   return "other";
 }
 
@@ -253,6 +267,7 @@ const OPS = new Set([
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
+  "work.repository.get", "work.repository.put", "work.items", "work.item", "work.history",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -352,6 +367,10 @@ async function routeApi(
   if ((route.op === "secrets" || route.op.startsWith("secrets.")) && identity.principal === COMPUTER_PRINCIPAL) {
     return out.error(403, "forbidden", "Sessions cannot read or set secrets over this API.", { reason: "computer_principal" });
   }
+  // Only people change the Work setting (3.9, 3.10): a session's own key is refused on writes.
+  if (route.op === "work.repository.put" && identity.principal === COMPUTER_PRINCIPAL) {
+    return out.error(403, "forbidden", "Sessions cannot change Work over this API.", { reason: "computer_principal" });
+  }
   const scope = scopeOf(route.op);
   if (scope && !caller.scopes.includes(scope)) {
     return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
@@ -362,6 +381,25 @@ async function routeApi(
   const query = url.searchParams;
   const call = (op: ApiOp | SecretsApiOp) => computer.computerApi(accountId, caller, op).then((reply) => out.of(reply));
 
+  if (route.op.startsWith("work.")) {
+    let body: unknown;
+    if (request.method === "PUT") {
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      body = parsed.value;
+    }
+    const index = env.WORK_INDEX ? (env.WORK_INDEX.getByName(accountId) as unknown as WorkIndexRpc) : null;
+    const reply = await workApi(
+      { accountId, caller, index, context: (op) => computer.computerApi(accountId, caller, op) },
+      route as WorkRoute,
+      query,
+      body,
+      request.headers.get("if-none-match"),
+    );
+    const response = out.of(reply);
+    if (reply.etag) response.headers.set("etag", reply.etag);
+    return response;
+  }
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
   if (route.op === "secrets.list") return call({ op: "secrets.list" });
   if (route.op.startsWith("secrets.")) {
