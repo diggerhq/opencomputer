@@ -63,6 +63,7 @@ export function computerApiRouteFamily(suffix: string): string {
   if (first === "me") return parts.length === 2 ? "me" : "secrets";
   if (first === "tickets") return "tickets";
   if (first === "secrets" || first === "organization") return "secrets";
+  if (first === "work") return "work";
   if (first !== "sessions") return "other";
   if (parts.length <= 3) return "sessions";
   switch (third) {

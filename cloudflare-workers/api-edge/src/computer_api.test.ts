@@ -1085,11 +1085,12 @@ describe("computer API telemetry: one edge.request per call", () => {
         "/computer/organization/secrets/X",
         `/computer/sessions/${SID}/secrets/X`,
         `/computer/sessions/${SID}/workspace/archive`,
+        "/computer/work/items/22/history",
         "/computer/nope",
       ].map(computerApiRouteFamily),
     ).toEqual([
       "me", "tickets", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
-      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "other",
+      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "other",
     ]);
   });
 });
