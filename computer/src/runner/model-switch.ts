@@ -15,7 +15,7 @@ export interface ModelHost {
   info: { model?: string; effort?: EffortLevel; speed?: Speed; kind: 'thread' | 'channel' };
   /** The model in effect. */
   model: string;
-  /** A Claude subscription's ceiling (work 077). */
+  /** The route's model ceiling, `maxModel` (work 097 C5). */
   maxModel?: string;
   isBusy: boolean;
   say(text: string): Promise<void>;

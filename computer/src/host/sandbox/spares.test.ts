@@ -17,8 +17,10 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false, destroy: () => {} } as unknown as net.Socket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean } = {}) {
+function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'create' | 'up' | 'pid' | 'mount' | 'prepare' | 'mint', Error>>; dial?: () => Promise<net.Socket | undefined>; api?: boolean; stays?: boolean; unbound?: boolean } = {}) {
   const log: string[] = [];
+  /** What the model proxy was asked, with how much of `log` there was then. */
+  const proxy: string[] = [];
   const ups: { rs: RunnerSpec; record: unknown; mount: unknown }[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
   const records = sandboxRecords(mkdtempSync(path.join(tmpdir(), 'records-')));
@@ -33,6 +35,13 @@ function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'cr
   const locks = threadLocks();
   const d: SpareDeps = {
     tm, records, locks, runRoot, version: 'v9',
+    models: {
+      spare: async (id) => {
+        proxy.push(`spare ${id} after ${log.length}`);
+        if (o.unbound) throw new Error('not bound');
+      },
+      closed: (key, id) => void proxy.push(`closed '${key}' ${id}`),
+    },
     deleteRun: async (id) => (rmSync(runRoot(id), { recursive: true, force: true }), step(`deleteRun ${id}`, true)),
     containers: {
       create: async (id) => (mkdirSync(runRoot(id), { recursive: true }), writeFileSync(path.join(runRoot(id), 'boot.env'), ''), step(`create ${id}`, 11)),
@@ -62,7 +71,7 @@ function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'cr
     settleMs: o.settleMs ?? 0,
     deferMs: o.deferMs,
   };
-  return { ...sandboxSpares(d), log, ups, records, locks, runRoot, tm };
+  return { ...sandboxSpares(d), log, proxy, ups, records, locks, runRoot, tm };
 }
 
 describe('a spare container', () => {
@@ -71,6 +80,7 @@ describe('a spare container', () => {
     const s = await t.launch();
     expect(s.id).toMatch(/^[0-9a-f]{16}$/);
     expect(t.log).toEqual([`create ${s.id}`, `up ${s.id}`]); // no directories of a person, no mint, no mount, no worktree
+    expect(t.proxy).toEqual([`spare ${s.id} after 0`]); // bound at the model proxy before its container is made, and kept
     expect(t.ups).toEqual([{ rs: { id: s.id, socket: path.join(t.runRoot(s.id), 'runners', `${s.id}.sock`), version: 'v9' }, record: undefined, mount: undefined }]);
     expect(t.records.all()).toEqual([]);
     expect(s).toMatchObject({ sock, run: t.runRoot(s.id), createMs: 11, startMs: 33 });
@@ -85,6 +95,15 @@ describe('a spare container', () => {
     const id = /^create (\w+)/.exec(t.log[0])![1];
     expect(t.log.slice(-2)).toEqual([`remove ${id}`, `deleteRun ${id}`]);
     expect(existsSync(t.runRoot(id))).toBe(false);
+    expect(t.ids()).toEqual([]);
+    expect(t.proxy).toEqual([`spare ${id} after 0`, `closed '' ${id}`]); // released at the model proxy
+  });
+
+  it('the model proxy did not bind is not made', async () => {
+    const t = rig({ unbound: true });
+    await expect(t.launch()).rejects.toThrow('not bound');
+    expect(t.log.some((l) => /^(create|up) /.test(l))).toBe(false);
+    expect(t.proxy).toHaveLength(1); // model-access.ts `spare` released it itself
     expect(t.ids()).toEqual([]);
   });
 
@@ -296,9 +315,10 @@ describe('a spare container', () => {
     const as = asRunner(['sudo'], exec, () => settled);
     const runs = mkdtempSync(path.join(tmpdir(), 'run-'));
     const all = containers({ as, runRoot: (id) => path.join(runs, id), dataDir: '/data', root: '/root', image: 'i:1', abi: '1', start: async () => {}, vars: () => ({}), definition: () => undefined,
-      serveTokens: () => ({ close() {} }) });
+      serveTokens: () => ({ close() {} }), modelSocket: '/run/oc-modelproxy/api.sock' });
     const t = rig();
-    const spares = sandboxSpares({ tm: t.tm, records: t.records, locks: t.locks, deleteRun: async () => true, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'] });
+    const spares = sandboxSpares({ tm: t.tm, records: t.records, locks: t.locks, deleteRun: async () => true, containers: all, runRoot: (id) => path.join(runs, id), version: 'v', mint: async () => undefined, workspace: {} as SpareDeps['workspace'],
+      models: { spare: async () => {}, closed: () => {} } });
     const p = spares.launch().catch((e) => e);
     await tick();
     expect(calls).toEqual([]); // provisioning holds the storage: nothing ran

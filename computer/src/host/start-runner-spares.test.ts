@@ -46,8 +46,10 @@ async function pair(answer: (m: HostToRunner & { id?: string }) => RunnerToHost 
   return { sock, got, say: (m: RunnerToHost) => send(runner, m) };
 }
 
-async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: Parameters<typeof pair>[0]; route?: string } = {}) {
+async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: Parameters<typeof pair>[0]; noSpares?: boolean; unbound?: boolean } = {}) {
   const log: string[] = [];
+  /** What the model proxy was asked for a claim, and after which step. */
+  const proxy: string[] = [];
   const sent: TelemetryEvent[] = [];
   const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(...b.events) });
   const spare = await pair(o.answer ?? ((m) => (m.t === 'claim' ? { t: 'reply', id: m.id!, ok: true } : undefined)));
@@ -76,14 +78,21 @@ async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: P
       enabled: true,
       add: (r: Runner) => pool.add(r),
       changed: () => {},
-      take: (fp: string | undefined) => {
-        log.push(`take ${fp ? 'with a credential' : 'without'}`);
+      take: (kind: string | undefined) => {
+        log.push(`take of kind ${kind}`);
         const r = [...pool][0];
         return r ? (pool.delete(r), r) : 'none';
       },
     },
     serveTokens: (run: string, id: string) => (log.push(`tokens ${run} ${id}`), { close: () => void log.push('tokens closed') }),
-    creds: () => undefined, forRunner: () => undefined, routeMode: () => o.route ?? 'managed',
+    creds: () => undefined,
+    models: {
+      up: true, canSpare: () => !o.noSpares, kind: (key: string) => `kind-of-${key}`, forRunner: () => undefined,
+      claim: async (id: string, key: string, harness: string) => {
+        proxy.push(`claim ${id} ${key} ${harness} after ${log.at(-1)}`);
+        if (o.unbound) throw new Error('the model proxy did not bind it');
+      },
+    },
     register: (r: Runner) => void log.push(`registered ${r.key}`), closed: () => {}, exit: (s: net.Socket) => (send(s, { t: 'exit' }), log.push('exit sent'), s.end()),
     message: (r: Runner, m: RunnerToHost) => (m.t === 'reply' ? r.calls.get(m.id)?.(m) : m.t === 'report' ? void (r.report = m.report) : void log.push(`${m.t} handled for '${r.key}'`)),
     stopSandbox: async (id: string) => void log.push(`stopped ${id}`),
@@ -92,7 +101,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: P
   const starts = runnerStarts(d);
   await starts.launchSpare();
   const events = async () => (await tm.flush(), sent);
-  return { log, starts, pool, spare, cold, events, tm };
+  return { log, proxy, starts, pool, spare, cold, events, tm };
 }
 
 describe('a new thread on a podman host with a spare', () => {
@@ -105,14 +114,15 @@ describe('a new thread on a podman host with a spare', () => {
     expect(t.tm.dropped).toEqual({});
   });
 
-  it('takes it: bound first, then credentials and claim into /workspace with no transcript; the pool is filled after', async () => {
+  it('takes it: bound first, at the model proxy next, then credentials and claim into /workspace with no transcript; the pool is filled after', async () => {
     const t = await rig();
     t.log.length = 0;
     const r = await t.starts.startRunner(spec, {}, creds);
     expect(r).toMatchObject({ id: ID, key: 'C1:1.1', sandbox: { record }, cold: { resumed: false, prewarmed: true } });
-    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, `claimed ${ID}`, 'registered C1:1.1', 'fill']);
+    expect(t.log).toEqual(['take of kind kind-of-C1:1.1', `bind ${ID} C1:1.1`, `claimed ${ID}`, 'registered C1:1.1', 'fill']);
     const claim = t.spare.got.find((m) => m.t === 'claim') as Extract<HostToRunner, { t: 'claim' }>;
     expect(t.spare.got.map((m) => m.t)).toEqual(['credentials', 'claim']);
+    expect(t.proxy).toEqual([`claim ${ID} C1:1.1 claude after bind ${ID} C1:1.1`]); // the session's route is the spare's before it is claimed
     expect(claim.session).toMatchObject({ key: 'C1:1.1', forkPath: '/workspace' });
     expect(claim.session).not.toHaveProperty('sdkSessionId');
     expect((await t.events()).find((e) => e.event_name === 'runner.claimed')).toMatchObject({ data: { launch_mode: 'podman', image: '64a672bb773b', 'container.mount_ms': 3, 'container.add_ms': 4 } });
@@ -121,13 +131,14 @@ describe('a new thread on a podman host with a spare', () => {
 
   it.each([
     ['could not be bound', { bind: () => Promise.reject(new Error('mount refused')) }, 'bind'],
+    ['the model proxy did not bind to the session', { unbound: true }, 'refused'],
     ['refused the claim', { answer: (m: HostToRunner & { id?: string }) => (m.t === 'claim' ? ({ t: 'reply', id: m.id!, ok: false, error: 'no' } as RunnerToHost) : undefined) }, 'refused'],
   ])('a spare that %s is told to exit and removed, and the delivery starts cold', async (_n, o, reason) => {
     const t = await rig(o);
     t.log.length = 0;
     const r = await t.starts.startRunner(spec, {}, creds);
     expect(r).toMatchObject({ id: ID, key: 'C1:1.1', sock: t.cold.sock });
-    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, 'exit sent', `removed ${ID}`, 'tokens closed', 'cold start', `tokens /run/sp/sandbox/${ID} ${ID}`, 'registered C1:1.1', 'fill']);
+    expect(t.log).toEqual(['take of kind kind-of-C1:1.1', `bind ${ID} C1:1.1`, 'exit sent', `removed ${ID}`, 'tokens closed', 'cold start', `tokens /run/sp/sandbox/${ID} ${ID}`, 'registered C1:1.1', 'fill']);
     await new Promise((x) => setTimeout(x, 20));
     expect(t.spare.got.at(-1)).toEqual({ t: 'exit' });
     expect((await t.events()).find((e) => e.event_name === 'pool.spare_missed')).toMatchObject({ data: { reason } });
@@ -142,8 +153,8 @@ describe('a new thread on a podman host with a spare', () => {
     expect(t.pool.size).toBe(1);
   });
 
-  it('a session off the managed route starts cold', async () => {
-    const t = await rig({ route: 'subscription' });
+  it('with no model route to park a spare on (model-access.ts `canSpare`), a thread starts cold', async () => {
+    const t = await rig({ noSpares: true });
     t.log.length = 0;
     await t.starts.startRunner(spec, {}, creds);
     expect(t.log[0]).toBe('cold start');
@@ -221,7 +232,7 @@ describe('a new thread on a podman host with a spare', () => {
     t.log.length = 0;
     const r = await t.starts.startRunner(spec, {}, creds);
     expect(r.key).toBe('C1:1.1');
-    expect(t.log).toEqual(['take with a credential', `bind ${ID} C1:1.1`, "token handled for 'C1:1.1'", "preview handled for 'C1:1.1'", `claimed ${ID}`, 'registered C1:1.1', 'fill']);
+    expect(t.log).toEqual(['take of kind kind-of-C1:1.1', `bind ${ID} C1:1.1`, "token handled for 'C1:1.1'", "preview handled for 'C1:1.1'", `claimed ${ID}`, 'registered C1:1.1', 'fill']);
   });
 
   it('a spare whose claim failed after it was bound is never registered, and is not a spare again', async () => {

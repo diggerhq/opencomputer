@@ -48,7 +48,7 @@ import { terminalHangUpArgs } from './podman-args.js';
 import { previewPorts } from './preview-ports.js';
 import { type SandboxRecord, sandboxRecords } from './records.js';
 import { type SandboxPlace, sandboxScripts } from './scripts.js';
-import { sandboxSpares } from './spares.js';
+import { type SpareDeps, sandboxSpares } from './spares.js';
 import { sandboxPrune } from './prune.js';
 import { sandboxStarts } from './start.js';
 import { SWEEP_AGE_MS, sandboxSweep } from './sweep.js';
@@ -64,6 +64,10 @@ export interface SandboxHostDeps {
   /** The release the host runs from, and its version. */
   root: string;
   version: string;
+  /** Where runners reach the model proxy's API (SP_MODEL_SOCKET or its default). */
+  modelSocket: string;
+  /** The host's model access (model-access.ts): a spare is bound at the model proxy before its container starts. */
+  models: SpareDeps['models'];
   tm: Telemetry;
   /** Both are asked for at a start, not here: the host builds what answers them after this. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
@@ -102,7 +106,7 @@ export function sandboxHost(d: SandboxHostDeps) {
     return key;
   });
   const all = containers({
-    as, runRoot, dataDir: d.data, root: d.root, image, abi,
+    as, runRoot, dataDir: d.data, root: d.root, image, abi, modelSocket: d.modelSocket,
     start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
     vars: () => runnerVars(env), definition: definitionFile,
     serveTokens,
@@ -125,7 +129,7 @@ export function sandboxHost(d: SandboxHostDeps) {
     // A spare is this host's from before its Create, though its runner connects only seconds later: never swept meanwhile.
     running: (id) => d.running(id) || spares.has(id) });
   /** Step 10: spares are containers too (spares.ts); pool.ts decides how many. */
-  const spares = sandboxSpares({ tm: d.tm, records, locks, containers: all, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
+  const spares = sandboxSpares({ tm: d.tm, records, locks, containers: all, models: d.models, runRoot, version: d.version, mint: d.mint, workspace, dial, deleteRun: sweep.deleteRun });
   const prune = sandboxPrune({ as, records, locks, mounts: mnt, helper: scripts.helperScripts, running: d.running, claim: uses.claim, lastUsed: artifacts.lastUsed,
     remove: all.remove, deleteRun: sweep.deleteRun });
   useForkKeeper(async (person) => (await artifacts.pruneIdle(person.dir), prune.pruneIdle(person.dir)));

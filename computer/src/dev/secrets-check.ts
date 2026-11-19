@@ -273,14 +273,15 @@ const vault = new Vault(store.db, KEY);
 const hub: Hub = new Hub({
   store,
   tokens: [],
-  credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT, claudeOAuthToken: 'x' }),
+  credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT }),
+  models: () => ({}),
   mintToken: async () => ({ token: 't', expiresAt: new Date().toISOString() }),
   secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
   requestSecret: (from, req) => ui.request(from, req, client),
 });
-const ui = createSecretsUi({ store, vault, hub });
+const ui = createSecretsUi({ store, vault, hub, deliver: (spec, h, c) => router.deliver(spec, h, c) });
 const vars = createVariablesUi({ store, vault, hub });
-const router = createRouter({ store, hub, mode: 'bypassPermissions', secrets: ui, variables: vars });
+const router = createRouter({ store, hub, mode: 'bypassPermissions', models: () => ({}), secrets: ui, variables: vars });
 const server = createServer((_, res) => res.writeHead(404).end());
 hub.attach(server);
 await new Promise<void>((ok) => server.listen(0, ok));
@@ -467,6 +468,22 @@ check(
   called('chat.update')[0]?.args.ts === '500.1' && /GCP_SA/.test(told?.msg.text ?? '') && told?.secrets?.some((s) => s.name === 'GCP_SA' && s.file),
   { update: called('chat.update'), told },
 );
+check('request_secret: the session is told through the role gate, as the one who set it', told?.msg.role === 'owner', told?.msg);
+
+// Session roles (work 112): in a session only its owner drives, ada cannot use `!secret` or submit its form.
+store.access.writeDrivers(SK, []);
+calls.length = 0;
+await route({ thread_ts: '300.1', text: '!secret', user: ada.slackUserId });
+const ok5 = ui.submit({ private_metadata: rview.private_metadata, state: { values: state('ADA_KEY', 'ada-value-456', 'session') } }, ada.slackUserId);
+check(
+  'roles: a participant’s `!secret` and secret form are refused; nothing stored',
+  /can drive this session can use `!secret`/.test(called('chat.postEphemeral')[0]?.args.text) &&
+    'errors' in ok5 &&
+    /`!secret`/.test(ok5.errors.name) &&
+    !vault.list([{ scope: 'session', owner: SK }]).some((s) => s.name === 'ADA_KEY'),
+  { calls, ok5 },
+);
+store.access.writeDrivers(SK, '*');
 
 await checkVariables({ check, route, next, called, calls, button, vault, vars, owner, ada });
 

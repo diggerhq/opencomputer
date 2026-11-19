@@ -3,7 +3,7 @@ import type { Telemetry } from '../../telemetry/emitter.js';
 import { sandboxHost } from './host.js';
 
 const deps = (env: NodeJS.ProcessEnv) => ({
-  env, run: '/nonexistent/run', data: '/nonexistent/data', root: '/nonexistent/root', version: 'v', tm: {} as Telemetry,
+  env, run: '/nonexistent/run', data: '/nonexistent/data', root: '/nonexistent/root', version: 'v', tm: {} as Telemetry, modelSocket: '/run/oc-modelproxy/api.sock', models: { spare: async () => {}, closed: () => {} },
   mint: async () => undefined, serveTokens: () => ({ close() {} }), serveHelper: () => ({}) as never, running: () => false, adopt: async () => undefined, unpreview: () => {},
 });
 

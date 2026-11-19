@@ -3,7 +3,7 @@
 // message.received's cached, cache_layer and colo, queue.started's inline and parallel,
 // dispatch.sent's wait_ms (work 068)
 // (bluecode perf/gateway-ack; add them to calvin's copy), and the subscription.* events
-// (work 082 P2, blue#272; add them to calvin's copy), the work 084 instrumentation entries
+// (work 082 P2, blue#272; add them to calvin's copy), access.changed (work 112; add it to calvin's copy), the work 084 instrumentation entries
 // (calvin's mirror.*, api.*, wire.*, cli.* and turn.started's keys verbatim, catalog v2; blue's
 // and the edge's own, below, per /tmp/build084/instrumentation-catalog.md); keep identical until work 050 P3
 // shares the protocol package.
@@ -69,6 +69,9 @@ export const CATALOG = {
   'credentials.resolved': gateway('source'),
   // The organization's repositories re-read: account object (installations, token mints) and GitHub (listing) timed apart.
   'definition.refreshed': gateway('account_ms', 'github_ms', 'repos', 'changed', 'timed_out'),
+  // Work 112: who can drive a Slack session changed (`session_key`, `person_id`: who changed it). `by_admin`: an
+  // admin who is not the owner; `from`/`to`: `*` (everyone in the thread) or a JSON array of Slack user ids.
+  'access.changed': gateway('by_admin', 'from', 'to'),
   // Model subscriptions held by the computer (work 077 Claude, 082 ChatGPT for Codex); the envelope's
   // `provider` (anthropic|chatgpt) says whose. Never a token, an account id or a fingerprint.
   // `via` slack|dashboard|connect_code; `plan` from the token's claims (chatgpt).

@@ -6,21 +6,29 @@
 // Telemetry (work 054): host events reach a fake collector through the spool,
 // across a collector outage and a host restart, with the path decided per
 // delivery; a runner killed mid-turn (with and without a host restart in
-// between) gives `turn.abandoned` with its trace. A fake model API that never
-// answers keeps those turns running.
-//   npx tsx src/dev/host-check.ts            (no model calls: `!status` deliveries)
-//   npx tsx src/dev/host-check.ts --claude   (first delivery is one tiny real Claude turn)
+// between) gives `turn.abandoned` with its trace.
+//
+// Model access is real (work 097): oc-modelproxy is built from modelproxy/
+// (Go on PATH) and run with -identity=single on temp sockets, with the
+// shipped profiles and one more, `hang`, whose upstream is a local TLS server
+// that never answers; it keeps those mid-turn turns running. The proxy trusts
+// that server's self-signed certificate through SSL_CERT_FILE (Linux only).
+//   npx tsx src/dev/host-check.ts            (no model calls but the hanging ones: `!status` deliveries)
+//   npx tsx src/dev/host-check.ts --claude   (first delivery is one tiny real Claude turn: CLAUDE_CODE_OAUTH_TOKEN,
+//                                             else ANTHROPIC_API_KEY, through the proxy as the gateway routes them)
 //   npx tsx src/dev/host-check.ts --workspace  (workspace definition of one local bare repository: the first
 //                                               start forks it while the runner launches, cold-start.ts)
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import http from 'node:http';
+import https from 'node:https';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { GatewayToHost, HostToGateway, SessionSpec, TraceContext } from '../protocol.js';
+import { modelKey } from '../model-key.js';
+import type { GatewayToHost, HostToGateway, ModelRoute, SessionSpec, TraceContext } from '../protocol.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -59,7 +67,7 @@ async function until<T>(f: () => T | undefined, ms = 30_000): Promise<T | undefi
   }
 }
 
-// ---- fake collector: 503 while `outage`, else 202; and a model API that never answers
+// ---- fake collector: 503 while `outage`, else 202
 
 const batches: { boot: string; seq: number; auth?: string; events: TelemetryEvent[] }[] = [];
 let outage = true;
@@ -74,9 +82,6 @@ const collector = http.createServer((req, res) => {
 });
 await new Promise<void>((r) => collector.listen(0, '127.0.0.1', r));
 const COLLECTOR = `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`;
-const hang = http.createServer(() => {});
-await new Promise<void>((r) => hang.listen(0, '127.0.0.1', r));
-const HANG_URL = `http://127.0.0.1:${(hang.address() as net.AddressInfo).port}`;
 const tel = () => batches.flatMap((b) => b.events);
 const telOf = (trace: TraceContext, name: string) => tel().filter((e) => e.trace_id === trace.id && e.event_name === name);
 function mkTrace(): TraceContext {
@@ -84,6 +89,45 @@ function mkTrace(): TraceContext {
   return { id: uuidv7(now), sentAt: now - 40, receivedAt: now - 20, dispatchedAt: now, surface: 'slack', surfaceWorkspaceId: 'T_CHECK',
     conversationId: 'C_CHECK', personId: 'U_OWNER' };
 }
+
+// ---- model access: a model API that never answers, behind oc-modelproxy
+
+const KEYFILE = path.join(dir, 'hang.key');
+const CERT = path.join(dir, 'hang.crt');
+execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '1', '-subj', '/CN=127.0.0.1',
+  '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', KEYFILE, '-out', CERT], { stdio: 'ignore' });
+const hangs: http.ServerResponse[] = []; // held open, never answered
+const hangServer = https.createServer({ key: readFileSync(KEYFILE), cert: readFileSync(CERT) }, (_, res) => void hangs.push(res));
+await new Promise<void>((r) => hangServer.listen(0, '127.0.0.1', r));
+
+const shipped = JSON.parse(readFileSync(path.join(ROOT, 'modelproxy', 'profiles', 'default.json'), 'utf8'));
+const route = (profile: string, token: string): ModelRoute => ({ mode: 'profile', profile, vars: { token }, key: modelKey(profile, { token }) });
+// --claude: the route the gateway gives these settings (gateway/main.ts); a turn on it is real.
+const real = !CLAUDE ? undefined
+  : process.env.CLAUDE_CODE_OAUTH_TOKEN ? route('claude-oauth', process.env.CLAUDE_CODE_OAUTH_TOKEN)
+  : process.env.ANTHROPIC_API_KEY ? route('anthropic-key', process.env.ANTHROPIC_API_KEY)
+  : undefined;
+if (CLAUDE && !real) throw new Error('--claude needs CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY');
+// `hang` runs Claude Code as the real route's profile does, so moving a live session onto it rebinds in place.
+const HANG = route('hang', 'check-not-a-credential');
+const profiles = path.join(dir, 'profiles.d');
+mkdirSync(profiles);
+writeFileSync(path.join(profiles, 'default.json'), JSON.stringify(shipped));
+writeFileSync(path.join(profiles, 'hang.json'), JSON.stringify({ hang: {
+  upstream: `https://127.0.0.1:${(hangServer.address() as net.AddressInfo).port}`,
+  routes: { 'POST /v1/messages': {}, 'POST /v1/messages/count_tokens': {} },
+  set: { 'X-Api-Key': '{token}' },
+  harness: { claude: shipped[real?.mode === 'profile' ? real.profile : 'anthropic-key'].harness.claude },
+} }));
+const PROXY_BIN = path.join(dir, 'oc-modelproxy');
+execFileSync('go', ['build', '-o', PROXY_BIN, '.'], { cwd: path.join(ROOT, 'modelproxy'), stdio: 'inherit', env: { ...process.env, CGO_ENABLED: '0' } });
+const CONTROL = path.join(dir, 'control.sock');
+const API = path.join(dir, 'api.sock');
+const proxy = spawn(PROXY_BIN, ['-identity=single', '-profiles', profiles, '-api-socket', API, '-control-socket', CONTROL, '-bindings-file', ''], {
+  env: { PATH: process.env.PATH, SSL_CERT_FILE: CERT },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+for (const s of [proxy.stdout!, proxy.stderr!]) s.on('data', (d) => process.stdout.write(String(d).replace(/^(?=.)/gm, '   proxy| ')));
 
 // ---- fake gateway
 
@@ -108,9 +152,7 @@ wss.on('connection', (c) => {
     if (m.t === 'hello')
       toHost({ t: 'welcome', protocol: 1, credentials: {
         slackBotToken: '', slackBotUserId: '',
-        ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { claudeOAuthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN } : {}),
-        ...(process.env.ANTHROPIC_API_KEY ? { anthropicApiKey: process.env.ANTHROPIC_API_KEY } : {}),
-      }, people: [owner] });
+      }, models: { claude: real ?? HANG }, people: [owner] });
     if (m.t === 'token') {
       tokenRequests++;
       tokenSessions.push(m.sessionKey);
@@ -132,8 +174,6 @@ const spec: SessionSpec = { key: KEY, kind: 'thread', channel: 'C_CHECK', thread
 const scopedCredentials = {
   slackBotToken: 'xoxb-fake',
   slackBotUserId: 'U_BOT',
-  ...(process.env.CLAUDE_CODE_OAUTH_TOKEN ? { claudeOAuthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN } : {}),
-  ...(process.env.ANTHROPIC_API_KEY ? { anthropicApiKey: process.env.ANTHROPIC_API_KEY } : {}),
 };
 function startHost(idleMs: number): ChildProcess {
   const { SP_DEFINITION, WORKDIR, SLACK_BOT_TOKEN, ...rest } = process.env;
@@ -141,6 +181,7 @@ function startHost(idleMs: number): ChildProcess {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'check',
       SP_RUN: RUN, SP_DATA: path.join(dir, 'data'), SP_IDLE_MS: String(idleMs), SP_LAUNCH: 'detached', SP_FAKE_SLACK: '1',
+      SP_MODEL_PROXY: CONTROL, SP_MODEL_SOCKET: API,
       SP_TELEMETRY_URL: COLLECTOR, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'laptop',
       ...(DEFINITION && { SP_DEFINITION: DEFINITION }) },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -269,19 +310,18 @@ try {
   check(!!r4?.ok && !!r5?.ok && !alive(pid) && alive(pid5) && pid5 !== pid, `!restart exits the runner; the next message starts a fresh one (${pid5}) (${r5?.error ?? ''})`);
   pid = pid5;
 
-  // Mid-turn: a model that never answers keeps the runner busy.
-  const hanging = { ...scopedCredentials, claudeOAuthToken: undefined, anthropicApiKey: 'sk-check', anthropicBaseUrl: HANG_URL };
+  // Mid-turn: a model that never answers keeps the runner busy. The route, not the credentials, says where a turn goes.
   const busy = () => reports().at(-1)?.status === 'busy' || undefined;
   const tr6 = mkTrace();
-  check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello', ts: '2.6' }, credentials: hanging, trace: tr6 }))?.ok
-    && !!(await until(busy)), 'a turn is running (model never answers)');
+  check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello', ts: '2.6' }, credentials: scopedCredentials, model: HANG, trace: tr6 }))?.ok
+    && !!(await until(busy)) && !!(await until(() => hangs.length || undefined)), 'a turn is running: its request reached the model, which never answers');
   kill(pid, 'SIGKILL');
   const ab6 = await until(() => telOf(tr6, 'turn.abandoned')[0]);
   check(ab6?.outcome === 'abandoned' && ab6.data.exit_reason === 'unknown' && typeof ab6.duration_ms === 'number',
     'runner killed mid-turn → turn.abandoned with its trace');
 
   const tr7 = mkTrace();
-  check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello again', ts: '2.7' }, credentials: hanging, trace: tr7 }))?.ok
+  check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello again', ts: '2.7' }, credentials: scopedCredentials, model: HANG, trace: tr7 }))?.ok
     && !!(await until(busy)), 'another turn is running');
   pid = runnerPid();
   await sleep(2500);
@@ -319,6 +359,7 @@ try {
   check(new Set(ids).size === ids.length, `no event sent twice (${ids.length} events)`);
 } finally {
   host.kill('SIGTERM');
+  proxy.kill('SIGTERM');
   for (const p of pids().values()) if (alive(p)) kill(p, 'SIGTERM');
   await sleep(500);
   say('runner log (last lines):\n' + runnerLog().split('\n').slice(-12).map((l) => '    runner| ' + l).join('\n'));
@@ -326,7 +367,8 @@ try {
   rmSync(path.join(ROOT, 'workspaces', KEY.replace(/[^a-zA-Z0-9]+/g, '-')), { recursive: true, force: true });
   wss.close();
   collector.close();
-  hang.close();
+  for (const r of hangs) r.destroy();
+  hangServer.close();
   say(failed ? `${failed} check(s) failed` : 'all checks passed');
   process.exit(failed ? 1 : 0);
 }

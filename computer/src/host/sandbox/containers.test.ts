@@ -23,7 +23,7 @@ function rig(answer: (argv: string[]) => string | Error = () => '', over: Partia
   };
   const as: AsRunner = { settled: async (ms) => void log.push(`settled ${ms ?? ''}`.trim()), run, podman: (args, o) => run(['podman', ...args], o) };
   const c = containers({
-    as, runRoot: (id) => path.join(root, id), dataDir: '/data', root: '/opt/slack-presence/releases/r1', image: 'img:tag', abi: '1',
+    as, runRoot: (id) => path.join(root, id), dataDir: '/data', root: '/opt/slack-presence/releases/r1', image: 'img:tag', abi: '1', modelSocket: '/run/oc-modelproxy/api.sock',
     start: async () => void log.push('start'), vars: () => ({ SP_VERSION: 'v1', PATH: '/host/bin' }), definition: () => undefined,
     serveTokens: (_run, id, session) => (log.push(`tokens ${id} ${session()}`), { close: () => void log.push('tokens closed') }),
     sleep: async () => {}, ...over,

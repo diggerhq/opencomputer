@@ -234,7 +234,7 @@ export async function spareChecks(k: SpareKit) {
     const run = sandboxRunFor(k.run, id);
     const mounts = (await podman(['inspect', '--format', '{{range .Mounts}}{{.Destination}} {{end}}', containerName(id)])).trim().split(' ').sort();
     check(mounts.length === 4 && mounts.includes('/home/agent') && mounts.includes(run) && !mounts.some((m) => m.startsWith(k.data) || m === '/workspace' || m.startsWith('/clones')),
-      `spare ${id} was created with its home, its run directory, the model proxy's directory and the releases, and nothing else: ${mounts.join(' ')}`);
+      `spare ${id} was created with its home, its run directory, the model proxy's API socket and the releases, and nothing else: ${mounts.join(' ')}`);
     const seen = await inside(id, `${dataMounts}; ls -A /workspace 2>&1 | wc -l; ls ${k.data} 2>&1 | grep -c -v 'No such file'; find ${run}/secrets -type f ! -name env.sh ! -name values.sh | wc -l; cat ${run}/secrets/*/values.sh | grep -c =; true`);
     if (id === first[0]) say(`its home: ${(await inside(id, 'LC_ALL=C ls -A /home/agent; find /home/agent -type f | wc -l')).split('\n').join(' ')}`);
     check(seen === '0\n0\n0\n0\n0', `inside it: no mount from ${k.data}, none at /workspace or /clones, an empty /workspace, no ${k.data}, no secret file and no secret value in its run directory (${JSON.stringify(seen)})`);

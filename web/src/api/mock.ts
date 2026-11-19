@@ -11,6 +11,7 @@
 // screen actually reads, not the full interface.
 
 import { ApiError } from './errors'
+import { computerSessionsMock } from './mock-computer-sessions'
 
 // Fixed clock so screenshots are deterministic.
 const BASE = new Date('2026-06-26T17:00:00Z').getTime()
@@ -824,7 +825,10 @@ const ROUTES: Array<[RegExp, Handler]> = [
 // Mutations the preview needs to echo something parseable (e.g. the Slack
 // wizard's POST …/slack/manifest → manifest+steps). Everything else 204-ish.
 const POST_ROUTES: [RegExp, () => unknown][] = [
-  [/^\/github-star\/start$/, () => (githubStar = { ...githubStar, started: true })],
+  [
+    /^\/github-star\/start$/,
+    () => (githubStar = { ...githubStar, started: true }),
+  ],
   [
     /^\/github-star\/claim$/,
     () => (githubStar = { ...githubStar, eligible: false, claimed: true }),
@@ -881,6 +885,8 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
+  const computerSessions = computerSessionsMock(path, method, options.body)
+  if (computerSessions !== undefined) return computerSessions as T
   if (
     /^\/managed-agents\/projects\/[^/]+\/service-connections$/.test(path) &&
     (method === 'POST' || method === 'DELETE')

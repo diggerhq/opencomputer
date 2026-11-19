@@ -7,9 +7,15 @@
 // Invariants:
 // - A spare holds nothing of anyone until it is bound: no record, no mount
 //   besides those of Create (its own empty home and run directory, the model
-//   proxy's socket directory, the releases read-only), a boot spec with no
+//   proxy's API socket, the releases read-only), a boot spec with no
 //   session and no API, no journal, and a token socket that answers nobody
 //   (host.ts: a container with no record has no session to ask for).
+// - A spare is bound at the model proxy under its id before its container is
+//   created (work 097, model-access.ts `spare`), as a spare outside a
+//   container is before its launch: the proxy names it by its unit, which has
+//   the id. One that was not bound is not made; one that did not come up is
+//   released there (`closed`). Once adopted, its closing releases it
+//   (host/main.ts), and its claim binds it to the thread (start-runner.ts).
 // - Bound once, to one thread: `bind` takes the id out of the spares before
 //   it writes the record. A thread that has a record never takes a spare (a
 //   record hit resumes): the caller asks `known` in the thread's turn, before
@@ -84,6 +90,8 @@ export interface SpareDeps {
   /** Delete a run directory (sweep.ts); never rejects. */
   deleteRun(id: string): Promise<unknown>;
   runRoot(id: string): RunRoot;
+  /** The model proxy's binding of a spare (model-access.ts): `spare` before it is made, rejecting when it was not bound; `closed` when it did not come up. */
+  models: { spare(id: string): Promise<void>; closed(key: string, id: string): void };
   version: string;
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
@@ -210,7 +218,10 @@ export function sandboxSpares(d: SpareDeps) {
     const run = d.runRoot(id);
     mine.add(id);
     making = id;
+    let bound = false;
     try {
+      await d.models.spare(id);
+      bound = true;
       const createMs = await c.create(id);
       open();
       // No session and no API: the runner parks, and knows nobody.
@@ -232,6 +243,7 @@ export function sandboxSpares(d: SpareDeps) {
         throw e;
       }
     } catch (e) {
+      if (bound) d.models.closed('', id); // never adopted: no closing connection releases it
       await drop(id);
       throw e;
     } finally {
