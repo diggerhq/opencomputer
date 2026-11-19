@@ -18,7 +18,7 @@
 
 import { randomBytes } from 'node:crypto';
 import type { WebClient } from '@slack/web-api';
-import type { ReadThreadRequest } from './protocol.js';
+import type { ReadThreadRequest, SlackFile } from './protocol.js';
 import { decodeSlack } from './slack-text.js';
 import { errorText } from './log.js';
 
@@ -28,6 +28,8 @@ export interface LinkedMessage {
   ts: string;
   text: string;
   files?: string[];
+  /** The same files as Slack gives them, for the runner to download (`linkedFiles`). */
+  slackFiles?: SlackFile[];
   /** The message the link points at, when it is a reply in a thread. */
   linked?: boolean;
   /** Replies left out just before this one (a trailing entry with only this set ends the list). */
@@ -211,7 +213,7 @@ export function linkResolver() {
       name: name(m),
       ts: m.ts,
       text: cap(decodeSlack(String(m.text ?? '').replace(/<@([UW][A-Z0-9]+)(\|[^>]*)?>/g, (_, id) => `@${dir.get(id)?.name ?? id}`))),
-      ...(m.files?.length ? { files: m.files.map((f: any) => f.name ?? f.id) } : {}),
+      ...(m.files?.length ? { files: m.files.map((f: any) => f.name ?? f.id), slackFiles: m.files.map(slackFile) } : {}),
       ...(link.threadTs && m.ts === link.ts && m.ts !== link.threadTs ? { linked: true } : {}),
     });
 
@@ -336,7 +338,7 @@ export interface SharedAttachment {
   ts?: string;
   text?: string;
   fallback?: string;
-  files?: { name?: string; title?: string }[];
+  files?: (Partial<SlackFile> & { title?: string })[];
 }
 
 /**
@@ -359,10 +361,36 @@ export function forwarded(attachments: SharedAttachment[] | undefined): Linked[]
           name: a.author_name ?? a.author_subname ?? 'someone',
           ts: a.ts ?? '',
           text: cap(decodeSlack(a.text || a.fallback || '')),
-          ...(a.files?.length ? { files: a.files.map((f) => f.name ?? f.title ?? 'file') } : {}),
+          ...(a.files?.length
+            ? { files: a.files.map((f) => f.name ?? f.title ?? 'file'), slackFiles: a.files.filter((f) => f.id).map(slackFile) }
+            : {}),
         },
       ],
     }));
+}
+
+/** Files a linked thread or forward is downloaded with: at most this many per message. */
+export const MAX_LINKED_FILES = 10;
+
+function slackFile(f: any): SlackFile {
+  const { id, name, mimetype, size, url_private, url_private_download } = f;
+  return { id, name, mimetype, size, url_private, url_private_download };
+}
+
+/**
+ * The files in linked threads and forwards that were shared with the session,
+ * newest first, so a screenshot posted with the link's last message is the one
+ * kept: the runner downloads them as it does the message's own files.
+ */
+export function linkedFiles(linked: Linked[] | undefined): SlackFile[] {
+  const seen = new Set<string>();
+  const out: SlackFile[] = [];
+  for (const l of [...(linked ?? [])].reverse()) {
+    if (!l.ok) continue;
+    for (const m of [...l.messages].reverse())
+      for (const f of m.slackFiles ?? []) if (f.id && !seen.has(f.id) && out.length < MAX_LINKED_FILES) seen.add(f.id), out.push(f);
+  }
+  return out;
 }
 
 /** The message text with each linked thread (or the reason it isn't shared) after it, for the model. */

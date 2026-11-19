@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkedBlock } from './links.js';
+import { forwarded, linkedBlock, linkedFiles, MAX_LINKED_FILES } from './links.js';
 
 describe('linkedBlock', () => {
   it('frames held context with its own sentence, oldest first (work 112)', () => {
@@ -28,5 +28,26 @@ describe('linkedBlock', () => {
 
   it('keeps the linked-thread sentence without `context`', () => {
     expect(linkedBlock({ url: 'u', ok: true, where: '#x', messages: [] })).toContain('A Slack thread linked in the message above');
+  });
+});
+
+describe('linkedFiles', () => {
+  const file = (id: string) => ({ id, name: `${id}.png`, mimetype: 'image/png', size: 10, url_private: `https://files.slack.com/${id}` });
+
+  it('downloads the files of shared links and forwards, not refused ones', () => {
+    const linked = [
+      { url: 'u1', ok: true as const, where: '#a', messages: [{ name: 'Igor', ts: '1', text: 'cc', files: ['F1.png'], slackFiles: [file('F1')] }] },
+      { url: 'u2', ok: false as const, reason: 'private' },
+      ...forwarded([{ is_share: true, text: 'see', files: [{ ...file('F2'), title: 't' }] }]),
+    ];
+    expect(linkedFiles(linked).map((f) => f.id)).toEqual(['F2', 'F1']);
+  });
+
+  it('keeps the newest files once, up to the cap', () => {
+    const messages = Array.from({ length: MAX_LINKED_FILES + 2 }, (_, i) => ({ name: 'a', ts: String(i), text: '', slackFiles: [file(`F${i}`), file('F0')] }));
+    const ids = linkedFiles([{ url: 'u', ok: true, where: '#a', messages }]).map((f) => f.id);
+    expect(ids).toHaveLength(MAX_LINKED_FILES);
+    expect(ids[0]).toBe(`F${MAX_LINKED_FILES + 1}`);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });

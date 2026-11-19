@@ -21,7 +21,7 @@ import { panels } from './runner/agents.js';
 import { ensureWorkdir } from './workspace.js';
 import { addressed, decodeSlack } from './slack-text.js';
 import { fetchAttachments, type SlackFile } from './runner/attachments.js';
-import { linkResolver, withLinked } from './links.js';
+import { linkedFiles, linkResolver, withLinked } from './links.js';
 import { log } from './log.js';
 import { decodeActionId, type PermissionMode } from './protocol.js';
 import { takeTier } from './tiers.js';
@@ -177,12 +177,12 @@ const resolveLinks = linkResolver();
 async function deliver(s: Session, m: Msg, text: string, mentioned = true, midThread = false) {
   if (text.startsWith('!')) return s.command(text, m.user!);
   if (s.isBusy) void s.client.reactions.add({ channel: m.channel, timestamp: m.ts, name: 'eyes' }).catch(() => {});
-  const atts = await fetchAttachments(m.files, s.client.token ?? env.SLACK_BOT_TOKEN, s.info.key);
   // One machine has no people table: whoever posts is the owner for the link check (work 049).
   const req = { text, poster: m.user!, owner: m.user!, destination: m.channel };
   const linked = await resolveLinks(s.client, req);
   // Mentioned mid-thread: the replies above, so the new session sees what it was asked about.
   if (midThread) linked.unshift(await resolveLinks.thread(s.client, req, m.thread_ts!, m.ts));
+  const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], s.client.token ?? env.SLACK_BOT_TOKEN, s.info.key);
   await s.send(withLinked(text, linked), m.user!, atts, mentioned);
 }
 
