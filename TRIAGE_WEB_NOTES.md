@@ -47,8 +47,8 @@ verdict.
 
 | Ask | Attached on top | Footer actions | Typing + Enter |
 |---|---|---|---|
-| Approval | Tool label and target (file, cwd, server) on one line; the exact command / diff / file content / arguments in a mono block, wrapped, scrolling past 12 lines | Deny, "Allow <tool> for this session" (when `alwaysAllows`), Allow (primary) | The verdict buttons give way to Send: the message declines the call and tells the agent what to do instead (a steer, which declines open asks with the message) |
-| Plan approval (ExitPlanMode) | The plan, rendered, scrolling | Keep planning, Approve (ask before edits), Approve (accept edits) | Same as approval |
+| Approval | Tool label and target (file, cwd, server) on one line; the exact command / diff / file content / arguments in a mono block, wrapped, scrolling past 12 lines | Deny, "Allow for this session" (when `alwaysAllows`), Allow (primary) | The verdict buttons give way to Send: the message declines the call and tells the agent what to do instead (a steer, which declines open asks with the message) |
+| Plan approval (ExitPlanMode) | The plan, rendered, scrolling | Keep planning, "Approve, ask before edits", "Approve, accept edits" | Same as approval |
 | Question | Options as full-width rows: label and description; single choice answers on click, multiple choice toggles with check boxes | Send (enabled once something is chosen or typed) | Free-form answer to the question (`answers[].text`); typed text alongside a clicked option goes with it as a note |
 | Secret | Key glyph, the secret's name (mono), its purpose; "Add in Secrets" button. A masked field can replace the button in place later | Send | A message to the agent (declines the request) |
 | Reply (plain text turn, future `attention.reason = reply`) | nothing | Send | The reply |
@@ -70,3 +70,13 @@ MultiEdit `{file_path, edits[]}`; Write `{file_path, content}`; ExitPlanMode
 permission title or "Claude wants to use <tool>". The reason/description the
 Slack prompt shows is not in the API payload, and neither is the working
 directory for Claude sessions.
+
+## Headlines
+
+The headline says what is needed in the person's words, from the payload,
+never the tool's id: Bash uses its `description`, else "Run <program
+[subcommand]>" (setup lines, `cd x &&`, `sudo`/`env`/`VAR=` prefixes
+skipped); Edit/Write "Edit <file>"/"Write <file>"; a plan "Review the plan";
+an MCP tool "Merge pull request · github". The Board, the session list and
+the transcript's closed-ask line use the same words ("Wants to run psql").
+The session view's ask card reuses the same approval detail.
