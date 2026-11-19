@@ -21,7 +21,8 @@ add fields without breaking the screens.
   - The picker (`RepositorySetting.tsx`) follows the "import a repository" pattern: an account select when there is more than one installation, a search that filters by name as you type, a refresh button, and a list of about six rows that scrolls, each with a lock when private, the pushed time and Select. The current choice shows as Selected.
   - The list is read again whenever the window regains focus (`refetchOnWindowFocus: 'always'`, past the 30 s default `staleTime`), so coming back from GitHub after granting access shows the new repository.
   - Under the list, "Adjust GitHub App access" opens the installation's `settingsUrl` in a new tab.
-  - When the list loads with no installation, the "Connect GitHub" state shows, as before.
+  - When the list loads with no installation, "Connect GitHub" starts the managed GitHub App install in a new window (the same flow as Connections and the Computer page).
+  - Choosing a repository when one is already set asks first ("Switch the board to owner/name?"). The wording follows the server's `setRepository`: the index is rebuilt from the new repository's default branch, nothing is written to either repository, and switching back is possible. Whether agents then write new items to the new repository was not checked, so the dialog does not say.
 - `Repository` is `{installationId: string|number, owner, name, branch, problem?: string|null, problemMessage?: string|null}`.
   - A non-empty `problem` means the repository cannot be read; the board then says so and links to settings.
   - `problem` is a stable code (`access_denied`, `repository_not_found`, `installation_removed`, `installation_suspended`, `branch_not_found`, `github_app_not_configured`). The code is never shown: the web shows `problemMessage` when present, else its own sentence for a known code (`repositoryProblem` in `board.ts`), else a general one.
@@ -77,7 +78,10 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
   - closed: error
   - unknown: outline
 - Where things live:
-  - The repository setting is on the Computer page (`/computer#work-repository`), after "Your agent", and is also embedded in the board's no-repository state.
+  - `KnowledgeRepositorySection` (`KnowledgeRepository.tsx`, props `{id?}`) is the stateful setting and can be mounted anywhere. It shows the repository (linked to GitHub), the branch and its state: "Up to date · read N ago at <short SHA>", "Reading the working docs for the first time…" while building, or the problem sentence in red with a fix per code (Reconnect GitHub for a removed or suspended installation, the installation's `settingsUrl` for a missing repository or denied access, choose again for a missing branch, a note that it is ours for `github_app_not_configured`). Change opens the picker in place.
+  - It is mounted on the Computer page as `/computer#work-repository`, after "Your agent", until the organization settings are redesigned. The board's no-repository state embeds `FirstRepository`, the picker alone.
+  - The GitHub repository and commit links are built in the web (`https://github.com/owner/name`, `/commit/<head>`); a `url` on `Repository` from the API would remove that.
+  - Queries more than one screen reads (`useOpenItems`, `useRepository`, `useGrantingInstallations`) live in `queries.ts`, so tests that mock `./api` reach them.
   - The board's header names the repository it reads as a quiet link to that setting; when the repository has a problem the link reads "Settings".
   - The rail gains one link, "Board" (`/computer/work`). It is shown unconditionally like Secrets; the page itself redirects when the organization has no computer.
 
@@ -86,7 +90,7 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
 `web/src/api/mock-work.ts` holds invented data. Pick a scenario with `?work=none|empty|mine-empty|building|problem|missing`.
 
 - The open-items poll goes through `workOpenItemsResponse`, which answers as the server does: an ETag over the page without `asOf`, a 304 while that ETag matches, and `Work-As-Of` on both.
-- `problem` sends `access_denied` with a `problemMessage`.
+- `problem` sends `access_denied` with a `problemMessage`; `&problem=<code>` sends another code, without a message.
 - `/repositories` lists eight repositories under `acme` and two under `acme-labs`, the preview's two installations. `?work=none` opens the picker.
 - Item 31 has an unknown `updatedAt`; closed item 8 has no `closedAt` or `closedBy`.
 - An unknown item number answers 404 `item_not_found`.
