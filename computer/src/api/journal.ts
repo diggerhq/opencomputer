@@ -1,5 +1,5 @@
 // A session's journal (work 084, "One writer, one log"): one JSONL file per
-// session, `<dataDir>/journals/<cs_…>.jsonl`, written only by the process that
+// session, `<dataDir>/journals/<cs_…>/<cs_…>.jsonl` (journal-dir.ts), written only by the process that
 // holds its flock (journal-lock.ts): the runner while it runs, the host's
 // session-writer otherwise. Three kinds of line:
 //
@@ -25,49 +25,27 @@
 //   holds events a new epoch cuts is not used; one the cut lands below is
 //   removed before the cut.
 // - `redact` is applied to every string of `data` before the line is written.
-// - Files are 0660 in a setgid 02770 directory, so the host (sp-host, in group
-//   agent) and the runner (agent) can both open each other's files.
+// - Files are 0660 in the session's setgid 02770 directory (journal-dir.ts), so
+//   the host (sp-host, in group agent) and the runner (agent) can both open
+//   each other's files.
+// - The file is opened once, without following a link, and must be a regular
+//   file; the lock is taken on that descriptor's file, not on the name. A line
+//   that names another session is not read (103, trust rule 4): it is skipped
+//   by every scan, and cut when it is the file's tail.
 
-import { chmodSync, closeSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, writeSync } from 'node:fs';
-import path from 'node:path';
+import { closeSync, fchmodSync, fstatSync, fsyncSync, ftruncateSync, writeSync } from 'node:fs';
 import type { ApiActor, JournalEvent } from '../protocol.js';
 import { isSessionId, mintId } from '../session-ids.js';
 import { type Checkpoint, lineHash, readCheckpoint, removeCheckpoint, writeCheckpoint } from './journal-checkpoint.js';
+import { JournalError, OPEN, openRegular } from './journal-dir.js';
 import { scanRange } from './journal-file.js';
 import { FileLock, LockError } from './journal-lock.js';
 import { saveResult } from './subagent-results.js';
 
-export const JOURNALS_DIR = 'journals';
 const INDEX_EVERY = 64;
 const IDEM_TTL_MS = 24 * 3600_000;
 /** A checkpoint is due once the file grew this much past the last one, and at least twice that one's size. */
 const CHECKPOINT_MIN_BYTES = 1 << 20;
-
-/** `<dataDir>/journals/<sessionId>.jsonl`. */
-export function journalPath(dataDir: string, sessionId: string): string {
-  if (!isSessionId(sessionId)) throw new JournalError('bad_id', `not a session id: ${sessionId}`);
-  return path.join(dataDir, JOURNALS_DIR, `${sessionId}.jsonl`);
-}
-
-/** Create `<dataDir>/journals` (02770: files keep the directory's group). Returns it. */
-export function ensureJournalDir(dataDir: string): string {
-  const dir = path.join(dataDir, JOURNALS_DIR);
-  mkdirSync(dir, { recursive: true, mode: 0o2770 });
-  // mkdir's mode is masked by the umask and drops setgid; set it outright (fails harmlessly when another uid owns it).
-  try {
-    chmodSync(dir, 0o2770);
-  } catch {}
-  return dir;
-}
-
-export class JournalError extends Error {
-  constructor(
-    readonly code: 'locked' | 'stale_epoch' | 'closed' | 'bad_id' | 'lock_failed',
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 export interface JournalOpen {
   sessionId: string;
@@ -152,6 +130,7 @@ function redactAll(v: unknown, r: (s: string) => string): unknown {
   return v;
 }
 
+export { ensureJournalDir, ensureSessionJournalDir, JournalError, journalPath } from './journal-dir.js';
 export { forgetJournalFile, readJournalFile } from './journal-file.js';
 
 export class Journal {
@@ -203,33 +182,24 @@ export class Journal {
   /** Take the lock and open `file` for `o.sessionId` under `o.epoch`. */
   static async open(file: string, o: JournalOpen): Promise<Journal> {
     if (!isSessionId(o.sessionId)) throw new JournalError('bad_id', `not a session id: ${o.sessionId}`);
-    const fd0 = openSync(file, 'a', 0o660);
+    const fd = openRegular(file, OPEN.append);
     // The umask may have masked the group's write bit; only the creator (the owner) can fix it.
     try {
-      fchmodSync(fd0, 0o660);
+      fchmodSync(fd, 0o660);
     } catch {}
-    closeSync(fd0);
     let lock: FileLock;
     try {
-      lock = await FileLock.take(file, o.waitMs ?? 0);
+      lock = await FileLock.take(file, o.waitMs ?? 0, undefined, fd);
     } catch (e) {
+      closeSync(fd);
       const locked = e instanceof LockError && e.code === 'locked';
       throw new JournalError(locked ? 'locked' : 'lock_failed', (e as Error).message);
     }
     try {
-      return Journal.load(file, o, lock);
-    } catch (e) {
-      await lock.release();
-      throw e;
-    }
-  }
-
-  private static load(file: string, o: JournalOpen, lock: FileLock): Journal {
-    const fd = openSync(file, 'a+', 0o660);
-    try {
       return Journal.loadFd(file, fd, o, lock);
     } catch (e) {
       closeSync(fd);
+      await lock.release();
       throw e;
     }
   }
@@ -272,7 +242,7 @@ export class Journal {
       }
       if (held) held.push(l);
       else take(l);
-    });
+    }, o.sessionId);
     if (o.epoch < k.epoch) throw new JournalError('stale_epoch', `epoch ${o.epoch} is older than the journal's ${k.epoch}`);
     let cut = validEnd;
     if (k.epoch && o.epoch > k.epoch) {
@@ -434,7 +404,7 @@ export class Journal {
       if (!isEvent(v) || v.seq <= after) return;
       out.push(v);
       if (out.length >= limit) return false;
-    });
+    }, this.sessionId);
     return out;
   }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { checkCliFrame } from '../api/cli-telemetry.js';
@@ -94,7 +94,13 @@ describe('apiMeter: the host\'s own units', () => {
     const { meter, out, journals } = setup();
     await meter.sample();
     expect(await out()).toEqual([]);
-    writeFileSync(path.join(journals, `${sid}.jsonl`), 'x'.repeat(100));
+    mkdirSync(path.join(journals, sid));
+    writeFileSync(path.join(journals, sid, `${sid}.jsonl`), 'x'.repeat(100));
+    // Not journals: a file directly in journals/ (the layout before work 103), and a link where a journal would be.
+    writeFileSync(path.join(journals, `${sid}.jsonl`), 'x'.repeat(7));
+    const linked = mintId('cs');
+    mkdirSync(path.join(journals, linked));
+    symlinkSync(path.join(journals, sid, `${sid}.jsonl`), path.join(journals, linked, `${linked}.jsonl`));
     meter.setGauges(() => ({ v4: true, runnerWriters: 2, hostWriters: 1, heldFrames: 0, mirrorSpooledBytes: 5 }));
     await meter.sample();
     const [s] = await out();

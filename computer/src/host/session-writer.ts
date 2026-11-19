@@ -25,6 +25,7 @@ import { log as logger } from '../log.js';
 import { isSessionId, mintId } from '../session-ids.js';
 import type { SessionCreated } from '../api/created.js';
 import { type SessionSeed, SYSTEM_ACTOR } from '../api/fold.js';
+import { listJournals } from '../api/journal-dir.js';
 import { JournalError, readJournalFile } from '../api/journal.js';
 import { dispatch, type WriteHandlers } from '../api/read-methods.js';
 import { SessionLog } from '../api/session-log.js';
@@ -310,23 +311,14 @@ export interface ScanResult {
 const LOST = { code: 'runtime_lost', message: 'The agent process ended unexpectedly' } as const;
 
 /**
- * Boot: for every journal in `dir` no writer holds, close what a dead runner left open, under the
+ * Boot: for every journal in `dir` (one directory per session, journal-dir.ts) no writer holds, close what a dead runner left open, under the
  * file's epoch: per unended turn, `tool.failed` (settledBy `turn.failed`) for each open call, then
  * `turn.failed runtime_lost`; every open ask `ask.closed` as `interrupted`; then, if anything
  * was open or the session was not suspended, `runtime.suspended {reason: 'lost'}` and the status.
  */
 export async function scanJournals(dir: string, o: { owner?: SessionSeed['owner'] } = {}): Promise<ScanResult[]> {
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
   const out: ScanResult[] = [];
-  for (const name of names) {
-    const sessionId = name.replace(/\.jsonl$/, '');
-    if (!name.endsWith('.jsonl') || !isSessionId(sessionId)) continue;
-    const file = path.join(dir, name);
+  for (const { sessionId, file } of listJournals(dir)) {
     const { epoch, through, lastSeq } = readJournalFile(file, Number.MAX_SAFE_INTEGER, 0);
     if (!epoch) continue;
     const r: ScanResult = { sessionId, file, epoch, lastSeq: 0, closedTurns: [] };
