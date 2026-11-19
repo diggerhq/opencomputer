@@ -68,6 +68,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
   if (p[0] === "work") {
     if (p[1] === "repository" && p.length === 2) return method === "GET" ? { op: "work.repository.get" } : method === "PUT" ? { op: "work.repository.put" } : null;
+    if (p[1] === "repositories") return is("GET", 2) ? { op: "work.repositories" } : null;
     if (p[1] !== "items") return null;
     if (is("GET", 2)) return { op: "work.items" };
     if (is("GET", 3)) return { op: "work.item", sub: p[2] };
@@ -271,7 +272,7 @@ const OPS = new Set([
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
-  "work.repository.get", "work.repository.put", "work.items", "work.item", "work.history",
+  "work.repository.get", "work.repository.put", "work.repositories", "work.items", "work.item", "work.history",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */

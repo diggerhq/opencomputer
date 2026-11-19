@@ -70,17 +70,20 @@ function computer(sessions: FakeSession[]) {
 }
 
 /** A Work index over a fake GitHub, as the binding answers it. */
-async function workIndex(repo: FakeRepo) {
+async function workIndex(repo: FakeRepo, over: Partial<TokenMinter> = {}) {
   const pending: Promise<unknown>[] = [];
   const account: TokenMinter = {
     mintGitHubInstallationToken: async () => ({ outcome: "minted", token: "ghs_test", expiresAt: "2099-01-01T00:00:00Z" }),
     getGitHubInstallation: () => ({ accountLogin: "acme" }),
+    listGitHubInstallations: () => [{ id: "12", githubInstallationId: 9012, accountLogin: "acme", accountType: "Organization", state: "active" }],
+    ...over,
   };
   const clock = new FakeClock();
   const index = new WorkIndex({ store: indexStore(), clock, scheduler: { arm: async () => {}, waitUntil: (p) => void pending.push(p) }, account: () => account, fetch: repo.fetch });
   const rpc: WorkIndexRpc = {
     repository: (a) => index.getRepository(a),
     setRepository: (a, c, by) => index.setRepository(a, c, by),
+    repositories: (a) => index.repositories(a),
     items: (a, q) => index.items(a, q),
     item: (a, n) => index.item(a, n),
     history: (a, n, c) => index.history(a, n, c),
@@ -133,7 +136,7 @@ async function board() {
 }
 
 describe("Work API scopes", () => {
-  const env = { WORK_INDEX: { getByName: () => ({ repository: async () => null, setRepository: async () => ({ ok: true, value: null }) }) } };
+  const env = { WORK_INDEX: { getByName: () => ({ repository: async () => null, setRepository: async () => ({ ok: true, value: null }), repositories: async () => ({ ok: true, installations: [] }) }) } };
   const stub: ComputerApiStub = { computerApi: vi.fn() };
   const status = async (identity: RequestIdentity, method = "GET", path = "/work/repository", body?: string) => {
     const res = await call(env, stub, identity, method, path, body ? { body } : {});
@@ -147,6 +150,8 @@ describe("Work API scopes", () => {
     expect((await status(withKey(["work:read"]))).status).toBe(200);
     expect(await status(withKey(["work:read"]), "PUT", "/work/repository", choice)).toMatchObject({ status: 403, error: { scope: "work:write" } });
     expect((await status(withKey(["work:write"]), "PUT", "/work/repository", choice)).status).toBe(200);
+    expect(await status(withKey(["sessions:read"]), "GET", "/work/repositories")).toMatchObject({ status: 403, error: { scope: "work:read" } });
+    expect((await status(withKey(["work:read"]), "GET", "/work/repositories")).status).toBe(200);
   });
 
   it("lets the dashboard read and write", async () => {
@@ -172,6 +177,8 @@ describe("Work API scopes", () => {
     expect((await call(env, stub, person, "DELETE", "/work/repository")).status).toBe(404);
     expect((await call(env, stub, person, "POST", "/work/items/1/close")).status).toBe(404);
     expect((await call(env, stub, person, "GET", "/work/files")).status).toBe(404);
+    expect((await call(env, stub, person, "POST", "/work/repositories")).status).toBe(404);
+    expect((await call(env, stub, person, "GET", "/work/repositories/1")).status).toBe(404);
   });
 });
 
@@ -351,6 +358,62 @@ describe("Work API composition", () => {
     expect(update.sessionId).toBe(SID.slack);
     const bo = await json(await call(w.env, c.stub, { ...person, userId: "user_bo" } as RequestIdentity, "GET", "/work/items/2/history"));
     expect(bo.revisions.find((r: { summary: string }) => r.summary === "Update 2").sessionId).toBeNull();
+  });
+});
+
+describe("Work API repositories", () => {
+  const installations = [
+    { id: "12", githubInstallationId: 9012, accountLogin: "acme", accountType: "Organization", state: "active" },
+    { id: "13", githubInstallationId: 9013, accountLogin: "ana", accountType: "User", state: "active" },
+    { id: "14", githubInstallationId: 9014, accountLogin: "old", accountType: "Organization", state: "suspended" },
+  ];
+
+  it("lists each active installation's repositories, most recently pushed first, with its settings page", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": doc(1, "A") });
+    repo.granted = [
+      { id: 1, name: "app", pushedAt: "2026-11-18T00:00:00Z" },
+      { id: 2, name: "empty", pushedAt: null },
+      { id: 3, name: "site", private: true, pushedAt: "2026-10-01T00:00:00Z" },
+    ];
+    const w = await workIndex(repo, { listGitHubInstallations: () => installations });
+    const res = await call(w.env, computer([]).stub, person, "GET", "/work/repositories");
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body.installations.map((i: { id: string }) => i.id)).toEqual(["12", "13"]);
+    const [acme, ana] = body.installations;
+    expect(acme).toMatchObject({ accountLogin: "acme", accountType: "Organization", settingsUrl: "https://github.com/organizations/acme/settings/installations/9012", truncated: false, problem: null });
+    expect(ana.settingsUrl).toBe("https://github.com/settings/installations/9013");
+    expect(acme.repositories.map((r: { name: string }) => r.name)).toEqual(["app", "knowledge", "site", "empty"]);
+    expect(acme.repositories[2]).toEqual({ id: 3, owner: "acme", name: "site", private: true, defaultBranch: "main", pushedAt: "2026-10-01T00:00:00Z" });
+    expect(repo.log).toContain("GET /installation/repositories?per_page=100&page=1");
+  });
+
+  it("stops at 500 repositories and says so", async () => {
+    const repo = new FakeRepo({});
+    repo.granted = Array.from({ length: 520 }, (_, i) => ({ id: i + 1, name: `r${i}`, pushedAt: "2026-11-01T00:00:00Z" }));
+    const w = await workIndex(repo);
+    const body = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories"));
+    expect(body.installations[0].repositories).toHaveLength(500);
+    expect(body.installations[0].truncated).toBe(true);
+    expect(repo.log.filter((l) => l.startsWith("GET /installation/repositories"))).toHaveLength(5);
+  });
+
+  it("names the problem of an installation GitHub will not list, and answers 503 when GitHub is down", async () => {
+    const w = await workIndex(new FakeRepo({}), { mintGitHubInstallationToken: async () => ({ outcome: "failed", code: "installation_suspended", message: "The installation is suspended." }) as never });
+    const body = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories"));
+    expect(body.installations[0]).toMatchObject({ repositories: [], problem: "installation_suspended", problemMessage: "The installation is suspended." });
+
+    const down = new FakeRepo({});
+    down.failNext = [{ status: 502, match: /^\/installation\// }];
+    const w2 = await workIndex(down);
+    const res = await call(w2.env, computer([]).stub, person, "GET", "/work/repositories");
+    expect(res.status).toBe(503);
+    expect((await json(res)).error).toMatchObject({ code: "unavailable", retryAfterMs: 5_000 });
+  });
+
+  it("answers no installations when GitHub is not connected", async () => {
+    const w = await workIndex(new FakeRepo({}), { listGitHubInstallations: () => [] });
+    expect(await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories"))).toEqual({ installations: [] });
   });
 });
 

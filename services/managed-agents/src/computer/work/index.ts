@@ -28,6 +28,7 @@
 //   Reads never wait on it: they are SQL, and the two that may need GitHub (an item or a page of
 //   closed items not read yet, history while the walk is not done) wait at most READ_WAIT_MS. Every
 //   GitHub request is aborted after 10 s, so a hung one holds the chain no longer than that.
+//   Listing what the installations grant (the repository picker) stores nothing and is outside it.
 // - A permanent failure is stored as `problem` (a code) and `problemMessage`; it is retried from
 //   the alarm with a backoff from PROBLEM_RETRY_MS to PROBLEM_RETRY_MAX_MS and cleared on success.
 //
@@ -43,6 +44,7 @@ import {
   WorkGitHub,
   type CommitInfo,
   type FileChange,
+  type GrantedRepository,
   type RepositoryProblem,
   type TokenMinter,
   type WorkRepo,
@@ -54,7 +56,9 @@ import type {
   ItemsQuery,
   ItemsResult,
   OpenStamp,
+  GrantingInstallation,
   ReadState,
+  RepositoriesResult,
   Repository,
   RepositoryChoice,
   Revision,
@@ -93,6 +97,8 @@ const HISTORY_PAGE = 30;
 const CLOSED_LIMIT_DEFAULT = 50;
 const CLOSED_LIMIT_MAX = 100;
 const FETCH_PARALLEL = 6;
+/** The picker lists at most this many repositories per installation (five pages). */
+export const GRANTED_MAX = 500;
 /** Durable Object SQL binds at most 100 parameters per statement. */
 const BIND_MAX = 90;
 /** Stored bodies re-parsed per step after PARSER_VERSION changes. */
@@ -190,6 +196,8 @@ export class WorkIndex {
   private tail: Promise<unknown> = Promise.resolve();
   private looking: Promise<void> | null = null;
   private readonly filling = new Map<number, Promise<void>>();
+  /** The picker's clients, one per installation, so a refresh reuses the token. */
+  private readonly listers = new Map<string, WorkGitHub>();
 
   constructor(private readonly deps: WorkIndexDeps) {
     this.store = deps.store;
@@ -389,6 +397,49 @@ export class WorkIndex {
       this.deps.scheduler.waitUntil(this.kick());
       return { ok: true, value: this.repository()! };
     });
+  }
+
+  /**
+   * The organization's active installations, each with the repositories it grants, read from
+   * GitHub on every call: the picker asks again when the person comes back from granting access.
+   * An installation GitHub will not list carries its problem; any other failure answers unavailable.
+   */
+  async repositories(accountId: string): Promise<RepositoriesResult> {
+    this.bind(accountId);
+    const account = this.deps.account(accountId);
+    const active = (await account.listGitHubInstallations()).filter((i) => i.state === "active");
+    try {
+      const installations = await Promise.all(
+        active.map(async (i): Promise<GrantingInstallation> => {
+          const organization = i.accountType.toLowerCase() === "organization";
+          const shown = {
+            id: String(i.id),
+            accountLogin: i.accountLogin,
+            accountType: organization ? "Organization" : "User",
+            settingsUrl: organization
+              ? `https://github.com/organizations/${encodeURIComponent(i.accountLogin)}/settings/installations/${i.githubInstallationId}`
+              : `https://github.com/settings/installations/${i.githubInstallationId}`,
+          };
+          let lister = this.listers.get(shown.id);
+          if (!lister) {
+            // A client for the installation alone: listing reads no repository.
+            lister = this.newClient({ installationId: shown.id, owner: i.accountLogin, name: "", branch: "" }, accountId);
+            this.listers.set(shown.id, lister);
+          }
+          try {
+            const { repositories, truncated } = await lister.grantedRepositories(GRANTED_MAX);
+            return { ...shown, repositories: repositories.sort(byPushed), truncated, problem: null, problemMessage: null };
+          } catch (error) {
+            if (!(error instanceof GitHubGone)) throw error;
+            return { ...shown, repositories: [], truncated: false, problem: error.problem, problemMessage: error.message };
+          }
+        }),
+      );
+      return { ok: true, installations };
+    } catch (error) {
+      const retryAfterMs = error instanceof GitHubPaused ? Math.max(1000, error.until - this.now()) : 5_000;
+      return { ok: false, error: "unavailable", retryAfterMs };
+    }
   }
 
   async items(accountId: string, query: ItemsQuery): Promise<ItemsResult> {
@@ -1252,4 +1303,14 @@ async function parallel<T>(items: T[], fn: (item: T) => Promise<void>): Promise<
     while (next < items.length) await fn(items[next++]!);
   });
   await Promise.all(lanes);
+}
+
+/** Most recently pushed first, never pushed last, then by name. */
+function byPushed(a: GrantedRepository, b: GrantedRepository): number {
+  if (a.pushedAt !== b.pushedAt) {
+    if (a.pushedAt === null) return 1;
+    if (b.pushedAt === null) return -1;
+    return Date.parse(b.pushedAt) - Date.parse(a.pushedAt);
+  }
+  return a.name.localeCompare(b.name);
 }

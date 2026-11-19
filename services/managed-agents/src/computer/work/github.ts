@@ -5,8 +5,9 @@
 //   token narrowed to the knowledge repository and `contents: read`. Pull request state is read
 //   with `pull_requests: read` narrowed to the repositories of the batch asked, and only for
 //   repositories of the installation's own account (other links are `unreadable`). Finding a
-//   renamed repository by its id uses `metadata: read`. Each token is held in memory until five
-//   minutes before it expires.
+//   renamed repository by its id, and listing the repositories an installation grants (the
+//   repository picker), use `metadata: read`. Each token is held in memory until five minutes
+//   before it expires.
 // - Every request is aborted after REQUEST_TIMEOUT_MS, the body included.
 // - Quota: the installation's limit is shared with the organization's agents. Every response's
 //   rate-limit headers are kept per resource (`core`, `graphql`); `spare()` is false under a fifth
@@ -77,6 +78,31 @@ export interface TokenMinter {
   }): Promise<GitHubTokenMint>;
   /** The installation's GitHub account (`accountLogin`), or null when it is not connected. */
   getGitHubInstallation(installationId: string): Promise<{ accountLogin: string } | null> | { accountLogin: string } | null;
+  /** The organization's installations (the repository picker lists the active ones). */
+  listGitHubInstallations(): Promise<AccountInstallation[]> | AccountInstallation[];
+}
+
+/** An installation as the Account object holds it, the fields the Work index reads. */
+export interface AccountInstallation {
+  /** The Account object's id for it. */
+  id: string;
+  /** GitHub's id for it, which its settings page is named by. */
+  githubInstallationId: number;
+  accountLogin: string;
+  /** GitHub's `Organization` or `User`. */
+  accountType: string;
+  state: string;
+}
+
+/** A repository an installation grants, as the picker lists it. */
+export interface GrantedRepository {
+  id: number;
+  owner: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+  /** The last push, ISO; null for a repository never pushed to. */
+  pushedAt: string | null;
 }
 
 export interface WorkRepo {
@@ -335,6 +361,27 @@ export class WorkGitHub {
 
   // ---------------------------------------------------------------- calls
 
+  /**
+   * The repositories the installation grants, PER_PAGE_MAX a page, at most `max` (in GitHub's
+   * order). The one call that reads the installation, not `repo`. `truncated` when it grants more.
+   */
+  async grantedRepositories(max: number): Promise<{ repositories: GrantedRepository[]; truncated: boolean }> {
+    const repositories: GrantedRepository[] = [];
+    let total: number | null = null;
+    let full = false;
+    for (let page = 1; repositories.length < max; page++) {
+      const answer = await this.request(`/installation/repositories?per_page=${PER_PAGE_MAX}&page=${page}`, { token: { kind: "metadata" } });
+      if (answer.status === 404) throw new GitHubGone("installation_removed", "The GitHub installation is not connected to this organization.");
+      const body = this.json<{ total_count?: unknown; repositories?: unknown }>(answer);
+      const list = Array.isArray(body.repositories) ? body.repositories : [];
+      if (typeof body.total_count === "number") total = body.total_count;
+      repositories.push(...list.map(grantedOf).filter((r): r is GrantedRepository => r !== null));
+      full = list.length >= PER_PAGE_MAX;
+      if (!full) break;
+    }
+    return { repositories: repositories.slice(0, max), truncated: total !== null ? total > max : full && repositories.length >= max };
+  }
+
   /** The repository as GitHub names it now, its id and default branch (setRepository's check). */
   async repository(): Promise<{ id: number | null; owner: string; name: string; defaultBranch: string }> {
     const answer = await this.request(this.repoPath(""));
@@ -504,6 +551,19 @@ function repositoryOf(raw: unknown): { id: number | null; owner: string; name: s
     owner: body.owner.login,
     name: body.name,
     defaultBranch: typeof body.default_branch === "string" ? body.default_branch : "main",
+  };
+}
+
+function grantedOf(raw: unknown): GrantedRepository | null {
+  const r = raw as { id?: unknown; name?: unknown; owner?: { login?: unknown }; private?: unknown; default_branch?: unknown; pushed_at?: unknown };
+  if (typeof r?.id !== "number" || typeof r.name !== "string" || typeof r.owner?.login !== "string") return null;
+  return {
+    id: r.id,
+    owner: r.owner.login,
+    name: r.name,
+    private: r.private === true,
+    defaultBranch: typeof r.default_branch === "string" ? r.default_branch : "main",
+    pushedAt: typeof r.pushed_at === "string" && Number.isFinite(Date.parse(r.pushed_at)) ? r.pushed_at : null,
   };
 }
 

@@ -6,10 +6,10 @@
 // Close and Reopen (3.9, build step 5) slot in beside `setRepository`: writes that run inside the
 // index's one-at-a-time chain and answer a `WorkWrite`.
 
-import type { RepositoryProblem } from "./github.js";
+import type { GrantedRepository, RepositoryProblem } from "./github.js";
 import type { Stage } from "./item.js";
 
-export type { RepositoryProblem } from "./github.js";
+export type { GrantedRepository, RepositoryProblem } from "./github.js";
 
 /** The knowledge repository setting, as the API shows it. */
 export interface Repository {
@@ -31,6 +31,26 @@ export interface RepositoryChoice {
   name: string;
   branch?: string;
 }
+
+/** One of the organization's active GitHub installations, with what it grants, for the picker. */
+export interface GrantingInstallation {
+  /** The Account object's id for it: a `RepositoryChoice`'s `installationId`. */
+  id: string;
+  accountLogin: string;
+  /** GitHub's `Organization` or `User`. */
+  accountType: string;
+  /** The installation's page on GitHub, where a person grants it more repositories. */
+  settingsUrl: string;
+  /** Most recently pushed first; never pushed last. */
+  repositories: GrantedRepository[];
+  /** True when the installation grants more than the list holds. */
+  truncated: boolean;
+  /** Set when GitHub would not list them (the repositories are then empty). A stable code. */
+  problem: RepositoryProblem | null;
+  problemMessage: string | null;
+}
+
+export type RepositoriesResult = { ok: true; installations: GrantingInstallation[] } | { ok: false; error: "unavailable"; retryAfterMs: number };
 
 /** Who made a write, from the identity the edge asserted. */
 export interface WorkActor {
@@ -123,6 +143,7 @@ export type WorkWrite<T> = { ok: true; value: T } | { ok: false; status: number;
 export interface WorkIndexRpc {
   repository(accountId: string): Promise<Repository | null>;
   setRepository(accountId: string, choice: RepositoryChoice, by: WorkActor): Promise<WorkWrite<Repository>>;
+  repositories(accountId: string): Promise<RepositoriesResult>;
   items(accountId: string, query: ItemsQuery): Promise<ItemsResult>;
   item(accountId: string, number: number): Promise<ItemResult>;
   history(accountId: string, number: number, cursor?: string): Promise<HistoryResult>;

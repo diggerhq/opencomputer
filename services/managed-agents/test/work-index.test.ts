@@ -39,6 +39,7 @@ function setup(repo: FakeRepo, options: { sql?: SqlStorage; mint?: Partial<Token
       return { outcome: "minted", token: "ghs_test", expiresAt: new Date(clock.now() + 3_600_000).toISOString() };
     },
     getGitHubInstallation: () => ({ accountLogin: "acme" }),
+    listGitHubInstallations: () => [{ id: "12", githubInstallationId: 9012, accountLogin: "acme", accountType: "Organization", state: "active" }],
     ...options.mint,
   };
   const fetches: string[] = [];

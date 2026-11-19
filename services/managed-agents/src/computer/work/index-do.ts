@@ -54,6 +54,10 @@ export class WorkIndexDurableObject extends DurableObject<WorkIndexEnv> implemen
     return this.index.setRepository(accountId, choice, by);
   }
 
+  repositories(accountId: string) {
+    return this.index.repositories(accountId);
+  }
+
   items(accountId: string, query: ItemsQuery) {
     return this.index.items(accountId, query);
   }

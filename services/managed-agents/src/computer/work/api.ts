@@ -53,7 +53,7 @@ export interface Item {
   closedBy: string | null;
 }
 
-export type WorkRouteOp = "work.repository.get" | "work.repository.put" | "work.items" | "work.item" | "work.history";
+export type WorkRouteOp = "work.repository.get" | "work.repository.put" | "work.repositories" | "work.items" | "work.item" | "work.history";
 
 export interface WorkRoute {
   op: WorkRouteOp;
@@ -77,6 +77,7 @@ export interface WorkDeps {
 const PARAMS: Record<WorkRouteOp, readonly string[]> = {
   "work.repository.get": [],
   "work.repository.put": [],
+  "work.repositories": [],
   "work.items": ["stage", "cursor", "limit"],
   "work.item": [],
   "work.history": ["cursor"],
@@ -113,6 +114,13 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
         return { status, error: { code, message, ...extra } };
       }
       return { status: 200, body: { repository: result.value } };
+    }
+
+    case "work.repositories": {
+      // What the organization's installations grant, for the picker; the index reads GitHub.
+      const result = await index.repositories(deps.accountId);
+      if (!result.ok) return { ...UNAVAILABLE, error: { ...UNAVAILABLE.error!, retryAfterMs: result.retryAfterMs } };
+      return { status: 200, body: { installations: result.installations } };
     }
 
     case "work.items": {

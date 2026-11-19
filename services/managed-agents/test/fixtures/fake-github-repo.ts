@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 /**
  * A knowledge repository on a fake GitHub, as much of the REST API as the Work index uses: the
  * branch ref (with ETag), compare (with rename detection), commits (one, and filtered by path),
- * trees (a commit's root, then one directory), blobs, the repository (by name and by id), and the
- * pull request GraphQL query. History is a list of commits with whole-tree snapshots; `forcePush`
+ * trees (a commit's root, then one directory), blobs, the repository (by name and by id), the
+ * installation's repositories, and the pull request GraphQL query. History is a list of commits with whole-tree snapshots; `forcePush`
  * rewrites it.
  *
  * GitHub's limits hold: compare lists at most 300 files and a page of commits; lists take
@@ -54,6 +54,8 @@ export class FakeRepo {
   limit = 5000;
   deleted = false;
   pulls = new Map<string, FakePull>();
+  /** The other repositories the installation grants, besides this one, as GitHub lists them. */
+  granted: { id: number; name: string; private?: boolean; pushedAt?: string | null }[] = [];
   private clock = Date.parse("2026-11-01T00:00:00Z");
 
   constructor(initial: Record<string, string> = {}) {
@@ -184,6 +186,15 @@ export class FakeRepo {
       return json(200, { data });
     }
     const about = () => ({ id: this.id, name: this.name, owner: { login: this.owner }, default_branch: this.defaultBranch });
+    if (url.pathname === "/installation/repositories") {
+      const all = [
+        ...(this.deleted ? [] : [{ ...about(), private: true, pushed_at: this.commits.get(this.head!)?.at ?? null }]),
+        ...this.granted.map((g) => ({ id: g.id, name: g.name, owner: { login: this.owner }, default_branch: "main", private: g.private ?? false, pushed_at: g.pushedAt ?? null })),
+      ];
+      const perPage = Math.min(Number(url.searchParams.get("per_page") ?? "30"), 100);
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return json(200, { total_count: all.length, repositories: all.slice((page - 1) * perPage, page * perPage) });
+    }
     if (url.pathname === `/repositories/${this.id}`) return this.deleted ? json(404, { message: "Not Found" }) : json(200, about());
     // GitHub's owner and repository names are case-insensitive; a former name redirects.
     const lower = url.pathname.toLowerCase();
