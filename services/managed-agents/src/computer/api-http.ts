@@ -81,6 +81,9 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (is("PATCH", 2)) return { op: "patch", sessionId };
   const r = p[2];
   if (is("GET", 3) && r === "capabilities") return { op: "capabilities", sessionId };
+  // Set aside (work-tracking 3.8): the Computer DO's own column, never the writer.
+  if (is("PUT", 3) && r === "aside") return { op: "aside.set", sessionId };
+  if (is("DELETE", 3) && r === "aside") return { op: "aside.clear", sessionId };
   if (is("POST", 3) && (r === "interrupt" || r === "compact" || r === "suspend" || r === "resume")) return { op: `sessions.${r}`, sessionId };
   if (r === "turns") {
     if (is("POST", 3)) return { op: "turns.send", sessionId };
@@ -250,7 +253,7 @@ export async function routeComputerApi(
 
 /** The closed route families of `httpapi.request` and `edge.request` (the catalog's list). */
 export function routeFamily(op: string): string {
-  if (op === "list" || op === "create" || op === "get" || op === "patch" || op === "capabilities") return "sessions";
+  if (op === "list" || op === "create" || op === "get" || op === "patch" || op === "capabilities" || op.startsWith("aside.")) return "sessions";
   if (op.startsWith("sessions.")) return "control";
   if (op === "events.list") return "events";
   if (op.startsWith("turns.")) return "turns";
@@ -264,6 +267,7 @@ export function routeFamily(op: string): string {
 
 const OPS = new Set([
   "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "list", "create", "get", "patch", "capabilities",
+  "aside.set", "aside.clear",
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
@@ -418,7 +422,7 @@ async function routeApi(
   if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities() });
   if (route.op === "list") return call({ op: "list", query: [...query.entries()] });
 
-  const needsBody = request.method === "POST" || request.method === "PATCH";
+  const needsBody = request.method === "POST" || request.method === "PATCH" || request.method === "PUT";
   let body: unknown;
   if (needsBody) {
     const parsed = await bodyOf(request);
@@ -441,6 +445,8 @@ async function routeApi(
     return call({ op: "get", sessionId, ...(minSeq !== undefined ? { minSeq } : {}) });
   }
   if (route.op === "patch") return call({ op: "patch", sessionId, body, ...(idem ? { idempotencyKey: idem } : {}) });
+  if (route.op === "aside.set") return call({ op: "aside.set", sessionId, body });
+  if (route.op === "aside.clear") return call({ op: "aside.clear", sessionId });
 
   // Writes to the session's writer.
   if (needsBody) {

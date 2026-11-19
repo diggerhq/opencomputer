@@ -377,6 +377,7 @@ export class Fold {
       title: this.title,
       status: this.sessionStatus,
       archived: this.archived,
+      aside: false, // the server's: a column on its session row, never journaled
       owner: { ...this.seed.owner },
       origin: structuredClone(this.origin),
       settings: { ...this.settings },

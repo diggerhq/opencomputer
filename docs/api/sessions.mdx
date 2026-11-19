@@ -72,6 +72,21 @@ Every field is optional ([API schema](/reference/api-schema#operations)). `id` i
 | `session.updated` event | `changes` maps each changed field to `{from, to}`. A metadata key is `metadata.<key>` |
 | Model the harness does not accept | `invalid_request` with `field: "model"`. The session stays on its model |
 
+## Set aside
+
+Triage lists the asks waiting on you. Setting a session aside moves its ask out of that list until something newer needs you. HTTP only: `PUT /sessions/{id}/aside` sets it, `DELETE /sessions/{id}/aside` brings it back. Both return the session.
+
+```json
+{"ref":"toolu_01AbCdEf"}
+```
+
+| Item | Rule |
+| --- | --- |
+| `ref` | The id of the ask being set aside: the session's oldest open ask |
+| `aside` | True while `ref` is still the session's oldest open ask. Once that ask closes, `aside` is false again, with no `DELETE` |
+| Caller | The session's owner, with `sessions:write`. Anyone else: `403 forbidden` with `reason: "aside_owner_only"` |
+| Events | None. Setting a session aside does not change `lastActiveAt` |
+
 ## Compact
 
 `sessions.compact` (`POST /sessions/{id}/compact`) queues a compaction as a turn and returns the same result as `turns.send`.

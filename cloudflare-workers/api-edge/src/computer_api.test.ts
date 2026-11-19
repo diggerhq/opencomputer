@@ -223,6 +223,8 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h"],
     ["PATCH", "/computer/sessions/cs_01h"],
     ["GET", "/computer/sessions/cs_01h/capabilities"],
+    ["PUT", "/computer/sessions/cs_01h/aside"],
+    ["DELETE", "/computer/sessions/cs_01h/aside"],
     ["POST", "/computer/sessions/cs_01h/interrupt"],
     ["POST", "/computer/sessions/cs_01h/compact"],
     ["POST", "/computer/sessions/cs_01h/suspend"],
@@ -263,6 +265,7 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/keys/sync"],
     ["POST", "/computer/keys/revoke"],
     ["DELETE", "/computer/sessions/cs_01h"],
+    ["POST", "/computer/sessions/cs_01h/aside"],
     ["PUT", "/computer/sessions/cs_01h/workspace/file"],
     ["POST", "/computer/sessions/cs_01h/turns/tn_1"],
     ["GET", "/computer/sessions/../me"],
@@ -1078,6 +1081,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         "/computer/sessions",
         `/computer/sessions/${SID}`,
         `/computer/sessions/${SID}/capabilities`,
+        `/computer/sessions/${SID}/aside`,
         `/computer/sessions/${SID}/interrupt`,
         `/computer/sessions/${SID}/turns/tn_1/cancel`,
         `/computer/sessions/${SID}/events`,
@@ -1092,7 +1096,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         "/computer/nope",
       ].map(computerApiRouteFamily),
     ).toEqual([
-      "me", "tickets", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
+      "me", "tickets", "sessions", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
       "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "other",
     ]);
   });

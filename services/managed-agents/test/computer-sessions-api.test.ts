@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ApiEvent, LogSummary } from "../src/computer/api-types.js";
-import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
+import type { ApiEvent, Ask, LogSummary } from "../src/computer/api-types.js";
+import { type ComputerApiStub, matchApiRoute, routeComputerApi, writeParams } from "../src/computer/api-http.js";
 import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
 import { ComputerKeys } from "../src/computer/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
@@ -20,6 +20,7 @@ import {
 } from "../src/computer/sessions-api.js";
 import { ApiTelemetry } from "../src/computer/telemetry/api.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
+import type { RequestIdentity } from "../src/edge/auth.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /**
@@ -514,6 +515,68 @@ describe("writes", () => {
     await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "Other" } });
     expect(f.frames("api").at(-1)).toMatchObject({ params: { title: "Other" }, session: { speed: "standard" } });
     expect(f.frames("api").at(-1)!.params).not.toHaveProperty("speed");
+  });
+});
+
+describe("set aside (work-tracking 3.8)", () => {
+  const ask = (id: string, createdAt: string, status: Ask["status"] = "open"): Ask => ({
+    id, sessionId: SID, turnId: "tn_1", kind: "question", status, createdAt, closedAt: null, closedBy: null,
+    answer: null, approval: null, question: { questions: [] }, secret: null,
+  });
+
+  it("the owner's ref on the row: aside while it is the oldest open ask; no event, no host, last activity unmoved", async () => {
+    const f = fixture();
+    await created(f);
+    const get = async () => ((await f.api.handle(caller(), { op: "get", sessionId: SID })).body as { session: { aside: boolean; lastActiveAt: string } }).session;
+    f.api.applySummary(SID, summary(SID, 0, 1, { status: "waiting", asks: [ask("ak_new", "2026-11-19T10:05:00.000Z"), ask("ak_old", "2026-11-19T10:00:00.000Z")] }));
+    const before = await get();
+    expect(before.aside).toBe(false);
+    f.state.protocol = null; // the host is not needed
+    const sent = f.frames("api").length;
+    const put = (ref: unknown, member = OWNER) => f.api.handle(caller(member), { op: "aside.set", sessionId: SID, body: { ref } });
+    expect(await put("ak_old")).toMatchObject({ status: 200, body: { session: { aside: true } } });
+    expect(f.api.row(SID)!.asideRef).toBe("ak_old");
+    expect((await get()).lastActiveAt).toBe(before.lastActiveAt);
+    expect(f.api.row(SID)!.lastSeq).toBe(0);
+    expect(f.frames("api")).toHaveLength(sent);
+    // Another ref is not the current one.
+    expect(await put("ak_new")).toMatchObject({ status: 200, body: { session: { aside: false } } });
+    await put("ak_old");
+    // The ask is answered: the newer one is current, so the session is back by itself.
+    f.api.applySummary(SID, summary(SID, 1, 1, { status: "waiting", asks: [ask("ak_new", "2026-11-19T10:05:00.000Z"), ask("ak_old", "2026-11-19T10:00:00.000Z", "answered")] }));
+    expect((await get()).aside).toBe(false);
+    expect(await f.api.handle(caller(), { op: "aside.clear", sessionId: SID })).toMatchObject({ status: 200, body: { session: { aside: false } } });
+    expect(f.api.row(SID)!.asideRef).toBeNull();
+  });
+
+  it("only the owner; a ref is required; an unseen session is 404", async () => {
+    const f = fixture();
+    await created(f);
+    expect(await f.api.handle(caller(MO), { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } })).toMatchObject({ status: 403, error: { code: "forbidden", reason: "aside_owner_only" } });
+    expect(await f.api.handle(caller(MO), { op: "aside.clear", sessionId: SID })).toMatchObject({ status: 403 });
+    for (const body of [{}, { ref: "" }, { ref: 1 }, null, [], { ref: "a b" }]) {
+      expect(await f.api.handle(caller(), { op: "aside.set", sessionId: SID, body })).toMatchObject({ status: 400, error: { code: "invalid_request", field: "ref" } });
+    }
+    expect(await f.api.handle(caller(), { op: "aside.set", sessionId: "cs_0000000000000000", body: { ref: "ak_1" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    expect(f.api.row(SID)!.asideRef).toBeNull();
+  });
+
+  it("HTTP: PUT and DELETE reach the Computer DO with sessions:write, never the writer", async () => {
+    const seen: unknown[] = [];
+    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 200, body: {} })) };
+    const person = { kind: "user", organizationId: "org_1", userId: "user_1", role: "member" } as RequestIdentity;
+    const reader = { ...person, apiKey: { id: "key_1", hash: "a".repeat(64), name: "r", kind: "user" as const, expiresAt: null, createdAt: null, scopes: ["sessions:read"] } } as RequestIdentity;
+    const go = (identity: RequestIdentity, method: string, body?: string) =>
+      routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/${SID}/aside`, { method, ...(body ? { body } : {}) }), {} as never, identity, "org_1", stub, `/sessions/${SID}/aside`);
+    expect((await go(person, "PUT", '{"ref":"ak_1"}')).status).toBe(200);
+    expect((await go(person, "DELETE")).status).toBe(200);
+    expect((await go(person, "PUT", "not json")).status).toBe(400);
+    expect((await go(reader, "PUT", '{"ref":"ak_1"}')).status).toBe(403);
+    expect(seen.filter((op) => (op as { op: string }).op !== "access")).toEqual([
+      { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } },
+      { op: "aside.clear", sessionId: SID },
+    ]);
+    expect(matchApiRoute("POST", `/sessions/${SID}/aside`)).toBeNull();
   });
 });
 

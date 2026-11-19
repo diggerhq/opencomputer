@@ -16,6 +16,7 @@ import {
   ChevronsUpDown,
   CreditCard,
   KeyRound,
+  Inbox,
   Loader2,
   LogOut,
   MessagesSquare,
@@ -57,6 +58,7 @@ import {
   WORKING,
 } from './state'
 import { timeAgo } from './transcript'
+import { useTriageCount } from './triage'
 
 // The computer's own full-screen view (work 107): a flat icon rail, the
 // sessions sidebar, and the open session or the new-session home.
@@ -69,6 +71,8 @@ export default function ComputerSessionsLayout() {
   const { user } = useAuth()
   const { pathname } = useLocation()
   const sessions = !!useMatch('/computer/sessions/*')
+  // Triage is full height too, with its own panel instead of the sidebar.
+  const full = !!useMatch('/computer/triage') || sessions
   // On a phone the list and a session take turns: the list at
   // /computer/sessions, the session (or the new-session home) on its own.
   const listing = !!useMatch({ path: '/computer/sessions', end: true })
@@ -82,10 +86,10 @@ export default function ComputerSessionsLayout() {
         className={cn(
           'min-w-0 flex-1',
           listing && 'hidden md:block',
-          !sessions && 'flex flex-col overflow-y-auto',
+          !full && 'flex flex-col overflow-y-auto',
         )}
       >
-        {sessions ? null : (
+        {full ? null : (
           <div className="sticky top-0 z-20">
             <BillingWarningBanner />
           </div>
@@ -99,7 +103,7 @@ export default function ComputerSessionsLayout() {
               </div>
             }
           >
-            {sessions ? (
+            {full ? (
               <Outlet />
             ) : (
               <div
@@ -125,27 +129,38 @@ function RailLink({
   to,
   label,
   end,
+  badge,
   children,
 }: {
   to: string
   label: string
   end?: boolean
+  badge?: number
   children: ReactNode
 }) {
+  const name = badge ? `${label}, ${badge}` : label
   return (
     <NavLink
       to={to}
       end={end}
-      title={label}
-      aria-label={label}
+      title={name}
+      aria-label={name}
       className={({ isActive }) =>
         cn(
-          'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-9 items-center justify-center rounded-md transition-colors',
+          'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground relative flex size-9 items-center justify-center rounded-md transition-colors',
           isActive && 'bg-sidebar-accent text-foreground',
         )
       }
     >
       {children}
+      {badge ? (
+        <span
+          aria-hidden
+          className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-medium"
+        >
+          {badge > 99 ? '99+' : badge}
+        </span>
+      ) : null}
     </NavLink>
   )
 }
@@ -156,6 +171,7 @@ function Rail() {
   const navigate = useNavigate()
   const orgs = user?.orgs ?? []
   const activeOrg = orgs.find((o) => o.isActive)
+  const asks = useTriageCount(!!user?.computerEnabled)
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
@@ -166,9 +182,14 @@ function Rail() {
         <OpenComputerMark className="size-8" />
       </Link>
       {user?.computerEnabled ? (
-        <RailLink to="/computer/sessions" label="Sessions">
-          <MessagesSquare className="size-4" aria-hidden />
-        </RailLink>
+        <>
+          <RailLink to="/computer/triage" label="Triage" badge={asks}>
+            <Inbox className="size-4" aria-hidden />
+          </RailLink>
+          <RailLink to="/computer/sessions" label="Sessions">
+            <MessagesSquare className="size-4" aria-hidden />
+          </RailLink>
+        </>
       ) : null}
       <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />

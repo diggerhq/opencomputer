@@ -25,6 +25,9 @@ const ComputerSessionsHome = lazy(
 const ComputerSession = lazy(
   () => import('./managed-agents/computer-sessions/Session'),
 )
+const ComputerTriage = lazy(
+  () => import('./managed-agents/computer-sessions/Triage'),
+)
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
@@ -123,6 +126,7 @@ export default function App() {
               </Suspense>
             }
           >
+            <Route path="computer/triage" element={<ComputerTriage />} />
             <Route path="computer/sessions">
               <Route index element={<ComputerSessionsHome />} />
               {/* The same home, for a phone, where the index is the list. */}

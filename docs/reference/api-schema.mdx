@@ -43,6 +43,8 @@ On an HTTP route, path parameters replace `sessionId`, `turnId`, `askId` and `su
 
 Creating a session is HTTP only: `POST /sessions` with `CreateSessionBody`: `id?`, `input?`, `title?` (up to 200 characters), `model?`, `effort?`, `speed?`, `mode?`, `metadata?`.
 
+Setting a session aside is HTTP only: `PUT /sessions/{id}/aside` with `ref` (1 to 255 characters), and `DELETE /sessions/{id}/aside`. Both return `session`. See [Sessions](/api/sessions#set-aside).
+
 ### Routes outside the schema
 
 The relay (`computer/src/wire/`) serves these. The API routes for workspace files are `/sessions/{id}/workspace/files`, `/file` and `/archive`; `opc push` and `opc pull` call `/archive`. See [Files](/api/files).
@@ -142,7 +144,7 @@ Sent only on a WebSocket attached with `deltas: true`; see [Events](/api/events#
 
 | Object | Fields |
 | --- | --- |
-| Session | `id` (`cs_` and 16 characters), `title`, `status` (`starting`, `running`, `waiting`, `idle`, `suspended`), `archived`, `owner` (Person), `origin` (Origin), `settings` (`model`, `effort`, `mode`, `speed`), `metadata`, `activeTurnId`, `queued` (Turn list), `asks` (Ask list), `subagents` (Subagent list), `lastTurn` (TurnSummary or null), `lastText`, `context` (`usedTokens`, `windowTokens`), `lastSeq`, `logEpoch`, `epochStartSeq`, `createdAt`, `lastActiveAt`, `syncedAt`, `urls.dashboard` |
+| Session | `id` (`cs_` and 16 characters), `title`, `status` (`starting`, `running`, `waiting`, `idle`, `suspended`), `archived`, `aside`, `owner` (Person), `origin` (Origin), `settings` (`model`, `effort`, `mode`, `speed`), `metadata`, `activeTurnId`, `queued` (Turn list), `asks` (Ask list), `subagents` (Subagent list), `lastTurn` (TurnSummary or null), `lastText`, `context` (`usedTokens`, `windowTokens`), `lastSeq`, `logEpoch`, `epochStartSeq`, `createdAt`, `lastActiveAt`, `syncedAt`, `urls.dashboard` |
 | Person | `id`, `name`, `email` |
 | Origin | `type` (`slack`, `opc`, `dashboard`, `api`), `client`, `slack` (`teamId`, `channelId`, `channelName`, `threadTs`, `url`) or null |
 | Actor | `id`, `name`, `via` (`slack`, `opc`, `dashboard`, `api`), `client` |
@@ -180,7 +182,7 @@ An error body is `code`, `message`, and optionally `status`, `retryable`, `reque
 | Conflict | `id_conflict`, `idempotency_conflict`, `ask_closed`, `session_busy`, `turn_not_cancellable`, `queue_full`, `cursor_ahead`, `path_exists`, `subagent_ended`, `too_far_behind`, `too_many_attached`, `too_many_terminals`, `feature_unavailable`, `computer_not_set_up` |
 | Retry later | `rate_limited`, `unavailable`, `computer_unavailable`, `internal` |
 
-`forbidden` carries a `reason`: `missing_scope`, `read_only` or `terminal_owner_only`.
+`forbidden` carries a `reason`: `missing_scope`, `read_only`, `terminal_owner_only` or `aside_owner_only`.
 
 ## Relay limits
 
