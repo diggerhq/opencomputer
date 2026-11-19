@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import net from 'node:net';
-import type { HostCredentials, HostToRunner, Person } from '../protocol.js';
+import type { HostCredentials, HostToRunner, Person, RunnerModel } from '../protocol.js';
 import { gatewayUpdates } from './gateway-updates.js';
 
 /** A runner's end as the host sees it: a socket whose writes are kept as parsed messages. */
@@ -11,7 +11,10 @@ function runner(key: string, owner?: Person) {
   return { key, sock, owner, sent };
 }
 const person = (slackUserId: string, gitName = 'A', gitEmail = 'a@x'): Person => ({ slackUserId, dir: slackUserId, gitName, gitEmail });
-const creds = (slackBotToken: string): HostCredentials => ({ slackBotToken, slackBotUserId: 'B', claudeOAuthToken: 'c' });
+const creds = (slackBotToken: string): HostCredentials => ({ slackBotToken, slackBotUserId: 'B' });
+const model = (profile: string): RunnerModel => ({ profile, key: 'k', harness: {}, endpoint: { unixSocket: '/s' }, placeholder: 'ph' });
+/** model-access.ts's shape: Slack's fields, plus the session's model (a spare's is key ''). */
+const shaped = (key: string, c: HostCredentials): HostCredentials => ({ ...c, model: model(key || 'spare') });
 
 function setup() {
   const a = runner('a', person('U1'));
@@ -21,7 +24,7 @@ function setup() {
   const org = gatewayUpdates({
     runners: () => [a],
     spares: () => [spare],
-    forRunner: (key, c) => (key === 'a' ? { ...c, claudeOAuthToken: undefined, claudeSubscription: { owner: 'U1', fingerprint: 'f' } } : c),
+    forRunner: shaped,
     fillPool: () => filled++,
     prepare: (p) => prepared.push(p),
   });
@@ -29,13 +32,13 @@ function setup() {
 }
 
 describe('gateway updates (welcome, credentials, people)', () => {
-  it('welcome: credentials to runners shaped per session, to spares as they are, then the pool fills', () => {
+  it('welcome: credentials to runners and spares shaped per session, then the pool fills', () => {
     const t = setup();
     t.org.welcome({ t: 'welcome', protocol: 1, credentials: creds('xoxb'), people: [person('U1')] });
     expect(t.org.creds?.slackBotToken).toBe('xoxb');
     expect(t.org.people.map((p) => p.slackUserId)).toEqual(['U1']);
-    expect(t.a.sent).toEqual([{ t: 'credentials', credentials: { slackBotToken: 'xoxb', slackBotUserId: 'B', claudeSubscription: { owner: 'U1', fingerprint: 'f' } } }]);
-    expect(t.spare.sent).toEqual([{ t: 'credentials', credentials: creds('xoxb') }]);
+    expect(t.a.sent).toEqual([{ t: 'credentials', credentials: { slackBotToken: 'xoxb', slackBotUserId: 'B', model: model('a') } }]);
+    expect(t.spare.sent).toEqual([{ t: 'credentials', credentials: shaped('', creds('xoxb')) }]);
     expect(t.fill()).toBe(1);
   });
 
@@ -50,8 +53,8 @@ describe('gateway updates (welcome, credentials, people)', () => {
     const t = setup();
     t.org.credentials({ t: 'credentials', credentials: creds('new') });
     expect(t.org.creds?.slackBotToken).toBe('new');
-    expect(t.a.sent[0]).toMatchObject({ t: 'credentials', credentials: { slackBotToken: 'new', claudeSubscription: { owner: 'U1' } } });
-    expect(t.spare.sent).toEqual([{ t: 'credentials', credentials: creds('new') }]);
+    expect(t.a.sent[0]).toMatchObject({ t: 'credentials', credentials: { slackBotToken: 'new', model: { profile: 'a' } } });
+    expect(t.spare.sent).toEqual([{ t: 'credentials', credentials: shaped('', creds('new')) }]);
     expect(t.fill()).toBe(1);
   });
 

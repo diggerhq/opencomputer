@@ -1,4 +1,5 @@
-// Concurrency caps, both counted between admission and the request's end:
+// Concurrency caps, counted between admission and the request's end (and,
+// with the same counter, a caller's open connections, connlimit.go):
 //   - per caller (-max-inflight-per-caller, held requests included): one
 //     session cannot queue enough hanging requests to starve the others;
 //   - per profile `concurrency` key (profile.go): every caller whose binding

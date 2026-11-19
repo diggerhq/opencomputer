@@ -11,9 +11,11 @@
 //
 // Invariants: a request to upgrade gets every refusal as a 426 (a client
 // that tried a WebSocket then goes on over HTTP at once, where the same
-// refusal is served with its own status, websocket.go); a refusal is logged
-// at most once per caller and reason in refusalLogEvery, so one session
-// cannot flood the journal. Every refusal is still an event (telemetry.go).
+// refusal is served with its own status, websocket.go); a refusal is
+// reported (a log line and a model.denied event, telemetry.go) at most once
+// per caller and reason in refusalEvery, with how many like it went
+// unreported since, so one session can flood neither the journal nor the
+// control socket's queue, which every session's messages share.
 package main
 
 import (
@@ -128,14 +130,15 @@ func apiErrorHeaders(h http.Header, status int, typ, msg string) []byte {
 }
 
 const (
-	refusalLogEvery = 10 * time.Second
-	refusalLogKeys  = 1024 // past it the table starts over
+	refusalEvery   = 10 * time.Second
+	refusalLogKeys = 1024 // past it the table starts over
 )
 
-// refusalLog decides which refusals are logged.
+// refusalLog decides which refusals are reported.
 type refusalLog struct {
-	mu   sync.Mutex
-	seen map[string]*refusalSeen
+	every time.Duration // refusalEvery; tests report each
+	mu    sync.Mutex
+	seen  map[string]*refusalSeen
 }
 
 type refusalSeen struct {
@@ -143,8 +146,8 @@ type refusalSeen struct {
 	skipped int
 }
 
-// allow: whether to log this refusal, and how many like it went unlogged
-// since the last one that was.
+// allow: whether to report this refusal, and how many like it went
+// unreported since the last one that was.
 func (l *refusalLog) allow(now time.Time, caller, reason string) (ok bool, skipped int) {
 	key := caller + "\x00" + reason
 	l.mu.Lock()
@@ -157,7 +160,7 @@ func (l *refusalLog) allow(now time.Time, caller, reason string) (ok bool, skipp
 		}
 		l.seen[key] = &refusalSeen{at: now}
 		return true, 0
-	case now.Sub(e.at) < refusalLogEvery:
+	case now.Sub(e.at) < l.every:
 		e.skipped++
 		return false, 0
 	}

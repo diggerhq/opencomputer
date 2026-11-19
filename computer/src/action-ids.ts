@@ -13,3 +13,8 @@ export function decodeActionId(actionId: string): { sessionKey: string; promptId
   if (!m) return undefined;
   return { sessionKey: Buffer.from(m[1], 'base64url').toString(), promptId: m[2], value: m[3] };
 }
+
+// Session access buttons (work 112): ac:<base64url(sessionKey)>:<verb>[:<userId>],
+// verbs `open`, `allow`, `deny`. Defined beside the views that post them
+// (access-views.ts), which managed-agents shares byte for byte; Buffer-free there.
+export { type AccessVerb, decodeAccessId, encodeAccessId } from './access-views.js';

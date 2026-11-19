@@ -54,7 +54,7 @@ func TestHelloFirst(t *testing.T) {
 		t.Fatalf("hello profiles %v", names)
 	}
 	if toJSON(ps[0]) != `{"harness":{"codex":{"cache":"1h"}},"name":"alt","vars":["accountId","token"]}` ||
-		toJSON(ps[2]) != `{"harness":{"claude":{"tokenEnv":"CLAUDE_CODE_OAUTH_TOKEN"}},"name":"claude-oauth","vars":["token"]}` {
+		toJSON(ps[2]) != `{"harness":{"claude":{"promptCacheTtl":"1h","tokenEnv":"CLAUDE_CODE_OAUTH_TOKEN"}},"name":"claude-oauth","vars":["token"]}` {
 		t.Fatalf("hello profiles %v", ps)
 	}
 	// model.proxy_started, sent before any binder connected, is kept for the first.

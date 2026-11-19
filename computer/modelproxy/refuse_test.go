@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-// One log line per caller and reason in refusalLogEvery; the next one says
+// One log line per caller and reason in refusalEvery; the next one says
 // how many went unlogged.
 func TestRefusalLog(t *testing.T) {
-	var l refusalLog
+	l := refusalLog{every: refusalEvery}
 	now := time.Unix(1_800_000_000, 0)
 	if ok, skipped := l.allow(now, "a", "route"); !ok || skipped != 0 {
 		t.Fatalf("first: %v %d", ok, skipped)
@@ -24,7 +24,7 @@ func TestRefusalLog(t *testing.T) {
 	if ok, _ := l.allow(now, "b", "route"); !ok {
 		t.Fatal("another caller not logged")
 	}
-	if ok, skipped := l.allow(now.Add(refusalLogEvery), "a", "route"); !ok || skipped != 5 {
+	if ok, skipped := l.allow(now.Add(refusalEvery), "a", "route"); !ok || skipped != 5 {
 		t.Fatalf("after the interval: %v %d", ok, skipped)
 	}
 	// The table is bounded.

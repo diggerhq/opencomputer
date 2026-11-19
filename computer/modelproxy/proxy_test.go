@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -283,5 +284,80 @@ func TestUpstreamBusy(t *testing.T) {
 	close(g.release)
 	if st := <-done; st != 200 || len(g.bearers) != 1 {
 		t.Fatalf("the stream: %d, upstream hits %d", st, len(g.bearers))
+	}
+}
+
+// An upstream that accepts and never answers the TLS handshake is a 502 and
+// an `observed` error, on the handshake's own limit, even when that is as
+// long as the hold: only a request queued for a connection is "busy".
+func TestUnreachableIsNotBusy(t *testing.T) {
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{hold: 300 * time.Millisecond})
+	k := h.dialControl()
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	prof := h.srv.profiles.get(mainProfile)
+	prof.url.Host = l.Addr().String()
+	prof.up.handshakeTimeout = 300 * time.Millisecond
+
+	res := do(t, h, testCaller)
+	if e := decodeAPIError(t, res); res.StatusCode != 502 || e.Error.Message != defaultTexts.unreachable {
+		t.Fatalf("%d %+v", res.StatusCode, e)
+	}
+	if m := k.waitFor(isT("observed")); m["error"] != "timeout" || m["key"] != "fp1" {
+		t.Fatalf("observed %v", m)
+	}
+}
+
+// A required header the caller's Connection header would strip on the way
+// does not pass `require`.
+func TestRequireNotHopByHop(t *testing.T) {
+	var hits atomic.Int64
+	h := newHarness(t, recordingUpstream(&hits, nil), harnessOpts{})
+	k := h.dialControl()
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	req := h.messagesReq(context.Background())
+	req.Header.Set("Connection", "keep-alive, x-app")
+	if st := doReq(t, h, testCaller, req); st != 403 || hits.Load() != 0 {
+		t.Fatalf("%d, upstream hits %d", st, hits.Load())
+	}
+}
+
+// One caller's refusals for one reason are one model.denied in refusalEvery,
+// however many there are: they cannot fill the control queue.
+func TestDeniedEventsBounded(t *testing.T) {
+	up, _ := okUpstream()
+	h := newHarness(t, up, harnessOpts{})
+	h.srv.proxy.refusals.every = refusalEvery
+	k := h.dialControl()
+	h.bindReady(k, testCaller, "s1", "tok", "fp1")
+	for range 20 {
+		req, _ := http.NewRequest(http.MethodGet, h.apiURL+"/nope", nil)
+		if st := doReq(t, h, testCaller, req); st != 404 {
+			t.Fatalf("status %d", st)
+		}
+	}
+	if ev := k.waitFor(isEvent("model.denied")); evData(ev)["reason"] != "route" || evData(ev)["suppressed"] != float64(0) {
+		t.Fatalf("event %v", ev)
+	}
+	k.noMessage(isEvent("model.denied"), 200*time.Millisecond)
+}
+
+func TestHoldTimeoutMustBePositive(t *testing.T) {
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{})
+	if _, err := newServer(config{placeholder: testPlaceholder}, h.srv.profiles, singleResolver); err == nil {
+		t.Fatal("-hold-timeout=0 accepted")
 	}
 }

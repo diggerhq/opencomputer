@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -324,4 +325,98 @@ func TestWSErrorEvent(t *testing.T) {
 		!strings.Contains(m["body"].(string), `"resets_at":1792513800`) {
 		t.Fatalf("observed %v", m)
 	}
+}
+
+func keySlots(h *harness) int {
+	c := h.srv.profiles.get(altProfile).perKey
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n[altAccount]
+}
+
+func callerSlots(h *harness, caller string) int {
+	c := h.srv.proxy.perCaller
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n[caller]
+}
+
+// A response.create on a tunnel whose lease is no longer current is never
+// sent: the tunnel closes instead, whatever is still in flight on it.
+func TestWSNoCreateOnStaleTunnel(t *testing.T) {
+	conns := make(chan *wsPeer, 1)
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
+	k := h.dialControl()
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
+	up := <-conns
+	c.send(`{"type":"response.create","model":"m","input":[]}`)
+	up.recv()
+	h.bindAltReady(k, altCaller, "s1", "tok2", "fpD", altAccount)
+
+	c.w.Write(wsFrame(1, true, []byte(`{"type":"response.create","model":"m","input":["second"]}`), c.mask))
+	c.closed()
+	if _, _, b, err := readWSFrame(up.r); err == nil {
+		t.Fatalf("the upstream got %q on the old credential", b)
+	}
+	e := k.waitFor(isRoute("responses_ws"))
+	if d := evData(e); d["closed"] != "rebind" || d["responses"] != float64(1) || keySlots(h) != 0 {
+		t.Fatalf("event %v, key slots %d", e, keySlots(h))
+	}
+}
+
+// A response.create read as the tunnel ends (the copy to the upstream may
+// outlive the handler by a write) leaves no concurrency slot counted.
+func TestWSCreateAtEndLeavesNoSlot(t *testing.T) {
+	conns := make(chan *wsPeer, 1)
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
+	ended := make(chan *wsTunnel, 1)
+	h.srv.proxy.statsHook = func(st *reqState) { ended <- st.ws }
+	k := h.dialControl()
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	h.openWS(altCaller).c.Close()
+	(<-ended).created(false)
+	if n := keySlots(h); n != 0 {
+		t.Fatalf("key slots %d", n)
+	}
+}
+
+// A tunnel the upstream closed ends, and frees its caller's slot, without
+// waiting for the client to close its side.
+func TestWSUpstreamCloseEndsTunnel(t *testing.T) {
+	conns := make(chan *wsPeer, 1)
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
+	k := h.dialControl()
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	h.openWS(altCaller)
+	(<-conns).c.Close()
+	k.waitFor(isRoute("responses_ws"))
+	if n := callerSlots(h, altCaller); n != 0 {
+		t.Fatalf("caller slots %d", n)
+	}
+}
+
+// A draining proxy waits for a tunnel's response without spinning.
+func TestWSDrainDoesNotSpin(t *testing.T) {
+	conns := make(chan *wsPeer, 1)
+	h := newHarness(t, recordingUpstream(new(atomic.Int64), nil), harnessOpts{alt: wsUpstream(t, 101, nil, "", nil, conns)})
+	k := h.dialControl()
+	h.bindAltReady(k, altCaller, "s1", "tok", "fpC", altAccount)
+	c := h.openWS(altCaller)
+	up := <-conns
+	c.send(`{"type":"response.create","model":"m","input":[]}`)
+	up.recv()
+	cpu := func() time.Duration {
+		var ru syscall.Rusage
+		syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+		return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	}
+	h.srv.proxy.drainWS(context.Background(), false)
+	before := cpu()
+	time.Sleep(400 * time.Millisecond)
+	if used := cpu() - before; used > 200*time.Millisecond {
+		t.Fatalf("%v of CPU in 400 ms of draining", used)
+	}
+	up.send(`{"type":"response.completed","response":{"id":"r1"}}`)
+	c.closed()
 }

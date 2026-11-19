@@ -5,14 +5,15 @@
 //     503/401 at the cap);
 //   - model.denied: a request the proxy refused (refuse.go), with its reason:
 //     credentials | unknown_caller | caller_cap | unbound | refused | route |
-//     websocket | require | concurrency_cap | upstream_busy.
+//     websocket | require | concurrency_cap | upstream_busy. At most one per
+//     caller and reason in refusalEvery, with how many it stands for.
 //
 // Every one carries `profile`: the name of the binding's profile, or none
 // before the binding is known.
 //
 // Envelope enums: outcome completed | failed | cancelled | timed_out;
 // error_type provider_error | provider_rate_limited | timeout | socket |
-// websocket | concurrency | unknown.
+// websocket | concurrency.
 //
 // Proxy overhead is time inside the proxy only: lease → upstream request
 // headers written, minus waiting for an upstream connection (reported apart
@@ -55,7 +56,7 @@ type reqState struct {
 	key        string
 	vars       map[string]string // never logged, never in an event
 	lease      *lease
-	connWait   *time.Timer // cancels the request if no upstream connection comes (proxy.go)
+	connWait   *time.Timer // cancels the request while it queues for an upstream connection (proxy.go)
 	ws         *wsTunnel   // a WS route, once switched
 	swapped    bool
 	proxied    bool
@@ -90,17 +91,23 @@ func (s *reqState) trace(up *upstream) *httptrace.ClientTrace {
 	return &httptrace.ClientTrace{
 		GetConn: func(string) { s.getConn.CompareAndSwap(0, s.since()) },
 		GotConn: func(i httptrace.GotConnInfo) {
-			if s.connWait != nil {
-				s.connWait.Stop()
-			}
+			s.stopConnWait()
 			s.gotConn.CompareAndSwap(0, s.since())
 			s.reused.Store(i.Reused)
 			if !i.Reused {
 				up.poolMiss.Add(1)
 			}
 		},
+		// A dial for this request has its own limits (upstream.go).
+		ConnectStart:         func(string, string) { s.stopConnWait() },
 		WroteHeaders:         func() { s.wroteHeaders.CompareAndSwap(0, s.since()) },
 		GotFirstResponseByte: func() { s.firstByte.CompareAndSwap(0, s.since()) },
+	}
+}
+
+func (s *reqState) stopConnWait() {
+	if s.connWait != nil {
+		s.connWait.Stop()
 	}
 }
 
@@ -145,20 +152,20 @@ func (p *Proxy) finish(st *reqState, r *http.Request) {
 		p.out.send(e)
 	}
 	if st.denyReason != "" {
-		e := newEvent(now, "model.denied")
-		e.SessionKey = st.sessionKey
-		e.Profile = st.profileName()
-		e.Outcome = "failed"
-		e.ErrorType = st.denyErr
-		route := st.route
-		if route == "" {
-			route = "other"
-		}
-		e.Data = map[string]any{"reason": st.denyReason, "route": route}
-		p.out.send(e)
-		if ok, skipped := p.refusals.allow(now, st.caller, st.denyReason); ok {
+		if ok, suppressed := p.refusals.allow(now, st.caller, st.denyReason); ok {
+			e := newEvent(now, "model.denied")
+			e.SessionKey = st.sessionKey
+			e.Profile = st.profileName()
+			e.Outcome = "failed"
+			e.ErrorType = st.denyErr
+			route := st.route
+			if route == "" {
+				route = "other"
+			}
+			e.Data = map[string]any{"reason": st.denyReason, "route": route, "suppressed": suppressed}
+			p.out.send(e)
 			logWarn("denied", "reason", st.denyReason, "error_type", st.denyErr, "profile", e.Profile, "route", route,
-				"path", truncate(st.path, 120), "caller", st.caller, "session_key", st.sessionKey, "unlogged", skipped)
+				"path", truncate(st.path, 120), "caller", st.caller, "session_key", st.sessionKey, "suppressed", suppressed)
 		}
 	}
 	if st.proxied {

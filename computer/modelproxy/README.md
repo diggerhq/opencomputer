@@ -4,7 +4,7 @@ A small reverse proxy between the model clients in a computer's sessions (Claude
 
 Everything the proxy knows about an upstream is configuration: a **profile** names the upstream, the routes a session may call, the headers that carry the credential, and what to report back. The proxy has no built-in providers.
 
-Go, standard library only. One static binary.
+Go, the standard library and one dependency ([tableflip](https://github.com/cloudflare/tableflip), for the restart). One static binary.
 
 ```
 session's client ──HTTP──▶ api socket ─────────┐
@@ -57,7 +57,7 @@ Any Anthropic-compatible or Responses-compatible API is one more entry:
 | `report` | Globs of response header names sent to the binder with each `observed`. |
 | `concurrency` | `{ "key": "{variable}", "limit": n }`: a cap on requests in flight across every caller whose binding expands `key` alike. Over it: 429, `Retry-After: 1`. |
 | `websocket` | `false` refuses the profile's WS routes with 426, so clients go on over HTTP. |
-| `harness` | Per harness name, an object passed to the binder in `hello`; the proxy does not read it. It is where a profile says how each model client is configured for it. |
+| `harness` | Per harness name, an object passed to the binder in `hello`; the proxy does not read it. It is where a profile says how each model client is configured for it: Claude Code reads `{ "tokenEnv": "ANTHROPIC_API_KEY" \| "ANTHROPIC_AUTH_TOKEN" \| "CLAUDE_CODE_OAUTH_TOKEN", "promptCacheTtl"?: "1h", "downgradeOnModelRefusal"?: true }` (the variable it sends the placeholder in, its prompt cache TTL, and whether a refused model steps down a family), Codex `{}`; anything else in them is malformed, and a computer's runner refuses the turn. |
 | `errors` | Texts replacing the proxy's own: `require`, `notReady`, `refused`, `refusedPrefix`, `unreachable`, `concurrency`. |
 
 Per route:
@@ -65,7 +65,7 @@ Per route:
 | Field | Meaning |
 |---|---|
 | `to` | The upstream path, when it differs from the route's. |
-| `require` | Header globs the request must match (a whole value, or one item of a comma-separated list, parameters ignored), else 403. |
+| `require` | Header globs the request must match (a whole value, or one item of a comma-separated list, parameters ignored), else 403. A header the request's `Connection` lists does not count: it would not reach the upstream. |
 | `set`, `default` | Headers for this route; `default` only where the request has none. |
 | `name` | Its name in telemetry; by default the path's last element (`messages`, `count_tokens`), `_ws` added for a WS route. |
 | `format` | `responses`: the route streams Responses events, which telemetry reads for the first output and the service tier. A WS route always does. |
@@ -95,13 +95,16 @@ Written by the proxy itself, never the upstream. One body on every route: `{"typ
 | 401 | `unbound` | No bind within `-hold-timeout` for a caller the binder did not name by `synced`. |
 | 401 | `refused` | The binder bound the caller with `mode: "refuse"`; its reason is the text. |
 | 404 | `route` | Not a route of the caller's profile. |
-| 426 | `websocket` | An upgrade that is not a WS route, or `websocket: false`, or the upstream refused the handshake. |
+| 426 | `websocket` | An upgrade that is not a WS route, or `websocket: false`. |
+| 426 | none (`model.request`) | The upstream refused the WebSocket handshake; the event and `observed` carry its status. |
 | 403 | `require` | The route's `require` does not match. |
 | 429 | `concurrency_cap` | The profile's `concurrency`. `Retry-After: 1`. |
-| 503 | `upstream_busy` | No upstream connection within `-hold-timeout`. `Retry-After: 1`. |
-| 502 | none (`model.request`) | The upstream could not be reached. |
+| 503 | `upstream_busy` | Still queued for one of the upstream's connections (`-max-conns-per-host`) after `-hold-timeout`. `Retry-After: 1`. |
+| 502 | none (`model.request`) | The upstream could not be reached (10 s to connect, 10 s for TLS); `observed` carries the error. |
 
-On a request to upgrade, every refusal is a 426 with `Use HTTP: ` before the text, so a client goes on over HTTP. Each refusal is an event; the journal gets one line per caller and reason every 10 s.
+On a request to upgrade, every refusal is a 426 with `Use HTTP: ` before the text, so a client goes on over HTTP. A refusal is reported, as a `model.denied` event and a journal line, at most once per caller and reason every 10 s; `suppressed` counts those since the last report.
+
+Before a request is admitted: its headers may be 32 KB (431 past it), and a caller may have `-max-conns-per-caller` connections open (more are closed as accepted).
 
 ## Control protocol
 
@@ -124,7 +127,7 @@ Rules that hold:
 
 - Every binder → proxy frame is idempotent: the same `bind` twice is answered `bound` twice and changes nothing.
 - A caller serves one `sessionKey` from its bind to its release; a bind naming another is `refused` (`caller_in_use`).
-- A bind applies to the caller's next request. Streams in flight finish on the credential they started with; a WebSocket is closed after the response in flight.
+- A bind applies to the caller's next request. Streams in flight finish on the credential they started with; a WebSocket is closed after the response in flight, or at once if the client starts another on it first.
 - Variables live only in memory. `-bindings-file` keeps caller, session, mode, profile and key, so a restarted proxy holds its callers' requests until the binder re-binds instead of refusing them.
 - Only `release` removes a binding. A closed control connection changes nothing; a binder that connects again gets every binding in its `hello`.
 
@@ -135,13 +138,13 @@ Rules that hold:
 | `name` | When | `data` |
 |---|---|---|
 | `model.request` | A request that reached the upstream, once it ends. | `route`, `stream`, `swapped`, `status`, `key`, `conn_wait_ms`, `conn_reused`, `overhead_us`, `ttfb_ms`; on a `responses` route `first_output_ms`, `service_tier`; over a WebSocket `transport`, `responses`, `closed`, `prewarm` |
-| `model.held` | A request that waited for its caller's bind. | `held_ms`, `released` (`bound`, `timeout`, `cancelled`) |
-| `model.denied` | A refusal. | `reason` (the table above), `route` |
+| `model.held` | A request that waited for its caller's bind. | `held_ms`, `released` (`bound`, `timeout`) |
+| `model.denied` | A refusal, at most one per caller and reason every 10 s. | `reason` (the table above), `route`, `suppressed` |
 | `model.binding` | A bind, a change of credential, a release, a refused bind. | `action` (`bind`, `swap`, `release`, `refused`), `caller`, `mode`, `key`; `code` when refused |
 | `model.pool` | Every minute, per profile with traffic. | `open_conns`, `idle_conns`, `active_streams`, `idle_pool_miss`, `dials`; on the first profile also `bindings`, `dropped_messages` |
 | `model.proxy_started` | At start. | `version`, `bindings` |
 
-`outcome` is `completed`, `failed`, `cancelled` or `timed_out`; `error_type` is `provider_error`, `provider_rate_limited`, `timeout`, `socket`, `websocket`, `concurrency` or `unknown`.
+`outcome` is `completed`, `failed`, `cancelled` or `timed_out`; `error_type` is `provider_error`, `provider_rate_limited`, `timeout`, `socket`, `websocket` or `concurrency`.
 
 ## Who is calling
 
@@ -153,7 +156,7 @@ Rules that hold:
 
 | Flag | Default | |
 |---|---|---|
-| `-api-socket` | `/run/oc-modelproxy/api/api.sock` | the model clients' socket, when not socket-activated. In a directory of its own, so that a session's container can mount that directory and nothing else of the proxy's |
+| `-api-socket` | `/run/oc-modelproxy/api.sock` | the model clients' socket, when not socket-activated |
 | `-control-socket` | `/run/oc-modelproxy/control.sock` | the binder's socket, when not socket-activated |
 | `-profiles` | `/etc/oc-modelproxy/profiles.d` | directory of profile files |
 | `-check` | | load `-profiles`, print the first error, exit 0 or 1 |
@@ -161,14 +164,15 @@ Rules that hold:
 | `-identity` | `cgroup` | `cgroup` or `single` |
 | `-caller-uid` | `-1` (any) | with `-identity=cgroup`, the only uid a caller may have |
 | `-bindings-file` | `/run/oc-modelproxy/profile-bindings.json` | persisted bindings, without variables (empty: off) |
-| `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for an upstream connection |
-| `-drain-timeout` | `630s` | on SIGTERM, how long streams in flight may finish |
+| `-hold-timeout` | `10s` | how long a request waits for its caller's bind, and then for a free upstream connection |
+| `-drain-timeout` | `630s` | on SIGTERM or after a handoff, how long streams in flight may finish |
 | `-max-inflight-per-caller` | `32` | concurrent requests per caller, held ones included (0: no limit) |
+| `-max-conns-per-caller` | `128` | connections a caller may have open on the API socket (0: no limit) |
 | `-ws-idle-timeout` | `5m` | close a WebSocket idle this long between responses (0: never) |
 | `-max-idle-conns-per-host`, `-max-conns-per-host`, `-idle-conn-timeout` | `96`, `256`, `50s` | upstream connection pool, per profile |
 | `-debug`, `-version` | | |
 
-Profiles are read at start; to change them, restart the proxy. Bindings survive the restart and streams in flight finish first. The garbage collector runs at `GOGC=400` unless the environment sets `GOGC`.
+Profiles are read at start; to change them, or the binary, send `SIGUSR2`. The proxy starts its replacement with the same command line and the listening sockets, and when that is ready stops accepting and exits once its streams end. No connection is refused in between: the replacement holds each caller's requests until the binder, whose connection the old process closes, has re-bound. A replacement that does not start changes nothing; the old process logs `handoff failed; still serving`. Under systemd the unit needs `Type=notify` and `NotifyAccess=all`, since the replacement reports itself as the new main pid. `SIGTERM` stops the proxy: bindings survive, streams in flight finish first, and new connections wait for the next start only if systemd owns the sockets. The garbage collector runs at `GOGC=400` unless the environment sets `GOGC`.
 
 ## Build and test
 
@@ -200,4 +204,4 @@ curl --unix-socket /tmp/mp/api.sock http://localhost/v1/messages \
 
 ## Files
 
-One concept per file, each with a header comment that says what it is and what must stay true: `profile.go` and `template.go` (profiles), `bindings.go` and `lease.go` (the table, and a request's hold on it), `proxy.go` (a request's stages), `refuse.go` (refusals), `outbound.go` (the rewrite), `observed.go` and `request.go` (what the binder hears and asks), `control.go` and `frames.go` (the control protocol), `websocket.go`, `wsframe.go`, `wsmessages.go` (WebSocket tunnels), `responses.go` and `telemetry.go` (events), `upstream.go` (connections), `identity.go`, `inflight.go`, `persist.go`, `activation.go`.
+One concept per file, each with a header comment that says what it is and what must stay true: `profile.go` and `template.go` (profiles), `bindings.go` and `lease.go` (the table, and a request's hold on it), `proxy.go` (a request's stages), `refuse.go` (refusals), `outbound.go` (the rewrite), `observed.go` and `request.go` (what the binder hears and asks), `control.go` and `frames.go` (the control protocol), `websocket.go`, `wsframe.go`, `wsmessages.go` (WebSocket tunnels), `responses.go` and `telemetry.go` (events), `upstream.go` (connections), `identity.go` and `connlimit.go` (who is calling), `inflight.go`, `persist.go`, `activation.go`.

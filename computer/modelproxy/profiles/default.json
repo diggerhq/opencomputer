@@ -8,7 +8,7 @@
     "set": { "X-Api-Key": "{token}" },
     "remove": ["Cookie"],
     "report": ["retry-after", "request-id", "anthropic-ratelimit-*"],
-    "harness": { "claude": { "tokenEnv": "ANTHROPIC_API_KEY" } }
+    "harness": { "claude": { "tokenEnv": "ANTHROPIC_API_KEY", "promptCacheTtl": "1h" } }
   },
   "claude-oauth": {
     "upstream": "https://api.anthropic.com",
@@ -25,7 +25,7 @@
     "set": { "Authorization": "Bearer {token}" },
     "remove": ["Cookie"],
     "report": ["retry-after", "request-id", "anthropic-ratelimit-*"],
-    "harness": { "claude": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN" } }
+    "harness": { "claude": { "tokenEnv": "CLAUDE_CODE_OAUTH_TOKEN", "promptCacheTtl": "1h" } }
   },
   "openrouter": {
     "upstream": "https://openrouter.ai/api",

@@ -533,6 +533,23 @@ describe("visibility and lists", () => {
     expect((idle.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)).toEqual([slackId]);
   });
 
+  it("a link reaches back: Slack sessions from before it become the owner's on their next list", async () => {
+    const f = fixture();
+    f.slackRow("T1:C1:1.2");
+    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
+    const ids = async (who?: string) =>
+      ((await f.api.handle(caller(who), { op: "list", query: [] })).body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
+    expect(await ids()).toEqual([]);
+    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
+    expect(await ids(MO)).toEqual([]);
+    expect(f.frames("access").at(-1)).toEqual({ t: "access", access: { sessionId: slackId, owner: OWNER, members: [OWNER] } });
+    expect(await ids()).toEqual([slackId]);
+    // Once theirs, it is not attached again.
+    const accesses = f.frames("access").length;
+    await ids();
+    expect(f.frames("access")).toHaveLength(accesses);
+  });
+
   it("a v3 host's Slack deliveries are unchanged (no id, no frames)", async () => {
     const f = fixture({ protocol: 3 });
     f.slackRow("T1:C1:1.2");
@@ -920,6 +937,7 @@ describe("api-http", () => {
     expect(matchApiRoute("POST", `/sessions/${SID}/asks/ak_7c1v9b4m8q2x/answer`)).toEqual({ op: "asks.answer", sessionId: SID, sub: "ak_7c1v9b4m8q2x" });
     expect(matchApiRoute("POST", `/sessions/${SID}/subagents/sa_000000000001/stop`)).toEqual({ op: "subagents.stop", sessionId: SID, sub: "sa_000000000001" });
     expect(matchApiRoute("GET", "/me")).toEqual({ op: "me" });
+    expect(matchApiRoute("GET", "/capabilities")).toEqual({ op: "capabilities" });
     expect(matchApiRoute("DELETE", `/sessions/${SID}`)).toBeNull();
   });
 

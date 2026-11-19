@@ -1003,7 +1003,8 @@ describe("computer routes", () => {
     expect(off.welcome).not.toHaveProperty("wire");
     expect(off.recorded).toBe(3);
     expect(off.listed).toMatchObject({ status: 409, error: { code: "feature_unavailable", feature: "sessions" } });
-    expect(off.deliver).toEqual(v3.deliver);
+    // (The baseline's message started the thread's session; this one is its owner's in it: work 112's `role`.)
+    expect(off.deliver).toEqual({ ...v3.deliver, msg: { ...v3.deliver.msg, role: "owner" } });
     expect(off.deliver.session).not.toHaveProperty("sessionId");
     expect(off.access).toEqual([]);
 
@@ -1015,7 +1016,7 @@ describe("computer routes", () => {
     expect(on.deliver.session).toMatchObject({ key: v3.deliver.session.key, sessionId: expect.stringMatching(/^cs_/), origin: { type: "slack" } });
     const { epoch, lastSeq, ...onRest } = on.deliver;
     expect({ epoch, lastSeq }).toEqual({ epoch: 1, lastSeq: 0 });
-    expect({ ...onRest, session: v3.deliver.session }).toEqual(v3.deliver);
+    expect({ ...onRest, session: off.deliver.session }).toEqual(off.deliver);
     expect(off.deliver).not.toHaveProperty("epoch");
 
     // Flipped back off: v3 again at the next hello, the API refuses again.

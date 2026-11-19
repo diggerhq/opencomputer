@@ -8,8 +8,9 @@
 // is never in the session's process, files or environment.
 //
 // Profiles are JSON files (-profiles), read at start: a change takes a
-// restart, which keeps bindings (persist.go); -check validates them without
-// starting. Everything else is flags. Standard library only.
+// restart, which keeps bindings (persist.go) and, on SIGUSR2, leaves no gap
+// (handoff.go); -check validates them without starting. Everything else is
+// flags. One dependency beyond the standard library, for that handoff.
 package main
 
 import (
@@ -42,6 +43,7 @@ type config struct {
 	bindingsFile             string
 	hold, drain              time.Duration
 	maxInflightPerCaller     int
+	maxConnsPerCaller        int
 	wsIdle                   time.Duration
 	maxIdlePerHost           int
 	maxConnsPerHost          int
@@ -56,6 +58,10 @@ type config struct {
 // stream latency (p99 overhead about 1.5 ms at 64 streams, versus 0.15 ms
 // at 400; see BenchmarkProxyOverhead). 400 costs a few tens of MiB.
 const defaultGCPercent = 400
+
+// maxHeaderBytes bounds a request's headers; with -max-conns-per-caller it
+// bounds what a caller can make the proxy hold before a request is admitted.
+const maxHeaderBytes = 32 << 10
 
 // setGCPercent applies defaultGCPercent unless GOGC is set in the environment.
 func setGCPercent() {
@@ -112,16 +118,17 @@ func parseFlags(args []string) (config, runMode, error) {
 	fs := flag.NewFlagSet("oc-modelproxy", flag.ContinueOnError)
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	check := fs.Bool("check", false, "load -profiles as a start would, print the first error and exit 0 or 1; opens no socket")
-	fs.StringVar(&cfg.apiSocket, "api-socket", "/run/oc-modelproxy/api/api.sock", "the model clients' socket; used when not socket-activated")
+	fs.StringVar(&cfg.apiSocket, "api-socket", "/run/oc-modelproxy/api.sock", "the model clients' socket; used when not socket-activated")
 	fs.StringVar(&cfg.controlSocket, "control-socket", "/run/oc-modelproxy/control.sock", "the binder's control socket; used when not socket-activated")
 	fs.StringVar(&cfg.profilesDir, "profiles", "/etc/oc-modelproxy/profiles.d", "directory of profile files (*.json)")
 	fs.StringVar(&cfg.placeholder, "placeholder", "ssh-placeholder", "the only credential a caller may send: `Authorization: Bearer <it>` or `x-api-key: <it>`")
 	fs.StringVar(&cfg.identity, "identity", "cgroup", "how a caller is named: cgroup (<id> of its sp-runner-<id>.service unit) or single (every caller is "+singleCaller+")")
 	fs.IntVar(&cfg.callerUID, "caller-uid", anyUID, "with -identity=cgroup, the only uid a caller may have (the sessions' user); -1: any")
 	fs.StringVar(&cfg.bindingsFile, "bindings-file", "/run/oc-modelproxy/profile-bindings.json", "persisted bindings, without their variables (empty: do not persist)")
-	fs.DurationVar(&cfg.hold, "hold-timeout", 10*time.Second, "how long a request waits for its caller's credential, and then for an upstream connection")
-	fs.DurationVar(&cfg.drain, "drain-timeout", 630*time.Second, "on SIGTERM, how long in-flight streams may finish")
+	fs.DurationVar(&cfg.hold, "hold-timeout", 10*time.Second, "how long a request waits for its caller's credential, and then for a free upstream connection")
+	fs.DurationVar(&cfg.drain, "drain-timeout", 630*time.Second, "on SIGTERM or after a handoff, how long in-flight streams may finish")
 	fs.IntVar(&cfg.maxInflightPerCaller, "max-inflight-per-caller", 32, "concurrent requests (held ones included) one caller may have; more get 429 (0: no limit)")
+	fs.IntVar(&cfg.maxConnsPerCaller, "max-conns-per-caller", 128, "connections one caller may have open on the API socket; more are closed as accepted (0: no limit)")
 	fs.DurationVar(&cfg.wsIdle, "ws-idle-timeout", 5*time.Minute, "close a WebSocket idle this long between responses; it holds a caller's in-flight slot while open (0: never)")
 	fs.IntVar(&cfg.maxIdlePerHost, "max-idle-conns-per-host", 96, "idle upstream connections kept")
 	fs.IntVar(&cfg.maxConnsPerHost, "max-conns-per-host", 256, "upstream connection ceiling; requests beyond it queue")
@@ -159,35 +166,55 @@ func run(cfg config) error {
 		return err
 	}
 
+	h, err := newHandoff()
+	if err != nil {
+		return err
+	}
 	ls, err := activatedListeners()
 	if err != nil {
 		return err
 	}
-	apiL, ctlL := ls["api"], ls["control"]
-	if apiL == nil {
-		if apiL, err = listenUnix(cfg.apiSocket); err != nil {
-			return err
-		}
+	apiL, err := h.listener("api", cfg.apiSocket, ls)
+	if err != nil {
+		return err
 	}
-	if ctlL == nil {
-		if ctlL, err = listenUnix(cfg.controlSocket); err != nil {
-			return err
-		}
+	ctlL, err := h.listener("control", cfg.controlSocket, ls)
+	if err != nil {
+		return err
 	}
 	srv.start(apiL, ctlL)
-	sdNotify("READY=1")
+	if err := h.ready(); err != nil {
+		return err
+	}
 	logInfo("ready", "activated", len(ls) > 0, "profiles", len(ps.sorted), "bindings", srv.bindings.Len(), "startup_ms", ms(time.Since(started)))
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
-	sdNotify("STOPPING=1")
-	logInfo("draining", "streams", srv.proxy.activeStreams())
+	handedOff := waitToStop(h)
+	logInfo("draining", "streams", srv.proxy.activeStreams(), "handed_off", handedOff)
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.drain)
 	defer cancel()
 	err = srv.shutdown(ctx)
 	logInfo("exit", "uptime_s", int(time.Since(started).Seconds()), "dropped_messages", srv.control.Dropped())
 	return err
+}
+
+// waitToStop returns when the process is to drain and exit: on SIGTERM or
+// SIGINT, or once the replacement a SIGUSR2 asked for is ready (handoff.go).
+func waitToStop(h *handoff) (handedOff bool) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR2)
+	for {
+		select {
+		case s := <-sig:
+			if s == syscall.SIGUSR2 {
+				h.replace()
+				continue
+			}
+			sdNotify("STOPPING=1")
+			return false
+		case <-h.replaced():
+			return true
+		}
+	}
 }
 
 // server wires the parts; tests build it with their own resolver and roots.
@@ -199,6 +226,7 @@ type server struct {
 	proxy    *Proxy
 	persist  *persister
 	http     *http.Server
+	resolve  Resolver
 	ctlL     net.Listener
 	stop     chan struct{}
 	done     chan struct{}
@@ -214,7 +242,10 @@ func newServer(cfg config, ps *profiles, resolve Resolver) (*server, error) {
 	if cfg.placeholder == "" || !validHeaderValue(cfg.placeholder) {
 		return nil, fmt.Errorf("-placeholder must be a header value")
 	}
-	s := &server{cfg: cfg, profiles: ps, stop: make(chan struct{}), done: make(chan struct{})}
+	if cfg.hold <= 0 {
+		return nil, fmt.Errorf("-hold-timeout must be positive")
+	}
+	s := &server{cfg: cfg, profiles: ps, resolve: resolve, stop: make(chan struct{}), done: make(chan struct{})}
 	s.control = NewControl(version, cfg.placeholder, ps)
 	s.bindings = NewBindings(ps, s.control, nil)
 	s.persist = newPersister(cfg.bindingsFile, s.bindings.Snapshot)
@@ -233,8 +264,9 @@ func newServer(cfg config, ps *profiles, resolve Resolver) (*server, error) {
 	}
 	s.http = &http.Server{
 		Handler:           s.proxy,
-		ConnContext:       ConnContext(resolve),
+		ConnContext:       connCaller,
 		ReadHeaderTimeout: 30 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
 		IdleTimeout:       5 * time.Minute,
 		ErrorLog:          discardLog,
 	}
@@ -246,7 +278,8 @@ func (s *server) start(apiL, ctlL net.Listener) {
 	s.ctlL = ctlL
 	go s.persist.run()
 	go func() {
-		if err := s.http.Serve(apiL); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		l := &callerListener{Listener: apiL, resolve: s.resolve, conns: newInflight(s.cfg.maxConnsPerCaller)}
+		if err := s.http.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logError("api socket", "error", err.Error())
 		}
 	}()
@@ -310,12 +343,12 @@ func (s *server) poolEvent(p *profile, first bool) (eventMsg, bool) {
 	return e, true
 }
 
-// shutdown: drop the binder's connection first (it reconnects to the next
-// instance at once), stop accepting, let in-flight streams and WebSocket
-// responses finish.
+// shutdown: leave the control socket to the next instance and drop the
+// binder's connection (it reconnects at once), stop accepting, let in-flight
+// streams and WebSocket responses finish.
 func (s *server) shutdown(ctx context.Context) error {
-	s.control.Close()
 	s.ctlL.Close()
+	s.control.Close()
 	s.proxy.drainWS(ctx, false) // tunnels close between responses while HTTP streams finish
 	err := s.http.Shutdown(ctx)
 	s.proxy.drainWS(ctx, true)

@@ -71,6 +71,7 @@ type harnessOpts struct {
 	hold      time.Duration
 	restore   []bindingInfo
 	perCaller int           // -max-inflight-per-caller; 0 = the default of 32
+	conns     int           // -max-conns-per-caller; 0 = no limit
 	alt       http.Handler  // the alt profile's upstream; nil = one that answers 500
 	perKey    int           // alt's concurrency limit; 0 = 8
 	noWS      bool          // alt's `websocket: false`
@@ -130,7 +131,7 @@ func newHarness(t testing.TB, h http.Handler, o harnessOpts) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{hold: o.hold, bindingsFile: filepath.Join(dir, "bindings.json"), maxInflightPerCaller: o.perCaller, wsIdle: o.wsIdle,
+	cfg := config{hold: o.hold, bindingsFile: filepath.Join(dir, "bindings.json"), maxInflightPerCaller: o.perCaller, maxConnsPerCaller: o.conns, wsIdle: o.wsIdle,
 		placeholder: testPlaceholder, rootCAs: roots,
 		maxIdlePerHost: 128, maxConnsPerHost: o.maxConns, idleConnTimeout: time.Minute}
 	if o.restore != nil {
@@ -155,6 +156,7 @@ func newHarness(t testing.TB, h http.Handler, o harnessOpts) *harness {
 		t.Fatal(err)
 	}
 	hs.srv = srv
+	srv.proxy.refusals.every = 0 // every refusal is an event
 	apiL, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

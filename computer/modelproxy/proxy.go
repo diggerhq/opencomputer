@@ -4,7 +4,7 @@
 //
 //	identify      the caller carries no credential of its own, only the
 //	              placeholder (401); the connection has a caller
-//	              (identity.go; none → 401); the caller is under its
+//	              (connlimit.go; none → 401); the caller is under its
 //	              in-flight cap (-max-inflight-per-caller, held requests
 //	              count; over → 429), so one session cannot queue enough
 //	              hanging requests to starve the others
@@ -20,8 +20,10 @@
 //	              `concurrency` cap (429): header compares only, never
 //	              contacting the upstream
 //	forward       the profile's own ReverseProxy (outbound.go), the response
-//	              streamed with an immediate flush. A request that gets no
-//	              upstream connection within -hold-timeout → 503
+//	              streamed with an immediate flush. A request still queued
+//	              for one of the upstream's connections (-max-conns-per-host)
+//	              after -hold-timeout → 503; an upstream that cannot be
+//	              reached is a 502, on the dial's own limits (upstream.go)
 //
 // When the request ends, whatever stage it reached, finish sends its
 // telemetry (telemetry.go). On a request to upgrade, every refusal is a 426
@@ -36,7 +38,6 @@ import (
 	"errors"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -71,7 +72,7 @@ type Proxy struct {
 // NewProxy serves ps; every profile's upstream must be set (newOutbound).
 func NewProxy(b *Bindings, o *Observer, out sender, ps *profiles, placeholder string, hold time.Duration, perCaller int) *Proxy {
 	return &Proxy{bindings: b, observer: o, out: out, profiles: ps, placeholder: placeholder, hold: hold, now: time.Now,
-		wsIdle: 5 * time.Minute, wsDrain: make(chan struct{}), perCaller: newInflight(perCaller)}
+		wsIdle: 5 * time.Minute, wsDrain: make(chan struct{}), perCaller: newInflight(perCaller), refusals: refusalLog{every: refusalEvery}}
 }
 
 // activeStreams is every profile's requests in flight upstream.
@@ -81,14 +82,6 @@ func (p *Proxy) activeStreams() int64 {
 		n += prof.up.streams.Load()
 	}
 	return n
-}
-
-// ConnContext names a connection's caller as it is accepted: every request
-// on it is that caller's, whatever its process does afterwards.
-func ConnContext(resolve Resolver) func(context.Context, net.Conn) context.Context {
-	return func(ctx context.Context, c net.Conn) context.Context {
-		return context.WithValue(ctx, callerKey, resolve(c))
-	}
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +199,7 @@ func (p *Proxy) check(w http.ResponseWriter, r *http.Request, st *reqState, l *l
 }
 
 // errConnWait cancels a request that got no upstream connection in time.
-var errConnWait = errors.New("no upstream connection within the hold timeout")
+var errConnWait = errors.New("no free upstream connection within the hold timeout")
 
 // forward hands the request to the profile's ReverseProxy.
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, st *reqState, l *lease) {
@@ -219,7 +212,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, st *reqState, l 
 	defer prof.up.streams.Add(-1)
 	ctx, cancel := context.WithCancelCause(context.WithValue(r.Context(), stateKey, st))
 	defer cancel(nil)
-	// Stopped when the transport hands over a connection (reqState.trace).
+	// Stopped when the transport hands over a connection or starts dialling
+	// one for this request (reqState.trace).
 	st.connWait = time.AfterFunc(p.hold, func() { cancel(errConnWait) })
 	defer st.connWait.Stop()
 	defer func() { // also when ReverseProxy aborts the handler
@@ -247,10 +241,14 @@ func placeholderOK(h http.Header, placeholder string) bool {
 // ReverseProxy tunnel a connection the proxy cannot observe. A bare Upgrade
 // header is no request to switch: it is a hop-by-hop header ReverseProxy
 // strips.
-func isUpgrade(h http.Header) bool {
+func isUpgrade(h http.Header) bool { return connectionLists(h, "upgrade") }
+
+// connectionLists: the request's Connection header names token, which makes
+// a header of that name hop-by-hop: ReverseProxy strips it.
+func connectionLists(h http.Header, token string) bool {
 	for _, v := range h["Connection"] {
 		for t := range strings.SplitSeq(v, ",") {
-			if strings.EqualFold(strings.TrimSpace(t), "upgrade") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
 				return true
 			}
 		}
