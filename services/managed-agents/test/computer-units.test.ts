@@ -467,6 +467,32 @@ describe("GitHub for the computer", () => {
     const many = Array.from({ length: DEFINITION_REPO_LIMIT + 1 }, (_, i) => pushed(`o/r${i}`, i === 0 ? 1 : 2));
     expect(workspaceDefinition("organization", many).repos.map((r) => r.name)).not.toContain("r0");
   });
+
+  it("marks the knowledge repository, eager and outside the cut", () => {
+    const pushed = (fullName: string, day: number) => ({
+      installationId: "x",
+      fullName,
+      defaultBranch: "main",
+      archived: false,
+      pushedAt: `2026-10-${String(day).padStart(2, "0")}T12:00:00Z`,
+    });
+    // The oldest push of all: without the role it would be cut and, kept, lazy.
+    const many = [pushed("o/notes", 1), ...Array.from({ length: DEFINITION_REPO_LIMIT + 1 }, (_, i) => pushed(`o/r${i}`, 2))];
+    const repos = workspaceDefinition("organization", many, "O/Notes").repos;
+    expect(repos).toHaveLength(DEFINITION_REPO_LIMIT + 1);
+    expect(repos.find((r) => r.name === "notes")).toEqual({
+      name: "notes",
+      remote: "https://github.com/o/notes",
+      branch: "main",
+      role: "knowledge",
+      pushedAt: "2026-10-01",
+    });
+    expect(repos.filter((r) => r.role === "knowledge")).toHaveLength(1);
+    expect(repos.filter((r) => r.clone !== "lazy")).toHaveLength(EAGER_REPO_COUNT + 1);
+    // Without one, or naming a repository the connection does not reach, nothing is marked.
+    expect(workspaceDefinition("organization", many).repos.some((r) => r.role)).toBe(false);
+    expect(workspaceDefinition("organization", many, "o/elsewhere").repos.some((r) => r.role)).toBe(false);
+  });
 });
 
 describe("idle park setting", () => {

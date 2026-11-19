@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // HOST_DATA is read when protocol.ts loads, so SP_DATA must be set first.
 const data = mkdtempSync(path.join(os.tmpdir(), 'sp-def-'));
 process.env.SP_DATA = data;
-const { definitionFile, gatewayDefinitionPath, loadDefinition, saveGatewayDefinition, validateDefinition, workspacesEnabled } = await import(
+const { definitionFile, gatewayDefinitionPath, isLazy, loadDefinition, saveGatewayDefinition, validateDefinition, workspacesEnabled } = await import(
   './definition.js'
 );
 
@@ -50,6 +50,21 @@ describe('validateDefinition', () => {
     });
   });
 
+  it('keeps the knowledge role, which is always eager', () => {
+    const [k, other] = validateDefinition(
+      {
+        repos: [
+          { name: 'notes', remote: 'https://github.com/o/notes', role: 'knowledge', clone: 'lazy' },
+          { name: 'b', remote: 'https://github.com/o/b', clone: 'lazy' },
+        ],
+      },
+      true,
+    ).repos;
+    expect(k).toEqual({ name: 'notes', remote: 'https://github.com/o/notes', clone: 'lazy', role: 'knowledge' });
+    expect(isLazy(k)).toBe(false);
+    expect(isLazy(other)).toBe(true);
+  });
+
   it.each([
     ['not an object', null],
     ['no repos', { name: 'x' }],
@@ -57,6 +72,16 @@ describe('validateDefinition', () => {
     ['duplicate name', { repos: [{ name: 'a', remote: 'https://github.com/o/a' }, { name: 'a', remote: 'https://github.com/o/b' }] }],
     ['no remote', { repos: [{ name: 'a' }] }],
     ['bad clone mode', { repos: [{ name: 'a', remote: 'https://github.com/o/a', clone: 'sometimes' }] }],
+    ['bad role', { repos: [{ name: 'a', remote: 'https://github.com/o/a', role: 'notes' }] }],
+    [
+      'a second knowledge repository',
+      {
+        repos: [
+          { name: 'a', remote: 'https://github.com/o/a', role: 'knowledge' },
+          { name: 'b', remote: 'https://github.com/o/b', role: 'knowledge' },
+        ],
+      },
+    ],
     ['non-string description', { repos: [{ name: 'a', remote: 'https://github.com/o/a', description: 3 }] }],
     ['setup not a list', { repos: [{ name: 'a', remote: 'https://github.com/o/a', setup: 'make' }] }],
     ['root file escaping the workspace', { repos: [], rootFiles: { '../x': 'a.md' } }],

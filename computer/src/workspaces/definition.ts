@@ -60,8 +60,11 @@ export function repoSlug(remote: string) {
   return m ? `${m[1]}/${m[2]}` : remote;
 }
 
+/** The organization's knowledge repository (work tracking): eager whatever its `clone` says. */
+export const isKnowledge = (r: RepoDef) => r.role === 'knowledge';
+
 /** Cloned only when a session checks it out (`checkout_repo`), never in the background. */
-export const isLazy = (r: RepoDef) => r.clone === 'lazy';
+export const isLazy = (r: RepoDef) => r.clone === 'lazy' && !isKnowledge(r);
 
 /** A relative path that stays inside its directory: no absolute paths, no `..`. */
 function contained(p: string) {
@@ -82,6 +85,7 @@ export function validateDefinition(raw: unknown, gateway = false): WorkspaceDefi
   if (d.about !== undefined && typeof d.about !== 'string') fail('about is not a string');
   if (!Array.isArray(d.repos)) fail('repos is not an array');
   const seen = new Set<string>();
+  let knowledge = 0;
   const repos = (d.repos as unknown[]).map((x): WorkspaceRepo => {
     const r = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
     const what = `repo ${JSON.stringify(x)}`;
@@ -96,6 +100,8 @@ export function validateDefinition(raw: unknown, gateway = false): WorkspaceDefi
     if (r.setup !== undefined && !(Array.isArray(r.setup) && r.setup.every((c) => typeof c === 'string'))) fail(`${what}: setup is not a list of commands`);
     if (r.unpublished !== undefined && typeof r.unpublished !== 'boolean') fail(`${what}: unpublished is not a boolean`);
     if (r.clone !== undefined && r.clone !== 'eager' && r.clone !== 'lazy') fail(`${what}: clone is not eager or lazy`);
+    if (r.role !== undefined && r.role !== 'knowledge') fail(`${what}: role is not knowledge`);
+    if (r.role === 'knowledge' && knowledge++) fail(`${what}: a second knowledge repository`);
     for (const k of ['description', 'language', 'pushedAt'] as const)
       if (r[k] !== undefined && typeof r[k] !== 'string') fail(`${what}: ${k} is not a string`);
     return {
@@ -105,6 +111,7 @@ export function validateDefinition(raw: unknown, gateway = false): WorkspaceDefi
       ...(r.setup !== undefined && { setup: r.setup as string[] }),
       ...(r.unpublished !== undefined && { unpublished: r.unpublished as boolean }),
       ...(r.clone !== undefined && { clone: r.clone as 'eager' | 'lazy' }),
+      ...(r.role !== undefined && { role: r.role as 'knowledge' }),
       // Index text only, but it lands in AGENTS.md: one line, bounded.
       ...(typeof r.description === 'string' && r.description.trim() && { description: oneLine(r.description, 200) }),
       ...(typeof r.language === 'string' && r.language.trim() && { language: oneLine(r.language, 40) }),
