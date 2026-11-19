@@ -144,7 +144,8 @@ crons = ["*/5 * * * *"]
 
 [vars]
 WORKER_ENV = "dev"
-# Computer rollout (work 052); see wrangler.prod.toml.
+# Computer rollout (work 052): only the organizations listed (comma-separated
+# ids) see their computer until COMPUTER_ENABLED_FOR_ALL is "true".
 COMPUTER_ENABLED_FOR_ALL = "false"
 COMPUTER_ENABLED_ORGS = ""
 MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev"

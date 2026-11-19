@@ -19,6 +19,10 @@
     "TELEMETRY_COLLECTOR_URL": "https://telemetry.example.com",
     "COMPUTER_DEFAULT_SIZE": "Standard_D16as_v7",
     "COMPUTER_MAX_SIZE": "Standard_D16as_v7",
+    // Work 106: eastus zone 1 has had no Standard_D16as_v7 since 2026-11-15, so new computers try it last,
+    // and computers whose disks are there wake on the Intel size (probed 2026-11-17).
+    "COMPUTER_ZONES": "2,3,1",
+    "COMPUTER_FALLBACK_SIZES": "Standard_D16s_v7",
     "COMPUTER_DEFAULT_DISK_GIB": "128",
     "COMPUTER_MAX_DISK_GIB": "1024",
     "COMPUTER_POOL_SIZE": "5",

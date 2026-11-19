@@ -18,10 +18,12 @@ export type Rec = unknown[];
 export interface SetupOptions {
   kind?: 'thread' | 'channel';
   fresh?: boolean;
+  /** The bot token's scopes, as `auth.test` reports them. */
+  scopes?: string[];
 }
 
 /** A Slack client that logs every call and answers like Slack does, with counter timestamps. */
-function slack(rec: Rec) {
+function slack(rec: Rec, scopes = ['chat:write']) {
   let n = 0;
   const node = (names: string[]): unknown =>
     new Proxy(() => {}, {
@@ -29,7 +31,8 @@ function slack(rec: Rec) {
       apply: async (_, __, [args]) => {
         const method = names.join('.');
         rec.push({ slack: method, args });
-        if (method === 'users.info') return { ok: true, user: { profile: { display_name: `name-${args.user}` } } };
+        if (method === 'users.info') return { ok: true, user: { profile: { display_name: `name-${args.user}`, image_192: `https://img/${args.user}` } } };
+        if (method === 'auth.test') return { ok: true, response_metadata: { scopes } };
         if (method === 'conversations.info') return { ok: true, channel: { name: 'eng' } };
         if (method === 'files.getUploadURLExternal') return { ok: true, upload_url: 'https://upload.invalid', file_id: 'F1' };
         return { ok: true, ts: `1.${++n}` };
@@ -108,7 +111,7 @@ export function fakeSession(rec: Rec, o: SetupOptions = {}) {
     mode: 'default' as const,
     ...(o.fresh ? {} : { sdkSessionId: 'sdk-0' }),
   };
-  const sess = new Session(info, slack(rec), () => rec.push({ persist: { mode: sess.info.mode, sdk: sess.info.sdkSessionId ?? null } }), {
+  const sess = new Session(info, slack(rec, o.scopes), () => rec.push({ persist: { mode: sess.info.mode, sdk: sess.info.sdkSessionId ?? null } }), {
     busy: (b) => void rec.push({ busy: b }),
   }, kind);
   /** Let the session run: fake time forward in steps, real immediates (Effect's scheduler) in between. */

@@ -51,6 +51,30 @@
       "default": false
     },
     {
+      "id": "gpt-6.2-sol",
+      "name": "GPT-6.2 Sol (Codex)",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "contextWindow": 400000,
+      "default": false
+    },
+    {
+      "id": "gpt-6.2-astra",
+      "name": "GPT-6.2 Astra (Codex)",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "contextWindow": 400000,
+      "default": false
+    },
+    {
       "id": "gpt-6.1-sol",
       "name": "GPT-6.1 Sol (Codex)",
       "efforts": [
