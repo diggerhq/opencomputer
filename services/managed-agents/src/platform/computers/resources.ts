@@ -9,6 +9,7 @@
 // kept OS disk (createOption Attach: no image, no osProfile, no customData).
 
 import { computerName, isPoolId, ownerTag, validResourcePrefix } from "../../computer/names.js";
+import { nvmeSize, validSize } from "../../computer/placement.js";
 import { API_VERSIONS, type AzureCredentials } from "./arm.js";
 
 export { computerName, validOrganizationId, validResourcePrefix } from "../../computer/names.js";
@@ -106,14 +107,7 @@ const DATA_DISK_MBPS = 600;
 const ADMIN_USER = "azureuser";
 const MAX_DISK_GIB = 65_536;
 
-/** v6 and v7 sizes (e.g. `Standard_D2as_v7`) expose disks only over NVMe. */
-export function nvmeSize(size: string): boolean {
-  return /_v[67]$/i.test(size);
-}
-
-export function validSize(size: string): boolean {
-  return /^Standard_[A-Za-z0-9_]+$/.test(size);
-}
+export { nvmeSize, validSize };
 
 export function validDiskGiB(diskGiB: number): boolean {
   return Number.isInteger(diskGiB) && diskGiB >= 1 && diskGiB <= MAX_DISK_GIB;

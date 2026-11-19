@@ -60,6 +60,8 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     return { op: method === "PUT" ? "secrets.put" : "secrets.delete", sub: p[2] };
   }
   if (p[0] === "me" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) return { op: "secrets" };
+  // The same for every session, so the new-session screen can read it before there is one.
+  if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
   if (p[0] !== "sessions") return null;
   if (p.length === 1) return method === "GET" ? { op: "list" } : method === "POST" ? { op: "create" } : null;
   const sessionId = p[1]!;
@@ -373,6 +375,7 @@ async function routeApi(
     return call({ op: "secrets.put", name, body: parsed.value });
   }
   if (route.op === "me") return call({ op: "me" });
+  if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities() });
   if (route.op === "list") return call({ op: "list", query: [...query.entries()] });
 
   const needsBody = request.method === "POST" || request.method === "PATCH";

@@ -7,7 +7,7 @@
 // the host sets every variable here on every launch, from its own
 // environment: one it lacks is set empty, and a runner treats empty as unset
 // (it deletes them before anything reads them). No session can choose
-// another runner's model socket, Codex binary or PATH.
+// another runner's Codex binary or PATH.
 //
 // Invariants:
 // - every name in RUNNER_ENV is in every launch's variables, empty or not;
@@ -19,7 +19,7 @@ export const RUNNER_ENV = [
   'PATH', 'HOME', 'USER', 'SHELL', 'LANG', 'TMPDIR', 'CLAUDE_CONFIG_DIR', 'SP_RUN', 'SP_DATA', 'SP_DEFINITION', 'SP_VERSION',
   'SP_COMMITTER_NAME', 'SP_COMMITTER_EMAIL', 'SP_REAL_GH', 'SP_REAL_OPENCOMPUTER', 'SP_FAKE_SLACK', 'SP_SLACK_API_URL', 'MODEL', 'FOLD_AT', 'WORKDIR',
   'PERMISSION_MODE', 'DISABLE_AUTOUPDATER', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'SP_REGION', 'SP_SUBSTRATE',
-  'SP_PROMPT_CACHE_TTL', 'SP_CONTEXT_WINDOW', 'SP_COMPACT_AT', 'SP_PROMPT_GUARD', 'SP_MODEL_SOCKET', 'SP_CODEX_BIN', 'SP_CODEX_PEER_CHECK',
+  'SP_PROMPT_CACHE_TTL', 'SP_CONTEXT_WINDOW', 'SP_COMPACT_AT', 'SP_PROMPT_GUARD', 'SP_CODEX_BIN', 'SP_CODEX_PEER_CHECK',
   // Unset on a computer's host, but inherited each would run a session's code in, or route the traffic of,
   // another session's runner. The host's own value when it has one (a laptop's proxy).
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'BASH_ENV',

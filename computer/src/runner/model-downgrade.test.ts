@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aboveCeiling, deniedLine, familyName, nextDown } from './model-downgrade.js';
+import { RETRY_TEXT, aboveCeiling, deniedLine, familyName, nextDown } from './model-downgrade.js';
 
 describe('model downgrade (work 077)', () => {
   it('steps one family down, and stops at the bottom or an unknown model', () => {
@@ -20,6 +20,7 @@ describe('model downgrade (work 077)', () => {
 
   it('says it in family names', () => {
     expect(familyName('claude-opus-5-5')).toBe('Opus');
-    expect(deniedLine('claude-fable-5-1', 'claude-opus-5-5')).toBe("Your Claude subscription doesn't include Fable; this thread is on Opus.");
+    expect(RETRY_TEXT).toBe('The last request failed because the model was not available; it has been switched. Continue where you left off.');
+    expect(deniedLine('claude-fable-5-1', 'claude-opus-5-5')).toBe("This credential doesn't include Fable; this thread is on Opus.");
   });
 });
