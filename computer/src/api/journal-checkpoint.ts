@@ -20,7 +20,8 @@
 //   checkpoint first (Journal.load).
 
 import { createHash } from 'node:crypto';
-import { closeSync, fchmodSync, openSync, readFileSync, readSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, fchmodSync, readSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { OPEN, openRegular, readRegular } from './journal-dir.js';
 
 /** Bumped whenever the header's meaning changes; an older checkpoint is ignored. */
 const VERSION = 1;
@@ -69,7 +70,7 @@ export function lineHash(fd: number, start: number, end: number): string {
 export function readCheckpoint(journal: string, fd: number, size: number, o: { sessionId?: string; fold: boolean }): { ck?: Checkpoint; offset: number; bytes: number } {
   let buf: Buffer;
   try {
-    buf = readFileSync(checkpointPath(journal));
+    buf = readRegular(checkpointPath(journal)); // never through a link (journal-dir.ts)
   } catch {
     return { offset: 0, bytes: 0 };
   }
@@ -104,7 +105,7 @@ export function writeCheckpoint(journal: string, h: Omit<CheckpointHeader, 'v'>,
   const tmp = `${file}.tmp`;
   const body = `${JSON.stringify({ v: VERSION, ...h })}\n${JSON.stringify(fold ?? null)}\n`;
   rmSync(tmp, { force: true }); // a temp left by another uid (runner or host): ours instead
-  const fd = openSync(tmp, 'w', 0o660);
+  const fd = openRegular(tmp, OPEN.create);
   try {
     // As the journal's own mode: the umask may have masked the group bit (the other writer reads and replaces it).
     try {

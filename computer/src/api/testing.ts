@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Schema } from 'effect';
 import type { ApiActor, JournalEvent } from '../protocol.js';
 import { mintId } from '../session-ids.js';
-import { ensureJournalDir, journalPath } from './journal.js';
+import { ensureSessionJournalDir, journalPath } from './journal.js';
 import { EVENT_DATA, Event } from './schema-events.js';
 import { SessionLog, type SessionLogOpen } from './session-log.js';
 
@@ -17,8 +17,8 @@ export const ANN_CTX = { actor: ANN, member: 'usr_ann' };
 /** A fresh data dir and session id; `cleanup` removes the dir. */
 export function tempSession() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'api-'));
-  ensureJournalDir(dir);
   const sessionId = mintId('cs');
+  ensureSessionJournalDir(dir, sessionId);
   return { dir, sessionId, file: journalPath(dir, sessionId), cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
