@@ -28,6 +28,8 @@ type MockSession = Json & {
   lastText: string | null
   lastSeq: number
   lastActiveAt: string
+  // The ask set aside in triage; the server keeps it on the session row.
+  asideRef?: string | null
 }
 type MockEvent = Json & { seq: number; type: string }
 
@@ -104,6 +106,7 @@ function history(
   s: MockSession,
   minAgo: number,
   steps: Array<[string, Json, Json?]>,
+  turnId = 'tn_preview',
 ) {
   const events = journal.get(s.id)!
   steps.forEach(([type, data, actor], i) => {
@@ -112,7 +115,7 @@ function history(
       seq: events.length + 1,
       createdAt: ago(minAgo + (steps.length - i) * 0.4),
       sessionId: s.id,
-      turnId: 'tn_preview',
+      turnId,
       actor: actor ?? null,
       type,
       data,
@@ -180,16 +183,32 @@ function seed() {
     'Run psql on staging',
     'psql $STAGING_URL -c "ALTER ROLE app PASSWORD \'…\'"',
   )
+  ask.turnId = 'tn_rotate_2'
   rotate.asks = [ask]
-  history(rotate, 3, [
-    said('Rotate the staging database password and update the app secret.'),
-    ...tool('Read deploy/staging.env', 'Read'),
-    ...tool('grep -rn STAGING_DB_PASSWORD .'),
-    reply(
-      'The app reads `STAGING_DB_PASSWORD` from the organization secrets. I will set a new password on the `app` role, then update the secret.',
-    ),
-    ['ask.opened', { ask }],
-  ])
+  history(
+    rotate,
+    9,
+    [
+      said('Which services read the staging database password?'),
+      ...tool('grep -rn STAGING_DB_PASSWORD .'),
+      reply('Only the app does, through `STAGING_DB_PASSWORD`.'),
+      done,
+    ],
+    'tn_rotate_1',
+  )
+  history(
+    rotate,
+    3,
+    [
+      said('Rotate the staging database password and update the app secret.'),
+      ...tool('Read deploy/staging.env', 'Read'),
+      reply(
+        'The app reads `STAGING_DB_PASSWORD` from the organization secrets. I will set a new password on the `app` role, then update the secret.',
+      ),
+      ['ask.opened', { ask }],
+    ],
+    'tn_rotate_2',
+  )
 
   const charts = session(
     'Pick a chart library for the usage page',
@@ -231,6 +250,35 @@ function seed() {
     said('Add a daily usage chart to the billing page', viaSlack),
     ...tool('Read web/src/pages/Billing.tsx', 'Read'),
     ['ask.opened', { ask: question }],
+  ])
+
+  const docs = session(
+    'Deploy the docs preview',
+    'waiting',
+    40,
+    'dashboard',
+    null,
+  )
+  const secret = {
+    id: nextId('ak'),
+    sessionId: docs.id,
+    turnId: 'tn_preview',
+    kind: 'secret',
+    status: 'open',
+    createdAt: ago(40),
+    closedAt: null,
+    closedBy: null,
+    answer: null,
+    approval: null,
+    question: null,
+    secret: { name: 'VERCEL_TOKEN' },
+  }
+  docs.asks = [secret]
+  history(docs, 40, [
+    said('Deploy a preview of the docs site for the Sessions launch.'),
+    ...tool('Read docs/vercel.json', 'Read'),
+    reply('The deploy needs a Vercel token, and none is set.'),
+    ['ask.opened', { ask: secret }],
   ])
 
   const flaky = session(
@@ -414,6 +462,16 @@ function playTurn(s: MockSession, input: string) {
   steps.forEach((step, i) => setTimeout(step, 600 + i * 1300))
 }
 
+// A session as the API returns it: `aside` while the ask set aside is still
+// the oldest open one.
+function view(s: MockSession): Json {
+  const { asideRef, ...rest } = s
+  const open = s.asks
+    .filter((a) => a.status === 'open')
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  return { ...rest, aside: !!asideRef && open[0]?.id === asideRef }
+}
+
 const wait = <T>(ms: number, value: () => T) =>
   new Promise<T>((resolve) => setTimeout(() => resolve(value()), ms))
 
@@ -445,7 +503,7 @@ export function computerSessionsMock(
       .filter((s) => !q || s.title.toLowerCase().includes(q))
       .filter((s) => archived === 'all' || s.archived === (archived === 'true'))
       .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
-    return { sessions: rows, nextCursor: null }
+    return { sessions: rows.map(view), nextCursor: null }
   }
   if (rest === '/sessions' && method === 'POST') {
     const text = typeof input.input === 'string' ? input.input : ''
@@ -459,7 +517,7 @@ export function computerSessionsMock(
     s.settings = { ...settings, ...pick(input, ['model', 'effort', 'mode']) }
     emit(s, 'message.received', { input: text, delivery: 'started' }, me)
     playTurn(s, text)
-    return { session: s }
+    return { session: view(s) }
   }
 
   const m = rest.match(/^\/sessions\/([^/]+)(\/.*)?$/)
@@ -468,14 +526,22 @@ export function computerSessionsMock(
   if (!s) return undefined
   const sub = m[2] ?? ''
 
-  if (sub === '' && method === 'GET') return { session: s }
+  if (sub === '' && method === 'GET') return { session: view(s) }
   if (sub === '' && method === 'PATCH') {
     Object.assign(s, pick(input, ['title', 'archived']))
     s.settings = {
       ...(s.settings as Json),
       ...pick(input, ['model', 'effort', 'mode']),
     }
-    return { session: s, seq: s.lastSeq }
+    return { session: view(s), seq: s.lastSeq }
+  }
+  if (sub === '/aside' && method === 'PUT') {
+    s.asideRef = typeof input.ref === 'string' ? input.ref : null
+    return { session: view(s) }
+  }
+  if (sub === '/aside' && method === 'DELETE') {
+    s.asideRef = null
+    return { session: view(s) }
   }
   if (sub === '/events') {
     const events = journal.get(s.id)!
@@ -506,6 +572,17 @@ export function computerSessionsMock(
   }
   if (sub === '/turns' && method === 'POST') {
     const text = typeof input.input === 'string' ? input.input : ''
+    // Steering a waiting session answers its open asks with the message.
+    if (input.ifBusy === 'steer') {
+      for (const ask of s.asks.filter((a) => a.status === 'open')) {
+        Object.assign(ask, {
+          status: 'declined',
+          closedAt: new Date().toISOString(),
+        })
+        emit(s, 'ask.closed', { ask })
+      }
+      s.asks = []
+    }
     emit(
       s,
       'message.received',
@@ -524,7 +601,7 @@ export function computerSessionsMock(
     emit(s, 'turn.cancelled', {})
     s.status = 'idle'
     s.activeTurnId = null
-    return { session: s }
+    return { session: view(s) }
   }
   const askMatch = sub.match(/^\/asks\/([^/]+)\/(answer|dismiss)$/)
   if (askMatch && method === 'POST') {
