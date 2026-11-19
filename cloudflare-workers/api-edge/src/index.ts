@@ -1570,11 +1570,15 @@ async function computerApiCall(
           reason: "origin_not_allowed",
         });
       }
+      // The member's name and email ride along (work tracking 3.10: the Work
+      // API's `mine` and the author of a person's write need them).
       const membership = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+        `SELECT m.role, u.name AS user_name, u.email AS user_email
+           FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
+          WHERE m.org_id = ?1 AND m.user_id = ?2`,
       )
         .bind(session.orgID, session.userID)
-        .first<{ role: string }>();
+        .first<{ role: string; user_name: string | null; user_email: string | null }>();
       if (!membership) {
         facts.auth = "not_member";
         return computerApiError(req, 401, "unauthenticated", "Sign in again.");
@@ -1586,6 +1590,8 @@ async function computerApiCall(
           membership.role === "owner" || membership.role === "admin"
             ? "admin"
             : membership.role,
+        userName: membership.user_name ?? null,
+        userEmail: membership.user_email ?? null,
       };
     }
   }

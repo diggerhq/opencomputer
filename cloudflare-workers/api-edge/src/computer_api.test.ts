@@ -52,8 +52,8 @@ class FakeStatement {
         role: "admin",
       } as T;
     }
-    if (this.sql.includes("SELECT role FROM org_memberships")) {
-      return { role: "owner" } as T;
+    if (this.sql.includes("FROM org_memberships m LEFT JOIN users u")) {
+      return { role: "owner", user_name: "Igor", user_email: "igor@example.com" } as T;
     }
     if (this.sql.includes("SELECT id FROM api_keys WHERE key_hash")) {
       const row = this.db.keys.get(String(this.args[0]));
@@ -245,6 +245,11 @@ describe("computer API allowlist", () => {
     ["PUT", "/computer/sessions/cs_01h/secrets/API_KEY"],
     ["DELETE", "/computer/me/secrets/API_KEY"],
     ["PUT", "/computer/organization/secrets/API_KEY"],
+    ["GET", "/computer/work/repository"],
+    ["PUT", "/computer/work/repository"],
+    ["GET", "/computer/work/items"],
+    ["GET", "/computer/work/items/22"],
+    ["GET", "/computer/work/items/22/history"],
     ["GET", "/computer/sessions/cs_01h/workspace/archive"],
     ["PUT", "/computer/sessions/cs_01h/workspace/archive"],
     ["GET", "/computer/sessions/cs_01h/workspace/file"],
@@ -265,6 +270,10 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/a%2Fb"],
     ["GET", "/computer/sessions/cs_01h/unknown"],
     ["POST", "/computer/slack/install"],
+    // Close and Reopen come with build step 5.
+    ["POST", "/computer/work/items/22/close"],
+    ["DELETE", "/computer/work/repository"],
+    ["GET", "/computer/work/files"],
   ])("refuses %s %s", (method, suffix) => {
     expect(isComputerApiRoute(method, suffix)).toBe(false);
   });
@@ -509,7 +518,7 @@ describe("computer API proxy to blue", () => {
     expect(sent(fetchMock).headers.get("x-request-id")).toBeNull();
   });
 
-  it("asserts a dashboard session with no key claims", async () => {
+  it("asserts a dashboard session with no key claims, and the member's name and email", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ sessions: [], nextCursor: null }));
     vi.stubGlobal("fetch", fetchMock);
     const res = await worker.fetch(
@@ -526,8 +535,9 @@ describe("computer API proxy to blue", () => {
     for (const claim of Object.keys(payload)) {
       expect(claim.startsWith("key_")).toBe(false);
     }
-    expect(payload.user_name).toBeUndefined();
-    expect(payload.user_email).toBeUndefined();
+    // The member's name and email, from the membership read (work tracking 3.10).
+    expect(payload.user_name).toBe("Igor");
+    expect(payload.user_email).toBe("igor@example.com");
   });
 
   it("refuses a cookie's unsafe call from another origin", async () => {
