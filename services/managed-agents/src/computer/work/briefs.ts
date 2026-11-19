@@ -5,6 +5,11 @@
 //
 // One call (`work.context`) where the design names two (`briefs`, `people`): the page needs both,
 // and one round trip to the Computer object is cheaper than two.
+//
+// `work.stamp` is the open list's ETag part from this object: a counter that SQLite triggers move
+// on every write to `sessions` or `people` (the two tables a brief or a person is read from), so no
+// write path can change a brief without moving it, whether or not it touches `updated_at`. The
+// Worker reads it before composing a page; a match answers 304 without `work.context`.
 
 import type { Session, SessionStatus } from "../api-types.js";
 import type { ApiCaller, ApiReply, ApiRow } from "../sessions-api.js";
@@ -18,6 +23,37 @@ export interface WorkContextOp {
   sessionIds: string[];
   /** Owner and author emails to resolve to members. */
   emails: string[];
+}
+
+export interface WorkStampOp {
+  op: "work.stamp";
+}
+
+/**
+ * The stamp's counter and triggers, and the indexes the context's email lookups use. Run once the
+ * `sessions` table has its API columns and `people` exists.
+ */
+export function workStampSetup(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS work_stamp (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);
+    INSERT OR IGNORE INTO work_stamp (id, n) VALUES (1, 0);
+    CREATE TRIGGER IF NOT EXISTS work_stamp_sessions_insert AFTER INSERT ON sessions BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE TRIGGER IF NOT EXISTS work_stamp_sessions_update AFTER UPDATE ON sessions BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE TRIGGER IF NOT EXISTS work_stamp_sessions_delete AFTER DELETE ON sessions BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE TRIGGER IF NOT EXISTS work_stamp_people_insert AFTER INSERT ON people BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE TRIGGER IF NOT EXISTS work_stamp_people_update AFTER UPDATE ON people BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE TRIGGER IF NOT EXISTS work_stamp_people_delete AFTER DELETE ON people BEGIN UPDATE work_stamp SET n = n + 1 WHERE id = 1; END;
+    CREATE INDEX IF NOT EXISTS sessions_owner_email_lower ON sessions (lower(owner_email));
+    CREATE INDEX IF NOT EXISTS sessions_owner_user ON sessions (owner_user_id);
+    CREATE INDEX IF NOT EXISTS sessions_owner_slack ON sessions (owner_id);
+    CREATE INDEX IF NOT EXISTS people_git_email_lower ON people (lower(git_email));
+  `);
+}
+
+/** The counter: moves whenever a session or a person changes. */
+export function workStamp(sql: SqlStorage): ApiReply {
+  const row = sql.exec<{ n: number }>("SELECT n FROM work_stamp WHERE id = 1").toArray()[0];
+  return { status: 200, body: { stamp: row?.n ?? 0 } };
 }
 
 export interface SessionBrief {
