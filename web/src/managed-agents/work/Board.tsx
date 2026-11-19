@@ -1,10 +1,6 @@
 import { useContext, type ReactNode } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
-import {
-  useInfiniteQuery,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import {
   FileText,
   Loader2,
@@ -20,19 +16,10 @@ import { Switch } from '@/components/ui/switch'
 import { AuthContext } from '@/hooks/useAuth'
 import { cn } from '@/lib/utils'
 import { timeAgo } from '../computer-sessions/transcript'
-import {
-  getClosedItems,
-  getOpenItems,
-  keepOpenItems,
-  useOrg,
-  workKeys,
-  type Item,
-  type OpenItemsPoll,
-} from './api'
+import { getClosedItems, useOrg, workKeys, type Item } from './api'
 import {
   closedShown,
   indexIsOld,
-  OPEN_POLL_MS,
   inProgress,
   matches,
   plural,
@@ -51,7 +38,8 @@ import {
   UnpublishedMark,
   WarningMark,
 } from './parts'
-import { WorkRepositorySetting } from './RepositorySetting'
+import { useOpenItems } from './queries'
+import { FirstRepository } from './RepositorySetting'
 
 // The board (ux-spec 4): tracked items in three columns, Mine or Everyone.
 // Read-only for now; Close and Reopen arrive with build step 5.
@@ -61,25 +49,6 @@ export default function BoardPage() {
   if (auth?.user && !auth.user.computerEnabled)
     return <Navigate to="/" replace />
   return <Board />
-}
-
-function useOpenItems() {
-  const qc = useQueryClient()
-  const key = workKeys.open(useOrg())
-  return useQuery({
-    queryKey: key,
-    queryFn: async () => {
-      const prev = qc.getQueryData<OpenItemsPoll>(key)
-      const next = await getOpenItems(prev?.etag ?? null)
-      if (prev) return keepOpenItems(prev, next)
-      if (!('notModified' in next)) return next
-      // A 304 with nothing cached cannot happen (no ETag was sent); ask again.
-      return (await getOpenItems(null)) as OpenItemsPoll
-    },
-    refetchInterval: OPEN_POLL_MS,
-    retry: (count, error) =>
-      !(error instanceof ApiError && error.status === 404) && count < 2,
-  })
 }
 
 export function Board() {
@@ -155,7 +124,7 @@ export function Board() {
           />
         </Panel>
         <div className="mt-8">
-          <WorkRepositorySetting />
+          <FirstRepository />
         </div>
       </BoardFrame>
     )

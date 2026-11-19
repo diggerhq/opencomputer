@@ -413,6 +413,24 @@ function scenario() {
     : new URLSearchParams(window.location.search).get('work')
 }
 
+// `?work=problem` reads `&problem=<code>` from the page's address (default
+// access_denied); access_denied comes with the server's own sentence, the
+// others with none, so the web's own words show.
+function problemOf() {
+  const code =
+    (typeof window === 'undefined'
+      ? null
+      : new URLSearchParams(window.location.search).get('problem')) ??
+    'access_denied'
+  return {
+    problem: code,
+    problemMessage:
+      code === 'access_denied'
+        ? "The installation cannot read the repository's contents."
+        : null,
+  }
+}
+
 // Returns undefined for paths it does not serve.
 export function workMock(
   path: string,
@@ -429,12 +447,7 @@ export function workMock(
     s === 'none'
       ? null
       : s === 'problem' && repository
-        ? {
-            ...repository,
-            problem: 'access_denied',
-            problemMessage:
-              "The installation cannot read the repository's contents.",
-          }
+        ? { ...repository, ...problemOf() }
         : repository
 
   if (rest === '/repository') {

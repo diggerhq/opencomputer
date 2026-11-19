@@ -25,7 +25,7 @@ vi.mock('./api', async (importOriginal) => ({
 
 const { Board } = await import('./Board')
 const { ItemView } = await import('./Item')
-const { WorkRepositorySetting } = await import('./RepositorySetting')
+const { KnowledgeRepositorySection } = await import('./KnowledgeRepository')
 
 const repository = {
   installationId: '1',
@@ -91,7 +91,10 @@ async function render(url: string) {
             <Routes>
               <Route path="/computer/work" element={<Board />} />
               <Route path="/computer/work/:number" element={<ItemView />} />
-              <Route path="/computer" element={<WorkRepositorySetting />} />
+              <Route
+                path="/computer"
+                element={<KnowledgeRepositorySection id="work-repository" />}
+              />
             </Routes>
           </MemoryRouter>
         </QueryClientProvider>
@@ -241,7 +244,7 @@ describe('board', () => {
     workApi.getRepository.mockResolvedValue(null)
     await render('/computer/work')
     expect(container.textContent).toContain('An item is a working doc')
-    expect(container.textContent).toContain('Working docs')
+    expect(container.textContent).toContain('Knowledge repository')
     expect(workApi.getClosedItems).not.toHaveBeenCalled()
   })
 
@@ -251,13 +254,28 @@ describe('board', () => {
     expect(container.textContent).toContain('The board is not available yet')
   })
 
-  it('names the repository it reads, quietly linked to settings', async () => {
+  it('names the repository it reads, quietly linked to its setting', async () => {
     workApi.getOpenItems.mockResolvedValue(openPage(items))
     await render('/computer/work')
     expect(
       container.querySelector('a[href="/computer#work-repository"]')
         ?.textContent,
     ).toBe('acme/knowledge')
+  })
+
+  it('chooses the first repository in place, then loads', async () => {
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([], { repository: null, head: null, asOf: null }),
+    )
+    workApi.getRepositories.mockResolvedValue([acme])
+    workApi.putRepository.mockResolvedValue(repository)
+    await render('/computer/work')
+    workApi.getOpenItems.mockResolvedValue(openPage(items))
+    click(container.querySelector('button[aria-label="Select knowledge"]'))
+    await settle()
+    // No confirmation for a first choice.
+    expect(workApi.putRepository).toHaveBeenCalledTimes(1)
+    expect(column('In progress')).toBeTruthy()
   })
 
   it('sends a repository problem to settings', async () => {
@@ -276,8 +294,9 @@ describe('board', () => {
     )
     expect(container.textContent).not.toContain('access_denied')
     expect(
-      container.querySelector('a[href="/computer#work-repository"]'),
-    ).not.toBeNull()
+      container.querySelector('a[href="/computer#work-repository"]')
+        ?.textContent,
+    ).toBe('Settings')
   })
 
   it('shows no time where the last change or the closing is not known', async () => {
@@ -590,9 +609,126 @@ describe('repository picker', () => {
     workApi.getRepository.mockResolvedValue(null)
     workApi.getRepositories.mockResolvedValue([])
     await render('/computer')
+    expect(button('Connect GitHub')).toBeTruthy()
+  })
+
+  it('confirms before switching from a set repository', async () => {
+    workApi.getRepository.mockResolvedValue(repository)
+    workApi.getOpenItems.mockResolvedValue(openPage([]))
+    workApi.putRepository.mockResolvedValue({ ...repository, name: 'app' })
+    await render('/computer')
+    click(button('Change'))
+    await settle()
+    click(container.querySelector('button[aria-label="Select app"]'))
+    await flush()
+    expect(workApi.putRepository).not.toHaveBeenCalled()
+    const dialog = document.body.querySelector('[role="alertdialog"]')!
+    expect(dialog.textContent).toContain('Switch the board to acme/app?')
+    expect(dialog.textContent).toContain(
+      'Nothing is deleted or changed in either repository',
+    )
+    click(
+      [...dialog.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Switch',
+      ),
+    )
+    await settle()
+    expect(workApi.putRepository).toHaveBeenCalledWith({
+      installationId: '1',
+      owner: 'acme',
+      name: 'app',
+      branch: 'main',
+    })
+  })
+})
+
+function button(text: string) {
+  return [...container.querySelectorAll('button')].find(
+    (b) => b.textContent === text,
+  )
+}
+
+describe('knowledge repository section', () => {
+  beforeEach(() => {
+    workApi.getRepositories.mockResolvedValue([acme])
+    workApi.getOpenItems.mockResolvedValue(
+      openPage(items(), { head: '9f2c1a7e4b3d', asOf: minutesAgo(2) }),
+    )
+  })
+  const items = () => [makeItem({ number: 1, title: 'One' })]
+  const withProblem = (problem: string, problemMessage: string | null = null) =>
+    workApi.getRepository.mockResolvedValue({
+      ...repository,
+      problem,
+      problemMessage,
+    })
+
+  it('shows the repository, its branch and how fresh the reading is', async () => {
+    workApi.getRepository.mockResolvedValue(repository)
+    await render('/computer')
+    expect(container.querySelector('section#work-repository')).not.toBeNull()
     expect(
-      container.querySelector('a[href="/managed-agents/connections"]')
+      container.querySelector('a[href="https://github.com/acme/knowledge"]')
         ?.textContent,
-    ).toBe('Connect GitHub')
+    ).toBe('acme/knowledge')
+    expect(container.textContent).toContain('main')
+    expect(container.textContent).toContain(
+      'Up to date · read 2 min ago at 9f2c1a7',
+    )
+    // The installations are read only when choosing.
+    expect(workApi.getRepositories).not.toHaveBeenCalled()
+  })
+
+  it('says when the first read is still going', async () => {
+    workApi.getRepository.mockResolvedValue(repository)
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([], { building: true, asOf: null }),
+    )
+    await render('/computer')
+    expect(container.textContent).toContain(
+      'Reading the working docs for the first time',
+    )
+  })
+
+  it('offers Reconnect GitHub when the installation is gone', async () => {
+    withProblem('installation_removed')
+    await render('/computer')
+    expect(container.textContent).toContain(
+      'The GitHub installation is not connected to this organization.',
+    )
+    expect(button('Reconnect GitHub')).toBeTruthy()
+    expect(button('Change')).toBeUndefined()
+    expect(container.textContent).not.toContain('installation_removed')
+  })
+
+  it('offers GitHub App access and another repository when it is not granted', async () => {
+    withProblem('repository_not_found')
+    await render('/computer')
+    expect(
+      [...container.querySelectorAll('a')]
+        .find((a) => a.textContent === 'Adjust GitHub App access')
+        ?.getAttribute('href'),
+    ).toBe(acme.settingsUrl)
+    click(button('Choose another repository'))
+    await settle()
+    expect(rows()).toEqual(['app', 'knowledge', 'website'])
+  })
+
+  it('says the branch is gone and offers Change', async () => {
+    withProblem('branch_not_found')
+    await render('/computer')
+    expect(container.textContent).toContain('The main branch is gone.')
+    expect(button('Change')).toBeTruthy()
+    expect(workApi.getRepositories).not.toHaveBeenCalled()
+  })
+})
+
+describe('knowledge repository section, not available', () => {
+  it('says so quietly while the Work API is not there', async () => {
+    workApi.getRepository.mockRejectedValue(new ApiError('Not found', 404))
+    await render('/computer')
+    expect(container.textContent).toContain(
+      'Tracked work is not available here yet.',
+    )
   })
 })

@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Check,
   ExternalLink,
@@ -9,14 +8,16 @@ import {
   RefreshCw,
   Search,
 } from 'lucide-react'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Input, Select } from '@/components/form'
+import { GithubMark } from '@/components/github-mark'
 import { Button } from '@/components/ui/button'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { cn } from '@/lib/utils'
+import { addManagedGitHubConnection } from '../api'
+import { launchAuthorizationWindow } from '../authorization-window'
 import { relativeTime } from '../computer-state'
 import {
-  getRepositories,
-  getRepository,
   putRepository,
   useOrg,
   workKeys,
@@ -24,79 +25,65 @@ import {
   type GrantingInstallation,
   type Repository,
 } from './api'
-import { repositoryName, repositoryProblem } from './board'
+import { repositoryName } from './board'
+import { useGrantingInstallations } from './queries'
 
 // Which repository holds the organization's working docs (tech design 3.1):
 // one per organization, chosen from what its GitHub connection can reach.
+// The first choice can be made on the board itself (`FirstRepository`); the
+// setting with its state and fixes is KnowledgeRepositorySection.
 
-export function WorkRepositorySetting({ id }: { id?: string }) {
-  const org = useOrg()
-  const repository = useQuery({
-    queryKey: workKeys.repository(org),
-    queryFn: getRepository,
-  })
-  const [editing, setEditing] = useState(false)
-  const current = repository.data ?? null
-
+/** The board's empty state: choose the repository, and the board loads. */
+export function FirstRepository() {
   return (
-    <section id={id} aria-labelledby="work-repository-title">
+    <section aria-labelledby="work-repository-title">
       <h2 id="work-repository-title" className="mb-3 text-sm font-semibold">
-        Working docs
+        Knowledge repository
       </h2>
       <div className="bg-panel rounded-lg border px-5 py-3 text-sm">
-        {repository.isPending ? (
-          <Loader2
-            className="text-muted-foreground size-4 animate-spin"
-            aria-label="Loading"
-          />
-        ) : repository.isError ? (
-          <p className="text-muted-foreground">
-            Working docs are not available here yet.
-          </p>
-        ) : editing || !current ? (
-          <RepositoryPicker
-            current={current}
-            onDone={() => setEditing(false)}
-            onCancel={current ? () => setEditing(false) : undefined}
-          />
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="font-medium">
-                {repositoryName(current)}
-                <span className="text-muted-foreground font-normal">
-                  {' '}
-                  · {current.branch}
-                </span>
-              </p>
-              {current.problem ? (
-                <p className="text-status-error">
-                  {repositoryProblem(current)}
-                </p>
-              ) : (
-                <p className="text-muted-foreground">
-                  Tracked items live here and show on the{' '}
-                  <Link
-                    to="/computer/work"
-                    className="hover:text-foreground underline underline-offset-4"
-                  >
-                    board
-                  </Link>
-                  .
-                </p>
-              )}
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setEditing(true)}
-            >
-              Change
-            </Button>
-          </div>
-        )}
+        <RepositoryPicker current={null} />
       </div>
     </section>
+  )
+}
+
+/**
+ * Starts the managed GitHub App install in a new window, as Connections and
+ * the Computer page do. Coming back, the picker and the repository are read
+ * again on focus.
+ */
+export function ConnectGitHubButton({
+  label = 'Connect GitHub',
+  variant = 'outline',
+}: {
+  label?: string
+  variant?: 'default' | 'outline'
+}) {
+  const [starting, setStarting] = useState(false)
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant={variant}
+      disabled={starting}
+      onClick={() => {
+        setStarting(true)
+        void launchAuthorizationWindow(() =>
+          addManagedGitHubConnection('install'),
+        )
+          .catch((error: unknown) =>
+            notifyError("Couldn't start the GitHub installation.", error),
+          )
+          .finally(() => setStarting(false))
+      }}
+    >
+      {starting ? (
+        <Loader2 className="animate-spin" aria-hidden />
+      ) : (
+        <GithubMark className="size-3.5" />
+      )}
+      {label}
+    </Button>
   )
 }
 
@@ -109,22 +96,20 @@ const LIST_HEIGHT = 'max-h-[16.5rem]'
  * default branch. The list is read again when the window regains focus, so
  * coming back from granting access on GitHub shows the new repository.
  */
-function RepositoryPicker({
+export function RepositoryPicker({
   current,
   onDone,
   onCancel,
 }: {
   current: Repository | null
-  onDone: () => void
+  onDone?: () => void
   onCancel?: () => void
 }) {
   const qc = useQueryClient()
   const org = useOrg()
-  const list = useQuery({
-    queryKey: workKeys.repositories(org),
-    queryFn: getRepositories,
-    refetchOnWindowFocus: 'always',
-  })
+  const list = useGrantingInstallations()
+  // A switch away from a set repository waits for a confirmation.
+  const [pending, setPending] = useState<Choice | null>(null)
   const installations = list.data ?? []
   const [chosen, setChosen] = useState<string | null>(null)
   const [q, setQ] = useState('')
@@ -133,13 +118,7 @@ function RepositoryPicker({
     installations.find((i) => i.id === want) ?? installations[0]
 
   const save = useMutation({
-    mutationFn: ({
-      installationId,
-      repository: r,
-    }: {
-      installationId: string
-      repository: GrantedRepository
-    }) =>
+    mutationFn: ({ installationId, repository: r }: Choice) =>
       putRepository({
         installationId,
         owner: r.owner,
@@ -149,8 +128,9 @@ function RepositoryPicker({
     onSuccess: (repository) => {
       qc.setQueryData(workKeys.repository(org), repository)
       void qc.invalidateQueries({ queryKey: ['work', org] })
-      notifySuccess('Working docs repository saved.')
-      onDone()
+      notifySuccess('Knowledge repository saved.')
+      setPending(null)
+      onDone?.()
     },
     onError: (e) => notifyError('Could not save the repository', e),
   })
@@ -161,9 +141,7 @@ function RepositoryPicker({
         <p className="text-muted-foreground">
           Connect GitHub first: working docs live in one of its repositories.
         </p>
-        <Button size="sm" variant="outline" asChild>
-          <Link to="/managed-agents/connections">Connect GitHub</Link>
-        </Button>
+        <ConnectGitHubButton />
       </div>
     )
   }
@@ -278,12 +256,14 @@ function RepositoryPicker({
                 selected={isCurrent(r)}
                 saving={save.isPending && save.variables.repository.id === r.id}
                 disabled={save.isPending}
-                onSelect={() =>
-                  save.mutate({
+                onSelect={() => {
+                  const choice = {
                     installationId: installation.id,
                     repository: r,
-                  })
-                }
+                  }
+                  if (current) setPending(choice)
+                  else save.mutate(choice)
+                }}
               />
             ))}
             {installation.truncated ? (
@@ -307,9 +287,32 @@ function RepositoryPicker({
           </Button>
         ) : null}
       </div>
+      {current ? (
+        <ConfirmDialog
+          open={pending !== null}
+          onOpenChange={(open) => !open && setPending(null)}
+          title={`Switch the board to ${pending ? `${pending.repository.owner}/${pending.repository.name}` : ''}?`}
+          description={
+            <>
+              The board is rebuilt from{' '}
+              {pending
+                ? `${pending.repository.owner}/${pending.repository.name}`
+                : ''}{' '}
+              on its {pending?.repository.defaultBranch} branch, and the items
+              in {repositoryName(current)} stop showing here. Nothing is deleted
+              or changed in either repository, and you can switch back.
+            </>
+          }
+          confirmLabel="Switch"
+          pending={save.isPending}
+          onConfirm={() => pending && save.mutate(pending)}
+        />
+      ) : null}
     </div>
   )
 }
+
+type Choice = { installationId: string; repository: GrantedRepository }
 
 function RepositoryRow({
   repository: r,
