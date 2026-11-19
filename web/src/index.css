@@ -312,3 +312,29 @@
     @apply bg-background text-foreground font-sans antialiased;
   }
 }
+
+/* Task-list boxes in a rendered working doc (the item page). The browser's
+   disabled checkbox is grey and off the text's line; this draws a quiet box
+   centred on the first 24px line, ticked in the muted ink when done. */
+@layer components {
+  .work-doc .task-list-item > input[type='checkbox'] {
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    appearance: none;
+    border: 1px solid var(--input);
+    border-radius: 3px;
+    background: var(--panel);
+  }
+  .work-doc .task-list-item > input[type='checkbox']:checked {
+    border-color: transparent;
+    background-color: var(--muted-foreground);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='white' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.25l2.25 2.25L10.5 4.75'/%3E%3C/svg%3E");
+  }
+  .dark .work-doc .task-list-item > input[type='checkbox']:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none' stroke='%23161616' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.25l2.25 2.25L10.5 4.75'/%3E%3C/svg%3E");
+  }
+}
