@@ -2,8 +2,10 @@
 // message asks for one, so a dev check can drive the real runner and the real
 // Agent SDK through a tool call with no model and no credential
 // (sandbox-check.ts runs it inside a session's container, whose loopback is
-// the only address the session's harness and this can share):
-//   node src/dev/fake-model.mjs <port>
+// the only address the session's harness and this can share; or, with a key
+// and a certificate, over https on a host, as the upstream of a profile of
+// oc-modelproxy: sandbox-check-model.ts):
+//   node src/dev/fake-model.mjs <port> [<key.pem> <cert.pem>]
 //
 // A message whose text has `call <tool> <json>` is answered with a `tool_use`
 // of the offered tool whose name is `<tool>` or ends in `__<tool>`; the
@@ -13,11 +15,14 @@
 // Invariants: plain Node, no dependency, no file written: it runs from a
 // release mounted read-only. It listens on 127.0.0.1 only.
 
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 
 const port = Number(process.argv[2]);
-if (!port) {
-  console.error('usage: fake-model.mjs <port>');
+const [key, cert] = process.argv.slice(3);
+if (!port || (key && !cert)) {
+  console.error('usage: fake-model.mjs <port> [<key.pem> <cert.pem>]');
   process.exit(2);
 }
 
@@ -46,7 +51,7 @@ function answer(j) {
   return { call };
 }
 
-const server = http.createServer((req, res) => {
+const handle = (req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
@@ -75,5 +80,6 @@ const server = http.createServer((req, res) => {
     ev('message_stop', {});
     res.end();
   });
-});
+};
+const server = key ? https.createServer({ key: readFileSync(key), cert: readFileSync(cert) }, handle) : http.createServer(handle);
 server.listen(port, '127.0.0.1');

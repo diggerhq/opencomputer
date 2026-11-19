@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ArmError, AzureClient, armRequest, tokenRequest } from "../src/platform/computers/arm.js";
+import { ArmError, AzureClient, armError, armRequest, tokenRequest } from "../src/platform/computers/arm.js";
 import {
   type ComputerPlacement,
   cloudInit,
@@ -211,7 +211,7 @@ describe("platform computer route", () => {
   it("derives every resource id itself and answers with the summary the lifecycle reads", async () => {
     const azure = fakeAzure();
     const put = await call(ENV, { op: "putDataDisk", organizationId: ORG, diskGiB: 128, zone: "1" }, azure.fetcher);
-    expect(put.body).toEqual({ ok: true, resource: { provisioningState: "Creating", organization: ORG, diskSizeGB: 128 } });
+    expect(put.body).toEqual({ ok: true, resource: { provisioningState: "Creating", organization: ORG, diskSizeGB: 128, zone: "1" } });
     expect(azure.requests[0]).toMatchObject({ method: "PUT", path: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/disks/oc-org-01hxyz-data" });
     const got = await call(ENV, { op: "get", organizationId: ORG, kind: "dataDisk" }, azure.fetcher);
     expect(got.body.resource.organization).toBe(ORG);
@@ -220,6 +220,25 @@ describe("platform computer route", () => {
     expect(azure.requests.at(-1)!.body!.properties.storageProfile.osDisk.createOption).toBe("Attach");
     expect((await call(ENV, { op: "delete", organizationId: ORG, kind: "vm" }, azure.fetcher)).body).toEqual({ ok: true, deleted: true });
     expect(azure.tokens()).toBeGreaterThanOrEqual(1);
+  });
+
+  it("summarises a failed VM with ARM's error code and its zone, so the lifecycle can tell capacity from the rest", async () => {
+    const azure = fakeAzure();
+    azure.resources.set("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/oc-org-01hxyz", {
+      zones: ["2"],
+      tags: { organization: ORG },
+      properties: {
+        provisioningState: "Failed",
+        instanceView: {
+          statuses: [{ code: "ProvisioningState/failed/ZonalAllocationFailed", message: "Allocation failed. We do not have sufficient capacity." }],
+        },
+      },
+    });
+    const got = await call(ENV, { op: "get", organizationId: ORG, kind: "vm", instanceView: true }, azure.fetcher);
+    expect(got.body).toMatchObject({
+      ok: true,
+      resource: { provisioningState: "Failed", zone: "2", failureCode: "ZonalAllocationFailed", failure: "Allocation failed. We do not have sufficient capacity." },
+    });
   });
 
   it("names resources by the prefix the edge stores, validated at the boundary", async () => {
@@ -285,6 +304,17 @@ describe("platform computer route", () => {
     expect(failed.status).toBe(502);
     expect(failed.body.error).toMatchObject({ status: 400, code: "InvalidSubnet" });
     expect(JSON.stringify(failed.body)).not.toContain(ENV.AZURE_CLIENT_SECRET);
+  });
+
+  it("reads a capacity or quota refusal out of a wrapped ARM error, and leaves any other error as it is", async () => {
+    const error = async (body: unknown) => {
+      const { code, message } = await armError(Response.json({ error: body }, { status: 409 }), "PUT vm");
+      return `${code}|${message}`;
+    };
+    const quota = { code: "QuotaExceeded", message: "over the quota" };
+    expect(await error({ code: "Conflict", message: "failed", details: [{ code: "Other" }, quota] })).toBe("QuotaExceeded|PUT vm: 409 QuotaExceeded: over the quota");
+    expect(await error({ code: "Conflict", message: "busy", details: [{ code: "Other", message: "x" }] })).toBe("Conflict|PUT vm: 409 Conflict: busy");
+    expect(await error({ code: "SkuNotAvailable", message: "none", details: [quota] })).toBe("SkuNotAvailable|PUT vm: 409 SkuNotAvailable: none");
   });
 
   it("retries sign-in after a 401 and reports network failures as status 0", async () => {

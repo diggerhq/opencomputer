@@ -58,7 +58,6 @@ persistence = "none"
         HOME: '/home/agent',
         SP_FILES_SOCKET: '/run/r1.files',
         SP_TOKEN_SOCKET: '/run/token.sock',
-        SP_MODEL_SOCKET: '/run/model.sock',
         CLAUDE_ENV_FILE: '/c.sh',
         RUNNER_SPEC: '{}',
         OPENAI_API_KEY: 'k',
@@ -70,7 +69,7 @@ persistence = "none"
         AZURE_OPENAI_API_KEY: 'k',
         BASH_ENV: '/runner/own.sh',
       },
-      { home: '/h', envFile: '/e.sh' },
+      { home: '/h', envFile: '/e.sh', placeholder: 'ssh-placeholder' },
     );
     expect(env).toEqual({
       PATH: '/bin',
@@ -81,6 +80,6 @@ persistence = "none"
       RUST_LOG: 'warn',
       BASH_ENV: '/e.sh',
     });
-    expect(spawnEnv({ BASH_ENV: '/runner/own.sh' }, { home: '/h' })).not.toHaveProperty('BASH_ENV');
+    expect(spawnEnv({ BASH_ENV: '/runner/own.sh' }, { home: '/h', placeholder: 'p' })).not.toHaveProperty('BASH_ENV');
   });
 });

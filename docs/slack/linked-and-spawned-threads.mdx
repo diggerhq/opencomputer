@@ -1,0 +1,76 @@
+---
+title: "Linked and spawned threads"
+description: "A pasted Slack permalink is read only if everyone involved can see it; `spawn_thread` starts a parallel session from a pushed brief"
+---
+
+<Frame>
+  <img src="/images/slack/spawned-thread.png" alt="A spawned thread in #billing: computer posts a message that mentions Sam, the task, a link to the brief and a link back to the parent thread, and the new session replies under it" />
+</Frame>
+
+## Pasted links
+
+When a message to the session contains a Slack message permalink, the gateway attaches the linked thread: its first message, the linked reply and the latest replies. The model receives it marked as data from Slack, not as instructions.
+
+- At most 3 links per message are read; size limits are in Limits and defaults.
+- The link must be in the same Slack workspace, and `@computer` must be a member of the conversation it points to.
+- If reading takes more than 10 seconds, the message is delivered with a note that reading took too long.
+- Messages forwarded into the message (up to 3) are attached with no access check.
+
+### Access check
+
+A linked thread is attached only if all of these can see the linked conversation:
+
+1. The person who posted the link.
+2. The session's owner.
+3. Everyone in the session's conversation, when it is not the linked one.
+
+| Linked conversation | Who counts as able to see it |
+| --- | --- |
+| Public channel | Every full member of the Slack workspace; a guest only if a member of the channel |
+| Private channel or DM | Its members. Refused when the session's conversation is a public channel. |
+
+The check also refuses when the session's conversation is shared with another organization, or when a member list it has to read has more than 5,000 members. On a refusal the model gets a note with the reason in place of the content.
+
+## Reading and posting tools
+
+Gateway-and-host deployment only. Parameters: Agent tools.
+
+| Tool | What it does | Limits |
+| --- | --- | --- |
+| `read_thread` | Reads a thread by link, or by channel id and message timestamp. Same content and access check as a pasted link, with the session's owner as the asker. | 40 calls per runner. Never asks for approval. |
+| `post_thread` | Posts a reply into another thread for the owner. | 20 calls per runner. 4,000 characters. Asks for approval unless the mode is `bypassPermissions`. |
+
+`post_thread`:
+
+- replies in the thread, never at the channel's top level;
+- neutralizes `@channel`, `@here`, `@everyone` and user-group mentions;
+- appends a line: "Posted for @owner from this thread." with a link back.
+
+<Frame>
+  <img src="/images/slack/post-thread.png" alt="A reply by computer in another thread in #web, ending with the line Posted for @Sam from this thread" />
+</Frame>
+
+## Spawned threads
+
+`spawn_thread` starts a new session, in a new thread, that runs in parallel. Gateway-and-host deployment only. Parameters: Agent tools.
+
+| Stage | Who | What happens |
+| --- | --- | --- |
+| Brief | Agent | Writes a Markdown file in a workspace repository, commits it and pushes it to that repository's default branch. The tool refuses a brief that is not there. |
+| Call | Agent | Calls `spawn_thread` with a one-line `task`, the `brief` path and optionally a `model` tier. Outside `bypassPermissions` the call asks for approval. |
+| Post | Gateway | Posts a top-level message in the parent's channel: a mention of the owner, the task, a link to the brief and a link back to the parent thread. |
+| Start | New session | Runs on that message as if the owner had mentioned `@computer` there. It is told to read the brief first and report there. |
+
+| The new session's | Value |
+| --- | --- |
+| Owner, permission mode | The parent's |
+| Model | The parent's, unless a `model` argument overrides it |
+| Conversation | Its own |
+| Session directory | Its own, starting from each repository's default branch |
+| Context | The pushed brief only |
+
+- 8 spawns per runner.
+- The parent is not told when the child finishes. The child reports in the brief and in its own thread; the parent can read that thread with `read_thread`.
+- Steer or stop the child in its own thread. Stopping the parent does not stop it.
+
+{/* Sources: computer/src/links.ts; computer/src/gateway/routing.ts (LINKS_TIMEOUT_MS, threadAbove, spawn); computer/src/gateway/threads.ts (neutralizeBroadcasts); computer/src/runner/threads.ts; computer/src/runner/spawn.ts (MAX_SPAWNS, args); computer/src/runner/main.ts (hooks); computer/src/main.ts (no hooks, link owner) */}

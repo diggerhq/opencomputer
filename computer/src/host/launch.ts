@@ -122,3 +122,22 @@ export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: Node
   spawn(c.cmd, c.args, { cwd: workingDirectory(rs, env), env: c.env, detached: true, stdio: ['ignore', fd, fd] }).unref();
   closeSync(fd);
 }
+
+/**
+ * Whether runner `id`'s systemd unit still exists (work 097: the model proxy's
+ * binding for a caller whose unit is gone is released). A container's unit has
+ * its runner's name too (work 103), and is gone while the container is stopped.
+ * Detached runners have no unit, and any doubt (systemctl failing) answers
+ * true: a binding is never released on a guess.
+ */
+export async function unitExists(id: string, how: LaunchMode | string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  if (how !== 'systemd' && how !== 'podman') return true;
+  const as = runnerUser(env);
+  const [cmd, ...args] = [...(as?.sudo ?? []), 'systemctl', '--user', 'show', '-p', 'LoadState', '--value', unitName(id)];
+  try {
+    const { stdout } = await promisify(execFile)(cmd, args, { env: { ...env, ...as?.env } as NodeJS.ProcessEnv });
+    return stdout.trim() !== 'not-found';
+  } catch {
+    return true;
+  }
+}

@@ -380,7 +380,8 @@ export class ComputerSessionsApi {
   }
 
   private actor(caller: ApiCaller): CalvinApiActor {
-    return { id: caller.member, name: caller.name, via: caller.via, client: caller.client };
+    // No profile name (common for email sign-ins): the email reads better than the raw member id.
+    return { id: caller.member, name: caller.name || caller.email, via: caller.via, client: caller.client };
   }
 
   // ---------------------------------------------------------------- operations
@@ -398,6 +399,7 @@ export class ComputerSessionsApi {
       case "create":
         return this.create(caller, op.body, op.idempotencyKey);
       case "list":
+        await this.attachLinked();
         return this.list(caller, op.query);
       case "get":
         return this.get(caller, op.sessionId, op.minSeq);
@@ -1138,6 +1140,11 @@ export class ComputerSessionsApi {
     return this.adminsCache;
   }
 
+  /** Whether organization member `member` (`usr_…`) is an admin, as last seen on the dashboard (work 112: session roles). */
+  isAdmin(member: string): boolean {
+    return this.admins().includes(member);
+  }
+
   /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
   private noteAdmin(member: string, admin: boolean): void {
     const admins = this.admins();
@@ -1412,21 +1419,57 @@ export class ComputerSessionsApi {
     const linked = !row.ownerUserId ? this.deps.linkOfSlack(ownerSlackId) : undefined;
     if (minted || linked) {
       const member = linked ? await memberId(linked) : row.ownerUserId;
-      const person = this.deps.slackPerson(ownerSlackId);
-      const name = person.name ?? (person.gitName.endsWith(" via Computer") ? person.gitName.slice(0, -" via Computer".length) : null);
+      const { name, email } = this.slackOwner(ownerSlackId);
       this.deps.sql.exec(
         `UPDATE sessions SET session_id = COALESCE(session_id, ?), origin_type = 'slack', owner_user_id = COALESCE(owner_user_id, ?),
            owner_name = COALESCE(owner_name, ?), owner_email = COALESCE(owner_email, ?) WHERE runner_key = ?`,
         mintId("cs"),
         member ?? null,
         name,
-        person.gitEmail.endsWith("@users.noreply.opencomputer.dev") ? null : person.gitEmail,
+        email,
         key,
       );
       row = this.rowByKey(key)!;
       this.sendAccess({ sessionId: row.sessionId, originType: "slack", ownerUserId: row.ownerUserId });
     }
     return { sessionId: row.sessionId, ...(row.ownerUserId ? { userId: row.ownerUserId } : {}), epoch: row.logEpoch, lastSeq: row.lastSeq };
+  }
+
+  /** A Slack person as a session's owner names them: no " via Computer", no placeholder email. */
+  private slackOwner(slackUserId: string): { name: string | null; email: string | null } {
+    const person = this.deps.slackPerson(slackUserId);
+    const name = person.name ?? (person.gitName.endsWith(" via Computer") ? person.gitName.slice(0, -" via Computer".length) : null);
+    return { name, email: person.gitEmail.endsWith("@users.noreply.opencomputer.dev") ? null : person.gitEmail };
+  }
+
+  /**
+   * Slack sessions whose owner linked a dashboard user after their last message become that user's,
+   * as their next delivery would make them (slackDelivery): a link reaches back to the threads before it.
+   * Runs before each list; it reads one row per Slack person with unowned sessions, so it stays cheap.
+   */
+  private async attachLinked(): Promise<void> {
+    const unowned = [
+      ...this.deps.sql.exec<{ ownerId: string }>(
+        `SELECT DISTINCT owner_id AS ownerId FROM sessions
+         WHERE session_id IS NOT NULL AND origin_type = 'slack' AND owner_user_id IS NULL AND owner_id IS NOT NULL`,
+      ),
+    ];
+    for (const { ownerId } of unowned) {
+      const linked = this.deps.linkOfSlack(ownerId);
+      if (!linked) continue;
+      const member = await memberId(linked);
+      const { name, email } = this.slackOwner(ownerId);
+      const unownedOf = `owner_id = ? AND owner_user_id IS NULL AND session_id IS NOT NULL AND origin_type = 'slack'`;
+      const rows = [...this.deps.sql.exec<{ sessionId: string }>(`SELECT session_id AS sessionId FROM sessions WHERE ${unownedOf}`, ownerId)];
+      this.deps.sql.exec(
+        `UPDATE sessions SET owner_user_id = ?, owner_name = COALESCE(owner_name, ?), owner_email = COALESCE(owner_email, ?) WHERE ${unownedOf}`,
+        member,
+        name,
+        email,
+        ownerId,
+      );
+      if (this.v4Host()) for (const { sessionId } of rows) this.sendAccess({ sessionId, originType: "slack", ownerUserId: member });
+    }
   }
 
   // ---------------------------------------------------------------- idempotency

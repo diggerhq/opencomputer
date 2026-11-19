@@ -2,7 +2,9 @@
 // host agent with SP_LAUNCH=podman against a fake gateway in this process,
 // runners rendering to a fake Slack client (SP_FAKE_SLACK=1, read back with
 // `podman logs`). No model call: a delivery is `!status`, or a turn whose
-// model is src/dev/fake-model.mjs inside the session's container.
+// model is src/dev/fake-model.mjs behind the release's oc-modelproxy, which
+// the check runs itself (sandbox-check-model.ts): every runner is bound there
+// by its unit, as on a computer, and without a proxy no session starts.
 //
 // It checks a new thread (record, container, unit, cgroup, run directory,
 // token socket, the report's path), a warm delivery, what reaches into a
@@ -65,7 +67,8 @@ import { createTelemetry } from '../telemetry/emitter.js';
 import { type TelemetryEvent, uuidv7 } from '../telemetry/envelope.js';
 import { safeKey, useScripts } from '../workspaces/clones.js';
 import { gatewayDefinitionPath } from '../workspaces/definition.js';
-import { APP_PORT, type Kit, MODEL_URL, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
+import { checkModel } from './sandbox-check-model.js';
+import { APP_PORT, type Kit, type Thread as Reached, reachResumed, reachRunning, reachStopped } from './sandbox-check-reach.js';
 import { type WireClient, wireClient } from './wire-client.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
@@ -114,6 +117,8 @@ try {
 } catch {
   // not active: the directories are ours for the run
 }
+/** The check's own model proxy and model stand-in: the host's SP_MODEL_PROXY and SP_MODEL_SOCKET. */
+const model = await checkModel({ root: ROOT, run: RUN }).catch((e) => refuse(`no model proxy: ${e.message}`));
 const as = asRunner(user.sudo);
 const podman = (args: string[], timeoutMs = 30_000) => as.podman(args, { timeoutMs });
 const mnt = mounts({ as, root: ROOT, dataDir: DATA });
@@ -154,7 +159,7 @@ const asked: { from: string; req: PreviewRequest }[] = [];
 const names = new Map<string, number>();
 /** Protocol 4: the host serves its wire socket, and a thread with a session id gets a journal (work 084), which its container must have mounted. */
 const welcome = (about: string) =>
-  toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, people: [PAT, QUINN], definition: definition(about), preview, wire: { key: preview.key } });
+  toHost({ t: 'welcome', protocol: 4, credentials: { slackBotToken: '', slackBotUserId: '' }, models: { claude: model.route }, people: [PAT, QUINN], definition: definition(about), preview, wire: { key: preview.key } });
 wss.on('connection', (c) => {
   conn = c;
   c.on('message', (d) => {
@@ -181,8 +186,8 @@ wss.on('connection', (c) => {
     }
   });
 });
-/** No model credential: the endpoint is src/dev/fake-model.mjs inside the session's own container, and the key is a word. */
-const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT', anthropicApiKey: 'no-key-the-model-is-a-stand-in', anthropicBaseUrl: MODEL_URL };
+/** No model credential: the welcome's route is the stand-in's profile, whose one variable is a word. */
+const credentials = { slackBotToken: 'xoxb-fake', slackBotUserId: 'U_BOT' };
 let ts = 1;
 /** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
 async function known(session: SessionSpec): Promise<string> {
@@ -246,7 +251,7 @@ function startHost(): ChildProcess {
   const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check',
-      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
+      SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: 'podman', SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_MODEL_PROXY: model.control, SP_MODEL_SOCKET: model.api, SP_ARTIFACTS_IDLE_HOURS: String(ARTIFACTS_IDLE_HOURS),
       SP_TELEMETRY_URL: `http://127.0.0.1:${(collector.address() as net.AddressInfo).port}`, SP_TELEMETRY_CREDENTIAL: 'check-credential', SP_REGION: 'local', SP_SUBSTRATE: 'vm' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -394,6 +399,8 @@ try {
   const seen = (await A1.inside('id -u; echo $SP_RUN')).split('\n').join(' ');
   check(seen === `1500 ${run}`, `inside: uid 1500, SP_RUN its own run directory (${seen})`);
   check(readlinkSync(path.join(run, 'token.sock')) === path.relative(run, tokenSocketFor(run, id)), `token.sock in its run directory links to ${path.relative(run, tokenSocketFor(run, id))}`);
+  check((await A1.inside(`test -S ${model.api} && test ! -e ${model.control} && echo yes`).catch(() => '')) === 'yes',
+    `inside, the model proxy's API socket ${model.api} is there and its control socket is not`);
   const tk = await A1.askToken();
   check(tk.startsWith('ghs_fake') && tokenSessions.at(-1) === A1.key, `a token asked for inside, naming another session, is asked of the gateway for this one (${tk}, ${JSON.stringify(tokenSessions)})`);
   const l1 = launched(d1.trace) ?? (await until(() => launched(d1.trace), 10_000));
@@ -427,7 +434,7 @@ try {
   const files = sandboxScripts({ as, sudo: user.sudo, tm: createTelemetry({ service: 'host', version: 'check', region: 'local', send: async () => {} }), root: ROOT, dataDir: DATA,
     helperRun: path.join(RUN, 'helper'), image: IMAGE, execIn: () => Promise.reject(new Error('not used')) });
   const kit: Kit = {
-    root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire,
+    root: ROOT, dataDir: DATA, key: preview.key, member: PAT.userId as string, say, check, until, asked, wire, calls: model.calls,
     inside: (cid, script) => podman(['exec', '--user', '1500:1500', containerName(cid), '/bin/sh', '-c', script]).then((s) => s.trim()),
     detached: (cid, argv) => podman(['exec', '--detach', '--user', '1500:1500', containerName(cid), ...argv]),
     asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
@@ -487,6 +494,7 @@ try {
   await sleep(1500);
   host.kill('SIGKILL');
   await cleanup();
+  model.stop();
   wss.close();
   collector.close();
 }
