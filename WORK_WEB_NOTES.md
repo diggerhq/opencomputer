@@ -19,24 +19,27 @@ add fields without breaking the screens.
   - `installationId` is the installation `id` string that `GET /managed-agents/computer` lists under `github.installations`.
   - `owner` is that installation's `accountLogin`.
   - The repository `name` is typed by hand, because no endpoint lists the repositories a computer installation can reach.
-- `Repository` is `{installationId: string|number, owner, name, branch, problem?: string|null}`. A non-empty `problem` means the repository cannot be read; the board then shows it and links to settings.
+- `Repository` is `{installationId: string|number, owner, name, branch, problem?: string|null, problemMessage?: string|null}`.
+  - A non-empty `problem` means the repository cannot be read; the board then says so and links to settings.
+  - `problem` is a stable code (`access_denied`, `repository_not_found`, `installation_removed`, `installation_suspended`, `branch_not_found`, `github_app_not_configured`). The code is never shown: the web shows `problemMessage` when present, else its own sentence for a known code (`repositoryProblem` in `board.ts`), else a general one.
 - `GET /work/items?stage=open` returns `{repository, head, asOf, building, items}`.
   - It is polled every 15 seconds with `If-None-Match: <last ETag>`.
-  - A 304 keeps the cached page. `apiFetchResponse` now passes a 304 back to the caller instead of throwing; this is the one change to the shared client.
+  - A 304 keeps the cached page. `apiFetchResponse` now passes a 304 back to the caller instead of throwing; this is the one change to the shared client. It returns the `Response`, so the caller reads headers from a 304 as from a 200.
+  - The server sends the index's current `asOf` in a `Work-As-Of` header on both 200 and 304. The web reads it on both: on a 200 it overrides the body's `asOf`, on a 304 it replaces only the stored `asOf` and keeps the page (`keepOpenItems`). Without it, a quiet board would freeze `asOf` and say "As of N ago" after 5 minutes.
   - When `repository` is null, the board shows the "what is an item" empty state and the repository form.
 - `GET /work/items?stage=closed&limit=50[&cursor=]` returns `{items, nextCursor}`.
   - It is fetched once the repository is set, with "Load more" following `nextCursor`.
 - `GET /work/items/{n}` returns `{item, body}`. It is polled every 15 seconds.
 - `GET /work/items/{n}/history[?cursor=]` returns `{revisions, nextCursor}`. It is fetched only while the History tab is open.
-- `Item` and `Revision` follow the contract field for field. Item sessions are `{id, title, ownerName}`, plus an optional `status`; see "Beyond the contract".
-- Any 404 from a `/work` route reads as "not available yet" (section 4).
+- `Item` and `Revision` follow the contract field for field.
+  - Item sessions are `{id, title, ownerName, status}`; `status` is required, one of `starting | running | waiting | idle | suspended`.
+  - `updatedAt` may be null while not known yet. Such an item sorts last within its group, is never stale, and shows no time (card and item header).
+  - `closedAt` and `closedBy` may be null on a closed item. The card and header then say just "Closed" with no time (or the `updatedAt` time when only that is known), and the item shows in the Closed column only with "Show older".
+- Any 404 from a `/work` route reads as "not available yet" (section 4), except a 404 with code `item_not_found` on the item page: that reads "No item 123", with a link back to the board.
 
 ## Beyond the contract, or left out
 
-- Session state:
-  - The spec asks for "sessions with state", but `Item.sessions[]` has no state in 3.10.
-  - The web accepts an optional `status` (a session status string) and shows a status dot and the word when it is there. Without it, only the title and owner show.
-  - The service should add `status`, or the spec should drop the request.
+- Session state: `status` is now in the contract. Details shows the sessions screens' status dot and their word in lower case (working, starting, idle, asleep), with "waiting for an answer" for `waiting`, because the session may be someone else's.
 - Related items are not in the contract, so they are not shown.
 - Close and Reopen are left for step 5. The places for them are marked with comments:
   - The Ready to close card's action slot (`Card` children).
@@ -77,6 +80,11 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
 ## Preview mock
 
 `web/src/api/mock-work.ts` holds invented data. Pick a scenario with `?work=none|empty|mine-empty|building|problem|missing`.
+
+- The open-items poll goes through `workOpenItemsResponse`, which answers as the server does: an ETag over the page without `asOf`, a 304 while that ETag matches, and `Work-As-Of` on both.
+- `problem` sends `access_denied` with a `problemMessage`.
+- Item 31 has an unknown `updatedAt`; closed item 8 has no `closedAt` or `closedBy`.
+- An unknown item number answers 404 `item_not_found`.
 
 ## Visual pass
 
