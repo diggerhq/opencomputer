@@ -31,7 +31,7 @@ add fields without breaking the screens.
   - It is polled every 15 seconds with `If-None-Match: <last ETag>`.
   - A 304 keeps the cached page. `apiFetchResponse` now passes a 304 back to the caller instead of throwing; this is the one change to the shared client. It returns the `Response`, so the caller reads headers from a 304 as from a 200.
   - The server sends the index's current `asOf` in a `Work-As-Of` header on both 200 and 304. The web reads it on both: on a 200 it overrides the body's `asOf`, on a 304 it replaces only the stored `asOf` and keeps the page (`keepOpenItems`). Without it, a quiet board would freeze `asOf` and say "As of N ago" after 5 minutes.
-  - When `repository` is null, the board shows the "what is an item" empty state and the repository form.
+  - When `repository` is null, the board shows its first-visit message ("First visit" below) with the repository combobox, or Connect GitHub when no installation grants anything.
 - `GET /work/items?stage=closed&limit=50[&cursor=]` returns `{items, nextCursor}`.
   - It is fetched once the repository is set, with "Load more" following `nextCursor`.
 - `GET /work/items/{n}` returns `{item, body}`. It is polled every 15 seconds.
@@ -87,16 +87,57 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
   - unknown: outline
 - Where things live:
   - `KnowledgeRepositorySection` (`KnowledgeRepository.tsx`, props `{id?}`) is the stateful setting and can be mounted anywhere. Its Repository row is the combobox itself (there is no Change or Cancel), with "Open on GitHub" as a trailing icon button. Below it are the branch and its state: "Up to date · read N ago at <short SHA>", "Reading the working docs for the first time…" while building, or the problem sentence in red with a fix per code (Reconnect GitHub for a removed or suspended installation, the installation's `settingsUrl` for a missing repository or denied access, choose again for a missing branch, a note that it is ours for `github_app_not_configured`).
-  - It is the second section of the organization Settings page, as `/settings#work-repository`. The Computer page is not the place: it shows the setup wizard until setup is complete. The board's no-repository state embeds `FirstRepository`, the combobox alone.
+  - It is the second section of the organization Settings page, as `/settings#work-repository`. The Computer page is not the place: it shows the setup wizard until setup is complete. The board's no-repository state (`BoardIntro`) embeds the combobox itself.
   - The Settings page was redesigned with it. `components/settings.tsx` holds the shared anatomy: `SettingsSection` (title, one sentence, one panel), `SettingsRow` (three columns on shared edges: a 10rem label, the value, and a trailing action at the panel's right edge; on a phone the label stacks above the value) and `SettingsAction` (the one trailing action style, a quiet ghost button). The sections are Organization, Knowledge repository, Members and Agent environment. The name shows Save and Cancel only once changed, and Escape resets it. Members and invitations have a "…" menu holding Remove or Revoke; your own row has none and is tagged "You".
   - The GitHub repository and commit links are built in the web (`https://github.com/owner/name`, `/commit/<head>`); a `url` on `Repository` from the API would remove that.
   - Queries more than one screen reads (`useOpenItems`, `useRepository`, `useGrantingInstallations`) live in `queries.ts`, so tests that mock `./api` reach them.
-  - The board's header names the repository it reads as a quiet link to that setting; when the repository has a problem the link reads "Settings".
+  - The board's header names the repository it reads as a quiet link to that setting (underlined on hover), also while the first read runs; when the repository has a problem the link reads "Settings".
   - The rail gains one link, "Board" (`/computer/work`). It is shown unconditionally like Secrets; the page itself redirects when the organization has no computer.
+
+## First visit
+
+Before the board has cards it explains itself (`BoardIntro.tsx`). The three
+lanes are drawn behind one message as placeholders: their names, and cards as
+dashed outlines with grey bars, still, fading out downwards (only the first
+lane below `lg`). The message is a raised panel, 34rem wide, over them.
+
+- Steps: a quiet line, "Connect GitHub · Choose a repository · Track a first
+  item", done ones checked, the current one in the foreground.
+- 1, GitHub not connected (`GET /work/repositories` lists no installation):
+  "The work your team and its agents have in progress. Each card is a
+  markdown file in a git repository. Agents read and update those files as
+  they work, so there is nothing to keep in sync by hand." Then the example
+  tree, then "Knowledge repository: the one repository where that work is
+  written down: `work/` for open items, `done/` for closed ones." and the one
+  action, Connect GitHub (primary). While the list loads the action is a
+  skeleton, so the copy does not jump.
+- 2, connected, no repository: the same copy, the action is the combobox,
+  with "Any repository works. Nothing is written to it until an agent tracks
+  something."
+- 3, a repository with no items, open or closed: "Nothing is tracked in
+  owner/name yet. A card appears here for each file in its `work/` folder.
+  Ask an agent to track something, in any session, and it writes the first
+  one:", an example ask ("Track the usage billing work: what is done and what
+  is left."), the tree of that repository with `work/1-usage-billing.md`, and
+  Start a session (primary, `/computer/sessions/new`). The quiet alternative
+  is "Or add a file to `work/` on GitHub": GitHub's new-file page with
+  `work/1-usage-billing.md` and the item's shape filled in (`owner:` the
+  viewer's email, `# Title`, the line on where it stands, `## Left` with
+  `- [ ]`), from `newItemUrl` in `board.ts`. No tabs or filter in this state.
+- 4, the first read (`building` with nothing read yet): no steps, a spinner,
+  "Reading owner/name for the first time. Each file in `work/` and `done/`
+  becomes a card. They show here once the first read is done."
+- The tree is monospace and muted; a dashed line runs from its first open
+  file to a small card of the same item, which hides below `sm`. The names
+  follow what agents are told (`computer/src/workspaces/knowledge.ts`):
+  `work/NN-slug.md`, `done/`, `owner:`, `## Left`. A new number is one more
+  than the highest in `work/` and `done/`, so the first item is 1.
+- A repository with a problem and no items keeps the lanes and the red
+  header, as before.
 
 ## Preview mock
 
-`web/src/api/mock-work.ts` holds invented data. Pick a scenario with `?work=none|empty|mine-empty|building|problem|missing`.
+`web/src/api/mock-work.ts` holds invented data. Pick a scenario with `?work=no-github|none|empty|mine-empty|building|problem|missing`. `no-github` has no repository and no installation.
 
 - The open-items poll goes through `workOpenItemsResponse`, which answers as the server does: an ETag over the page without `asOf`, a 304 while that ETag matches, and `Work-As-Of` on both.
 - `problem` sends `access_denied` with a `problemMessage`; `&problem=<code>` sends another code, without a message.
