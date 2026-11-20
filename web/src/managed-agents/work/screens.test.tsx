@@ -17,6 +17,7 @@ const workApi = vi.hoisted(() => ({
   getRepository: vi.fn(),
   putRepository: vi.fn(),
   getRepositories: vi.fn(),
+  getSessionItems: vi.fn(),
 }))
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
@@ -26,6 +27,7 @@ vi.mock('./api', async (importOriginal) => ({
 const { Board } = await import('./Board')
 const { ItemView } = await import('./Item')
 const { KnowledgeRepositorySection } = await import('./KnowledgeRepository')
+const { SessionWork } = await import('./SessionWork')
 
 const repository = {
   installationId: '1',
@@ -94,6 +96,10 @@ async function render(url: string) {
               <Route
                 path="/computer"
                 element={<KnowledgeRepositorySection id="work-repository" />}
+              />
+              <Route
+                path="/computer/sessions/cs_7"
+                element={<SessionWork id="cs_7" />}
               />
             </Routes>
           </MemoryRouter>
@@ -566,6 +572,37 @@ describe('item page', () => {
     await render('/computer/work/99')
     expect(container.textContent).toContain('The board is not available yet')
     expect(container.textContent).not.toContain('No item')
+  })
+})
+
+describe('session header', () => {
+  it('links the items the session worked on, two by name and a count', async () => {
+    workApi.getSessionItems.mockResolvedValue([
+      makeItem({ number: 114, title: 'Work tracking' }),
+      makeItem({ number: 7, title: 'Billing' }),
+      makeItem({ number: 9, title: 'Docs' }),
+    ])
+    await render('/computer/sessions/cs_7')
+    expect(workApi.getSessionItems).toHaveBeenCalledWith('cs_7')
+    const links = [...document.body.querySelectorAll('a')]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      '/computer/work/114',
+      '/computer/work/7',
+    ])
+    expect(links[0].textContent).toBe('Work:114Work tracking')
+    expect(links[0].getAttribute('title')).toBe('Work item 114: Work tracking')
+    expect(document.body.textContent).toContain('+1')
+  })
+
+  it('shows nothing when the session named no item or Work cannot answer', async () => {
+    workApi.getSessionItems.mockResolvedValue([])
+    await render('/computer/sessions/cs_7')
+    expect(document.body.querySelector('a')).toBeNull()
+    workApi.getSessionItems.mockRejectedValue(
+      new ApiError('Work is unavailable.', 503, 'unavailable'),
+    )
+    await render('/computer/sessions/cs_7')
+    expect(document.body.querySelector('a')).toBeNull()
   })
 })
 

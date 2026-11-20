@@ -21,6 +21,7 @@ import {
 } from '../computer-sessions-api'
 import { Item } from './conversation'
 import { useMemberEmails } from './members'
+import { SessionWork } from '../work/SessionWork'
 import { AskCard, SettingsPickers, StatusDot } from './parts'
 import {
   isBusy,
@@ -215,6 +216,7 @@ function Header({ id }: { id: string }) {
             · {s.owner.name}
           </span>
         ) : null}
+        <SessionWork id={id} />
       </div>
       {slackUrl ? (
         <Button asChild size="sm" variant="ghost">
