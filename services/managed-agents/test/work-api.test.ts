@@ -4,7 +4,7 @@ import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http
 import type { Session } from "../src/computer/api-types.js";
 import type { ApiCaller, ApiRow } from "../src/computer/sessions-api.js";
 import { branchName, itemAttention } from "../src/computer/work/api.js";
-import { type SessionBrief, type WorkContextOp, workContext, workStamp, workStampSetup } from "../src/computer/work/briefs.js";
+import { type SessionBrief, type WorkContextOp, type WorkRefsOp, workContext, workRefs, workStamp, workStampSetup } from "../src/computer/work/briefs.js";
 import type { TokenMinter } from "../src/computer/work/github.js";
 import { REQUEST_TIMEOUT_MS } from "../src/computer/work/github.js";
 import { READ_WAIT_MS, WorkIndex } from "../src/computer/work/index.js";
@@ -61,6 +61,7 @@ function computer(sessions: FakeSession[]) {
   const stub: ComputerApiStub = {
     computerApi: vi.fn(async (_account, caller, op) => {
       if (op.op === "work.stamp") return workStamp(sql);
+      if (op.op === "work.refs") return workRefs({ api }, caller, op as WorkRefsOp);
       if (op.op !== "work.context") throw new Error(`unexpected ${op.op}`);
       ops.push(op as WorkContextOp);
       return workContext({ sql, api }, caller, op as WorkContextOp);
@@ -89,6 +90,7 @@ async function workIndex(repo: FakeRepo, over: Partial<TokenMinter> = {}) {
     history: (a, n, c) => index.history(a, n, c),
     poke: (a) => index.poke(a),
     stamp: (a) => index.stamp(a),
+    linked: (a, refs) => index.linked(a, refs),
   };
   const settle = async () => {
     while (pending.length) await Promise.allSettled(pending.splice(0));
@@ -152,6 +154,7 @@ describe("Work API scopes", () => {
     expect((await status(withKey(["work:write"]), "PUT", "/work/repository", choice)).status).toBe(200);
     expect(await status(withKey(["sessions:read"]), "GET", "/work/repositories")).toMatchObject({ status: 403, error: { scope: "work:read" } });
     expect((await status(withKey(["work:read"]), "GET", "/work/repositories")).status).toBe(200);
+    expect(await status(withKey(["sessions:read"]), "GET", `/work/sessions/${SID.mine}/items`)).toMatchObject({ status: 403, error: { scope: "work:read" } });
   });
 
   it("lets the dashboard read and write", async () => {
@@ -241,6 +244,11 @@ describe("Work API composition", () => {
     // An idle session adds no attention; a member known only by their git email has a name, no id.
     expect(four).toMatchObject({ number: 4, owner: { email: "cy@acme.test", name: "Cy Git", id: null }, author: { email: "cy@acme.test", name: "Cy Git", id: null }, attention: null, unpublished: false });
     expect(typeof four.updatedAt).toBe("string");
+
+    // Declared owners; the board's commits are older than 14 days, so only items with a session at work are active.
+    expect(one.owner.source).toBe("declared");
+    expect([one.active, two.active, four.active]).toEqual([true, true, false]);
+    expect(four.lastActivityAt).toBe(four.updatedAt);
 
     // One call to the Computer object per page, with every linked session and email.
     expect(c.ops).toHaveLength(1);
@@ -347,6 +355,45 @@ describe("Work API composition", () => {
     expect(Object.keys(one)).toEqual(["item", "body"]);
     expect(one.item.attention.state).toBe("needs_you");
     expect(one.body).toContain("# 1. Mine");
+  });
+
+  it("derives an owner from the latest commit, without ' via Computer', mine when it is my git email; a recent change is active until it ages out", async () => {
+    const { repo, w, c } = await board();
+    // A commit dated yesterday by the index's clock.
+    repo["clock"] = Date.parse("2026-11-18T10:00:00Z");
+    repo.commit({ "work/5-derived.md": doc(5, "Derived") }, "Add 5", { name: "Me via Computer", email: "Me.Git@acme.test" });
+    await w.rpc.poke(ORG);
+    await w.settle();
+    const res = await call(w.env, c.stub, person, "GET", "/work/items?stage=open");
+    const five = (await json(res)).items.find((i: { number: number }) => i.number === 5);
+    expect(five).toMatchObject({ owner: { email: "me.git@acme.test", name: "Me", id: ME, source: "derived" }, mine: true, attention: null, active: true });
+    expect(five.lastActivityAt).toBe(repo.commits.get(repo.head!)!.at);
+    // Fourteen days on, nothing else changed: a new ETag, and the item is dormant.
+    const etag = res.headers.get("ETag")!;
+    w.clock.tick(14 * 86_400_000);
+    const later = await call(w.env, c.stub, person, "GET", "/work/items?stage=open", { headers: { "If-None-Match": etag } });
+    expect(later.status).toBe(200);
+    expect((await json(later)).items.find((i: { number: number }) => i.number === 5).active).toBe(false);
+  });
+
+  it("lists a session's items by its id or the key its trailers name, only for a caller who may see it", async () => {
+    const { w, c } = await board();
+    const numbers = async (identity: RequestIdentity, id: string) => {
+      const res = await call(w.env, c.stub, identity, "GET", `/work/sessions/${id}/items`);
+      return res.status === 200 ? (await json(res)).items.map((i: { number: number }) => i.number) : { status: res.status, ...(await json(res)).error };
+    };
+    expect(await numbers(person, SID.mine)).toEqual([1]);
+    // My Slack session: its commit names its key.
+    expect(await numbers(person, SID.slack)).toEqual([2]);
+    expect(await numbers(person, SID.idle)).toEqual([4]);
+    // Bo's private Slack session is not mine to see; Bo sees it.
+    expect(await numbers(person, SID.private)).toMatchObject({ status: 404, code: "session_not_found" });
+    expect(await numbers({ ...person, userId: "user_bo" } as RequestIdentity, SID.private)).toEqual([2]);
+    expect(await numbers(person, "cs_0000000000000099")).toMatchObject({ status: 404, code: "session_not_found" });
+    expect(await numbers(person, "a.b")).toMatchObject({ status: 404, code: "session_not_found" });
+    const res = await json(await call(w.env, c.stub, person, "GET", `/work/sessions/${SID.mine}/items`));
+    expect(Object.keys(res)).toEqual(["items"]);
+    expect(res.items[0]).toMatchObject({ number: 1, mine: true, attention: { state: "needs_you" } });
   });
 
   it("shows a revision's session by its id, and only when the caller may see it", async () => {
