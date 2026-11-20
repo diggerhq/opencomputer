@@ -7,6 +7,7 @@ import {
   type ListSessionsQuery,
   type Session,
 } from '../computer-sessions-api'
+import { approvalLine, isPlan } from './ask-line'
 
 export const NEEDS_YOU: ListSessionsQuery = { status: 'waiting', limit: 50 }
 export const WORKING: ListSessionsQuery = {
@@ -33,8 +34,14 @@ export function statusLabel(status: string) {
 }
 
 export function askTitle(ask: Ask): string {
-  if (ask.kind === 'approval')
-    return `Approve ${ask.approval?.title || ask.approval?.toolName || 'a tool call'}`
+  if (ask.kind === 'approval') {
+    if (isPlan(ask)) return 'Has a plan to review'
+    const line = approvalLine(ask)
+    const lower = /^[A-Z][a-z]/.test(line)
+      ? line[0].toLowerCase() + line.slice(1)
+      : line
+    return `Wants to ${lower}`
+  }
   if (ask.kind === 'question') {
     const q = ask.question?.questions[0]
     return q?.text || q?.header || 'Has a question'

@@ -22,12 +22,15 @@ export interface WireKeysWriter {
   delete(key: string): Promise<void>;
 }
 
-/** Scopes a wildcard never grants: the key must name them (work 095). */
-const NAMED_ONLY: readonly ApiScope[] = ["secrets:write"];
+/**
+ * Scopes a wildcard never grants: the key must name them (work 095). The Work scopes too (work
+ * tracking 3.10): a key made before they existed must not silently read an organization's documents.
+ */
+const NAMED_ONLY: readonly ApiScope[] = ["secrets:write", "work:read", "work:write"];
 
 /**
  * A key's API scopes. Keys made before scopes existed carry `sandbox:*` (the edge hardcodes it),
- * and `*` or no scopes at all mean the same: every scope except `secrets:write`, which a key gets
+ * and `*` or no scopes at all mean the same: every scope except NAMED_ONLY, which a key gets
  * only by naming it (work 095: the one-hour keys sessions mint are `sandbox:*`, and a session must
  * not be able to set a secret). Otherwise the scopes the API knows.
  */

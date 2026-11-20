@@ -164,6 +164,11 @@ export interface Session {
   title: string;
   status: SessionStatus;
   archived: boolean;
+  /**
+   * Set aside by its owner from triage: true while the stored ref is the oldest open ask's id. Optional
+   * in the published schema (absent: false); this service always sends it.
+   */
+  aside?: boolean;
   owner: Person;
   origin: Origin;
   settings: SessionSettings;
@@ -225,5 +230,5 @@ export interface ApiErrorBody {
 }
 
 /** The API key scopes (authentication.mdx#scopes). */
-export const API_SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals"] as const;
+export const API_SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals", "work:read", "work:write"] as const;
 export type ApiScope = (typeof API_SCOPES)[number];

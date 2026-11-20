@@ -86,9 +86,13 @@ describe('Fold', () => {
   it('session.updated changes settings, title, archive and metadata keys', () => {
     const { fold, add } = feed();
     add('session.updated', { changes: { title: { from: '', to: 'T' }, model: { from: null, to: 'm2' }, archived: { from: false, to: true }, 'metadata.k': { from: null, to: 'v' } } });
-    expect(fold.session()).toMatchObject({ title: 'T', archived: true, settings: { model: 'm2' }, metadata: { k: 'v' } });
+    // Set aside is the server's column, never journaled: the computer's fold always says false.
+    expect(fold.session()).toMatchObject({ title: 'T', archived: true, aside: false, settings: { model: 'm2' }, metadata: { k: 'v' } });
     add('session.updated', { changes: { 'metadata.k': { from: 'v', to: null } } });
     expect(fold.session().metadata).toEqual({});
+    // Optional in the schema: a Session without it (from a computer older than set-aside) still decodes.
+    const { aside: _, ...older } = fold.session();
+    expect(Schema.decodeUnknownSync(Session)(older)).not.toHaveProperty('aside');
   });
 
   it('speed: null from a session.created written before it, then what session.updated sets', () => {

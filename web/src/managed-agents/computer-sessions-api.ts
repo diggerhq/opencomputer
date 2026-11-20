@@ -56,6 +56,8 @@ export const SessionSchema = z.looseObject({
   title: z.string().nullable(),
   status: z.string(),
   archived: z.boolean(),
+  // Set aside by its owner in triage, until something newer needs them.
+  aside: z.boolean().default(false),
   owner: PersonSchema.nullable(),
   origin: z.looseObject({
     type: z.string(),
@@ -107,6 +109,8 @@ const EventPageSchema = z.looseObject({
   events: z.array(EventSchema),
   lastSeq: z.number(),
   hasMore: z.boolean(),
+  // With `tailTurns`: the turns before the tail, as one line each.
+  earlierTurns: z.array(z.unknown()).nullable().optional(),
 })
 export type EventPage = z.infer<typeof EventPageSchema>
 
@@ -132,6 +136,7 @@ const SendResultSchema = z.looseObject({
 const AskResultSchema = z.looseObject({ ask: AskSchema })
 
 export type ListSessionsQuery = {
+  owner?: 'me' | 'anyone'
   status?: string
   q?: string
   archived?: 'false' | 'true' | 'all'
@@ -220,6 +225,26 @@ export function updateSession(
   ).then((r) => r.session)
 }
 
+// Sets the session aside in triage until something newer needs its owner:
+// `ref` is the ask being set aside. Owner only.
+export function setAside(id: string, ref: string) {
+  return apiFetch(
+    `${PREFIX}/sessions/${encodeURIComponent(id)}/aside`,
+    { method: 'PUT', body: JSON.stringify({ ref }) },
+    SessionResultSchema,
+    '/api',
+  ).then((r) => r.session)
+}
+
+export function bringBack(id: string) {
+  return apiFetch(
+    `${PREFIX}/sessions/${encodeURIComponent(id)}/aside`,
+    { method: 'DELETE' },
+    SessionResultSchema,
+    '/api',
+  ).then((r) => r.session)
+}
+
 export type IfBusy = 'queue' | 'steer' | 'interrupt'
 
 export function sendTurn(id: string, input: string, ifBusy: IfBusy) {
@@ -303,5 +328,7 @@ export const sessionKeys = {
   all: ['computer-sessions'] as const,
   list: (q: ListSessionsQuery) => ['computer-sessions', 'list', q] as const,
   one: (id: string) => ['computer-sessions', 'one', id] as const,
+  events: (id: string, q: object) =>
+    ['computer-sessions', 'events', id, q] as const,
   capabilities: ['computer-sessions', 'capabilities'] as const,
 }

@@ -197,6 +197,11 @@ export const Session = Schema.Struct({
   title: Schema.String,
   status: SessionStatus,
   archived: Schema.Boolean,
+  /**
+   * Set aside by its owner in triage, until something newer needs them. The hosted API's (a column of
+   * its session row): it always sends it. Absent means false, as from a computer older than set-aside.
+   */
+  aside: Schema.optionalKey(Schema.Boolean),
   owner: Person,
   origin: Origin,
   settings: Settings,

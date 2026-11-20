@@ -13,9 +13,10 @@
 // The variables are also set in the runner's own environment, for processes
 // started later without the env file (a new query, MCP servers).
 //
-// `values.sh` also carries the session's own variables (`base`): a spare
-// runner's Claude Code (work 069) started before the session was known, so
-// its Bash tool gets SP_SESSION_KEY and the git author only from here.
+// `values.sh` also carries the session's own variables (`base`, sessionVars):
+// a spare runner's Claude Code (work 069) started before the session was
+// known, so its Bash tool gets SP_SESSION_KEY, SP_SESSION_ID and the git
+// author only from here. Codex commands source the same file (BASH_ENV).
 //
 // Out of Slack: every known value is replaced with `[secret:NAME]` in what the
 // runner posts. Variables (`!var`, `variable: true`) reach the environment the
@@ -37,6 +38,16 @@ export const REQUEST_SECRET_TOOL = 'mcp__calvin__request_secret';
 const MIN_REDACT = 6;
 /** Lines of a multi-line value (a PEM key) at least this long are redacted on their own too. */
 const MIN_LINE = 16;
+
+/**
+ * The session's own variables, for `base`: commits authored by its initiator
+ * (the app identity commits them), its key, and SP_SESSION_ID, its public id
+ * (the key while it has none, as host/api-host.ts names it), which the knowledge
+ * repository's hooks/knowledge/prepare-commit-msg puts in a `Session:` trailer.
+ */
+export function sessionVars(s: { key: string; sessionId?: string; owner: { gitName: string; gitEmail: string } }): Record<string, string> {
+  return { GIT_AUTHOR_NAME: s.owner.gitName, GIT_AUTHOR_EMAIL: s.owner.gitEmail, SP_SESSION_KEY: s.key, SP_SESSION_ID: s.sessionId ?? s.key };
+}
 
 const quote = (v: string) => `'${v.replaceAll("'", `'\\''`)}'`;
 

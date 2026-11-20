@@ -12,6 +12,7 @@
 
 import { ApiError } from './errors'
 import { computerSessionsMock } from './mock-computer-sessions'
+import { workMock } from './mock-work'
 
 // Fixed clock so screenshots are deterministic.
 const BASE = new Date('2026-06-26T17:00:00Z').getTime()
@@ -173,6 +174,20 @@ const orgMembers = [
     name: 'Alex Rivera',
     role: 'member',
   },
+  {
+    membershipId: 'mem_3',
+    id: 'user_4ghi',
+    email: 'mohamed@digger.dev',
+    name: 'Mohamed Habib',
+    role: 'admin',
+  },
+  {
+    membershipId: 'mem_4',
+    id: 'user_5jkl',
+    email: 'priya@digger.dev',
+    name: '',
+    role: 'member',
+  },
 ]
 
 const orgInvitations = [
@@ -183,6 +198,14 @@ const orgInvitations = [
     role: 'member',
     expiresAt: at(-5),
     createdAt: at(1),
+  },
+  {
+    id: 'inv_2',
+    email: 'jordan@acme.dev',
+    state: 'pending',
+    role: 'member',
+    expiresAt: at(-6),
+    createdAt: at(0.5),
   },
 ]
 
@@ -885,6 +908,8 @@ const POST_ROUTES: [RegExp, () => unknown][] = [
 
 export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
+  const work = workMock(path, method, options.body)
+  if (work !== undefined) return work as T
   const computerSessions = computerSessionsMock(path, method, options.body)
   if (computerSessions !== undefined) return computerSessions as T
   if (
