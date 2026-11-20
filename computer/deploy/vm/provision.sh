@@ -644,6 +644,11 @@ log "systemd units"
 # The entries live in sp-host.sh (`run_dirs`), which also writes them on migrate and revert.
 AGENT_USER="$AGENT_USER" SP_RUN="$SP_RUN" bash "$SP_CURRENT/deploy/vm/sp-host.sh" run-dirs
 
+# /tmp ages after 7 days, not Ubuntu's 30: runners share TMPDIR=/tmp, and it
+# filled the root disk (deploy/vm/tmp.conf replaces /usr/lib/tmpfiles.d/tmp.conf).
+# No clean here: the daily systemd-tmpfiles-clean.timer does the first one, not a deploy.
+install -m 0644 "$SP_CURRENT/deploy/vm/tmp.conf" /etc/tmpfiles.d/tmp.conf
+
 # Lingering keeps the agent's systemd user manager (user@$AGENT_UID) running
 # without a login, so the host agent can start runners as transient user units
 # (`systemd-run --user`). Chosen over system-level systemd-run: letting a
