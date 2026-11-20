@@ -78,7 +78,7 @@ export function Board() {
   const open = useOpenItems()
   const repository = open.data?.page.repository ?? null
   // Before a repository is chosen: is GitHub connected at all?
-  const noRepository = open.isSuccess && !repository
+  const noRepository = open.data !== undefined && !repository
   const installations = useGrantingInstallations(noRepository)
   const closed = useInfiniteQuery({
     queryKey: workKeys.closed(org),
@@ -95,7 +95,9 @@ export function Board() {
       </div>
     )
   }
-  if (open.isError) {
+  // A failed poll keeps the board it has (IndexStatus says it could not
+  // refresh); the error screen is for when there is nothing to show.
+  if (!open.data) {
     const missing = open.error instanceof ApiError && open.error.status === 404
     return (
       <BoardFrame>
@@ -155,6 +157,7 @@ export function Board() {
       problem={repositoryProblem(page.repository)}
       building={page.building}
       asOf={page.asOf}
+      refreshFailed={open.isError}
     />
   )
   // Nothing to show yet: no tabs or filter, the lanes drawn as placeholders.
@@ -425,11 +428,13 @@ function IndexStatus({
   problem,
   building,
   asOf,
+  refreshFailed,
 }: {
   repository: string
   problem: string | null
   building: boolean
   asOf: string | null
+  refreshFailed: boolean
 }) {
   return (
     <p className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
@@ -460,6 +465,7 @@ function IndexStatus({
           ) : null}
         </>
       )}
+      {refreshFailed ? <span>· Couldn&apos;t refresh</span> : null}
     </p>
   )
 }

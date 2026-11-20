@@ -108,6 +108,15 @@ async function render(url: string) {
     )
   })
   await settle()
+  return client
+}
+
+// A poll that fails after the screen has loaded.
+async function failRefetch(client: QueryClient) {
+  await act(async () => {
+    await client.refetchQueries({ queryKey: ['work'] })
+  })
+  await settle()
 }
 
 // Flushes until nothing is loading (the repository setting loads in two
@@ -317,6 +326,20 @@ describe('board', () => {
       container.querySelector('a[href="/settings#work-repository"]')
         ?.textContent,
     ).toBe('acme/knowledge')
+  })
+
+  it('keeps the board when a poll fails, and says it could not refresh', async () => {
+    workApi.getOpenItems.mockResolvedValue(openPage(items))
+    const client = await render('/computer/work')
+    expect(container.textContent).not.toContain("Couldn't refresh")
+    workApi.getOpenItems.mockRejectedValue(new ApiError('Down', 500))
+    await failRefetch(client)
+    expect(titles(column('In progress'))).toContain('Mine, needs me')
+    expect(container.textContent).toContain("Couldn't refresh")
+    expect(container.textContent).not.toContain('Could not load the board')
+    workApi.getOpenItems.mockResolvedValue(openPage(items))
+    await failRefetch(client)
+    expect(container.textContent).not.toContain("Couldn't refresh")
   })
 
   it('reads a 404 as not available yet', async () => {
@@ -611,6 +634,26 @@ describe('item page', () => {
         'a[href="https://github.com/acme/knowledge/commit/abcdef1"]',
       )?.textContent,
     ).toContain('abcdef1')
+  })
+
+  it('keeps the item when a poll fails, and says it could not refresh', async () => {
+    workApi.getItem.mockResolvedValue({ item, body: '# Usage billing' })
+    const client = await render('/computer/work/12')
+    workApi.getItem.mockRejectedValue(new ApiError('Down', 500))
+    await failRefetch(client)
+    expect(container.querySelector('h1')?.textContent).toBe('12Usage billing')
+    expect(container.textContent).toContain("Couldn't refresh")
+    expect(container.textContent).not.toContain('Could not load this item')
+  })
+
+  it('says the item is gone when a poll finds it removed', async () => {
+    workApi.getItem.mockResolvedValue({ item, body: '# Usage billing' })
+    const client = await render('/computer/work/12')
+    workApi.getItem.mockRejectedValue(
+      new ApiError('No such item.', 404, 'item_not_found'),
+    )
+    await failRefetch(client)
+    expect(container.textContent).toContain('No item 12')
   })
 
   it('says when there is no such item, with a way back', async () => {

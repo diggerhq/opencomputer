@@ -80,15 +80,18 @@ export function ItemView() {
       !(error instanceof ApiError && error.status === 404) && count < 2,
   })
 
-  if (!valid || item.isError) {
-    const status = item.error instanceof ApiError ? item.error.status : null
-    // The server's 404 for a number it does not track; any other 404 means
-    // the routes are not there yet, as on the board.
-    const noItem =
-      !valid ||
-      (status === 404 &&
-        item.error instanceof ApiError &&
-        item.error.type === 'item_not_found')
+  const status = item.error instanceof ApiError ? item.error.status : null
+  // The server's 404 for a number it does not track; any other 404 means
+  // the routes are not there yet, as on the board.
+  const noItem =
+    !valid ||
+    (status === 404 &&
+      item.error instanceof ApiError &&
+      item.error.type === 'item_not_found')
+  // A failed poll keeps the item it has, with a quiet word that it could not
+  // refresh; the error screen is for when there is nothing to show, or the
+  // item is gone.
+  if (noItem || (item.isError && !item.data)) {
     const { title, description } = noItem
       ? {
           title: valid ? `No item ${number}` : 'No such item',
@@ -125,7 +128,7 @@ export function ItemView() {
       </div>
     )
   }
-  if (item.isPending) {
+  if (!item.data) {
     return (
       <div role="status" className="flex min-h-64 items-center justify-center">
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
@@ -136,7 +139,7 @@ export function ItemView() {
   const it = item.data.item
   return (
     <div>
-      <Breadcrumb number={it.number} />
+      <Breadcrumb number={it.number} refreshFailed={item.isError} />
       <ItemHeader item={it} />
       <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-0">
         <article className="min-w-0 lg:pr-12">
@@ -192,19 +195,28 @@ export function ItemView() {
   )
 }
 
-function Breadcrumb({ number }: { number: number | null }) {
+function Breadcrumb({
+  number,
+  refreshFailed = false,
+}: {
+  number: number | null
+  refreshFailed?: boolean
+}) {
   return (
-    <nav aria-label="Breadcrumb" className="text-muted-foreground mb-3 text-xs">
-      <Link to="/computer/work" className="hover:text-foreground">
-        Board
-      </Link>
-      {number !== null ? (
-        <>
-          <span className="mx-1.5">/</span>
-          <span className="tabular-nums">{number}</span>
-        </>
-      ) : null}
-    </nav>
+    <div className="text-muted-foreground mb-3 flex items-center gap-3 text-xs">
+      <nav aria-label="Breadcrumb">
+        <Link to="/computer/work" className="hover:text-foreground">
+          Board
+        </Link>
+        {number !== null ? (
+          <>
+            <span className="mx-1.5">/</span>
+            <span className="tabular-nums">{number}</span>
+          </>
+        ) : null}
+      </nav>
+      {refreshFailed ? <span>Couldn&apos;t refresh</span> : null}
+    </div>
   )
 }
 
