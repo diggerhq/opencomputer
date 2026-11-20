@@ -9,11 +9,13 @@ on:
     paths:
       - services/managed-agents/**
       - .github/workflows/managed-agents.yml
+      - .github/actions/managed-agents-setup/**
   push:
     branches: [main]
     paths:
       - services/managed-agents/**
       - .github/workflows/managed-agents.yml
+      - .github/actions/managed-agents-setup/**
 
 permissions:
   contents: read
@@ -29,8 +31,11 @@ defaults:
 jobs:
   test:
     name: Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
     strategy:
       fail-fast: false
       matrix:
@@ -87,32 +92,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            services/managed-agents/package-lock.json
-            services/managed-agents/src/workerd-runtime/package-lock.json
-      - run: npm ci && npm ci --prefix src/workerd-runtime
+      - uses: ./.github/actions/managed-agents-setup
       - run: npm test -- ${{ matrix.projects }}
 
   static:
     name: Check, build and dry-run
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            services/managed-agents/package-lock.json
-            services/managed-agents/src/workerd-runtime/package-lock.json
-      - run: npm ci && npm ci --prefix src/workerd-runtime
+      - uses: ./.github/actions/managed-agents-setup
       - run: npm run check
       - run: npm run build
       - name: Dry-run each Worker
@@ -126,7 +120,7 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
         with:
