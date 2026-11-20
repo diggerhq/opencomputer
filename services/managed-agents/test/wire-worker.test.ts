@@ -51,7 +51,7 @@ beforeAll(async () => {
 
 type Call = { url: string; init: RequestInit; headers: Headers };
 
-function harness(answer: (call: Call) => Response | Promise<Response> = () => upgraded()) {
+function harness(answer: (call: Call) => Response | Promise<Response> = () => upgraded(), computers?: WireEnv["COMPUTERS"]) {
   const calls: Call[] = [];
   const handle = createWireHandler({
     now: () => NOW,
@@ -61,7 +61,7 @@ function harness(answer: (call: Call) => Response | Promise<Response> = () => up
       return answer(call);
     }) as typeof fetch,
   });
-  return { calls, handle: (request: Request) => handle(request, wireEnv) };
+  return { calls, handle: (request: Request) => handle(request, computers ? { ...wireEnv, COMPUTERS: computers } : wireEnv) };
 }
 
 /** What the relay answers: an accepted socket selecting opc.v1. */
@@ -197,6 +197,38 @@ describe("the wire Worker's upgrade", () => {
       const { handle } = harness(answer);
       expect(await closeOf(await handle(dial({ "x-api-key": KEYS.full.key })))).toEqual({ code: 4503, reason: { retryAfterMs: 1000 } });
     }
+  });
+
+  it("on a 530 asks the computer once per burst: waking waits 5 s, asleep or gone a minute, a failed ask 1 s", async () => {
+    for (const [state, reason] of [
+      ["waking", { reason: "waking", retryAfterMs: 5000 }],
+      ["asleep", { reason: "asleep", retryAfterMs: 60_000 }],
+      ["gone", { reason: "gone", retryAfterMs: 60_000 }],
+      [null, { retryAfterMs: 1000 }],
+    ] as const) {
+      const asked: string[] = [];
+      const computers = {
+        getByName: (org: string) => ({
+          wireWake: async () => {
+            asked.push(org);
+            if (!state) throw new Error("no computer object");
+            return state;
+          },
+        }),
+      };
+      const { handle } = harness(() => new Response("tunnel down", { status: 530 }), computers);
+      expect(await closeOf(await handle(dial({ "x-api-key": KEYS.full.key })))).toEqual({ code: 4503, reason });
+      expect(await closeOf(await handle(dial({ "x-api-key": KEYS.full.key })))).toEqual({ code: 4503, reason });
+      expect(asked).toEqual(["org_wire"]);
+    }
+  });
+
+  it("does not ask the computer on a 502", async () => {
+    const asked: string[] = [];
+    const computers = { getByName: (org: string) => ({ wireWake: async () => (asked.push(org), "waking" as const) }) };
+    const { handle } = harness(() => new Response("bad gateway", { status: 502 }), computers);
+    expect(await closeOf(await handle(dial({ "x-api-key": KEYS.full.key })))).toEqual({ code: 4503, reason: { retryAfterMs: 1000 } });
+    expect(asked).toEqual([]);
   });
 });
 

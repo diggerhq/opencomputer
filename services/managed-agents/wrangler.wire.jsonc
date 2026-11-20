@@ -3,8 +3,10 @@
   // Work 084: the wire's front door, `wire.example.com`. Checks the
   // credential on the WebSocket upgrade (`/v1`) and the workspace file routes,
   // signs for the computer's relay (X-Wire-*) and hands the organization's
-  // tunnel (`<tunnelId>.w.example.com`) the request. No DO, no D1: the
-  // key records in WIRE_KEYS are written by `managed-agents`.
+  // tunnel (`<tunnelId>.w.example.com`) the request. No D1: the key records
+  // in WIRE_KEYS are written by `managed-agents`, and COMPUTERS (its
+  // ComputerDurableObject) is asked only when a tunnel answers 530, to wake
+  // a parked computer.
   //
   // Secrets (wrangler secret put --config wrangler.wire.jsonc):
   //   WIRE_TICKET_KEY       verifies tickets; the same value as in `managed-agents`
@@ -26,6 +28,11 @@
   "kv_namespaces": [
     { "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }
   ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
+    ]
+  },
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // Logs to Axiom through cloudflare-workers/log-tail.
   "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],

@@ -1779,6 +1779,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return "waking";
   }
 
+  /**
+   * The wire found the tunnel down (530) under a key's connection: wake a
+   * parked computer as an API call would, unless billing refuses it (a free
+   * trial over), when it stays asleep and the client is told to back off.
+   */
+  async wireWake(): Promise<"waking" | "asleep" | "gone"> {
+    if (!this.previewOrganization()) return "gone";
+    const state = this.lifecycle.row()?.state;
+    if (state === "provisioning" || state === "waking" || state === "resizing" || state === "ready") return "waking";
+    if (state !== "parked" && state !== "parking") return "gone";
+    if (!(await this.admitForApi().catch(() => false))) return "asleep";
+    console.log(JSON.stringify({ level: "info", event: "computer.wire_wake", accountId: this.setting("accountId") }));
+    // lifecycle.wake answers false when a wake is already in flight: still on its way up.
+    await this.wakeComputer();
+    this.noteActivity();
+    return "waking";
+  }
+
   /** A preview served a visitor (at most every 30 s per name and isolate): the computer is in use, so it does not park. */
   notePreviewHit(): void {
     if (this.previewOrganization() && this.lifecycle.row()?.state === "ready") this.noteActivity();
