@@ -31,8 +31,11 @@ defaults:
 jobs:
   test:
     name: Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
     strategy:
       fail-fast: false
       matrix:
@@ -94,8 +97,11 @@ jobs:
 
   static:
     name: Check, build and dry-run
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,7 +120,7 @@ jobs:
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
         with:
