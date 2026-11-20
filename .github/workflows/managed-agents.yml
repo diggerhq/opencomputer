@@ -48,16 +48,24 @@ jobs:
             projects: >-
               --project managed-session-workerd
               test/managed-session-workerd.test.ts
+          - name: Edge channel sessions
+            projects: >-
+              --project managed-session-workerd
+              test/managed-session-workerd-channel.test.ts
           - name: Edge questions
             projects: >-
               --project managed-session-workerd
               test/questions.test.ts
               test/consult.test.ts
+          - name: Edge session intent
+            projects: >-
+              --project managed-session-workerd
               test/session-creation-intent.test.ts
               test/template-runtime-parity.test.ts
           - name: Edge worker
+            projects: --project worker
+          - name: Edge first session
             projects: >-
-              --project worker
               --project memory
               --project do-first-session-full-example
               --project do-first-session-spike
@@ -78,9 +86,9 @@ jobs:
           - name: Computer telemetry
             projects: --project computer-telemetry
           - name: Workerd memory
-            projects: >-
-              --project workerd-memory
-              --project memory-integrated
+            projects: --project workerd-memory
+          - name: Memory integrated
+            projects: --project memory-integrated
           - name: Command integration
             projects: >-
               --project commands-integrated

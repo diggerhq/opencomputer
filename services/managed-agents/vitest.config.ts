@@ -48,6 +48,7 @@ export default defineConfig({
           name: "managed-session-workerd",
           include: [
             "test/managed-session-workerd.test.ts",
+            "test/managed-session-workerd-channel.test.ts",
             "test/questions.test.ts",
             "test/consult.test.ts",
             "test/session-creation-intent.test.ts",
