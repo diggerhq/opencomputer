@@ -174,6 +174,20 @@ const orgMembers = [
     name: 'Alex Rivera',
     role: 'member',
   },
+  {
+    membershipId: 'mem_3',
+    id: 'user_4ghi',
+    email: 'mohamed@digger.dev',
+    name: 'Mohamed Habib',
+    role: 'admin',
+  },
+  {
+    membershipId: 'mem_4',
+    id: 'user_5jkl',
+    email: 'priya@digger.dev',
+    name: '',
+    role: 'member',
+  },
 ]
 
 const orgInvitations = [
@@ -184,6 +198,14 @@ const orgInvitations = [
     role: 'member',
     expiresAt: at(-5),
     createdAt: at(1),
+  },
+  {
+    id: 'inv_2',
+    email: 'jordan@acme.dev',
+    state: 'pending',
+    role: 'member',
+    expiresAt: at(-6),
+    createdAt: at(0.5),
   },
 ]
 
