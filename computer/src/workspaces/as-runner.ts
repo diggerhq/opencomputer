@@ -57,6 +57,7 @@ export const rm = (p: string) => (as() ? run('rm', ['-rf', '--', p]) : fsp.rm(p,
 export const rename = (from: string, to: string) => (as() ? run('mv', ['-T', '--', from, to]) : fsp.rename(from, to));
 export const writeFile = (file: string, data: string) => (as() ? run('sh', ['-c', 'cat > "$1"', 'sh', file], data) : fsp.writeFile(file, data));
 export const appendFile = (file: string, data: string) => (as() ? run('sh', ['-c', 'cat >> "$1"', 'sh', file], data) : fsp.appendFile(file, data));
+export const chmod = (file: string, mode: number) => (as() ? run('chmod', [mode.toString(8), '--', file]) : fsp.chmod(file, mode));
 export const copyFile = (from: string, to: string) => (as() ? run('cp', ['--', from, to]) : fsp.copyFile(from, to));
 /** Sets the modification time to now. */
 export const touch = (file: string) => (as() ? run('touch', ['-c', '--', file]) : fsp.utimes(file, new Date(), new Date()));

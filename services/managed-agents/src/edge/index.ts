@@ -316,6 +316,7 @@ import {
   computerReachableConnections,
 } from "./computer-grants.js";
 import { SessionLogDurableObject } from "../computer/session-log.js";
+import { WorkIndexDurableObject } from "../computer/work/index-do.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import {
   type Latency,
@@ -335,6 +336,7 @@ export {
   ProjectDatabaseDurableObject,
   SessionDurableObject,
   SessionLogDurableObject,
+  WorkIndexDurableObject,
 };
 
 const MICROVM_STATES = new Set([

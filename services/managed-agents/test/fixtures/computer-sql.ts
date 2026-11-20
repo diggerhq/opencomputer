@@ -12,7 +12,7 @@ export function sqlStorage(): SqlStorage {
         return cursor([], 0);
       }
       const statement = db.prepare(query);
-      if (/^\s*(SELECT|PRAGMA)/i.test(query)) return cursor(statement.all(...(binds as never[])) as unknown[], 0);
+      if (/^\s*(SELECT|PRAGMA|EXPLAIN)/i.test(query)) return cursor(statement.all(...(binds as never[])) as unknown[], 0);
       const result = statement.run(...(binds as never[]));
       return cursor([], Number(result.changes));
     },

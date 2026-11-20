@@ -48,6 +48,7 @@ export default defineConfig({
           name: "managed-session-workerd",
           include: [
             "test/managed-session-workerd.test.ts",
+            "test/managed-session-workerd-channel.test.ts",
             "test/questions.test.ts",
             "test/consult.test.ts",
             "test/session-creation-intent.test.ts",
@@ -494,6 +495,9 @@ export default defineConfig({
             "test/computer-pool-probe.test.ts",
             "test/computer-token-check.test.ts",
             "test/computer-secrets.test.ts", "test/computer-secrets-scopes.test.ts",
+            "test/work-item.test.ts",
+            "test/work-index.test.ts",
+            "test/work-api.test.ts",
             "test/computer-connections.test.ts",
             "test/computer-model-subscriptions.test.ts",
             "test/computer-codex-subscriptions.test.ts",

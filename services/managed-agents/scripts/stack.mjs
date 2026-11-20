@@ -4,6 +4,16 @@
 //
 //   node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]
 //                                       [--runtime-image ARN --runtime-image-version V]
+//   node scripts/stack.mjs <devin-name> github-app [--org ORG] [--port N] [--host H] [--public-url URL]
+//
+// `github-app` registers a GitHub App of the stack's own by the manifest flow
+// (callback and webhook on the stack's dashboard) and keeps its credentials
+// in secrets.json, where `up` finds them. It serves one page to open in a
+// browser signed in to GitHub; --public-url is where that page is reachable
+// when the browser is on another machine. The page listens on 127.0.0.1 only;
+// --host 0.0.0.0 (or another address) when a proxy on another interface must
+// reach it, as a preview URL does. Run it after the api-edge stack is
+// up, then run `up` again. The OC_STACK_GITHUB_APP_* env, when set, wins.
 //
 // Stack names must start with `devin-`. Only `devin-*` workers/databases are
 // ever touched; the production configs are never read for deploys.
@@ -40,6 +50,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,7 +94,7 @@ const cfToken =
 // edge (called by the api-edge Worker) needs a custom domain.
 const EDGE_DOMAIN = stackEnv("OC_STACK_EDGE_DOMAIN");
 
-const commands = { render, up, status, destroy };
+const commands = { render, up, status, destroy, "github-app": githubApp };
 if (!commands[command]) usage();
 await commands[command]();
 
@@ -239,6 +250,130 @@ async function status() {
     }
   }
   console.log(JSON.stringify(out, null, 2));
+}
+
+async function githubApp() {
+  // The permissions and events of the managed OpenComputer GitHub App.
+  const GITHUB_APP_PERMISSIONS = {
+    actions: "write",
+    checks: "write",
+    contents: "write",
+    issues: "write",
+    metadata: "read",
+    pull_requests: "write",
+    workflows: "write",
+  };
+  const GITHUB_APP_EVENTS = ["push", "pull_request", "check_run", "check_suite"];
+  const stack = loadStack();
+  if (!stack.apiEdgeUrl) {
+    die("the stack has no dashboard yet: bring the api-edge stack up, then `up --api-edge-url URL`");
+  }
+  const secrets = loadSecrets();
+  if (secrets.OC_STACK_GITHUB_APP_ID) {
+    die(
+      `the stack already has a GitHub App (${secrets.OC_STACK_GITHUB_APP_SLUG}); delete it on GitHub and its OC_STACK_GITHUB_APP_* entries in ${secretsFile} to register another`,
+    );
+  }
+  const port = Number(flags.port ?? 8791);
+  // Loopback unless asked: the page hands a registration's credentials to whoever completes it.
+  const host = String(flags.host || "127.0.0.1");
+  // The page's own address when no --public-url: the listening one (localhost may resolve to ::1 first).
+  const local = host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
+  const origin = String(flags["public-url"] ?? `http://${local}:${port}`).replace(/\/$/, "");
+  const state = randomBytes(16).toString("hex");
+  const manifest = {
+    // GitHub App names are global and at most 34 characters.
+    name: `OpenComputer ${name}`.slice(0, 34),
+    url: stack.apiEdgeUrl,
+    description: `OpenComputer preview stack ${name}`,
+    hook_attributes: {
+      url: `${stack.apiEdgeUrl}/api/managed-agents/github/webhooks`,
+      active: true,
+    },
+    redirect_url: `${origin}/created`,
+    callback_urls: [`${stack.apiEdgeUrl}/api/managed-agents/github/callback`],
+    // The callback binds an installation with the installing person's code.
+    request_oauth_on_install: true,
+    public: false,
+    default_permissions: GITHUB_APP_PERMISSIONS,
+    default_events: GITHUB_APP_EVENTS,
+  };
+  const action = flags.org
+    ? `https://github.com/organizations/${encodeURIComponent(flags.org)}/settings/apps/new`
+    : "https://github.com/settings/apps/new";
+  const page = (body) =>
+    `<!doctype html><meta charset="utf-8"><title>${name}</title><body style="font:16px system-ui;margin:3rem">${body}`;
+  const escape = (value) =>
+    String(value).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+  const app = await new Promise((resolve, reject) => {
+    const server = http.createServer(async (request, response) => {
+      const url = new URL(request.url ?? "/", origin);
+      const send = (status, body) => {
+        response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+        response.end(page(body));
+      };
+      if (url.pathname === "/") {
+        return send(
+          200,
+          `<form method="post" action="${action}?state=${state}"><input type="hidden" name="manifest" value="${escape(JSON.stringify(manifest))}"><p>Register the GitHub App for <b>${name}</b>${flags.org ? ` under <b>${escape(flags.org)}</b>` : ""}.</p><button>Continue on GitHub</button></form>`,
+        );
+      }
+      if (url.pathname !== "/created") return send(404, "Not found");
+      const code = url.searchParams.get("code") ?? "";
+      if (url.searchParams.get("state") !== state || !/^[A-Za-z0-9_-]{1,100}$/.test(code)) {
+        return send(400, "This link does not belong to the running command.");
+      }
+      try {
+        const converted = await fetch(
+          `https://api.github.com/app-manifests/${code}/conversions`,
+          {
+            method: "POST",
+            headers: {
+              accept: "application/vnd.github+json",
+              "user-agent": "opencomputer-stack",
+            },
+          },
+        );
+        const body = await converted.json().catch(() => ({}));
+        if (!converted.ok || !body.pem) {
+          throw new Error(`GitHub ${converted.status}: ${body.message ?? "no credentials returned"}`);
+        }
+        send(
+          200,
+          `<p>Registered <b>${escape(body.slug)}</b>.</p><p>Once the stack is redeployed, connect GitHub from its <a href="${stack.apiEdgeUrl}">dashboard</a>.</p>`,
+        );
+        server.close();
+        resolve(body);
+      } catch (error) {
+        send(502, `GitHub did not hand over the app: ${escape(error.message)}`);
+        server.close();
+        reject(error);
+      }
+    });
+    server.on("error", reject);
+    server.listen(port, host, () => {
+      console.log(`listening on ${host}:${port}; open ${origin}/ in a browser signed in to GitHub`);
+    });
+  });
+
+  Object.assign(secrets, {
+    OC_STACK_GITHUB_APP_ID: String(app.id),
+    OC_STACK_GITHUB_APP_SLUG: app.slug,
+    OC_STACK_GITHUB_APP_CLIENT_ID: app.client_id,
+    OC_STACK_GITHUB_APP_CLIENT_SECRET: app.client_secret,
+    OC_STACK_GITHUB_APP_WEBHOOK_SECRET: app.webhook_secret,
+    OC_STACK_GITHUB_APP_PRIVATE_KEY: app.pem,
+  });
+  fs.writeFileSync(secretsFile, `${JSON.stringify(secrets, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  console.log(`registered ${app.html_url}`);
+  console.log(`next: node scripts/stack.mjs ${name} up`);
+  const settings = flags.org
+    ? `https://github.com/organizations/${encodeURIComponent(flags.org)}/settings/apps/${app.slug}`
+    : `https://github.com/settings/apps/${app.slug}`;
+  console.log(`(destroy leaves the app on GitHub: delete it under ${settings}/advanced when the stack is gone)`);
 }
 
 async function destroy() {
@@ -443,6 +578,8 @@ function writeConfigs(stack, { bootstrap }) {
         { name: "COMPUTERS", class_name: "ComputerDurableObject" },
         // Work 084: one per computer session, the sessions API's copy of its event log.
         { name: "SESSION_LOG", class_name: "SessionLogDurableObject" },
+        // Work tracking: one per organization, the index of its knowledge repository's work items.
+        { name: "WORK_INDEX", class_name: "WorkIndexDurableObject" },
       ],
     },
     migrations: [
@@ -455,6 +592,7 @@ function writeConfigs(stack, { bootstrap }) {
       { tag: "v4", new_sqlite_classes: ["ProjectDatabaseDurableObject"] },
       { tag: "v5", new_sqlite_classes: ["ComputerDurableObject"] },
       { tag: "v6", new_sqlite_classes: ["SessionLogDurableObject"] },
+      { tag: "v7", new_sqlite_classes: ["WorkIndexDurableObject"] },
     ],
     observability,
   });
@@ -694,7 +832,12 @@ function step(label) {
 
 function usage() {
   console.error(
-    "usage: node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]",
+    [
+      "usage: node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]",
+      "                                     [--runtime-image ARN --runtime-image-version V]",
+      "       node scripts/stack.mjs <devin-name> github-app [--org ORG] [--port N] [--host H] [--public-url URL]",
+      "         --host: the address the github-app page listens on (default 127.0.0.1; 0.0.0.0 for a preview proxy)",
+    ].join("\n"),
   );
   process.exit(2);
 }

@@ -17,7 +17,7 @@
 
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { AssertedApiKey } from "../edge/auth.js";
-import type { ApiScope, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
+import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities, checkSettings } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import { sha256Hex } from "./crypto.js";
@@ -96,6 +96,8 @@ export type ApiOp =
   | { op: "access"; sessionId: string }
   | { op: "call"; sessionId: string; method: WriteMethod; params: Record<string, unknown>; idempotencyKey?: string }
   | { op: "patch"; sessionId: string; body: unknown; idempotencyKey?: string }
+  | { op: "aside.set"; sessionId: string; body: unknown }
+  | { op: "aside.clear"; sessionId: string }
   | { op: "ticket"; body: unknown };
 
 export interface ApiErrorReply {
@@ -162,6 +164,7 @@ export interface ApiRow {
   subagents: number;
   createHash: string | null;
   activeTurnId: string | null;
+  asideRef: string | null;
 }
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
@@ -170,7 +173,7 @@ const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id A
   origin_client AS originClient, last_seq AS lastSeq, log_epoch AS logEpoch, epoch_start_seq AS epochStartSeq,
   summary, api_status AS apiStatus, archived, metadata, created_at AS createdAt, updated_at AS updatedAt,
   last_active_at AS lastActiveAt, synced_at AS syncedAt, subagents, create_hash AS createHash,
-  active_turn_id AS activeTurnId FROM sessions`;
+  active_turn_id AS activeTurnId, aside_ref AS asideRef FROM sessions`;
 
 /** Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). */
 const COLUMNS: Array<[string, string]> = [
@@ -194,6 +197,7 @@ const COLUMNS: Array<[string, string]> = [
   ["subagents", "INTEGER NOT NULL DEFAULT 0"],
   ["create_hash", "TEXT"],
   ["active_turn_id", "TEXT"],
+  ["aside_ref", "TEXT"],
 ];
 
 export interface SessionsApiDeps {
@@ -273,12 +277,12 @@ export class ComputerSessionsApi {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE session_id = ?`, sessionId)][0] as unknown as ApiRow | undefined;
   }
 
-  private rowByKey(key: string): ApiRow | undefined {
+  rowByKey(key: string): ApiRow | undefined {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE runner_key = ?`, key)][0] as unknown as ApiRow | undefined;
   }
 
   /** A session the caller may see: every API session; a Slack one only by its linked owner. */
-  private visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
+  visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
     if (!isSessionId(sessionId)) return undefined;
     const row = this.row(sessionId);
     if (!row) return undefined;
@@ -320,6 +324,7 @@ export class ComputerSessionsApi {
       title: row.title,
       status,
       archived: row.archived === 1,
+      aside: row.asideRef !== null && row.asideRef === attentionRef(summary?.asks ?? []),
       owner,
       origin,
       settings: summary?.settings
@@ -342,8 +347,10 @@ export class ComputerSessionsApi {
       urls: { dashboard: null },
     };
     if (!fresh) return base;
-    // The writer's own view is newer than the row; the row owns who, where, archive and labels.
-    return { ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, metadata: base.metadata, urls: base.urls };
+    // The writer's own view is newer than the row; the row owns who, where, archive, aside and labels.
+    const asks = fresh.asks ?? base.asks;
+    const aside = row.asideRef !== null && row.asideRef === attentionRef(asks);
+    return { ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls };
   }
 
   /** The runner's spec for a session: an API one (`kind: "api"`) or a Slack thread. */
@@ -411,6 +418,9 @@ export class ComputerSessionsApi {
         return this.call(caller, op.sessionId, op.method, op.params, op.idempotencyKey);
       case "patch":
         return this.patch(caller, op.sessionId, op.body, op.idempotencyKey);
+      case "aside.set":
+      case "aside.clear":
+        return this.aside(caller, op);
       case "ticket":
         return this.ticket(caller, op.body);
     }
@@ -670,6 +680,28 @@ export class ComputerSessionsApi {
       sessionId,
     );
     return { status: 200, body: { session: this.compose(this.row(sessionId)!, fresh), seq } };
+  }
+
+  /**
+   * Set aside (work-tracking 3.8): the owner parks the session's current ask in triage. Only the
+   * row's column: no journal event, no host call, last activity unmoved. A newer ask has another
+   * ref, so the session comes back by itself.
+   */
+  private aside(caller: ApiCaller, op: Extract<ApiOp, { op: "aside.set" | "aside.clear" }>): ApiReply {
+    const row = this.visible(caller, op.sessionId);
+    if (!row) return notFound();
+    if (row.ownerUserId !== caller.member) {
+      return { status: 403, error: { code: "forbidden", message: "Only the session's owner can set it aside.", reason: "aside_owner_only" } };
+    }
+    let ref: string | null = null;
+    if (op.op === "aside.set") {
+      const input = op.body;
+      const value = input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>).ref : undefined;
+      if (typeof value !== "string" || !/^[\x21-\x7e]{1,255}$/.test(value)) return invalid("ref", "ref is the id of what is set aside: 1 to 255 printable characters.");
+      ref = value;
+    }
+    this.deps.sql.exec("UPDATE sessions SET aside_ref = ? WHERE session_id = ?", ref, op.sessionId);
+    return { status: 200, body: { session: this.compose(this.row(op.sessionId)!) } };
   }
 
   private async ticket(caller: ApiCaller, body: unknown): Promise<ApiReply> {
@@ -1558,6 +1590,16 @@ function titleFrom(input: string): string {
 /** No answer from the host in time: retryable. */
 function hostLost(): CalvinApiError {
   return { code: "computer_unavailable", message: "The computer did not answer. Retry.", status: 503, retryable: true, retryAfterMs: RETRY_COMPUTER_MS };
+}
+
+/**
+ * What needs the person now, as one ref: the oldest open ask's id, or null. Set aside compares
+ * against it. Work-tracking step 4 replaces it with `attention.ref`.
+ */
+export function attentionRef(asks: readonly Ask[]): string | null {
+  let oldest: Ask | null = null;
+  for (const a of asks) if (a.status === "open" && (!oldest || a.createdAt < oldest.createdAt)) oldest = a;
+  return oldest?.id ?? null;
 }
 
 function notFound(): ApiReply {

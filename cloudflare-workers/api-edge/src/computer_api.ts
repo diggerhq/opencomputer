@@ -41,6 +41,8 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["GET"]),
     pattern: route(`/sessions/${SEG}/capabilities`),
   },
+  // Set aside (docs/api/sessions.mdx).
+  { methods: new Set(["PUT", "DELETE"]), pattern: route(`/sessions/${SEG}/aside`) },
   {
     methods: new Set(["POST"]),
     pattern: route(`/sessions/${SEG}/(?:interrupt|compact|suspend|resume)`),
@@ -72,6 +74,13 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["PUT", "DELETE"]),
     pattern: route(`/(?:sessions/${SEG}|me|organization)/secrets/${SEG}`),
   },
+  // The Work API (work tracking tech design 3.10).
+  { methods: new Set(["GET", "PUT"]), pattern: route("/work/repository") },
+  { methods: new Set(["GET"]), pattern: route("/work/repositories") },
+  { methods: new Set(["GET"]), pattern: route("/work/items") },
+  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}`) },
+  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}/history`) },
+  { methods: new Set(["GET"]), pattern: route(`/work/sessions/${SEG}/items`) },
 ];
 
 const WORKSPACE_ROUTE = new RegExp(
@@ -162,6 +171,8 @@ const API_RESPONSE_HEADERS = [
   "x-opc-latest",
   "retry-after",
   "etag",
+  // When the Work index last saw the branch head (work tracking 3.10), on 200 and 304.
+  "work-as-of",
 ];
 
 /** Request headers passed to the wire Worker, beside the caller's key. */
@@ -307,7 +318,7 @@ const CORS_ALLOW_HEADERS =
   "authorization, content-type, idempotency-key, x-request-id, if-none-match";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
-  "server-timing, x-request-id, x-opc-latest, retry-after, etag";
+  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";
 
 /**
  * Whether a browser origin may call the computer API: the edge's own origin

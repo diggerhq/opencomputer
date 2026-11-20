@@ -95,15 +95,24 @@ export const EAGER_REPO_COUNT = 3;
  * the rest are `lazy`, cloned when a session checks them out. Description,
  * language and last push go to the repository index in each session's
  * AGENTS.md, so the model knows every repository without a clone.
+ *
+ * `knowledge` (`owner/name`, any case): the organization's knowledge
+ * repository (work tracking, design 3.1), marked `role: "knowledge"`. It is
+ * always listed and cloned eagerly, outside the cut and the eager count: the
+ * host installs its hooks and every session's AGENTS.md names it.
  */
-export function workspaceDefinition(name: string, repositories: ComputerRepository[]): WorkspaceDefinition {
-  const byPush = repositories
-    .filter((repository) => !repository.archived && /^[^/]+\/[^/]+$/.test(repository.fullName))
+export function workspaceDefinition(name: string, repositories: ComputerRepository[], knowledge?: string): WorkspaceDefinition {
+  const isKnowledge = (repository: ComputerRepository) => !!knowledge && repository.fullName.toLowerCase() === knowledge.toLowerCase();
+  const usable = repositories.filter((repository) => !repository.archived && /^[^/]+\/[^/]+$/.test(repository.fullName));
+  const byPush = usable
+    .filter((repository) => !isKnowledge(repository))
     // By push day, then name: the eager set and the cut stay put through a day of pushes (each change re-sends the definition).
     .sort((a, b) => pushDay(b).localeCompare(pushDay(a)) || a.fullName.localeCompare(b.fullName))
     .slice(0, DEFINITION_REPO_LIMIT);
   const eager = new Set(byPush.slice(0, EAGER_REPO_COUNT).map((repository) => repository.fullName));
-  const live = byPush.sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const chosen = usable.find(isKnowledge);
+  if (chosen) eager.add(chosen.fullName);
+  const live = [...byPush, ...(chosen ? [chosen] : [])].sort((a, b) => a.fullName.localeCompare(b.fullName));
   const counts = new Map<string, number>();
   for (const repository of live) {
     const repoName = repository.fullName.split("/")[1]!.toLowerCase();
@@ -117,6 +126,7 @@ export function workspaceDefinition(name: string, repositories: ComputerReposito
       remote: `https://github.com/${owner}/${repoName}`,
       ...(repository.defaultBranch ? { branch: repository.defaultBranch } : {}),
       ...(eager.has(repository.fullName) ? {} : { clone: "lazy" as const }),
+      ...(repository === chosen ? { role: "knowledge" as const } : {}),
       ...(repository.description ? { description: repository.description } : {}),
       ...(repository.language ? { language: repository.language } : {}),
       // The day only: the definition changes (and the computer runs housekeeping) once a day per repository, not per push.

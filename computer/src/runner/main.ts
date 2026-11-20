@@ -40,7 +40,7 @@ import { Session, type SessionHooks, prompts } from './session.js';
 import { mayAnswer } from './prompts.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
 import { type Linked, linkedFiles, withLinked } from '../links.js';
-import { SessionSecrets, redactingClient } from './session-secrets.js';
+import { SessionSecrets, redactingClient, sessionVars } from './session-secrets.js';
 import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
 import { fakeSlack } from '../dev/fake-slack.js';
@@ -99,7 +99,6 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const secrets = new SessionSecrets(secretsFor(HOST_RUN, path.basename(spec.socket, '.sock')));
 
 // Commits are authored by the initiator (sessionVars) and committed by the app identity.
-const sessionVars = (b: Bound) => ({ GIT_AUTHOR_NAME: b.owner.gitName, GIT_AUTHOR_EMAIL: b.owner.gitEmail, SP_SESSION_KEY: b.key });
 Object.assign(env, {
   GIT_COMMITTER_NAME: env.SP_COMMITTER_NAME ?? 'Computer',
   GIT_COMMITTER_EMAIL: env.SP_COMMITTER_EMAIL ?? 'computer@users.noreply.opencomputer.dev',

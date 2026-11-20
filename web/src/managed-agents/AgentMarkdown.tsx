@@ -1,11 +1,24 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-export function AgentMarkdown({ children }: { children: string }) {
+export function AgentMarkdown({
+  children,
+  resolveUrl,
+}: {
+  children: string
+  // Rewrites a link or image address before the usual sanitizing, such as a
+  // relative link in a working doc to its place on GitHub.
+  resolveUrl?: (url: string) => string
+}) {
   return (
     <div className="text-sm leading-6">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={
+          resolveUrl
+            ? (url) => defaultUrlTransform(resolveUrl(url))
+            : defaultUrlTransform
+        }
         components={{
           h1: ({ children, ...props }) => (
             <h1

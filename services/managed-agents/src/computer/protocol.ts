@@ -220,6 +220,13 @@ export interface WorkspaceRepo {
    * ignore it and the metadata below, which feeds the fork's repository index.
    */
   clone?: "eager" | "lazy";
+  /**
+   * Work tracking: the organization's knowledge repository, at most one per
+   * definition. The host clones it eagerly, installs its git hooks (Session
+   * trailer, unique item numbers) and names it in each fork's AGENTS.md. Older
+   * hosts ignore it and treat it as any other eager repository.
+   */
+  role?: "knowledge";
   description?: string;
   language?: string;
   pushedAt?: string;

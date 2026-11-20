@@ -15,7 +15,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { log } from '../log.js';
 import type { CheckoutResult, Person } from '../protocol.js';
-import { isLazy, loadDefinition, type RepoDef, repoSlug } from './definition.js';
+import { isKnowledge, isLazy, loadDefinition, type RepoDef, repoSlug } from './definition.js';
+import { knowledgeSection } from './knowledge.js';
 import { repoIndex } from './repo-index.js';
 import { appendFile, mkdir, touch, writeFile } from './as-runner.js';
 import {
@@ -71,7 +72,11 @@ export async function forkSession(person: Person, sessionKey: string): Promise<s
     ms: Date.now() - t0,
     repos: Object.fromEntries(forked.filter((f) => f !== undefined)),
   };
-  const index = repoIndex(def.repos, new Set(Object.keys(info.repos)));
+  const here = new Set(Object.keys(info.repos));
+  const knowledge = def.repos.find(isKnowledge);
+  const tracking = knowledgeSection(def.repos, here, knowledge && info.repos[knowledge.name]?.from.replace(/^origin\//, ''));
+  if (tracking) await appendFile(path.join(fork, 'AGENTS.md'), `\n${tracking}`);
+  const index = repoIndex(def.repos, here);
   if (index) await appendFile(path.join(fork, 'AGENTS.md'), `\n${index}`);
   await writeFile(path.join(fork, FORK_FILE), JSON.stringify(info, null, 2) + '\n');
   const stale = Object.entries(info.repos).filter(([, r]) => r.fetchError);

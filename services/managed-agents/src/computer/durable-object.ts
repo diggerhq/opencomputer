@@ -146,6 +146,8 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
+import { type WorkContextOp, type WorkRefsOp, type WorkStampOp, workContext, workRefs, workStamp, workStampSetup } from "./work/briefs.js";
+import { knowledgeRepository } from "./work/index-do.js";
 import { AccessStore } from "./access-store.js";
 import { AccessFlow } from "./access-flow.js";
 import { AccessUi } from "./access-ui.js";
@@ -375,6 +377,8 @@ export const SLACK_STRANDED_MS = 60_000;
 const SLACK_FALLBACK_MS = 1_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
+/** The Work index answers from its own storage; a slow one must not hold up `welcome`. */
+const KNOWLEDGE_TIMEOUT_MS = 2_000;
 /** How often a delivery may re-read the organization's repositories (work 052). */
 const DEFINITION_RECHECK_MS = 60_000;
 
@@ -676,6 +680,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       remove: (key) => this.remove(key),
       telemetry: this.apiTelemetry,
     });
+    // The Work API's stamp (work tracking 3.10): after the sessions table has the API's columns.
+    workStampSetup(sql);
     // Work 112: session roles. After the sessions table and `this.api` (who is an admin).
     const roleStore = new AccessStore(sql);
     this.roles = new AccessFlow({
@@ -1625,10 +1631,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   // ------------------------------------------------------------------ session API (work 084)
 
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
-  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
+  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
+    // The Work API's sessions and people (work tracking 3.10), likewise.
+    if (op.op === "work.context") return workContext({ sql: this.ctx.storage.sql, api: this.api }, caller, op as WorkContextOp);
+    if (op.op === "work.stamp") return workStamp(this.ctx.storage.sql);
+    if (op.op === "work.refs") return workRefs({ api: this.api }, caller, op as WorkRefsOp);
     return this.api.handle(caller, op as ApiOp);
   }
 
@@ -3880,7 +3890,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
           new Promise<null>((resolve) => setTimeout(() => resolve(null), DEFINITION_TIMEOUT_MS)),
         ]);
         if (fresh) {
-          const definition = workspaceDefinition("organization", fresh);
+          const definition = workspaceDefinition("organization", fresh, await this.knowledge());
           const changed = JSON.stringify(definition) !== this.setting("definition");
           this.put("definition", JSON.stringify(definition));
           span.end({ outcome: "completed", data: { ...data(), repos: fresh.length, changed, timed_out: false } });
@@ -3894,6 +3904,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       const cached = this.setting("definition");
       return cached ? (JSON.parse(cached) as WorkspaceDefinition) : null;
     });
+  }
+
+  /**
+   * The organization's knowledge repository (`owner/name`) from the Work index
+   * (work tracking, design 3.1), or none. An index that does not answer in
+   * time keeps the last answer, so the definition does not flap.
+   */
+  private async knowledge(): Promise<string | undefined> {
+    try {
+      const repository = await Promise.race([
+        knowledgeRepository(this.env, this.accountId()),
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), KNOWLEDGE_TIMEOUT_MS)),
+      ]);
+      if (repository !== undefined) this.put("knowledge", repository ? `${repository.owner}/${repository.name}` : "");
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.knowledge_lookup_failed", message: errorText(error) }));
+    }
+    return this.setting("knowledge") || undefined;
   }
 
   /** A host's `token`: from the installation that owns the requested repositories, narrowed to them. */

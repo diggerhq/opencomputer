@@ -1,0 +1,28 @@
+name: Set up managed-agents
+description: >-
+  Install Node and the dependencies of services/managed-agents and its
+  workerd-runtime, restoring both node_modules trees from cache when the
+  lockfiles have not changed.
+
+runs:
+  using: composite
+  steps:
+    - id: node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    # The installed trees, not just npm's download cache: npm ci spends most
+    # of its time extracting and linking, which a download cache does not save.
+    # The key carries the exact Node version so a native module is never
+    # reused across ABIs.
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          services/managed-agents/node_modules
+          services/managed-agents/src/workerd-runtime/node_modules
+        key: managed-agents-node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('services/managed-agents/package-lock.json', 'services/managed-agents/src/workerd-runtime/package-lock.json') }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: services/managed-agents
+      run: npm ci --no-audit --no-fund && npm ci --no-audit --no-fund --prefix src/workerd-runtime

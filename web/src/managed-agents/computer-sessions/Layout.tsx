@@ -23,6 +23,7 @@ import {
   Plus,
   Search,
   Settings,
+  SquareKanban,
   Sun,
   Plug,
 } from 'lucide-react'
@@ -69,6 +70,9 @@ export default function ComputerSessionsLayout() {
   const { user } = useAuth()
   const { pathname } = useLocation()
   const sessions = !!useMatch('/computer/sessions/*')
+  // Full height, with its own panel instead of the sidebar. Triage (unrouted
+  // for now) joins this when it returns.
+  const full = sessions
   // On a phone the list and a session take turns: the list at
   // /computer/sessions, the session (or the new-session home) on its own.
   const listing = !!useMatch({ path: '/computer/sessions', end: true })
@@ -82,10 +86,10 @@ export default function ComputerSessionsLayout() {
         className={cn(
           'min-w-0 flex-1',
           listing && 'hidden md:block',
-          !sessions && 'flex flex-col overflow-y-auto',
+          !full && 'flex flex-col overflow-y-auto',
         )}
       >
-        {sessions ? null : (
+        {full ? null : (
           <div className="sticky top-0 z-20">
             <BillingWarningBanner />
           </div>
@@ -99,7 +103,7 @@ export default function ComputerSessionsLayout() {
               </div>
             }
           >
-            {sessions ? (
+            {full ? (
               <Outlet />
             ) : (
               <div
@@ -125,27 +129,38 @@ function RailLink({
   to,
   label,
   end,
+  badge,
   children,
 }: {
   to: string
   label: string
   end?: boolean
+  badge?: number
   children: ReactNode
 }) {
+  const name = badge ? `${label}, ${badge}` : label
   return (
     <NavLink
       to={to}
       end={end}
-      title={label}
-      aria-label={label}
+      title={name}
+      aria-label={name}
       className={({ isActive }) =>
         cn(
-          'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground flex size-9 items-center justify-center rounded-md transition-colors',
+          'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground relative flex size-9 items-center justify-center rounded-md transition-colors',
           isActive && 'bg-sidebar-accent text-foreground',
         )
       }
     >
       {children}
+      {badge ? (
+        <span
+          aria-hidden
+          className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-medium"
+        >
+          {badge > 99 ? '99+' : badge}
+        </span>
+      ) : null}
     </NavLink>
   )
 }
@@ -166,9 +181,14 @@ function Rail() {
         <OpenComputerMark className="size-8" />
       </Link>
       {user?.computerEnabled ? (
-        <RailLink to="/computer/sessions" label="Sessions">
-          <MessagesSquare className="size-4" aria-hidden />
-        </RailLink>
+        <>
+          <RailLink to="/computer/sessions" label="Sessions">
+            <MessagesSquare className="size-4" aria-hidden />
+          </RailLink>
+          <RailLink to="/computer/work" label="Board">
+            <SquareKanban className="size-4" aria-hidden />
+          </RailLink>
+        </>
       ) : null}
       <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />

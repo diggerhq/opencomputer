@@ -52,8 +52,8 @@ class FakeStatement {
         role: "admin",
       } as T;
     }
-    if (this.sql.includes("SELECT role FROM org_memberships")) {
-      return { role: "owner" } as T;
+    if (this.sql.includes("FROM org_memberships m LEFT JOIN users u")) {
+      return { role: "owner", user_name: "Igor", user_email: "igor@example.com" } as T;
     }
     if (this.sql.includes("SELECT id FROM api_keys WHERE key_hash")) {
       const row = this.db.keys.get(String(this.args[0]));
@@ -223,6 +223,8 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h"],
     ["PATCH", "/computer/sessions/cs_01h"],
     ["GET", "/computer/sessions/cs_01h/capabilities"],
+    ["PUT", "/computer/sessions/cs_01h/aside"],
+    ["DELETE", "/computer/sessions/cs_01h/aside"],
     ["POST", "/computer/sessions/cs_01h/interrupt"],
     ["POST", "/computer/sessions/cs_01h/compact"],
     ["POST", "/computer/sessions/cs_01h/suspend"],
@@ -245,6 +247,13 @@ describe("computer API allowlist", () => {
     ["PUT", "/computer/sessions/cs_01h/secrets/API_KEY"],
     ["DELETE", "/computer/me/secrets/API_KEY"],
     ["PUT", "/computer/organization/secrets/API_KEY"],
+    ["GET", "/computer/work/repository"],
+    ["PUT", "/computer/work/repository"],
+    ["GET", "/computer/work/repositories"],
+    ["GET", "/computer/work/items"],
+    ["GET", "/computer/work/items/22"],
+    ["GET", "/computer/work/items/22/history"],
+    ["GET", "/computer/work/sessions/cs_01h/items"],
     ["GET", "/computer/sessions/cs_01h/workspace/archive"],
     ["PUT", "/computer/sessions/cs_01h/workspace/archive"],
     ["GET", "/computer/sessions/cs_01h/workspace/file"],
@@ -258,6 +267,7 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/keys/sync"],
     ["POST", "/computer/keys/revoke"],
     ["DELETE", "/computer/sessions/cs_01h"],
+    ["POST", "/computer/sessions/cs_01h/aside"],
     ["PUT", "/computer/sessions/cs_01h/workspace/file"],
     ["POST", "/computer/sessions/cs_01h/turns/tn_1"],
     ["GET", "/computer/sessions/../me"],
@@ -265,6 +275,14 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/a%2Fb"],
     ["GET", "/computer/sessions/cs_01h/unknown"],
     ["POST", "/computer/slack/install"],
+    // Close and Reopen come with build step 5.
+    ["POST", "/computer/work/items/22/close"],
+    ["DELETE", "/computer/work/repository"],
+    ["PUT", "/computer/work/repositories"],
+    ["GET", "/computer/work/files"],
+    ["POST", "/computer/work/sessions/cs_01h/items"],
+    ["GET", "/computer/work/sessions/cs_01h"],
+    ["GET", "/computer/work/sessions/../items"],
   ])("refuses %s %s", (method, suffix) => {
     expect(isComputerApiRoute(method, suffix)).toBe(false);
   });
@@ -425,6 +443,7 @@ describe("computer API proxy to blue", () => {
           "x-opc-latest": "0.9.0",
           etag: '"v1"',
           "retry-after": "1",
+          "work-as-of": "2026-11-19T10:00:00.000Z",
           "set-cookie": "nope=1",
         },
       }),
@@ -453,6 +472,7 @@ describe("computer API proxy to blue", () => {
       ["x-opc-latest", "0.9.0"],
       ["etag", '"v1"'],
       ["retry-after", "1"],
+      ["work-as-of", "2026-11-19T10:00:00.000Z"],
     ]) {
       expect(res.headers.get(name)).toBe(value);
     }
@@ -509,7 +529,7 @@ describe("computer API proxy to blue", () => {
     expect(sent(fetchMock).headers.get("x-request-id")).toBeNull();
   });
 
-  it("asserts a dashboard session with no key claims", async () => {
+  it("asserts a dashboard session with no key claims, and the member's name and email", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ sessions: [], nextCursor: null }));
     vi.stubGlobal("fetch", fetchMock);
     const res = await worker.fetch(
@@ -526,8 +546,9 @@ describe("computer API proxy to blue", () => {
     for (const claim of Object.keys(payload)) {
       expect(claim.startsWith("key_")).toBe(false);
     }
-    expect(payload.user_name).toBeUndefined();
-    expect(payload.user_email).toBeUndefined();
+    // The member's name and email, from the membership read (work tracking 3.10).
+    expect(payload.user_name).toBe("Igor");
+    expect(payload.user_email).toBe("igor@example.com");
   });
 
   it("refuses a cookie's unsafe call from another origin", async () => {
@@ -592,7 +613,7 @@ describe("computer API proxy to blue", () => {
   it("returns a 304 with no body", async () => {
     const db = new FakeDB();
     const key = await addKey(db);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 304, headers: { etag: '"v1"' } })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 304, headers: { etag: '"v1"', "work-as-of": "2026-11-19T10:00:00.000Z" } })));
     const res = await worker.fetch(
       api("/sessions/cs_1", { headers: { "x-api-key": key, "if-none-match": '"v1"' } }),
       testEnv(db),
@@ -600,6 +621,7 @@ describe("computer API proxy to blue", () => {
     );
     expect(res.status).toBe(304);
     expect(res.headers.get("etag")).toBe('"v1"');
+    expect(res.headers.get("work-as-of")).toBe("2026-11-19T10:00:00.000Z");
   });
 
   it("keeps the dashboard mount's computer list on the dashboard family", async () => {
@@ -780,7 +802,7 @@ describe("computer API CORS", () => {
     );
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-expose-headers")).toBe(
-      "server-timing, x-request-id, x-opc-latest, retry-after, etag",
+      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of",
     );
     expect(res.headers.get("server-timing")).toBe("x;dur=1");
   });
@@ -1065,6 +1087,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         "/computer/sessions",
         `/computer/sessions/${SID}`,
         `/computer/sessions/${SID}/capabilities`,
+        `/computer/sessions/${SID}/aside`,
         `/computer/sessions/${SID}/interrupt`,
         `/computer/sessions/${SID}/turns/tn_1/cancel`,
         `/computer/sessions/${SID}/events`,
@@ -1075,11 +1098,13 @@ describe("computer API telemetry: one edge.request per call", () => {
         "/computer/organization/secrets/X",
         `/computer/sessions/${SID}/secrets/X`,
         `/computer/sessions/${SID}/workspace/archive`,
+        "/computer/work/items/22/history",
+        `/computer/work/sessions/${SID}/items`,
         "/computer/nope",
       ].map(computerApiRouteFamily),
     ).toEqual([
-      "me", "tickets", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
-      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "other",
+      "me", "tickets", "sessions", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
+      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
     ]);
   });
 });
