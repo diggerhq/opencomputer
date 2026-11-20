@@ -364,7 +364,9 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return this.exclusive(async (): Promise<RecoverResult> => {
       this.claim(input);
       const m = this.meta;
-      if (input.epoch !== m.logEpoch + 1) return { ok: false, reason: "stale_epoch", logEpoch: m.logEpoch, ack: m.ack };
+      // Any newer epoch, not only logEpoch + 1: a log the host never wrote is at 0 while its row starts at 1,
+      // so the recover comes at 2. A lagging row's recover (epoch <= logEpoch) is still refused.
+      if (input.epoch <= m.logEpoch) return { ok: false, reason: "stale_epoch", logEpoch: m.logEpoch, ack: m.ack };
       const result = await this.store(input.epoch, this.recoveryEvents(input));
       return result.ok ? { ...result, tail: await this.tailOf() } : result;
     });

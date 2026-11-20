@@ -220,7 +220,7 @@ describe("SessionLog recover", () => {
     const log = open();
     await log.stub.append(log.identity, 1, busyLog(log));
     const at = "2026-10-26T10:00:00.000Z";
-    expect(await log.stub.recover({ ...log.identity, epoch: 3, at })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 1 });
+    expect(await log.stub.recover({ ...log.identity, epoch: 1, at })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 1 });
 
     const result = await log.stub.recover({ ...log.identity, epoch: 2, at });
     expect(result).toMatchObject({ ok: true, ack: 13 });
@@ -268,6 +268,17 @@ describe("SessionLog recover", () => {
 
     // The lost writer's late batch is refused.
     expect(await log.stub.append(log.identity, 1, [log.ev(15, "x.y", null, {})])).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 3 });
+  });
+
+  it("recovers a log the host never wrote, at the row's next epoch", async () => {
+    // A new row is at epoch 1 but its log is at 0 until the host's first append, so the recover comes at 2.
+    const log = open();
+    const result = await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" });
+    expect(result).toMatchObject({ ok: true, summary: { logEpoch: 2, status: "suspended" } });
+    // Settled: the same recover again is refused, and so is the lost writer at the row's old epoch.
+    expect(await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 2 });
+    if (!result.ok) throw new Error("refused");
+    expect(await log.stub.append(log.identity, 1, [log.ev(result.ack + 1, "x.y", null, {})])).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 2 });
   });
 
   it("with nothing open records the suspension only", async () => {
