@@ -16,7 +16,6 @@ import {
   ChevronsUpDown,
   CreditCard,
   KeyRound,
-  Inbox,
   Loader2,
   LogOut,
   MessagesSquare,
@@ -59,7 +58,6 @@ import {
   WORKING,
 } from './state'
 import { timeAgo } from './transcript'
-import { useTriageCount } from './triage'
 
 // The computer's own full-screen view (work 107): a flat icon rail, the
 // sessions sidebar, and the open session or the new-session home.
@@ -72,8 +70,9 @@ export default function ComputerSessionsLayout() {
   const { user } = useAuth()
   const { pathname } = useLocation()
   const sessions = !!useMatch('/computer/sessions/*')
-  // Triage is full height too, with its own panel instead of the sidebar.
-  const full = !!useMatch('/computer/triage') || sessions
+  // Full height, with its own panel instead of the sidebar. Triage (unrouted
+  // for now, see TRIAGE_WEB_NOTES.md) joins this when it returns.
+  const full = sessions
   // On a phone the list and a session take turns: the list at
   // /computer/sessions, the session (or the new-session home) on its own.
   const listing = !!useMatch({ path: '/computer/sessions', end: true })
@@ -172,7 +171,6 @@ function Rail() {
   const navigate = useNavigate()
   const orgs = user?.orgs ?? []
   const activeOrg = orgs.find((o) => o.isActive)
-  const asks = useTriageCount(!!user?.computerEnabled)
   return (
     <nav className="bg-sidebar border-sidebar-border flex w-14 shrink-0 flex-col items-center gap-1 border-r py-3">
       <Link
@@ -183,14 +181,9 @@ function Rail() {
         <OpenComputerMark className="size-8" />
       </Link>
       {user?.computerEnabled ? (
-        <>
-          <RailLink to="/computer/triage" label="Triage" badge={asks}>
-            <Inbox className="size-4" aria-hidden />
-          </RailLink>
-          <RailLink to="/computer/sessions" label="Sessions">
-            <MessagesSquare className="size-4" aria-hidden />
-          </RailLink>
-        </>
+        <RailLink to="/computer/sessions" label="Sessions">
+          <MessagesSquare className="size-4" aria-hidden />
+        </RailLink>
       ) : null}
       <RailLink to="/computer/work" label="Board">
         <SquareKanban className="size-4" aria-hidden />

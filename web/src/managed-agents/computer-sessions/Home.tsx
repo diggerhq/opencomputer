@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, ChevronRight, Loader2 } from 'lucide-react'
+import { ArrowUp, Loader2 } from 'lucide-react'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
@@ -11,9 +11,8 @@ import {
   sessionKeys,
   type SessionSettings,
 } from '../computer-sessions-api'
-import { SettingsPickers, StatusDot } from './parts'
-import { WORKING } from './state'
-import { useTriageCount } from './triage'
+import { AskCard, SettingsPickers } from './parts'
+import { NEEDS_YOU, WORKING } from './state'
 
 // No session open: start one, and answer what is waiting on you.
 export default function ComputerSessionsHome() {
@@ -22,7 +21,11 @@ export default function ComputerSessionsHome() {
   const [input, setInput] = useState('')
   const [settings, setSettings] = useState<SessionSettings>({})
   const [computerStarting, setComputerStarting] = useState(false)
-  const asks = useTriageCount()
+  const needs = useQuery({
+    queryKey: sessionKeys.list(NEEDS_YOU),
+    queryFn: () => listSessions(NEEDS_YOU),
+    refetchInterval: 5_000,
+  })
   const working = useQuery({
     queryKey: sessionKeys.list(WORKING),
     queryFn: () => listSessions(WORKING),
@@ -43,6 +46,9 @@ export default function ComputerSessionsHome() {
     if (input.trim() && !start.isPending) start.mutate()
   }
 
+  const waiting = (needs.data?.sessions ?? []).flatMap((s) =>
+    s.asks.filter((a) => a.status === 'open').map((ask) => ({ s, ask })),
+  )
   const busy = working.data?.sessions.length ?? 0
 
   return (
@@ -87,21 +93,15 @@ export default function ComputerSessionsHome() {
           </p>
         ) : null}
 
-        {asks ? (
-          <Link
-            to="/computer/triage"
-            className="bg-card hover:bg-muted/60 mt-10 flex items-center gap-2 rounded-lg border border-amber-500/40 px-3 py-2.5 text-sm transition-colors"
-          >
-            <StatusDot status="waiting" />
-            <span className="flex-1">
-              {asks} {asks === 1 ? 'ask needs' : 'asks need'} you
-            </span>
-            <span className="text-muted-foreground text-xs">Open triage</span>
-            <ChevronRight
-              className="text-muted-foreground size-3.5"
-              aria-hidden
-            />
-          </Link>
+        {waiting.length ? (
+          <section className="mt-10 space-y-2">
+            <h2 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+              Needs you
+            </h2>
+            {waiting.map(({ s, ask }) => (
+              <AskCard key={ask.id} ask={ask} session={s} showSession />
+            ))}
+          </section>
         ) : null}
         <div className="flex-1" />
         {busy ? (

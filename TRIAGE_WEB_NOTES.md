@@ -1,5 +1,14 @@
 # Triage (web): design notes
 
+> **Hidden for now.** The Board ships first; Triage returns with the attention
+> step. The `computer/triage` route and the rail link (with its count) are
+> removed, so the screen is unreachable, and the new-session home lists the
+> open asks again as it did before Triage (each `AskCard` names its session).
+> `Triage.tsx`, `triage.ts`, `AnswerDock.tsx` and their tests stay in place,
+> unrouted. `RailLink` keeps its `badge` prop for the count. To bring it back,
+> revert the commit "Hide Triage: unroute the screen, drop the rail link,
+> Home lists asks again".
+
 Second pass on the Triage screen (ux-spec 3). What the screen does is
 unchanged; how it is arranged and answered is redesigned. Same family as the
 Board's visual pass (WORK_WEB_NOTES.md): Inter, `text-sm` (14/20) for names
