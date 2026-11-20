@@ -14,7 +14,13 @@
 //   carried, else `models[harness]` from the last `welcome` or `credentials`,
 //   else none, which is bound as a refusal. Nothing is persisted: a runner
 //   found again after a host restart keeps the binding the proxy holds until
-//   its session's route arrives with a delivery or a `model` frame.
+//   its session's route arrives with a delivery, a `model` frame or a call of
+//   the session API (`called`, which settles it on `models` as a delivery
+//   without a route does). One the proxy lists on `models[harness]`'s
+//   credential, or not at all, is settled on `models` as soon as both are
+//   known: when the proxy restarted with the host, its binding came back from
+//   disk without the variables, and only a bind restores them (else every
+//   model request of the session is held, then 503, until the runner exits).
 // - A bind the proxy refuses is bound again as a refusal naming the code; a
 //   refusal is never retried, so this cannot loop. A bind with no answer in
 //   5 s drops the control connection, and the next hello re-sends every bind.
@@ -39,7 +45,7 @@ import type { Telemetry } from '../telemetry/emitter.js';
 import { send } from '../ipc.js';
 import { log } from '../log.js';
 import { spareKind } from '../model-key.js';
-import { type ModelProxy, modelProxy, type ProxyBind, type ProxyEvent, type ProxyOptions } from './model-proxy.js';
+import { type ModelProxy, modelProxy, type ProxyBind, type ProxyHello, type ProxyEvent, type ProxyOptions } from './model-proxy.js';
 
 export const NO_MODEL_CREDENTIAL = 'No model credential is configured for this computer.';
 export const PROXY_DOWN = "This computer's model proxy is not running.";
@@ -199,6 +205,26 @@ export function hostModelAccess(o: HostModelAccessDeps) {
     } else if (route) update([key], () => own.set(key, route));
   }
 
+  /** The proxy's binding `b` is on `route`'s credential (a refusal is any refusal). */
+  const on = (b: ProxyHello['bindings'][number], route: ModelRoute | undefined) =>
+    route?.mode === b.mode && (route.mode === 'refuse' || (route.profile === b.profile && route.key === b.key));
+
+  /**
+   * Settle the found runners in `keys` on `models`, once the proxy and `models` are both known, unless the proxy holds
+   * their caller for this session on another credential (their own route's: kept until it arrives). The same bind
+   * again changes nothing at a proxy that kept its variables, and restores them at one that restarted.
+   */
+  function settleFound(keys: Iterable<string> = unknown) {
+    if (!proxy.up || !models) return;
+    const at = new Map(proxy.hello!.bindings.map((b) => [b.caller, b]));
+    for (const key of [...keys]) {
+      const r = o.runner(key);
+      const b = r && at.get(callerOf(r.id));
+      if (!r || (b && (b.sessionKey !== key || !on(b, models[r.harness ?? 'claude'])))) continue;
+      routed(key, undefined);
+    }
+  }
+
   function forRunner(key: string, c: HostCredentials | undefined, harness = o.runner(key)?.harness ?? 'claude'): HostCredentials | undefined {
     if (!c) return undefined;
     const slack = slackOnly(c);
@@ -245,6 +271,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
           h.refused = undefined;
           void bind(caller);
         }
+        settleFound();
         for (const b of hello.bindings) {
           if (held.has(b.caller)) continue;
           void o.unitExists(b.caller).then((exists) => exists || held.has(b.caller) || proxy.release(b.caller));
@@ -281,7 +308,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
     profiles,
     /** Runner `id`, on `harness`, now serves `key`: bind it, unless it was found after a restart (its route comes later). */
     registered(key: string, id: string, harness: HarnessName = 'claude', found = false) {
-      if (found) return void unknown.add(key);
+      if (found) return void (unknown.add(key), settleFound([key]));
       const caller = callerOf(id);
       const h = held.get(caller);
       if (h?.sessionKey !== key || h.harness !== harness) void hold(caller, key, harness);
@@ -303,6 +330,11 @@ export function hostModelAccess(o: HostModelAccessDeps) {
       routed(key, route);
       await live(key)?.h.pending;
       return forRunner(key, c, harness);
+    },
+    /** A call of the session API is about to reach `key`'s live runner, with no delivery: settle a found runner as a delivery without a route would; settles once its bind was answered. */
+    async called(key: string) {
+      routed(key, undefined);
+      await live(key)?.h.pending;
     },
     /** Credentials as `key`'s runner (on `harness`, else its live runner's; '' for a spare) gets them: Slack's, plus C4. */
     forRunner,
@@ -332,6 +364,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
           const before = models?.claude;
           const keys = [...held.values()].map((h) => h.sessionKey).filter((k) => !k.startsWith(SPARE) && !own.has(k));
           update(keys, () => (models = m.models));
+          settleFound();
           if (!isDeepStrictEqual(before, models?.claude)) for (const [caller, h] of held) if (h.sessionKey.startsWith(SPARE)) void bind(caller);
           return false;
         }

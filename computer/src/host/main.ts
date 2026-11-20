@@ -289,6 +289,7 @@ const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-a
   send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner,
   dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
   forkPath: (key) => runners.get(key)?.report?.forkPath,
+  routed: async (id) => { const r = [...runners.values()].find((x) => x.id === id); if (r) await subs.called(r.key); }, // model-access.ts `called`
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
     stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files, terminal: sandbox?.terminal }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {

@@ -7,7 +7,11 @@
 //   calls and messages arrive with `parent`, its lifecycle as `task` records;
 // - a message's text is shown from its deltas; one that never streamed (some
 //   SDK failures arrive only as a final assistant message) arrives as a whole
-//   `text` record, unless it is a refusal for credits, which is a `limit`.
+//   `text` record, unless it is a refusal for credits, which is a `limit`;
+// - a turn that ended on an API error (`is_error` on a `success` result, or
+//   the main thread's last message carrying an `error`) ends `error`, so it
+//   is failed, not completed; unless it was a refusal for credits or a denied
+//   model, which their own records already report.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { resultText } from '../../format.js';
@@ -21,6 +25,7 @@ interface Fields {
   status?: unknown;
   parent_tool_use_id?: string | null;
   error?: string;
+  is_error?: boolean;
   event?: {
     type?: string;
     index?: number;
@@ -80,6 +85,8 @@ export class Translator {
   private streamed = false;
   /** Records a hook produced (hooks.ts), out with the next message so the stream keeps its order. */
   private held: HarnessEvent[] = [];
+  /** The main thread's last message's `error` this turn; null: one its own record reports (credits, a denied model). */
+  private apiError?: string | null;
 
   /** The PostCompact hook: the compaction's summary is written, `chars` long. */
   summarized(chars: number) {
@@ -113,18 +120,22 @@ export class Translator {
         return this.assistant(m, e);
       case 'user':
         return e.parent_tool_use_id ? [] : results(e.message?.content);
-      case 'result':
+      case 'result': {
+        const apiError = this.apiError;
+        this.apiError = undefined;
+        // `error_during_execution` is a stopped turn or a failed one: Session and TurnEvents know which.
+        const detail = e.subtype !== 'success' ? e.subtype : apiError === null ? undefined : (apiError ?? (e.is_error ? 'api_error' : undefined));
         return [
           {
             t: 'turn_ended',
-            // `error_during_execution` is a stopped turn or a failed one: Session and TurnEvents know which.
-            reason: e.subtype === 'success' ? 'done' : 'error',
-            ...(e.subtype !== 'success' ? { detail: e.subtype } : {}),
+            reason: detail ? 'error' : 'done',
+            ...(detail ? { detail } : {}),
             usage: usage(e.usage),
             ...(e.duration_api_ms !== undefined ? { apiMs: e.duration_api_ms } : {}),
             ...(e.total_cost_usd !== undefined ? { costTotalUsd: e.total_cost_usd } : {}),
           },
         ];
+      }
     }
     return [];
   }
@@ -194,7 +205,9 @@ export class Translator {
     const out: HarnessEvent[] = [{ t: 'message', ...(parent ? { parent } : {}) }];
     const credits = isOutOfCredits(m);
     if (credits) out.push({ t: 'limit', kind: 'credits' });
-    if (isModelDenied(m)) out.push({ t: 'error', kind: 'model', code: 'model_not_found', message: textOf(content) });
+    const denied = isModelDenied(m);
+    if (denied) out.push({ t: 'error', kind: 'model', code: 'model_not_found', message: textOf(content) });
+    if (!parent) this.apiError = credits || denied ? null : e.error;
     if (!parent && !this.streamed && !credits) {
       const text = textOf(content);
       if (text) out.push({ t: 'text', delta: text });

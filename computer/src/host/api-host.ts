@@ -84,6 +84,11 @@ export interface ApiHostDeps {
   retire?(runnerId: string): Promise<unknown>;
   /** Start the session's runner (or find it running), then deliver `msg`; resolves with its status. */
   start(spec: SessionSpec, o: StartOptions): Promise<SessionStatus | undefined>;
+  /**
+   * A call is about to reach runner `runnerId` without a delivery (the session API, opc): bind it as `deliver` would, so a runner
+   * found after a restart of the host and the model proxy gets its credential again (model-access.ts `called`); settles once bound.
+   */
+  routed?(runnerId: string): Promise<unknown>;
   /** The fork of the session's runner, if it reported one. */
   forkPath?(key: string): string | undefined;
   /** Present where sessions run in containers (work 103): the session's sandbox, undefined when it has none yet. Its terminal and files are reached only there. */
@@ -184,6 +189,7 @@ export function apiHost(d: ApiHostDeps) {
     await adopting.get(sessionId);
     await pending.get(sessionId)?.done;
     const r = live.get(sessionId);
+    if (r && open) await d.routed?.(r.runnerId); // a call (not the mirror following it): its runner has its model first
     if (r) return r.port;
     const h = hostWriters.get(sessionId) ?? (open ? openHost(sessionId) : undefined);
     return h && localPort(await h.w);
@@ -256,6 +262,7 @@ export function apiHost(d: ApiHostDeps) {
       await pending.get(sessionId)?.done;
       const r = live.get(sessionId);
       const epochStartSeq = () => readJournalFile(journalPath(d.dataDir, sessionId), Number.MAX_SAFE_INTEGER, 0).startSeq || undefined;
+      if (r) await d.routed?.(r.runnerId);
       if (r) return { socket: r.api.socket, token: r.api.token, writer: 'runner', epoch: r.api.epoch, epochStartSeq: epochStartSeq() };
       const h = hostWriters.get(sessionId) ?? openHost(sessionId);
       if (!h) return undefined;
