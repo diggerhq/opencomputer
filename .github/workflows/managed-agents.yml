@@ -29,8 +29,70 @@ defaults:
     working-directory: services/managed-agents
 
 jobs:
+  # On a push to main, skip the heavy jobs when the exact same tree already
+  # passed on the PR that was merged (see the record-green job). The run
+  # itself always happens and reports a conclusion, since deploys gate on it.
+  # Any mismatch or error means a full run.
+  fast-track:
+    name: Fast-track
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          fingerprint=$(
+          {
+            for path in services/managed-agents .github/workflows/managed-agents.yml .github/actions/managed-agents-setup; do
+              printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path" 2>/dev/null || echo missing)"
+            done
+          } | sha256sum | cut -d' ' -f1
+          )
+          echo "Tree fingerprint: $fingerprint"
+          if ! prs=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[] | "\(.number) \(.head.sha)"'); then
+            echo "full run: could not list the PRs for $SHA"; exit 0
+          fi
+          if [ -z "$prs" ]; then
+            echo "full run: $SHA is not from a PR"; exit 0
+          fi
+          while read -r number head; do
+            if ! match=$(gh api --paginate "repos/$REPO/commits/$head/statuses" \
+              | jq -r --arg fp "$fingerprint" '.[] | select(.context == "managed-agents/green-tree" and .state == "success" and .creator.login == "github-actions[bot]" and .description == $fp) | .id'); then
+              echo "PR #$number: could not read the statuses of $head"; continue
+            fi
+            if [ -n "$match" ]; then
+              echo "fast-tracked: identical tree passed on PR #$number"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "PR #$number: no green-tree status matching this tree on $head"
+          done <<< "$prs"
+          echo "full run: no PR passed with this exact tree"
+
   test:
     name: Test (${{ matrix.name }})
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
     # Fork PRs run on a standard runner so they cannot spend the org's
     # larger-runner minutes.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
@@ -105,6 +167,10 @@ jobs:
 
   static:
     name: Check, build and dry-run
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
     # Fork PRs run on a standard runner so they cannot spend the org's
     # larger-runner minutes.
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
@@ -127,6 +193,10 @@ jobs:
 
   secrets:
     name: Secret scan
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -141,3 +211,46 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --redact --no-banner
+
+  # On a PR whose jobs all passed, record the fingerprint of the tested tree
+  # (the PR merge ref) as a commit status on the PR head, for fast-track to
+  # find after the merge. Fork PRs get a read-only token, so they skip this
+  # and their merge gets a full run.
+  record-green:
+    name: Record green tree
+    needs: [test, static, secrets]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && needs.test.result == 'success' && needs.static.result == 'success'
+      && needs.secrets.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      statuses: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          fingerprint=$(
+          {
+            for path in services/managed-agents .github/workflows/managed-agents.yml .github/actions/managed-agents-setup; do
+              printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path" 2>/dev/null || echo missing)"
+            done
+          } | sha256sum | cut -d' ' -f1
+          )
+          echo "Recording tree fingerprint $fingerprint on $HEAD_SHA"
+          gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=success \
+            -f context=managed-agents/green-tree -f description="$fingerprint" -f target_url="$RUN_URL" > /dev/null
