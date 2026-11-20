@@ -20,6 +20,7 @@ export default function ComputerSessionsHome() {
   const qc = useQueryClient()
   const [input, setInput] = useState('')
   const [settings, setSettings] = useState<SessionSettings>({})
+  const [computerStarting, setComputerStarting] = useState(false)
   const needs = useQuery({
     queryKey: sessionKeys.list(NEEDS_YOU),
     queryFn: () => listSessions(NEEDS_YOU),
@@ -31,7 +32,9 @@ export default function ComputerSessionsHome() {
     refetchInterval: 5_000,
   })
   const start = useMutation({
-    mutationFn: () => createSession(input.trim(), settings),
+    mutationFn: () =>
+      createSession(input.trim(), settings, () => setComputerStarting(true)),
+    onSettled: () => setComputerStarting(false),
     onSuccess: (session) => {
       setInput('')
       void qc.invalidateQueries({ queryKey: sessionKeys.all })
@@ -79,6 +82,16 @@ export default function ComputerSessionsHome() {
             </Button>
           </div>
         </div>
+
+        {computerStarting ? (
+          <p
+            role="status"
+            className="text-muted-foreground mt-3 inline-flex items-center gap-2 text-sm"
+          >
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            Starting your computer. The first time takes a minute or two.
+          </p>
+        ) : null}
 
         {waiting.length ? (
           <section className="mt-10 space-y-2">

@@ -17,27 +17,26 @@ import type { Person, WorkspaceStatus } from '../protocol.js';
 import { isLazy, loadDefinition, type RepoDef, repoSlug, workspacesEnabled } from './definition.js';
 import { mkdir } from './as-runner.js';
 import {
-  cloneRepo, copyRootFiles, defaultBranch, errText, type FetchTrigger, fetchedAt, fetchErrorType, fetchInterval, fetchLane, fetchTimeout, freshness, git,
-  HOUSEKEEPING_FETCHES, isClone, observe, observed, ok, personRoot, serial, workspaceDir,
+  cloneRepo, copyRootFiles, defaultBranch, errText, type FetchTrigger, fetchedAt, fetchErrorType, fetchInterval, fetchLane, fetchTimeout, freshness,
+  HOUSEKEEPING_FETCHES, isClone, observe, observed, personRoot, scriptsFor, serial, workspaceDir,
 } from './clones.js';
 import { limit } from './fetch-schedule.js';
 import { pruneIdleArtifacts } from './idle.js';
 import { pruneForks } from './prune.js';
+import { row } from './script-runner.js';
 
 type RepoStatus = WorkspaceStatus['repos'][number];
 
 const housekeepingFetch = limit(HOUSEKEEPING_FETCHES);
 
-/** Fast-forward the checkout; a string says why not, `true` that it moved. */
-async function fastForward(clone: string, b: string): Promise<string | boolean | undefined> {
-  const current = await git(clone, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '');
-  if (current !== b) return `checkout is on ${current || 'a detached HEAD'}, not ${b}; not fast-forwarded`;
-  if (await git(clone, ['status', '--porcelain'])) return 'checkout has local changes; not fast-forwarded';
-  const [head, remote] = [await git(clone, ['rev-parse', 'HEAD']), await git(clone, ['rev-parse', `origin/${b}`])];
-  if (head === remote) return undefined;
-  if (!(await ok(git(clone, ['merge-base', '--is-ancestor', head, remote])))) return `${b} has diverged from origin/${b}; not fast-forwarded`;
-  await git(clone, ['merge', '--ff-only', '--quiet', `origin/${b}`], fetchTimeout()); // downloads contents on a partial clone
-  return true;
+/**
+ * Fast-forward the checkout (ws-sync.sh): `ff` is a string that says why not, `true` that it moved; `head` is origin/<b>, short.
+ * Bounded like a fetch: the merge downloads contents on a partial clone.
+ */
+async function fastForward(clone: string, b: string): Promise<{ ff: string | boolean | undefined; head?: string }> {
+  const { s, repo } = scriptsFor(clone);
+  const [state, head, why] = row(await s.run('ws-sync.sh', ['--only=forward', s.clones, repo, b], { timeoutMs: fetchTimeout() }), repo);
+  return { ff: state === 'moved' ? true : state === 'current' ? undefined : why, head: head || undefined };
 }
 
 /**
@@ -59,17 +58,17 @@ async function syncRepo(person: Person, repo: RepoDef, trigger: FetchTrigger): P
     await housekeepingFetch(() =>
       fetchLane(clone, async () => {
         const started = Date.now();
-        await git(clone, ['fetch', '--quiet', '--prune', 'origin'], fetchTimeout()).then(
+        const { s, repo: name } = scriptsFor(clone);
+        await s.run('ws-sync.sh', ['--only=fetch', s.clones, name], { timeoutMs: fetchTimeout() }).then((out) => row(out, name)).then(
           () => (fetchedAt.set(clone, new Date().toISOString()), freshness.fetchedFrom(clone, started)),
           (e) => (problems.push(`fetch: ${errText(e)}`), (fetchError = fetchErrorType(e))),
         );
         ms = Date.now() - started;
       }), trigger === 'pushed');
     return await serial(clone, async () => {
-      const ff = await fastForward(clone, b).catch((e) => `fast-forward: ${errText(e)}`);
+      const { ff, head } = await fastForward(clone, b).catch((e) => ({ ff: `fast-forward: ${errText(e)}`, head: undefined }));
       if (typeof ff === 'string') problems.push(ff);
       observe(() => observed().repoFetched?.({ repo: repo.name, ms, fastForwarded: ff === true, trigger, fetchError }));
-      const head = await git(clone, ['rev-parse', '--short', `origin/${b}`]).catch(() => undefined);
       return { name: repo.name, fetchedAt: fetchedAt.get(clone), head, ...(problems.length && { problem: problems.join('; ') }) };
     });
   } catch (e) {

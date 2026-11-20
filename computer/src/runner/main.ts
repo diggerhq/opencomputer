@@ -39,13 +39,13 @@ import { WebClient } from '@slack/web-api';
 import { Session, type SessionHooks, prompts } from './session.js';
 import { mayAnswer } from './prompts.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
-import { type Linked, withLinked } from '../links.js';
+import { type Linked, linkedFiles, withLinked } from '../links.js';
 import { SessionSecrets, redactingClient } from './session-secrets.js';
 import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
 import { fakeSlack } from '../dev/fake-slack.js';
-import { lines, pidFileFor, send } from '../ipc.js';
-import { HOST_RUN, NOT_ASKED, RUNNER_TOKEN_DIR, isSlackSpec, type RunnerApi } from '../protocol.js';
+import { lines, pidFileFor, secretsFor, send, tokenSocketFor } from '../ipc.js';
+import { HOST_RUN, NOT_ASKED, isSlackSpec, type RunnerApi } from '../protocol.js';
 import { type AttachedApi, attachApi } from './api/attach.js';
 import { NullSurface } from './api/surface.js';
 import { RunningSubagents } from './api/running.js';
@@ -95,7 +95,7 @@ const spec: RunnerSpec = JSON.parse(env.RUNNER_SPEC ?? '');
 let ss: Bound | undefined = spec.session;
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 // Named as the socket is: the runner's id, or its session key from a host before work 069.
-const secrets = new SessionSecrets(path.join(HOST_RUN, 'secrets', path.basename(spec.socket, '.sock')));
+const secrets = new SessionSecrets(secretsFor(HOST_RUN, path.basename(spec.socket, '.sock')));
 
 // Commits are authored by the initiator (sessionVars) and committed by the app identity.
 const sessionVars = (b: Bound) => ({ GIT_AUTHOR_NAME: b.owner.gitName, GIT_AUTHOR_EMAIL: b.owner.gitEmail, SP_SESSION_KEY: b.key });
@@ -105,7 +105,7 @@ Object.assign(env, {
   // What bin/git-credential-slack-presence and bin/gh need to find the host: this runner's own
   // token socket, where the host knows which session asks (work 080).
   SP_RUN: HOST_RUN,
-  SP_TOKEN_SOCKET: path.join(HOST_RUN, RUNNER_TOKEN_DIR, path.basename(spec.socket)),
+  SP_TOKEN_SOCKET: tokenSocketFor(HOST_RUN, path.basename(spec.socket, '.sock')),
   // bin/calvin-send-file: scripts post files into the thread (send-file-socket.ts). Not
   // `.sock`: the host takes every `*.sock` in the runners directory for a runner.
   SP_FILES_SOCKET: spec.socket.replace(/\.sock$/, '.files'),
@@ -226,7 +226,7 @@ const hooks: SessionHooks = {
   },
   output: () => clearFeedback(),
   spawn,
-  threads: { read: readThread, post: postThread },
+  threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
   previews: {
     preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
     unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
@@ -422,8 +422,9 @@ async function handle(m: Delivery, trace?: TraceContext) {
   if (refused) return void (await s.say(refused), clearFeedback(m.ts));
   if (!s.isBusy) awaitingOutput.push(m.ts);
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
-  const fetching = fetchAttachments(m.files, botToken, ss.key);
-  const atts = m.files?.length ? turns.timed('attachments', fetching, { count: m.files.length }) : fetching;
+  const files = [...(m.files ?? []), ...linkedFiles(m.linked)];
+  const fetching = fetchAttachments(files, botToken, ss.key);
+  const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;
   await s.send(withLinked(m.text, m.linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, undefined, m.role);
   // The gateway set the status to `processing` on receipt. A reply that only
   // answered an open prompt starts no turn, and nothing would clear it.

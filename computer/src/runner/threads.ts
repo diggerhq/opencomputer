@@ -13,6 +13,7 @@
 import { tool } from './tool.js';
 import { z } from 'zod';
 import { type Linked, linkedBlock } from '../links.js';
+import { type Attachment, attachmentNotes } from './attachments.js';
 import type { PostThreadRequest, PostThreadResult, ReadThreadRequest } from '../protocol.js';
 
 export const READ_THREAD_TOOL = 'mcp__calvin__read_thread';
@@ -25,6 +26,8 @@ export const MAX_READS = 40;
 /** What the process hosting the session wires: the gateway answers both. */
 export interface ThreadHooks {
   read(req: ReadThreadRequest): Promise<Linked>;
+  /** Downloads the files handed over with a thread read (`linked.attached`), as a linked message's are. */
+  attach(linked: Linked): Promise<Attachment[]>;
   post(req: PostThreadRequest): Promise<PostThreadResult>;
 }
 
@@ -56,7 +59,7 @@ export function threadTools(hooks: ThreadHooks) {
   let reads = 0;
   const read = tool(
     'read_thread',
-    'Read a Slack thread: its first message, the latest replies and how many were left out. Give its link, or a channel id and the ts ' +
+    'Read a Slack thread: its first message, the latest replies, how many were left out, and its latest small files, saved for you to open. Give its link, or a channel id and the ts ' +
       'of a message in it. Use it for a thread named in a file, a brief or an earlier message, or to see new replies in one linked ' +
       'before. Only threads in channels you and the person you work for can both read; otherwise it says why not.',
     where,
@@ -67,7 +70,9 @@ export function threadTools(hooks: ThreadHooks) {
       reads++;
       try {
         const linked = await hooks.read(req);
-        return text(linkedBlock(linked, true), !linked.ok);
+        // A tool result is text: images are not inline as with a link, but at a path the model can open.
+        const notes = linked.ok && linked.attached?.length ? attachmentNotes(await hooks.attach(linked)) : [];
+        return text([linkedBlock(linked, true), ...notes].join('\n'), !linked.ok);
       } catch (e) {
         return text(`could not read the thread: ${errorOf(e)}`, true);
       }

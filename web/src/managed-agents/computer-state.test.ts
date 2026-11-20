@@ -14,7 +14,6 @@ import {
   SESSION_POLL_MS,
   SLOW_POLL_MS,
   agentSummary,
-  computerIsOnboarded,
   computerPollInterval,
   computerPresentation,
   firstTaskLead,
@@ -199,20 +198,28 @@ describe('computer setup', () => {
     installations: [{ id: '1', accountLogin: 'acme' }],
   }
 
-  it('walks Slack, then GitHub, then the first mention', () => {
-    expect(setupStep(status({ computer: null }), undefined)).toBe('slack')
-    // GitHub connected first still leaves Slack to do.
-    expect(setupStep(status({ github }), [])).toBe('slack')
+  it('walks GitHub, then the first session, with or without Slack', () => {
+    expect(setupStep(status({ computer: null }), undefined)).toBe('github')
     expect(setupStep(status({ slack }), [])).toBe('github')
-    expect(setupStep(status({ slack, github }), [])).toBe('hello')
-    expect(setupStep(status({ slack, github }), [{} as never])).toBeNull()
+    // Slack is on offer, never a step: the first session can come first.
+    expect(setupStep(status({ github, computer: null }), undefined)).toBe(
+      'start',
+    )
+    expect(setupStep(status({ github }), [])).toBe('start')
+    expect(setupStep(status({ slack, github }), [])).toBe('start')
+    expect(setupStep(status({ github }), [{} as never])).toBeNull()
+  })
+
+  it('lets GitHub be skipped for now', () => {
+    expect(setupStep(status({ computer: null }), undefined, true)).toBe('start')
+    expect(setupStep(status(), [{} as never], true)).toBeNull()
   })
 
   it('stays on the last step while there is no computer', () => {
-    // Slack's claim failed: sessions are not asked for, so none can show.
+    // Its creation is under way or failed: sessions are not asked for.
     expect(
       setupStep(status({ slack, github, computer: null }), undefined),
-    ).toBe('hello')
+    ).toBe('start')
   })
 
   it('says ready only when it is', () => {
@@ -251,12 +258,12 @@ describe('choosing the coding agent (work 081)', () => {
 
   it('moves on once free credits are chosen or a subscription connected', () => {
     const credits = { ...fresh, choice: 'credits' as const }
-    expect(setupStep(status({ agent: credits }), undefined)).toBe('slack')
-    expect(setupStep(status({ agent: connected }), undefined)).toBe('slack')
+    expect(setupStep(status({ agent: credits }), undefined)).toBe('github')
+    expect(setupStep(status({ agent: connected }), undefined)).toBe('github')
     // A subscription without a recorded choice still counts.
     expect(
       setupStep(status({ agent: { ...connected, choice: null } }), undefined),
-    ).toBe('slack')
+    ).toBe('github')
   })
 
   it('never sends an installed organization back to it', () => {
@@ -264,7 +271,7 @@ describe('choosing the coding agent (work 081)', () => {
   })
 
   it('is skipped by an older backend that sends no agent', () => {
-    expect(setupStep(status(), undefined)).toBe('slack')
+    expect(setupStep(status(), undefined)).toBe('github')
     expect(
       computerStatusSchema.parse({
         computer: null,
@@ -286,7 +293,7 @@ describe('choosing the coding agent (work 081)', () => {
         status({ agent: { ...connected, choice: 'codex' } }),
         undefined,
       ),
-    ).toBe('slack')
+    ).toBe('github')
   })
 
   it('names the linked Slack user only once Slack is in and the name is one', () => {
@@ -439,26 +446,6 @@ function session(
     slackUrl: null,
   }
 }
-
-describe('onboarding', () => {
-  it('is onboarded once Slack is installed and GitHub connected', () => {
-    const slack = { installed: true, teamName: 'Acme' }
-    const github = {
-      connected: true,
-      installations: [{ id: '1', accountLogin: 'acme' }],
-    }
-    expect(computerIsOnboarded(status())).toBe(false)
-    expect(computerIsOnboarded(status({ slack }))).toBe(false)
-    expect(computerIsOnboarded(status({ github }))).toBe(false)
-    expect(computerIsOnboarded(status({ slack, github }))).toBe(true)
-    // Onboarding is about the person's setup, not the computer's mood.
-    expect(
-      computerIsOnboarded(
-        status({ slack, github, computer: { ...computer, state: 'parked' } }),
-      ),
-    ).toBe(true)
-  })
-})
 
 describe('live and recent sessions', () => {
   const sessions = [

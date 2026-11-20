@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import type { PreviewConfig } from '../protocol.js';
 import { signPreview } from '../signed-header.js';
+import { loopbackDialer } from './preview-dial.js';
 import { previewProxy } from './preview-proxy.js';
 
 const KEY = Buffer.alloc(32, 7).toString('base64url');
@@ -60,6 +61,35 @@ describe('preview proxy', () => {
     expect(seen.headers['x-forwarded-host']).toBe('demo.opencomputer.app');
     expect(seen.headers['x-forwarded-proto']).toBe('https');
     expect(Object.keys(seen.headers).filter((k) => k.startsWith('x-preview-'))).toEqual([]);
+  });
+
+  it('keeps the connection to the app between requests, and dials it through its dialer', async () => {
+    const sockets = new Set<unknown>();
+    const seen: (string | undefined)[] = [];
+    const app = await listen(http.createServer((req, res) => (sockets.add(req.socket), seen.push(req.headers.connection), res.end('ok'))));
+    const dialed: number[] = [];
+    const at = await listen(previewProxy(() => ({ tunnelToken: 't', key: KEY, ports: [app] }), [], (p) => (dialed.push(p), loopbackDialer(p))));
+    const headers = { 'x-preview-port': String(app), 'x-preview-auth': signPreview(KEY, app) };
+    for (let n = 0; n < 3; n++) expect((await get(at, headers)).status).toBe(200);
+    expect(sockets.size).toBe(1);
+    expect(dialed).toEqual([app]);
+    expect(seen).toEqual(['keep-alive', 'keep-alive', 'keep-alive']);
+  });
+
+  it('closes its idle connections to the app when it closes', async () => {
+    let open = 0;
+    const appServer = http.createServer((_req, res) => res.end('ok'));
+    appServer.on('connection', (s) => (open++, s.on('close', () => open--)));
+    const app = await listen(appServer);
+    const p = previewProxy(() => ({ tunnelToken: 't', key: KEY, ports: [app] }), []);
+    await new Promise<void>((r) => p.listen(0, '127.0.0.1', r));
+    const at = (p.address() as AddressInfo).port;
+    expect((await get(at, { 'x-preview-port': String(app), 'x-preview-auth': signPreview(KEY, app) })).status).toBe(200);
+    expect(open).toBe(1);
+    p.closeAllConnections();
+    await new Promise((r) => p.close(r));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(open).toBe(0);
   });
 
   it('refuses a port not in the allow-list, a host port, and a request without config', async () => {
