@@ -105,10 +105,15 @@ async function render(url: string) {
 }
 
 // Flushes until nothing is loading (the repository setting loads in two
-// steps: the choice, then the picker's list).
+// steps: the choice, then the picker's list, which is in a popover outside
+// the container).
 async function settle() {
   await flush()
-  for (let i = 0; i < 50 && container.querySelector('[role="status"]'); i++) {
+  for (
+    let i = 0;
+    i < 50 && document.body.querySelector('[role="status"]');
+    i++
+  ) {
     await flush()
   }
   await flush()
@@ -242,9 +247,11 @@ describe('board', () => {
       openPage([], { repository: null, head: null, asOf: null }),
     )
     workApi.getRepository.mockResolvedValue(null)
+    workApi.getRepositories.mockResolvedValue([acme])
     await render('/computer/work')
     expect(container.textContent).toContain('An item is a working doc')
-    expect(container.textContent).toContain('Knowledge repository')
+    expect(container.textContent).toContain('Choose the knowledge repository')
+    expect(trigger()?.textContent).toContain('Select a repository')
     expect(workApi.getClosedItems).not.toHaveBeenCalled()
   })
 
@@ -271,7 +278,8 @@ describe('board', () => {
     workApi.putRepository.mockResolvedValue(repository)
     await render('/computer/work')
     workApi.getOpenItems.mockResolvedValue(openPage(items))
-    click(container.querySelector('button[aria-label="Select knowledge"]'))
+    await openPicker()
+    click(option('knowledge'))
     await settle()
     // No confirmation for a first choice.
     expect(workApi.putRepository).toHaveBeenCalledTimes(1)
@@ -499,10 +507,29 @@ const acme = {
   problemMessage: null,
 }
 
-function rows() {
-  return [...container.querySelectorAll('ul[aria-label="Repositories"] li')]
-    .map((li) => li.querySelector('.font-medium')?.textContent)
-    .filter(Boolean)
+const trigger = () =>
+  container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')
+
+async function openPicker() {
+  click(trigger())
+  await settle()
+}
+
+// The options of the open picker, by name (it portals to the body).
+const options = () => [...document.body.querySelectorAll('[role="option"]')]
+const rows = () =>
+  options().map((o) => o.querySelector('.truncate')?.textContent)
+const option = (name: string) =>
+  options().find((o) => o.querySelector('.truncate')?.textContent === name)
+const search = () =>
+  document.body.querySelector<HTMLInputElement>(
+    'input[aria-label="Search repositories"]',
+  )!
+
+function key(el: Element, k: string) {
+  act(() => {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }))
+  })
 }
 
 function type(el: HTMLInputElement, value: string) {
@@ -518,34 +545,62 @@ describe('repository picker', () => {
     workApi.getRepositories.mockResolvedValue([acme])
   })
 
-  it('lists what GitHub grants, in the order the server sends', async () => {
+  it('shows Select a repository, and lists what GitHub grants on open', async () => {
     workApi.getRepository.mockResolvedValue(null)
     await render('/computer')
+    expect(trigger()?.textContent).toContain('Select a repository')
+    await openPicker()
     expect(rows()).toEqual(['app', 'knowledge', 'website'])
-    expect(container.querySelector('[aria-label="Private"]')).not.toBeNull()
-    expect(container.textContent).toContain('5 min ago')
-    // One installation: no account select.
-    expect(container.querySelector('#work-repo-account')).toBeNull()
-    const access = [...container.querySelectorAll('a')].find((a) =>
+    expect(document.activeElement).toBe(search())
+    expect(
+      option('app')?.querySelector('[aria-label="Private"]'),
+    ).not.toBeNull()
+    expect(option('app')?.textContent).toContain('5 min ago')
+    // One installation: no account headings, one access link.
+    expect(
+      document.body.querySelector('[role="group"]')?.textContent,
+    ).not.toContain('acme/')
+    const access = [...document.body.querySelectorAll('a')].find((a) =>
       a.textContent?.includes('Adjust GitHub App access'),
     )
     expect(access?.getAttribute('href')).toBe(acme.settingsUrl)
     expect(access?.getAttribute('target')).toBe('_blank')
   })
 
+  it('groups by account when several installations grant', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    workApi.getRepositories.mockResolvedValue([
+      acme,
+      {
+        ...acme,
+        id: '2',
+        accountLogin: 'acme-labs',
+        repositories: [],
+        problem: 'installation_suspended',
+        problemMessage: 'The installation is suspended.',
+      },
+    ])
+    await render('/computer')
+    await openPicker()
+    const groups = [...document.body.querySelectorAll('[role="group"]')]
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual([
+      'acme',
+      'acme-labs',
+    ])
+    expect(groups[1].textContent).toContain('The installation is suspended.')
+  })
+
   it('filters by name as you type', async () => {
     workApi.getRepository.mockResolvedValue(null)
     await render('/computer')
-    const search = container.querySelector<HTMLInputElement>(
-      'input[aria-label="Search repositories"]',
-    )!
-    type(search, 'WEB')
+    await openPicker()
+    type(search(), 'WEB')
     expect(rows()).toEqual(['website'])
-    type(search, 'nothing')
-    expect(container.textContent).toContain('No repository matches')
+    type(search(), 'nothing')
+    expect(document.body.textContent).toContain('No repository matches')
   })
 
-  it('saves a selected repository on its default branch', async () => {
+  it('saves a clicked repository on its default branch, without asking', async () => {
     workApi.getRepository.mockResolvedValue(null)
     workApi.putRepository.mockResolvedValue({
       ...repository,
@@ -553,8 +608,10 @@ describe('repository picker', () => {
       branch: 'trunk',
     })
     await render('/computer')
-    click(container.querySelector('button[aria-label="Select website"]'))
+    await openPicker()
+    click(option('website'))
     await flush()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     expect(workApi.putRepository).toHaveBeenCalledWith({
       installationId: '1',
       owner: 'acme',
@@ -563,27 +620,39 @@ describe('repository picker', () => {
     })
   })
 
-  it('marks the current choice on Change, and Cancel goes back', async () => {
+  it('chooses with the arrow keys and Enter', async () => {
+    workApi.getRepository.mockResolvedValue(null)
+    workApi.putRepository.mockResolvedValue(repository)
+    await render('/computer')
+    await openPicker()
+    key(search(), 'ArrowDown')
+    expect(search().getAttribute('aria-activedescendant')).toBe(
+      option('knowledge')?.id,
+    )
+    key(search(), 'Enter')
+    await flush()
+    expect(options()).toEqual([])
+    expect(workApi.putRepository).toHaveBeenCalledWith({
+      installationId: '1',
+      owner: 'acme',
+      name: 'knowledge',
+      branch: 'main',
+    })
+  })
+
+  it('reads the list only when wanted, and checks the current one', async () => {
     workApi.getRepository.mockResolvedValue(repository)
     await render('/computer')
     expect(workApi.getRepositories).not.toHaveBeenCalled()
-    click(
-      [...container.querySelectorAll('button')].find(
-        (b) => b.textContent === 'Change',
-      ),
-    )
-    await settle()
-    const knowledge = [
-      ...container.querySelectorAll('ul[aria-label="Repositories"] li'),
-    ].find((li) => li.textContent?.includes('knowledge'))!
-    expect(knowledge.textContent).toContain('Selected')
-    expect(knowledge.querySelector('button')).toBeNull()
-    click(
-      [...container.querySelectorAll('button')].find(
-        (b) => b.textContent === 'Cancel',
-      ),
-    )
-    expect(container.querySelector('ul[aria-label="Repositories"]')).toBeNull()
+    expect(trigger()?.textContent).toContain('acme/knowledge')
+    await openPicker()
+    expect(option('knowledge')?.getAttribute('aria-selected')).toBe('true')
+    expect(option('app')?.getAttribute('aria-selected')).toBe('false')
+    // The same one again changes nothing.
+    click(option('knowledge'))
+    await flush()
+    expect(workApi.putRepository).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
   })
 
   it('says when GitHub could not list, with a way to try again', async () => {
@@ -592,12 +661,11 @@ describe('repository picker', () => {
       new ApiError('GitHub is unavailable', 503),
     )
     await render('/computer')
-    expect(container.textContent).toContain(
-      'Could not load the repositories from GitHub.',
-    )
+    await openPicker()
+    expect(document.body.textContent).toContain('Could not load repositories')
     workApi.getRepositories.mockResolvedValue([acme])
     click(
-      [...container.querySelectorAll('button')].find(
+      [...document.body.querySelectorAll('button')].find(
         (b) => b.textContent === 'Try again',
       ),
     )
@@ -610,6 +678,7 @@ describe('repository picker', () => {
     workApi.getRepositories.mockResolvedValue([])
     await render('/computer')
     expect(button('Connect GitHub')).toBeTruthy()
+    expect(trigger()).toBeNull()
   })
 
   it('confirms before switching from a set repository', async () => {
@@ -617,9 +686,8 @@ describe('repository picker', () => {
     workApi.getOpenItems.mockResolvedValue(openPage([]))
     workApi.putRepository.mockResolvedValue({ ...repository, name: 'app' })
     await render('/computer')
-    click(button('Change'))
-    await settle()
-    click(container.querySelector('button[aria-label="Select app"]'))
+    await openPicker()
+    click(option('app'))
     await flush()
     expect(workApi.putRepository).not.toHaveBeenCalled()
     const dialog = document.body.querySelector('[role="alertdialog"]')!
@@ -667,10 +735,12 @@ describe('knowledge repository section', () => {
     workApi.getRepository.mockResolvedValue(repository)
     await render('/computer')
     expect(container.querySelector('section#work-repository')).not.toBeNull()
+    expect(trigger()?.textContent).toContain('acme/knowledge')
     expect(
-      container.querySelector('a[href="https://github.com/acme/knowledge"]')
-        ?.textContent,
-    ).toBe('acme/knowledge')
+      container
+        .querySelector('a[href="https://github.com/acme/knowledge"]')
+        ?.getAttribute('aria-label'),
+    ).toBe('Open acme/knowledge on GitHub')
     expect(container.textContent).toContain('main')
     expect(container.textContent).toContain(
       'Up to date · read 2 min ago at 9f2c1a7',
@@ -697,7 +767,7 @@ describe('knowledge repository section', () => {
       'The GitHub installation is not connected to this organization.',
     )
     expect(button('Reconnect GitHub')).toBeTruthy()
-    expect(button('Change')).toBeUndefined()
+    expect(button('Choose another repository')).toBeTruthy()
     expect(container.textContent).not.toContain('installation_removed')
   })
 
@@ -714,12 +784,23 @@ describe('knowledge repository section', () => {
     expect(rows()).toEqual(['app', 'knowledge', 'website'])
   })
 
-  it('says the branch is gone and offers Change', async () => {
+  it('says the branch is gone, and choosing it again saves it', async () => {
     withProblem('branch_not_found')
+    workApi.putRepository.mockResolvedValue(repository)
     await render('/computer')
     expect(container.textContent).toContain('The main branch is gone.')
-    expect(button('Change')).toBeTruthy()
     expect(workApi.getRepositories).not.toHaveBeenCalled()
+    click(button('Choose again'))
+    await settle()
+    click(option('knowledge'))
+    await flush()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(workApi.putRepository).toHaveBeenCalledWith({
+      installationId: '1',
+      owner: 'acme',
+      name: 'knowledge',
+      branch: 'main',
+    })
   })
 })
 

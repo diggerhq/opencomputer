@@ -1,6 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { ApiError } from '@/api/errors'
+import {
+  SettingsAction,
+  SettingsRow,
+  SettingsRowSkeleton,
+  SettingsSection,
+} from '@/components/settings'
 import { Button } from '@/components/ui/button'
 import { relativeTime } from '../computer-state'
 import type { Repository } from './api'
@@ -10,115 +16,99 @@ import {
   useOpenItems,
   useRepository,
 } from './queries'
-import { ConnectGitHubButton, RepositoryPicker } from './RepositorySetting'
+import { ConnectGitHubButton, RepositoryCombobox } from './RepositorySetting'
 
-// The knowledge repository setting, as one self-contained section that can be
-// mounted on any settings surface: which repository holds the working docs,
-// how the board's reading of it stands, Change (with a confirmation when it
-// switches), and the one action that fixes each problem the server reports.
+// The knowledge repository setting, as one self-contained section in the
+// settings anatomy (components/settings.tsx), so it can be mounted on any
+// settings surface: which repository holds the working docs (the Repository
+// row is the picker itself), its branch, how the board's reading of it
+// stands, and the one action that fixes each problem the server reports.
 
 /** `id` goes on the section, as a link target. */
 export function KnowledgeRepositorySection({ id }: { id?: string }) {
   const repository = useRepository()
-  const [editing, setEditing] = useState(false)
+  // Open from a fix ("Choose another repository") as well as the trigger.
+  const [choosing, setChoosing] = useState(false)
 
-  let body: ReactNode
+  let rows: ReactNode
   if (repository.isPending) {
-    body = (
-      <p role="status" className="text-muted-foreground flex items-center">
-        <Loader2 className="size-4 animate-spin" aria-label="Loading" />
-      </p>
+    rows = (
+      <div role="status" aria-label="Loading" className="divide-y">
+        <SettingsRowSkeleton />
+        <SettingsRowSkeleton />
+        <SettingsRowSkeleton />
+      </div>
     )
   } else if (repository.isError) {
     const missing =
       repository.error instanceof ApiError && repository.error.status === 404
-    body = (
-      <p className="text-muted-foreground">
-        {missing
-          ? 'Tracked work is not available here yet.'
-          : 'Could not load the knowledge repository. Try loading this page again.'}
-      </p>
+    rows = (
+      <SettingsRow>
+        <span className="text-muted-foreground">
+          {missing
+            ? 'Tracked work is not available here yet.'
+            : 'Could not load the knowledge repository. Try loading this page again.'}
+        </span>
+      </SettingsRow>
     )
   } else if (!repository.data) {
-    body = <RepositoryPicker current={null} />
-  } else if (editing) {
-    body = (
-      <RepositoryPicker
-        current={repository.data}
-        onDone={() => setEditing(false)}
-        onCancel={() => setEditing(false)}
-      />
+    rows = (
+      <SettingsRow label="Repository">
+        <RepositoryCombobox current={null} />
+      </SettingsRow>
     )
   } else {
-    body = (
-      <Current repository={repository.data} onChange={() => setEditing(true)} />
+    const r = repository.data
+    const problem = repositoryProblem(r)
+    rows = (
+      <>
+        <SettingsRow
+          label="Repository"
+          action={
+            <SettingsAction size="icon-sm" asChild>
+              <a
+                href={`https://github.com/${r.owner}/${r.name}`}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open ${repositoryName(r)} on GitHub`}
+                title="Open on GitHub"
+              >
+                <ExternalLink />
+              </a>
+            </SettingsAction>
+          }
+        >
+          <RepositoryCombobox
+            current={r}
+            open={choosing}
+            onOpenChange={setChoosing}
+          />
+        </SettingsRow>
+        <SettingsRow label="Branch">
+          <span className="font-mono text-[13px]">{r.branch}</span>
+        </SettingsRow>
+        <SettingsRow label="State">
+          {problem ? (
+            <span className="text-status-error">{problem}</span>
+          ) : (
+            <ReadState repository={r} />
+          )}
+        </SettingsRow>
+        {problem ? (
+          <Fix repository={r} onChoose={() => setChoosing(true)} />
+        ) : null}
+      </>
     )
   }
 
   return (
-    <section id={id} aria-labelledby="knowledge-repository-title">
-      <h2
-        id="knowledge-repository-title"
-        className="mb-1 text-sm font-semibold"
-      >
-        Knowledge repository
-      </h2>
-      <p className="text-muted-foreground mb-3 text-sm">
-        The GitHub repository where agents keep working docs. The board shows
-        the items in it.
-      </p>
-      <div className="bg-panel rounded-lg border px-5 py-4 text-sm">{body}</div>
-    </section>
-  )
-}
-
-/** The chosen repository, how the board's reading of it stands, and its fix. */
-function Current({
-  repository: r,
-  onChange,
-}: {
-  repository: Repository
-  onChange: () => void
-}) {
-  const problem = repositoryProblem(r)
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <dl className="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-1.5">
-          <dt className="text-muted-foreground">Repository</dt>
-          <dd className="min-w-0">
-            <a
-              href={`https://github.com/${r.owner}/${r.name}`}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-foreground inline-flex items-center gap-1 font-medium"
-            >
-              {repositoryName(r)}
-              <ExternalLink
-                className="text-muted-foreground size-3"
-                aria-hidden
-              />
-            </a>
-          </dd>
-          <dt className="text-muted-foreground">Branch</dt>
-          <dd>{r.branch}</dd>
-          <dt className="text-muted-foreground">State</dt>
-          <dd>
-            {problem ? (
-              <span className="text-status-error">{problem}</span>
-            ) : (
-              <ReadState repository={r} />
-            )}
-          </dd>
-        </dl>
-        {problem ? null : (
-          <Button size="sm" variant="outline" onClick={onChange}>
-            Change
-          </Button>
-        )}
-      </div>
-      {problem ? <Fix repository={r} onChange={onChange} /> : null}
-    </div>
+    <SettingsSection
+      id={id}
+      title="Knowledge repository"
+      description="The GitHub repository where agents keep working docs. The board shows the items in it."
+    >
+      {rows}
+    </SettingsSection>
   )
 }
 
@@ -176,10 +166,10 @@ function ReadState({ repository: r }: { repository: Repository }) {
  */
 function Fix({
   repository: r,
-  onChange,
+  onChoose,
 }: {
   repository: Repository
-  onChange: () => void
+  onChoose: () => void
 }) {
   const code = r.problem ?? ''
   const needsAccess =
@@ -189,10 +179,21 @@ function Fix({
   const settingsUrl = installations.data?.find(
     (i) => i.id === String(r.installationId),
   )?.settingsUrl
+  // Quiet beside the fix itself; the button when it is the only way out.
+  const another = (alone = false) =>
+    alone ? (
+      <Button size="sm" onClick={onChoose}>
+        Choose another repository
+      </Button>
+    ) : (
+      <SettingsAction onClick={onChoose}>
+        Choose another repository
+      </SettingsAction>
+    )
 
   if (code === 'installation_removed' || code === 'installation_suspended') {
     return (
-      <Actions
+      <FixRow
         hint={
           code === 'installation_suspended'
             ? 'Unsuspend the GitHub App, or connect it again, then come back.'
@@ -200,15 +201,13 @@ function Fix({
         }
       >
         <ConnectGitHubButton label="Reconnect GitHub" variant="default" />
-        <Button size="sm" variant="ghost" onClick={onChange}>
-          Choose another repository
-        </Button>
-      </Actions>
+        {another()}
+      </FixRow>
     )
   }
   if (needsAccess) {
     return (
-      <Actions hint="Grant the GitHub App this repository again, or pick another one.">
+      <FixRow hint="Grant the GitHub App this repository again, or pick another one.">
         {settingsUrl ? (
           <Button size="sm" asChild>
             <a href={settingsUrl} target="_blank" rel="noreferrer">
@@ -217,46 +216,40 @@ function Fix({
             </a>
           </Button>
         ) : null}
-        <Button
-          size="sm"
-          variant={settingsUrl ? 'outline' : 'default'}
-          onClick={onChange}
-        >
-          Choose another repository
-        </Button>
-      </Actions>
+        {another(!settingsUrl)}
+      </FixRow>
     )
   }
   if (code === 'branch_not_found') {
     return (
-      <Actions
+      <FixRow
         hint={`The ${r.branch} branch is gone. Choose the repository again to use its default branch.`}
       >
-        <Button size="sm" onClick={onChange}>
-          Change
+        <Button size="sm" onClick={onChoose}>
+          Choose again
         </Button>
-      </Actions>
+      </FixRow>
     )
   }
   if (code === 'github_app_not_configured') {
     return (
-      <Actions hint="This is on our side, not yours; the board reads again once it is fixed." />
+      <FixRow hint="This is on our side, not yours; the board reads again once it is fixed." />
     )
   }
-  return (
-    <Actions>
-      <Button size="sm" variant="outline" onClick={onChange}>
-        Change
-      </Button>
-    </Actions>
-  )
+  return <FixRow>{another(true)}</FixRow>
 }
 
-function Actions({ hint, children }: { hint?: string; children?: ReactNode }) {
+function FixRow({ hint, children }: { hint?: string; children?: ReactNode }) {
+  // In the value column, the hint over its buttons: a full sentence and two
+  // buttons do not fit one line beside each other.
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-4">
-      {hint ? <p className="text-muted-foreground flex-1">{hint}</p> : null}
-      {children ? <div className="flex gap-2">{children}</div> : null}
-    </div>
+    <SettingsRow indent className="py-3">
+      <div className="space-y-2.5">
+        {hint ? <p className="text-muted-foreground">{hint}</p> : null}
+        {children ? (
+          <div className="flex flex-wrap items-center gap-2">{children}</div>
+        ) : null}
+      </div>
+    </SettingsRow>
   )
 }

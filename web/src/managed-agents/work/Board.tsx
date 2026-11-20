@@ -121,11 +121,10 @@ export function Board() {
             icon={FileText}
             title="Nothing is tracked yet"
             description={<WhatIsAnItem />}
+            action={<FirstRepository />}
+            className="[&>div:last-child]:w-full"
           />
         </Panel>
-        <div className="mt-8">
-          <FirstRepository />
-        </div>
       </BoardFrame>
     )
   }
