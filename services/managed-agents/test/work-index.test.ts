@@ -469,6 +469,7 @@ describe("GitHub trouble", () => {
         async mintGitHubInstallationToken() {
           return connected ? { outcome: "minted", token: "t", expiresAt: new Date(Date.parse("2026-11-20T00:00:00Z")).toISOString() } : { outcome: "not_connected" };
         },
+        getGitHubInstallation: () => (connected ? { accountLogin: "acme" } : null),
       },
     });
     await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
@@ -479,6 +480,41 @@ describe("GitHub trouble", () => {
     await open(s);
     await s.settle();
     expect((await open(s)).problem).toBe("installation_removed");
+    // Confirmed gone (the Account object no longer has it): the alarm stops retrying.
+    expect(s.index["meta"]("problem_final")).toBe("1");
+    s.tick(2 * 60 * 60_000);
+    expect(await s.index.alarm()).toBeNull();
+    // Connected again: a read looks, and heals it.
+    connected = true;
+    s.index["github"] = null;
+    await open(s);
+    await s.settle();
+    const healed = await open(s);
+    expect(healed.problem).toBeNull();
+    expect(s.index["meta"]("problem_final")).toBeNull();
+    expect(await s.index.alarm()).not.toBeNull();
+  });
+
+  it("an installation refusing tokens that the Account object still has is retried from the alarm", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    let refused = false;
+    const s = setup(repo, {
+      mint: {
+        async mintGitHubInstallationToken() {
+          return refused ? { outcome: "not_connected" } : { outcome: "minted", token: "t", expiresAt: new Date(Date.parse("2026-11-20T00:00:00Z")).toISOString() };
+        },
+      },
+    });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    refused = true;
+    s.index["github"] = null;
+    s.tick(LOOK_AFTER_MS + 1);
+    await open(s);
+    await s.settle();
+    expect((await open(s)).problem).toBe("installation_removed");
+    expect(s.index["meta"]("problem_final")).toBeNull();
+    expect(await s.index.alarm()).not.toBeNull();
   });
 });
 

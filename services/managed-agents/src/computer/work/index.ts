@@ -34,6 +34,8 @@
 //   Listing what the installations grant (the repository picker) stores nothing and is outside it.
 // - A permanent failure is stored as `problem` (a code) and `problemMessage`; it is retried from
 //   the alarm with a backoff from PROBLEM_RETRY_MS to PROBLEM_RETRY_MAX_MS and cleared on success.
+//   An installation the Account object no longer has (removed, not just refusing a token) is final
+//   (`problem_final`): the alarm stops, and only a read or a new setting looks again.
 // - No alarm loops without progress: a blob or a commit GitHub will not give is asked again with a
 //   backoff (`failures`) and given up after FAILURE_TRIES, with a warning; an alarm that moved
 //   nothing while there is no cursor (a first build that failed) or a build waits longer each time
@@ -616,7 +618,7 @@ export class WorkIndex {
 
   /** The alarm: continue a build, look while there are readers or a problem is due, walk. Returns when to come back. */
   async alarm(): Promise<number | null> {
-    if (!this.repo()) return null;
+    if (!this.repo() || this.meta("problem_final") !== null) return null;
     const version = this.metaNumber("version");
     await this.exclusive(async () => {
       const now = this.now();
@@ -688,14 +690,15 @@ export class WorkIndex {
     } catch (error) {
       if (error instanceof GitHubGone) {
         if (error.problem === "repository_not_found" && (await this.relocate())) return;
-        this.setProblem(error.problem, error.message);
+        this.setProblem(error.problem, error.message, error.problem === "installation_removed" && (await this.installationGone()));
       } else if (error instanceof GitHubPaused) {
         this.setMeta(error.resource === "graphql" ? "pulls_pause_until" : "pause_until", error.until);
       } else if (!(error instanceof GitHubUnavailable)) throw error;
     }
   }
 
-  private setProblem(problem: RepositoryProblem, message: string): void {
+  /** `final`: retrying from the alarm cannot help (the installation is gone); reads still look. */
+  private setProblem(problem: RepositoryProblem, message: string, final = false): void {
     const tries = this.meta("problem") !== null ? this.metaNumber("problem_tries") + 1 : 0;
     this.store.transaction(() => {
       if (this.meta("problem") !== problem || this.meta("problem_message") !== message) this.bump();
@@ -703,12 +706,25 @@ export class WorkIndex {
       this.setMeta("problem_message", message);
       this.setMeta("problem_tries", tries);
       this.setMeta("problem_retry_at", this.now() + Math.min(PROBLEM_RETRY_MS * 2 ** tries, PROBLEM_RETRY_MAX_MS));
+      this.setMeta("problem_final", final ? 1 : null);
     });
+  }
+
+  /** Whether the Account object confirms the stored installation is gone: it no longer has it. A failure to ask is not a yes. */
+  private async installationGone(): Promise<boolean> {
+    const repo = this.repo();
+    const accountId = this.meta("account_id");
+    if (!repo || !accountId) return false;
+    try {
+      return (await this.deps.account(accountId).getGitHubInstallation(repo.installationId)) === null;
+    } catch {
+      return false;
+    }
   }
 
   private clearProblem(): void {
     if (this.meta("problem") === null) return;
-    for (const k of ["problem", "problem_message", "problem_tries", "problem_retry_at"]) this.setMeta(k, null);
+    for (const k of ["problem", "problem_message", "problem_tries", "problem_retry_at", "problem_final"]) this.setMeta(k, null);
     this.bump();
   }
 
