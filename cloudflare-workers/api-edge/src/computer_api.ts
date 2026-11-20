@@ -80,6 +80,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   { methods: new Set(["GET"]), pattern: route("/work/items") },
   { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}`) },
   { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}/history`) },
+  { methods: new Set(["GET"]), pattern: route(`/work/sessions/${SEG}/items`) },
 ];
 
 const WORKSPACE_ROUTE = new RegExp(

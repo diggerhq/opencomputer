@@ -253,6 +253,7 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/work/items"],
     ["GET", "/computer/work/items/22"],
     ["GET", "/computer/work/items/22/history"],
+    ["GET", "/computer/work/sessions/cs_01h/items"],
     ["GET", "/computer/sessions/cs_01h/workspace/archive"],
     ["PUT", "/computer/sessions/cs_01h/workspace/archive"],
     ["GET", "/computer/sessions/cs_01h/workspace/file"],
@@ -279,6 +280,9 @@ describe("computer API allowlist", () => {
     ["DELETE", "/computer/work/repository"],
     ["PUT", "/computer/work/repositories"],
     ["GET", "/computer/work/files"],
+    ["POST", "/computer/work/sessions/cs_01h/items"],
+    ["GET", "/computer/work/sessions/cs_01h"],
+    ["GET", "/computer/work/sessions/../items"],
   ])("refuses %s %s", (method, suffix) => {
     expect(isComputerApiRoute(method, suffix)).toBe(false);
   });
@@ -1095,11 +1099,12 @@ describe("computer API telemetry: one edge.request per call", () => {
         `/computer/sessions/${SID}/secrets/X`,
         `/computer/sessions/${SID}/workspace/archive`,
         "/computer/work/items/22/history",
+        `/computer/work/sessions/${SID}/items`,
         "/computer/nope",
       ].map(computerApiRouteFamily),
     ).toEqual([
       "me", "tickets", "sessions", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
-      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "other",
+      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
     ]);
   });
 });
