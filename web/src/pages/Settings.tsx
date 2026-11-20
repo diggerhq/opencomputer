@@ -1,5 +1,14 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Check,
+  Copy,
+  Loader2,
+  Mail,
+  MoreHorizontal,
+  UserPlus,
+} from 'lucide-react'
 import { notifyError } from '@/lib/errors'
 import { useTransientFlag } from '@/lib/use-transient-flag'
 import { useAuth } from '@/hooks/useAuth'
@@ -19,14 +28,20 @@ import {
 } from '@/api/client'
 import { PageHeader } from '@/components/page-header'
 import {
-  Panel,
-  PanelHeader,
-  PanelTitle,
-  PanelDescription,
-} from '@/components/panel'
+  SettingsAction,
+  SettingsRow,
+  SettingsRowSkeleton,
+  SettingsSection,
+} from '@/components/settings'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Field, Input, Label } from '@/components/form'
+import { Input } from '@/components/form'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   Dialog,
@@ -40,20 +55,34 @@ import {
 import { getManagedRuntimeProfile } from '@/managed-agents/api'
 import { KnowledgeRepositorySection } from '@/managed-agents/work/KnowledgeRepository'
 
-function ReadOnlyField({ label, value }: { label: string; value: ReactNode }) {
+// The organization's settings, one calm column of sections in the settings
+// anatomy (components/settings.tsx): Organization, Knowledge repository,
+// Members, Agent environment.
+
+export default function Settings() {
+  const { user } = useAuth()
+  const { data: org } = useQuery({ queryKey: ['org'], queryFn: getOrg })
+
   return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      <div className="bg-panel-2 text-muted-foreground flex h-8 items-center rounded-md border px-3 font-mono text-sm">
-        {value}
+    <div className="mx-auto w-full max-w-[720px] pb-16">
+      <PageHeader
+        title="Settings"
+        // The name, once known; a space holds its line until then.
+        description={org?.name ?? '\u00a0'}
+        className="mb-8"
+      />
+      <div className="space-y-10">
+        <Organization />
+        <KnowledgeRepositorySection id="work-repository" />
+        {user?.capabilities?.manageMembers !== false ? <Members /> : null}
+        <AgentEnvironment />
       </div>
     </div>
   )
 }
 
-export default function Settings() {
+function Organization() {
   const queryClient = useQueryClient()
-  const { user } = useAuth()
   const { data: org, isLoading } = useQuery({
     queryKey: ['org'],
     queryFn: getOrg,
@@ -68,21 +97,11 @@ export default function Settings() {
     queryFn: getAutumnBilling,
     enabled: usesAutumnBilling,
   })
-  const {
-    data: runtimeProfile,
-    isLoading: runtimeProfileLoading,
-    isError: runtimeProfileError,
-  } = useQuery({
-    queryKey: ['managed-runtime-profile'],
-    queryFn: getManagedRuntimeProfile,
-    retry: false,
-  })
 
   // Local edits override the fetched name; null = "not edited" (avoids an
   // effect to sync the field with the query).
   const [draftName, setDraftName] = useState<string | null>(null)
   const [saved, markSaved] = useTransientFlag(2000)
-  const [showRuntimeProfileInfo, setShowRuntimeProfileInfo] = useState(false)
   const name = draftName ?? org?.name ?? ''
 
   const saveMutation = useMutation({
@@ -95,115 +114,509 @@ export default function Settings() {
     onError: (e) => notifyError("Couldn't save organization settings.", e),
   })
 
-  if (isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)) {
-    return (
-      <div>
-        <PageHeader title="Settings" description="Organization configuration" />
-        <div className="max-w-2xl space-y-6">
-          <Skeleton className="h-64 w-full" />
-          <Skeleton className="h-40 w-full" />
-        </div>
-      </div>
-    )
-  }
-
-  const unchanged = name === (org?.name ?? '')
-  const plan = organizationPlanLabel(org, billing, autumn)
+  const loading =
+    isLoading || isBillingLoading || (usesAutumnBilling && isAutumnLoading)
+  const changed = name.trim() !== '' && name !== (org?.name ?? '')
 
   return (
-    <div>
-      <PageHeader title="Settings" description="Organization configuration" />
-
-      <div className="grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="lg:col-span-2">
-          <KnowledgeRepositorySection id="work-repository" />
+    <SettingsSection
+      title="Organization"
+      description="Your organization's name and plan."
+    >
+      {loading ? (
+        <div role="status" aria-label="Loading" className="divide-y">
+          <SettingsRowSkeleton />
+          <SettingsRowSkeleton />
+          <SettingsRowSkeleton />
         </div>
-
-        <Panel className="p-6 lg:col-span-2">
-          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-            <div>
-              <PanelTitle>Customize VM packages</PanelTitle>
-              <PanelDescription className="mt-1">
-                Select the tools available to agents when they start a VM.
-              </PanelDescription>
-              <div className="mt-4">
-                <Label>Selected package image</Label>
-                <p className="text-foreground mt-1 text-sm font-medium">
-                  {runtimeProfileLoading
-                    ? 'Loading…'
-                    : runtimeProfileError
-                      ? 'Unavailable'
-                      : (runtimeProfile?.displayName ?? 'OpenComputer default')}
-                </p>
-                {runtimeProfile?.customized ? (
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    A dedicated image is assigned to this organization.
-                  </p>
-                ) : null}
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => setShowRuntimeProfileInfo(true)}
+      ) : (
+        <>
+          <SettingsRow
+            label="Name"
+            htmlFor="org-name"
+            action={
+              changed || saveMutation.isPending ? (
+                <>
+                  <SettingsAction
+                    type="button"
+                    onClick={() => setDraftName(null)}
+                    disabled={saveMutation.isPending}
+                  >
+                    Cancel
+                  </SettingsAction>
+                  <Button
+                    type="submit"
+                    form="org-name-form"
+                    size="sm"
+                    disabled={saveMutation.isPending}
+                  >
+                    {saveMutation.isPending ? (
+                      <Loader2 className="animate-spin" aria-hidden />
+                    ) : null}
+                    Save
+                  </Button>
+                </>
+              ) : saved ? (
+                <span className="text-muted-foreground inline-flex items-center gap-1.5 px-2.5">
+                  <Check className="size-3.5" aria-hidden />
+                  Saved
+                </span>
+              ) : null
+            }
+          >
+            <form
+              id="org-name-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (changed) saveMutation.mutate(name)
+              }}
             >
-              Edit
-            </Button>
-          </div>
-        </Panel>
-
-        {/* Organization */}
-        <Panel className="p-6">
-          <div className="mb-5">
-            <PanelTitle>Organization</PanelTitle>
-            <PanelDescription className="mt-1">
-              Your organization&apos;s name and plan.
-            </PanelDescription>
-          </div>
-          <div className="space-y-5">
-            <Field label="Organization name" htmlFor="org-name">
               <Input
                 id="org-name"
                 value={name}
                 onChange={(e) => setDraftName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Escape' && setDraftName(null)}
+                className="max-w-80"
+                autoComplete="off"
               />
-            </Field>
+            </form>
+          </SettingsRow>
+          <SettingsRow
+            label="Plan"
+            action={
+              <SettingsAction asChild>
+                <Link to="/billing">Manage billing</Link>
+              </SettingsAction>
+            }
+          >
+            <span className="font-medium">
+              {organizationPlanLabel(org, billing, autumn)}
+            </span>
+          </SettingsRow>
+          <SettingsRow
+            label="Organization ID"
+            action={org?.id ? <CopyButton value={org.id} /> : null}
+          >
+            <code className="block truncate font-mono text-[13px] [font-variant-ligatures:none]">
+              {org?.id ?? '—'}
+            </code>
+          </SettingsRow>
+        </>
+      )}
+    </SettingsSection>
+  )
+}
 
-            <ReadOnlyField label="Plan" value={plan} />
+/** Copy, then "Copied" with a check for a moment once the clipboard has it. */
+function CopyButton({ value }: { value: string }) {
+  const [copied, markCopied] = useTransientFlag(1500)
+  return (
+    <SettingsAction
+      type="button"
+      onClick={() =>
+        void navigator.clipboard
+          .writeText(value)
+          .then(markCopied, (e) =>
+            notifyError("Couldn't copy to clipboard.", e),
+          )
+      }
+    >
+      {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+      {copied ? 'Copied' : 'Copy'}
+    </SettingsAction>
+  )
+}
 
-            <ReadOnlyField label="Organization ID" value={org?.id ?? '—'} />
+/** The people in the organization, then the invitations still pending. */
+function Members() {
+  const queryClient = useQueryClient()
+  const { user } = useAuth()
+  const members = useQuery({
+    queryKey: ['org-members'],
+    queryFn: getOrgMembers,
+  })
+  const invitations = useQuery({
+    queryKey: ['org-invitations'],
+    queryFn: getInvitations,
+  })
 
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={() => saveMutation.mutate(name)}
-                disabled={saveMutation.isPending || unchanged}
-              >
-                {saveMutation.isPending ? 'Saving…' : 'Save changes'}
-              </Button>
-              {saved ? (
-                <span className="text-status-running text-sm font-medium">
-                  Saved
+  const [showInvite, setShowInvite] = useState(false)
+  const [toRemove, setToRemove] = useState<OrgMember | null>(null)
+  const [toRevoke, setToRevoke] = useState<OrgInvitation | null>(null)
+
+  const inviteMutation = useMutation({
+    mutationFn: (email: string) => sendInvitation(email),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['org-members'] })
+      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] })
+      setShowInvite(false)
+    },
+    onError: (e) => notifyError("Couldn't send the invitation.", e),
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (membershipId: string) => removeMember(membershipId),
+    onError: (e) => notifyError("Couldn't remove the member.", e),
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ['org-members'] }),
+  })
+
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) => revokeInvitation(id),
+    onError: (e) => notifyError("Couldn't revoke the invitation.", e),
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
+  })
+
+  const pending = (invitations.data ?? []).filter(
+    (inv) => inv.state === 'pending',
+  )
+  const isMe = (m: OrgMember) =>
+    !!user &&
+    (m.id === user.id || m.email.toLowerCase() === user.email.toLowerCase())
+
+  return (
+    <SettingsSection
+      title="Members"
+      description="People with access to this organization."
+      action={
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setShowInvite((v) => !v)}
+          aria-expanded={showInvite}
+        >
+          <UserPlus aria-hidden />
+          Invite
+        </Button>
+      }
+    >
+      {showInvite ? (
+        <InviteRow
+          sending={inviteMutation.isPending}
+          onSend={(email) => inviteMutation.mutate(email)}
+          onCancel={() => setShowInvite(false)}
+        />
+      ) : null}
+
+      {members.isLoading ? (
+        <div role="status" aria-label="Loading" className="divide-y">
+          <PersonSkeleton />
+          <PersonSkeleton />
+        </div>
+      ) : members.isError ? (
+        <SettingsRow>
+          <span className="text-muted-foreground">
+            Could not load the members. Try loading this page again.
+          </span>
+        </SettingsRow>
+      ) : (members.data ?? []).length === 0 ? (
+        <SettingsRow>
+          <span className="text-muted-foreground">No members yet.</span>
+        </SettingsRow>
+      ) : (
+        (members.data ?? []).map((member, i) => {
+          const me = isMe(member)
+          return (
+            <PersonRow
+              key={member.membershipId || member.id || i}
+              initials={initials(member.name || member.email)}
+              primary={member.name || member.email}
+              tag={me ? 'You' : undefined}
+              secondary={
+                member.name && member.name !== member.email
+                  ? member.email
+                  : null
+              }
+              role={member.role}
+              menu={
+                member.membershipId && !me ? (
+                  <RowMenu
+                    label={`Actions for ${member.email}`}
+                    item="Remove from organization"
+                    onSelect={() => setToRemove(member)}
+                  />
+                ) : null
+              }
+            />
+          )
+        })
+      )}
+
+      {pending.map((inv) => (
+        <PersonRow
+          key={inv.id}
+          invited
+          primary={inv.email}
+          tag="Invited"
+          secondary={`Expires ${new Date(inv.expiresAt).toLocaleDateString(
+            undefined,
+            { month: 'short', day: 'numeric' },
+          )}`}
+          role={inv.role ?? 'member'}
+          menu={
+            <RowMenu
+              label={`Actions for the invitation to ${inv.email}`}
+              item="Revoke invitation"
+              onSelect={() => setToRevoke(inv)}
+            />
+          }
+        />
+      ))}
+
+      <ConfirmDialog
+        open={toRemove !== null}
+        onOpenChange={(open) => !open && setToRemove(null)}
+        title={`Remove ${toRemove?.email ?? 'this member'}?`}
+        description="They will lose access to this organization."
+        confirmLabel="Remove member"
+        destructive
+        pending={removeMutation.isPending}
+        onConfirm={() => {
+          if (!toRemove?.membershipId) return
+          removeMutation.mutate(toRemove.membershipId, {
+            onSuccess: () => setToRemove(null),
+          })
+        }}
+      />
+      <ConfirmDialog
+        open={toRevoke !== null}
+        onOpenChange={(open) => !open && setToRevoke(null)}
+        title={`Revoke invitation for ${toRevoke?.email ?? ''}?`}
+        confirmLabel="Revoke invitation"
+        destructive
+        pending={revokeMutation.isPending}
+        onConfirm={() => {
+          if (!toRevoke) return
+          revokeMutation.mutate(toRevoke.id, {
+            onSuccess: () => setToRevoke(null),
+          })
+        }}
+      />
+    </SettingsSection>
+  )
+}
+
+/** The email to invite, focused as it opens; Escape or Cancel closes it. */
+function InviteRow({
+  sending,
+  onSend,
+  onCancel,
+}: {
+  sending: boolean
+  onSend: (email: string) => void
+  onCancel: () => void
+}) {
+  const [email, setEmail] = useState('')
+  const input = useRef<HTMLInputElement>(null)
+  useEffect(() => input.current?.focus(), [])
+  return (
+    <SettingsRow
+      label="Invite by email"
+      htmlFor="invite-email"
+      action={
+        <>
+          <SettingsAction type="button" onClick={onCancel}>
+            Cancel
+          </SettingsAction>
+          <Button
+            type="submit"
+            form="invite-form"
+            size="sm"
+            disabled={sending || !email.trim()}
+          >
+            {sending ? <Loader2 className="animate-spin" aria-hidden /> : null}
+            Send invite
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="invite-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (email.trim()) onSend(email.trim())
+        }}
+      >
+        <Input
+          ref={input}
+          id="invite-email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === 'Escape' && onCancel()}
+          placeholder="name@example.com"
+          className="max-w-80"
+        />
+      </form>
+    </SettingsRow>
+  )
+}
+
+function initials(s: string) {
+  const words = s.split(/[\s@._-]+/).filter(Boolean)
+  const letters =
+    words.length > 1 && !s.includes('@')
+      ? words[0][0] + words[1][0]
+      : (words[0]?.[0] ?? '?')
+  return letters.toUpperCase()
+}
+
+/**
+ * A member or an invitation: the avatar on the label's edge, name over
+ * email, the role in a column of its own so roles line up, and the menu in
+ * the trailing column. On a phone the role goes beside the email.
+ */
+function PersonRow({
+  initials: letters,
+  invited = false,
+  primary,
+  tag,
+  secondary,
+  role,
+  menu,
+}: {
+  initials?: string
+  invited?: boolean
+  primary: string
+  /** A small tag after the name ("You", "Invited"). */
+  tag?: string
+  secondary: string | null
+  role: string
+  menu: ReactNode
+}) {
+  return (
+    <SettingsRow
+      className="min-h-15"
+      // A slot the menu's size even without one, so the roles line up.
+      action={menu ?? <span className="size-7" />}
+    >
+      <div className="flex items-center gap-4">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {invited ? (
+            <span className="text-muted-foreground flex size-8 shrink-0 items-center justify-center rounded-full border border-dashed">
+              <Mail className="size-3.5" aria-hidden />
+            </span>
+          ) : (
+            <span
+              className="bg-secondary text-muted-foreground flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-medium"
+              aria-hidden
+            >
+              {letters}
+            </span>
+          )}
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-medium">{primary}</span>
+              {tag ? (
+                <span className="text-muted-foreground shrink-0 rounded-sm border px-1 text-xs leading-4">
+                  {tag}
                 </span>
               ) : null}
             </div>
+            {/* On a phone the role joins this line, so every row is two. */}
+            <div className="text-muted-foreground truncate text-xs">
+              {secondary}
+              <span className="sm:hidden">
+                {secondary ? ' · ' : null}
+                <span className="capitalize">{role}</span>
+              </span>
+            </div>
           </div>
-        </Panel>
-
-        {user?.capabilities?.manageMembers !== false ? (
-          <>
-            <div className="lg:col-span-2">
-              <TeamMembers />
-            </div>
-            <div className="lg:col-span-2">
-              <PendingInvitations />
-            </div>
-          </>
-        ) : null}
+        </div>
+        <span className="text-muted-foreground hidden w-20 shrink-0 capitalize sm:block">
+          {role}
+        </span>
       </div>
+    </SettingsRow>
+  )
+}
 
-      <Dialog
-        open={showRuntimeProfileInfo}
-        onOpenChange={setShowRuntimeProfileInfo}
+/** The quiet "…" menu of a member or invitation row, with its one action. */
+function RowMenu({
+  label,
+  item,
+  onSelect,
+}: {
+  label: string
+  item: string
+  onSelect: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <SettingsAction size="icon-sm" aria-label={label}>
+          <MoreHorizontal />
+        </SettingsAction>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          variant="destructive"
+          className="whitespace-nowrap"
+          onSelect={onSelect}
+        >
+          {item}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function PersonSkeleton() {
+  return (
+    <SettingsRow className="min-h-15">
+      <div className="flex items-center gap-3">
+        <Skeleton className="size-8 shrink-0 rounded-full" />
+        <div className="space-y-1.5">
+          <Skeleton className="h-3.5 w-28" />
+          <Skeleton className="h-3 w-40" />
+        </div>
+      </div>
+    </SettingsRow>
+  )
+}
+
+/** The VM package image agents start with (custom images are Enterprise). */
+function AgentEnvironment() {
+  const [showInfo, setShowInfo] = useState(false)
+  const profile = useQuery({
+    queryKey: ['managed-runtime-profile'],
+    queryFn: getManagedRuntimeProfile,
+    retry: false,
+  })
+
+  return (
+    <SettingsSection
+      title="Agent environment"
+      description="The tools available to agents when they start a VM."
+    >
+      <SettingsRow
+        label="Package image"
+        action={
+          <SettingsAction onClick={() => setShowInfo(true)}>
+            Edit
+          </SettingsAction>
+        }
       >
+        {profile.isLoading ? (
+          <Skeleton className="h-3.5 w-40" />
+        ) : (
+          <>
+            <div className="font-medium">
+              {profile.isError
+                ? 'Unavailable'
+                : (profile.data?.displayName ?? 'OpenComputer default')}
+            </div>
+            {profile.data?.customized ? (
+              <div className="text-muted-foreground text-xs">
+                A dedicated image is assigned to this organization.
+              </div>
+            ) : null}
+          </>
+        )}
+      </SettingsRow>
+
+      <Dialog open={showInfo} onOpenChange={setShowInfo}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Custom VM packages</DialogTitle>
@@ -229,203 +642,6 @@ export default function Settings() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  )
-}
-
-function TeamMembers() {
-  const queryClient = useQueryClient()
-  const { data: members, isLoading } = useQuery({
-    queryKey: ['org-members'],
-    queryFn: getOrgMembers,
-  })
-
-  const [inviteEmail, setInviteEmail] = useState('')
-  const [showInvite, setShowInvite] = useState(false)
-  const [toRemove, setToRemove] = useState<OrgMember | null>(null)
-
-  const inviteMutation = useMutation({
-    mutationFn: (email: string) => sendInvitation(email),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['org-members'] })
-      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] })
-      setInviteEmail('')
-      setShowInvite(false)
-    },
-    onError: (e) => notifyError("Couldn't send the invitation.", e),
-  })
-
-  const removeMutation = useMutation({
-    mutationFn: (membershipId: string) => removeMember(membershipId),
-    onError: (e) => notifyError("Couldn't remove the member.", e),
-    onSettled: () =>
-      void queryClient.invalidateQueries({ queryKey: ['org-members'] }),
-  })
-
-  return (
-    <Panel className="p-6">
-      <PanelHeader className="border-0 p-0">
-        <div>
-          <PanelTitle>Team members</PanelTitle>
-          <PanelDescription className="mt-1">
-            People with access to this organization
-          </PanelDescription>
-        </div>
-        <Button size="sm" onClick={() => setShowInvite((v) => !v)}>
-          Invite
-        </Button>
-      </PanelHeader>
-
-      {showInvite ? (
-        <form
-          className="mt-4 flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (inviteEmail.trim()) inviteMutation.mutate(inviteEmail.trim())
-          }}
-        >
-          <Input
-            type="email"
-            value={inviteEmail}
-            onChange={(e) => setInviteEmail(e.target.value)}
-            placeholder="email@example.com"
-            className="flex-1"
-          />
-          <Button
-            type="submit"
-            disabled={inviteMutation.isPending || !inviteEmail.trim()}
-          >
-            {inviteMutation.isPending ? 'Sending…' : 'Send'}
-          </Button>
-        </form>
-      ) : null}
-
-      <div className="mt-4 divide-y">
-        {isLoading ? (
-          <Skeleton className="h-10 w-full" />
-        ) : (members ?? []).length === 0 ? (
-          <p className="text-muted-foreground py-2 text-sm">No members yet.</p>
-        ) : (
-          (members ?? []).map((member, i) => (
-            <div
-              key={member.membershipId || member.id || i}
-              className="flex items-center justify-between py-3"
-            >
-              <div className="min-w-0">
-                <div className="text-foreground truncate text-sm font-medium">
-                  {member.name || member.email}
-                </div>
-                <div className="text-muted-foreground truncate text-xs">
-                  {member.email}
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-muted-foreground text-xs tracking-wide uppercase">
-                  {member.role}
-                </span>
-                {member.membershipId ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-status-error"
-                    onClick={() => setToRemove(member)}
-                  >
-                    Remove
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      <ConfirmDialog
-        open={toRemove !== null}
-        onOpenChange={(open) => !open && setToRemove(null)}
-        title={`Remove ${toRemove?.email ?? 'this member'}?`}
-        description="They will lose access to this organization."
-        confirmLabel="Remove member"
-        destructive
-        pending={removeMutation.isPending}
-        onConfirm={() => {
-          if (!toRemove?.membershipId) return
-          removeMutation.mutate(toRemove.membershipId, {
-            onSuccess: () => setToRemove(null),
-          })
-        }}
-      />
-    </Panel>
-  )
-}
-
-function PendingInvitations() {
-  const queryClient = useQueryClient()
-  const { data: invitations, isLoading } = useQuery({
-    queryKey: ['org-invitations'],
-    queryFn: getInvitations,
-  })
-  const [toRevoke, setToRevoke] = useState<OrgInvitation | null>(null)
-
-  const revokeMutation = useMutation({
-    mutationFn: (id: string) => revokeInvitation(id),
-    onError: (e) => notifyError("Couldn't revoke the invitation.", e),
-    onSettled: () =>
-      void queryClient.invalidateQueries({ queryKey: ['org-invitations'] }),
-  })
-
-  const pending = (invitations ?? []).filter((inv) => inv.state === 'pending')
-
-  // Render only once we know there are pending invitations — never during the
-  // initial load, so the panel doesn't flash in and then vanish when empty.
-  if (isLoading || pending.length === 0) return null
-
-  return (
-    <Panel className="p-6">
-      <div className="mb-1">
-        <PanelTitle>Pending invitations</PanelTitle>
-        <PanelDescription className="mt-1">
-          Invitations waiting to be accepted
-        </PanelDescription>
-      </div>
-
-      <div className="mt-3 divide-y">
-        {pending.map((inv) => (
-          <div key={inv.id} className="flex items-center justify-between py-3">
-            <div className="min-w-0">
-              <div className="text-foreground truncate text-sm font-medium">
-                {inv.email}
-              </div>
-              <div className="text-muted-foreground truncate text-xs">
-                {inv.state} · expires{' '}
-                {new Date(inv.expiresAt).toLocaleDateString()}
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground hover:text-status-error"
-              onClick={() => setToRevoke(inv)}
-            >
-              Revoke
-            </Button>
-          </div>
-        ))}
-      </div>
-
-      <ConfirmDialog
-        open={toRevoke !== null}
-        onOpenChange={(open) => !open && setToRevoke(null)}
-        title={`Revoke invitation for ${toRevoke?.email ?? ''}?`}
-        confirmLabel="Revoke invitation"
-        destructive
-        pending={revokeMutation.isPending}
-        onConfirm={() => {
-          if (!toRevoke) return
-          revokeMutation.mutate(toRevoke.id, {
-            onSuccess: () => setToRevoke(null),
-          })
-        }}
-      />
-    </Panel>
+    </SettingsSection>
   )
 }
