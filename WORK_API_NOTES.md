@@ -21,7 +21,16 @@ Build step 3, the service side. This file covers the shapes and headers, how the
 - `GET /work/items/{n}/history[?cursor]` returns `{ revisions: [{ sha, url, at, authorName, summary, sessionId: string | null }], nextCursor }`.
   - Newest first, 30 per page.
   - The cursor is a keyset on `(at, sha)`.
+- `GET /work/sessions/{id}/items` returns `{ items: Item[] }`: the items whose commits name the session in a `Session:` trailer, by its `cs_` id or its runner key, numbered order, at most 50.
+  - The session must be one the caller may see (the Computer object's `work.refs` op answers its id and key). Otherwise, or for an id that is not `[A-Za-z0-9_-]{1,128}`, it is 404 `session_not_found`.
+  - It is for the session screen's "Work:" chips. Scope `work:read`; the edge allows `GET` on it.
 - In `Item`:
+  - `owner` is `{ email, name, id, source: "declared" | "derived" } | null`.
+    - `declared` is the doc's `owner:` frontmatter.
+    - `derived` is the author of the item's latest commit that was not a bulk edit, else of its latest commit of any kind, else null. The name drops a trailing " via Computer"; `name` and `id` resolve the email to a member as for the author, and the commit's name is the fallback.
+    - `mine` holds for a derived owner too.
+  - `lastActivityAt` is the item's latest commit that touched at most 5 item files (`BULK_ITEMS`). A commit touching more is a bulk edit: it moves `updatedAt` only. Null when the index has read no such commit (also before the walk dates the item).
+  - `active` is `lastActivityAt` within 14 days (`RECENT_DAYS`), or `attention` is set (a linked session the caller may see is running or waiting). The index computes the first part (`recent`), the Worker composes the second.
   - `updatedAt`, `createdAt`, `closedAt` and `closedBy` are null until the walk (below) has read the commit that settles them. They are never a placeholder date.
   - A move to `done/` that has not been dated yet leaves `closedAt` and `closedBy` null. They are not taken from the newest commit.
 - Errors use the usual envelope: `{ error: { code, message, requestId, retryable, ... } }`.
@@ -30,7 +39,8 @@ Build step 3, the service side. This file covers the shapes and headers, how the
 ## Headers
 
 - `ETag` on the open list.
-  - It is `"<head|none>-<sha256/16 of [index version, sessions stamp, caller member, caller email]>"`.
+  - It is `"<head|none>-<sha256/16 of [index version, recent open items, sessions stamp, caller member, caller email]>"`.
+  - The count of recent open items moves the tag when an item ages out of `active` with no commit and no session write.
   - The index version moves on every write that changes output, including pull request state.
   - The sessions stamp is a counter in the Computer object (`work_stamp`). AFTER INSERT/UPDATE/DELETE triggers on `sessions` and `people` move it, so every write moves it, including the ones that leave `updated_at` alone (for example an `owner_name` change). Triggers were chosen so that no write path can forget to bump it.
   - The tag is checked before the list is read or composed. An unchanged poll costs two stamp calls (the index and the Computer object) and no SQL beyond them.
@@ -145,7 +155,8 @@ The walk fills them, with one `commits?path=work` and one `commits?path=done` li
 6. A listing stops at the first commit already listed for that folder, or at a short page.
 7. Each detailed commit is applied in its own transaction:
    - revisions and links;
-   - `updatedAt` is the latest commit;
+   - `updatedAt` is the latest commit, with its author;
+   - `lastActivityAt` and the derived owner are the latest commit that touched at most 5 item files, with its author;
    - `createdAt` and the author come from the add, or from a rename from a non-item path;
    - `closedAt` and `closedBy` come from the latest move into `done/`.
 
@@ -180,9 +191,23 @@ Measured with the fake GitHub in `work-index.test.ts`. The fake enforces the rea
 | Advance over 500 commits (400 non-item files, 100 item edits) | 115: 1 ref + 1 compare + 2 trees (root, `work/`) + 100 blobs + 1 listing page + 10 details. No rebuild. |
 | The walk finishing that range | 91, over later alarms. |
 | Advance over one commit | 3: ref + compare + one blob per changed item. |
+| Walk of 150 items over 300 one-item commits | 306: 5 listing pages (4 of `work/`, 1 of `done/`) + 301 details. Activity and derived owners add nothing. |
 | Board poll, unchanged | At most 1 ref per 10 s window, plus the two stamp calls (no GitHub). A 304. |
 | Item page | 0, or 1 blob the first time a closed item is opened. |
 | History once walked | 0. |
+
+## Activity and owners
+
+- Both come from the per-commit file lists the walk and the advance already read, so they cost no GitHub call. The first build stays 154 calls for 150 items; a walk of a few hundred commits is about one listing page per 100 commits per folder plus one detail per commit (306 for 300), spread over alarm ticks by the quota guard.
+- Until the walk has dated an item, its `lastActivityAt` and derived owner are null, and it is dormant unless a session is at work. On a first build this lasts until the walk is through.
+- **Decision: the walk is not capped by age.** It also gives history, the author, `createdAt` and `closedAt`, and a cap would leave the derived owner to bulk commits only. Activity older than 14 days is dormant whatever its depth. GraphQL history was considered and not used: it has no file lists (bulk edits cannot be told apart) and would be a second code path.
+- `SCHEMA_VERSION` is 3: the tables are dropped and rebuilt once on deploy (new item columns `updated_name`, `updated_email`, `activity_at`, `activity_name`, `activity_email`).
+
+## Session: trailers (what a link needs)
+
+- The knowledge repository's `prepare-commit-msg` hook (`computer/hooks/knowledge/prepare-commit-msg`) adds `Session: $SP_SESSION_ID`. `SP_SESSION_ID` is the session's `cs_` id, or its runner key when it has none yet (`runner/session-secrets.ts`). The hook is installed by `syncKnowledgeHooks` (`computer/src/workspaces/knowledge-hooks.ts`) at housekeeping and on workspace setup; worktrees share it.
+- Gaps, read from the code and not run: a commit through an editor (no `-m`/`-F`) gets no trailer; Codex has `SP_SESSION_ID` only through `BASH_ENV`, so only in bash; a repository cloned on demand (`checkoutRepos`) has no hook until the next housekeeping.
+- On a dev stack a link appears when: the stack's computers run a bundle of this branch (they pull `calvin-latest.bundle` every 5 minutes); the repository is set with `PUT /work/repository` and the index is bound; housekeeping has installed the hook; the host is at v4; the commit is made with `-m`/`-F` in the session's worktree and pushed; the index has walked it. A Slack session's links are visible only to its owner.
 
 ## Limitations
 

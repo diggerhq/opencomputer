@@ -80,3 +80,10 @@ skipped); Edit/Write "Edit <file>"/"Write <file>"; a plan "Review the plan";
 an MCP tool "Merge pull request · github". The Board, the session list and
 the transcript's closed-ask line use the same words ("Wants to run psql").
 The session view's ask card reuses the same approval detail.
+
+## Work items
+
+Triage does not name the work item an ask belongs to. The session screen's
+header does ("Work: 114 Title" chips, from `GET /work/sessions/{id}/items`),
+and the thread name in Triage's header links there. Adding the chip to
+Triage's header is one `<SessionWork id>` away if wanted.

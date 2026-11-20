@@ -36,9 +36,12 @@ add fields without breaking the screens.
   - It is fetched once the repository is set, with "Load more" following `nextCursor`.
 - `GET /work/items/{n}` returns `{item, body}`. It is polled every 15 seconds.
 - `GET /work/items/{n}/history[?cursor=]` returns `{revisions, nextCursor}`. It is fetched only while the History tab is open.
+- `GET /work/sessions/{id}/items` returns `{items}`: the items whose commits name the session. The session screen's header reads it once a minute at most (`SessionWork.tsx`, no retry) and shows nothing on any error.
 - `Item` and `Revision` follow the contract field for field.
   - Item sessions are `{id, title, ownerName, status}`; `status` is required, one of `starting | running | waiting | idle | suspended`.
-  - `updatedAt` may be null while not known yet. Such an item sorts last within its group, is never stale, and shows no time (card and item header).
+  - `owner` is `{email, name, id, source: 'declared' | 'derived'}`. `derived` comes from recent commits (the server's choice); `mine` is the server's for both.
+  - `lastActivityAt` (the item's own last change, bulk edits left out) and `active` are the server's. The web compares no dates for them.
+  - `updatedAt` may be null while not known yet. Such an item sorts last within its group and shows no time (card and item header).
   - `closedAt` and `closedBy` may be null on a closed item. The card and header then say just "Closed" with no time (or the `updatedAt` time when only that is known), and the item shows in the Closed column only with "Show older".
 - Any 404 from a `/work` route reads as "not available yet" (section 4), except a 404 with code `item_not_found` on the item page: that reads "No item 123", with a link back to the board.
 
@@ -61,9 +64,13 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
   - In progress is `stage=open` with `!readyToClose`.
   - Ready to close is `stage=open` with `readyToClose`.
   - Closed is `stage=closed`.
-  - Within a column, items with `attention.state = needs_you` come first, then `updatedAt` newest first.
+  - Within a column, items with `attention.state = needs_you` come first, then `lastActivityAt` (else `updatedAt`) newest first.
 - Attention: only `needs_you` is coloured (amber). Waiting reads "waiting on X · 3h" and working reads "agent working"; both are grey.
-- Stale: an open card whose `updatedAt` is 14 or more days old is shaded, and "no change in N days" replaces its time. The threshold is a client constant.
+- Dormant: open items with `active: false`. Each open lane (In progress, Ready to close) shows its active items and ends with a quiet "Dormant (N)" toggle, collapsed by default; the lane's count is the active count. Open lanes are kept in the address (`?dormant=progress,ready`). It is a view, not a stage. The toggle's hover text says what dormant means: "No change of their own in two weeks and no session at work". The client has no threshold; the old stale constant is gone.
+- Time on an open card: `lastActivityAt`, else `updatedAt`, so a bulk retag does not make a dormant item look fresh.
+- Owner: avatar and name on the card. A derived owner is muted, with a dashed avatar ring and the hover text "Name · From recent commits"; the item page says "(from recent commits)". No owner shows nothing.
+- Sessions: the card's activity line links each linked session (a status dot, hover "title · owner · status") to `/computer/sessions/{id}`; Details on the item page already did.
+- Session screen: the header shows "Work: 114 Title" chips (two at most, then "+n") linking to the items the session's commits name.
 - Closed column: by default it shows items with `closedAt` in the last 7 days. "Show older" (kept in the address as `?older=1`) shows every fetched closed item.
 - Address state: the tab (`?tab=everyone`; Mine is the default), the text filter (`?q=`) and the tag filter (`?tag=`) all live in the address. Tags on cards set the tag filter.
 - Mine empty: shown when Mine has nothing, Everyone has something and no filter is set. It links to Everyone.
@@ -95,6 +102,7 @@ The web renders the server's `stage`, `readyToClose`, `attention`, `mine`, `warn
 - `problem` sends `access_denied` with a `problemMessage`; `&problem=<code>` sends another code, without a message.
 - `/repositories` lists eight repositories under `acme` and two under `acme-labs`, the preview's two installations. `?work=none` shows the combobox alone. The preview's organization (`api/mock.ts`) has four members and two invitations, so the Members section has something to show.
 - Item 31 has an unknown `updatedAt`; closed item 8 has no `closedAt` or `closedBy`.
+- Owners are mixed: declared, derived (muted) and none. Items 3, 5, 6, 7, 10 and 11 are dormant; 5 was touched yesterday by a bulk edit only, 11 has an idle session. `/sessions/{id}/items` answers from the mock items' sessions, so the session screens show Work chips.
 - An unknown item number answers 404 `item_not_found`.
 
 ## Visual pass
@@ -133,8 +141,8 @@ regularity of Linear's board and issue page, not its features.
 - Colour: only "needs you" is coloured (amber). Doc problems and unpublished
   changes are grey icons on the card (words and colour on the item page).
   Pull request dots keep their state colours, as the spec asks for state.
-- Stale: the card loses its raised surface and sits flat on the lane with a
-  dashed border, its title dimmed; the age says "no change in N days".
+- Dormant (when unfolded): the card loses its raised surface and sits flat on
+  the lane with a dashed border, its title dimmed.
 - Item page: a neutral stage pill, then one metadata line with dot
   separators (a dot that wraps to the start of a line is clipped away). Only
   "needs you" and the doc problem keep their colour there; "unpublished

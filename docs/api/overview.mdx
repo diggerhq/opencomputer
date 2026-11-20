@@ -53,7 +53,7 @@ A credential without a scope list has every scope.
 | `sessions:write` | `turns.send`, `turns.cancel`, `sessions.update`, `sessions.interrupt`, `sessions.compact`, `sessions.suspend`, `sessions.resume`, setting a session aside, file upload |
 | `asks:answer` | `asks.answer`, `asks.dismiss` |
 | `terminals` | `terminals.open`, `terminals.resize`, `terminals.eof`, `terminals.close` |
-| `work:read` | `GET /work/repository`, `GET /work/repositories`, `GET /work/items`, `GET /work/items/{number}`, `GET /work/items/{number}/history` |
+| `work:read` | `GET /work/repository`, `GET /work/repositories`, `GET /work/items`, `GET /work/items/{number}`, `GET /work/items/{number}/history`, `GET /work/sessions/{id}/items` |
 | `work:write` | `PUT /work/repository` |
 
 `work:read` and `work:write` are granted only to a key that names them, never by a missing scope list or `*`. A session's own key is refused on `PUT /work/repository`.
