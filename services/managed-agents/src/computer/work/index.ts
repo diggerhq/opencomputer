@@ -34,6 +34,10 @@
 //   Listing what the installations grant (the repository picker) stores nothing and is outside it.
 // - A permanent failure is stored as `problem` (a code) and `problemMessage`; it is retried from
 //   the alarm with a backoff from PROBLEM_RETRY_MS to PROBLEM_RETRY_MAX_MS and cleared on success.
+// - No alarm loops without progress: a blob or a commit GitHub will not give is asked again with a
+//   backoff (`failures`) and given up after FAILURE_TRIES, with a warning; an alarm that moved
+//   nothing while there is no cursor (a first build that failed) or a build waits longer each time
+//   (`stall`), up to PROBLEM_RETRY_MAX_MS. An organization with no repository arms no alarm.
 //
 // Close and Reopen (3.9, build step 5) are writes in the same chain: a commit through the
 // contents API, then an advance to it.
@@ -98,6 +102,9 @@ export const READ_WAIT_MS = 5_000;
 /** A stored problem is retried after this, doubling each time up to the maximum. */
 export const PROBLEM_RETRY_MS = 60_000;
 export const PROBLEM_RETRY_MAX_MS = 60 * 60_000;
+/** A blob or commit that fails is asked again after this, doubling; given up after FAILURE_TRIES. */
+export const FAILURE_RETRY_MS = 60_000;
+export const FAILURE_TRIES = 8;
 const HISTORY_PAGE = 30;
 /** A session's linked items answered at most. */
 const LINKED_MAX = 50;
@@ -154,9 +161,10 @@ CREATE TABLE IF NOT EXISTS revisions (
 );
 CREATE INDEX IF NOT EXISTS revisions_order ON revisions (number, at, sha);
 CREATE TABLE IF NOT EXISTS pulls (url TEXT PRIMARY KEY, state TEXT, title TEXT, checked_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS failures (k TEXT PRIMARY KEY, tries INTEGER NOT NULL, retry_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
-const TABLES = ["items", "files", "links", "commits", "revisions", "pulls"];
+const TABLES = ["items", "files", "links", "commits", "revisions", "pulls", "failures"];
 
 /** What the index needs of where it runs. */
 export interface WorkIndexDeps {
@@ -424,7 +432,7 @@ export class WorkIndex {
       this.store.transaction(() => {
         if (!same) {
           for (const table of TABLES) this.store.exec(`DELETE FROM ${table}`);
-          for (const k of ["cursor", "build", "walk", "dirs", "head_etag", "as_of", "tried_at", "pulls_at", "pause_until", "pulls_pause_until"]) this.setMeta(k, null);
+          for (const k of ["cursor", "build", "walk", "dirs", "head_etag", "as_of", "tried_at", "pulls_at", "pause_until", "pulls_pause_until", "stall"]) this.setMeta(k, null);
         }
         this.setMeta("repo", JSON.stringify(repo));
         this.clearProblem();
@@ -607,6 +615,7 @@ export class WorkIndex {
   /** The alarm: continue a build, look while there are readers or a problem is due, walk. Returns when to come back. */
   async alarm(): Promise<number | null> {
     if (!this.repo()) return null;
+    const version = this.metaNumber("version");
     await this.exclusive(async () => {
       const now = this.now();
       this.reparseBatch();
@@ -619,16 +628,49 @@ export class WorkIndex {
         else await this.guard(() => this.fillOpen());
         return;
       }
-      if (now - this.metaNumber("read_at") < READS_WINDOW_MS) await this.look();
+      // No cursor and no build: the first build failed (GitHub down, or no spare quota). Again.
+      if (this.meta("cursor") === null || now - this.metaNumber("read_at") < READS_WINDOW_MS) await this.look();
       else await this.guard(() => this.walkStep(WALK_PAGES_PER_TICK, WALK_DETAILS_PER_TICK));
     });
     const now = this.now();
+    const starting = this.meta("build") !== null || this.meta("cursor") === null;
+    if (starting) this.setMeta("stall", this.metaNumber("version") !== version ? 0 : this.metaNumber("stall") + 1);
     let next: number | null = null;
     if (this.meta("problem") !== null) next = Math.max(this.metaNumber("problem_retry_at"), now + BUILD_STEP_MS);
-    else if (this.meta("build") !== null || this.reparsing()) next = now + BUILD_STEP_MS;
+    else if (starting) next = this.startNext();
+    else if (this.reparsing()) next = now + BUILD_STEP_MS;
     else if (now - this.metaNumber("read_at") < READS_WINDOW_MS || !this.walkDone()) next = now + ALARM_EVERY_MS;
     if (next !== null && this.pausedUntil() > next) next = this.pausedUntil();
     return next;
+  }
+
+  /**
+   * When to come back to a build (or a first build that failed): a step on, later after each alarm
+   * that moved nothing (to PROBLEM_RETRY_MAX_MS), never after a waiting blob is due.
+   */
+  private startNext(): number {
+    const now = this.now();
+    const building = this.meta("build") !== null;
+    const step = building ? BUILD_STEP_MS : PROBLEM_RETRY_MS;
+    let next = now + Math.min(step * 2 ** Math.min(this.metaNumber("stall"), 30), PROBLEM_RETRY_MAX_MS);
+    if (building) {
+      const due = this.store.exec<{ at: number | null }>(
+        "SELECT MIN(f.retry_at) AS at FROM items i JOIN failures f ON f.k = 'blob:' || i.blob WHERE i.parser = 0 AND i.stage = 'open'",
+      )[0]?.at;
+      if (typeof due === "number") next = Math.min(next, due);
+      if (this.reparsing()) next = Math.min(next, now + BUILD_STEP_MS);
+    }
+    return Math.max(next, now + BUILD_STEP_MS);
+  }
+
+  // ------------------------------------------------------------------ failures of one blob or commit
+
+  /** Notes a failure of `key`; true when it has now failed FAILURE_TRIES times (give it up). */
+  private failed(key: string): boolean {
+    const tries = (this.store.exec<{ tries: number }>("SELECT tries FROM failures WHERE k = ?", key)[0]?.tries ?? 0) + 1;
+    const retryAt = this.now() + Math.min(FAILURE_RETRY_MS * 2 ** (tries - 1), PROBLEM_RETRY_MAX_MS);
+    this.store.exec("INSERT INTO failures (k, tries, retry_at) VALUES (?, ?, ?) ON CONFLICT (k) DO UPDATE SET tries = excluded.tries, retry_at = excluded.retry_at", key, tries, retryAt);
+    return tries >= FAILURE_TRIES;
   }
 
   // ------------------------------------------------------------------ looking
@@ -729,7 +771,7 @@ export class WorkIndex {
       this.setMeta("as_of", this.now());
       if (this.meta("build") !== null) {
         await this.fillOpen();
-        if (this.meta("build") !== null) this.deps.scheduler.waitUntil(this.deps.scheduler.arm(this.now() + BUILD_STEP_MS));
+        if (this.meta("build") !== null) this.deps.scheduler.waitUntil(this.deps.scheduler.arm(this.startNext()));
       } else if (!moved && !this.walkDone()) {
         await this.walkStep(1, WALK_DETAILS_PER_TICK);
       }
@@ -763,6 +805,7 @@ export class WorkIndex {
       // Links (the sessions that worked on an item) stay.
       store.exec("DELETE FROM commits");
       store.exec("DELETE FROM revisions");
+      store.exec("DELETE FROM failures");
       const old = new Map(
         store.exec<{ number: number; path: string; blob: string; body: string; body_note: string | null; parser: number } & Row>("SELECT number, path, blob, body, body_note, parser FROM items").map((r) => [r.number, r]),
       );
@@ -815,8 +858,20 @@ export class WorkIndex {
     const build = this.metaJson<{ head: string; dirs: DirShas }>("build");
     const gh = this.client();
     if (!build || !gh || !gh.spare()) return;
-    const rows = this.store.exec<ItemRow & Row>(`SELECT ${ROW_COLUMNS} FROM items WHERE parser = 0 AND stage = 'open' ORDER BY number LIMIT ?`, FILL_BATCH);
-    await parallel(rows, (row) => this.fill(gh, row));
+    // Not the blobs that failed and are not due again: they wait their backoff, the others go on.
+    const rows = this.store.exec<ItemRow & Row>(
+      `SELECT ${ROW_COLUMNS} FROM items WHERE parser = 0 AND stage = 'open'
+       AND NOT EXISTS (SELECT 1 FROM failures f WHERE f.k = 'blob:' || items.blob AND f.retry_at > ?) ORDER BY number LIMIT ?`,
+      this.now(),
+      FILL_BATCH,
+    );
+    let failure: unknown = null;
+    await parallel(rows, (row) =>
+      this.fill(gh, row).catch((error: unknown) => {
+        failure ??= error;
+      }),
+    );
+    if (failure !== null && !(failure instanceof GitHubUnavailable)) throw failure;
     const left = this.store.exec<{ n: number }>("SELECT COUNT(*) AS n FROM items WHERE parser = 0 AND stage = 'open'")[0]!.n;
     if (left > 0) return;
     this.store.transaction(() => {
@@ -832,7 +887,16 @@ export class WorkIndex {
   private async fill(gh: WorkGitHub, row: { number: number; path: string; blob: string }): Promise<void> {
     const ip = itemPath(row.path);
     if (!ip) return;
-    const kept = keepBody(await gh.blob(row.blob));
+    let text: string | null = null;
+    try {
+      text = await gh.blob(row.blob);
+    } catch (error) {
+      if (!(error instanceof GitHubUnavailable)) throw error;
+      // Asked again after a backoff; after FAILURE_TRIES, the row is kept with its name and a warning.
+      if (!this.failed(`blob:${row.blob}`)) throw error;
+      console.warn(`Work index: blob ${row.blob} of ${row.path} could not be read after ${FAILURE_TRIES} tries: ${error.message}`);
+    }
+    const kept = text === null ? UNREAD : keepBody(text);
     const write = (k: KeptBody) =>
       this.store.transaction(() => {
         this.store.exec(
@@ -845,6 +909,7 @@ export class WorkIndex {
           row.blob,
           row.path,
         );
+        this.store.exec("DELETE FROM failures WHERE k = ?", `blob:${row.blob}`);
         this.bump();
       });
     try {
@@ -952,7 +1017,14 @@ export class WorkIndex {
     const readNow = needed.filter((w) => stageOf(w.path) === "open" || needed.length <= FILL_BATCH);
     const bodies = new Map<string, KeptBody>();
     await parallel(readNow, async (w) => {
-      bodies.set(w.blob, keepBody(await gh.blob(w.blob)));
+      try {
+        bodies.set(w.blob, keepBody(await gh.blob(w.blob)));
+      } catch (error) {
+        // A blob that never reads stops the advance FAILURE_TRIES times at most, then is kept unread.
+        if (!(error instanceof GitHubUnavailable) || !this.failed(`blob:${w.blob}`)) throw error;
+        console.warn(`Work index: blob ${w.blob} of ${w.path} could not be read after ${FAILURE_TRIES} tries: ${error.message}`);
+        bodies.set(w.blob, UNREAD);
+      }
     });
 
     // A range of one commit with every file listed: its details are compare's.
@@ -1099,11 +1171,29 @@ export class WorkIndex {
         this.setMeta("walk", JSON.stringify(now));
       });
     }
-    const todo = this.store.exec<{ sha: string } & Row>("SELECT sha FROM commits WHERE detailed = 0 ORDER BY at DESC, sha DESC LIMIT ?", details);
+    const todo = this.store.exec<{ sha: string } & Row>(
+      `SELECT sha FROM commits WHERE detailed = 0 AND NOT EXISTS (SELECT 1 FROM failures f WHERE f.k = 'commit:' || commits.sha AND f.retry_at > ?)
+       ORDER BY at DESC, sha DESC LIMIT ?`,
+      this.now(),
+      details,
+    );
     for (const { sha } of todo) {
       if (!gh.spare()) break;
-      const c = await gh.commit(sha);
+      let c: Awaited<ReturnType<WorkGitHub["commit"]>>;
+      try {
+        c = await gh.commit(sha);
+      } catch (error) {
+        if (!(error instanceof GitHubUnavailable)) throw error;
+        // Asked again after a backoff, the others first; after FAILURE_TRIES, given up (detailed -1).
+        if (this.failed(`commit:${sha}`)) {
+          console.warn(`Work index: commit ${sha} could not be read after ${FAILURE_TRIES} tries; its changes are left out of the history: ${error.message}`);
+          this.store.exec("UPDATE commits SET detailed = -1 WHERE sha = ?", sha);
+        }
+        // GitHub may be failing as a whole: no more this step.
+        break;
+      }
       this.store.transaction(() => {
+        this.store.exec("DELETE FROM failures WHERE k = ?", `commit:${sha}`);
         this.apply(c, c.files);
         this.bump();
       });
@@ -1360,15 +1450,16 @@ function pendingParse(ip: ItemPath): ParsedItem {
   return { title: slugTitle(ip.slug), stateLine: null, tags: [], owner: null, left: null, boxes: 0, pullRequests: [], warnings: [] };
 }
 
-type BodyNote = "cut" | "unstored";
+type BodyNote = "cut" | "unstored" | "unread";
 interface KeptBody {
   body: string;
   note: BodyNote | null;
 }
 const UNSTORED: KeptBody = { body: "", note: "unstored" };
+const UNREAD: KeptBody = { body: "", note: "unread" };
 
 function keptNote(note: string | null): BodyNote | null {
-  return note === "cut" || note === "unstored" ? note : null;
+  return note === "cut" || note === "unstored" || note === "unread" ? note : null;
 }
 
 /** A file's text as it is stored: at most BODY_STORE_BYTES of UTF-8, cut at a character boundary. */
@@ -1385,6 +1476,7 @@ export function keepBody(text: string): KeptBody {
 /** The parser never throws by design; if it does, the row keeps its slug and says so. */
 function safeParse(ip: ItemPath, body: string, note: string | null = null): ParsedItem {
   if (note === "unstored") return { ...pendingParse(ip), warnings: ["The file could not be stored; only its name is shown."] };
+  if (note === "unread") return { ...pendingParse(ip), warnings: ["GitHub would not give the file; only its name is shown. It is read again when it changes."] };
   let parsed: ParsedItem;
   try {
     parsed = parseItem(ip, body);

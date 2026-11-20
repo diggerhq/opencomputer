@@ -17,6 +17,7 @@ import {
   REPARSE_BATCH,
   BULK_ITEMS,
   BODY_STORE_BYTES,
+  FAILURE_TRIES,
   WorkIndex,
 } from "../src/computer/work/index.js";
 import type { IndexedItem, ItemsResult } from "../src/computer/work/index-contract.js";
@@ -1080,5 +1081,108 @@ describe("merge commits", () => {
     expect(two.updatedAt).toBe(repo.commits.get(onBranch)!.at);
     const history = await s.index.history(ORG, 2);
     expect(history.ok && history.revisions.map((r) => r.summary)).toEqual(["Add 2"]);
+  });
+});
+
+describe("no alarm loops without progress", () => {
+  /** Runs the alarm `n` times, moving the clock to each time it asks for; the gaps between them. */
+  async function alarms(s: ReturnType<typeof setup>, n: number): Promise<(number | null)[]> {
+    const gaps: (number | null)[] = [];
+    for (let i = 0; i < n; i++) {
+      const next = await s.index.alarm();
+      await s.settle();
+      gaps.push(next === null ? null : next - s.now());
+      if (next === null) break;
+      s.tick(Math.max(0, next - s.now()));
+    }
+    return gaps;
+  }
+
+  it("an organization with no repository arms no alarm", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    const s = setup(repo);
+    await s.index.items(ORG, { stage: "open" });
+    await s.index.stamp(ORG);
+    await s.settle();
+    expect(s.alarmAt()).toBeNull();
+    expect(await s.index.alarm()).toBeNull();
+    expect(repo.take()).toEqual([]);
+  });
+
+  it("a first build that failed is tried again from the alarm, waiting longer each time, until it succeeds", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    // GitHub fails every tree request for a while: the build never starts.
+    repo.failNext = Array.from({ length: 6 }, () => ({ status: 502, match: /\/git\/trees\// }));
+    const s = setup(repo);
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await open(s);
+    await s.settle();
+    expect(s.index["meta"]("cursor")).toBeNull();
+    // Past the readers' window: before, the alarm came back every minute and asked nothing.
+    s.tick(11 * 60_000);
+    repo.take();
+    const gaps = await alarms(s, 12);
+    const trees = repo.take().filter((l) => l.includes("/git/trees/"));
+    expect(trees.length).toBeGreaterThan(1);
+    // Each failed try waits longer than the one before.
+    const failing = gaps.slice(0, 4) as number[];
+    for (let i = 1; i < failing.length; i++) expect(failing[i]!).toBeGreaterThan(failing[i - 1]!);
+    expect(s.index["meta"]("cursor")).toBe(repo.head);
+    expect((await open(s)).items.map((i) => i.title)).toEqual(["A"]);
+  });
+
+  it("a blob that never reads is asked a few times with a backoff, then the item shows a warning and the build finishes", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A"), "work/2-b.md": item(2, "B") });
+    const bad = repo.blobSha(item(2, "B"));
+    repo.failNext = Array.from({ length: 100 }, () => ({ status: 404, match: new RegExp(`/git/blobs/${bad}$`) }));
+    const s = setup(repo);
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await s.drain();
+    expect(s.index["meta"]("build")).toBeNull();
+    const asked = repo.log.filter((l) => l.includes(`/git/blobs/${bad}`));
+    expect(asked).toHaveLength(FAILURE_TRIES);
+    const r = byNumber(await open(s));
+    expect(r.get(1)!.title).toBe("A");
+    expect(r.get(2)!.title).toBe("b");
+    expect(r.get(2)!.warnings).toEqual(["GitHub would not give the file; only its name is shown. It is read again when it changes."]);
+
+    // Changed, it is read again.
+    await s.settle();
+    repo.commit({ "work/2-b.md": item(2, "B", "now") });
+    await s.index.poke(ORG);
+    await s.settle();
+    expect(byNumber(await open(s)).get(2)!.title).toBe("B");
+  });
+
+  it("a blob that never reads in an advance stops it FAILURE_TRIES times at most", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    const s = await connect(repo);
+    const text = item(1, "A", "edited");
+    repo.failNext = Array.from({ length: 100 }, () => ({ status: 404, match: new RegExp(`/git/blobs/${repo.blobSha(text)}$`) }));
+    repo.commit({ "work/1-a.md": text });
+    for (let i = 0; i < FAILURE_TRIES + 2; i++) {
+      await s.index.poke(ORG);
+      await s.settle();
+    }
+    expect(repo.log.filter((l) => l.includes(`/git/blobs/${repo.blobSha(text)}`))).toHaveLength(FAILURE_TRIES);
+    const r = await open(s);
+    expect(r.head).toBe(repo.head);
+    expect(r.items[0]!.warnings).toEqual(["GitHub would not give the file; only its name is shown. It is read again when it changes."]);
+  });
+
+  it("a listed commit that 404s is asked again with a backoff, the others first, then left out", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    const lost = repo.commit({ "work/1-a.md": item(1, "A", "v1") }, "Lost");
+    repo.commit({ "work/1-a.md": item(1, "A", "v2") }, "Kept");
+    repo.failNext = Array.from({ length: 100 }, () => ({ status: 404, match: new RegExp(`/commits/${lost}$`) }));
+    const s = await connect(repo);
+    s.tick(11 * 60_000);
+    await s.drain();
+    expect(s.walkDone()).toBe(true);
+    expect(repo.log.filter((l) => l.includes(`/commits/${lost}`))).toHaveLength(FAILURE_TRIES);
+    const history = await s.index.history(ORG, 1);
+    expect(history.ok && history.revisions.map((r) => r.summary)).toEqual(["Kept", "Initial"]);
   });
 });
