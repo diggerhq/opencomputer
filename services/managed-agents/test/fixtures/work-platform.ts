@@ -3,6 +3,8 @@ import { sqlStorage } from "./computer-sql.js";
 
 /** Durable Object SQL binds at most 100 parameters per statement; the fake refuses more, as it does. */
 const BIND_LIMIT = 100;
+/** Durable Object SQLite refuses a string or blob over 2 MB; the fake does too. */
+const STRING_LIMIT = 2_000_000;
 
 /** The Work index's store on node:sqlite (the computer modules' fake), with real transactions. */
 export function indexStore(sql: SqlStorage = sqlStorage()): IndexStore & { sql: SqlStorage } {
@@ -11,6 +13,7 @@ export function indexStore(sql: SqlStorage = sqlStorage()): IndexStore & { sql: 
     sql,
     exec<T extends Record<string, StoreValue>>(query: string, ...params: StoreValue[]): T[] {
       if (params.length > BIND_LIMIT) throw new Error(`too many SQL variables: ${params.length}`);
+      for (const p of params) if (typeof p === "string" && p.length > STRING_LIMIT / 3 && Buffer.byteLength(p) > STRING_LIMIT) throw new Error("string or blob too big: SQLITE_TOOBIG");
       return sql.exec(query, ...params).toArray() as T[];
     },
     transaction<T>(fn: () => T): T {

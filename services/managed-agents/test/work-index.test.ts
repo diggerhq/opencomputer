@@ -16,10 +16,12 @@ import {
   UNREADABLE_RECHECK_MS,
   REPARSE_BATCH,
   BULK_ITEMS,
+  BODY_STORE_BYTES,
   WorkIndex,
 } from "../src/computer/work/index.js";
 import type { IndexedItem, ItemsResult } from "../src/computer/work/index-contract.js";
 import { PARSER_VERSION } from "../src/computer/work/item.js";
+import type { IndexStore } from "../src/computer/work/platform.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import { FakeRepo } from "./fixtures/fake-github-repo.js";
 import { FakeClock, indexStore } from "./fixtures/work-platform.js";
@@ -29,7 +31,7 @@ import { FakeClock, indexStore } from "./fixtures/work-platform.js";
 const ORG = "acct_1";
 const by = { member: "m_1", name: "Ana", email: "ana@acme.test" };
 
-function setup(repo: FakeRepo, options: { sql?: SqlStorage; mint?: Partial<TokenMinter>; clock?: FakeClock } = {}) {
+function setup(repo: FakeRepo, options: { sql?: SqlStorage; mint?: Partial<TokenMinter>; clock?: FakeClock; store?: (store: IndexStore) => IndexStore } = {}) {
   const clock = options.clock ?? new FakeClock();
   const pending: Promise<unknown>[] = [];
   const mints: unknown[] = [];
@@ -46,7 +48,7 @@ function setup(repo: FakeRepo, options: { sql?: SqlStorage; mint?: Partial<Token
   };
   const fetches: string[] = [];
   const index = new WorkIndex({
-    store: indexStore(sql),
+    store: options.store ? options.store(indexStore(sql)) : indexStore(sql),
     clock,
     scheduler: {
       arm: async (at) => {
@@ -987,5 +989,66 @@ describe("pull request polling", () => {
     await s.settle();
     expect(asks()).toBe(1);
     expect((await open(s)).items[0]!.pullRequests).toEqual([{ url: gone, state: "open", title: "Back" }]);
+  });
+});
+
+describe("large and unstorable files", () => {
+  it("keeps a file over the store's limit cut by bytes, with a warning, and the build finishes", async () => {
+    // Three-byte characters: 3 MB of UTF-8, over Durable Object SQLite's 2 MB string limit.
+    const huge = `# 2. Huge\n\nState of Huge.\n${"€".repeat(1_000_000)}\n`;
+    const repo = new FakeRepo({ "work/1-board.md": item(1, "Board"), "work/2-huge.md": huge });
+    const s = await connect(repo);
+    const r = await open(s);
+    expect(r.building).toBe(false);
+    expect(r.head).toBe(repo.head);
+    const two = byNumber(r).get(2)!;
+    expect(two.title).toBe("Huge");
+    expect(two.warnings).toContain("The file is larger than 1 MB; only the start is read.");
+    const got = await s.index.item(ORG, 2);
+    expect(got.ok && Buffer.byteLength(got.body!)).toBeLessThanOrEqual(BODY_STORE_BYTES);
+    // Cut at a character boundary: no replacement character at the end.
+    expect(got.ok && got.body!.endsWith("€")).toBe(true);
+
+    // An advance to a still larger file is cut the same way.
+    repo.commit({ "work/2-huge.md": `${huge}${"€".repeat(10)}` });
+    s.tick(LOOK_AFTER_MS + 1);
+    await open(s);
+    await s.settle();
+    const after = await open(s);
+    expect(after.head).toBe(repo.head);
+    expect(byNumber(after).get(2)!.warnings).toContain("The file is larger than 1 MB; only the start is read.");
+  });
+
+  it("makes a row that cannot be written that row's problem, in a build and in an advance", async () => {
+    const repo = new FakeRepo({ "work/1-board.md": item(1, "Board"), "work/2-bad.md": item(2, "Bad") });
+    const refuse = (store: IndexStore): IndexStore => ({
+      ...store,
+      exec(query, ...params) {
+        if (params.some((p) => typeof p === "string" && p.includes("State of Bad"))) throw new Error("SQLITE_TOOBIG");
+        return store.exec(query, ...params);
+      },
+    });
+    const s = setup(repo, { store: refuse });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await s.drain();
+    const r = await open(s);
+    expect(r.building).toBe(false);
+    expect(r.items.map((i) => [i.number, i.title])).toEqual([
+      [1, "Board"],
+      [2, "bad"],
+    ]);
+    expect(byNumber(r).get(2)!.warnings).toEqual(["The file could not be stored; only its name is shown."]);
+    expect(byNumber(r).get(2)!.parsed).toBe(true);
+
+    repo.commit({ "work/1-board.md": item(1, "Board 2"), "work/2-bad.md": item(2, "Bad", "more") });
+    s.tick(LOOK_AFTER_MS + 1);
+    await open(s);
+    await s.settle();
+    const after = await open(s);
+    expect(after.head).toBe(repo.head);
+    expect(after.problem).toBeNull();
+    expect(byNumber(after).get(1)!.title).toBe("Board 2");
+    expect(byNumber(after).get(2)!.warnings).toEqual(["The file could not be stored; only its name is shown."]);
   });
 });

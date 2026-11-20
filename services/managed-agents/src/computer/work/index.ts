@@ -108,7 +108,13 @@ const BIND_MAX = 90;
 /** Stored bodies re-parsed per step after PARSER_VERSION changes. */
 export const REPARSE_BATCH = 100;
 /** The tables' shape; another stored version drops them (the repository is the record). */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
+/**
+ * Bytes of an item file kept in `items.body`. Durable Object SQLite refuses a string or a row over
+ * 2 MB; a larger file is kept cut (`body_note` 'cut'), and a row that cannot be written is kept
+ * without its body ('unstored'), so one file never stops the build or an advance.
+ */
+export const BODY_STORE_BYTES = 1_000_000;
 /** A commit touching more item files than this is a bulk edit: no item's own activity, no owner. */
 export const BULK_ITEMS = 5;
 /** An item whose own last change is this recent is active (with a session at work, in the Worker). */
@@ -124,6 +130,7 @@ CREATE TABLE IF NOT EXISTS items (
   body TEXT NOT NULL,
   parsed TEXT NOT NULL,
   parser INTEGER NOT NULL,
+  body_note TEXT,
   author_name TEXT, author_email TEXT, created_at TEXT,
   updated_at TEXT, closed_at TEXT, closed_by TEXT,
   updated_name TEXT, updated_email TEXT,
@@ -751,7 +758,9 @@ export class WorkIndex {
       // Links (the sessions that worked on an item) stay.
       store.exec("DELETE FROM commits");
       store.exec("DELETE FROM revisions");
-      const old = new Map(store.exec<{ number: number; path: string; blob: string; body: string; parser: number } & Row>("SELECT number, path, blob, body, parser FROM items").map((r) => [r.number, r]));
+      const old = new Map(
+        store.exec<{ number: number; path: string; blob: string; body: string; body_note: string | null; parser: number } & Row>("SELECT number, path, blob, body, body_note, parser FROM items").map((r) => [r.number, r]),
+      );
       for (const [number] of old) {
         if (!winners.has(number)) {
           store.exec("DELETE FROM items WHERE number = ?", number);
@@ -763,8 +772,8 @@ export class WorkIndex {
         const prev = old.get(number);
         const keep = prev && prev.blob === w.blob && prev.parser > 0;
         store.exec(
-          `INSERT INTO items (number, path, stage, blob, body, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body, parsed = excluded.parsed,
+          `INSERT INTO items (number, path, stage, blob, body, body_note, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body, body_note = excluded.body_note, parsed = excluded.parsed,
              parser = excluded.parser, author_name = NULL, author_email = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL, closed_by = NULL,
              updated_name = NULL, updated_email = NULL, activity_at = NULL, activity_name = NULL, activity_email = NULL`,
           number,
@@ -772,7 +781,8 @@ export class WorkIndex {
           ip.stage,
           w.blob,
           keep ? prev.body : "",
-          JSON.stringify(keep ? safeParse(ip, prev.body) : pendingParse(ip)),
+          keep ? prev.body_note : null,
+          JSON.stringify(keep ? safeParse(ip, prev.body, prev.body_note) : pendingParse(ip)),
           keep ? PARSER_VERSION : 0,
         );
       }
@@ -817,11 +827,27 @@ export class WorkIndex {
   private async fill(gh: WorkGitHub, row: { number: number; path: string; blob: string }): Promise<void> {
     const ip = itemPath(row.path);
     if (!ip) return;
-    const body = await gh.blob(row.blob);
-    this.store.transaction(() => {
-      this.store.exec("UPDATE items SET body = ?, parsed = ?, parser = ? WHERE number = ? AND blob = ? AND path = ?", body, JSON.stringify(safeParse(ip, body)), PARSER_VERSION, row.number, row.blob, row.path);
-      this.bump();
-    });
+    const kept = keepBody(await gh.blob(row.blob));
+    const write = (k: KeptBody) =>
+      this.store.transaction(() => {
+        this.store.exec(
+          "UPDATE items SET body = ?, body_note = ?, parsed = ?, parser = ? WHERE number = ? AND blob = ? AND path = ?",
+          k.body,
+          k.note,
+          JSON.stringify(safeParse(ip, k.body, k.note)),
+          PARSER_VERSION,
+          row.number,
+          row.blob,
+          row.path,
+        );
+        this.bump();
+      });
+    try {
+      write(kept);
+    } catch {
+      // The row's problem, not the build's: kept without its body, with a warning.
+      write(UNSTORED);
+    }
   }
 
   /** Bodies asked for before they were read: read them (joining a read already running), within the quota. */
@@ -902,10 +928,11 @@ export class WorkIndex {
       else files.set(path, { number: itemPath(path)!.number, blob });
     }
     const winners = pickWinners([...files].map(([path, f]) => ({ path, ...f })));
-    const old = new Map<number, { number: number; path: string; stage: string; blob: string; body: string; parser: number } & Row>();
+    type OldRow = { number: number; path: string; stage: string; blob: string; body: string; body_note: string | null; parser: number } & Row;
+    const old = new Map<number, OldRow>();
     for (const part of chunks([...numbers])) {
-      for (const r of this.store.exec<{ number: number; path: string; stage: string; blob: string; body: string; parser: number } & Row>(
-        `SELECT number, path, stage, blob, body, parser FROM items WHERE number IN (${marks(part)})`,
+      for (const r of this.store.exec<OldRow>(
+        `SELECT number, path, stage, blob, body, body_note, parser FROM items WHERE number IN (${marks(part)})`,
         ...part,
       )) {
         old.set(r.number, r);
@@ -918,9 +945,9 @@ export class WorkIndex {
       return !prev || prev.blob !== w.blob || prev.parser === 0;
     });
     const readNow = needed.filter((w) => stageOf(w.path) === "open" || needed.length <= FILL_BATCH);
-    const bodies = new Map<string, string>();
+    const bodies = new Map<string, KeptBody>();
     await parallel(readNow, async (w) => {
-      bodies.set(w.blob, await gh.blob(w.blob));
+      bodies.set(w.blob, keepBody(await gh.blob(w.blob)));
     });
 
     // A range of one commit with every file listed: its details are compare's.
@@ -941,29 +968,36 @@ export class WorkIndex {
           continue;
         }
         const ip = itemPath(w.path)!;
-        const body = bodies.get(w.blob) ?? (prev && prev.blob === w.blob && prev.parser > 0 ? prev.body : null);
-        const parsed = body !== null ? safeParse(ip, body) : pendingParse(ip);
+        const kept: KeptBody | null = bodies.get(w.blob) ?? (prev && prev.blob === w.blob && prev.parser > 0 ? { body: prev.body, note: keptNote(prev.body_note) } : null);
         const changed = !prev || prev.blob !== w.blob || prev.path !== w.path;
         const moved = !prev || prev.stage !== ip.stage;
         // What changed is not dated yet; the walk dates it from the commit that did it.
-        store.exec(
-          `INSERT INTO items (number, path, stage, blob, body, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body,
-             parsed = excluded.parsed, parser = excluded.parser,
-             updated_at = CASE WHEN ? THEN NULL ELSE updated_at END,
-             closed_at = CASE WHEN ? THEN NULL ELSE closed_at END,
-             closed_by = CASE WHEN ? THEN NULL ELSE closed_by END`,
-          n,
-          w.path,
-          ip.stage,
-          w.blob,
-          body ?? "",
-          JSON.stringify(parsed),
-          body !== null ? PARSER_VERSION : 0,
-          changed ? 1 : 0,
-          moved ? 1 : 0,
-          moved ? 1 : 0,
-        );
+        const write = (k: KeptBody | null) =>
+          store.exec(
+            `INSERT INTO items (number, path, stage, blob, body, body_note, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body,
+               body_note = excluded.body_note, parsed = excluded.parsed, parser = excluded.parser,
+               updated_at = CASE WHEN ? THEN NULL ELSE updated_at END,
+               closed_at = CASE WHEN ? THEN NULL ELSE closed_at END,
+               closed_by = CASE WHEN ? THEN NULL ELSE closed_by END`,
+            n,
+            w.path,
+            ip.stage,
+            w.blob,
+            k?.body ?? "",
+            k?.note ?? null,
+            JSON.stringify(k ? safeParse(ip, k.body, k.note) : pendingParse(ip)),
+            k ? PARSER_VERSION : 0,
+            changed ? 1 : 0,
+            moved ? 1 : 0,
+            moved ? 1 : 0,
+          );
+        try {
+          write(kept);
+        } catch {
+          // The row's problem, not the advance's: kept without its body, with a warning.
+          write(UNSTORED);
+        }
       }
       const walk = this.walkState();
       if (only) {
@@ -1185,15 +1219,15 @@ export class WorkIndex {
    */
   private reparseBatch(): void {
     if (!this.reparsing()) return;
-    const rows = this.store.exec<{ number: number; path: string; body: string } & Row>(
-      "SELECT number, path, body FROM items WHERE parser > 0 AND parser <> ? LIMIT ?",
+    const rows = this.store.exec<{ number: number; path: string; body: string; body_note: string | null } & Row>(
+      "SELECT number, path, body, body_note FROM items WHERE parser > 0 AND parser <> ? LIMIT ?",
       PARSER_VERSION,
       REPARSE_BATCH,
     );
     this.store.transaction(() => {
       for (const r of rows) {
         const ip = itemPath(r.path);
-        if (ip) this.store.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(safeParse(ip, r.body)), PARSER_VERSION, r.number);
+        if (ip) this.store.exec("UPDATE items SET parsed = ?, parser = ? WHERE number = ?", JSON.stringify(safeParse(ip, r.body, r.body_note)), PARSER_VERSION, r.number);
       }
       if (rows.length < REPARSE_BATCH) this.setMeta("parser_version", PARSER_VERSION);
       this.bump();
@@ -1300,13 +1334,39 @@ function pendingParse(ip: ItemPath): ParsedItem {
   return { title: slugTitle(ip.slug), stateLine: null, tags: [], owner: null, left: null, boxes: 0, pullRequests: [], warnings: [] };
 }
 
+type BodyNote = "cut" | "unstored";
+interface KeptBody {
+  body: string;
+  note: BodyNote | null;
+}
+const UNSTORED: KeptBody = { body: "", note: "unstored" };
+
+function keptNote(note: string | null): BodyNote | null {
+  return note === "cut" || note === "unstored" ? note : null;
+}
+
+/** A file's text as it is stored: at most BODY_STORE_BYTES of UTF-8, cut at a character boundary. */
+export function keepBody(text: string): KeptBody {
+  // A UTF-16 unit is at most 3 bytes: shorter text needs no encoding to know it fits.
+  if (text.length * 3 <= BODY_STORE_BYTES) return { body: text, note: null };
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= BODY_STORE_BYTES) return { body: text, note: null };
+  let end = BODY_STORE_BYTES;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return { body: new TextDecoder().decode(bytes.subarray(0, end)), note: "cut" };
+}
+
 /** The parser never throws by design; if it does, the row keeps its slug and says so. */
-function safeParse(ip: ItemPath, body: string): ParsedItem {
+function safeParse(ip: ItemPath, body: string, note: string | null = null): ParsedItem {
+  if (note === "unstored") return { ...pendingParse(ip), warnings: ["The file could not be stored; only its name is shown."] };
+  let parsed: ParsedItem;
   try {
-    return parseItem(ip, body);
+    parsed = parseItem(ip, body);
   } catch {
     return { ...pendingParse(ip), warnings: ["The file could not be read."] };
   }
+  if (note === "cut") parsed.warnings = [`The file is larger than ${BODY_STORE_BYTES / 1_000_000} MB; only the start is read.`, ...parsed.warnings];
+  return parsed;
 }
 
 /** Who closed: the commit's author, or null when a session made the commit (it says "closed in a session"). */
