@@ -144,7 +144,7 @@ Sent only on a WebSocket attached with `deltas: true`; see [Events](/api/events#
 
 | Object | Fields |
 | --- | --- |
-| Session | `id` (`cs_` and 16 characters), `title`, `status` (`starting`, `running`, `waiting`, `idle`, `suspended`), `archived`, `aside`, `owner` (Person), `origin` (Origin), `settings` (`model`, `effort`, `mode`, `speed`), `metadata`, `activeTurnId`, `queued` (Turn list), `asks` (Ask list), `subagents` (Subagent list), `lastTurn` (TurnSummary or null), `lastText`, `context` (`usedTokens`, `windowTokens`), `lastSeq`, `logEpoch`, `epochStartSeq`, `createdAt`, `lastActiveAt`, `syncedAt`, `urls.dashboard` |
+| Session | `id` (`cs_` and 16 characters), `title`, `status` (`starting`, `running`, `waiting`, `idle`, `suspended`), `archived`, `aside?` (absent: false), `owner` (Person), `origin` (Origin), `settings` (`model`, `effort`, `mode`, `speed`), `metadata`, `activeTurnId`, `queued` (Turn list), `asks` (Ask list), `subagents` (Subagent list), `lastTurn` (TurnSummary or null), `lastText`, `context` (`usedTokens`, `windowTokens`), `lastSeq`, `logEpoch`, `epochStartSeq`, `createdAt`, `lastActiveAt`, `syncedAt`, `urls.dashboard` |
 | Person | `id`, `name`, `email` |
 | Origin | `type` (`slack`, `opc`, `dashboard`, `api`), `client`, `slack` (`teamId`, `channelId`, `channelName`, `threadTs`, `url`) or null |
 | Actor | `id`, `name`, `via` (`slack`, `opc`, `dashboard`, `api`), `client` |
