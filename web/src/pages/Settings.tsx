@@ -56,8 +56,8 @@ import { getManagedRuntimeProfile } from '@/managed-agents/api'
 import { KnowledgeRepositorySection } from '@/managed-agents/work/KnowledgeRepository'
 
 // The organization's settings, one calm column of sections in the settings
-// anatomy (components/settings.tsx): Organization, Knowledge repository,
-// Members, Agent environment.
+// anatomy (components/settings.tsx): Organization, Knowledge repository
+// (with Computer), Members, Agent environment.
 
 export default function Settings() {
   const { user } = useAuth()
@@ -73,7 +73,9 @@ export default function Settings() {
       />
       <div className="space-y-10">
         <Organization />
-        <KnowledgeRepositorySection id="work-repository" />
+        {user?.computerEnabled ? (
+          <KnowledgeRepositorySection id="work-repository" />
+        ) : null}
         {user?.capabilities?.manageMembers !== false ? <Members /> : null}
         <AgentEnvironment />
       </div>

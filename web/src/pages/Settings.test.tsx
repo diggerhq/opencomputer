@@ -74,11 +74,15 @@ const invitations = [
   },
 ]
 
-const auth = (manageMembers = true): AuthContextValue => ({
+const auth = (
+  manageMembers = true,
+  computerEnabled = true,
+): AuthContextValue => ({
   user: {
     id: 'usr_1',
     email: 'igor@digger.dev',
     orgId: 'org_1',
+    computerEnabled,
     capabilities: {
       signOut: true,
       manageMembers,
@@ -114,13 +118,13 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function render(manageMembers = true) {
+async function render(manageMembers = true, computerEnabled = true) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   act(() => {
     root.render(
-      <AuthContext.Provider value={auth(manageMembers)}>
+      <AuthContext.Provider value={auth(manageMembers, computerEnabled)}>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/settings']}>
             <Settings />
@@ -254,5 +258,11 @@ describe('settings', () => {
       'Knowledge repository',
       'Agent environment',
     ])
+  })
+
+  it('leaves out the knowledge repository without Computer', async () => {
+    await render(true, false)
+    expect(titles()).toEqual(['Organization', 'Members', 'Agent environment'])
+    expect(container.querySelector('section#work-repository')).toBeNull()
   })
 })
