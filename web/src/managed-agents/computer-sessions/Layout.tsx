@@ -181,13 +181,15 @@ function Rail() {
         <OpenComputerMark className="size-8" />
       </Link>
       {user?.computerEnabled ? (
-        <RailLink to="/computer/sessions" label="Sessions">
-          <MessagesSquare className="size-4" aria-hidden />
-        </RailLink>
+        <>
+          <RailLink to="/computer/sessions" label="Sessions">
+            <MessagesSquare className="size-4" aria-hidden />
+          </RailLink>
+          <RailLink to="/computer/work" label="Board">
+            <SquareKanban className="size-4" aria-hidden />
+          </RailLink>
+        </>
       ) : null}
-      <RailLink to="/computer/work" label="Board">
-        <SquareKanban className="size-4" aria-hidden />
-      </RailLink>
       <RailLink to="/automations" label="Automations">
         <CalendarClock className="size-4" aria-hidden />
       </RailLink>
