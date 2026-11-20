@@ -197,6 +197,32 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
+  it("binds the session's model before a call reaches its live runner: an opc turn after a host and model proxy restart (model-access.ts `called`)", async () => {
+    let bound = () => {};
+    const routed: string[] = [];
+    const t = setup({ routed: (id) => (routed.push(id), new Promise<void>((r) => (bound = r))) });
+    t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
+    await t.a.mint(spec, 'beef');
+    t.a.up('beef'); // found running after the restart: no delivery, no start
+    let where: unknown = 'pending';
+    void Promise.resolve(t.a.hooks.where(S)).then((w) => (where = w));
+    await tick(5);
+    expect(routed).toEqual(['beef']);
+    expect(where).toBe('pending'); // the client is not handed the runner until its bind is answered
+    bound();
+    await tick(5);
+    expect(where).toMatchObject({ writer: 'runner' });
+    t.a.onGateway(api('a1', 'turns.send', { session: spec }));
+    await tick(5);
+    expect(t.runner.calls).toEqual([]); // a gateway `api` call waits for it too
+    bound();
+    await tick(5);
+    expect(routed).toEqual(['beef', 'beef']);
+    expect(t.runner.calls).toEqual(['turns.send']);
+    expect(results(t.sent)).toHaveLength(1);
+    await t.a.stop();
+  });
+
   it('journals the relay\'s terminal and upload events through the session\'s writer, with their actor', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));

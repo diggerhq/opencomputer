@@ -115,6 +115,27 @@ describe('Translator', () => {
     expect(tr({ type: 'result', subtype: 'error_max_turns' })[0]).toMatchObject({ reason: 'error', detail: 'error_max_turns' });
   });
 
+  it('a turn that ended on an API error fails: `is_error`, or the main thread ending on an `error`, with the error as detail', () => {
+    const t = new Translator();
+    const end = (m: Record<string, unknown> = {}) => t.translate({ type: 'result', subtype: 'success', ...m } as unknown as SDKMessage)[0];
+    // The model proxy's 503 for a session it holds no credential for, as Claude Code ends the turn after its retries.
+    t.translate(assistant('API Error: 503 model credential for this session is not ready', { error: 'server_error' }));
+    expect(end({ is_error: true })).toMatchObject({ t: 'turn_ended', reason: 'error', detail: 'server_error' });
+    expect(end({ is_error: true })).toMatchObject({ reason: 'error', detail: 'api_error' });
+    t.translate(assistant('API Error: 500', { error: 'unknown' }));
+    expect(end()).toMatchObject({ reason: 'error', detail: 'unknown' });
+    // A message that recovered, a subagent's error, credits and a denied model end it `done`: the last two say why themselves.
+    t.translate(assistant('', { error: 'max_output_tokens' }));
+    t.translate(assistant('continued'));
+    expect(end()).toEqual(expect.objectContaining({ reason: 'done' }));
+    t.translate(assistant('API Error: 500', { error: 'server_error', parent_tool_use_id: 'task1' }));
+    expect(end()).not.toHaveProperty('detail');
+    t.translate(assistant('API Error: 402 requires more credits', { error: 'billing_error' }));
+    expect(end({ is_error: true })).toMatchObject({ reason: 'done' });
+    t.translate(assistant('model not allowed', { error: 'model_not_found' }));
+    expect(end({ is_error: true })).toMatchObject({ reason: 'done' });
+  });
+
   it('system messages: init, requesting, compaction start and end', () => {
     expect(
       tr(

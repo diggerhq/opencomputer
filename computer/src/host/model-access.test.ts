@@ -44,11 +44,12 @@ let bin: string;
 let proxy: ChildProcess | undefined;
 let cleanup: (() => unknown)[] = [];
 
-async function startProxy() {
+/** `bindingsFile`: the table a restart restores, every entry known and not credentialed (computer/modelproxy/persist.go). */
+async function startProxy(bindingsFile = '') {
   const control = path.join(dir, 'control.sock');
   rmSync(control, { force: true });
   proxy = spawn(bin, ['-profiles', path.join(dir, 'profiles'), '-api-socket', path.join(dir, 'api.sock'), '-control-socket', control,
-    '-bindings-file', '', '-hold-timeout', '1s', '-drain-timeout', '1s'], { stdio: 'ignore' });
+    '-bindings-file', bindingsFile, '-hold-timeout', '1s', '-drain-timeout', '1s'], { stdio: 'ignore' });
   await vi.waitFor(() => expect(existsSync(control)).toBe(true), { timeout: 5000 });
 }
 async function stopProxy() {
@@ -267,6 +268,43 @@ describe.skipIf(!GO)('host model access against the real model proxy', () => {
     expect(c?.model).toMatchObject({ profile: 'claude-b' });
     expect(await held('r5')).toMatchObject({ profile: 'claude-b' });
   });
+
+  it('a proxy and host restart (a release switch): a found runner on `models` is bound again at once, one on its own route at its first API call', async () => {
+    const file = path.join(dir, 'bindings.json');
+    await stopProxy();
+    await startProxy(file);
+    const t = setup();
+    await t.up();
+    t.a.onGateway(welcome({ claude: route('claude-a') }));
+    await t.register('s8', 'r8');
+    t.a.onGateway({ t: 'model', sessionKey: 'api', model: route('claude-a', 'sk-own', 'own-key') });
+    await t.register('api', 'r9');
+    await vi.waitFor(() => expect(readFileSync(file, 'utf8')).toContain('own-key'));
+    t.a.stop();
+    await stopProxy();
+    await startProxy(file); // its bindings come back from disk, without their variables
+
+    const u = setup();
+    const runners = [['s8', fakeRunner('r8')], ['api', fakeRunner('r9')]] as const;
+    for (const [k, r] of runners) u.runners.set(k, r), u.a.registered(k, r.id, 'claude', true); // found before the proxy and the gateway say hello
+    await u.up();
+    expect(u.out).toEqual([]);
+    u.a.onGateway(welcome({ claude: route('claude-a') }));
+    await u.a.ready('s8');
+    expect(u.out).toEqual([{ t: 'model-bound', sessionKey: 's8', mode: 'profile', profile: 'claude-a', key: 'claude-a-key' }]);
+    expect(u.a.forRunner('s8', creds)?.model).toMatchObject({ profile: 'claude-a' });
+    expect(u.a.forRunner('api', creds)?.model).toBeUndefined(); // on another credential: kept until its own route comes
+
+    // An opc turn reaches its runner over the session API, with no delivery (api-host.ts `routed`): it is bound before the call goes on.
+    await u.a.called('api');
+    expect(u.out.at(-1)).toEqual({ t: 'model-bound', sessionKey: 'api', mode: 'profile', profile: 'claude-a', key: 'claude-a-key' });
+    expect(u.a.forRunner('api', creds)?.model).toMatchObject({ profile: 'claude-a' });
+    const n = u.out.length;
+    await u.a.called('api'); // a runner already settled: nothing again
+    expect(u.out.length).toBe(n);
+    await stopProxy();
+    rmSync(file, { force: true });
+  }, 30_000);
 
   it('re-hello: a proxy that restarts empty gets every held bind again; while down the host advertises no profiles', async () => {
     const t = setup();
