@@ -4,13 +4,15 @@
 //
 //   node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]
 //                                       [--runtime-image ARN --runtime-image-version V]
-//   node scripts/stack.mjs <devin-name> github-app [--org ORG] [--port N] [--public-url URL]
+//   node scripts/stack.mjs <devin-name> github-app [--org ORG] [--port N] [--host H] [--public-url URL]
 //
 // `github-app` registers a GitHub App of the stack's own by the manifest flow
 // (callback and webhook on the stack's dashboard) and keeps its credentials
 // in secrets.json, where `up` finds them. It serves one page to open in a
 // browser signed in to GitHub; --public-url is where that page is reachable
-// when the browser is on another machine. Run it after the api-edge stack is
+// when the browser is on another machine. The page listens on 127.0.0.1 only;
+// --host 0.0.0.0 (or another address) when a proxy on another interface must
+// reach it, as a preview URL does. Run it after the api-edge stack is
 // up, then run `up` again. The OC_STACK_GITHUB_APP_* env, when set, wins.
 //
 // Stack names must start with `devin-`. Only `devin-*` workers/databases are
@@ -273,7 +275,11 @@ async function githubApp() {
     );
   }
   const port = Number(flags.port ?? 8791);
-  const origin = String(flags["public-url"] ?? `http://localhost:${port}`).replace(/\/$/, "");
+  // Loopback unless asked: the page hands a registration's credentials to whoever completes it.
+  const host = String(flags.host || "127.0.0.1");
+  // The page's own address when no --public-url: the listening one (localhost may resolve to ::1 first).
+  const local = host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
+  const origin = String(flags["public-url"] ?? `http://${local}:${port}`).replace(/\/$/, "");
   const state = randomBytes(16).toString("hex");
   const manifest = {
     // GitHub App names are global and at most 34 characters.
@@ -346,8 +352,8 @@ async function githubApp() {
       }
     });
     server.on("error", reject);
-    server.listen(port, () => {
-      console.log(`open ${origin}/ in a browser signed in to GitHub`);
+    server.listen(port, host, () => {
+      console.log(`listening on ${host}:${port}; open ${origin}/ in a browser signed in to GitHub`);
     });
   });
 
@@ -826,7 +832,12 @@ function step(label) {
 
 function usage() {
   console.error(
-    "usage: node scripts/stack.mjs <devin-name> render|up|status|destroy|github-app [--api-edge-url URL]",
+    [
+      "usage: node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]",
+      "                                     [--runtime-image ARN --runtime-image-version V]",
+      "       node scripts/stack.mjs <devin-name> github-app [--org ORG] [--port N] [--host H] [--public-url URL]",
+      "         --host: the address the github-app page listens on (default 127.0.0.1; 0.0.0.0 for a preview proxy)",
+    ].join("\n"),
   );
   process.exit(2);
 }
