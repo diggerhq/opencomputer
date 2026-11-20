@@ -35,6 +35,7 @@ import {
 import {
   AttentionMark,
   Avatar,
+  DERIVED_OWNER,
   PullDot,
   SectionTitle,
   Tag,
@@ -253,6 +254,10 @@ function ItemHeader({ item }: { item: Item }) {
                   <span className="text-foreground">
                     {personName(item.owner)}
                   </span>
+                  {/* Not in the doc: the author of its recent changes. */}
+                  {item.owner.source === 'derived' ? (
+                    <span>({DERIVED_OWNER.toLowerCase()})</span>
+                  ) : null}
                 </>
               ) : (
                 'no owner'

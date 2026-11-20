@@ -341,6 +341,81 @@ describe('board', () => {
     expect(done.textContent).not.toContain('Closed by')
   })
 
+  it('folds dormant cards under a quiet toggle, per lane', async () => {
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([
+        makeItem({ number: 1, title: 'Active' }),
+        makeItem({ number: 2, title: 'Quiet one', active: false }),
+        makeItem({ number: 3, title: 'Quiet two', active: false }),
+        makeItem({
+          number: 4,
+          title: 'Quiet, done',
+          active: false,
+          readyToClose: true,
+        }),
+      ]),
+    )
+    await render('/computer/work?tab=everyone')
+    expect(titles(column('In progress'))).toEqual(['Active'])
+    expect(column('In progress').querySelector('h2')?.textContent).toContain(
+      '1',
+    )
+    const toggle = [...column('In progress').querySelectorAll('button')].find(
+      (b) => b.textContent === 'Dormant(2)',
+    )
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+    expect(titles(column('Ready to close'))).toEqual([])
+    expect(column('Ready to close').textContent).toContain('Dormant(1)')
+    click(toggle)
+    await settle()
+    expect(titles(column('In progress'))).toEqual([
+      'Active',
+      'Quiet one',
+      'Quiet two',
+    ])
+    // The other lane stays folded.
+    expect(titles(column('Ready to close'))).toEqual([])
+  })
+
+  it("shows the owner by name, quieter when it comes from commits, and links the item's sessions", async () => {
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([
+        makeItem({
+          number: 1,
+          title: 'Declared',
+          owner: {
+            email: 'maya@example.com',
+            name: 'Maya Chen',
+            id: 'usr_2',
+            source: 'declared',
+          },
+          sessions: [
+            { id: 'cs_7', title: 'Fix it', ownerName: 'Maya', status: 'idle' },
+          ],
+        }),
+        makeItem({
+          number: 2,
+          title: 'Derived',
+          owner: {
+            email: 'sam@example.com',
+            name: 'Sam',
+            id: null,
+            source: 'derived',
+          },
+        }),
+      ]),
+    )
+    await render('/computer/work?tab=everyone')
+    const cards = column('In progress').querySelectorAll('article')
+    expect(cards[0].textContent).toContain('Maya Chen')
+    expect(cards[0].querySelector('[title="Maya Chen"]')).not.toBeNull()
+    expect(
+      cards[1].querySelector('[title="Sam · From recent commits"]'),
+    ).not.toBeNull()
+    const link = cards[0].querySelector('a[href="/computer/sessions/cs_7"]')
+    expect(link?.getAttribute('title')).toBe('Fix it · Maya · idle')
+  })
+
   it('offers no Close or Reopen yet', async () => {
     workApi.getOpenItems.mockResolvedValue(openPage(items))
     await render('/computer/work')
@@ -356,7 +431,12 @@ describe('item page', () => {
   const item = makeItem({
     number: 12,
     title: 'Usage billing',
-    owner: { email: 'igor@example.com', name: 'Igor', id: 'usr_1' },
+    owner: {
+      email: 'igor@example.com',
+      name: 'Igor',
+      id: 'usr_1',
+      source: 'declared',
+    },
     author: { email: 'maya@example.com', name: 'Maya', id: null },
     tags: ['billing'],
     sessions: [
@@ -388,6 +468,17 @@ describe('item page', () => {
     expect(container.textContent).toContain('#41 Meter')
     expect(container.textContent).toContain('merged')
     expect(workApi.getHistory).not.toHaveBeenCalled()
+  })
+
+  it('says when the owner comes from recent commits', async () => {
+    workApi.getItem.mockResolvedValue({
+      item: { ...item, owner: { ...item.owner!, source: 'derived' } },
+      body: 'x',
+    })
+    await render('/computer/work/12')
+    expect(container.querySelector('header')?.textContent).toContain(
+      'Igor(from recent commits)',
+    )
   })
 
   it('says when an item has no owner', async () => {

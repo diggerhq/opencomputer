@@ -27,6 +27,10 @@ export function makeItem(over: Partial<Item> = {}): Item {
     sessions: [],
     unpublished: false,
     updatedAt: minutesAgo(60),
+    // The item's own last change: its last change, unless a test says.
+    lastActivityAt:
+      over.updatedAt !== undefined ? over.updatedAt : minutesAgo(60),
+    active: true,
     createdAt: null,
     closedAt: null,
     closedBy: null,

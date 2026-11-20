@@ -11,7 +11,7 @@ import {
   repositoryProblem,
   resolveAgainst,
   sessionStatusWord,
-  staleDays,
+  splitDormant,
 } from './board'
 import { makeItem, minutesAgo, NOW } from './fixtures'
 
@@ -125,12 +125,28 @@ describe('card wording', () => {
     expect(attentionLabel(makeItem(), ago)).toBeNull()
   })
 
-  it('marks an open card stale after two weeks without a change', () => {
-    expect(staleDays(makeItem({ updatedAt: minutesAgo(20 * DAY) }), NOW)).toBe(
-      20,
-    )
-    expect(staleDays(makeItem({ updatedAt: minutesAgo(DAY) }), NOW)).toBeNull()
-    expect(staleDays(makeItem({ updatedAt: null }), NOW)).toBeNull()
+  it('folds the cards the API calls inactive away from the active ones', () => {
+    const { active, dormant } = splitDormant([
+      makeItem({ number: 1 }),
+      makeItem({ number: 2, active: false }),
+      makeItem({ number: 3 }),
+    ])
+    expect(active.map((i) => i.number)).toEqual([1, 3])
+    expect(dormant.map((i) => i.number)).toEqual([2])
+  })
+
+  it("orders by an item's own last change, not a bulk edit's", () => {
+    const items = [
+      // A bulk edit touched it a minute ago; its own change is a day old.
+      makeItem({
+        number: 1,
+        updatedAt: minutesAgo(1),
+        lastActivityAt: minutesAgo(DAY),
+      }),
+      makeItem({ number: 2, updatedAt: minutesAgo(60), lastActivityAt: null }),
+      makeItem({ number: 3, updatedAt: null, lastActivityAt: null }),
+    ]
+    expect(inProgress(items).map((i) => i.number)).toEqual([2, 1, 3])
   })
 
   it('words a session status the way the sessions screens do', () => {

@@ -14,7 +14,6 @@ export type Tab = 'mine' | 'everyone'
 
 // The board and the item page poll this often (tech design 3.11).
 export const OPEN_POLL_MS = 15_000
-export const STALE_DAYS = 14
 export const CLOSED_RECENT_DAYS = 7
 const DAY = 86_400_000
 
@@ -31,15 +30,15 @@ export function matches(item: Item, f: Filters): boolean {
   )
 }
 
+// The change a card's time shows: its own (not a bulk edit) when known.
+const changedAt = (i: Item) => i.lastActivityAt ?? i.updatedAt
+
 // Newest change first; an item whose last change is not known yet goes last.
-const latestFirst = (a: Item, b: Item) =>
-  a.updatedAt === b.updatedAt
-    ? 0
-    : a.updatedAt === null
-      ? 1
-      : b.updatedAt === null
-        ? -1
-        : b.updatedAt.localeCompare(a.updatedAt)
+const latestFirst = (a: Item, b: Item) => {
+  const x = changedAt(a)
+  const y = changedAt(b)
+  return x === y ? 0 : x === null ? 1 : y === null ? -1 : y.localeCompare(x)
+}
 
 const needsYouFirst = (a: Item, b: Item) =>
   (a.attention?.state === 'needs_you' ? 0 : 1) -
@@ -78,11 +77,19 @@ export function closedShown(
     )
 }
 
-/** Days since the last change, when that makes the card stale; else null. */
-export function staleDays(item: Item, now = Date.now()): number | null {
-  if (item.stage !== 'open' || item.updatedAt === null) return null
-  const days = Math.floor((now - new Date(item.updatedAt).getTime()) / DAY)
-  return days >= STALE_DAYS ? days : null
+/**
+ * A lane's cards as the board shows them: the active ones, and the dormant
+ * ones it folds away (the server's `active`: no change of their own in two
+ * weeks and no session at work). A view, not a stage.
+ */
+export function splitDormant(items: Item[]): {
+  active: Item[]
+  dormant: Item[]
+} {
+  return {
+    active: items.filter((i) => i.active),
+    dormant: items.filter((i) => !i.active),
+  }
 }
 
 /** The one attention line on a card, and whether it is the coloured one. */

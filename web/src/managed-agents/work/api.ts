@@ -20,6 +20,16 @@ const PersonSchema = z.looseObject({
 })
 export type Person = z.infer<typeof PersonSchema>
 
+// Who owns an item: the doc's `owner:` (declared), or else the author of its
+// latest change that was not a bulk edit (derived, from recent commits).
+const OwnerSchema = z.looseObject({
+  email: z.string(),
+  name: z.string().nullable(),
+  id: z.string().nullable(),
+  source: z.enum(['declared', 'derived']),
+})
+export type Owner = z.infer<typeof OwnerSchema>
+
 export const RepositorySchema = z.looseObject({
   installationId: z.union([z.string(), z.number()]),
   owner: z.string(),
@@ -79,7 +89,7 @@ export const ItemSchema = z.looseObject({
   title: z.string(),
   stateLine: z.string().nullable(),
   tags: z.array(z.string()),
-  owner: PersonSchema.nullable(),
+  owner: OwnerSchema.nullable(),
   author: PersonSchema.nullable(),
   mine: z.boolean(),
   left: z.number().nullable(),
@@ -91,6 +101,12 @@ export const ItemSchema = z.looseObject({
   unpublished: z.boolean(),
   // Null while the index has not read the doc's last commit yet.
   updatedAt: z.string().nullable(),
+  // The doc's latest commit that was not a bulk edit (one touching more than
+  // five items); null when the index has read none.
+  lastActivityAt: z.string().nullable(),
+  // Changed in the last 14 days, or a linked session is running or waiting:
+  // the board shows active items and folds the rest under "Dormant".
+  active: z.boolean(),
   createdAt: z.string().nullable(),
   // Both may be null on a closed item, when not known yet.
   closedAt: z.string().nullable(),
@@ -118,6 +134,10 @@ const ItemResultSchema = z.looseObject({
   body: z.string(),
 })
 export type ItemResult = z.infer<typeof ItemResultSchema>
+
+const SessionItemsSchema = z.looseObject({
+  items: z.array(ItemSchema),
+})
 
 const RevisionSchema = z.looseObject({
   sha: z.string(),
@@ -286,6 +306,16 @@ export function getHistory(number: number, cursor: string | undefined) {
   )
 }
 
+/** The items a session worked on (its commits' `Session:` trailers). */
+export function getSessionItems(sessionId: string) {
+  return apiFetch(
+    `${PREFIX}/sessions/${encodeURIComponent(sessionId)}/items`,
+    undefined,
+    SessionItemsSchema,
+    '/api',
+  ).then((r) => r.items)
+}
+
 // Every key starts with the organization so a switch never shows another
 // organization's items.
 export const workKeys = {
@@ -296,6 +326,7 @@ export const workKeys = {
   closed: (org: string) => ['work', org, 'items', 'closed'] as const,
   item: (org: string, n: number) => ['work', org, 'item', n] as const,
   history: (org: string, n: number) => ['work', org, 'history', n] as const,
+  session: (org: string, id: string) => ['work', org, 'session', id] as const,
 }
 
 /** The organization the keys are scoped to; '' before the user is known. */

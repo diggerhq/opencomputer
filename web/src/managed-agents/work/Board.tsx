@@ -2,9 +2,9 @@ import { useContext, type ReactNode } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
+  ChevronRight,
   FileText,
   Loader2,
-  MessagesSquare,
   Search,
   SquareKanban,
   X,
@@ -22,18 +22,18 @@ import {
   indexIsOld,
   inProgress,
   matches,
-  plural,
   readyToClose,
   repositoryName,
   repositoryProblem,
-  staleDays,
+  splitDormant,
   type Filters,
   type Tab,
 } from './board'
 import {
   AttentionMark,
-  Avatar,
+  OwnerMark,
   PullDots,
+  SessionDots,
   Tag,
   UnpublishedMark,
   WarningMark,
@@ -61,6 +61,15 @@ export function Board() {
     tag: params.get('tag'),
   }
   const showOlder = params.get('older') === '1'
+  // Which lanes show their dormant cards: `dormant=progress,ready`.
+  const unfolded = new Set((params.get('dormant') ?? '').split(','))
+  const toggleDormant = (lane: Lane) => {
+    const next = new Set(unfolded)
+    if (next.has(lane)) next.delete(lane)
+    else next.add(lane)
+    next.delete('')
+    setParam('dormant', [...next].sort().join(',') || null)
+  }
   const setParam = (k: string, v: string | null) =>
     setParams(
       (p) => {
@@ -132,10 +141,10 @@ export function Board() {
   const closedItems = closed.data?.pages.flatMap((p) => p.items) ?? []
   const all = [...page.items, ...closedItems]
   const shown = all.filter((i) => matches(i, filters))
-  const progress = inProgress(shown)
-  const ready = readyToClose(shown)
+  const progress = splitDormant(inProgress(shown))
+  const ready = splitDormant(readyToClose(shown))
   const done = closedShown(shown, showOlder)
-  const needYou = progress.filter(
+  const needYou = progress.active.filter(
     (i) => i.attention?.state === 'needs_you',
   ).length
   const filtering = !!filters.q.trim() || !!filters.tag
@@ -196,23 +205,41 @@ export function Board() {
         <div className="grid gap-4 lg:grid-cols-3">
           <Column
             title="In progress"
-            count={progress.length}
+            count={progress.active.length}
             note={
               needYou ? `${needYou} need${needYou === 1 ? 's' : ''} you` : null
             }
             accent={needYou > 0}
             empty={page.building ? 'Reading the working docs…' : undefined}
+            dormant={
+              <Dormant
+                lane="progress"
+                items={progress.dormant}
+                open={unfolded.has('progress')}
+                onToggle={toggleDormant}
+                onTag={(t) => setParam('tag', t)}
+              />
+            }
           >
-            {progress.map((i) => (
+            {progress.active.map((i) => (
               <Card key={i.number} item={i} onTag={(t) => setParam('tag', t)} />
             ))}
           </Column>
           <Column
             title="Ready to close"
-            count={ready.length}
+            count={ready.active.length}
             note="nothing left in the doc"
+            dormant={
+              <Dormant
+                lane="ready"
+                items={ready.dormant}
+                open={unfolded.has('ready')}
+                onToggle={toggleDormant}
+                onTag={(t) => setParam('tag', t)}
+              />
+            }
           >
-            {ready.map((i) => (
+            {ready.active.map((i) => (
               <Card key={i.number} item={i} onTag={(t) => setParam('tag', t)}>
                 {/* Close arrives in build step 5. */}
               </Card>
@@ -252,6 +279,58 @@ export function Board() {
         </div>
       )}
     </BoardFrame>
+  )
+}
+
+type Lane = 'progress' | 'ready'
+
+/**
+ * A lane's dormant cards, folded under a quiet "Dormant (N)" until asked
+ * for. Nothing when the lane has none.
+ */
+function Dormant({
+  lane,
+  items,
+  open,
+  onToggle,
+  onTag,
+}: {
+  lane: Lane
+  items: Item[]
+  open: boolean
+  onToggle: (lane: Lane) => void
+  onTag: (tag: string) => void
+}) {
+  if (!items.length) return null
+  const id = `work-dormant-${lane}`
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        title="No change of their own in two weeks and no session at work"
+        onClick={() => onToggle(lane)}
+        className="text-muted-foreground hover:text-foreground flex h-8 w-full items-center gap-1 rounded-md px-[13px] text-xs transition-colors"
+      >
+        <ChevronRight
+          className={cn(
+            '-ml-1 size-3.5 transition-transform',
+            open && 'rotate-90',
+          )}
+          aria-hidden
+        />
+        Dormant
+        <span className="tabular-nums">({items.length})</span>
+      </button>
+      {open ? (
+        <div id={id} className="flex flex-col gap-2">
+          {items.map((i) => (
+            <Card key={i.number} item={i} onTag={onTag} />
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -404,6 +483,7 @@ function Column({
   note,
   accent,
   empty = 'None',
+  dormant,
   footer,
   children,
 }: {
@@ -414,6 +494,8 @@ function Column({
   accent?: boolean
   // What an empty lane says.
   empty?: string
+  // The lane's folded dormant cards, below its active ones.
+  dormant?: ReactNode
   footer?: ReactNode
   children: ReactNode
 }) {
@@ -442,6 +524,9 @@ function Column({
       {count === 0 ? (
         <p className="text-muted-foreground px-[13px] py-2 text-xs">{empty}</p>
       ) : null}
+      {dormant ? (
+        <div className={cn(count > 0 && 'mt-2')}>{dormant}</div>
+      ) : null}
       {footer ? <div className="px-[13px] pt-3 pb-1">{footer}</div> : null}
     </section>
   )
@@ -462,18 +547,20 @@ export function Card({
   // The card's action (Close, Reopen), from build step 5.
   children?: ReactNode
 }) {
-  const stale = staleDays(item)
   const closed = item.stage === 'closed'
+  const dormant = !closed && !item.active
   const shownTags = item.tags.slice(0, MAX_TAGS)
   const moreTags = item.tags.slice(MAX_TAGS)
-  const sessions = item.sessions.length
-  // When it last changed, or closed; unknown yet shows nothing.
-  const when = closed ? (item.closedAt ?? item.updatedAt) : item.updatedAt
+  // When it closed, or last changed (its own change, not a bulk edit, when
+  // the index knows one); unknown yet shows nothing.
+  const when = closed
+    ? (item.closedAt ?? item.updatedAt)
+    : (item.lastActivityAt ?? item.updatedAt)
   return (
     <article
       className={cn(
         'group/card relative rounded-lg border p-3 transition-colors',
-        stale !== null
+        dormant
           ? 'border-foreground/15 hover:border-foreground/30 border-dashed bg-transparent'
           : 'bg-panel hover:border-foreground/20 shadow-[0_1px_1px_0_rgb(20_19_17/0.03)]',
       )}
@@ -494,13 +581,13 @@ export function Card({
         <span className="ml-auto flex shrink-0 items-center gap-2 pl-1">
           <WarningMark warnings={item.warnings} quiet />
           {item.unpublished ? <UnpublishedMark quiet /> : null}
-          {item.owner ? <Avatar person={item.owner} /> : null}
+          {item.owner ? <OwnerMark owner={item.owner} /> : null}
         </span>
       </div>
       <h3
         className={cn(
           'mt-2 line-clamp-2 text-sm leading-5 font-medium text-pretty',
-          (closed || stale !== null) && 'text-muted-foreground',
+          (closed || dormant) && 'text-muted-foreground',
         )}
       >
         <Link
@@ -527,21 +614,10 @@ export function Card({
         </div>
         {children ? <div className="relative z-10">{children}</div> : null}
         <PullDots prs={item.pullRequests} />
-        {sessions ? (
-          <span
-            className="inline-flex items-center gap-1 tabular-nums"
-            title={plural(sessions, 'session')}
-          >
-            <MessagesSquare className="size-3.5" aria-hidden />
-            {sessions}
-            <span className="sr-only">
-              {sessions === 1 ? ' session' : ' sessions'}
-            </span>
-          </span>
-        ) : null}
-        {stale !== null || when ? (
-          <span className="shrink-0 tabular-nums" title={when ?? undefined}>
-            {stale !== null ? `no change in ${stale} days` : timeAgo(when)}
+        <SessionDots sessions={item.sessions} />
+        {when ? (
+          <span className="shrink-0 tabular-nums" title={when}>
+            {timeAgo(when)}
           </span>
         ) : null}
       </div>
