@@ -17,5 +17,7 @@ msg=$1
 [ -n "$msg" ] && [ -f "$msg" ] || exit 0
 # Nothing written yet (an editor will open next): leave it, so an empty message still aborts the commit.
 [ -n "$(git stripspace --strip-comments <"$msg" 2>/dev/null)" ] || exit 0
-git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Session: $id" "$msg" >/dev/null 2>&1
+# --no-divider: a `---` line in the message is text, not the start of a patch; the trailer goes at the
+# end, where `git log` (and the Work index) read trailers.
+git interpret-trailers --in-place --no-divider --if-exists addIfDifferent --trailer "Session: $id" "$msg" >/dev/null 2>&1
 exit 0

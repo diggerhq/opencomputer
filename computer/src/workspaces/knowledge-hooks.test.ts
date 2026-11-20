@@ -159,6 +159,15 @@ describe('prepare-commit-msg', () => {
     expect(git(session, ['log', '-1', '--format=%B'])).toBe('Track mine\n\nWith a body.\n\nSession: cs_s1');
   });
 
+  it('puts the trailer at the end of a message with a --- line in it', () => {
+    put(session, { 'docs/divider.md': 'x\n' });
+    git(session, ['add', '-A']);
+    git(session, ['commit', '-q', '-m', 'Divider\n\nAbove the line.\n---\nBelow the line.'], id);
+    expect(git(session, ['log', '-1', '--format=%B'])).toBe('Divider\n\nAbove the line.\n---\nBelow the line.\n\nSession: cs_s1');
+    expect(trailers(session)).toEqual(['cs_s1']);
+    git(session, ['reset', '-q', '--hard', 'HEAD~1']);
+  });
+
   it('adds nothing without SP_SESSION_ID, or with one that is not an id', () => {
     put(session, { 'docs/x.md': 'x\n' });
     git(session, ['add', '-A']);
