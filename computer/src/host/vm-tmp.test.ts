@@ -60,8 +60,8 @@ describe.skipIf(!tmpfiles)('deploy/vm/tmp.conf', () => {
     expect(left).toEqual(['oc-src', 'oc-src/new.ts', 'vid']);
   });
 
-  it('never ages the host’s attachments or other services’ private /tmp', () => {
-    const keep = ['slack-presence/s-1/F1-a.png', 'systemd-private-abc-x/tmp/f', 'snap-private-tmp/f', '.X11-unix/X0', '.ICE-unix/1'];
+  it('never ages the host’s attachments, Claude Code’s temp dir or other services’ private /tmp', () => {
+    const keep = ['slack-presence/s-1/F1-a.png', 'claude-1500/cwd-x', 'systemd-private-abc-x/tmp/f', 'snap-private-tmp/f', '.X11-unix/X0', '.ICE-unix/1'];
     const left = clean(Object.fromEntries(keep.map((f) => [f, 20])), Object.fromEntries(keep.map((f) => [path.dirname(f), 20])));
     for (const f of keep) expect(left).toContain(f);
   });
