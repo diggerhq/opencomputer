@@ -10,16 +10,19 @@
 //   3. The blobs of the changed items only, then rows, files and the cursor in one transaction.
 //      Changed rows lose `updatedAt`, a new close loses `closedAt`/`closedBy`: null until the walk
 //      fills them, never a guess. A range of one commit fills them at once from compare's files.
-//   4. The walk (below) gets the range: a page of each changed folder's commits and up to
-//      ADVANCE_DETAILS commit details now, the rest from the alarm.
+//   4. The walk (below) gets the range when it changed an item file: compare's commits (the first
+//      page is in hand, the rest are a range task) and up to ADVANCE_DETAILS commit details now,
+//      the rest from the alarm. The range is compare's, not the folders' listings back to a commit
+//      already listed: those are ordered by date, and a merged branch's commits dated before the
+//      cursor would be missed. Merge commits are not detailed: their files repeat the branch's.
 //   Whatever the range's size, an advance never rebuilds and stays within those calls.
 // - Build (no cursor, or a rewritten history): list the two folders at the head; open items are
 //   read in batches of 50 continued by the alarm, and the cursor is set when they are done. Closed
 //   items get a row from the listing and are read when a page of them is asked for. Dates,
 //   authors and links come from the walk.
-// - The walk: `commits?path=work` and `commits?path=done` from a head, back to the newest commit of
-//   that folder already listed (a page of 100 at a time); then each listed commit's files (one call
-//   each, newest first, within the quota). A commit's files give its items' revisions (history),
+// - The walk: after a build, `commits?path=work` and `commits?path=done` from its head to the root
+//   (a page of 100 at a time); after an advance, the range's commits from compare. Then each listed
+//   commit's files (one call each, newest first, within the quota). A commit's files give its items' revisions (history),
 //   links (`Session:` trailers), the add (author, created), the move into done/ (closed) and the
 //   latest change (updated).
 // - Duplicate numbers: `files` holds every item file at the cursor; the row of a number is its open
@@ -198,15 +201,17 @@ const DIRS: Dir[] = ["work", "done"];
 interface StoredRepo extends WorkRepo {}
 
 /**
- * The walk's listing of one folder's commits: from `head` back to the first commit already listed
- * for that folder (everything older is listed, or is the range of a task still running).
+ * The walk's listing: one folder's commits from a build's `head` back to the first commit already
+ * listed for that folder, or (`range`) an advance's commits `base...head` from compare.
  */
-interface WalkTask {
+interface DirTask {
+  kind?: "dir";
   dir: Dir;
   head: string;
   /** The next page to ask. */
   page: number;
 }
+type WalkTask = DirTask | { kind: "range"; base: string; head: string; page: number };
 
 interface WalkState {
   tasks: WalkTask[];
@@ -1003,8 +1008,9 @@ export class WorkIndex {
       if (only) {
         this.apply(only, cmp.files);
         this.store.exec("UPDATE commits SET listed = ? WHERE sha = ?", [...touchedDirs].map((d) => `,${d},`).join(""), only.sha);
-      } else {
-        for (const dir of touchedDirs) addTask(walk, dir, head);
+      } else if (touchedDirs.size) {
+        for (const c of cmp.commits) this.listCommit(c);
+        if (cmp.totalCommits > cmp.commits.length) walk.tasks.unshift({ kind: "range", base, head, page: 2 });
       }
       this.setMeta("walk", JSON.stringify(walk));
       this.setMeta("dirs", dirsNow ? JSON.stringify(dirsNow) : null);
@@ -1012,8 +1018,8 @@ export class WorkIndex {
       this.setMeta("as_of", this.now());
       this.bump();
     });
-    // The range's commits: a page of each folder and a few details now, the rest from the alarm.
-    if (!only && touchedDirs.size) await this.walkStep(touchedDirs.size, ADVANCE_DETAILS);
+    // The range's commits: a page more of them and a few details now, the rest from the alarm.
+    if (!only && touchedDirs.size) await this.walkStep(1, ADVANCE_DETAILS);
     return "done";
   }
 
@@ -1050,10 +1056,24 @@ export class WorkIndex {
       const walk = this.walkState();
       const task = walk.tasks[0];
       if (!task) break;
+      if (task.kind === "range") {
+        // Null: the base is gone (a rewritten history); the rebuild that follows lists everything.
+        const cmp = await gh.compare(task.base, task.head, task.page);
+        this.store.transaction(() => {
+          const now = this.walkState();
+          const t = now.tasks.find((x) => x.kind === "range" && x.base === task.base && x.head === task.head && x.page === task.page);
+          if (!t) return;
+          for (const c of cmp?.commits ?? []) this.listCommit(c);
+          if (!cmp || cmp.commits.length < PER_PAGE_MAX || task.page * PER_PAGE_MAX >= cmp.totalCommits) now.tasks.splice(now.tasks.indexOf(t), 1);
+          else t.page += 1;
+          this.setMeta("walk", JSON.stringify(now));
+        });
+        continue;
+      }
       const list = await gh.commits({ sha: task.head, path: task.dir, page: task.page, perPage: PER_PAGE_MAX });
       this.store.transaction(() => {
         const now = this.walkState();
-        const t = now.tasks.find((x) => x.dir === task.dir && x.head === task.head && x.page === task.page);
+        const t = now.tasks.find((x): x is DirTask => x.kind !== "range" && x.dir === task.dir && x.head === task.head && x.page === task.page);
         if (!t) return;
         const mark = `,${t.dir},`;
         let done = list.length < PER_PAGE_MAX;
@@ -1088,6 +1108,19 @@ export class WorkIndex {
         this.bump();
       });
     }
+  }
+
+  /** A commit of an advance's range, to detail (a merge's files repeat its branch's: not detailed). */
+  private listCommit(c: CommitInfo): void {
+    if (c.merge) return;
+    this.store.exec(
+      "INSERT INTO commits (sha, at, author_name, author_email, message, detailed) VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT (sha) DO NOTHING",
+      c.sha,
+      c.at,
+      c.authorName.slice(0, 200),
+      c.authorEmail,
+      c.message.slice(0, 10_000),
+    );
   }
 
   /**
@@ -1305,13 +1338,6 @@ function stageOf(path: string): "open" | "closed" {
 
 function dirOf(path: string): Dir | null {
   return path.startsWith("work/") ? "work" : path.startsWith("done/") ? "done" : null;
-}
-
-/** A folder's range to list: a task not started yet takes the newer head (it covers the older), else a new task first. */
-function addTask(walk: WalkState, dir: Dir, head: string): void {
-  const waiting = walk.tasks.find((t) => t.dir === dir && t.page === 1);
-  if (waiting) waiting.head = head;
-  else walk.tasks.unshift({ dir, head, page: 1 });
 }
 
 /** The row of each number: its open file before a closed one, then the first path. */

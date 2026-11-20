@@ -121,6 +121,8 @@ export interface CommitInfo {
   authorEmail: string | null;
   /** The author date, ISO; null when GitHub gave none. */
   at: string | null;
+  /** More than one parent: its files against the first parent repeat the merged branch's. */
+  merge: boolean;
 }
 
 export interface FileChange {
@@ -407,11 +409,11 @@ export class WorkGitHub {
   }
 
   /**
-   * `base...head`, one page of PER_PAGE_MAX commits (the oldest) and at most 300 files; null when
-   * GitHub no longer knows `base` (a rewritten history).
+   * `base...head`, one page of PER_PAGE_MAX commits (oldest first; page 1 the oldest) and, on the
+   * first page, at most 300 files; null when GitHub no longer knows `base` (a rewritten history).
    */
-  async compare(base: string, head: string): Promise<Comparison | null> {
-    const answer = await this.request(this.repoPath(`/compare/${base}...${head}?per_page=${PER_PAGE_MAX}`));
+  async compare(base: string, head: string, page = 1): Promise<Comparison | null> {
+    const answer = await this.request(this.repoPath(`/compare/${base}...${head}?per_page=${PER_PAGE_MAX}${page > 1 ? `&page=${page}` : ""}`));
     if (answer.status === 404) return null;
     const body = this.json<{ status?: unknown; total_commits?: unknown; commits?: unknown; files?: unknown }>(answer);
     const status = body.status;
@@ -568,7 +570,7 @@ function grantedOf(raw: unknown): GrantedRepository | null {
 }
 
 function commitOf(raw: unknown): CommitInfo | null {
-  const c = raw as { sha?: unknown; commit?: { message?: unknown; author?: { name?: unknown; email?: unknown; date?: unknown } } };
+  const c = raw as { sha?: unknown; parents?: unknown; commit?: { message?: unknown; author?: { name?: unknown; email?: unknown; date?: unknown } } };
   if (typeof c?.sha !== "string" || typeof c.commit?.message !== "string") return null;
   const author = c.commit.author;
   const at = typeof author?.date === "string" && Number.isFinite(Date.parse(author.date)) ? author.date : null;
@@ -578,6 +580,7 @@ function commitOf(raw: unknown): CommitInfo | null {
     authorName: typeof author?.name === "string" ? author.name : "",
     authorEmail: typeof author?.email === "string" ? author.email : null,
     at,
+    merge: Array.isArray(c.parents) && c.parents.length > 1,
   };
 }
 

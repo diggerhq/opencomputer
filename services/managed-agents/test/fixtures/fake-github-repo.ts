@@ -14,7 +14,10 @@ import { createHash } from "node:crypto";
 
 export interface FakeCommit {
   sha: string;
+  /** The first parent. */
   parent: string | null;
+  /** Every parent: two for a merge. */
+  parents: string[];
   message: string;
   author: { name: string; email: string };
   at: string;
@@ -76,7 +79,41 @@ export class FakeRepo {
     this.clock += 60_000;
     for (const text of files.values()) this.blobStore.set(this.blobSha(text), text);
     const sha = sha1(`${this.head}\n${message}\n${this.clock}\n${[...files].join("\n")}`);
-    this.commits.set(sha, { sha, parent: this.head, message, author, at: new Date(this.clock).toISOString(), files });
+    this.commits.set(sha, { sha, parent: this.head, parents: this.head ? [this.head] : [], message, author, at: new Date(this.clock).toISOString(), files });
+    this.head = sha;
+    return sha;
+  }
+
+  /** A commit on a branch off `from` (a pull request's branch): the head does not move. */
+  branchCommit(from: string, changes: Record<string, string | null>, message = "Branch", author = { name: "Ana", email: "ana@acme.test" }): string {
+    const files = new Map(this.commits.get(from)!.files);
+    for (const [path, text] of Object.entries(changes)) {
+      if (text === null) files.delete(path);
+      else files.set(path, text);
+    }
+    this.clock += 60_000;
+    for (const text of files.values()) this.blobStore.set(this.blobSha(text), text);
+    const sha = sha1(`${from}\n${message}\n${this.clock}\n${[...files].join("\n")}`);
+    this.commits.set(sha, { sha, parent: from, parents: [from], message, author, at: new Date(this.clock).toISOString(), files });
+    return sha;
+  }
+
+  /** A merge commit of `branch` into the head: its first parent is the head; the branch's changes since the fork are applied. */
+  merge(branch: string, message = "Merge pull request"): string {
+    const mine = new Set(this.ancestors(this.head!));
+    let fork = branch;
+    while (!mine.has(fork)) fork = this.commits.get(fork)!.parent!;
+    const files = new Map(this.commits.get(this.head!)!.files);
+    for (const f of this.diff(this.commits.get(fork)!.files, this.commits.get(branch)!.files)) {
+      if (f.status === "removed") files.delete(f.filename);
+      else {
+        if (f.previous_filename) files.delete(f.previous_filename);
+        files.set(f.filename, this.commits.get(branch)!.files.get(f.filename)!);
+      }
+    }
+    this.clock += 60_000;
+    const sha = sha1(`${this.head}\n${branch}\n${message}\n${this.clock}`);
+    this.commits.set(sha, { sha, parent: this.head, parents: [this.head!, branch], message, author: { name: "Ana", email: "ana@acme.test" }, at: new Date(this.clock).toISOString(), files });
     this.head = sha;
     return sha;
   }
@@ -92,9 +129,22 @@ export class FakeRepo {
     return sha1(`blob\n${text}`);
   }
 
+  /** Every commit reachable from `sha`, as `git log` lists them: newest date first among those reached. */
   private ancestors(sha: string): string[] {
     const out: string[] = [];
-    for (let c: string | null = sha; c; c = this.commits.get(c)?.parent ?? null) out.push(c);
+    const seen = new Set([sha]);
+    const queue = [sha];
+    while (queue.length) {
+      queue.sort((a, b) => (this.commits.get(a)!.at < this.commits.get(b)!.at ? 1 : -1));
+      const c = queue.shift()!;
+      out.push(c);
+      for (const p of this.commits.get(c)?.parents ?? []) {
+        if (!seen.has(p) && this.commits.has(p)) {
+          seen.add(p);
+          queue.push(p);
+        }
+      }
+    }
     return out;
   }
 
@@ -117,11 +167,15 @@ export class FakeRepo {
   }
 
   private commitJson(c: FakeCommit) {
-    return { sha: c.sha, commit: { message: c.message, author: { name: c.author.name, email: c.author.email, date: c.at } } };
+    return { sha: c.sha, parents: c.parents.map((sha) => ({ sha })), commit: { message: c.message, author: { name: c.author.name, email: c.author.email, date: c.at } } };
   }
 
   private changed(c: FakeCommit) {
     return this.diff(c.parent ? this.commits.get(c.parent)!.files : new Map(), c.files);
+  }
+
+  private under(files: Map<string, string>, path: string): string {
+    return JSON.stringify([...files].filter(([p]) => p === path || p.startsWith(`${path}/`)).sort());
   }
 
   /** Renames the repository; the old name redirects (or 404s when `redirects` is false). */
@@ -222,14 +276,16 @@ export class FakeRepo {
       const [baseSha, headSha] = [m[1]!, m[2]!];
       if (!this.commits.has(baseSha) || !this.commits.has(headSha)) return json(404, { message: "Not Found" });
       const line = this.ancestors(headSha);
-      const at = line.indexOf(baseSha);
-      if (at === -1) return json(200, { status: "diverged", total_commits: 0, commits: [], files: [] });
-      if (at === 0) return json(200, { status: "identical", total_commits: 0, commits: [], files: [] });
-      const range = line.slice(0, at).reverse().map((s) => this.commits.get(s)!);
+      if (!line.includes(baseSha)) return json(200, { status: "diverged", total_commits: 0, commits: [], files: [] });
+      if (baseSha === headSha) return json(200, { status: "identical", total_commits: 0, commits: [], files: [] });
+      const before = new Set(this.ancestors(baseSha));
+      // Oldest first, as GitHub lists a comparison's commits; paged.
+      const range = line.filter((s) => !before.has(s)).reverse().map((s) => this.commits.get(s)!);
+      const page = Number(url.searchParams.get("page") ?? "1");
       return json(200, {
         status: "ahead",
         total_commits: range.length,
-        commits: range.slice(0, perPage()).map((c) => this.commitJson(c)),
+        commits: range.slice((page - 1) * perPage(), page * perPage()).map((c) => this.commitJson(c)),
         // GitHub lists at most 300 files.
         files: this.diff(this.commits.get(baseSha)!.files, this.commits.get(headSha)!.files).slice(0, 300),
       });
@@ -251,7 +307,9 @@ export class FakeRepo {
       const touching = this.ancestors(from)
         .map((s) => this.commits.get(s)!)
         .filter((c) => !until || c.at <= until)
-        .filter((c) => this.changed(c).some((f) => f.filename === path || f.filename.startsWith(`${path}/`) || f.previous_filename === path || f.previous_filename?.startsWith(`${path}/`)));
+        .filter((c) => this.changed(c).some((f) => f.filename === path || f.filename.startsWith(`${path}/`) || f.previous_filename === path || f.previous_filename?.startsWith(`${path}/`)))
+        // git's history simplification: a merge the path is unchanged by on one side is left out.
+        .filter((c) => c.parents.length < 2 || !c.parents.some((p) => this.under(this.commits.get(p)!.files, path) === this.under(c.files, path)));
       return json(200, touching.slice((page - 1) * size, page * size).map((c) => this.commitJson(c)));
     }
     m = /^\/git\/trees\/(.+)$/.exec(rest);

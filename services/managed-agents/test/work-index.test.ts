@@ -862,10 +862,10 @@ describe("call budgets", () => {
     await s.index.poke(ORG);
     await s.settle();
     const calls = repo.take();
-    // ref + compare + root and work/ trees + 100 changed blobs + a page of work/ commits + 10 details.
+    // ref + compare + root and work/ trees + 100 changed blobs + the range's second page of commits + 10 details.
     const budget = 1 + 1 + 2 + 100 + 1 + ADVANCE_DETAILS;
     expect(calls.length).toBeLessThanOrEqual(budget);
-    expect(count(calls, /\/compare\//)).toBe(1);
+    expect(count(calls, /\/compare\//)).toBe(2);
     expect(count(calls, /\/git\/trees\//)).toBe(2);
     expect(count(calls, /\/git\/blobs\//)).toBe(100);
     expect(count(calls, /\/commits\/[0-9a-f]{40}/)).toBeLessThanOrEqual(ADVANCE_DETAILS);
@@ -1050,5 +1050,35 @@ describe("large and unstorable files", () => {
     expect(after.problem).toBeNull();
     expect(byNumber(after).get(1)!.title).toBe("Board 2");
     expect(byNumber(after).get(2)!.warnings).toEqual(["The file could not be stored; only its name is shown."]);
+  });
+});
+
+describe("merge commits", () => {
+  it("details a pull request branch's commits dated before the cursor but merged after it", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A") });
+    const s = await connect(repo);
+    s.tick(11 * 60_000);
+    await s.drain();
+    // A branch commit, then main moves on (the cursor passes it by date), then the merge.
+    const fork = repo.head!;
+    const onBranch = repo.branchCommit(fork, { "work/2-b.md": item(2, "B") }, "Add 2\n\nSession: cs_branch", { name: "Bob", email: "bob@acme.test" });
+    repo.commit({ "work/1-a.md": item(1, "A", "edited") }, "Edit 1");
+    await s.index.poke(ORG);
+    await s.settle();
+    s.tick(11 * 60_000);
+    await s.drain();
+    repo.merge(onBranch);
+    await s.index.poke(ORG);
+    await s.settle();
+    s.tick(11 * 60_000);
+    await s.drain();
+    expect(s.walkDone()).toBe(true);
+    const two = byNumber(await open(s)).get(2)!;
+    expect(two.sessionIds).toEqual(["cs_branch"]);
+    expect(two.createdAt).toBe(repo.commits.get(onBranch)!.at);
+    expect(two.author).toEqual({ name: "Bob", email: "bob@acme.test" });
+    expect(two.updatedAt).toBe(repo.commits.get(onBranch)!.at);
+    const history = await s.index.history(ORG, 2);
+    expect(history.ok && history.revisions.map((r) => r.summary)).toEqual(["Add 2"]);
   });
 });
