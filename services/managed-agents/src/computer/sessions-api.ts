@@ -458,8 +458,10 @@ export class ComputerSessionsApi {
     // The same create again (same id, body and member, e.g. a retry whose key the edge dropped): finish it.
     const repeat = row !== undefined && row.createHash === hash && row.ownerUserId === caller.member;
     if (row && !repeat) return conflict("id_conflict", `${id} belongs to another session.`);
-    if (this.deps.computerStatus() === "not_set_up") return conflict("computer_not_set_up", "Your organization has not finished setting up its computer.");
-    if (v.input !== undefined) {
+    // No computer yet: the first session started outside Slack brings it to life (unavailable() wakes, which creates it),
+    // so a web user need not install Slack first. Only past the credit check, so an org that cannot run boots no VM.
+    const firstComputer = this.deps.computerStatus() === "not_set_up";
+    if (v.input !== undefined || firstComputer) {
       const refused = await this.admission();
       if (refused) return refused;
     }

@@ -39,7 +39,7 @@ import { WebClient } from '@slack/web-api';
 import { Session, type SessionHooks, prompts } from './session.js';
 import { mayAnswer } from './prompts.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
-import { type Linked, withLinked } from '../links.js';
+import { type Linked, linkedFiles, withLinked } from '../links.js';
 import { SessionSecrets, redactingClient } from './session-secrets.js';
 import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
@@ -231,7 +231,7 @@ const hooks: SessionHooks = {
   },
   output: () => clearFeedback(),
   spawn,
-  threads: { read: readThread, post: postThread },
+  threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
   previews,
   ...(workspacesEnabled() && { checkout }),
   restart: () => {
@@ -424,8 +424,9 @@ async function handle(m: Delivery, trace?: TraceContext) {
   if (refused) return void (await s.say(refused), clearFeedback(m.ts));
   if (!s.isBusy) awaitingOutput.push(m.ts);
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
-  const fetching = fetchAttachments(m.files, botToken, ss.key);
-  const atts = m.files?.length ? turns.timed('attachments', fetching, { count: m.files.length }) : fetching;
+  const files = [...(m.files ?? []), ...linkedFiles(m.linked)];
+  const fetching = fetchAttachments(files, botToken, ss.key);
+  const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;
   await s.send(withLinked(m.text, m.linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, undefined, m.role);
   // The gateway set the status to `processing` on receipt. A reply that only
   // answered an open prompt starts no turn, and nothing would clear it.

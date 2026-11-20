@@ -253,7 +253,7 @@ describe('choosing the coding agent', () => {
 
   it('comes first, with a paste form that never keeps the token', async () => {
     await show({ ...empty, agent: fresh }, 'Choose your coding agent')
-    expect(text()).toContain('Step 1 of 4')
+    expect(text()).toContain('Step 1 of 3')
     expect(text()).toContain('Bring your own subscription.')
     expect(text()).toContain(
       'No subscription? Your trial includes $10 of model credits.',
@@ -276,7 +276,7 @@ describe('choosing the coding agent', () => {
     paste(TOKEN)
     submit()
     expect(field().value).toBe('')
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(computerApi.connectClaudeSubscription).toHaveBeenCalledWith(TOKEN)
     const mutations = client.getMutationCache().getAll()
     expect(mutations.length).toBeGreaterThan(0)
@@ -313,7 +313,7 @@ describe('choosing the coding agent', () => {
     paste(`  ${TOKEN.slice(0, 25)}\n    ${TOKEN.slice(25)}  `)
     expect(text()).not.toContain('cut off')
     submit()
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(computerApi.connectClaudeSubscription).toHaveBeenCalledWith(TOKEN)
   })
 
@@ -356,7 +356,7 @@ describe('choosing the coding agent', () => {
       () => computerApi.getComputer.mock.calls.length > reads,
       're-read',
     )
-    expect(text()).toContain('Step 1 of 4')
+    expect(text()).toContain('Step 1 of 3')
   })
 
   it("shows the edge's copy when someone else connected one", async () => {
@@ -377,7 +377,7 @@ describe('choosing the coding agent', () => {
     )
   })
 
-  it('moves on to Slack once a token is verified', async () => {
+  it('moves on to GitHub once a token is verified', async () => {
     await show({ ...empty, agent: fresh }, 'Choose your coding agent')
     computerApi.connectClaudeSubscription.mockResolvedValue({
       agent: { ...fresh, choice: 'claude', subscription: subscription('ok') },
@@ -387,7 +387,7 @@ describe('choosing the coding agent', () => {
     openPaste()
     paste(TOKEN)
     submit()
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(text()).toContain('Claude Code · your subscription')
     expect(notify.notifySuccess).toHaveBeenCalledWith(
       'Claude Code is connected.',
@@ -469,7 +469,7 @@ describe('choosing the coding agent', () => {
     openPaste()
     paste(TOKEN)
     submit()
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(notify.notifySuccess).toHaveBeenCalledWith(
       "Saved. We'll check it when your computer starts.",
     )
@@ -571,7 +571,7 @@ describe('choosing the coding agent', () => {
       },
     })
     refocus()
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(text()).toContain('Codex · your ChatGPT plan')
     expect(notify.notifySuccess).toHaveBeenCalledWith('Codex is connected.')
     expect(capture).toHaveBeenCalledWith('computer.setup.agent_connected', {
@@ -786,7 +786,7 @@ describe('choosing the coding agent', () => {
         ...empty,
         agent: { ...fresh, choice: 'claude', subscription: subscription('ok') },
       },
-      'Add OpenComputer to Slack',
+      'Step 2 of 3',
     )
     act(() => button('Change')!.click())
     await settle(() => command() !== undefined, 'command')
@@ -832,7 +832,7 @@ describe('choosing the coding agent', () => {
       { ...empty, agent: { ...withCodex, choice: 'codex' } },
       'Choose your coding agent',
     )
-    expect(text()).toContain('Step 1 of 4')
+    expect(text()).toContain('Step 1 of 3')
     await settle(() => command()?.includes(' codex ') === true, 'codex command')
     expect(computerApi.setAgentChoice).not.toHaveBeenCalled()
   })
@@ -972,7 +972,7 @@ describe('choosing the coding agent', () => {
       choice: 'credits',
     })
     act(() => button('Use OpenComputer credits')!.click())
-    await settle(() => text().includes('Step 2 of 4'), 'Slack step')
+    await settle(() => text().includes('Step 2 of 3'), 'GitHub step')
     expect(computerApi.setAgentChoice).toHaveBeenCalledWith('credits')
     expect(computerApi.disconnectClaudeSubscription).not.toHaveBeenCalled()
     expect(text()).toContain('Claude Opus 5.5 · OpenComputer credits')
@@ -987,7 +987,7 @@ describe('choosing the coding agent', () => {
         ...empty,
         agent: { ...fresh, choice: 'claude', subscription: subscription('ok') },
       },
-      'Add OpenComputer to Slack',
+      'Step 2 of 3',
     )
     expect(text()).toContain('Claude Code · your subscription')
     act(() => button('Change')!.click())
@@ -1179,8 +1179,8 @@ describe('choosing the coding agent', () => {
   })
 
   it('is not there for an older backend', async () => {
-    await show(empty, 'Add OpenComputer to Slack')
-    expect(text()).toContain('Step 1 of 3')
+    await show(empty, 'Connect GitHub')
+    expect(text()).toContain('Step 1 of 2')
     expect(text()).not.toContain('Choose your coding agent')
   })
 })
