@@ -58,6 +58,7 @@ import {
   type TokenMinter,
   type WorkRepo,
 } from "./github.js";
+import { GRANTED_PAGES_MAX } from "./index-contract.js";
 import type {
   HistoryResult,
   IndexedItem,
@@ -69,6 +70,7 @@ import type {
   OpenStamp,
   GrantingInstallation,
   ReadState,
+  RepositoriesQuery,
   RepositoriesResult,
   Repository,
   RepositoryChoice,
@@ -114,7 +116,6 @@ const CLOSED_LIMIT_DEFAULT = 50;
 const CLOSED_LIMIT_MAX = 100;
 const FETCH_PARALLEL = 6;
 /** The picker lists at most this many repositories per installation (five pages). */
-export const GRANTED_MAX = 500;
 /** Durable Object SQL binds at most 100 parameters per statement. */
 const BIND_MAX = 90;
 /** Stored bodies re-parsed per step after PARSER_VERSION changes. */
@@ -447,14 +448,18 @@ export class WorkIndex {
   }
 
   /**
-   * The organization's active installations, each with the repositories it grants, read from
-   * GitHub on every call: the picker asks again when the person comes back from granting access.
+   * The organization's active installations (or the one asked for), each with a page of the
+   * repositories it grants, read from GitHub on every call: the picker reads every page, again when
+   * the person comes back from granting access.
    * An installation GitHub will not list carries its problem; any other failure answers unavailable.
    */
-  async repositories(accountId: string): Promise<RepositoriesResult> {
+  async repositories(accountId: string, query: RepositoriesQuery = {}): Promise<RepositoriesResult> {
     this.bind(accountId);
     const account = this.deps.account(accountId);
-    const active = (await account.listGitHubInstallations()).filter((i) => i.state === "active");
+    const page = query.page ?? 1;
+    const active = (await account.listGitHubInstallations()).filter(
+      (i) => i.state === "active" && (query.installationId === undefined || String(i.id) === query.installationId),
+    );
     try {
       const installations = await Promise.all(
         active.map(async (i): Promise<GrantingInstallation> => {
@@ -474,11 +479,12 @@ export class WorkIndex {
             this.listers.set(shown.id, lister);
           }
           try {
-            const { repositories, truncated } = await lister.grantedRepositories(GRANTED_MAX);
-            return { ...shown, repositories: repositories.sort(byPushed), truncated, problem: null, problemMessage: null };
+            const { repositories, more } = await lister.grantedPage(page);
+            const nextPage = more && page < GRANTED_PAGES_MAX ? page + 1 : null;
+            return { ...shown, repositories: repositories.sort(byPushed), truncated: more && nextPage === null, nextPage, problem: null, problemMessage: null };
           } catch (error) {
             if (!(error instanceof GitHubGone)) throw error;
-            return { ...shown, repositories: [], truncated: false, problem: error.problem, problemMessage: error.message };
+            return { ...shown, repositories: [], truncated: false, nextPage: null, problem: error.problem, problemMessage: error.message };
           }
         }),
       );

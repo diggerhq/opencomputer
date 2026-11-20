@@ -364,26 +364,19 @@ export class WorkGitHub {
   // ---------------------------------------------------------------- calls
 
   /**
-   * The repositories the installation grants, PER_PAGE_MAX a page, at most `max` (in GitHub's
-   * order). The one call that reads the installation, not `repo`. `truncated` when it grants more.
+   * One page of the repositories the installation grants, PER_PAGE_MAX a page, in GitHub's order;
+   * `more` when a later page holds others. The one call that reads the installation, not `repo`.
    */
-  async grantedRepositories(max: number): Promise<{ repositories: GrantedRepository[]; truncated: boolean }> {
-    const repositories: GrantedRepository[] = [];
-    let total: number | null = null;
-    let full = false;
-    // A token keeps the repositories it was minted with: mint afresh, so a grant changed on GitHub shows.
-    this.tokens.delete("metadata");
-    for (let page = 1; repositories.length < max; page++) {
-      const answer = await this.request(`/installation/repositories?per_page=${PER_PAGE_MAX}&page=${page}`, { token: { kind: "metadata" } });
-      if (answer.status === 404) throw new GitHubGone("installation_removed", "The GitHub installation is not connected to this organization.");
-      const body = this.json<{ total_count?: unknown; repositories?: unknown }>(answer);
-      const list = Array.isArray(body.repositories) ? body.repositories : [];
-      if (typeof body.total_count === "number") total = body.total_count;
-      repositories.push(...list.map(grantedOf).filter((r): r is GrantedRepository => r !== null));
-      full = list.length >= PER_PAGE_MAX;
-      if (!full) break;
-    }
-    return { repositories: repositories.slice(0, max), truncated: total !== null ? total > max : full && repositories.length >= max };
+  async grantedPage(page: number): Promise<{ repositories: GrantedRepository[]; more: boolean }> {
+    // A token keeps the repositories it was minted with: a listing starts on a fresh one, so a grant changed on GitHub shows.
+    if (page === 1) this.tokens.delete("metadata");
+    const answer = await this.request(`/installation/repositories?per_page=${PER_PAGE_MAX}&page=${page}`, { token: { kind: "metadata" } });
+    if (answer.status === 404) throw new GitHubGone("installation_removed", "The GitHub installation is not connected to this organization.");
+    const body = this.json<{ total_count?: unknown; repositories?: unknown }>(answer);
+    const list = Array.isArray(body.repositories) ? body.repositories : [];
+    const repositories = list.map(grantedOf).filter((r): r is GrantedRepository => r !== null);
+    const more = typeof body.total_count === "number" ? page * PER_PAGE_MAX < body.total_count : list.length >= PER_PAGE_MAX;
+    return { repositories, more };
   }
 
   /** The repository as GitHub names it now, its id and default branch (setRepository's check). */

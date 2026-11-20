@@ -84,7 +84,7 @@ async function workIndex(repo: FakeRepo, over: Partial<TokenMinter> = {}) {
   const rpc: WorkIndexRpc = {
     repository: (a) => index.getRepository(a),
     setRepository: (a, c, by) => index.setRepository(a, c, by),
-    repositories: (a) => index.repositories(a),
+    repositories: (a, q) => index.repositories(a, q),
     items: (a, q) => index.items(a, q),
     item: (a, n) => index.item(a, n),
     history: (a, n, c) => index.history(a, n, c),
@@ -445,14 +445,26 @@ describe("Work API repositories", () => {
     expect(mints).toBe(2);
   });
 
-  it("stops at 500 repositories and says so", async () => {
+  it("lists a page at a time, and a later page of one installation", async () => {
     const repo = new FakeRepo({});
     repo.granted = Array.from({ length: 520 }, (_, i) => ({ id: i + 1, name: `r${i}`, pushedAt: "2026-11-01T00:00:00Z" }));
     const w = await workIndex(repo);
-    const body = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories"));
-    expect(body.installations[0].repositories).toHaveLength(500);
-    expect(body.installations[0].truncated).toBe(true);
-    expect(repo.log.filter((l) => l.startsWith("GET /installation/repositories"))).toHaveLength(5);
+    const first = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories"));
+    expect(first.installations[0]).toMatchObject({ nextPage: 2, truncated: false });
+    expect(first.installations[0].repositories).toHaveLength(100);
+    const last = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories?installation=12&page=6"));
+    expect(last.installations[0]).toMatchObject({ nextPage: null, truncated: false });
+    expect(last.installations[0].repositories).toHaveLength(21);
+    const other = await json(await call(w.env, computer([]).stub, person, "GET", "/work/repositories?installation=99&page=2"));
+    expect(other.installations).toEqual([]);
+    expect(repo.log.filter((l) => l.startsWith("GET /installation/repositories"))).toHaveLength(2);
+  });
+
+  it("refuses a later page of every installation, or past the last", async () => {
+    const w = await workIndex(new FakeRepo({}));
+    expect((await call(w.env, computer([]).stub, person, "GET", "/work/repositories?page=2")).status).toBe(400);
+    expect((await call(w.env, computer([]).stub, person, "GET", "/work/repositories?installation=12&page=101")).status).toBe(400);
+    expect((await call(w.env, computer([]).stub, person, "GET", "/work/repositories?installation=12&page=0")).status).toBe(400);
   });
 
   it("names the problem of an installation GitHub will not list, and answers 503 when GitHub is down", async () => {

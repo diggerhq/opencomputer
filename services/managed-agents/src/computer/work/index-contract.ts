@@ -41,13 +41,24 @@ export interface GrantingInstallation {
   accountType: string;
   /** The installation's page on GitHub, where a person grants it more repositories. */
   settingsUrl: string;
-  /** Most recently pushed first; never pushed last. */
+  /** This page of them, most recently pushed first; never pushed last. */
   repositories: GrantedRepository[];
-  /** True when the installation grants more than the list holds. */
+  /** The page holding more of them, or null on the last. */
+  nextPage: number | null;
+  /** True when the installation grants more than the pages a listing reads. */
   truncated: boolean;
   /** Set when GitHub would not list them (the repositories are then empty). A stable code. */
   problem: RepositoryProblem | null;
   problemMessage: string | null;
+}
+
+/** The last page a listing reads: 10,000 repositories an installation. */
+export const GRANTED_PAGES_MAX = 100;
+
+/** Which page to list, of every installation or of one (`GrantingInstallation.id`). */
+export interface RepositoriesQuery {
+  installationId?: string;
+  page?: number;
 }
 
 export type RepositoriesResult = { ok: true; installations: GrantingInstallation[] } | { ok: false; error: "unavailable"; retryAfterMs: number };
@@ -164,7 +175,7 @@ export type WorkWrite<T> = { ok: true; value: T } | { ok: false; status: number;
 export interface WorkIndexRpc {
   repository(accountId: string): Promise<Repository | null>;
   setRepository(accountId: string, choice: RepositoryChoice, by: WorkActor): Promise<WorkWrite<Repository>>;
-  repositories(accountId: string): Promise<RepositoriesResult>;
+  repositories(accountId: string, query?: RepositoriesQuery): Promise<RepositoriesResult>;
   items(accountId: string, query: ItemsQuery): Promise<ItemsResult>;
   item(accountId: string, number: number): Promise<ItemResult>;
   history(accountId: string, number: number, cursor?: string): Promise<HistoryResult>;

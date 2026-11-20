@@ -13,6 +13,7 @@
 import type { ApiCaller, ApiReply } from "../sessions-api.js";
 import type { SessionBrief, WorkContext, WorkContextOp, WorkRefsOp, WorkStampOp } from "./briefs.js";
 import type { IndexedItem, ItemsResult, Revision, WorkIndexRpc } from "./index-contract.js";
+import { GRANTED_PAGES_MAX } from "./index-contract.js";
 
 export interface Person {
   email: string;
@@ -87,7 +88,7 @@ export interface WorkDeps {
 const PARAMS: Record<WorkRouteOp, readonly string[]> = {
   "work.repository.get": [],
   "work.repository.put": [],
-  "work.repositories": [],
+  "work.repositories": ["installation", "page"],
   "work.items": ["stage", "cursor", "limit"],
   "work.item": [],
   "work.history": ["cursor"],
@@ -99,6 +100,7 @@ const NUMBER = /^[1-9]\d{0,8}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+const INSTALLATION_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const UNAVAILABLE: WorkReply = { status: 503, error: { code: "unavailable", message: "Work is unavailable. Try again shortly.", retryAfterMs: 5_000 } };
 
 const invalid = (message: string, field: string): WorkReply => ({ status: 400, error: { code: "invalid_request", message, field } });
@@ -129,8 +131,18 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
     }
 
     case "work.repositories": {
-      // What the organization's installations grant, for the picker; the index reads GitHub.
-      const result = await index.repositories(deps.accountId);
+      // What the organization's installations grant, a page at a time, for the picker; the index reads GitHub.
+      const installation = query.get("installation");
+      const rawPage = query.get("page");
+      if (installation !== null && !INSTALLATION_ID.test(installation)) return invalid("installation is an installation id.", "installation");
+      if (rawPage !== null && (!/^[1-9]\d{0,2}$/.test(rawPage) || Number(rawPage) > GRANTED_PAGES_MAX)) {
+        return invalid(`page is 1 to ${GRANTED_PAGES_MAX}.`, "page");
+      }
+      if (rawPage !== null && rawPage !== "1" && installation === null) return invalid("A later page is of one installation.", "installation");
+      const result = await index.repositories(deps.accountId, {
+        ...(installation !== null ? { installationId: installation } : {}),
+        ...(rawPage !== null ? { page: Number(rawPage) } : {}),
+      });
       if (!result.ok) return { ...UNAVAILABLE, error: { ...UNAVAILABLE.error!, retryAfterMs: result.retryAfterMs } };
       return { status: 200, body: { installations: result.installations } };
     }

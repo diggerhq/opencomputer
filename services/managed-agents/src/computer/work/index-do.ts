@@ -7,7 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { TokenMinter } from "./github.js";
 import { WorkIndex } from "./index.js";
-import type { ItemsQuery, RepositoryChoice, WorkActor, WorkIndexRpc } from "./index-contract.js";
+import type { ItemsQuery, RepositoriesQuery, RepositoryChoice, WorkActor, WorkIndexRpc } from "./index-contract.js";
 import type { IndexStore, StoreValue } from "./platform.js";
 
 export interface WorkIndexEnv {
@@ -54,8 +54,8 @@ export class WorkIndexDurableObject extends DurableObject<WorkIndexEnv> implemen
     return this.index.setRepository(accountId, choice, by);
   }
 
-  repositories(accountId: string) {
-    return this.index.repositories(accountId);
+  repositories(accountId: string, query?: RepositoriesQuery) {
+    return this.index.repositories(accountId, query);
   }
 
   items(accountId: string, query: ItemsQuery) {
