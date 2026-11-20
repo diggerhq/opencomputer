@@ -52,9 +52,11 @@ import {
 import type {
   HistoryResult,
   IndexedItem,
+  IndexedOwner,
   ItemResult,
   ItemsQuery,
   ItemsResult,
+  LinkedResult,
   OpenStamp,
   GrantingInstallation,
   ReadState,
@@ -94,6 +96,8 @@ export const READ_WAIT_MS = 5_000;
 export const PROBLEM_RETRY_MS = 60_000;
 export const PROBLEM_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_PAGE = 30;
+/** A session's linked items answered at most. */
+const LINKED_MAX = 50;
 const CLOSED_LIMIT_DEFAULT = 50;
 const CLOSED_LIMIT_MAX = 100;
 const FETCH_PARALLEL = 6;
@@ -104,7 +108,12 @@ const BIND_MAX = 90;
 /** Stored bodies re-parsed per step after PARSER_VERSION changes. */
 export const REPARSE_BATCH = 100;
 /** The tables' shape; another stored version drops them (the repository is the record). */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+/** A commit touching more item files than this is a bulk edit: no item's own activity, no owner. */
+export const BULK_ITEMS = 5;
+/** An item whose own last change is this recent is active (with a session at work, in the Worker). */
+export const RECENT_DAYS = 14;
+const DAY_MS = 86_400_000;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS items (
@@ -116,7 +125,9 @@ CREATE TABLE IF NOT EXISTS items (
   parsed TEXT NOT NULL,
   parser INTEGER NOT NULL,
   author_name TEXT, author_email TEXT, created_at TEXT,
-  updated_at TEXT, closed_at TEXT, closed_by TEXT
+  updated_at TEXT, closed_at TEXT, closed_by TEXT,
+  updated_name TEXT, updated_email TEXT,
+  activity_at TEXT, activity_name TEXT, activity_email TEXT
 );
 CREATE INDEX IF NOT EXISTS items_stage ON items (stage, number);
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, number INTEGER NOT NULL, blob TEXT NOT NULL);
@@ -148,7 +159,8 @@ export interface WorkIndexDeps {
 }
 
 /** The columns a list shows (no body). */
-const ROW_COLUMNS = "number, path, stage, blob, parsed, parser, author_name, author_email, created_at, updated_at, closed_at, closed_by";
+const ROW_COLUMNS =
+  "number, path, stage, blob, parsed, parser, author_name, author_email, created_at, updated_at, closed_at, closed_by, updated_name, updated_email, activity_at, activity_name, activity_email";
 
 interface ItemRow {
   number: number;
@@ -163,6 +175,13 @@ interface ItemRow {
   updated_at: string | null;
   closed_at: string | null;
   closed_by: string | null;
+  /** The author of the latest commit that touched the file. */
+  updated_name: string | null;
+  updated_email: string | null;
+  /** The latest commit that touched the file and was not a bulk edit, and its author. */
+  activity_at: string | null;
+  activity_name: string | null;
+  activity_email: string | null;
 }
 
 type Row = Record<string, StoreValue>;
@@ -348,7 +367,13 @@ export class WorkIndex {
     this.bind(accountId);
     this.noteRead();
     const { head, asOf, version } = this.readState();
-    return { head, asOf, version };
+    const recent = this.store.exec<{ n: number }>("SELECT COUNT(*) AS n FROM items WHERE stage = 'open' AND activity_at >= ?", this.recentSince())[0]!.n;
+    return { head, asOf, version, recent };
+  }
+
+  /** The commits' time format (no milliseconds) RECENT_DAYS ago: a change at or after it is recent. */
+  private recentSince(): string {
+    return new Date(this.now() - RECENT_DAYS * DAY_MS).toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
   /**
@@ -480,6 +505,21 @@ export class WorkIndex {
       if (row && row.parser === 0) return { ok: false, error: "unavailable", retryAfterMs: Math.max(1000, this.pausedUntil() - this.now(), 5_000) };
     }
     return { ok: true, ...this.readState(), repository: this.repository(), item: row ? this.indexed([row])[0]! : null, body: row ? row.body : null };
+  }
+
+  /**
+   * The items linked to a session: their commits carry one of `refs` in a `Session:` trailer. Open
+   * and closed, by number; at most LINKED_MAX. Bodies not read yet show their slug.
+   */
+  async linked(accountId: string, refs: string[]): Promise<LinkedResult> {
+    this.bind(accountId);
+    this.noteRead();
+    const wanted = [...new Set(refs.filter((r) => typeof r === "string" && r.length > 0 && r.length <= 128))].slice(0, BIND_MAX);
+    const numbers = wanted.length
+      ? this.store.exec<{ number: number } & Row>(`SELECT DISTINCT number FROM links WHERE session_id IN (${marks(wanted)}) ORDER BY number LIMIT ?`, ...wanted, LINKED_MAX).map((r) => r.number)
+      : [];
+    const rows = numbers.length ? this.store.exec<ItemRow & Row>(`SELECT ${ROW_COLUMNS} FROM items WHERE number IN (${marks(numbers)}) ORDER BY number`, ...numbers) : [];
+    return { ok: true, ...this.readState(), repository: this.repository(), items: this.indexed(rows) };
   }
 
   /**
@@ -725,7 +765,8 @@ export class WorkIndex {
         store.exec(
           `INSERT INTO items (number, path, stage, blob, body, parsed, parser) VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (number) DO UPDATE SET path = excluded.path, stage = excluded.stage, blob = excluded.blob, body = excluded.body, parsed = excluded.parsed,
-             parser = excluded.parser, author_name = NULL, author_email = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL, closed_by = NULL`,
+             parser = excluded.parser, author_name = NULL, author_email = NULL, created_at = NULL, updated_at = NULL, closed_at = NULL, closed_by = NULL,
+             updated_name = NULL, updated_email = NULL, activity_at = NULL, activity_name = NULL, activity_email = NULL`,
           number,
           w.path,
           ip.stage,
@@ -1024,6 +1065,10 @@ export class WorkIndex {
     const store = this.store;
     const trailers = sessionTrailers(c.message);
     const at = c.at ?? "";
+    const author = authorName(c);
+    const email = c.authorEmail?.trim().toLowerCase() || null;
+    // A commit across many items (a rename, a sweep) is nobody's work on any one of them.
+    const bulk = itemNumbers(files).size > BULK_ITEMS;
     for (const f of files) {
       const ip = itemPath(f.filename);
       const from = f.previousFilename ? itemPath(f.previousFilename) : null;
@@ -1038,14 +1083,19 @@ export class WorkIndex {
           summaryOf(c.message),
           trailers[0] ?? null,
         );
-        const row = store.exec<{ path: string; stage: string; created_at: string | null; closed_at: string | null; updated_at: string | null } & Row>(
-          "SELECT path, stage, created_at, closed_at, updated_at FROM items WHERE number = ?",
+        const row = store.exec<{ path: string; stage: string; created_at: string | null; closed_at: string | null; updated_at: string | null; activity_at: string | null } & Row>(
+          "SELECT path, stage, created_at, closed_at, updated_at, activity_at FROM items WHERE number = ?",
           number,
         )[0];
         if (!row) continue;
         for (const sessionId of trailers) this.link(number, sessionId, at);
         if (c.at === null) continue;
-        if (row.updated_at === null || c.at > row.updated_at) store.exec("UPDATE items SET updated_at = ? WHERE number = ?", c.at, number);
+        if (row.updated_at === null || c.at > row.updated_at) {
+          store.exec("UPDATE items SET updated_at = ?, updated_name = ?, updated_email = ? WHERE number = ?", c.at, author, email, number);
+        }
+        if (!bulk && (row.activity_at === null || c.at > row.activity_at)) {
+          store.exec("UPDATE items SET activity_at = ?, activity_name = ?, activity_email = ? WHERE number = ?", c.at, author, email, number);
+        }
         const mine = ip !== null && ip.number === number;
         if (mine && (f.status === "added" || (f.status === "renamed" && !from)) && (row.created_at === null || c.at < row.created_at)) {
           store.exec("UPDATE items SET created_at = ?, author_name = ?, author_email = ? WHERE number = ?", c.at, c.authorName.slice(0, 200), c.authorEmail, number);
@@ -1176,6 +1226,7 @@ export class WorkIndex {
     for (const part of chunks(urls)) {
       for (const p of store.exec<{ url: string; state: string | null; title: string | null } & Row>(`SELECT url, state, title FROM pulls WHERE url IN (${marks(part)})`, ...part)) pulls.set(p.url, p);
     }
+    const recentSince = this.recentSince();
     const blobBase = `https://github.com/${repo.owner}/${repo.name}/blob/${repo.branch.split("/").map(encodeURIComponent).join("/")}`;
     return parsedRows.map(({ r, parsed }) => {
       const stage = r.stage === "closed" ? "closed" : "open";
@@ -1189,7 +1240,7 @@ export class WorkIndex {
         title: parsed.title,
         stateLine: parsed.stateLine,
         tags: parsed.tags,
-        owner: parsed.owner,
+        owner: ownerOf(parsed.owner, r),
         author: r.author_name !== null ? { name: r.author_name, email: r.author_email } : null,
         left: parsed.left,
         readyToClose: readyToClose(stage, parsed),
@@ -1201,6 +1252,8 @@ export class WorkIndex {
         }),
         sessionIds: links.get(r.number) ?? [],
         updatedAt: r.updated_at,
+        lastActivityAt: r.activity_at,
+        recent: r.activity_at !== null && r.activity_at >= recentSince,
         createdAt: r.created_at,
         closedAt: stage === "closed" ? r.closed_at : null,
         closedBy: stage === "closed" ? r.closed_by : null,
@@ -1259,10 +1312,38 @@ function safeParse(ip: ItemPath, body: string): ParsedItem {
 /** Who closed: the commit's author, or null when a session made the commit (it says "closed in a session"). */
 function closerName(c: CommitInfo): string | null {
   if (sessionTrailers(c.message).length) return null;
+  return authorName(c);
+}
+
+/** The commit author's name without the " via Computer" a session's commit carries; null when empty. */
+function authorName(c: CommitInfo): string | null {
   // By hand, not `/\s+via Computer$/`: an unanchored `\s+` backtracks on a run of spaces.
   const name = c.authorName.slice(0, 200).trim();
   const suffix = " via computer";
   return (name.toLowerCase().endsWith(suffix) ? name.slice(0, -suffix.length) : name).trim() || null;
+}
+
+/** The items a commit's files touch, by number (a rename counts both ends). */
+function itemNumbers(files: FileChange[]): Set<number> {
+  const out = new Set<number>();
+  for (const f of files) {
+    const ip = itemPath(f.filename);
+    if (ip) out.add(ip.number);
+    const from = f.previousFilename ? itemPath(f.previousFilename) : null;
+    if (from) out.add(from.number);
+  }
+  return out;
+}
+
+/**
+ * The frontmatter owner; else the author of the latest change that was not a bulk edit; else of
+ * the latest change of any kind. A commit with no email names no owner.
+ */
+function ownerOf(declared: string | null, r: ItemRow): IndexedOwner | null {
+  if (declared) return { email: declared, name: null, source: "declared" };
+  if (r.activity_email) return { email: r.activity_email, name: r.activity_name, source: "derived" };
+  if (r.updated_email) return { email: r.updated_email, name: r.updated_name, source: "derived" };
+  return null;
 }
 
 function summaryOf(message: string): string {

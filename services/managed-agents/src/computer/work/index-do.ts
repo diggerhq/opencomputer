@@ -70,6 +70,10 @@ export class WorkIndexDurableObject extends DurableObject<WorkIndexEnv> implemen
     return this.index.history(accountId, number, cursor);
   }
 
+  linked(accountId: string, refs: string[]) {
+    return this.index.linked(accountId, refs);
+  }
+
   poke(accountId: string) {
     return this.index.poke(accountId);
   }

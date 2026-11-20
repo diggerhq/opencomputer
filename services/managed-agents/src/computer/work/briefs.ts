@@ -29,6 +29,12 @@ export interface WorkStampOp {
   op: "work.stamp";
 }
 
+/** A session's references, as a `Session:` trailer may name it: its public id and its key. */
+export interface WorkRefsOp {
+  op: "work.refs";
+  sessionId: string;
+}
+
 /**
  * The stamp's counter and triggers, and the indexes the context's email lookups use. Run once the
  * `sessions` table has its API columns and `people` exists.
@@ -89,6 +95,17 @@ export interface WorkContextDeps {
 }
 
 const NO_REPLY = /noreply/i;
+
+/**
+ * What a commit's `Session:` trailer may name for the session: its public id, and the key a host
+ * before the public ids wrote (the hook writes `SP_SESSION_ID`, which is either). 404 for a session
+ * the caller may not see, as the sessions routes answer.
+ */
+export function workRefs(deps: Pick<WorkContextDeps, "api">, caller: ApiCaller, op: WorkRefsOp): ApiReply {
+  const row = typeof op.sessionId === "string" ? deps.api.visible(caller, op.sessionId) : undefined;
+  if (!row?.sessionId) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
+  return { status: 200, body: { refs: [...new Set([row.sessionId, row.key].filter((r) => !!r))] } };
+}
 
 export function workContext(deps: WorkContextDeps, caller: ApiCaller, op: WorkContextOp): ApiReply {
   const sessions: Record<string, SessionBrief> = {};

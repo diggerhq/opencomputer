@@ -12,8 +12,10 @@ import {
   PULLS_EVERY_MS,
   PULLS_PER_QUERY,
   READ_WAIT_MS,
+  RECENT_DAYS,
   UNREADABLE_RECHECK_MS,
   REPARSE_BATCH,
+  BULK_ITEMS,
   WorkIndex,
 } from "../src/computer/work/index.js";
 import type { IndexedItem, ItemsResult } from "../src/computer/work/index-contract.js";
@@ -175,6 +177,82 @@ describe("build", () => {
     expect(two.closedBy).toBe("Cy");
     expect(two.closedAt).toBe(repo.commits.get(repo.head!)!.at);
     expect(s.walkDone()).toBe(true);
+  });
+});
+
+describe("activity and owners", () => {
+  // The fake repository's commits start on 2026-11-01; the index's clock is set a day later.
+  const early = () => new FakeClock(Date.parse("2026-11-02T00:00:00Z"));
+  const bulk = (tag: string) => Object.fromEntries(Array.from({ length: BULK_ITEMS + 1 }, (_, i) => [`work/${i + 1}-x.md`, item(i + 1, `X ${i + 1}`, tag)]));
+
+  it("an item's activity and derived owner are its latest commit touching at most five items; a bulk edit only moves updatedAt", async () => {
+    const repo = new FakeRepo({});
+    repo.commit(bulk("one"), "Import", { name: "Ana", email: "ana@acme.test" });
+    repo.commit({ "work/1-x.md": item(1, "X 1", "two") }, "Edit 1", { name: "Bob via Computer", email: "Bob@Acme.test" });
+    const own = repo.commits.get(repo.head!)!.at;
+    repo.commit(bulk("three"), "Retag everything", { name: "Cy via Computer", email: "cy@acme.test" });
+    const s = setup(repo, { clock: early() });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await s.drain();
+    s.tick(11 * 60_000);
+    await s.drain();
+    expect(s.walkDone()).toBe(true);
+    const one = (await itemOf(s, 1))!;
+    expect(one.updatedAt).toBe(repo.commits.get(repo.head!)!.at);
+    expect(one.lastActivityAt).toBe(own);
+    expect(one.owner).toEqual({ email: "bob@acme.test", name: "Bob", source: "derived" });
+    expect(one.recent).toBe(true);
+    // Touched only by bulk edits: no activity, and the latest commit's author as the owner.
+    const two = (await itemOf(s, 2))!;
+    expect(two.lastActivityAt).toBeNull();
+    expect(two.recent).toBe(false);
+    expect(two.owner).toEqual({ email: "cy@acme.test", name: "Cy", source: "derived" });
+  });
+
+  it("the frontmatter owner is declared and wins over commits", async () => {
+    const repo = new FakeRepo({});
+    repo.commit({ "work/1-a.md": `---\nowner: dee@acme.test\n---\n${item(1, "A")}` }, "Add 1", { name: "Bob", email: "bob@acme.test" });
+    const s = setup(repo, { clock: early() });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await s.drain();
+    expect((await itemOf(s, 1))!.owner).toEqual({ email: "dee@acme.test", name: null, source: "declared" });
+  });
+
+  it("an advance sets activity from the compare's files; recent ages out after 14 days and the stamp counts it", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A"), "work/2-b.md": item(2, "B") });
+    const s = setup(repo, { clock: early() });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    await s.settle();
+    await s.drain();
+    repo.commit({ "work/1-a.md": item(1, "A", "more") }, "Edit 1", { name: "Bob via Computer", email: "bob@acme.test" });
+    await s.index.poke(ORG);
+    await s.settle();
+    const one = (await itemOf(s, 1))!;
+    expect(one).toMatchObject({ lastActivityAt: repo.commits.get(repo.head!)!.at, recent: true, owner: { name: "Bob", source: "derived" } });
+    const before = await s.index.stamp(ORG);
+    expect(before.recent).toBeGreaterThanOrEqual(1);
+    s.tick(RECENT_DAYS * 86_400_000);
+    expect((await itemOf(s, 1))!.recent).toBe(false);
+    const after = await s.index.stamp(ORG);
+    expect(after.recent).toBe(0);
+  });
+
+  it("linked answers the items a session's id or key names, once each", async () => {
+    const repo = new FakeRepo({ "work/1-a.md": item(1, "A"), "work/2-b.md": item(2, "B"), "work/3-c.md": item(3, "C") });
+    const s = await connect(repo);
+    repo.commit({ "work/1-a.md": item(1, "A", "x") }, "Edit 1\n\nSession: cs_1");
+    repo.commit({ "work/2-b.md": item(2, "B", "x") }, "Edit 2\n\nSession: T1:C1:111");
+    repo.commit({ "work/1-a.md": item(1, "A", "y") }, "Edit 1 again\n\nSession: T1:C1:111");
+    await s.index.poke(ORG);
+    await s.settle();
+    s.tick(11 * 60_000);
+    await s.drain();
+    const r = await s.index.linked(ORG, ["cs_1", "T1:C1:111"]);
+    expect(r.ok && r.items.map((i) => i.number)).toEqual([1, 2]);
+    const none = await s.index.linked(ORG, ["cs_none"]);
+    expect(none.ok && none.items).toEqual([]);
   });
 });
 
@@ -801,6 +879,37 @@ describe("call budgets", () => {
     expect(after.get(1)!.updatedAt).not.toBeNull();
     expect(after.get(150)!.sessionIds).toEqual([]);
     expect(s.walkDone()).toBe(true);
+  });
+
+  it("150 items and 300 commits: the build as before, then a walk of a commit listing page per 100 and a detail per commit; activity and owners cost no more", async () => {
+    const files: Record<string, string> = {};
+    for (let n = 1; n <= 150; n++) files[`work/${n}-item.md`] = item(n, `Item ${n}`);
+    const repo = new FakeRepo(files);
+    for (let k = 0; k < 300; k++) {
+      const n = (k % 150) + 1;
+      repo.commit({ [`work/${n}-item.md`]: item(n, `Item ${n}`, `edit ${k}`) }, `Edit ${n}`, { name: `P${k % 7} via Computer`, email: `p${k % 7}@acme.test` });
+    }
+    const s = setup(repo, { clock: new FakeClock(Date.parse("2026-11-02T00:00:00Z")) });
+    await s.index.setRepository(ORG, { installationId: "inst_1", owner: "acme", name: "knowledge" }, by);
+    repo.take();
+    await s.settle();
+    for (let i = 0; i < 10 && s.index["meta"]("build") !== null; i++) {
+      s.tick(1000);
+      await s.index.alarm();
+    }
+    expect(repo.take()).toHaveLength(1 + 2 + 150);
+    s.tick(11 * 60_000);
+    await s.drain();
+    expect(s.walkDone()).toBe(true);
+    const walk = repo.take();
+    // 301 commits touch work/ (the import and 300 edits): 4 pages of 100, and done/'s one page.
+    expect(count(walk, /\/commits\?/)).toBe(5);
+    expect(count(walk, /\/commits\/[0-9a-f]{40}/)).toBe(301);
+    expect(walk).toHaveLength(5 + 301);
+    const r = byNumber(await open(s));
+    // Item 1 was last edited by the 151st edit, k = 150.
+    expect(r.get(1)!.owner).toMatchObject({ source: "derived", name: "P3", email: "p3@acme.test" });
+    expect(r.get(1)!.lastActivityAt).not.toBeNull();
   });
 
   it("a board poll on an unchanged head is one ref request a 10 s window, a 304; an item page is no call", async () => {

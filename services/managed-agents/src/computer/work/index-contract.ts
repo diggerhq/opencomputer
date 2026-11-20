@@ -78,6 +78,20 @@ export interface OpenStamp {
   head: string | null;
   asOf: string | null;
   version: number;
+  /** How many open items changed within RECENT_DAYS: moves when one ages out, with no commit. */
+  recent: number;
+}
+
+/**
+ * Who owns an item. `declared`: the frontmatter `owner:`. `derived`: the author of the latest commit
+ * that touched the file and was not a bulk edit, else of its latest commit of any kind.
+ */
+export interface IndexedOwner {
+  /** Lowercased. */
+  email: string;
+  /** The commit author's name without " via Computer"; null for a declared owner. */
+  name: string | null;
+  source: "declared" | "derived";
 }
 
 /** An item as the index holds it, before the Worker joins sessions and people. */
@@ -90,8 +104,8 @@ export interface IndexedItem {
   title: string;
   stateLine: string | null;
   tags: string[];
-  /** The frontmatter owner email, lowercased. */
-  owner: string | null;
+  /** Declared, else derived from the commits; null when neither is known. */
+  owner: IndexedOwner | null;
   /** The author of the commit that added the file; null until the index has seen that commit. */
   author: { name: string; email: string | null } | null;
   left: number | null;
@@ -101,6 +115,10 @@ export interface IndexedItem {
   /** Sessions with a commit that touched the file, most recent first. */
   sessionIds: string[];
   updatedAt: string | null;
+  /** The latest commit that touched the file and was not a bulk edit (BULK_ITEMS); null when none is read. */
+  lastActivityAt: string | null;
+  /** `lastActivityAt` is within RECENT_DAYS of now. */
+  recent: boolean;
   createdAt: string | null;
   closedAt: string | null;
   /** The name of the person who closed it; null when unknown or closed in a session. */
@@ -123,6 +141,9 @@ export type ItemResult =
   | (ReadState & { ok: true; repository: Repository | null; item: IndexedItem | null; body: string | null })
   /** The body is not read yet and GitHub did not give it within the read's wait. */
   | { ok: false; error: "unavailable"; retryAfterMs: number };
+
+/** The items whose commits name one of a session's references in a `Session:` trailer. */
+export type LinkedResult = ReadState & { ok: true; repository: Repository | null; items: IndexedItem[] };
 
 export interface Revision {
   sha: string;
@@ -147,6 +168,8 @@ export interface WorkIndexRpc {
   items(accountId: string, query: ItemsQuery): Promise<ItemsResult>;
   item(accountId: string, number: number): Promise<ItemResult>;
   history(accountId: string, number: number, cursor?: string): Promise<HistoryResult>;
+  /** Open and closed items linked to any of `refs` (a session's public id and its runner key), by number. */
+  linked(accountId: string, refs: string[]): Promise<LinkedResult>;
   poke(accountId: string): Promise<void>;
   stamp(accountId: string): Promise<OpenStamp>;
 }

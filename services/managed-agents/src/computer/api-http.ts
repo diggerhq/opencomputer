@@ -25,14 +25,14 @@ import type { LogReadRefusal, SessionLogRpc } from "./session-log-contract.js";
 import { isSessionId, memberId } from "./session-ids.js";
 import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
 import type { SecretsApiOp } from "./secrets-store.js";
-import type { WorkContextOp, WorkStampOp } from "./work/briefs.js";
+import type { WorkContextOp, WorkRefsOp, WorkStampOp } from "./work/briefs.js";
 import { type WorkRoute, workApi } from "./work/api.js";
 import type { WorkIndexRpc } from "./work/index-contract.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
-  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp): Promise<ApiReply>;
+  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply>;
 }
 
 const BODY_MAX_BYTES = 512 * 1024;
@@ -69,6 +69,8 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (p[0] === "work") {
     if (p[1] === "repository" && p.length === 2) return method === "GET" ? { op: "work.repository.get" } : method === "PUT" ? { op: "work.repository.put" } : null;
     if (p[1] === "repositories") return is("GET", 2) ? { op: "work.repositories" } : null;
+    // The items a session worked on, for the session's screen.
+    if (p[1] === "sessions") return is("GET", 4) && p[3] === "items" ? { op: "work.session.items", sub: p[2] } : null;
     if (p[1] !== "items") return null;
     if (is("GET", 2)) return { op: "work.items" };
     if (is("GET", 3)) return { op: "work.item", sub: p[2] };
@@ -272,7 +274,7 @@ const OPS = new Set([
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
-  "work.repository.get", "work.repository.put", "work.repositories", "work.items", "work.item", "work.history",
+  "work.repository.get", "work.repository.put", "work.repositories", "work.items", "work.item", "work.history", "work.session.items",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */

@@ -11,13 +11,18 @@
 // Every read answers `Work-As-Of`, when the head was last confirmed against GitHub.
 
 import type { ApiCaller, ApiReply } from "../sessions-api.js";
-import type { SessionBrief, WorkContext, WorkContextOp, WorkStampOp } from "./briefs.js";
+import type { SessionBrief, WorkContext, WorkContextOp, WorkRefsOp, WorkStampOp } from "./briefs.js";
 import type { IndexedItem, ItemsResult, Revision, WorkIndexRpc } from "./index-contract.js";
 
 export interface Person {
   email: string;
   name: string | null;
   id: string | null;
+}
+
+/** The owner: a person, and whether the doc names them (`declared`) or the commits do (`derived`). */
+export interface Owner extends Person {
+  source: "declared" | "derived";
 }
 
 export interface ItemAttention {
@@ -35,8 +40,9 @@ export interface Item {
   title: string;
   stateLine: string | null;
   tags: string[];
-  owner: Person | null;
+  owner: Owner | null;
   author: Person | null;
+  /** The caller owns it, declared or derived. */
   mine: boolean;
   left: number | null;
   readyToClose: boolean;
@@ -48,16 +54,20 @@ export interface Item {
   unpublished: boolean;
   /** The last commit that changed the file; null until the index has dated it. */
   updatedAt: string | null;
+  /** The last commit that changed the file and was not a bulk edit; null when none is known. */
+  lastActivityAt: string | null;
+  /** `lastActivityAt` within the last 14 days, or a linked session is working or waiting (`attention`). */
+  active: boolean;
   createdAt: string | null;
   closedAt: string | null;
   closedBy: string | null;
 }
 
-export type WorkRouteOp = "work.repository.get" | "work.repository.put" | "work.repositories" | "work.items" | "work.item" | "work.history";
+export type WorkRouteOp = "work.repository.get" | "work.repository.put" | "work.repositories" | "work.items" | "work.item" | "work.history" | "work.session.items";
 
 export interface WorkRoute {
   op: WorkRouteOp;
-  /** The item number's path segment, unvalidated. */
+  /** The item number's (or, for `work.session.items`, the session id's) path segment, unvalidated. */
   sub?: string;
 }
 
@@ -69,8 +79,8 @@ export interface WorkDeps {
   caller: ApiCaller;
   /** The Work index, or null when the binding is missing. */
   index: WorkIndexRpc | null;
-  /** The Computer object's `work.context` and `work.stamp`. */
-  context(op: WorkContextOp | WorkStampOp): Promise<ApiReply>;
+  /** The Computer object's `work.context`, `work.stamp` and `work.refs`. */
+  context(op: WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply>;
 }
 
 /** The query parameters each route takes; any other is refused. */
@@ -81,10 +91,12 @@ const PARAMS: Record<WorkRouteOp, readonly string[]> = {
   "work.items": ["stage", "cursor", "limit"],
   "work.item": [],
   "work.history": ["cursor"],
+  "work.session.items": [],
 };
 
 const CLOSED_LIMIT_MAX = 100;
 const NUMBER = /^[1-9]\d{0,8}$/;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const UNAVAILABLE: WorkReply = { status: 503, error: { code: "unavailable", message: "Work is unavailable. Try again shortly.", retryAfterMs: 5_000 } };
@@ -139,7 +151,7 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
         const [open, sessions] = await Promise.all([index.stamp(deps.accountId), deps.context({ op: "work.stamp" })]);
         if (sessions.error) return sessions;
         stamp = String((sessions.body as { stamp: number }).stamp);
-        const etag = await etagOf(open.head, open.version, stamp, deps.caller);
+        const etag = await etagOf(open.head, open.version, open.recent, stamp, deps.caller);
         if (ifNoneMatch !== null && matches(ifNoneMatch, etag)) return { status: 304, etag, asOf: open.asOf };
       }
       const cursor = query.get("cursor");
@@ -154,7 +166,8 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
       if (stage === "closed") return { status: 200, body: { items: composed.items, nextCursor: result.nextCursor }, asOf: result.asOf };
       const page = { repository: result.repository, head: result.head, asOf: result.asOf, building: result.building, items: composed.items };
       // The list's own head and version: the ETag never names content newer than the page.
-      return { status: 200, body: page, etag: await etagOf(result.head, result.version, stamp!, deps.caller), asOf: result.asOf };
+      const recent = result.items.filter((i) => i.stage === "open" && i.recent).length;
+      return { status: 200, body: page, etag: await etagOf(result.head, result.version, recent, stamp!, deps.caller), asOf: result.asOf };
     }
 
     case "work.item": {
@@ -166,6 +179,18 @@ export async function workApi(deps: WorkDeps, route: WorkRoute, query: URLSearch
       const composed = await compose(deps, [result.item]);
       if ("status" in composed) return composed;
       return { status: 200, body: { item: composed.items[0]!, body: result.body }, asOf: result.asOf };
+    }
+
+    case "work.session.items": {
+      // The session must be one the caller may see; its id and key are what trailers name.
+      const sessionId = route.sub ?? "";
+      if (!SESSION_ID.test(sessionId)) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
+      const refs = await deps.context({ op: "work.refs", sessionId });
+      if (refs.error) return refs;
+      const result = await index.linked(deps.accountId, (refs.body as { refs: string[] }).refs);
+      const composed = await compose(deps, result.items);
+      if ("status" in composed) return composed;
+      return { status: 200, body: { items: composed.items }, asOf: result.asOf };
     }
 
     case "work.history": {
@@ -233,7 +258,7 @@ export function branchName(name: string): boolean {
 /** The index's items joined with the caller's sessions and the members behind emails. */
 async function compose(deps: WorkDeps, items: IndexedItem[]): Promise<{ items: Item[] } | WorkReply> {
   const sessionIds = [...new Set(items.flatMap((i) => i.sessionIds))];
-  const emails = [...new Set(items.flatMap((i) => [i.owner, i.author?.email ?? null]).filter((e): e is string => !!e).map((e) => e.toLowerCase()))];
+  const emails = [...new Set(items.flatMap((i) => [i.owner?.email ?? null, i.author?.email ?? null]).filter((e): e is string => !!e).map((e) => e.toLowerCase()))];
   const context = items.length ? await workContext(deps, sessionIds, emails) : { sessions: {}, people: {}, callerEmails: [] };
   if ("status" in context) return context;
   const mine = new Set(context.callerEmails.map((e) => e.toLowerCase()));
@@ -244,6 +269,7 @@ async function compose(deps: WorkDeps, items: IndexedItem[]): Promise<{ items: I
   return {
     items: items.map((i): Item => {
       const briefs = linkedBriefs(i.sessionIds, context.sessions);
+      const attention = itemAttention(briefs, deps.caller.member);
       return {
         number: i.number,
         stage: i.stage,
@@ -252,17 +278,19 @@ async function compose(deps: WorkDeps, items: IndexedItem[]): Promise<{ items: I
         title: i.title,
         stateLine: i.stateLine,
         tags: i.tags,
-        owner: i.owner ? person(i.owner) : null,
+        owner: i.owner ? { ...person(i.owner.email, i.owner.name), source: i.owner.source } : null,
         author: i.author?.email ? person(i.author.email, i.author.name) : null,
-        mine: i.owner !== null && mine.has(i.owner.toLowerCase()),
+        mine: i.owner !== null && mine.has(i.owner.email.toLowerCase()),
         left: i.left,
         readyToClose: i.readyToClose,
         warnings: i.warnings,
         pullRequests: i.pullRequests,
-        attention: itemAttention(briefs, deps.caller.member),
+        attention,
         sessions: briefs.map((b) => ({ id: b.id, title: b.title, ownerName: b.ownerName, status: b.status })),
         unpublished: false,
         updatedAt: i.updatedAt ?? i.closedAt ?? i.createdAt,
+        lastActivityAt: i.lastActivityAt,
+        active: i.recent || attention !== null,
         createdAt: i.createdAt,
         closedAt: i.closedAt,
         closedBy: i.closedBy,
@@ -308,12 +336,13 @@ export function itemAttention(briefs: SessionBrief[], member: string): ItemAtten
 }
 
 /**
- * The open list's ETag: the head, then a digest of the index's version, the Computer object's
- * session stamp and the caller (attention, sessions, people and pull request states change without
- * a commit; `mine` and visibility are the caller's).
+ * The open list's ETag: the head, then a digest of the index's version, how many open items are
+ * recent (one ages out of `active` with no commit), the Computer object's session stamp and the
+ * caller (attention, sessions, people and pull request states change without a commit; `mine` and
+ * visibility are the caller's).
  */
-export async function etagOf(head: string | null, version: number, sessions: string, caller: Pick<ApiCaller, "member" | "email">): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([version, sessions, caller.member, caller.email])));
+export async function etagOf(head: string | null, version: number, recent: number, sessions: string, caller: Pick<ApiCaller, "member" | "email">): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([version, recent, sessions, caller.member, caller.email])));
   const stamp = [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
   return `"${head ?? "none"}-${stamp}"`;
 }
