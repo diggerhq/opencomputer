@@ -1,8 +1,9 @@
 // Preview data for the Work routes (tech design 3.10): the board, an item and
 // its history. Invented people and work only.
 //
-// `?work=` picks a scenario: none (no repository set), empty (a repository
-// with nothing tracked), mine-empty (nothing owned by the viewer), building
+// `?work=` picks a scenario: no-github (GitHub not connected, so no
+// repository), none (no repository set), empty (a repository with nothing
+// tracked), mine-empty (nothing owned by the viewer), building
 // (the first read of the repository), problem (the repository cannot be
 // read), missing (the routes answer 404, as before the service ships).
 
@@ -535,7 +536,7 @@ export function workMock(
   const s = scenario()
   if (s === 'missing') throw new ApiError('Not found', 404)
   const current =
-    s === 'none'
+    s === 'none' || s === 'no-github'
       ? null
       : s === 'problem' && repository
         ? { ...repository, ...problemOf() }
@@ -550,7 +551,7 @@ export function workMock(
     return { repository: current }
   }
   if (rest === '/repositories' && method === 'GET') {
-    return { installations: granting }
+    return { installations: s === 'no-github' ? [] : granting }
   }
   const mineEmpty = s === 'mine-empty'
   const visible = (list: Json[]) =>
