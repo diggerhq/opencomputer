@@ -371,6 +371,8 @@ export class WorkGitHub {
     const repositories: GrantedRepository[] = [];
     let total: number | null = null;
     let full = false;
+    // A token keeps the repositories it was minted with: mint afresh, so a grant changed on GitHub shows.
+    this.tokens.delete("metadata");
     for (let page = 1; repositories.length < max; page++) {
       const answer = await this.request(`/installation/repositories?per_page=${PER_PAGE_MAX}&page=${page}`, { token: { kind: "metadata" } });
       if (answer.status === 404) throw new GitHubGone("installation_removed", "The GitHub installation is not connected to this organization.");

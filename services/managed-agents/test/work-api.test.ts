@@ -435,6 +435,16 @@ describe("Work API repositories", () => {
     expect(repo.log).toContain("GET /installation/repositories?per_page=100&page=1");
   });
 
+  it("mints a fresh token for every listing, so a grant changed on GitHub shows at once", async () => {
+    let mints = 0;
+    const w = await workIndex(new FakeRepo({}), {
+      mintGitHubInstallationToken: async () => ({ outcome: "minted", token: `ghs_${++mints}`, expiresAt: "2099-01-01T00:00:00Z" }),
+    });
+    await call(w.env, computer([]).stub, person, "GET", "/work/repositories");
+    await call(w.env, computer([]).stub, person, "GET", "/work/repositories");
+    expect(mints).toBe(2);
+  });
+
   it("stops at 500 repositories and says so", async () => {
     const repo = new FakeRepo({});
     repo.granted = Array.from({ length: 520 }, (_, i) => ({ id: i + 1, name: `r${i}`, pushedAt: "2026-11-01T00:00:00Z" }));
