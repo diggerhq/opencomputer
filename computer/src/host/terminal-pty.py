@@ -5,15 +5,21 @@
 # (or, with tty false, three pipes) and speaks frames on stdin/stdout:
 #
 #   frame = type (1 byte) | length (u32 big-endian) | payload
-#   in:  S start {cols, rows, command, tty, term, env, cwd}   D data   R resize {cols, rows}
-#        E eof (tty: ^D; pipes: close stdin)   H hang up (stdin closing counts as H)
+#   in:  S start {cols, rows, command, tty, term, env, cwd, inherit}   D data   R resize {cols, rows}
+#        E eof (tty: ^D; pipes: close stdin)   H hang up (stdin closing and SIGHUP count as H)
 #   out: O output   X standard error (tty false)   Z exit {exitCode, signal}, last
 #
 # Invariants: the child's environment is exactly `env` from the start frame
 # (no secrets: the host builds it from a fixed list, and BASH_ENV/ENV are never
-# set); the child leads its own session and process group; a hang-up sends
-# SIGHUP to the group (again every 0.5 s) and SIGKILL 5 s later; every byte of output is framed
-# before `Z`; this process exits right after `Z`.
+# set). With `inherit` (work 103: the helper runs inside a session's
+# container, by `podman exec`) it is this process's own environment, which is
+# the container's and holds no credential, with `env` over it and without
+# BASH_ENV and ENV. There a SIGHUP is how the host hangs up a helper whose
+# `podman exec` client is gone (`pkill -HUP -f`; extra arguments, the
+# terminal's unit name, are only there for it to match). The child leads its
+# own session and process group; a hang-up sends SIGHUP to the group (again
+# every 0.5 s) and SIGKILL 5 s later; every byte of output is framed before
+# `Z`; this process exits right after `Z`.
 
 import fcntl
 import json
@@ -66,7 +72,8 @@ def winsize(fd, cols, rows):
 
 
 def start(spec):
-    env = {k: str(v) for k, v in (spec.get('env') or {}).items()}
+    env = {k: v for k, v in os.environ.items() if k not in ('BASH_ENV', 'ENV')} if spec.get('inherit') else {}
+    env.update({k: str(v) for k, v in (spec.get('env') or {}).items()})
     env['TERM'] = spec.get('term') or 'xterm-256color'
     shell = env.get('SHELL') or '/bin/bash'
     argv = ['/bin/bash', '-lc', spec['command']] if spec.get('command') else [shell, '-l']
@@ -125,6 +132,10 @@ def main():
     exited_at = None
     stdin_open = True
     open_out = {}
+    # A SIGHUP wakes the loop through a pipe; it is a hang-up.
+    hup_r, hup_w = os.pipe()
+    os.set_blocking(hup_w, False)
+    signal.signal(signal.SIGHUP, lambda *_: os.write(hup_w, b'h'))
 
     def hang_up():
         nonlocal hup_at
@@ -139,13 +150,16 @@ def main():
                 pass
 
     while True:
-        watch = [fd for fd in open_out if fd is not None]
+        watch = [fd for fd in open_out if fd is not None] + [hup_r]
         if stdin_open:
             watch.append(in_fd)
         timeout = 0.1 if (hup_at is not None or exited_at is not None or status is None and pid is not None) else None
         ready, _, _ = select.select(watch, [], [], timeout)
         for fd in ready:
-            if fd == in_fd:
+            if fd == hup_r:
+                os.read(hup_r, CHUNK)
+                hang_up()
+            elif fd == in_fd:
                 try:
                     chunk = os.read(in_fd, CHUNK)
                 except BlockingIOError:

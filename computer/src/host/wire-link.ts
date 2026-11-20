@@ -29,19 +29,26 @@ import { lines, send } from '../ipc.js';
 import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
 import { oneShotSocket } from './one-shot-socket.js';
-import type { Terminals } from './terminal.js';
+import { sessionNotRunning, type Terminals } from './terminal.js';
+import { unavailable } from './unavailable.js';
+import { WORKSPACE } from './sandbox/mounts.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 import type { WorkspaceFiles } from './workspace-files.js';
 
 export const WIRE_DIR = path.join(HOST_RUN, 'wire');
 
-type Workspace = { forkPath: string; owner: string };
+/** `sandbox`: the session runs in a container (work 103); its terminal and its files are reached there. */
+type Workspace = { forkPath: string; owner: string; sandbox?: SandboxPlace };
 
 export interface WireLinkHooks {
   /** The session's writer, if this host runs the session. */
   where(sessionId: string): WhereResult | undefined | Promise<WhereResult | undefined>;
   /** Start the session's runner if it is suspended (attach with resume=1). */
   resume(sessionId: string, actor: ApiActor): Promise<{ status: ApiSessionStatus } | { error: ApiError }>;
-  /** The session's fork and owner (`usr_…`); undefined: not a session this host runs, or no fork yet. */
+  /**
+   * The session's fork and owner (`usr_…`), asked before a terminal or `/files` acts in it; undefined: not a session
+   * this host runs, or no fork yet.
+   */
   workspace(sessionId: string): Workspace | undefined | Promise<Workspace | undefined>;
   /** Record an event in the session's log through its writer; resolves with its seq. */
   record?(sessionId: string, type: 'terminal.opened' | 'terminal.closed' | 'files.pushed', data: unknown, actor: ApiActor): Promise<number | undefined>;
@@ -109,8 +116,10 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: sessionNotFound() };
         if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
+        // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
+        if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(
-          { sessionId: m.sessionId, cwd: ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
+          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
           (terminalId, exitCode, signal) => {
             const t = terms.get(terminalId);
             terms.delete(terminalId);
@@ -138,7 +147,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       case 'files.list': {
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: sessionNotFound() };
-        const r = await o.files.list({ sessionId: m.sessionId, forkPath: ws.forkPath }, m);
+        const r = await o.files.list({ sessionId: m.sessionId, forkPath: ws.forkPath, sandbox: ws.sandbox }, m);
         return 'error' in r ? { error: r.error } : { result: r };
       }
       case 'files.get':
@@ -158,7 +167,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
     const fail = (error: ApiError) => send(peer, { t: 'result', id: m.id, error } satisfies HostToWire);
     const ws = await hooks.workspace(m.sessionId);
     if (!ws) return fail(sessionNotFound());
-    const where = { sessionId: m.sessionId, forkPath: ws.forkPath };
+    const where = { sessionId: m.sessionId, forkPath: ws.forkPath, sandbox: ws.sandbox };
     let out: (() => { stream: Readable; done: Promise<void> }) | undefined;
     let extra: Record<string, unknown> = {};
     if (m.t === 'files.get') {
@@ -186,15 +195,21 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         () => true,
         () => false,
       );
-      const ended = await r.done.then(
-        () => true,
-        (e) => (log.warn('wire: files.get', e?.message ?? e), false),
+      const cut = () => apiError('internal', 'The transfer failed.', 500, { retryable: true });
+      // What the host has words for (the computer is updating, the session stopped) is said; anything else is a transfer that failed.
+      const failed = await r.done.then(
+        () => (ok ? undefined : cut()),
+        (e) => (log.warn('wire: files.get', e?.message ?? e), unavailable(e) ?? cut()),
       );
-      return done(ok && ended ? { result: {} } : { error: apiError('internal', 'The transfer failed.', 500, { retryable: true }) });
+      return done(failed ? { error: failed } : { result: {} });
     }
     if (m.t !== 'files.put') return;
     const actor = memberActor(m.member);
-    const r = await o.files.upload(where, m.path, m.format, actor, conn);
+    // The relay has its socket and waits for `files.done`: a failure from here on is said there.
+    const r = await o.files.upload(where, m.path, m.format, actor, conn).catch((e) => {
+      log.warn('wire: files.put', e?.message ?? e);
+      return { error: unavailable(e) ?? apiError('internal', 'The transfer failed.', 500, { retryable: true }) };
+    });
     conn.destroy();
     if ('error' in r) return done({ error: r.error });
     const u = r.upload;
@@ -226,7 +241,8 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         if (r && id !== undefined) send(peer, { t: 'result', id, ...r } satisfies HostToWire);
       } catch (e) {
         log.warn(`wire: ${m.t} failed`, e);
-        if (id !== undefined) send(peer, { t: 'result', id, error: apiError('internal', 'The host failed this call.', 500, { retryable: true }) } satisfies HostToWire);
+        // What the host has words for (the computer is updating) is said; anything else is the host's own failure.
+        if (id !== undefined) send(peer, { t: 'result', id, error: unavailable(e) ?? apiError('internal', 'The host failed this call.', 500, { retryable: true }) } satisfies HostToWire);
       }
     });
   });

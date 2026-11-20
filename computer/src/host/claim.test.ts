@@ -8,7 +8,7 @@ describe('claimSpare', () => {
       log,
       s: {
         take: o.take ?? (() => 'spare' as string),
-        fork: o.fork ?? (async () => (log.push('fork'), '/fork')),
+        fork: o.fork ?? (async (r: string) => (log.push(`fork for ${r}`), '/fork')),
         claim: o.claim ?? (async () => void log.push('claim')),
         discard: (r: string) => void log.push(`discard ${r}`),
         release: (r: string) => void log.push(`release ${r}`),
@@ -19,7 +19,7 @@ describe('claimSpare', () => {
   it('forks, then claims the spare into the fork', async () => {
     const { s, log } = steps();
     expect(await claimSpare(s)).toEqual({ runner: 'spare', forkPath: '/fork' });
-    expect(log).toEqual(['fork', 'claim']);
+    expect(log).toEqual(['fork for spare', 'claim']);
   });
 
   it('no spare: misses without forking (the cold start forks alongside the launch)', async () => {
@@ -31,7 +31,7 @@ describe('claimSpare', () => {
   it('a refused or unanswered claim discards the spare and keeps the fork for the cold start', async () => {
     const refused = steps({ claim: () => Promise.reject(new Error('claim refused: option x')) });
     expect(await claimSpare(refused.s)).toEqual({ missed: 'refused', forkPath: '/fork' });
-    expect(refused.log).toEqual(['fork', 'discard spare']);
+    expect(refused.log).toEqual(['fork for spare', 'discard spare']);
     const slow = steps({ claim: () => Promise.reject(new Error('runner did not answer claim')) });
     expect(await claimSpare(slow.s)).toEqual({ missed: 'timeout', forkPath: '/fork' });
     const dead = steps({ claim: () => Promise.reject(new Error('runner gone')) });

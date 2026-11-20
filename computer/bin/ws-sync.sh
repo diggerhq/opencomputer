@@ -3,9 +3,10 @@
 #
 # Keep the clone <clones>/<repo> current (syncRepo and fastForward in
 # src/workspaces/housekeep.ts, defaultBranch in clones.ts): fetch origin with
-# --prune, then fast-forward the clone's own checkout of <base>. <base> is the
-# branch forks start from; empty or absent, origin/HEAD (asked of the remote
-# when the clone does not know it).
+# --prune (after ws_keep in ws-lib.sh, so that no garbage collection prunes),
+# then fast-forward the clone's own checkout of <base>. <base> is the branch
+# forks start from; empty or absent, origin/HEAD (asked of the remote when the
+# clone does not know it).
 #
 # The checkout is only ever fast-forwarded: never when it is on another
 # branch, has local changes or has diverged. A fetch that fails does not stop
@@ -34,6 +35,7 @@ fi
 
 problem=
 if [ "$only" != forward ]; then
+  ws_keep "$clone"
   if ! ws_in "$clone" git fetch --quiet --prune origin >/dev/null; then
     why=$(ws_why 'Command failed: git fetch --quiet --prune origin')
     [ "$only" != fetch ] || { ws_failed "$repo" "$why"; exit 0; }

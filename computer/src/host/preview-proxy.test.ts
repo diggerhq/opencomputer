@@ -92,6 +92,19 @@ describe('preview proxy', () => {
     expect(open).toBe(0);
   });
 
+  it('with a table of previewed ports, dials only a port the table holds', async () => {
+    const app = await echo();
+    const dialed: number[] = [];
+    const held = new Set([30001]);
+    const config = { tunnelToken: 't', key: KEY, ports: [30001, 30002] };
+    const at = await listen(previewProxy(() => config, [], (port) => (dialed.push(port), loopbackDialer(app)), (port) => held.has(port)));
+    const signed = (port: number) => ({ 'x-preview-port': String(port), 'x-preview-auth': signPreview(KEY, port), 'x-preview-host': 'demo.opencomputer.app' });
+    expect((await get(at, signed(30001))).status).toBe(200);
+    const r = await get(at, signed(30002)); // signed and allowed by the gateway, but the table lost it
+    expect([r.status, r.body.trim()]).toEqual([403, 'port not previewed']);
+    expect(dialed).toEqual([30001]);
+  });
+
   it('refuses a port not in the allow-list, a host port, and a request without config', async () => {
     const app = await echo();
     const { at, signed } = await proxy([app + 1]);

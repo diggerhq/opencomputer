@@ -38,6 +38,8 @@ export function send(sock: Socket | undefined, m: object) {
 /** The directory a runner sees as SP_RUN: HOST_RUN itself, or its own under HOST_RUN/sandbox (work 103). */
 export type RunRoot = string;
 export const runnersDir = (run: RunRoot) => path.join(run, 'runners');
+/** The run root of the runner `id` in a container (work 103): its own directory, mounted at the same path inside. */
+export const sandboxRunFor = (hostRun: string, id: string): RunRoot => path.join(hostRun, 'sandbox', id);
 
 /**
  * <run>/runners/<name>.sock, a `.pid` file next to it. The name is the

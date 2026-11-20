@@ -80,7 +80,7 @@ const dialTo = (w: ReturnType<typeof memWriter>, dialled: string[]) => async (p:
 
 const dirs: string[] = [];
 afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 function setup(o: Partial<ApiHostDeps> = {}) {
@@ -208,6 +208,21 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
+  it('journals an upload to a session whose runner is gone through the host\'s writer, which it opens for it', async () => {
+    const t = setup();
+    t.a.onGateway(welcome(4));
+    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    await t.a.mint(spec, 'beef');
+    t.a.up('beef');
+    await tick(5);
+    t.a.down('beef');
+    // Nothing has asked for the session since its runner left: no writer of the host's is open.
+    expect(t.host.calls).toEqual([]);
+    expect(await t.a.hooks.record(S, 'files.pushed', { path: 'notes', files: 1, bytes: 9, replaced: false }, actor)).toBe(1);
+    expect(t.host.calls).toEqual([RECORD_METHOD]);
+    await t.a.stop();
+  });
+
   it('wakes the runner for a send the host writer recorded, as an API delivery', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));
@@ -246,6 +261,31 @@ describe('apiHost', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(t.started.map((x) => x.spec)).toEqual([spec]);
       expect(t.host.failed.length).toBe(1);
+      await t.a.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens no host writer while a start of the session is in flight, however long it takes; the start\'s end, not a timer, lets it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let hooks: WireHooks | undefined;
+      const t = setup({ wire: async (h) => ((hooks = h), { setKey() {}, setAccess() {}, setAdmins() {}, revoked() {}, moved() {}, close: async () => {} }) });
+      t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
+      await vi.advanceTimersByTimeAsync(0);
+      await t.a.mint(spec, 'aaaa');
+      let where: unknown;
+      void Promise.resolve(hooks!.where(S)).then((w) => (where = w));
+      // A start may wait 300 s for the image lock (sandbox/image-lock.ts) before its container is even started.
+      await vi.advanceTimersByTimeAsync(301_000);
+      expect(where).toBeUndefined();
+      expect(t.opened).toEqual([]);
+      t.a.startEnded(spec); // it failed: no runner registered
+      await vi.advanceTimersByTimeAsync(0);
+      expect(where).toMatchObject({ writer: 'host' });
+      t.a.startEnded(spec); // twice, or for a session with no start: nothing
+      t.a.startEnded({ ...spec, sessionId: undefined });
       await t.a.stop();
     } finally {
       vi.useRealTimers();

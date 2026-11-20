@@ -29,9 +29,9 @@
 export * from './definition.js';
 export { configureAsRunner, mkdir as mkdirAsRunner } from './as-runner.js';
 export {
-  ensureWorkspace, type FetchTrigger, forkDir, observeWorkspaces, personRoot, prepareInBackground, safeKey, workspaceDir, type WorkspaceObserver,
-  workspacePrepared,
+  ensureWorkspace, type FetchTrigger, forkDir, observeWorkspaces, personRoot, prepareInBackground, safeKey, useScripts, workspaceDir,
+  type WorkspaceObserver, workspacePrepared,
 } from './clones.js';
 export { checkoutRepos, type ForkInfo, forkInfo, forkSession, touchFork } from './fork.js';
-export { fetchRepo, housekeep, markPushed, oldestFetchAgeS, startHousekeeping } from './housekeep.js';
+export { fetchRepo, type ForkKeeper, housekeep, markPushed, oldestFetchAgeS, startHousekeeping, useForkKeeper } from './housekeep.js';
 export { pruneFork } from './prune.js';

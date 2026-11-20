@@ -1,15 +1,21 @@
 // Host agent (work 045): one per machine. Dials the gateway over one
 // WebSocket, forks sessions, starts runners outside its own process tree,
-// forwards deliveries, relays GitHub tokens, and finds its runners again by
-// their sockets after a restart. Restarting it never ends a turn.
+// forwards deliveries, relays GitHub tokens, and finds its runners again
+// after a restart: by their sockets, or on a `podman` host from its records
+// and Podman's inventory (sandbox/sweep.ts). Restarting it never ends a turn.
 //
 //   SP_GATEWAY_URL=ws://…/host SP_HOST_TOKEN=… [SP_HOST_ID] [SP_DATA] [SP_RUN]
 //   [SP_DEFINITION]            workspace definition: fork with src/workspaces (VM); unset: ensureWorkdir (laptop).
 //                              A definition in the gateway's welcome replaces it (<SP_DATA>/definition.json).
 //   [SP_IDLE_MS=7200000]       tell a runner to exit after this long without deliveries
-//   [SP_LAUNCH=systemd|detached]  default systemd on Linux, detached elsewhere
+//   [SP_LAUNCH=systemd|podman|detached]  default systemd on Linux, detached elsewhere. podman (work 103): every
+//                              thread in its own container (sandbox/), spares too; needs SP_RUNNER_USER
+//   [SP_IMAGE] [SP_IMAGE_ABI]  the session image and its ABI, from the release's .sp-version.env; required by podman
+//   [SP_SWEEP_AGE_MS=600000]   podman: how old a container, home or run directory of no thread must be before the
+//                              sweep removes it (sandbox/sweep.ts); the sweep runs every half of it, at most every 5 minutes
 //   [SP_SYSTEMD_RUN="systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=12G -p MemoryMax=16G"]
-//                              prefix for the transient unit (--unit, --collect, --setenv are added); the
+//                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
+//                              unit gets no --setenv); the
 //                              default sizes MemoryHigh/MemoryMax from the machine (runner-limits.ts)
 //   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off
 //   [SP_VERSION]               code version (the release's commit); else `git rev-parse`
@@ -17,7 +23,7 @@
 //   [SP_TELEMETRY_CREDENTIAL]  the collector credential the gateway signed for this host; a `welcome` renews it
 //   [SP_REGION] [SP_SUBSTRATE] telemetry dimensions (`westus2`, `vm`)
 //   SP_MODEL_PROXY             the model proxy's control socket (work 097, model-access.ts); unset: the proxy is down, no session starts
-//   [SP_MODEL_SOCKET=/run/oc-modelproxy/api.sock]  where runners reach the proxy's API (sent to them, C4)
+//   [SP_MODEL_SOCKET=/run/oc-modelproxy/api.sock]  where runners reach the proxy's API (sent to them, C4); a container mounts it
 //   [SP_RUNNER_USER=agent]     run runners as this user, through sudo (work 077, runner-user.ts); the host then runs as another
 //   [SP_RUNNER_PATH=...]       the PATH runners and workspace commands get then (the host's own has no agent-owned directory)
 //   node --import tsx src/host/main.ts
@@ -36,7 +42,7 @@ import type net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, PROTOCOL_VERSION } from '../protocol.js';
+import { HOST_DATA, HOST_RUN, HOST_TOKEN_SOCKET, MODEL_SOCKET, PROTOCOL_VERSION } from '../protocol.js';
 import { codexBin } from '../runner-env.js';
 import { prereadCodex } from './codex-preread.js';
 import type {
@@ -66,6 +72,7 @@ import {
 import { send, socketFor } from '../ipc.js';
 import { log } from '../log.js';
 import { closed, rediscover, retire } from './runner-sockets.js';
+import { checkedDial } from './remote-port.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
 import { freshTokenDir, tokenRelay } from './tokens.js';
@@ -83,6 +90,7 @@ import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
 import { wireFor } from './api-wire.js';
+import { sandboxHost, sandboxWorkspace } from './sandbox/host.js';
 
 const env = process.env;
 const IDENTITY_FILE = identityFile(HOST_DATA);
@@ -111,7 +119,7 @@ observeWorkspaces(workspaceTelemetry(tm, () => forkContext.getStore()));
 /** The organization's credentials and people, as the gateway last sent them. */
 const org = gatewayUpdates({ runners: () => runners.values(), spares: () => pool.spares, forRunner: (key, c) => subs.forRunner(key, c),
   fillPool: () => fillPool(), prepare: (p) => workspacesEnabled() && prepareInBackground(p) });
-const subs = hostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, modelSocket: env.SP_MODEL_SOCKET || undefined, single: LAUNCH !== 'systemd',
+const subs = hostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, modelSocket: env.SP_MODEL_SOCKET || undefined, single: LAUNCH !== 'systemd' && LAUNCH !== 'podman',
   toGateway, tm, runner: (key) => runners.get(key), creds: () => org.creds, exit: switchRunner, unitExists: (id) => unitExists(id, LAUNCH, env),
   rehello: () => link.redial(), codexBin: codexBin(env) });
 
@@ -125,7 +133,7 @@ const pool = new Pool<Runner>({
   failed: () => tm.emit('pool.spare_failed', {}),
   evict: (r, reason) => {
     tm.emit('pool.spare_evicted', { data: { reason } });
-    exitRunner(r.sock);
+    starts.evict(r);
   },
 });
 /** Every connected runner: the sessions' and the spares. */
@@ -139,20 +147,31 @@ function exitRunner(sock: net.Socket) {
 function switchRunner(key: string, r = runners.get(key)) {
   if (r) (r.switching = true), r.report?.status === 'busy' ? send(r.sock, { t: 'exit' } satisfies HostToRunner) : exitRunner(r.sock);
 }
-/** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s. */
+/** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s (a container: stopped with no grace). */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
-  r && ((r.exiting = true), retire(r.sock, socketFor(HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {})));
+  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {}),
+    { kill: r.sandbox && (() => sandbox!.stop(r.id, 0)) }));
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
 const starting = new Map<string, Promise<Runner>>();
 /** Set on SIGTERM: runner sockets closing then are the host leaving, not the runners. */
 let stopping = false;
 
+/** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
+const sandbox = LAUNCH === 'podman'
+  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm, modelSocket: env.SP_MODEL_SOCKET || MODEL_SOCKET, models: subs,
+      mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+      serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => allRunners().some((r) => r.id === id),
+      adopt: (record, run, sock) => starts.adopt(record.id, sock, { verify: true, sandbox: { record, run } }),
+      unpreview: (name, from) => previews.forget(name, from), sweepAgeMs: env.SP_SWEEP_AGE_MS ? Number(env.SP_SWEEP_AGE_MS) : undefined })
+  : undefined;
+
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
   tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, models: subs,
-  mint: (spec, id) => api.mint(spec, id), serveTokens: (id, session) => tokens.serveRunner(HOST_RUN, id, session),
+  mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
+  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE, stopSandbox: (id) => sandbox!.stop(id, 0),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -172,7 +191,9 @@ function runnerClosed(r: Runner) {
   if (!stopping) api.down(r.id), subs.closed(r.key, r.id);
   if (!r.key) {
     pool.gone(r);
-    fillPool();
+    // A spare that leaves a `podman` host is Removed (sandbox/spares.ts), whatever made it go; the next host removes what this one leaves.
+    if (stopping) return;
+    void (sandbox?.spares.gone(r.id) ?? Promise.resolve()).then(fillPool);
     return;
   }
   if (runners.get(r.key) !== r) return;
@@ -186,6 +207,7 @@ async function onRunner(r: Runner, m: RunnerToHost) {
     case 'telemetry':
       return telemetry.relay(m.batch);
     case 'report':
+      if (r.sandbox) m.report.forkPath = sandboxWorkspace(r.sandbox.record); // the runner says /workspace; the gateway keeps seeing host paths
       r.report = m.report;
       // A spare reports as it is claimed, before the host has it as the session's runner (startRunner forwards it then).
       return runners.get(r.key) === r && toGateway({ t: 'session', report: m.report });
@@ -206,15 +228,16 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       return toGateway({ ...m, from: r.key });
     }
     case 'preview': // the host probes the port between the gateway's answer and the runner's (previews.ts)
-    case 'unpreview': return previews.request(r.key, m).then((a) => send(r.sock, a satisfies HostToRunner));
+    case 'unpreview': return previews.request(r.key, m, r.sandbox?.record.id).then((a) => send(r.sock, a satisfies HostToRunner));
     case 'out-of-credits': return runners.get(r.key) === r && toGateway({ t: 'out-of-credits', sessionKey: r.key });
     case 'model-denied': return toGateway({ t: 'model-denied', sessionKey: r.key, model: m.model, fallbackTo: m.fallbackTo });
     case 'checkout': {
       const forkPath = r.report?.forkPath;
       const fail = (error: string) => send(r.sock, { t: 'checked-out', id: m.id, error } satisfies HostToRunner);
       if (!workspacesEnabled()) return fail('this host has no workspace definition; there is nothing to check out');
-      if (!forkPath) return fail('the session has not reported its fork yet');
-      return checkoutRepos(forkPath, m.repos).then(
+      if (!r.sandbox && !forkPath) return fail('the session has not reported its fork yet');
+      // A container's worktrees are added inside it, from its record (sandbox/workspace.ts); the reported path is never used.
+      return (r.sandbox ? sandbox!.checkout(r.id, m.repos) : checkoutRepos(forkPath!, m.repos)).then(
         (result) => send(r.sock, { t: 'checked-out', id: m.id, result } satisfies HostToRunner),
         (e) => fail(String(e?.message ?? e)),
       );
@@ -232,7 +255,8 @@ function ensureRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Pr
   if (live) return Promise.resolve(live);
   let p = starting.get(spec.key);
   if (!p) {
-    p = starts.startRunner(spec, f, first).finally(() => starting.delete(spec.key));
+    // Until here nobody opens the session's journal beside the start (api-host.ts `mint`): its end, whichever, is what frees it.
+    p = starts.startRunner(spec, f, first).finally(() => (starting.delete(spec.key), api.startEnded(spec)));
     starting.set(spec.key, p);
   }
   return p;
@@ -262,9 +286,11 @@ function toGateway(m: HostToGateway) {
   link.send(m);
 }
 const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-api'), runDir: path.join(HOST_RUN, 'host-api'),
-  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner, forkPath: (key) => runners.get(key)?.report?.forkPath,
+  send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner,
+  dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
+  forkPath: (key) => runners.get(key)?.report?.forkPath,
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
-    stateDir: path.join(HOST_DATA, 'state', 'uploads') }), telemetry: tm });
+    stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files, terminal: sandbox?.terminal }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
   if (disk) toGateway(disk);
@@ -281,9 +307,9 @@ async function onGateway(m: GatewayToHost) {
   switch (m.t) {
     case 'welcome':
       org.welcome(m);
-      if (m.definition !== undefined && applyGatewayDefinition(m.definition)) housekeeper?.now();
+      if (m.definition !== undefined && applyGatewayDefinition(m.definition)) (sandbox?.definitionChanged([...runners.values()].flatMap((r) => (r.sandbox ? r.id : []))), housekeeper?.now());
       if (m.telemetryCredential) telemetry.renew(m.telemetryCredential, m.telemetryUrl);
-      previews.configure(m.preview);
+      (previews.configure(m.preview), previews.connected());
       return housekeeping();
     case 'previews': return previews.configure(m.preview);
     case 'previewed': return previews.answer(m);
@@ -379,11 +405,15 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
     }
     // Ahead of the message on the same socket, so the turn starts with them.
     if (secrets) send(r.sock, { t: 'secrets', secrets } satisfies HostToRunner);
+    // A container that started for this delivery serves no preview yet: its runner is told the ports its thread had (work 103, "Previews").
+    const ports = cold && r.sandbox ? sandbox!.previews.ports.all().flatMap((e) => (e.id === r.id && e.name ? [{ port: e.port, name: e.name }] : [])) : [];
+    if (ports.length) send(r.sock, { t: 'preview-ports', ports } satisfies HostToRunner);
     r.lastDelivery = Date.now();
     r.owner = spec.owner;
     // Retention counts from the latest use; never awaited, so delivery doesn't wait on the disk.
     const forkPath = r.report?.forkPath ?? spec.forkPath;
-    if (forkPath && workspacesEnabled()) void touchFork(forkPath);
+    if (r.sandbox) sandbox!.touch(r.id); // its record is its fork record
+    else if (forkPath && workspacesEnabled()) void touchFork(forkPath);
     const wasExiting = r.exiting;
     r.exiting = false;
     const trace = rx.trace && forwardTrace(rx.trace, cold);
@@ -429,14 +459,18 @@ function housekeeping() {
 
 freshTokenDir(HOST_RUN); // no runner's token socket outlives the host that served it
 const tokens = tokenRelay(link.ask, tm);
-const previews = hostPreviews({ ask: link.ask });
+const previews = hostPreviews({ ask: link.ask, sandbox: sandbox?.previews });
 
 // ---------------------------------------------------------------- start
 
 mkdirSync(HOST_RUN, { recursive: true });
 const tokenServer = tokens.serve(path.join(HOST_RUN, HOST_TOKEN_SOCKET));
+const helperTokens = sandbox?.serveHelpers(); // workspace scripts in helper containers (sandbox/scripts.ts)
 await api.boot(); // settles the journals no runner holds (work 084); none on a host that never had a v4 gateway
-api.rediscovered(await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+// A `podman` host never scans `runners/`, which its sessions' user can write: it takes back the running containers of its records.
+api.rediscovered(sandbox ? await sandbox.reconcile()
+  : await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
+sandbox?.sweeping();
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();
@@ -459,6 +493,7 @@ const emitSample = () =>
     since_gateway_message_s: link.seenAt ? Math.round((Date.now() - link.seenAt) / 1000) : undefined,
     telemetry_spooled_bytes: telemetry.spooledBytes,
     telemetry_dropped: telemetry.dropped,
+    ...sandbox?.health(),
     model_proxy_down_s: subs.downS(),
   }) });
 emitSample();
@@ -470,12 +505,16 @@ const shutdown = async () => {
   // Runners keep going; the next host finds them by their sockets.
   log.info('host stopping');
   for (const r of allRunners()) r.sock.destroy();
+  // A spare's container serves nobody and no host finds it again: each is stopped and Removed, within what the unit's stop allows (15 s in all).
+  const spares = sandbox && Promise.race([sandbox.spares.close(), new Promise((r) => setTimeout(r, 8000).unref())]);
   tokenServer.close();
+  helperTokens?.close();
   previews.stop();
   subs.stop(); // tokenServer.close() unlinked the socket; the next host replaces it anyway
   await api.stop();
   // One last send within 5 s; what is left stays in the spool for the next start.
   await telemetry.close(5000);
+  await spares;
   process.exit(0);
 };
 process.on('SIGTERM', () => void shutdown());

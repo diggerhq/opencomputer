@@ -8,15 +8,18 @@
 // The session a token is for is the host's word, never the asker's (work 080):
 // each runner has its own token socket in a directory only the host writes, and
 // the host names the session it serves. The shared socket names none.
+// The helper containers' socket (work 103) serves no session either, and only
+// GitHub tokens for repositories of the workspace definition: a helper runs
+// git on clones a session can write.
 //
 // Invariants: a request fails fast when the gateway is not connected and
 // times out after 15 s; a failed request is not cached. Tokens are never logged.
 
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
-import type { GitHubToken, HostToGateway, TokenKind } from '../protocol.js';
+import { type GitHubToken, HOST_RUN, HOST_TOKEN_SOCKET, type HostToGateway, RUNNER_TOKEN_DIR, type TokenKind } from '../protocol.js';
 import { type RunRoot, lines, tokenSocketFor } from '../ipc.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 
@@ -33,8 +36,15 @@ export interface TokenRelay {
   /**
    * A runner's own token socket below its run root (`tokenSocketFor`); `session` is the host's word for who asks.
    * Idempotent per id; the caller closes it when the runner is gone. The directory is the caller's to make (`freshTokenDir`).
+   * In a sandbox's run root (work 103) it also makes `token.sock` a relative link to it, so the helpers find it under the
+   * name they know; at HOST_RUN that name is the host's shared token socket and stays.
    */
   serveRunner(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /**
+   * The helper containers' token socket: GitHub tokens only, for no session, and only for repositories among
+   * `allowed()` (`owner/name` of each repository in the workspace definition). A request naming none is refused.
+   */
+  serveHelper(socket: string, allowed: () => string[]): net.Server;
 }
 
 /**
@@ -105,24 +115,41 @@ export function tokenRelay(ask: (m: Extract<HostToGateway, { t: 'token' }>) => b
       const open = served.get(socket);
       if (open) return open;
       const server = relay.serve(socket, session);
+      if (path.resolve(run) !== path.resolve(HOST_RUN)) {
+        const link = path.join(run, HOST_TOKEN_SOCKET);
+        rmSync(`${link}.tmp`, { force: true });
+        symlinkSync(path.join(RUNNER_TOKEN_DIR, `${id}.sock`), `${link}.tmp`);
+        renameSync(`${link}.tmp`, link);
+      }
       const handle = { close: () => void (served.get(socket) === handle && (served.delete(socket), server.close())) };
       served.set(socket, handle);
       return handle;
     },
-    serve(socket, session) {
-      rmSync(socket, { force: true });
-      const server = net.createServer((sock) => {
-        sock.on('error', () => {});
-        lines(sock, async (req: { repos?: string[]; kind?: TokenKind }) => {
-          const kind = req.kind === 'opencomputer' || req.kind === 'automation-repo' ? req.kind : 'github';
-          const res = await request(session?.() || undefined, req.repos, kind).catch((e) => ({ error: String(e?.message ?? e) }));
-          sock.end(JSON.stringify(res) + '\n');
-        });
-      });
-      // 0660: runners reach it through the group of SP_RUN (setgid), also when they run as another user (work 077).
-      server.listen(socket, () => chmodSync(socket, 0o660));
-      return server;
-    },
+    serve: (socket, session) =>
+      listen(socket, (req) => request(session?.() || undefined, req.repos, req.kind === 'opencomputer' || req.kind === 'automation-repo' ? req.kind : 'github')),
+    serveHelper: (socket, allowed) =>
+      listen(socket, async (req) => {
+        if (req.kind !== undefined && req.kind !== 'github') throw new Error('this socket gives GitHub tokens only');
+        const slug = (r: string) => r.replace(/\.git$/, '').toLowerCase();
+        const granted = new Set(allowed().map(slug));
+        const repos = Array.isArray(req.repos) ? req.repos.filter((r): r is string => typeof r === 'string') : [];
+        if (!repos.length || !repos.every((r) => granted.has(slug(r)))) throw new Error('not a repository of this workspace');
+        return request(undefined, repos, 'github');
+      }),
   };
+  /** One JSON line in, one out: `answer`'s token, or its error's message. */
+  function listen(socket: string, answer: (req: { repos?: string[]; kind?: TokenKind }) => Promise<GitHubToken>) {
+    rmSync(socket, { force: true });
+    const server = net.createServer((sock) => {
+      sock.on('error', () => {});
+      lines(sock, async (req: { repos?: string[]; kind?: TokenKind }) => {
+        const res = await Promise.resolve().then(() => answer(req ?? {})).catch((e) => ({ error: String(e?.message ?? e) }));
+        sock.end(JSON.stringify(res) + '\n');
+      });
+    });
+    // 0660: runners reach it through the group of SP_RUN (setgid), also when they run as another user (work 077).
+    server.listen(socket, () => chmodSync(socket, 0o660));
+    return server;
+  }
   return relay;
 }

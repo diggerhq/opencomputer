@@ -6,6 +6,8 @@
 # <worktree> is a path below <workspace>: a repository's name, or `.wt/<name>`
 # for one an agent added. Read-only: nothing here writes to a worktree, not
 # even its index (--no-optional-locks: a refreshed index would look like use).
+# Nothing the worktree's configuration names is run either: no file system
+# monitor and no hook (a session writes that configuration; work 103).
 #
 # state:   whether it has uncommitted changes (`dirty`, also when git cannot
 #          say), the number of commits on no remote (-1: cannot count; not
@@ -29,6 +31,7 @@ case ${1:-} in --only=*) only=${1#--only=}; shift ;; esac
 [ $# -ge 2 ] || { echo "usage: ws-inspect.sh [--only=state|ignored] <clones> <workspace> <worktree>…" >&2; exit 2; }
 workspace=$2
 shift 2
+git='git -c core.fsmonitor=false -c core.hooksPath=/dev/null'
 if [ "$only" = state ]; then : >"$ws_tmp/dirs"; else cat >"$ws_tmp/dirs"; fi
 
 n=0
@@ -38,12 +41,12 @@ for repo in "$@"; do
   state=- unpushed=- branch=- common=-
   if [ "$only" != ignored ]; then
     state=dirty
-    if changes=$(ws_q "$wt" git --no-optional-locks status --porcelain) && [ -z "$changes" ]; then
+    if changes=$(ws_q "$wt" $git --no-optional-locks status --porcelain) && [ -z "$changes" ]; then
       state=clean
-      unpushed=$(ws_q "$wt" git rev-list --count HEAD --not --remotes) || unpushed=-1
+      unpushed=$(ws_q "$wt" $git rev-list --count HEAD --not --remotes) || unpushed=-1
     fi
-    branch=$(ws_q "$wt" git symbolic-ref --quiet --short HEAD) || branch=
-    common=$(ws_q "$wt" git rev-parse --git-common-dir) || common=
+    branch=$(ws_q "$wt" $git symbolic-ref --quiet --short HEAD) || branch=
+    common=$(ws_q "$wt" $git rev-parse --git-common-dir) || common=
   fi
   set -- "$state" "$unpushed" "$branch" "$common"
   line=0
@@ -51,7 +54,7 @@ for repo in "$@"; do
     line=$((line + 1))
     [ "$of" = "$n" ] && [ -n "$rel" ] || continue
     # check-ignore exits 0 only for an ignored path.
-    if ws_q "$wt" git check-ignore -q "$rel"; then set -- "$@" "$line"; fi
+    if ws_q "$wt" $git check-ignore -q "$rel"; then set -- "$@" "$line"; fi
   done <"$ws_tmp/dirs"
   ws_ok "$n" "$@"
 done

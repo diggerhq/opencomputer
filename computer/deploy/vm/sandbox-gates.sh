@@ -45,6 +45,7 @@ AGENT_UID=1500
 SLICE=slack-presence-runners.slice
 SP_RUN=${SP_GATES_RUN:-/run/sp-gates}
 SP_DATA=${SP_GATES_DATA:-/data/sp-gates}
+MODEL_SOCKET=/run/oc-modelproxy/api.sock
 GATES=$SP_RUN/gates           # this script's own files, readable by agent
 PEOPLE=$SP_DATA/people
 QUICK_IMAGE=localhost/sp-gates-session:3
@@ -113,9 +114,11 @@ run_dir() { echo "$SP_RUN/sandbox/$1"; }
 # network of `docker compose` inside cannot be made (G9). $NETWORK and
 # $CREATE_MORE are for the gates that compare (G2) or watch (G4).
 create() {
-  local id=$1 run
+  local id=$1 run model=()
   run=$(run_dir "$id")
   IDS+=("$id")
+  # The model proxy's API socket, the file alone; a computer without the proxy has none to mount.
+  [[ ! -S $MODEL_SOCKET ]] || model=(-v "$MODEL_SOCKET:$MODEL_SOCKET")
   install -d -m 2750 -o root -g "$AGENT" "$run"   # a -v source must exist
   q pm create --name "sp-runner-$id" --hostname session \
     --label "sp.runner=$id" --label sp.abi=1 \
@@ -134,7 +137,7 @@ create() {
     --env "SP_PREVIEW_SOCKET=$run/runners/$id.preview.sock" \
     -v "sp-home-$id:/home/agent" \
     -v "$run:$run" \
-    -v /run/oc-modelproxy/api:/run/oc-modelproxy/api \
+    "${model[@]}" \
     -v /opt/slack-presence:/opt/slack-presence:ro \
     "${CREATE_MORE[@]}" \
     "$IMAGE"
@@ -381,9 +384,8 @@ EOF
   install -d -m 0700 "$SP_DATA/state" "$SP_DATA/state/sandboxes"
   install -d -o "$AGENT" -g "$AGENT" "$PEOPLE"
   install -m 0644 "$HERE/../../bin/sandbox-mount.py" "$GATES/sandbox-mount.py" || die "bin/sandbox-mount.py is not beside this script's repository"
-  # Create's fixed -v sources: there on a provisioned computer, made here when not.
+  # Create's fixed -v source: there on a provisioned computer, made here when not.
   [[ -d /opt/slack-presence ]] || install -d /opt/slack-presence
-  [[ -d /run/oc-modelproxy/api ]] || install -d -m 0750 -g "$AGENT" /run/oc-modelproxy/api
 
   local had=1 t
   if [[ -z $IMAGE ]]; then

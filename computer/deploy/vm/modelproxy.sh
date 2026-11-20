@@ -10,7 +10,8 @@
 # /etc/oc-modelproxy/profiles.d/, then writes the socket and service units.
 # Nothing is compiled on a computer.
 #
-#   /run/oc-modelproxy/api.sock      group agent: the sessions' model clients (SP_MODEL_SOCKET)
+#   /run/oc-modelproxy/api.sock      group agent: the sessions' model clients (SP_MODEL_SOCKET);
+#                                    a session's container mounts this file alone (work 103)
 #   /run/oc-modelproxy/control.sock  group sp-host: the host agent only (SP_MODEL_PROXY, sp-host.sh)
 #
 # Invariants:
@@ -25,6 +26,9 @@
 # - Files in profiles.d that the release does not ship (an operator's own)
 #   are left as they are, and checked with the rest.
 # - Profiles are 0640 root:modelproxy: the proxy reads them, sessions do not.
+# - `-caller-uid` (only a process of the sessions' uid is a session: in a
+#   container every other uid is one of its subordinate ids, work 103) is
+#   passed only when this release's binary knows the option.
 # - The proxy runs as its own system user with no home and no write access
 #   outside its runtime directory, so a runner (uid agent) can read neither its
 #   memory nor its credentials.
@@ -56,6 +60,10 @@ mkdir "$tmp/profiles.d"
 cp "${shipped[@]}" "$tmp/profiles.d/"
 "$src" -check -profiles "$tmp/profiles.d" \
   || die "this release's oc-modelproxy does not load the profiles it would serve; nothing installed"
+
+caller_uid=""
+help="$("$src" -help 2>&1 || true)" # not a pipe: under pipefail, grep -q closing early would fail it
+if grep -q -- '-caller-uid' <<<"$help"; then caller_uid=" -caller-uid=$(id -u "$AGENT_USER")"; fi
 
 getent group sp-host >/dev/null || groupadd --system sp-host
 id "$USER_" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$USER_"
@@ -139,7 +147,7 @@ NotifyAccess=all
 User=$USER_
 Group=$USER_
 ExecStartPre=$BIN -check -profiles $PROFILES
-ExecStart=$BIN -profiles $PROFILES
+ExecStart=$BIN -profiles $PROFILES$caller_uid
 # The handoff: a replacement with the binary and profiles now on disk.
 ExecReload=/bin/kill -USR2 \$MAINPID
 Restart=always

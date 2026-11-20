@@ -12,7 +12,11 @@
 //   before reaches main unchanged. Only `cs_` sessions have a writer.
 // - One writer per session: the host's session-writer is handed off (lock
 //   released) before a runner is started or claimed for its session, and is
-//   opened only when no runner serves it and none is starting.
+//   opened only when no runner serves it and none is starting. "Starting"
+//   lasts from `mint` until the runner is `up` or main says the start ended
+//   (`startEnded`, well or not), however long that takes: a start in a
+//   container may wait minutes for the image lock (work 103), and no timer
+//   stands in for its end.
 // - Calvin never writes recovery events for a lost runner (the DO does, under
 //   epoch + 1); the boot scan settles only journals no process holds.
 // - Only the gateway's `epoch` frame moves a session's epoch (recovery-fix):
@@ -40,7 +44,7 @@ import { moveFlatJournals, moveFlatSessionLogged } from './journal-flat-move.js'
 import { journalReports } from './journal-reports.js';
 import { type HostWriterOptions, HostSessionWriter, scanJournals } from './session-writer.js';
 import { isSessionId } from '../session-ids.js';
-import { runnersDir as runnersDirOf } from '../ipc.js';
+import { type RunRoot, runnersDir as runnersDirOf } from '../ipc.js';
 import { log } from '../log.js';
 import { apiBridge, localPort, type WriterPort } from './api-bridge.js';
 import { mirrorAcks } from './mirror-acks.js';
@@ -50,6 +54,7 @@ import { apiWake } from './api-wake.js';
 import { apiRelay, type WireHooks, type WireLinkLike } from './api-relay.js';
 import { type ApiMeter, apiMeter } from './api-meter.js';
 import type { Telemetry } from '../telemetry/emitter.js';
+import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
   /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
@@ -81,6 +86,8 @@ export interface ApiHostDeps {
   start(spec: SessionSpec, o: StartOptions): Promise<SessionStatus | undefined>;
   /** The fork of the session's runner, if it reported one. */
   forkPath?(key: string): string | undefined;
+  /** Present where sessions run in containers (work 103): the session's sandbox, undefined when it has none yet. Its terminal and files are reached only there. */
+  sandbox?(spec: SessionSpec): Promise<SandboxPlace | undefined>;
   /** Serve the relay's local socket (api-wire.ts); absent: no relay on this host. */
   wire?(hooks: WireHooks): Promise<WireLinkLike>;
   /** The host's emitter: the API side's telemetry (api-meter.ts: the relay's frames, the mirror's turns, adoptions, api.sample). */
@@ -165,9 +172,7 @@ export function apiHost(d: ApiHostDeps) {
     if (pending.has(sessionId)) return;
     let resolve = () => {};
     const done = new Promise<void>((r) => (resolve = r));
-    const t = setTimeout(() => settle(sessionId), 60_000); // a launch that failed before its runner registered
-    t.unref?.();
-    pending.set(sessionId, { done, resolve: () => (clearTimeout(t), resolve()) });
+    pending.set(sessionId, { done, resolve });
   }
   function settle(sessionId: string) {
     pending.get(sessionId)?.resolve();
@@ -272,10 +277,15 @@ export function apiHost(d: ApiHostDeps) {
       const spec = specs.get(sessionId);
       const forkPath = spec && (d.forkPath?.(spec.key) ?? spec.forkPath);
       const owner = spec?.owner.userId;
+      if (d.sandbox) {
+        const sandbox = spec && (await d.sandbox(spec));
+        return sandbox && owner ? { forkPath: sandbox.workspace, owner, sandbox } : undefined;
+      }
       return forkPath && owner ? { forkPath, owner } : undefined;
     },
     async record(sessionId, type, data, actor) {
-      const w = await writer(sessionId, false);
+      // With no runner the host's own writer records it, opened as for any call: an upload to a stopped session is in its log.
+      const w = await writer(sessionId, true);
       const r = await w?.call(RECORD_METHOD, { sessionId, type, data }, { actor, member: actor.id });
       if (r?.error) log.warn(`${type} not recorded in ${sessionId}: ${r.error.code}`);
       return (r?.result as { seq?: number } | undefined)?.seq;
@@ -461,8 +471,8 @@ export function apiHost(d: ApiHostDeps) {
       }
     },
 
-    /** Before a runner is launched or claimed for `spec`: its RunnerApi, with the host's writer handed off; undefined off the API. */
-    async mint(spec: SessionSpec, runnerId: string): Promise<RunnerApi | undefined> {
+    /** Before a runner is launched or claimed for `spec`: its RunnerApi, with the host's writer handed off; undefined off the API. `run`: the runner's own run root, when it has one (work 103). */
+    async mint(spec: SessionSpec, runnerId: string, run?: RunRoot): Promise<RunnerApi | undefined> {
       const sessionId = spec.sessionId;
       if (!v4 || !isSessionId(sessionId)) return undefined;
       specs.set(sessionId, spec);
@@ -474,10 +484,13 @@ export function apiHost(d: ApiHostDeps) {
       const { epoch, lastSeq } = logOf(sessionId);
       ensureSessionJournalDir(d.dataDir, sessionId); // the runner opens the journal there and cannot make the directory itself
       moveFlatSessionLogged(d.dataDir, sessionId); // what a runner from before the move left flat (goes in step 12 of work 103)
-      const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, runnersDir), token: mintToken() };
+      const api: RunnerApi = { sessionId, journal: journalPath(d.dataDir, sessionId), epoch, lastSeq, socket: apiSocketFor(runnerId, run ? runnersDirOf(run) : runnersDir), token: mintToken() };
       tokens.set(runnerId, api);
       return api;
     },
+
+    /** The start `mint` was called for is over, with a runner or without: whoever waited for it goes on (to the runner's writer, or the host's). */
+    startEnded: (spec: SessionSpec) => void (isSessionId(spec.sessionId) && settle(spec.sessionId)),
 
     /** A runner now serves its session (launched, claimed, or found after a restart). */
     up(runnerId: string) {

@@ -10,14 +10,20 @@
 //   whichever writes next.
 // - A runner listens on its API socket a moment after its control socket:
 //   dialling retries for up to `dialMs`.
+// - The socket is in a directory its session can write: it is connected to
+//   as the runner's control socket is (checked-socket.ts), never plainly.
 
 import { type ApiClient, dialApi } from '../api/socket.js';
 import type { WriterPort } from './api-bridge.js';
+import { type SocketCheck, connectChecked } from './checked-socket.js';
 
 export type Dial = (path: string, token: string) => Promise<ApiClient>;
 
+/** `dialApi` for a runner's API socket: only a socket (of `check.uid`, when given), and the very file that was checked. */
+export const checkedDial = (check: SocketCheck = {}): Dial => (path, token) => dialApi(path, token, (p) => connectChecked(p, check));
+
 export function remotePort(socket: string, token: string, o: { dial?: Dial; dialMs?: number } = {}): WriterPort & { close(): void } {
-  const dial = o.dial ?? dialApi;
+  const dial = o.dial ?? checkedDial();
   const dialMs = o.dialMs ?? 10_000;
   let shared: Promise<ApiClient> | undefined;
   const subs = new Set<ApiClient>();

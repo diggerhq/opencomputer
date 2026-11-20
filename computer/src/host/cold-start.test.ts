@@ -5,50 +5,63 @@ const later = <T>(ms: number, v: T, log?: string[], what?: string) =>
   new Promise<T>((r) => setTimeout(() => (what && log?.push(what), r(v)), ms));
 
 describe('coldStart', () => {
-  it('starts the runner while forking and resolves only once both are done', async () => {
+  it('brings the runner up, then prepares the fork while waiting for the socket', async () => {
     const log: string[] = [];
     const r = await coldStart({
-      dir: '/f',
-      fork: () => (log.push('fork start'), later(60, '/f', log, 'fork done')),
-      start: (dir) => (log.push(`start ${dir}`), later(20, 'runner', log, 'runner up')),
-      abandon: () => log.push('abandon'),
+      up: () => later(5, undefined, log, 'up'),
+      prepare: () => (log.push('prepare start'), later(60, undefined, log, 'prepared')),
+      ready: () => (log.push('ready start'), later(20, 'runner', log, 'runner up')),
+      abandon: async () => void log.push('abandon'),
     });
-    expect(r).toEqual({ ready: 'runner', forkPath: '/f' });
-    // 'runner up' before 'fork done' is the concurrency: sequential, the runner
-    // couldn't start before the fork finished. (A wall-clock bound flaked on CI.)
-    expect(log).toEqual(['fork start', 'start /f', 'runner up', 'fork done']);
+    expect(r).toBe('runner');
+    // 'runner up' before 'prepared' is the concurrency. (A wall-clock bound flaked on CI.)
+    expect(log).toEqual(['up', 'ready start', 'prepare start', 'runner up', 'prepared']);
   });
 
-  it('forks first when the directory is not known up front (laptop)', async () => {
+  it('only waits for the socket when the fork exists already', async () => {
+    expect(await coldStart({ up: async () => {}, ready: async () => 1, abandon: async () => {} })).toBe(1);
+  });
+
+  it('a failed `up` fails the start; nothing else runs', async () => {
     const log: string[] = [];
-    const r = await coldStart({
-      fork: () => later(5, '/w', log, 'fork done'),
-      start: (dir) => (log.push(`start ${dir}`), later(5, 1)),
-      abandon: () => log.push('abandon'),
-    });
-    expect(r).toEqual({ ready: 1, forkPath: '/w' });
-    expect(log).toEqual(['fork done', 'start /w']);
+    await expect(coldStart({
+      up: () => Promise.reject(new Error('create')),
+      prepare: async () => void log.push('prepare'),
+      ready: async () => void log.push('ready'),
+      abandon: async () => void log.push('abandon'),
+    })).rejects.toThrow('create');
+    expect(log).toEqual([]);
   });
 
-  it('only starts when the fork exists already', async () => {
-    const r = await coldStart({ dir: '/f', start: async (dir) => dir, abandon: () => {} });
-    expect(r).toEqual({ ready: '/f', forkPath: '/f' });
+  it('a failed fork abandons the runner and fails the start', async () => {
+    const log: string[] = [];
+    await expect(coldStart({
+      up: async () => {},
+      prepare: () => Promise.reject(new Error('worktree')),
+      ready: () => later(5, 'runner'),
+      abandon: async () => void log.push('abandon'),
+    })).rejects.toThrow('worktree');
+    expect(log).toEqual(['abandon']);
   });
 
-  it('a failed fork abandons a runner that came up, and fails the start', async () => {
-    const abandoned: string[] = [];
-    await expect(
-      coldStart({ dir: '/f', fork: () => Promise.reject(new Error('worktree')), start: () => later(5, 'runner'), abandon: (r) => abandoned.push(r) }),
-    ).rejects.toThrow('worktree');
-    expect(abandoned).toEqual(['runner']);
+  it('a runner that never answers abandons and fails the start', async () => {
+    const log: string[] = [];
+    await expect(coldStart({
+      up: async () => {},
+      prepare: () => later(20, undefined, log, 'prepared'),
+      ready: () => Promise.reject(new Error('not ready')),
+      abandon: async () => void log.push('abandon'),
+    })).rejects.toThrow('not ready');
+    expect(log).toEqual(['abandon']);
   });
 
-  it('a failed launch fails the start after the fork settles', async () => {
-    let forked = false;
-    await expect(
-      coldStart({ dir: '/f', fork: () => later(10, '/f').then((v) => ((forked = true), v)), start: () => Promise.reject(new Error('launch')), abandon: () => {} }),
-    ).rejects.toThrow('launch');
-    expect(forked).toBe(true);
+  it('rethrows the first failure, also when abandoning fails', async () => {
+    await expect(coldStart({
+      up: async () => {},
+      prepare: () => later(5, undefined).then(() => Promise.reject(new Error('first'))),
+      ready: () => later(30, undefined).then(() => Promise.reject(new Error('second'))),
+      abandon: () => Promise.reject(new Error('stop failed')),
+    })).rejects.toThrow('first');
   });
 });
 

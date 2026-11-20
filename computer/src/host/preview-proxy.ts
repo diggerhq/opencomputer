@@ -6,7 +6,9 @@
 // Invariants: it dials only through its Dialer (preview-dial.ts; loopback
 // unless another is passed; the connections are kept alive by an agent of
 // its own, which ends with it), only a port in the config's allow-list
-// that is not one of the host's own, and only for a request whose
+// that is not one of the host's own and that `previewed` accepts (on a host
+// whose sessions run in containers: a virtual port in the host's table, work
+// 103 C9; no other port is ever dialed there), and only for a request whose
 // X-Preview-Auth verifies (src/signed-header.ts). Every response it produces,
 // proxied ones too, carries `X-Preview-Origin: computer`, the one signal the
 // Worker trusts; a closed port is a 503 with `X-Preview-State: closed`, which
@@ -29,11 +31,12 @@ const HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-e
 type Check = { port: number; headers: http.OutgoingHttpHeaders } | { status: number; error: string; state?: string };
 
 /** Whether the request may reach a port, and the headers the app gets. */
-export function checkRequest(req: http.IncomingMessage, config: PreviewConfig | undefined, refused: number[], now = Date.now()): Check {
+export function checkRequest(req: http.IncomingMessage, config: PreviewConfig | undefined, refused: number[], now = Date.now(),
+  previewed: (port: number) => boolean = () => true): Check {
   if (!config) return { status: 503, error: 'previews are not configured on this computer' };
   const raw = String(req.headers['x-preview-port'] ?? '');
   const port = /^\d{1,5}$/.test(raw) ? Number(raw) : 0;
-  if (!config.ports.includes(port) || refused.includes(port)) {
+  if (!config.ports.includes(port) || refused.includes(port) || !previewed(port)) {
     log.warn(`preview proxy: refused port ${raw.slice(0, 16) || '(none)'}`);
     return { status: 403, error: 'port not previewed' };
   }
@@ -89,10 +92,11 @@ function dialAgent(dial: Dialer): http.Agent {
 }
 
 /** The proxy; `config` is read per request, so a `previews` frame applies at once. Closing it closes its idle connections to the apps. */
-export function previewProxy(config: () => PreviewConfig | undefined, refused = HOST_PORTS, dial: Dialer = loopbackDialer): http.Server {
+export function previewProxy(config: () => PreviewConfig | undefined, refused = HOST_PORTS, dial: Dialer = loopbackDialer,
+  previewed?: (port: number) => boolean): http.Server {
   const agent = dialAgent(dial);
   const server = http.createServer((req, res) => {
-    const c = checkRequest(req, config(), refused);
+    const c = checkRequest(req, config(), refused, Date.now(), previewed);
     if ('status' in c) return refuse(res, c);
     for (const k of HOP) delete c.headers[k];
     const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, agent }, (ures) => {
@@ -108,7 +112,7 @@ export function previewProxy(config: () => PreviewConfig | undefined, refused = 
 
   server.on('upgrade', (req, socket: Duplex, first: Buffer) => {
     socket.on('error', () => {});
-    const c = checkRequest(req, config(), refused);
+    const c = checkRequest(req, config(), refused, Date.now(), previewed);
     if ('status' in c) return refuseSocket(socket, c);
     const up = http.request({ host: '127.0.0.1', port: c.port, method: req.method, path: req.url, headers: c.headers, agent });
     up.on('upgrade', (ures, usock, uhead) => {

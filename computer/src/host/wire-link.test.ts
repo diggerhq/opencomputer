@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { lines } from '../ipc.js';
 import { createTerminals } from './terminal.js';
+import { Unavailable } from './unavailable.js';
 import { serveWireLink, type WireLink, type WireLinkHooks } from './wire-link.js';
 import { createWorkspaceFiles } from './workspace-files.js';
 
@@ -18,7 +19,10 @@ const counts: [string, number][] = [];
 const hooks: WireLinkHooks = {
   where: (sid) => (sid === 'cs_a' ? { socket: '/x/api.sock', token: 't', writer: 'host', epoch: 1 } : undefined),
   resume: async () => ({ status: 'starting' }),
-  workspace: (sid) => (sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' } : undefined),
+  workspace: (sid) =>
+    sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
+    : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }
+    : undefined,
   record: async (sid, type, data) => {
     recorded.push([sid, type, data]);
     return 42;
@@ -126,6 +130,19 @@ describe('wire link', () => {
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
   });
 
+  it("refuses a terminal in a session whose container is stopped, and starts nothing (C13)", async () => {
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    r.send({ t: 'terminal.open', id: 't1', sessionId: 'cs_stopped', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    const { error } = await r.next((m) => m.id === 't1');
+    expect(error).toMatchObject({ code: 'conflict', status: 409, reason: 'session_not_running' });
+    expect(error.message).toMatch(/[Rr]esume the session first/);
+    expect(recorded).toEqual([]);
+    expect(counts).toEqual([]);
+    r.sock.destroy();
+  });
+
   it('lets only the relay peer that opened a terminal resize, eof or close it', async () => {
     const [a, b] = [await relay(), await relay()];
     for (const r of [a, b]) {
@@ -145,6 +162,52 @@ describe('wire link', () => {
     expect((await a.next((m) => m.id === 'a2')).result).toEqual({});
     a.sock.destroy();
     b.sock.destroy();
+  });
+
+  it('tells the relay what the host has words for (the computer is updating), as the call\'s result or its files.done', async () => {
+    // The first script of this place starts; every later one is refused as behind the image lock.
+    let n = 0;
+    const dir = path.join(root, 'wire2');
+    const other = await serveWireLink(hooks, {
+      dir,
+      terminals: createTerminals({ dir: path.join(dir, 'terminals'), launch: 'detached' }),
+      files: createWorkspaceFiles({
+        dir: path.join(root, 'files-scratch2'),
+        place: (ws) => ({
+          root: ws.forkPath,
+          spawn: async (argv) => {
+            if (n++) throw new Unavailable('The computer is updating, try again in a few minutes.');
+            return spawn(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] });
+          },
+        }),
+      }),
+    });
+    const sock = net.connect(other.socket);
+    const got: Frame[] = [];
+    lines(sock, (m) => got.push(m));
+    const next = async (pred: (m: Frame) => boolean) => {
+      for (const end = Date.now() + 8000; Date.now() < end; await new Promise((r) => setTimeout(r, 10))) {
+        const i = got.findIndex(pred);
+        if (i >= 0) return got.splice(i, 1)[0];
+      }
+      throw new Error(`no frame; have ${JSON.stringify(got)}`);
+    };
+    const send = (m: object) => sock.write(`${JSON.stringify(m)}\n`);
+    send({ t: 'hello', version: 'test' });
+    await next((m) => m.t === 'welcome');
+    const updating = { code: 'unavailable', status: 503, retryable: true, message: 'The computer is updating, try again in a few minutes.' };
+    // A download: its size was read (the first script), its bytes are refused.
+    send({ t: 'files.get', id: 'g', sessionId: 'cs_a', member: 'usr_owner', path: 'hello.txt', file: true });
+    const first = await next((m) => m.id === 'g' && m.t === 'result');
+    const s = await connect(first.result.socket);
+    s.resume();
+    expect((await next((m) => m.id === 'g' && m.t === 'files.done')).error).toEqual(updating);
+    send({ t: 'files.list', id: 'l', sessionId: 'cs_a', member: 'usr_owner', path: '' });
+    expect((await next((m) => m.id === 'l')).error).toEqual(updating);
+    send({ t: 'files.put', id: 'p', sessionId: 'cs_a', member: 'usr_owner', path: 'notes', format: 'tar' });
+    expect((await next((m) => m.id === 'p')).error).toEqual(updating);
+    sock.destroy();
+    await other.close();
   });
 
   it('streams a file out and an upload in, with files.done', async () => {

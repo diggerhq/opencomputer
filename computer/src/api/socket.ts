@@ -196,10 +196,10 @@ export interface ApiClient {
 
 const gone = (): CallOutcome => ({ error: apiError('unavailable', 'the session writer went away', 503, { retryable: true, retryAfterMs: 250 }) });
 
-/** Connect to a writer's socket and say hello. */
-export function dialApi(path: string, token: string): Promise<ApiClient> {
+/** Connect to a writer's socket and say hello. `connect`: how, when the socket is where its path cannot be trusted (it may throw). */
+export function dialApi(path: string, token: string, connect: (path: string) => net.Socket = net.connect): Promise<ApiClient> {
   return new Promise((resolve, reject) => {
-    const sock = net.connect(path);
+    const sock = connect(path);
     const pending = new Map<string, (o: CallOutcome) => void>();
     let next = 0;
     let handlers: SubscribeOptions | undefined;

@@ -1,8 +1,10 @@
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Unavailable, UPDATING } from './unavailable.js';
 import { createTerminals, frame, frames, type Terminals, TERMINALS_PER_SESSION } from './terminal.js';
 
 let dir: string;
@@ -127,4 +129,48 @@ describe('terminals (real PTY)', () => {
     await terms.closeSession('cs_b');
     expect(terms.count('cs_b')).toBe(0);
   }, 20_000);
+});
+
+describe('terminals in containers (work 103, C13)', () => {
+  it('on a podman host, an open that names no sandbox starts nothing', async () => {
+    const podman = createTerminals({ dir: path.join(dir, 'p'), launch: 'podman' });
+    podman.prewarm(); // no helper ahead either: it would be a process outside every container
+    const r = await podman.open({ sessionId: 'cs_a', cwd: dir, cols: 80, rows: 24, tty: true }, onExit);
+    expect('error' in r && [r.error.code, r.error.status]).toEqual(['unavailable', 503]);
+    expect(podman.count('cs_a')).toBe(0);
+    await podman.closeAll();
+  });
+
+  it('enters the sandbox first: refused with the words of the refusal, or as not running, and nothing starts; no use is left', async () => {
+    const log: string[] = [];
+    let answer: () => Promise<{ running: boolean; leave(): void }> = async () => ({ running: false, leave: () => void log.push('left') });
+    const podman = createTerminals({ dir: path.join(dir, 'p'), launch: 'podman', inside: { enter: (id) => (log.push(`enter ${id}`), answer()), hangUp() {} } });
+    const open = () => podman.open({ sessionId: 'cs_a', sandbox: '00aa11bb22cc33dd', cwd: '/workspace', cols: 80, rows: 24, tty: true }, onExit);
+    const stopped = await open();
+    expect('error' in stopped && [stopped.error.code, stopped.error.reason]).toEqual(['conflict', 'session_not_running']);
+    answer = () => Promise.reject(new Unavailable(UPDATING));
+    const updating = await open();
+    expect('error' in updating && updating.error).toEqual({ code: 'unavailable', message: 'The computer is updating, try again in a few minutes.', status: 503, retryable: true });
+    answer = () => Promise.reject(new Error('systemctl: /run/user/1500'));
+    const other = await open();
+    expect('error' in other && [other.error.code, other.error.message]).toEqual(['unavailable', 'The terminal could not start.']);
+    expect(log).toEqual(['enter 00aa11bb22cc33dd', 'left', 'enter 00aa11bb22cc33dd', 'enter 00aa11bb22cc33dd']);
+    expect(podman.count('cs_a')).toBe(0);
+    await podman.closeAll();
+  });
+
+  it('the helper, as podman exec runs it: its own environment with TERM over it, never BASH_ENV, and SIGHUP hangs up', async () => {
+    const helper = path.resolve(import.meta.dirname, 'terminal-pty.py');
+    const p = spawn('python3', [helper, 'sp-term-test'], { stdio: ['pipe', 'pipe', 'inherit'], env: { PATH: env.PATH, HOME: '/home/agent', BASH_ENV: '/nonexistent', SP_INSIDE: 'yes' } });
+    let out = '';
+    let exit: { exitCode: number | null; signal: string | null } | undefined;
+    p.stdout.on('data', frames((k, payload) => (k === 'O' ? (out += payload.toString()) : k === 'Z' && (exit = JSON.parse(payload.toString())))));
+    p.stdin.write(frame('S', JSON.stringify({ cols: 80, rows: 24, tty: true, cwd: dir, env: { TERM: 'vt100' }, term: 'vt100', inherit: true,
+      command: 'echo "$SP_INSIDE $HOME $TERM ${BASH_ENV:-unset}"; sleep 60' })));
+    await until(() => out.includes('vt100'));
+    expect(out).toContain('yes /home/agent vt100 unset');
+    p.kill('SIGHUP');
+    await until(() => !!exit);
+    expect(exit).toEqual({ exitCode: null, signal: 'SIGHUP' });
+  });
 });

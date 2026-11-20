@@ -82,6 +82,18 @@ ws_failed() {
   printf '%s\tfailed\t%s\n' "$1" "$(printf '%s' "$2" | tr '\t\r\n' '   ')"
 }
 
+# ws_keep <clone>: a clone whose worktrees are registered elsewhere (a thread's
+# container sees its own registry over .git/worktrees; work 103) must never
+# drop what only they reach, and has the directory the registries mount over.
+# Written only when it differs: a session's git may hold the configuration's lock.
+ws_keep() {
+  for ws_k in gc.pruneExpire gc.worktreePruneExpire; do
+    [ "$(cd "$1" && git config --local --get "$ws_k" 2>/dev/null)" = never ] ||
+      (cd "$1" && git config --local "$ws_k" never) 2>/dev/null || :
+  done
+  mkdir -p -- "$1/.git/worktrees" 2>/dev/null || :
+}
+
 # ws_base <clone>: sets ws_b to the branch the clone's forks start from:
 # origin/HEAD, asked of the remote once when the clone does not know it.
 ws_base() {

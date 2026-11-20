@@ -74,6 +74,7 @@ import { TIERS, tierOf } from '../tiers.js';
 import { codexRoot } from '../codex-home.js';
 import { meteredClient } from './surface-meter.js';
 import { serveFiles } from './send-file-socket.js';
+import { servedPreviews } from './preview-socket.js';
 import { Waiters } from './waiters.js';
 import { TurnEvents } from './turn-events.js';
 import { sampleLoopLag } from './loop-lag.js';
@@ -216,6 +217,10 @@ const report = (status: SessionReport['status'] = s!.isBusy ? 'busy' : 'idle'): 
 });
 const sendSpare = () => spare && out({ t: 'spare', spare: { id: spec.id!, ready: spare.ready, version: spec.version, kind: spare.kind } });
 
+const previews = servedPreviews(env.SP_PREVIEW_SOCKET, {
+  preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
+  unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
+});
 const hooks: SessionHooks = {
   busy: (busy) => {
     out({ t: 'report', report: report() });
@@ -226,10 +231,7 @@ const hooks: SessionHooks = {
   output: () => clearFeedback(),
   spawn,
   threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
-  previews: {
-    preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
-    unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
-  },
+  previews,
   ...(workspacesEnabled() && { checkout }),
   restart: () => {
     restarting = true;
@@ -505,6 +507,7 @@ async function onHost(m: HostToRunner) {
       return gateway.answer(m.id, m);
     case 'secrets':
       return secrets.apply(m.secrets);
+    case 'preview-ports': return previews.restore(m.ports); // after a resume: its previews answer again without a new `preview` (work 103)
     case 'secret-asked':
       return secretAsks.answer(m.id, m);
     case 'checked-out':

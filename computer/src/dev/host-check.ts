@@ -48,8 +48,10 @@ if (DEFINITION) {
 }
 const RUN = path.join(dir, 'run');
 const KEY = `C_CHECK:${Date.now() / 1000}`;
+// Runners are named by an id the host mints (work 069), a new one per start: the check finds them by what they left in RUN.
 const RUNNERS = path.join(RUN, 'runners');
 const LOGS = path.join(RUN, 'logs');
+const ls = (d: string) => (existsSync(d) ? readdirSync(d) : []);
 const t0 = Date.now();
 const say = (...a: unknown[]) => console.log(`+${((Date.now() - t0) / 1000).toFixed(1)}s`, ...a);
 let failed = 0;
@@ -187,11 +189,15 @@ function startHost(idleMs: number): ChildProcess {
   for (const s of [h.stdout!, h.stderr!]) s.on('data', (d) => process.stdout.write(String(d).replace(/^(?=.)/gm,'    host| ')));
   return h;
 }
-// Runners are named by id, not session. The session's runner is the only one: with -identity=single the host keeps no spares.
-const runnerId = () => (existsSync(RUNNERS) ? readdirSync(RUNNERS).find((f) => f.endsWith('.sock') && !f.endsWith('.api.sock'))?.slice(0, -'.sock'.length) : undefined);
-const runnerPid = () => {
-  const f = path.join(RUNNERS, `${runnerId()}.pid`);
-  return existsSync(f) ? Number(readFileSync(f, 'utf8')) : 0;
+/** The pid files in RUN/runners: runner id → pid. A runner removes its own when it exits by itself. */
+const pids = () => new Map(ls(RUNNERS).filter((f) => f.endsWith('.pid')).map((f) => [f.replace(/\.pid$/, ''), Number(readFileSync(path.join(RUNNERS, f), 'utf8'))]));
+/** The session's runner: the living one started last (0: none). */
+const runnerPid = () => [...pids()].filter(([, p]) => alive(p)).map(([id, p]) => ({ p, at: statSync(path.join(RUNNERS, `${id}.pid`)).mtimeMs })).sort((a, b) => b.at - a.at)[0]?.p ?? 0;
+const socketOf = (pid: number) => [...pids()].flatMap(([id, p]) => (p === pid ? [path.join(RUNNERS, `${id}.sock`)] : []))[0];
+/** Never 0 or 1: `kill(0)` is this check's own process group. */
+const kill = (pid: number, signal: NodeJS.Signals) => {
+  if (pid > 1) process.kill(pid, signal);
+  else say(`not signalling pid ${pid}: no runner found`);
 };
 const alive = (pid: number) => {
   try {
@@ -200,9 +206,8 @@ const alive = (pid: number) => {
     return false;
   }
 };
-/** Every runner's log, oldest first. */
-const runnerLog = () => (existsSync(LOGS) ? readdirSync(LOGS).map((f) => path.join(LOGS, f)).sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
-  .map((f) => readFileSync(f, 'utf8')).join('') : '');
+/** What every runner of this run wrote, oldest first. */
+const runnerLog = () => ls(LOGS).map((f) => ({ f: path.join(LOGS, f), at: statSync(path.join(LOGS, f)).mtimeMs })).sort((a, b) => a.at - b.at).map((x) => readFileSync(x.f, 'utf8')).join('');
 function askToken(sessionKey: string, socket = path.join(RUN, 'token.sock')) {
   return new Promise<any>((resolve, reject) => {
     const s = net.createConnection(socket, () => s.write(JSON.stringify({ sessionKey }) + '\n'));
@@ -223,7 +228,7 @@ try {
   const r1 = await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text, ts: '2.1' }, credentials: scopedCredentials, trace: tr1 });
   check(!!r1?.ok, `deliver "${text}" → reply ok (${r1?.error ?? ''})`);
   pid = runnerPid();
-  check(alive(pid) && !!runnerId(), `runner process ${pid} spawned, listening on its socket`);
+  check(alive(pid) && existsSync(socketOf(pid) ?? ''), `runner process ${pid} spawned, listening on its socket`);
   if (CLAUDE) {
     await until(() => reports().some((r) => r.status === 'busy') && reports().at(-1)?.status === 'idle' ? true : undefined, 120_000);
     check(/chat\.(startStream|postMessage)/.test(runnerLog()) && !!reports().at(-1)?.sdkSessionId, 'Claude turn rendered to fake Slack, sdkSessionId reported');
@@ -285,7 +290,7 @@ try {
   check(batches.every((b) => b.auth === 'Bearer check-credential'), 'batches carry the credential');
 
   check(!!(await until(() => (!alive(pid) ? true : undefined), 20_000)), 'runner exited after the idle timeout');
-  check(reports().at(-1)?.status === 'stopped' && !runnerId(), 'runner reported stopped and removed its socket');
+  check(reports().at(-1)?.status === 'stopped' && !ls(RUNNERS).some((f) => f.endsWith('.sock')), 'runner reported stopped and removed its socket');
 
   check(!!(await until(() => tel().find((e) => e.event_name === 'runner.exited' && e.data.exit_reason === 'idle' && e.data.busy === false))),
     'runner.exited: idle, not busy');
@@ -310,7 +315,7 @@ try {
   const tr6 = mkTrace();
   check(!!(await request({ t: 'deliver', id: randomUUID(), session: spec, msg: { userId: 'U_OWNER', text: 'hello', ts: '2.6' }, credentials: scopedCredentials, model: HANG, trace: tr6 }))?.ok
     && !!(await until(busy)) && !!(await until(() => hangs.length || undefined)), 'a turn is running: its request reached the model, which never answers');
-  if (alive(pid)) process.kill(pid, 'SIGKILL'); // never 0: that is this process's group
+  kill(pid, 'SIGKILL');
   const ab6 = await until(() => telOf(tr6, 'turn.abandoned')[0]);
   check(ab6?.outcome === 'abandoned' && ab6.data.exit_reason === 'unknown' && typeof ab6.duration_ms === 'number',
     'runner killed mid-turn → turn.abandoned with its trace');
@@ -324,7 +329,7 @@ try {
   await sleep(500);
   host = startHost(600_000);
   check(!!(await until(() => hellos()[2]))?.sessions.some((s) => s.key === KEY && s.status === 'busy'), 'restarted host found the busy runner');
-  if (alive(pid)) process.kill(pid, 'SIGKILL');
+  kill(pid, 'SIGKILL');
   check(!!(await until(() => telOf(tr7, 'turn.abandoned')[0])), 'host restarted mid-turn, then the runner killed → turn.abandoned still names the trace');
 
   if (WORKSPACE) {
@@ -355,7 +360,7 @@ try {
 } finally {
   host.kill('SIGTERM');
   proxy.kill('SIGTERM');
-  if (alive(pid)) process.kill(pid, 'SIGTERM');
+  for (const p of pids().values()) if (alive(p)) kill(p, 'SIGTERM');
   await sleep(500);
   say('runner log (last lines):\n' + runnerLog().split('\n').slice(-12).map((l) => '    runner| ' + l).join('\n'));
   rmSync(dir, { recursive: true, force: true });

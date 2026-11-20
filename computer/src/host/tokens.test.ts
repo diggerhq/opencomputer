@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readlinkSync, statSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -86,6 +86,8 @@ describe('token relay', () => {
     const sock = path.join(dir, 'r1.sock');
     expect(sock).toBe(tokenSocketFor(root, 'r1'));
     await vi.waitFor(() => expect(existsSync(sock)).toBe(true));
+    // Work 103: in a run root that is not the host's, the name the helpers know leads to the runner's own socket.
+    expect(readlinkSync(path.join(root, 'token.sock'))).toBe('tokens/r1.sock');
     serving.close();
     await vi.waitFor(() => expect(existsSync(sock)).toBe(false));
   });
@@ -121,6 +123,38 @@ describe('token relay', () => {
       expect(out).toMatch(/^username=t\npassword=jwt_p\npassword_expiry_utc=\d+\n$/);
       // One ask: the push reuses the credential the remote was set up with.
       expect(asked.map((m) => m.kind)).toEqual(['automation-repo']);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("the helpers' socket gives GitHub tokens for the definition's repositories and nothing else", async () => {
+    const asked: Extract<HostToGateway, { t: 'token' }>[] = [];
+    const tm = createTelemetry({ service: 'host', version: 'v', region: 'r', send: () => {} });
+    const relay = tokenRelay((m) => {
+      asked.push(m);
+      queueMicrotask(() => relay.answer({ id: m.id, result: { token: 'ghs_h', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+      return true;
+    }, tm);
+    const dir = mkdtempSync(path.join(tmpdir(), 'tokens-'));
+    const socket = path.join(dir, 'token.sock');
+    const server = relay.serveHelper(socket, () => ['Acme/Widgets']);
+    await new Promise((r) => server.once('listening', r));
+    const ask = (req: unknown) =>
+      new Promise<{ token?: string; error?: string }>((resolve, reject) => {
+        const c = net.connect(socket, () => c.write(JSON.stringify(req) + '\n'));
+        let got = '';
+        c.on('data', (d) => (got += d)).on('end', () => resolve(JSON.parse(got))).on('error', reject);
+      });
+    try {
+      expect(await ask({ repos: ['acme/widgets.git'] })).toMatchObject({ token: 'ghs_h' });
+      expect(asked).toEqual([expect.objectContaining({ repos: ['acme/widgets.git'], sessionKey: undefined })]);
+      expect(await ask({ repos: ['acme/widgets', 'acme/other'] })).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({})).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({ repos: 'acme/widgets' })).toEqual({ error: 'not a repository of this workspace' });
+      expect(await ask({ kind: 'opencomputer' })).toEqual({ error: 'this socket gives GitHub tokens only' });
+      expect(await ask({ kind: 'automation-repo', repos: ['acme/widgets'] })).toEqual({ error: 'this socket gives GitHub tokens only' });
+      expect(asked.length).toBe(1);
     } finally {
       server.close();
     }

@@ -2,7 +2,8 @@
 // hold the git sequences; clones.ts, fork.ts, housekeep.ts, prune.ts and
 // idle.ts keep the locks, the scheduling, the telemetry and the parsing, and
 // reach git only through a ScriptRunner. `hostScripts` runs a script on the
-// host as the runners' user (as-runner.ts), with host paths.
+// host as the runners' user (as-runner.ts), with host paths; on a `podman`
+// host the two runners of host/sandbox/scripts.ts run it in a container.
 //
 // Invariants:
 // - A script prints one line per repository, tab-separated: the repository,
@@ -33,7 +34,7 @@ export class ScriptError extends Error {
 
 export interface ScriptRunner {
   /** Run bin/<script> with these arguments; resolves with stdout, rejects with ScriptError { code, stderr } on a non-zero exit or the timeout (0: none). */
-  run(script: string, args: string[], o: { stdin?: string; timeoutMs: number }): Promise<string>;
+  run(script: string, args: string[], o: { stdin?: string | Buffer; timeoutMs: number }): Promise<string>;
   /** How this runner names the clones directory and a workspace: host paths, or /clones and /workspace. */
   clones: string;
   workspace(hostForkPath: string): string;
