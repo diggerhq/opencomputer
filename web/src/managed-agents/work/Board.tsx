@@ -1,14 +1,7 @@
 import { useContext, type ReactNode } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import {
-  ChevronRight,
-  FileText,
-  Loader2,
-  Search,
-  SquareKanban,
-  X,
-} from 'lucide-react'
+import { ChevronRight, Loader2, Search, SquareKanban, X } from 'lucide-react'
 import { ApiError } from '@/api/errors'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/panel'
@@ -38,8 +31,8 @@ import {
   UnpublishedMark,
   WarningMark,
 } from './parts'
-import { useOpenItems } from './queries'
-import { FirstRepository } from './RepositorySetting'
+import { BoardIntro, BoardReading } from './BoardIntro'
+import { useGrantingInstallations, useOpenItems } from './queries'
 
 // The board (ux-spec 4): tracked items in three columns, Mine or Everyone.
 // Read-only for now; Close and Reopen arrive with build step 5.
@@ -52,6 +45,7 @@ export default function BoardPage() {
 }
 
 export function Board() {
+  const auth = useContext(AuthContext)
   const org = useOrg()
   const [params, setParams] = useSearchParams()
   const tab: Tab = params.get('tab') === 'everyone' ? 'everyone' : 'mine'
@@ -83,6 +77,9 @@ export function Board() {
 
   const open = useOpenItems()
   const repository = open.data?.page.repository ?? null
+  // Before a repository is chosen: is GitHub connected at all?
+  const noRepository = open.isSuccess && !repository
+  const installations = useGrantingInstallations(noRepository)
   const closed = useInfiniteQuery({
     queryKey: workKeys.closed(org),
     queryFn: ({ pageParam }) => getClosedItems(pageParam),
@@ -123,17 +120,14 @@ export function Board() {
 
   const page = open.data.page
   if (!page.repository) {
+    // The list failing is the combobox's to say; it offers a retry.
+    const connected = !installations.isSuccess || installations.data.length > 0
     return (
       <BoardFrame>
-        <Panel>
-          <EmptyState
-            icon={FileText}
-            title="Nothing is tracked yet"
-            description={<WhatIsAnItem />}
-            action={<FirstRepository />}
-            className="[&>div:last-child]:w-full"
-          />
-        </Panel>
+        <BoardIntro
+          step={connected ? 'choose' : 'connect'}
+          checking={installations.isPending}
+        />
       </BoardFrame>
     )
   }
@@ -154,7 +148,31 @@ export function Board() {
     !all.some((i) => i.mine) &&
     all.length > 0 &&
     !closed.isPending
-  const nothing = all.length === 0 && !page.building && !closed.isPending
+  const nothing = all.length === 0 && !closed.isPending
+  const status = (
+    <IndexStatus
+      repository={repositoryName(page.repository)}
+      problem={repositoryProblem(page.repository)}
+      building={page.building}
+      asOf={page.asOf}
+    />
+  )
+  // Nothing to show yet: no tabs or filter, the lanes drawn as placeholders.
+  if (nothing && !repositoryProblem(page.repository)) {
+    return (
+      <BoardFrame status={status}>
+        {page.building ? (
+          <BoardReading repository={page.repository} />
+        ) : (
+          <BoardIntro
+            step="track"
+            repository={page.repository}
+            email={auth?.user?.email}
+          />
+        )}
+      </BoardFrame>
+    )
+  }
 
   return (
     <BoardFrame
@@ -164,24 +182,9 @@ export function Board() {
       onQ={(q) => setParam('q', q || null)}
       tag={filters.tag}
       onClearTag={() => setParam('tag', null)}
-      status={
-        <IndexStatus
-          repository={repositoryName(page.repository)}
-          problem={repositoryProblem(page.repository)}
-          building={page.building}
-          asOf={page.asOf}
-        />
-      }
+      status={status}
     >
-      {nothing ? (
-        <Panel>
-          <EmptyState
-            icon={FileText}
-            title="Nothing is tracked yet"
-            description={<WhatIsAnItem />}
-          />
-        </Panel>
-      ) : mineEmpty ? (
+      {mineEmpty ? (
         <Panel>
           <EmptyState
             icon={SquareKanban}
@@ -334,16 +337,6 @@ function Dormant({
   )
 }
 
-function WhatIsAnItem() {
-  return (
-    <>
-      An item is a working doc an agent keeps about work that outlives one
-      sitting: what it is, where it stands, and what is left. Any session can be
-      tracked: say &ldquo;track this&rdquo; in it, and the item shows up here.
-    </>
-  )
-}
-
 function BoardFrame({
   tab,
   onTab,
@@ -455,24 +448,32 @@ function IndexStatus({
       ) : building ? (
         <span role="status" className="inline-flex items-center gap-1.5">
           <Loader2 className="size-3 animate-spin" aria-hidden />
-          Reading {repository}…
+          <span>
+            Reading <RepositoryLink repository={repository} />…
+          </span>
         </span>
       ) : (
         <>
-          {/* Quiet: where the board reads from, and the way to change it. */}
-          <Link
-            to="/settings#work-repository"
-            title="Change the working docs repository"
-            className="hover:text-foreground"
-          >
-            {repository}
-          </Link>
+          <RepositoryLink repository={repository} />
           {indexIsOld(asOf) ? (
             <span title={asOf ?? undefined}>· As of {timeAgo(asOf)} ago</span>
           ) : null}
         </>
       )}
     </p>
+  )
+}
+
+/** Quiet: where the board reads from, and the way to change it. */
+function RepositoryLink({ repository }: { repository: string }) {
+  return (
+    <Link
+      to="/settings#work-repository"
+      title="Knowledge repository settings"
+      className="hover:text-foreground underline-offset-4 hover:underline"
+    >
+      {repository}
+    </Link>
   )
 }
 

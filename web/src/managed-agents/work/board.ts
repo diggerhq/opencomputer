@@ -204,3 +204,27 @@ export function resolveAgainst(url: string, base: string): string {
     return url
   }
 }
+
+/**
+ * GitHub's new-file page in `work/`, filled in with an item's shape: the
+ * frontmatter `owner:`, a title, the line on where it stands and `## Left`.
+ */
+export function newItemUrl(repository: Repository, email: string | null) {
+  const body = [
+    ...(email ? ['---', `owner: ${email}`, '---', ''] : []),
+    '# Usage billing',
+    '',
+    'Metering is live; invoices next.',
+    '',
+    '## Left',
+    '',
+    '- [ ] Draft the invoice email',
+    '- [ ] Backfill last month',
+    '',
+  ].join('\n')
+  const q = new URLSearchParams({
+    filename: 'work/1-usage-billing.md',
+    value: body,
+  })
+  return `https://github.com/${repository.owner}/${repository.name}/new/${encodeURIComponent(repository.branch)}?${q}`
+}

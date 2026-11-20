@@ -248,17 +248,75 @@ describe('board', () => {
     expect(titles(column('In progress'))).toEqual(['Theirs'])
   })
 
-  it('explains what an item is before a repository is set', async () => {
+  it('says what the board is and offers the repository before one is set', async () => {
     workApi.getOpenItems.mockResolvedValue(
       openPage([], { repository: null, head: null, asOf: null }),
     )
     workApi.getRepository.mockResolvedValue(null)
     workApi.getRepositories.mockResolvedValue([acme])
     await render('/computer/work')
-    expect(container.textContent).toContain('An item is a working doc')
-    expect(container.textContent).toContain('Choose the knowledge repository')
+    const text = container.textContent
+    expect(text).toContain('The work your team and its agents have in progress')
+    expect(text).toContain('Each card is a markdown file in a git repository')
+    expect(text).toContain('The one repository where that work is written down')
+    expect(currentStep()).toBe('Choose a repository')
     expect(trigger()?.textContent).toContain('Select a repository')
+    expect(button('Connect GitHub')).toBeUndefined()
     expect(workApi.getClosedItems).not.toHaveBeenCalled()
+  })
+
+  it('asks to connect GitHub first when nothing is connected', async () => {
+    workApi.getOpenItems.mockResolvedValue(
+      openPage([], { repository: null, head: null, asOf: null }),
+    )
+    workApi.getRepositories.mockResolvedValue([])
+    await render('/computer/work')
+    expect(container.textContent).toContain(
+      'The work your team and its agents have in progress',
+    )
+    expect(currentStep()).toBe('Connect GitHub')
+    expect(button('Connect GitHub')).toBeTruthy()
+    expect(trigger()).toBeNull()
+  })
+
+  it('shows how to track a first item when the repository has none', async () => {
+    workApi.getOpenItems.mockResolvedValue(openPage([]))
+    await render('/computer/work')
+    expect(container.textContent).toContain(
+      'Nothing is tracked in acme/knowledge yet',
+    )
+    expect(currentStep()).toBe('Track a first item')
+    expect(
+      container.querySelector('a[href="/computer/sessions/new"]')?.textContent,
+    ).toBe('Start a session')
+    const github = container.querySelector<HTMLAnchorElement>(
+      'a[href^="https://github.com/acme/knowledge/new/main?"]',
+    )
+    expect(github?.textContent).toContain('Or add a file to work/ on GitHub')
+    // No lanes, tabs or filter while there is nothing to show.
+    expect(
+      container.querySelector('section[aria-label="In progress"]'),
+    ).toBeNull()
+    expect(container.querySelector('[role="tablist"]')).toBeNull()
+    expect(
+      container.querySelector('a[href="/settings#work-repository"]')
+        ?.textContent,
+    ).toBe('acme/knowledge')
+  })
+
+  it('says the first read is going on, without the getting-started steps', async () => {
+    workApi.getOpenItems.mockResolvedValue(openPage([], { building: true }))
+    await render('/computer/work')
+    expect(container.textContent).toContain(
+      'Reading acme/knowledge for the first time',
+    )
+    expect(currentStep()).toBeNull()
+    expect(container.textContent).not.toContain('Start a session')
+    // The header names the repository, linked to its setting.
+    expect(
+      container.querySelector('a[href="/settings#work-repository"]')
+        ?.textContent,
+    ).toBe('acme/knowledge')
   })
 
   it('reads a 404 as not available yet', async () => {
@@ -634,6 +692,11 @@ const acme = {
   problem: null,
   problemMessage: null,
 }
+
+// The current step's label (its number is drawn, hidden from readers).
+const currentStep = () =>
+  container.querySelector('[aria-current="step"]')?.lastElementChild
+    ?.textContent ?? null
 
 const trigger = () =>
   container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')

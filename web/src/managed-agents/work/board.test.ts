@@ -5,6 +5,7 @@ import {
   indexIsOld,
   inProgress,
   matches,
+  newItemUrl,
   presentBody,
   pullLabel,
   readyToClose,
@@ -216,5 +217,32 @@ describe('the doc as shown', () => {
       'https://example.com',
     )
     expect(resolveAgainst('#why', base)).toBe('#why')
+  })
+})
+
+describe('newItemUrl', () => {
+  const repository = {
+    installationId: '1',
+    owner: 'acme',
+    name: 'knowledge',
+    branch: 'main',
+  }
+  it("opens GitHub's new-file page in work/ with an item's shape", () => {
+    const url = new URL(newItemUrl(repository, 'a@example.com'))
+    expect(url.origin + url.pathname).toBe(
+      'https://github.com/acme/knowledge/new/main',
+    )
+    expect(url.searchParams.get('filename')).toBe('work/1-usage-billing.md')
+    const body = url.searchParams.get('value') ?? ''
+    expect(
+      body.startsWith('---\nowner: a@example.com\n---\n\n# Usage billing'),
+    ).toBe(true)
+    expect(body).toContain('## Left\n\n- [ ] ')
+  })
+  it('leaves out the frontmatter without an email', () => {
+    const url = new URL(newItemUrl(repository, null))
+    expect(url.searchParams.get('value')?.startsWith('# Usage billing')).toBe(
+      true,
+    )
   })
 })

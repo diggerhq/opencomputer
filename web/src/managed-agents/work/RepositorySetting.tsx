@@ -43,24 +43,8 @@ import { useGrantingInstallations } from './queries'
 // one per organization, chosen from what its GitHub connection can reach.
 // One control shows the choice and opens a searchable list of what the
 // installations grant, as GitHub's and Vercel's repository pickers do. The
-// board's first-time state uses it (`FirstRepository`); the setting with its
+// board's first-time state uses it (`BoardIntro`); the setting with its
 // state and fixes is KnowledgeRepositorySection.
-
-/** The board's empty state: choose the repository, and the board loads. */
-export function FirstRepository() {
-  return (
-    <div className="mx-auto w-full max-w-sm space-y-3 text-left">
-      <p className="text-muted-foreground text-center text-sm">
-        Choose the{' '}
-        <span className="text-foreground font-medium">
-          knowledge repository
-        </span>
-        : the GitHub repository where agents keep these docs.
-      </p>
-      <RepositoryCombobox current={null} prominent />
-    </div>
-  )
-}
 
 /**
  * Starts the managed GitHub App install in a new window, as Connections and
@@ -70,15 +54,17 @@ export function FirstRepository() {
 export function ConnectGitHubButton({
   label = 'Connect GitHub',
   variant = 'outline',
+  size = 'sm',
 }: {
   label?: string
   variant?: 'default' | 'outline'
+  size?: 'sm' | 'default'
 }) {
   const [starting, setStarting] = useState(false)
   return (
     <Button
       type="button"
-      size="sm"
+      size={size}
       variant={variant}
       disabled={starting}
       onClick={() => {
