@@ -71,7 +71,7 @@ export default function ComputerSessionsLayout() {
   const { pathname } = useLocation()
   const sessions = !!useMatch('/computer/sessions/*')
   // Full height, with its own panel instead of the sidebar. Triage (unrouted
-  // for now, see TRIAGE_WEB_NOTES.md) joins this when it returns.
+  // for now) joins this when it returns.
   const full = sessions
   // On a phone the list and a session take turns: the list at
   // /computer/sessions, the session (or the new-session home) on its own.

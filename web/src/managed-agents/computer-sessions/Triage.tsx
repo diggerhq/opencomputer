@@ -33,7 +33,7 @@ import {
 } from './triage'
 import { buildTranscript, timeAgo } from './transcript'
 
-// Triage (work-tracking ux-spec 3; TRIAGE_WEB_NOTES.md): one ask at a time,
+// Triage (work-tracking ux-spec 3): one ask at a time,
 // answer, next. The ask on screen is `?ask=<id>`; nothing replaces it while
 // it is shown.
 

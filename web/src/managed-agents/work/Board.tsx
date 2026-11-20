@@ -533,7 +533,7 @@ function Column({
   )
 }
 
-// A card has one anatomy whatever it carries (WORK_WEB_NOTES "Visual pass"):
+// A card has one anatomy whatever it carries (work 114):
 // an identity line, the title and state, and an activity line. Every line box
 // is 20px, so cards differ only by whole lines.
 const MAX_TAGS = 2

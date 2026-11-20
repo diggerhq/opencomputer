@@ -27,7 +27,7 @@ import { isPlan } from './ask-line'
 import { useCapabilities } from './state'
 import type { TriageEntry } from './triage'
 
-// The answer dock (TRIAGE_WEB_NOTES.md): one card at the bottom of the ask,
+// The answer dock: one card at the bottom of the ask,
 // shaped by it. What the agent asked for is attached on top, the text box is
 // the one place to type, and the footer holds the verdict. Typing is always
 // the free-form answer: on an approval it declines the call and tells the

@@ -8,7 +8,7 @@ import type { Repository } from './api'
 import { newItemUrl, repositoryName } from './board'
 import { ConnectGitHubButton, RepositoryCombobox } from './RepositorySetting'
 
-// What the board says before it has cards (WORK_WEB_NOTES "First visit"):
+// What the board says before it has cards (work 114):
 // the lanes drawn as placeholders behind one message, which says what the
 // board is, what the knowledge repository is for, and offers the one next
 // step. The example tree follows the item conventions agents are given
