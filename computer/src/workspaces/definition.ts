@@ -100,7 +100,7 @@ export function validateDefinition(raw: unknown, gateway = false): WorkspaceDefi
     if (r.setup !== undefined && !(Array.isArray(r.setup) && r.setup.every((c) => typeof c === 'string'))) fail(`${what}: setup is not a list of commands`);
     if (r.unpublished !== undefined && typeof r.unpublished !== 'boolean') fail(`${what}: unpublished is not a boolean`);
     if (r.clone !== undefined && r.clone !== 'eager' && r.clone !== 'lazy') fail(`${what}: clone is not eager or lazy`);
-    if (r.role !== undefined && r.role !== 'knowledge') fail(`${what}: role is not knowledge`);
+    // A role this release does not know (a newer server's) is dropped, not fatal: the repository is an ordinary one here.
     if (r.role === 'knowledge' && knowledge++) fail(`${what}: a second knowledge repository`);
     for (const k of ['description', 'language', 'pushedAt'] as const)
       if (r[k] !== undefined && typeof r[k] !== 'string') fail(`${what}: ${k} is not a string`);
@@ -111,7 +111,7 @@ export function validateDefinition(raw: unknown, gateway = false): WorkspaceDefi
       ...(r.setup !== undefined && { setup: r.setup as string[] }),
       ...(r.unpublished !== undefined && { unpublished: r.unpublished as boolean }),
       ...(r.clone !== undefined && { clone: r.clone as 'eager' | 'lazy' }),
-      ...(r.role !== undefined && { role: r.role as 'knowledge' }),
+      ...(r.role === 'knowledge' && { role: 'knowledge' as const }),
       // Index text only, but it lands in AGENTS.md: one line, bounded.
       ...(typeof r.description === 'string' && r.description.trim() && { description: oneLine(r.description, 200) }),
       ...(typeof r.language === 'string' && r.language.trim() && { language: oneLine(r.language, 40) }),

@@ -65,6 +65,17 @@ describe('validateDefinition', () => {
     expect(isLazy(other)).toBe(true);
   });
 
+  it('drops a role it does not know, keeping the repository and the rest of the definition', () => {
+    const d = validateDefinition(
+      { repos: [{ name: 'a', remote: 'https://github.com/o/a', role: 'notes' }, { name: 'b', remote: 'https://github.com/o/b', role: 'knowledge' }] },
+      true,
+    );
+    expect(d.repos).toEqual([
+      { name: 'a', remote: 'https://github.com/o/a' },
+      { name: 'b', remote: 'https://github.com/o/b', role: 'knowledge' },
+    ]);
+  });
+
   it.each([
     ['not an object', null],
     ['no repos', { name: 'x' }],
@@ -72,7 +83,6 @@ describe('validateDefinition', () => {
     ['duplicate name', { repos: [{ name: 'a', remote: 'https://github.com/o/a' }, { name: 'a', remote: 'https://github.com/o/b' }] }],
     ['no remote', { repos: [{ name: 'a' }] }],
     ['bad clone mode', { repos: [{ name: 'a', remote: 'https://github.com/o/a', clone: 'sometimes' }] }],
-    ['bad role', { repos: [{ name: 'a', remote: 'https://github.com/o/a', role: 'notes' }] }],
     [
       'a second knowledge repository',
       {
