@@ -216,5 +216,6 @@ Other limits are in [Limits and defaults](/reference/limits#api).
 | `4029` | More than 50 connections for one member |
 | `4400` | The `opc.v1` subprotocol was not offered |
 | `4503` | The relay has no signing key from the host yet. The reason is `{"retryAfterMs":2000}` |
+| `4503` | The computer is not connected. The reason is `{"reason":"waking","retryAfterMs":5000}` when it is starting, `{"reason":"asleep","retryAfterMs":60000}` when it is parked and billing refuses to wake it, `{"retryAfterMs":1000}` otherwise |
 
 {/* Sources: computer/schema/computer-api.v1.json (x-methods, x-eventTypes, $defs); computer/src/api/schema-methods.ts; computer/src/api/read-methods.ts (events.list default limit, idempotency 24 h); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/relay.ts; computer/src/wire/files.ts; computer/src/wire/attachment.ts (detach reasons); computer/src/host/session-writer.ts and computer/src/runner/api/api.ts (QUEUE_MAX); computer/src/host/terminal.ts; computer/src/host/workspace-files.ts; opc/src/cli.rs (schema subcommand) */}

@@ -324,6 +324,36 @@ describe("computer routes", () => {
     expect((await row())?.state).toBe("parked");
   });
 
+  it("wakes a parked computer for the wire's 530, unless billing refuses it", async () => {
+    const ORG = "org_wire_wake";
+    const org = () => computers().getByName(ORG);
+    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(org(), fn as never) as Promise<T>;
+    const row = () => inside((instance) => instance.lifecycle.row() as { state: string } | undefined);
+
+    expect(await org().wireWake()).toBe("gone");
+    expect(await slackInstall(ORG, "join:T0WIREWAKE:U0INSTALLER")).toMatchObject({ status: 302 });
+    for (let i = 0; i < 30 && (await row())?.state !== "ready"; i += 1) {
+      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0"));
+      await runDurableObjectAlarm(org());
+    }
+    expect((await row())?.state).toBe("ready");
+    expect(await inside((instance) => instance.lifecycle.park() as Promise<boolean>)).toBe(true);
+    for (let i = 0; i < 5; i += 1) {
+      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0"));
+      await runDurableObjectAlarm(org());
+    }
+    expect((await row())?.state).toBe("parked");
+
+    // A free trial over: it stays asleep.
+    await inside((instance) => void (instance.admitForApi = async () => false));
+    expect(await org().wireWake()).toBe("asleep");
+    expect((await row())?.state).toBe("parked");
+
+    await inside((instance) => void (instance.admitForApi = async () => true));
+    expect(await org().wireWake()).toBe("waking");
+    expect((await row())?.state).toBe("waking");
+  });
+
   it("unpaid (work 086): retries a DM that failed, parks despite preview traffic, counts the VM gone only once it is", async () => {
     const ORG = "org_unpaid";
     const org = () => computers().getByName(ORG);

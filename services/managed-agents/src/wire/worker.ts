@@ -8,7 +8,9 @@
 //   /v1/sessions/<cs_…>/workspace/(archive|file|files)
 //                        key only → /files/<cs_…>/<op> on the tunnel, both bodies streamed
 //
-// No DO, no D1: one KV read (two for a ticket), WebCrypto, one fetch. The key
+// No D1, and no DO on the way in: one KV read (two for a ticket), WebCrypto,
+// one fetch. Only a tunnel that is not connected (530) asks the organization's
+// computer (COMPUTERS) to wake, and how long the client should wait. The key
 // and the ticket never leave this Worker. A refused upgrade is still accepted
 // and closed at once with the code, because a browser sees only 1006 for a
 // failed one.
@@ -25,6 +27,14 @@ export const DEFAULT_TUNNEL_DOMAIN = "w.opencomputer.dev";
 /** A ticket connection is closed by the relay this long after it opened. */
 export const TICKET_CONNECTION_TTL_MS = 3600_000;
 export const RETRY_AFTER_MS = 1_000;
+/** A parked computer was woken: it boots in seconds, not one. */
+export const WAKING_RETRY_AFTER_MS = 5_000;
+/** A computer that stays asleep (billing refuses it) or is gone: no use dialing every second. */
+export const ASLEEP_RETRY_AFTER_MS = 60_000;
+/** How long one organization's answer is reused, so a client's burst asks its computer once. */
+const WAKE_TTL_MS = 10_000;
+
+export type WireComputerState = "waking" | "asleep" | "gone";
 
 export const CLOSE = {
   unauthenticated: 4001,
@@ -43,6 +53,8 @@ export interface WireEnv {
   PREVIEW_PLATFORM_KEY?: string;
   /** Where the tunnels' wire hostnames live; `w.opencomputer.dev` unless set. */
   WIRE_TUNNEL_DOMAIN?: string;
+  /** The organizations' computers (managed-agents' ComputerDurableObject): asked only on a 530. */
+  COMPUTERS?: { getByName(organizationId: string): { wireWake(): Promise<WireComputerState> } };
   /** Telemetry (work 084): both set turns on one `wireworker.request` per request; the gateway's append token. */
   TINYBIRD_API_URL?: string;
   TINYBIRD_APPEND_TOKEN?: string;
@@ -173,6 +185,23 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
   const upstream = options.fetch ?? ((input, init) => fetch(input, init));
   const now = options.now ?? Date.now;
   const computerKeys = new Map<string, Promise<string>>();
+
+  const wakes = new Map<string, { value: Promise<WireComputerState | null>; until: number }>();
+
+  /** Single-flight per organization: what its computer says to a 530 (null: not asked, or it failed). */
+  function computerState(env: WireEnv, org: string): Promise<WireComputerState | null> {
+    const cached = wakes.get(org);
+    if (cached && cached.until > now()) return cached.value;
+    const value = env.COMPUTERS
+      ? env.COMPUTERS.getByName(org).wireWake().catch((error: unknown) => {
+          log("wire.wake_failed", { org, error: String(error) });
+          return null;
+        })
+      : Promise.resolve(null);
+    wakes.set(org, { value, until: now() + WAKE_TTL_MS });
+    if (wakes.size > 5_000) wakes.delete(wakes.keys().next().value as string);
+    return value;
+  }
 
   function keyFor(env: WireEnv, tunnelId: string): Promise<string> {
     let key = computerKeys.get(tunnelId);
@@ -311,7 +340,15 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
     await response.body?.cancel().catch(() => undefined);
     log("wire.tunnel_refused", { org: record!.org, status: response.status });
     f.reason = "tunnel_refused";
-    if (response.status === 530 || response.status === 502 || response.status === 503 || response.status === 504) {
+    if (response.status === 530) {
+      f.result = "unavailable";
+      f.code = CLOSE.unavailable;
+      const state = await computerState(env, record!.org);
+      if (state === "waking") return closedSocket(CLOSE.unavailable, { reason: state, retryAfterMs: WAKING_RETRY_AFTER_MS });
+      if (state) return closedSocket(CLOSE.unavailable, { reason: state, retryAfterMs: ASLEEP_RETRY_AFTER_MS });
+      return closedSocket(CLOSE.unavailable, { retryAfterMs: RETRY_AFTER_MS });
+    }
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
       f.result = "unavailable";
       f.code = CLOSE.unavailable;
       return closedSocket(CLOSE.unavailable, { retryAfterMs: RETRY_AFTER_MS });
