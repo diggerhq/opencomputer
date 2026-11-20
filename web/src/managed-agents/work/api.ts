@@ -171,15 +171,17 @@ const GrantedRepositorySchema = z.looseObject({
 })
 export type GrantedRepository = z.infer<typeof GrantedRepositorySchema>
 
-// One of the organization's GitHub installations and the repositories it
-// grants, most recently pushed first (the server's order). `settingsUrl` is
-// the installation's page on GitHub, where a person grants it more.
+// One of the organization's GitHub installations and a page of the
+// repositories it grants; `nextPage` is the page holding more, or null on the
+// last. `settingsUrl` is the installation's page on GitHub, where a person
+// grants it more.
 const GrantingInstallationSchema = z.looseObject({
   id: z.string(),
   accountLogin: z.string(),
   accountType: z.string(),
   settingsUrl: z.string(),
   repositories: z.array(GrantedRepositorySchema),
+  nextPage: z.number().int().positive().nullable().optional(),
   truncated: z.boolean(),
   problem: z.string().nullable(),
   problemMessage: z.string().nullable(),
@@ -219,14 +221,54 @@ export function putRepository(choice: RepositoryChoice) {
   ).then((r) => r.repository)
 }
 
-/** What each of the organization's GitHub installations grants, for the picker. */
-export function getRepositories() {
+function getRepositoriesPage(installation?: string, page = 1) {
+  const query = installation
+    ? `?${new URLSearchParams({ installation, page: String(page) })}`
+    : ''
   return apiFetch(
-    `${PREFIX}/repositories`,
+    `${PREFIX}/repositories${query}`,
     undefined,
     RepositoriesSchema,
     '/api',
   ).then((r) => r.installations)
+}
+
+/**
+ * What each of the organization's GitHub installations grants, for the
+ * picker: every page, read up front so a search covers them all. Most
+ * recently pushed first, never pushed last.
+ */
+export async function getRepositories() {
+  const installations = await getRepositoriesPage()
+  return Promise.all(
+    installations.map(async (installation) => {
+      const repositories = [...installation.repositories]
+      let next = installation.nextPage ?? null
+      let truncated = installation.truncated
+      while (next !== null) {
+        const [more] = await getRepositoriesPage(installation.id, next)
+        if (!more) break
+        repositories.push(...more.repositories)
+        next = more.nextPage ?? null
+        truncated = more.truncated
+      }
+      return {
+        ...installation,
+        repositories: repositories.sort(byPushed),
+        nextPage: null,
+        truncated,
+      }
+    }),
+  )
+}
+
+function byPushed(a: GrantedRepository, b: GrantedRepository) {
+  if (a.pushedAt !== b.pushedAt) {
+    if (a.pushedAt === null) return 1
+    if (b.pushedAt === null) return -1
+    return Date.parse(b.pushedAt) - Date.parse(a.pushedAt)
+  }
+  return a.name.localeCompare(b.name)
 }
 
 /** What the open-items poll keeps: the page and the ETag it came with. */

@@ -149,10 +149,53 @@ describe('repositories the installations grant', () => {
         new Response(JSON.stringify({ installations }), { status: 200 }),
       )
     vi.stubGlobal('fetch', fetch)
-    expect(await getRepositories()).toEqual(installations)
+    expect(await getRepositories()).toEqual([
+      { ...installations[0], nextPage: null },
+    ])
     expect(fetch.mock.calls[0][0]).toBe(
       '/api/managed-agents/computer/work/repositories',
     )
+  })
+
+  it('reads every page of an installation, then sorts them together', async () => {
+    const repo = (id: number, pushedAt: string | null) => ({
+      id,
+      owner: 'acme',
+      name: `r${id}`,
+      private: false,
+      defaultBranch: 'main',
+      pushedAt,
+    })
+    const installation = {
+      id: '1',
+      accountLogin: 'acme',
+      accountType: 'Organization',
+      settingsUrl:
+        'https://github.com/organizations/acme/settings/installations/41',
+      truncated: false,
+      problem: null,
+      problemMessage: null,
+    }
+    const page = (repositories: unknown[], nextPage: number | null) =>
+      new Response(
+        JSON.stringify({
+          installations: [{ ...installation, repositories, nextPage }],
+        }),
+        { status: 200 },
+      )
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(page([repo(1, '2026-01-01T00:00:00Z')], 2))
+      .mockResolvedValueOnce(page([repo(2, null)], 3))
+      .mockResolvedValueOnce(page([repo(3, '2026-11-01T00:00:00Z')], null))
+    vi.stubGlobal('fetch', fetch)
+    const [all] = await getRepositories()
+    expect(all.repositories.map((r) => r.id)).toEqual([3, 1, 2])
+    expect(fetch.mock.calls.map((c) => c[0] as string)).toEqual([
+      '/api/managed-agents/computer/work/repositories',
+      '/api/managed-agents/computer/work/repositories?installation=1&page=2',
+      '/api/managed-agents/computer/work/repositories?installation=1&page=3',
+    ])
   })
 })
 
