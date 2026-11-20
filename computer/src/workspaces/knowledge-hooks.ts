@@ -14,8 +14,13 @@
 // - A clone that is not (or no longer) the knowledge repository has none of
 //   ours: they are removed from its hooks directory, so no other repository's
 //   pushes are checked.
+// - Installed only into the common directory's hooks/: a core.hooksPath (the
+//   clone's, or a global one shared by every repository on the host) is
+//   reported as a problem and nothing is written there, so our hooks never
+//   land in a directory other repositories run.
 
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -51,8 +56,12 @@ export async function syncKnowledgeHooks(clone: string, repo: RepoDef, source = 
     return;
   }
   // Where git looks for this clone and its worktrees: core.hooksPath if set, else the common directory's hooks/.
-  const c = command('git', ['rev-parse', '--git-path', 'hooks'], { GIT_TERMINAL_PROMPT: '0' });
-  const dir = path.resolve(clone, (await exec(c.cmd, c.args, { cwd: clone, env: c.env })).stdout.trim());
+  const c = command('git', ['rev-parse', '--git-common-dir', '--git-path', 'hooks'], { GIT_TERMINAL_PROMPT: '0' });
+  const [common, hooksPath] = (await exec(c.cmd, c.args, { cwd: clone, env: c.env })).stdout.split('\n').map((l) => l.trim());
+  const dir = path.resolve(clone, hooksPath);
+  const own = path.join(path.resolve(clone, common), 'hooks');
+  if (dir !== own)
+    throw new Error(`core.hooksPath points ${clone} at ${dir}, which other repositories may share; work-tracking hooks not installed`);
   await mkdir(dir, { recursive: true });
   const taken: string[] = [];
   for (const name of KNOWLEDGE_HOOKS) {
@@ -64,7 +73,7 @@ export async function syncKnowledgeHooks(clone: string, repo: RepoDef, source = 
       taken.push(name);
       continue;
     }
-    const tmp = `${dest}.installing`;
+    const tmp = `${dest}.installing-${process.pid}-${randomUUID()}`;
     await writeFile(tmp, want);
     await chmod(tmp, 0o755);
     await rename(tmp, dest);

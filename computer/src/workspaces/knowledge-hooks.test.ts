@@ -3,7 +3,7 @@
 // it (as fork.ts makes them), committing and pushing the way an agent does.
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -99,7 +99,7 @@ describe('syncKnowledgeHooks', () => {
     await syncKnowledgeHooks(clone, knowledge, source);
     expect(readFileSync(file, 'utf8')).toBe(readFileSync(path.join(source, 'pre-push'), 'utf8'));
     expect(statSync(path.join(hooks, 'prepare-commit-msg')).mode & 0o111).toBe(0o111);
-    expect(existsSync(`${file}.installing`)).toBe(false);
+    expect(readdirSync(hooks).filter((f) => f.includes('.installing'))).toEqual([]);
   });
 
   it("never replaces someone else's hook, and says so", async () => {
@@ -115,6 +115,33 @@ describe('syncKnowledgeHooks', () => {
     expect(existsSync(path.join(dir, '.git', 'hooks', 'prepare-commit-msg'))).toBe(false);
     expect(readFileSync(path.join(dir, '.git', 'hooks', 'pre-push'), 'utf8')).toBe(theirs);
     await syncKnowledgeHooks(path.join(root, 'nowhere'), plain, source); // nothing there: nothing to do
+  });
+
+  it('installs nothing where core.hooksPath points, global or the clone\'s own, and says so', async () => {
+    const dir = path.join(root, 'hookspath');
+    git(root, ['init', '-q', dir]);
+    const shared = path.join(root, 'shared-hooks');
+    const ours = () => [shared, path.join(dir, '.git', 'hooks'), path.join(dir, 'local-hooks')].flatMap((d) =>
+      existsSync(d) ? readdirSync(d).filter((f) => !f.endsWith('.sample') && (KNOWLEDGE_HOOKS as readonly string[]).includes(f.split('.')[0]!)) : [],
+    );
+    const global = path.join(root, 'gitconfig');
+    const before = readFileSync(global, 'utf8');
+    try {
+      writeFileSync(global, `${before}[core]\n\thooksPath = ${shared}\n`);
+      configureAsRunner(undefined, env()); // the host's git sees that global configuration
+      await expect(syncKnowledgeHooks(dir, knowledge, source)).rejects.toThrow(/core\.hooksPath .*shared-hooks.*not installed/);
+      expect(ours()).toEqual([]);
+    } finally {
+      writeFileSync(global, before);
+      configureAsRunner(undefined, process.env);
+    }
+    git(dir, ['config', 'core.hooksPath', 'local-hooks']);
+    await expect(syncKnowledgeHooks(dir, knowledge, source)).rejects.toThrow(/core\.hooksPath .*local-hooks/);
+    expect(ours()).toEqual([]);
+    // Pointed back at its own hooks directory: installed as usual.
+    git(dir, ['config', 'core.hooksPath', '.git/hooks']);
+    await syncKnowledgeHooks(dir, knowledge, source);
+    expect(readFileSync(path.join(dir, '.git', 'hooks', 'pre-push'), 'utf8')).toContain(HOOK_MARK);
   });
 });
 
