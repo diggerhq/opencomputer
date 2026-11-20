@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { OpenCodeWorkerd } from "@opencode-ai/sdk/workerd";
+// Type-only: the SDK's runtime is ~20 MB of bundled JavaScript. Evaluating
+// it at module scope pushed Worker startup past Cloudflare's CPU limit
+// (deploy error 10021), so it is loaded on first use by `loadOpenCodeWorkerd`.
+import type { OpenCodeWorkerd } from "@opencode-ai/sdk/workerd";
 import { modelRetryDecision } from "./model-retry.js";
 import {
   dispatchToolExecution,
@@ -71,6 +74,19 @@ import {
 import type { SkillToolDefinition } from "../runtime/skill-tool-core.js";
 import { type Latency, latencyTelemetry, requestRegion } from "../edge/latency.js";
 import type { Dimensions } from "../computer/telemetry/envelope.js";
+
+let openCodeWorkerdModule:
+  | Promise<typeof import("@opencode-ai/sdk/workerd")>
+  | undefined;
+
+/** Loads the OpenCode SDK once per isolate, off the startup path. */
+function loadOpenCodeWorkerd(): Promise<typeof import("@opencode-ai/sdk/workerd")> {
+  openCodeWorkerdModule ??= import("@opencode-ai/sdk/workerd").catch((error) => {
+    openCodeWorkerdModule = undefined;
+    throw error;
+  });
+  return openCodeWorkerdModule;
+}
 
 interface Env {
   OPENCODE_SESSIONS: DurableObjectNamespace<OpenCodeSessionDurableObject>;
@@ -1063,7 +1079,7 @@ export class OpenCodeSessionDurableObject extends DurableObject<Env> {
         ...projection.manifest.mcpServers,
         ...(databaseMcpEnabled ? ["database"] : []),
       ];
-      const opencode = await latency.time("workerd.opencode_created", () => OpenCodeWorkerd.create({
+      const opencode = await latency.time("workerd.opencode_created", async () => (await loadOpenCodeWorkerd()).OpenCodeWorkerd.create({
         storage: this.ctx.storage,
         app: { name: "opencomputer-do-first-spike", version: "dev-19272" },
         models: { fetch: false },
