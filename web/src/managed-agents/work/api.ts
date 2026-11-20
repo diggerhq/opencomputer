@@ -1,6 +1,7 @@
 import { useContext } from 'react'
 import { z } from 'zod'
 import { AuthContext } from '@/hooks/useAuth'
+import { ApiError } from '@/api/errors'
 import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 
 // The Work API (serverless-agents-ws product/work-tracking/tech-design.md,
@@ -314,6 +315,21 @@ export function getSessionItems(sessionId: string) {
     SessionItemsSchema,
     '/api',
   ).then((r) => r.items)
+}
+
+// Retries wait as the server asks: a 503 `unavailable` carries `retryAfterMs`
+// (the index is still reading, the Work service is starting), kept between
+// 1 s and 60 s. Anything else backs off as React Query does by default.
+const MIN_RETRY_MS = 1_000
+const MAX_RETRY_MS = 60_000
+
+/** The delay before retry `attempt` (0 first) of a work query. */
+export function workRetryDelay(attempt: number, error: Error): number {
+  const asked =
+    error instanceof ApiError ? error.details?.retryAfterMs : undefined
+  if (typeof asked === 'number' && Number.isFinite(asked))
+    return Math.min(MAX_RETRY_MS, Math.max(MIN_RETRY_MS, asked))
+  return Math.min(1_000 * 2 ** attempt, 30_000)
 }
 
 // Every key starts with the organization so a switch never shows another

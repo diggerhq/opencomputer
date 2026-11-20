@@ -20,6 +20,7 @@ import {
   getItem,
   useOrg,
   workKeys,
+  workRetryDelay,
   type Item,
   type Revision,
 } from './api'
@@ -32,6 +33,7 @@ import {
   resolveAgainst,
   sessionStatusWord,
 } from './board'
+import { notThereYet } from './queries'
 import {
   AttentionMark,
   Avatar,
@@ -76,8 +78,8 @@ export function ItemView() {
     queryFn: () => getItem(number),
     enabled: valid,
     refetchInterval: OPEN_POLL_MS,
-    retry: (count, error) =>
-      !(error instanceof ApiError && error.status === 404) && count < 2,
+    retry: notThereYet,
+    retryDelay: workRetryDelay,
   })
 
   const status = item.error instanceof ApiError ? item.error.status : null
@@ -458,6 +460,7 @@ function HistoryList({ number }: { number: number }) {
     queryFn: ({ pageParam }) => getHistory(number, pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    retryDelay: workRetryDelay,
   })
   if (history.isPending) {
     return (

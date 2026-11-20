@@ -4,8 +4,10 @@ import {
   getRepositories,
   keepOpenItems,
   putRepository,
+  workRetryDelay,
   type OpenItemsPoll,
 } from './api'
+import { ApiError } from '@/api/errors'
 
 const page = {
   repository: null,
@@ -151,5 +153,30 @@ describe('repositories the installations grant', () => {
     expect(fetch.mock.calls[0][0]).toBe(
       '/api/managed-agents/computer/work/repositories',
     )
+  })
+})
+
+describe('retry delay', () => {
+  const unavailable = (retryAfterMs: unknown) =>
+    new ApiError('Not yet', 503, 'unavailable', {
+      code: 'unavailable',
+      retryAfterMs,
+    })
+
+  it('waits as long as a 503 asks', () => {
+    expect(workRetryDelay(0, unavailable(5_000))).toBe(5_000)
+    expect(workRetryDelay(1, unavailable(5_000))).toBe(5_000)
+  })
+
+  it('keeps what the server asks between 1 s and 60 s', () => {
+    expect(workRetryDelay(0, unavailable(10))).toBe(1_000)
+    expect(workRetryDelay(0, unavailable(600_000))).toBe(60_000)
+  })
+
+  it('backs off as usual without a retryAfterMs', () => {
+    expect(workRetryDelay(0, new ApiError('Down', 500))).toBe(1_000)
+    expect(workRetryDelay(1, new ApiError('Down', 500))).toBe(2_000)
+    expect(workRetryDelay(1, unavailable('soon'))).toBe(2_000)
+    expect(workRetryDelay(2, new Error('offline'))).toBe(4_000)
   })
 })

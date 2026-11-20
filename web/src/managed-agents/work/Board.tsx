@@ -9,7 +9,13 @@ import { Switch } from '@/components/ui/switch'
 import { AuthContext } from '@/hooks/useAuth'
 import { cn } from '@/lib/utils'
 import { timeAgo } from '../computer-sessions/transcript'
-import { getClosedItems, useOrg, workKeys, type Item } from './api'
+import {
+  getClosedItems,
+  useOrg,
+  workKeys,
+  workRetryDelay,
+  type Item,
+} from './api'
 import {
   closedShown,
   indexIsOld,
@@ -85,6 +91,7 @@ export function Board() {
     queryFn: ({ pageParam }) => getClosedItems(pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    retryDelay: workRetryDelay,
     enabled: repository !== null,
   })
 

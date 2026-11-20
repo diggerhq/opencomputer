@@ -7,13 +7,15 @@ import {
   keepOpenItems,
   useOrg,
   workKeys,
+  workRetryDelay,
   type OpenItemsPoll,
 } from './api'
 import { OPEN_POLL_MS } from './board'
 
 // The queries more than one screen reads, so they share one cache entry.
 
-const notThereYet = (count: number, error: Error) =>
+/** Retry twice, except a 404: the routes, or the item, are not there. */
+export const notThereYet = (count: number, error: Error) =>
   !(error instanceof ApiError && error.status === 404) && count < 2
 
 /**
@@ -35,6 +37,7 @@ export function useOpenItems() {
     },
     refetchInterval: OPEN_POLL_MS,
     retry: notThereYet,
+    retryDelay: workRetryDelay,
   })
 }
 
@@ -44,6 +47,7 @@ export function useRepository() {
     queryKey: workKeys.repository(useOrg()),
     queryFn: getRepository,
     retry: notThereYet,
+    retryDelay: workRetryDelay,
   })
 }
 
@@ -57,6 +61,7 @@ export function useGrantingInstallations(enabled = true) {
     queryKey: workKeys.repositories(useOrg()),
     queryFn: getRepositories,
     refetchOnWindowFocus: 'always',
+    retryDelay: workRetryDelay,
     enabled,
   })
 }
