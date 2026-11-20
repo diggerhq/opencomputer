@@ -506,8 +506,10 @@ export class WorkIndex {
     let rows = select();
     const pending = rows.slice(0, limit).filter((r) => r.parser === 0);
     // Bodies not read yet are read now, for at most READ_WAIT_MS; the page then shows what it has.
-    if (pending.length && (await within(this.clock, READ_WAIT_MS, this.fillLater(pending).then(() => true), () => false))) rows = select();
-    else if (pending.length) rows = select();
+    if (pending.length) {
+      await within(this.clock, READ_WAIT_MS, this.fillLater(pending).then(() => true), () => false);
+      rows = select();
+    }
     const page = rows.slice(0, limit);
     const nextCursor = rows.length > limit ? encodeCursor({ n: page[page.length - 1]!.number }) : null;
     return { ok: true, ...this.readState(), repository, items: this.indexed(page), nextCursor };
