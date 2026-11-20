@@ -4,12 +4,16 @@
 # and replaced by it on every housekeeping pass: edits here do not last.
 #
 # Item numbers are unique. An item is a file `NN-slug.md` directly under
-# work/ or done/ (directories there are ignored), and its number, the leading
-# digits, is its identity. A push is refused when the tree it pushes to a
-# branch has more items with one number than the remote's head has: a push is
-# a compare-and-swap on that head, so this is a real uniqueness check, and
-# numbers already shared upstream (history) never block anyone. The message
-# names the number to take instead.
+# work/ or done/ (directories there are ignored): 1 to 9 digits whose value is
+# at least 1, `-`, a non-empty slug, `.md`, the rule of the Work index
+# (services/managed-agents/src/computer/work/item.ts, ITEM_FILE); its number is
+# its identity. A push is refused when the tree it pushes to a branch has more
+# items with one number than the remote's head has: a push is a
+# compare-and-swap on that head, so this is a real uniqueness check, and
+# numbers already shared upstream (history) never block anyone. Without a
+# head to compare with (a new branch and no remote HEAD known), nothing is
+# refused: every shared number would look new. The message names the number
+# to take instead.
 #
 # It also prints warnings, never refusals, for item files the push adds or
 # changes: the cheap part of the Work index's parser (title, owner, `## Left`).
@@ -18,18 +22,26 @@
 
 zero() { case $1 in *[!0]*) return 1 ;; esac; }
 
+# awk: whether a file name directly under work/ or done/ is an item (see above). No {m,n}: not every awk has them.
+IS_ITEM='function is_item(name) {
+  if (name !~ /^[0-9]+-[^\/]+\.md$/) return 0
+  match(name, /^[0-9]+/)
+  return RLENGTH <= 9 && substr(name, 1, RLENGTH) + 0 >= 1
+}'
+
 # `<number>\t<path>` for every item file of commit $1.
 items() {
-  git -c core.quotePath=false ls-tree --full-tree "$1" -- work/ done/ 2>/dev/null | awk -F'\t' '
+  git -c core.quotePath=false ls-tree --full-tree "$1" -- work/ done/ 2>/dev/null | awk -F'\t' "$IS_ITEM"'
     $1 ~ / blob / {
       name = $2; sub(/^[^\/]*\//, "", name)
-      if (name ~ /^[0-9]+-[^\/]*\.md$/) { match(name, /^[0-9]+/); print (substr(name, 1, RLENGTH) + 0) "\t" $2 }
+      if (is_item(name)) { match(name, /^[0-9]+/); print (substr(name, 1, RLENGTH) + 0) "\t" $2 }
     }'
 }
 
-# Exit 1, with a message, if commit $1 has duplicate numbers that the base commit $2 (may be empty) has fewer of.
+# Exit 1, with a message, if commit $1 has duplicate numbers that the base commit $2 has fewer of. No base: nothing to compare, nothing refused.
 check() {
-  { [ -z "$2" ] || items "$2"; echo '--'; items "$1"; } | awk -F'\t' '
+  [ -n "$2" ] || return 0
+  { items "$2"; echo '--'; items "$1"; } | awk -F'\t' '
     !pushed && $0 == "--" { pushed = 1; next }
     !pushed { before[$1 + 0]++; old[$2] = 1; next }
     { n = $1 + 0; count[n]++; path[n, count[n]] = $2; if (n > max) max = n }
@@ -66,10 +78,10 @@ warn() {
   git -c core.quotePath=false diff --name-only --no-renames --diff-filter=AM "$2" "$1" -- ':/work' ':/done' 2>/dev/null | head -n 50 |
     while IFS= read -r p; do
       case $p in */*/*) continue ;; *.md) ;; *) continue ;; esac
-      case ${p#*/} in
-        [0-9]*-*.md) ;;
-        *) echo "pre-push: warning: $p is not an item; items are named NN-slug.md" >&2; continue ;;
-      esac
+      if ! printf '%s\n' "${p#*/}" | awk "$IS_ITEM"' { exit !is_item($0) }'; then
+        echo "pre-push: warning: $p is not an item; items are named NN-slug.md (NN: 1 to 9 digits, not 0)" >&2
+        continue
+      fi
       git cat-file blob "$1:$p" 2>/dev/null | awk -v p="$p" '
         NR == 1 && $0 == "---" { front = 1; next }
         front && $0 == "---" { front = 0; next }

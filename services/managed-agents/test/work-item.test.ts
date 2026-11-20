@@ -22,7 +22,9 @@ describe("itemPath", () => {
   it("names only NN-slug.md directly under work/ or done/", () => {
     expect(itemPath("work/7-board-api.md")).toEqual({ number: 7, stage: "open", slug: "board-api" });
     expect(itemPath("done/012-old.md")).toEqual({ number: 12, stage: "closed", slug: "old" });
-    for (const p of ["work/README.md", "work/x/7-a.md", "work/7-a.txt", "notes/7-a.md", "work/7.md", "work/-a.md", "done/1234567890-a.md"]) {
+    expect(itemPath("work/000000001-a.md")).toEqual({ number: 1, stage: "open", slug: "a" });
+    expect(itemPath("work/999999999-2026-plan.md")).toEqual({ number: 999999999, stage: "open", slug: "2026-plan" });
+    for (const p of ["work/README.md", "work/x/7-a.md", "work/7-a.txt", "notes/7-a.md", "work/7.md", "work/-a.md", "done/1234567890-a.md", "work/0-a.md", "done/000-a.md", "work/1a-x.md", "work/7-.md"]) {
       expect(itemPath(p)).toBeNull();
     }
   });

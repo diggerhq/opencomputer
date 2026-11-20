@@ -221,4 +221,39 @@ describe('pre-push', () => {
     expect(r.stderr).toContain('work/notes.md is not an item');
     expect(r.stderr).not.toContain('12-ok');
   });
+
+  it("counts only what the Work index counts as an item: 1 to 9 digits, not 0, then a slug", () => {
+    // Each pair would share a number if these were items; none is, so nothing is refused.
+    const odd = ['work/0-zero.md', 'done/00-zero.md', 'work/1234567890-big.md', 'done/1234567890-big.md', 'work/13a-x.md', 'work/14-.md'];
+    put(session, Object.fromEntries(odd.map((p) => [p, item('Odd')])));
+    git(session, ['add', '-A']);
+    git(session, ['commit', '-q', '-m', 'Not items']);
+    const r = push(session);
+    expect(r.stderr).not.toMatch(/refused/);
+    expect(r.status).toBe(0);
+    for (const p of odd) expect(r.stderr).toContain(`${p} is not an item`);
+    // Nine digits with leading zeros is an item, and its number is 7: taken.
+    put(session, { 'work/000000007-padded.md': item('Padded') });
+    git(session, ['add', '-A']);
+    git(session, ['commit', '-q', '-m', 'Padded']);
+    const p = push(session);
+    expect(p.status).not.toBe(0);
+    expect(p.stderr).toContain('7 is taken by');
+    git(session, ['reset', '-q', '--hard', 'HEAD~1']);
+  });
+
+  it('refuses nothing for a new branch when there is no remote head to compare with', () => {
+    git(clone, ['remote', 'set-head', 'origin', '-d']);
+    try {
+      put(session, { 'work/15-fresh.md': item('Fresh') });
+      git(session, ['add', '-A']);
+      git(session, ['commit', '-q', '-m', 'Fresh']);
+      // History shares 7 (work/07-a.md, done/7-b.md): with no base, that must not read as this push's collision.
+      const r = spawnSync('git', ['push', 'origin', 'HEAD:refs/heads/sp/nobase'], { cwd: session, env: env(), encoding: 'utf8' });
+      expect(r.stderr).not.toMatch(/refused/);
+      expect(r.status).toBe(0);
+    } finally {
+      git(clone, ['remote', 'set-head', 'origin', 'main']);
+    }
+  });
 });

@@ -47,13 +47,18 @@ export interface ParsedItem {
   warnings: string[];
 }
 
+// An item file: 1 to 9 digits whose value is at least 1 (leading zeros allowed), `-`, a non-empty
+// slug, `.md`. The knowledge repository's pre-push hook (computer/hooks/knowledge/pre-push) and the
+// API's item number (api.ts NUMBER) apply the same rule; change them together.
 const ITEM_FILE = /^(work|done)\/(\d{1,9})-([^/]+)\.md$/;
 
 /** The item a path names, or null when the file is not an item. */
 export function itemPath(path: string): ItemPath | null {
   const m = ITEM_FILE.exec(path);
   if (!m) return null;
-  return { number: Number(m[2]), stage: m[1] === "work" ? "open" : "closed", slug: m[3]! };
+  const number = Number(m[2]);
+  if (number < 1) return null;
+  return { number, stage: m[1] === "work" ? "open" : "closed", slug: m[3]! };
 }
 
 /** The title an item has before its body is read: the slug. */
