@@ -57,6 +57,7 @@ function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'cr
     mint: async (s, id, run) => (await step(`mint ${id} ${run} sdk=${s.sdkSessionId ?? '-'} fork=${s.forkPath ?? '-'}`, 0), o.api ? ({ journal: '/data/journals/s1/journal.jsonl', token: 'tok' } as RunnerApi) : undefined),
     workspace: {
       repos: () => ['hello'],
+      there: (_person, key) => key === 'C9:legacy', // ONE-TIME systemd->podman migration (work 103): a `systemd` fork
       dirs: async (r, names) => void log.push(`dirs ${r.key} ${names.join(',')}`),
       binds: (r, names, journal) => [{ src: `ws:${r.key}`, dst: '/workspace' }, ...names.map((n) => ({ src: n, dst: `/clones/${n}` })), ...(journal ? [{ src: journal, dst: journal }] : [])],
       mount: (id, pid, person, b) => step(`mount ${id} ${pid} ${person} ${b.map((x) => x.dst).join(' ')}`, undefined),
@@ -144,6 +145,7 @@ describe('a spare container', () => {
     await expect(t.bind(id, { ...spec, key: 'C1:2.2' }, {})).rejects.toThrow(/not a spare/);
     expect(t.known(spec)).toBe(true);
     expect(t.known({ ...spec, key: 'C1:2.2' })).toBe(false);
+    expect(t.known({ ...spec, key: 'C9:legacy' })).toBe(true); // ONE-TIME systemd->podman migration (work 103): a fork with no record takes no spare
     expect(t.records.all().map((r) => r.id)).toEqual([id]);
   });
 

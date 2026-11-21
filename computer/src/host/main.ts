@@ -91,6 +91,7 @@ import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
 import { wireFor } from './api-wire.js';
 import { sandboxHost, sandboxWorkspace } from './sandbox/host.js';
+import { legacyDrain } from './legacy-migration/drain.js'; // ONE-TIME systemd->podman migration (work 103): delete in step 11
 
 const env = process.env;
 const IDENTITY_FILE = identityFile(HOST_DATA);
@@ -138,7 +139,10 @@ const pool = new Pool<Runner>({
 });
 /** Every connected runner: the sessions' and the spares. */
 const allRunners = () => [...runners.values(), ...pool.spares];
-const fillPool = () => !stopping && pool.fill(subs.canSpare());
+// ONE-TIME systemd->podman migration (work 103): delete in step 11. SIGUSR2 (provision.sh): drain, exit, come back as `podman`.
+const drain = LAUNCH === 'systemd' ? legacyDrain({ runners: allRunners, send, exit: () => void shutdown() }) : undefined;
+if (drain) process.on('SIGUSR2', () => drain.start());
+const fillPool = () => !stopping && !drain?.draining && pool.fill(subs.canSpare());
 function exitRunner(sock: net.Socket) {
   send(sock, { t: 'exit' } satisfies HostToRunner);
   sock.end();
@@ -251,6 +255,7 @@ async function onRunner(r: Runner, m: RunnerToHost) {
 }
 
 function ensureRunner(spec: SessionSpec, f: Fields, first?: HostCredentials): Promise<Runner> {
+  if (drain?.draining) return drain.held(); // ONE-TIME systemd->podman migration (work 103): delete in step 11
   const live = runners.get(spec.key);
   if (live) return Promise.resolve(live);
   let p = starting.get(spec.key);

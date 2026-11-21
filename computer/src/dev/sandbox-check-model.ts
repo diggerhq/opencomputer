@@ -34,6 +34,8 @@ export interface CheckModel {
   route: ModelRoute;
   /** The tool calls the stand-in made, with the results it was given. */
   calls(): Promise<ModelCall[]>;
+  /** Per turn the stand-in answered, the text of the person's messages it was sent, earlier turns' too. */
+  turns(): Promise<string[]>;
   stop(): void;
 }
 
@@ -83,11 +85,13 @@ export async function checkModel(o: { root: string; run: string }): Promise<Chec
     }
   chmodSync(api, 0o666);
   const token = 'check-not-a-credential';
-  const calls = () => new Promise<ModelCall[]>((resolve) => {
-    https.get({ host: '127.0.0.1', port: MODEL_PORT, path: '/calls', ca: readFileSync(cert), timeout: 5000 }, (res) => {
+  const get = <T>(what: string) => new Promise<T[]>((resolve) => {
+    https.get({ host: '127.0.0.1', port: MODEL_PORT, path: what, ca: readFileSync(cert), timeout: 5000 }, (res) => {
       let body = '';
       res.setEncoding('utf8').on('data', (d) => (body += d)).on('end', () => resolve(JSON.parse(body || '[]')));
     }).on('timeout', function (this: { destroy(): void }) { this.destroy(); }).on('error', () => resolve([]));
   });
-  return { control, api, route: { mode: 'profile', profile: PROFILE, vars: { token }, key: modelKey(PROFILE, { token }) }, calls, stop };
+  const calls = () => get<ModelCall>('/calls');
+  const turns = () => get<string>('/turns');
+  return { control, api, route: { mode: 'profile', profile: PROFILE, vars: { token }, key: modelKey(PROFILE, { token }) }, calls, turns, stop };
 }

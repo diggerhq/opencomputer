@@ -85,6 +85,8 @@ export interface SandboxStartDeps {
   workspaces(): boolean;
   /** Connect to a runner's socket; undefined when nothing answers. */
   dial?: (socket: string) => Promise<net.Socket | undefined>;
+  /** ONE-TIME systemd->podman migration (work 103, legacy-migration/): a record made from a `systemd` fork on a miss. Delete in step 11. */
+  legacy?: (spec: SessionSpec) => Promise<SandboxRecord | undefined>;
 }
 
 export interface Started {
@@ -126,10 +128,11 @@ export function sandboxStarts(d: SandboxStartDeps) {
 
   async function startNow(spec: SessionSpec, f: Dimensions): Promise<Started> {
     const now = new Date().toISOString();
-    const found = d.records.find(spec.owner.dir, spec.key);
+    let found = d.records.find(spec.owner.dir, spec.key);
     const unread = found ? [] : d.records.unread();
     if (unread.length && d.workspace.there(spec.owner.dir, spec.key))
       throw new Error(`this thread has files but no sandbox record, and the record ${unread.map((id) => `${id}.json`).join(', ')} did not load; nothing was started. Repair that file in the host's state/sandboxes, or remove it for a new sandbox`);
+    found ??= await d.legacy?.(spec); // ONE-TIME systemd->podman migration (work 103): delete in step 11
     const { sdkSessionId, forkPath: _fork, ...fresh } = spec;
     let record: SandboxRecord = found ? { ...found, usedAt: now } : { id: randomBytes(8).toString('hex'), person: spec.owner.dir, key: spec.key, createdAt: now, usedAt: now };
     d.records.write(record);

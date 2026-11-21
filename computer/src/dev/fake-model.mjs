@@ -11,6 +11,8 @@
 // of the offered tool whose name is `<tool>` or ends in `__<tool>`; the
 // request that carries its result is answered `done`, and the result's text
 // is kept. `GET /calls` returns what was kept: `[{ tool, input, result }]`.
+// `GET /turns` returns, for each turn's request, the text of its person's
+// messages, earlier ones too (sandbox-check-legacy.ts: a resumed transcript).
 //
 // Invariants: plain Node, no dependency, no file written: it runs from a
 // release mounted read-only. It listens on 127.0.0.1 only.
@@ -28,6 +30,8 @@ if (!port || (key && !cert)) {
 
 /** @type {{ tool: string, input: unknown, result?: string }[]} */
 const calls = [];
+/** @type {string[]} */
+const turns = [];
 const ASK = /call ([a-z_]+) (\{[^\n]*\})/;
 
 const textOf = (content) =>
@@ -56,10 +60,12 @@ const handle = (req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     const json = (code, v) => (res.writeHead(code, { 'content-type': 'application/json' }), res.end(JSON.stringify(v)));
+    if (req.method === 'GET' && req.url === '/turns') return json(200, turns);
     if (req.method === 'GET' && req.url === '/calls') return json(200, calls.map(({ tool, input, result }) => ({ tool, input, result })));
     if (!req.url?.startsWith('/v1/messages')) return json(404, { type: 'error', error: { type: 'not_found_error', message: 'not found' } });
     if (req.url.startsWith('/v1/messages/count_tokens')) return json(200, { input_tokens: 10 });
     const j = body ? JSON.parse(body) : {};
+    if (j.stream) turns.push((j.messages ?? []).filter((m) => m.role === 'user').map((m) => textOf(m.content)).join('\n'));
     const a = j.stream ? answer(j) : { text: 'ok' }; // only a turn streams; the side requests (a title) get a word
     const content = a.call ? [{ type: 'tool_use', id: a.call.id, name: a.call.tool, input: a.call.input }] : [{ type: 'text', text: a.text }];
     const stop_reason = a.call ? 'tool_use' : 'end_turn';

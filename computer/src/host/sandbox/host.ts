@@ -38,6 +38,7 @@ import { runnerVars } from '../../runner-env.js';
 import type { Telemetry } from '../../telemetry/emitter.js';
 import { definitionFile, forkDir, loadDefinition, repoSlug, useForkKeeper, useScripts, workspacesEnabled } from '../../workspaces/index.js';
 import { launch } from '../launch.js';
+import { legacyMigration } from '../legacy-migration/migrate.js'; // ONE-TIME systemd->podman migration (work 103): delete in step 11
 import { dialSocket } from '../runner-sockets.js';
 import { runnerUser } from '../runner-user.js';
 import { sandboxArtifacts } from './artifacts.js';
@@ -136,7 +137,8 @@ export function sandboxHost(d: SandboxHostDeps) {
   return {
     stop: all.stop,
     spares,
-    starts: sandboxStarts({ tm: d.tm, records, locks, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial }),
+    starts: sandboxStarts({ tm: d.tm, records, locks, containers: all, runRoot, image, abi, version: d.version, mint: d.mint, workspace, workspaces: workspacesEnabled, dial,
+      legacy: legacyMigration({ as, records, mounts: mnt, root: d.root, image, helperRun, runRoot, agentHome: user.env.HOME, there: workspace.there }) }), // ONE-TIME systemd->podman migration (work 103): delete in step 11
     /** Host restart: the running containers taken back, by id (sweep.ts). */
     reconcile: sweep.reconcile,
     /** One sweep of what belongs to no thread; never rejects. */
