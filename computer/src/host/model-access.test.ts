@@ -403,4 +403,24 @@ describe('host model access relays (golden frames)', () => {
     await new Promise((r) => server.close(r));
     rmSync(d, { recursive: true, force: true });
   });
+
+  it('spareable: called once the proxy says hello, so the pool fills then, not at its timer', async () => {
+    const d = mkdtempSync(path.join(os.tmpdir(), 'hmr-'));
+    const control = path.join(d, 'control.sock');
+    let conn: net.Socket | undefined;
+    const server = net.createServer((c) => (conn = c));
+    await new Promise<void>((r) => server.listen(control, r));
+    const spareable = vi.fn();
+    const a = hostModelAccess({ controlSocket: control, toGateway: () => {}, runner: () => undefined, creds: () => undefined, exit: () => {},
+      unitExists: async () => true, rehello: () => {}, tm: { emit: vi.fn() } as unknown as Telemetry, spareable });
+    await vi.waitFor(() => expect(conn).toBeDefined());
+    expect(spareable).not.toHaveBeenCalled();
+    conn!.write(golden('hello'));
+    await vi.waitFor(() => expect(spareable).toHaveBeenCalledTimes(1));
+    expect(a.up).toBe(true);
+    a.stop();
+    conn?.destroy();
+    await new Promise((r) => server.close(r));
+    rmSync(d, { recursive: true, force: true });
+  });
 });

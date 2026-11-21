@@ -23,7 +23,7 @@ export interface SpareRunner {
   spare?: SpareReport;
 }
 
-export type EvictReason = 'version' | 'surplus';
+export type EvictReason = 'version' | 'surplus' | 'memory';
 export type MissReason = 'none' | 'kind';
 
 export interface PoolOptions<R> {
@@ -94,6 +94,13 @@ export class Pool<R extends SpareRunner> {
         },
       );
     }
+  }
+
+  /** Memory pressure (memory-pressure.ts): evict one spare, one not parked yet first; the evicted one, if any. */
+  shed(): R | undefined {
+    const r = [...this.spares].sort((a, b) => Number(!!a.spare?.ready) - Number(!!b.spare?.ready))[0];
+    if (r) this.evict(r, 'memory');
+    return r;
   }
 
   /** A parked spare of `kind` (`any` for Codex), now the caller's; else why there is none. */

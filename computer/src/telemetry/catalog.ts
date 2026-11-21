@@ -88,7 +88,7 @@ export const CATALOG = {
   // The warm pool (work 069, host/pool.ts): spare runners, their Claude Code parked before any session.
   // A spare that is a container (work 103) says its image and what Create and Start took.
   'pool.spare_started': host('launch_mode', 'image', 'container.create_ms', 'container.start_ms'),
-  // `reason`: version (an older release), surplus (the pool was made smaller).
+  // `reason`: version (an older release), surplus (the pool was made smaller), memory (host memory pressure, memory-pressure.ts).
   'pool.spare_evicted': host('reason'),
   // A spare that exited before it was ever ready (its Claude Code did not start).
   'pool.spare_failed': host(),

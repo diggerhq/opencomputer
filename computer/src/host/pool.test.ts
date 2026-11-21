@@ -124,4 +124,17 @@ describe('Pool', () => {
     p.fill(true);
     expect(launches).toHaveLength(1);
   });
+
+  it('sheds one spare under memory pressure, one not parked yet first, as `memory`', () => {
+    const { p, evicted } = pool(2);
+    const ready = spare('a');
+    const parking = spare('b', { ready: false });
+    p.add(ready);
+    p.add(parking);
+    expect(p.shed()).toBe(parking);
+    expect(p.shed()).toBe(ready);
+    expect(p.shed()).toBeUndefined();
+    expect(evicted).toEqual(['b:memory', 'a:memory']);
+    expect(p.spares.size).toBe(0);
+  });
 });

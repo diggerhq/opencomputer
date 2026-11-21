@@ -17,7 +17,10 @@
 //                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
 //                              unit gets no --setenv); the
 //                              default sizes MemoryHigh/MemoryMax from the machine (runner-limits.ts)
-//   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off
+//   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off. Filled as soon as the
+//                              model proxy is up, topped up every 30 s
+//   [SP_EVICT_MIN_AVAILABLE_MB=2048]  below this MemAvailable, stop the LRU idle thread before SP_IDLE_MS, else drop a
+//                              spare, one every 10 s, and do not refill the pool (memory-pressure.ts); 0: off
 //   [SP_VERSION]               code version (the release's commit); else `git rev-parse`
 //   [SP_TELEMETRY_URL]         telemetry collector (work 054); unset: telemetry is validated and discarded
 //   [SP_TELEMETRY_CREDENTIAL]  the collector credential the gateway signed for this host; a `welcome` renews it
@@ -75,6 +78,7 @@ import { closed, rediscover, retire } from './runner-sockets.js';
 import { checkedDial } from './remote-port.js';
 import { type Runner, runnerStarts } from './start-runner.js';
 import { Pool } from './pool.js';
+import { availableMb, EVICT_INTERVAL_MS, evictThresholdMb, memoryPressure } from './memory-pressure.js';
 import { freshTokenDir, tokenRelay } from './tokens.js';
 import { hostPreviews } from './previews.js';
 import { startHostTelemetry, workspaceTelemetry } from './telemetry.js';
@@ -99,6 +103,7 @@ const IDENTITY_FILE = identityFile(HOST_DATA);
 let identity = loadIdentity(env, IDENTITY_FILE, os.hostname());
 const IDLE_MS = Number(env.SP_IDLE_MS ?? 2 * 3600_000);
 const POOL_SIZE = Number(env.SP_POOL_SIZE ?? 2);
+const EVICT_MIN_MB = evictThresholdMb(env.SP_EVICT_MIN_AVAILABLE_MB);
 const LAUNCH = env.SP_LAUNCH ?? (process.platform === 'linux' ? 'systemd' : 'detached');
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const VERSION = codeVersion(env.SP_VERSION, ROOT);
@@ -122,7 +127,7 @@ const org = gatewayUpdates({ runners: () => runners.values(), spares: () => pool
   fillPool: () => fillPool(), prepare: (p) => workspacesEnabled() && prepareInBackground(p) });
 const subs = hostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, modelSocket: env.SP_MODEL_SOCKET || undefined, single: LAUNCH !== 'systemd' && LAUNCH !== 'podman',
   toGateway, tm, runner: (key) => runners.get(key), creds: () => org.creds, exit: switchRunner, unitExists: (id) => unitExists(id, LAUNCH, env),
-  rehello: () => link.redial(), codexBin: codexBin(env) });
+  rehello: () => link.redial(), codexBin: codexBin(env), spareable: () => fillPool() });
 
 // ---------------------------------------------------------------- runners
 
@@ -142,7 +147,16 @@ const allRunners = () => [...runners.values(), ...pool.spares];
 // ONE-TIME systemd->podman migration (work 103): delete in step 11. SIGUSR2 (provision.sh): drain, exit, come back as `podman`.
 const drain = LAUNCH === 'systemd' ? legacyDrain({ runners: allRunners, send, exit: () => void shutdown() }) : undefined;
 if (drain) process.on('SIGUSR2', () => drain.start());
-const fillPool = () => !stopping && !drain?.draining && pool.fill(subs.canSpare());
+const fillPool = () => !stopping && !drain?.draining && pool.fill(subs.canSpare() && !memory.low());
+/** What SP_IDLE_MS's expiry does: the runner exits once idle, and its next delivery starts it again. */
+function idleExit(r: Runner) {
+  r.exiting = true;
+  send(r.sock, { t: 'exit' } satisfies HostToRunner);
+}
+const memory = memoryPressure({ thresholdMb: EVICT_MIN_MB, available: () => availableMb(), log: (l) => log.warn(l),
+  runners: () => [...runners.values()].map((r) => ({ id: r.id, key: r.key, lastDelivery: r.lastDelivery, status: r.report?.status, exiting: r.exiting,
+    switching: r.switching, inUse: api.subagentsRunning(r.report) || api.terminalsOpen(api.sessionOf(r.id)), r })),
+  stopThread: (c) => idleExit(c.r), dropSpare: () => pool.shed()?.id });
 function exitRunner(sock: net.Socket) {
   send(sock, { t: 'exit' } satisfies HostToRunner);
   sock.end();
@@ -272,8 +286,7 @@ setInterval(() => {
     if (api.subagentsRunning(r.report)) r.lastDelivery = Date.now(); // idle counts from the last subagent's end
     if (!r.exiting && r.report?.status !== 'busy' && Date.now() - r.lastDelivery > IDLE_MS && !api.terminalsOpen(api.sessionOf(r.id))) {
       log.info('idle, asking runner to exit', r.key);
-      r.exiting = true;
-      send(r.sock, { t: 'exit' } satisfies HostToRunner);
+      idleExit(r);
     }
   }
 }, Math.min(60_000, Math.max(1000, IDLE_MS / 4))).unref();
@@ -477,9 +490,10 @@ await api.boot(); // settles the journals no runner holds (work 084); none on a 
 api.rediscovered(sandbox ? await sandbox.reconcile()
   : await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 sandbox?.sweeping();
-log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
+log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}, memory eviction ${EVICT_MIN_MB ? `below ${EVICT_MIN_MB} MB available` : 'off'}`);
 link.dial();
-setInterval(fillPool, 30_000).unref();
+setInterval(fillPool, 30_000).unref(); // a top-up: the first fill is the model proxy's hello (`spareable`) or the gateway's welcome
+if (EVICT_MIN_MB > 0) setInterval(memory.check, EVICT_INTERVAL_MS).unref();
 // The first Codex session after a boot would page in Codex's binaries as it starts (codex-preread.ts).
 const t0Preread = Date.now();
 void prereadCodex(codexBin(env)).then(

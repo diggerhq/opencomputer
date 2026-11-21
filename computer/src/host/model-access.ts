@@ -33,6 +33,7 @@
 // - Proxy down (no control connection with a hello): no `profiles` in the
 //   gateway hello, `model-request` answers `proxy_unavailable`, no runner or
 //   spare starts, live runners are left alone; 30 s down is logged as an error.
+//   Every hello calls `spareable`, so the pool fills as soon as it is up.
 // - Variables never reach a log, a runner or telemetry.
 
 import { existsSync } from 'node:fs';
@@ -79,6 +80,8 @@ export interface HostModelAccessDeps {
   tm: Telemetry;
   /** The Codex CLI runners launch: a profile only for Codex is not advertised without it. */
   codexBin?: string;
+  /** The proxy said hello (it is up): spares may start now, so the pool fills without waiting for its timer. */
+  spareable?(): void;
   proxy?: ProxyOptions;
 }
 
@@ -277,6 +280,7 @@ export function hostModelAccess(o: HostModelAccessDeps) {
           void o.unitExists(b.caller).then((exists) => exists || held.has(b.caller) || proxy.release(b.caller));
         }
         recheck();
+        o.spareable?.();
       },
       changed(up) {
         if (up) downLogged = false;
