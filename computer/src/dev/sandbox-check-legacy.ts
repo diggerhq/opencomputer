@@ -6,7 +6,10 @@
 // oc-modelproxy, sandbox-check-model.ts); one goes idle and its runner exits
 // (a cold thread), the other is live with an uncommitted file in its
 // worktree. SIGUSR2 drains the host (legacy-migration/drain.ts): a delivery
-// sent then gets no reply from it, its runner exits and so does the host. A
+// sent then gets no reply from it, its runner exits and so does the host.
+// The host runs as its unit runs it, under tsx's CLI, and gets the signal the
+// way provision.sh sends it, at the process deploy/vm/legacy-drain.sh finds
+// (tsx forwards no SIGUSR2: the wrapper itself would die of it). A
 // host with SP_LAUNCH=podman comes up, the fake gateway sends the held
 // delivery again (as the gateway does when a host's socket closes), then
 // delivers to the cold thread with the session id and fork path of its last
@@ -148,7 +151,8 @@ const COLD = thread(2);
 let host: ChildProcess | undefined;
 function startHost(launch: 'systemd' | 'podman'): ChildProcess {
   const { SP_DEFINITION, WORKDIR, SLACK_BOT_TOKEN, ...rest } = process.env;
-  const h = spawn(process.execPath, ['--import', 'tsx', 'src/host/main.ts'], {
+  // As provision.sh's unit runs it (ExecStart): through tsx's CLI, which starts main.ts as its child.
+  const h = spawn(path.join(ROOT, 'node_modules/.bin/tsx'), ['src/host/main.ts'], {
     cwd: ROOT,
     env: { ...rest, SP_GATEWAY_URL: `ws://127.0.0.1:${(wss.address() as net.AddressInfo).port}/host`, SP_HOST_TOKEN: 'check-token', SP_HOST_ID: 'sandbox-check-legacy',
       SP_RUN: RUN, SP_DATA: DATA, SP_IDLE_MS: String(IDLE_MS), SP_LAUNCH: launch, SP_POOL_SIZE: '0', SP_FAKE_SLACK: '1', SP_MODEL_PROXY: model.control, SP_MODEL_SOCKET: model.api },
@@ -206,7 +210,10 @@ async function onSystemd() {
 
 async function drain() {
   const h = host!;
-  h.kill('SIGUSR2');
+  // As provision.sh signals it (deploy/vm/legacy-drain.sh): the process running main.ts, not the wrapper.
+  const pid = Number(execFileSync('bash', [path.join(ROOT, 'deploy/vm/legacy-drain.sh'), 'host-pid', String(h.pid)], { encoding: 'utf8' }).trim());
+  check(pid !== h.pid, `drain: the host runs under tsx's CLI as the unit runs it (pid ${pid} under ${h.pid})`);
+  process.kill(pid, 'SIGUSR2');
   await sleep(500);
   const held = LIVE.send('during the drain marker-live-3');
   const out = await exited(h, 120_000);
