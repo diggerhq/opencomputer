@@ -19,7 +19,8 @@ const spec: SessionSpec = { key: 'C1:1.1', kind: 'thread', owner, title: 't', mo
 const sock = { destroyed: false } as net.Socket;
 
 function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Record<'create' | 'up' | 'inventory' | 'mount' | 'prepare', Error>>; stale?: boolean;
-  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean; stays?: boolean } = {}) {
+  dial?: () => Promise<net.Socket | undefined>; definition?: boolean; clones?: string[]; api?: boolean; unread?: string; there?: boolean; stays?: boolean;
+  legacy?: (records: ReturnType<typeof sandboxRecords>) => SandboxStartDeps['legacy'] } = {}) { // legacy: ONE-TIME systemd->podman migration (work 103)
   const log: string[] = [];
   const ups: RunnerSpec[] = [];
   const sent: TelemetryEvent[] = [];
@@ -69,6 +70,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
       },
     },
     dial: o.dial ?? (async () => sock),
+    legacy: o.legacy?.(records), // ONE-TIME systemd->podman migration (work 103): delete in step 11
   };
   const events = async () => (await tm.flush(), sent);
   return { ...sandboxStarts(d), log, ups, records, locks, events, tm };
@@ -95,6 +97,27 @@ describe('sandbox start', () => {
     });
     expect(ev.some((e) => e.event_name === 'runner.ready')).toBe(true);
     expect(t.tm.dropped).toEqual({}); // every key is in the catalog
+  });
+
+  // ONE-TIME systemd->podman migration (work 103): delete in step 11.
+  it('a `systemd` thread with no record is migrated in its turn and resumes under the session id the gateway sent', async () => {
+    const id = '00112233445566aa';
+    const asked: string[] = [];
+    const t = rig({ homes: [id], legacy: (records) => async (s) => {
+      asked.push(s.key);
+      const r = { id, person: 'pat', key: s.key, createdAt: '', usedAt: '', repos: { hello: { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' } } };
+      records.write(r);
+      return r;
+    } });
+    const s = await t.start({ ...spec, sdkSessionId: 'sdk-old', forkPath: '/data/people/pat/sessions/C1-1-1' }, {});
+    expect(asked).toEqual(['C1:1.1']);
+    expect(s.record.id).toBe(id);
+    expect(s.resumed).toBe(true);
+    expect(t.log).toEqual(['dirs C1:1.1 hello', 'inventory', `mint ${id} /run/sp/sandbox/${id} sdk=sdk-old`, `recreate ${id}`, `up ${id} C1:1.1`, `mount ${id} 5 pat /workspace /clones/hello`]);
+    expect(t.ups[0].session).toMatchObject({ sdkSessionId: 'sdk-old', forkPath: '/workspace' });
+    // Its record found from now on: not asked again.
+    await t.start({ ...spec, sdkSessionId: 'sdk-old' }, {});
+    expect(asked).toEqual(['C1:1.1']);
   });
 
   it("a thread with a record resumes under the record's id, with its transcript, on its container", async () => {

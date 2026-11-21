@@ -95,7 +95,7 @@ export interface SpareDeps {
   version: string;
   /** The session's journal, socket (below `run`) and token for this runner; undefined off the API. */
   mint(spec: SessionSpec, runnerId: string, run: RunRoot): Promise<RunnerApi | undefined>;
-  workspace: Pick<SandboxWorkspace, 'repos' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
+  workspace: Pick<SandboxWorkspace, 'repos' | 'there' | 'dirs' | 'binds' | 'mount' | 'prepare'>;
   /** Connect to a runner's socket; undefined when nothing answers. */
   dial?: (socket: string) => Promise<net.Socket | undefined>;
   /** How long after a thread's start no spare is made while the pool has one; SETTLE_MS unless given. */
@@ -304,7 +304,8 @@ export function sandboxSpares(d: SpareDeps) {
     /** `fn` in the thread's turn: a claim, from the look for its record to the spare claimed or discarded. */
     turn: <T>(spec: SessionSpec, fn: () => Promise<T>): Promise<T> => d.locks.run(spec.owner.dir, spec.key, fn),
     /** True when the thread has a record: it resumes, and never takes a spare. */
-    known: (spec: SessionSpec) => !!d.records.find(spec.owner.dir, spec.key),
+    // ONE-TIME systemd->podman migration (work 103): a `systemd` fork with no record is migrated by its start, never given a spare. Delete `there` in step 11.
+    known: (spec: SessionSpec) => !!d.records.find(spec.owner.dir, spec.key) || d.workspace.there(spec.owner.dir, spec.key),
     /** A spare's connection closed (it exited, was evicted, the host told it to go): Remove. Nothing for a container that is a thread's. */
     gone: (id: string): Promise<void> => (mine.has(id) || leaving.has(id) ? drop(id) : Promise.resolve()),
     /** A spare that was taken and not claimed: Remove; its record, if written, stays. */

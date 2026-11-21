@@ -870,12 +870,57 @@ EOF
   umask 022
 fi
 
+# ---- ONE-TIME systemd->podman migration (work 103). Delete together with the systemd launch path in step 11.
+# When this run turns the host's SP_LAUNCH from systemd to podman, a plain
+# restart would leave the `systemd` runners running beside a `podman` host.
+# Instead the running host is drained (src/host/legacy-migration/drain.ts):
+# SIGUSR2, it tells every runner to exit after its turn, holds new deliveries
+# and exits when none is left (10 min at most); Restart= brings it back as a
+# `podman` host, which migrates each thread at its next delivery. Returns 1,
+# for a plain restart, when SP_LAUNCH does not change that way, when the
+# running release has no drain, or when the host did not come back in time.
+sp_launch_of_files() { # <env files...>: the last SP_LAUNCH= in them, unquoted
+  local f v=''
+  for f in "$@"; do
+    [[ -r $f ]] || continue
+    v=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?SP_LAUNCH=//p' "$f" | tail -n1 | sed "s/^[\"']//; s/[\"']\$//")
+    [[ -n $v ]] && printf '%s\n' "$v"
+  done | tail -n1
+}
+legacy_drain_restart() {
+  local pid old new files
+  pid=$(systemctl show -p MainPID --value slack-presence-host.service 2>/dev/null || echo 0)
+  [[ -n $pid && $pid != 0 && -r /proc/$pid/environ ]] || return 1
+  old=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^SP_LAUNCH=//p' | tail -n1)
+  # What the restarted unit will have: its Environment=, then its EnvironmentFile=s in order (they win).
+  new=$(systemctl show -p Environment --value slack-presence-host.service | tr ' ' '\n' | sed -n 's/^SP_LAUNCH=//p' | tail -n1)
+  mapfile -t files < <(systemctl show -p EnvironmentFiles --value slack-presence-host.service | tr ' ' '\n' | grep '^/' || true)
+  local fromfiles; fromfiles=$(sp_launch_of_files "${files[@]}")
+  new=${fromfiles:-$new}
+  [[ ${old:-systemd} == systemd && ${new:-systemd} == podman ]] || return 1
+  if [[ ! -f /proc/$pid/cwd/src/host/legacy-migration/drain.ts ]]; then
+    warn "SP_LAUNCH turns to podman but the running host has no drain: plain restart (deploy this release on systemd first)"
+    return 1
+  fi
+  log "SP_LAUNCH systemd -> podman: draining host $pid (runners finish their turns; at most ~10 min)"
+  systemctl kill -s SIGUSR2 --kill-whom=main slack-presence-host.service || return 1
+  local i now
+  for ((i = 0; i < 660; i += 5)); do
+    sleep 5
+    now=$(systemctl show -p MainPID --value slack-presence-host.service 2>/dev/null || echo 0)
+    if [[ -n $now && $now != 0 && $now != "$pid" ]]; then log "host drained and back as podman (pid $now)"; return 0; fi
+  done
+  warn "host $pid did not drain in time: restarting it"
+  return 1
+}
+# ---- end ONE-TIME systemd->podman migration
+
 if [[ -f $HOST_ENV ]]; then
   chmod 0600 "$HOST_ENV"; chown root:root "$HOST_ENV"
   log "starting slack-presence-host"
   systemctl enable slack-presence-host.service
   # Restart picks up the new release; runners are unaffected (see KillMode).
-  systemctl restart slack-presence-host.service
+  legacy_drain_restart || systemctl restart slack-presence-host.service # ONE-TIME systemd->podman migration (work 103): delete in step 11
   # The relay follows the release too (its clients reconnect after 1012); a no-op unless the host is sp-host.
   systemctl enable -q slack-presence-wire.service
   systemctl restart slack-presence-wire.service || warn "slack-presence-wire did not start: journalctl -u slack-presence-wire"
