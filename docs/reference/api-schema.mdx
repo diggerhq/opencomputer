@@ -10,6 +10,11 @@ description: "Every method, event, object and error code of the Computer API, ve
 | `field?` | Optional |
 | `\| null` | Always present, may be null |
 
+**HTTP base:** Hosted requests use `https://app.opencomputer.dev/api/managed-agents/computer`. HTTP routes below
+are relative to this base. For example, `POST /sessions` becomes
+`POST https://app.opencomputer.dev/api/managed-agents/computer/sessions`. With a custom API URL, append
+`/api/managed-agents/computer` to that URL.
+
 ## Operations
 
 On an HTTP route, path parameters replace `sessionId`, `turnId`, `askId` and `subagentId`. A `GET` takes the other fields as query parameters, other verbs as a JSON body. Unknown fields are refused with `invalid_request`.
