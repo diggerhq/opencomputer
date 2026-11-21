@@ -727,25 +727,27 @@ export class ComputerSessionsApi {
 
   private async mint(caller: ApiCaller, body: unknown, facts: { sessions?: number; keyWritten?: boolean }): Promise<ApiReply> {
     const key = caller.apiKey;
-    if (!key) return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
-    if (key.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
+    // A dashboard login has no key; its ticket is read-only (work 113).
+    if (!key && caller.via !== "dashboard") return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
+    if (key?.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
     if (!this.deps.env.WIRE_TICKET_KEY) return { status: 503, error: { code: "unavailable", message: "Tickets are not available yet.", retryAfterMs: 60_000 } };
     const request = validateTicketRequest(body, caller.userAgent);
     if (!request.ok) return invalid(request.errors[0]!.field, request.errors[0]!.message);
     const now = this.now();
-    const recent = (this.tickets.get(key.id) ?? []).filter((at) => now - at < 60_000);
+    const limited = key ? key.id : `login:${caller.member}`;
+    const recent = (this.tickets.get(limited) ?? []).filter((at) => now - at < 60_000);
     if (recent.length >= TICKETS_PER_MINUTE) {
-      return { status: 429, error: { code: "rate_limited", message: "At most 60 tickets a minute per key.", retryAfterMs: 60_000 - (now - recent[0]!) } };
+      return { status: 429, error: { code: "rate_limited", message: `At most 60 tickets a minute per ${key ? "key" : "member"}.`, retryAfterMs: 60_000 - (now - recent[0]!) } };
     }
     recent.push(now);
-    this.tickets.set(key.id, recent);
+    this.tickets.set(limited, recent);
     const tunnelId = this.deps.tunnelId();
     if (!tunnelId) return this.unavailable();
-    facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
+    if (key) facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
     facts.sessions = request.value.sessionIds?.length ?? 0;
     try {
       const org = this.deps.organizationId();
-      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.member, computer: org, tunnelId, keyId: key.id }, now);
+      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.member, computer: org, tunnelId, ...(key ? { keyId: key.id } : {}) }, now);
       return { status: 200, body: { ticket } };
     } catch (error) {
       if (error instanceof TicketTooLongError) return invalid("sessionIds", "Too many sessionIds for one ticket.");

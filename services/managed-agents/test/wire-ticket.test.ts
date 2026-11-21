@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { TicketTooLongError, mintTicket as mintForRoute, validateTicketRequest } from "../src/computer/tickets.js";
-import { TICKET_MAX_LENGTH, TICKET_TTL_MS, mintTicket, verifyTicket } from "../src/wire/ticket.js";
+import { base64Url, base64UrlString } from "../src/wire/crypto.js";
+import { TICKET_MAX_LENGTH, TICKET_TTL_MS, mintTicket, ticketMacKeyBytes, verifyTicket } from "../src/wire/ticket.js";
 
 /** Work 084: ticket v1, minted for `POST /tickets` and verified by the wire Worker. */
 
@@ -16,6 +17,12 @@ const INPUT = {
   client: "my-dashboard/1.4.0",
   scope: { sessionIds: ["cs_7f3a9k2m4q8r1t6v"], readOnly: true },
 };
+/** Any claims at all under the real MAC: what `verifyTicket` must refuse by shape alone. */
+async function signed(claims: Record<string, unknown>): Promise<string> {
+  const body = `tk_${base64UrlString(JSON.stringify({ v: 1, ...claims, exp: NOW + TICKET_TTL_MS }))}`;
+  const key = await crypto.subtle.importKey("raw", await ticketMacKeyBytes(KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return `${body}.${base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))))}`;
+}
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `cs_${String(i).padStart(16, "0")}`);
 
 describe("ticket v1", () => {
@@ -43,6 +50,17 @@ describe("ticket v1", () => {
     // The format is calvin's and the limit is the vectors': 20 sessions and a 64-character client do not fit (the route answers 400).
     await expect(mintTicket(KEY, { ...INPUT, client: "x".repeat(64), scope: { sessionIds: ids(20), readOnly: true } }, NOW)).rejects.toBeInstanceOf(TicketTooLongError);
     expect(await verifyTicket(KEY, `${full}${"A".repeat(TICKET_MAX_LENGTH)}`, NOW)).toBeUndefined();
+  });
+
+  it("a login ticket carries login in place of keyId, and never both or neither", async () => {
+    const { keyId: _keyId, ...rest } = INPUT;
+    const token = await mintTicket(KEY, { ...rest, login: true }, NOW);
+    expect(await verifyTicket(KEY, token, NOW)).toEqual({ v: 1, ...rest, login: true, exp: NOW + TICKET_TTL_MS });
+    expect(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/"))).not.toContain("keyId");
+    expect(await verifyTicket(KEY, await signed({ ...rest, login: true }), NOW)).toBeDefined();
+    for (const claims of [{ ...INPUT, login: true }, rest, { ...rest, login: false }, { ...rest, login: "yes" }]) {
+      expect(await verifyTicket(KEY, await signed(claims), NOW)).toBeUndefined();
+    }
   });
 
   it("refuses more than 20 sessions or a malformed id even when signed", async () => {
@@ -88,5 +106,14 @@ describe("POST /tickets body and response", () => {
     expect((await verifyTicket(KEY, ticket.token, NOW))?.scope).toEqual({ sessionIds: ["cs_7f3a9k2m4q8r1t6v"], readOnly: true });
     expect((await mintForRoute({ WIRE_TICKET_KEY: KEY, WIRE_PUBLIC_URL: "wss://wire.example/v1" }, { ...who }, NOW)).url).toBe("wss://wire.example/v1");
     await expect(mintForRoute({}, { ...who }, NOW)).rejects.toThrow("WIRE_TICKET_KEY");
+  });
+
+  it("mints a login ticket when there is no key: read-only whatever was asked, labelled dashboard", async () => {
+    const { scope: _scope, keyId: _keyId, ...who } = INPUT;
+    const claims = async (client: string, readOnly?: boolean) =>
+      verifyTicket(KEY, (await mintForRoute({ WIRE_TICKET_KEY: KEY }, { ...who, client, ...(readOnly === undefined ? {} : { readOnly }) }, NOW)).token, NOW);
+    expect(await claims("Mozilla/5.0", false)).toMatchObject({ login: true, client: "dashboard", scope: { readOnly: true } });
+    expect(await claims("dashboard/1.2.0")).toMatchObject({ login: true, client: "dashboard/1.2.0", scope: { readOnly: true } });
+    expect((await claims("dashboard/1.2.0"))?.keyId).toBeUndefined();
   });
 });
