@@ -21,6 +21,9 @@ import {
 import { ApiTelemetry } from "../src/computer/telemetry/api.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
+import { routeApiSession } from "../src/computer/api-model-route.js";
+import { noModelAccess, type ResolvedRoute } from "../src/computer/model-access.js";
+import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /**
@@ -135,7 +138,7 @@ const event = (seq: number, sessionId = SID): ApiEvent => ({
   data: {},
 });
 
-function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry } = {}) {
+function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"] } = {}) {
   const sql = sqlStorage();
   sql.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -172,6 +175,7 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
     organizationId: () => ORG,
     host: () => (state.protocol === null ? undefined : { protocol: state.protocol }),
     enabled: () => options.enabled ?? true,
+    routeSession: options.routeSession,
     send: (frame) => {
       if (state.protocol === null) return false;
       sent.push(frame);
@@ -236,6 +240,98 @@ async function created(f: ReturnType<typeof fixture>, id = SID, member = OWNER) 
   expect(reply.status).toBe(201);
   return reply;
 }
+
+describe("API model routing", () => {
+  function routed() {
+    const access = noModelAccess();
+    const view = access.agents.view("");
+    access.agents.view = vi.fn(() => ({ ...view, linkedSlackUser: { id: "U1", name: "Owner", teamName: "Team" } }));
+    access.models.setHarness = vi.fn();
+    access.models.noteSent = vi.fn();
+    access.models.forDelivery = vi.fn(async () => ({
+      route: { mode: "profile" as const, profile: "chatgpt", vars: {}, key: "seat" }, reason: "subscription" as const,
+    }));
+    const f = fixture({
+      routeSession: (session, member) => routeApiSession({
+        access,
+        profiles: () => [{ name: "chatgpt", vars: [], harness: { codex: {} } }],
+        send: (frame) => { f.sent.push(frame); return true; },
+      }, session, member),
+    });
+    return { ...f, access };
+  }
+
+  it("starts the web session on the linked Slack Codex seat before launching its runner", async () => {
+    const f = routed();
+    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
+    expect(reply.status).toBe(201);
+    expect(f.access.models.setHarness).toHaveBeenCalledWith(SID, "codex");
+    expect(f.access.models.forDelivery).toHaveBeenCalledWith({ key: SID, ownerId: "U1" }, "U1");
+    expect(f.frames("start")[0]?.session).toMatchObject({ model: "gpt-6.2-sol", harness: "codex" });
+    expect(f.sent.findIndex((frame) => frame.t === "model")).toBeLessThan(f.sent.findIndex((frame) => frame.t === "start"));
+  });
+
+  it("routes the first input and re-resolves the connection before later inputs", async () => {
+    const f = routed();
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
+    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", input: "hi codo" } });
+    expect(reply.status).toBe(201);
+    expect(f.frames("api")[0]?.session?.harness).toBe("codex");
+    expect(f.sent.findIndex((frame) => frame.t === "model")).toBeLessThan(f.sent.findIndex((frame) => frame.t === "api"));
+    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "again" } });
+    expect(f.access.models.forDelivery).toHaveBeenCalledTimes(2);
+    expect(f.frames("api")[1]?.session?.harness).toBe("codex");
+  });
+
+  it("returns a subscription refusal without delivering an input to Claude", async () => {
+    const f = routed();
+    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "refuse", reason: "Connect ChatGPT first." }, reason: "no_subscription" }));
+    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", input: "hi" } });
+    expect(reply.status).toBe(403);
+    expect(reply.error?.message).toBe("Connect ChatGPT first.");
+    expect(f.frames("api")).toHaveLength(0);
+    expect(f.frames("start")).toHaveLength(0);
+  });
+
+  it("does not send a GPT model through a managed Claude fallback", async () => {
+    const f = routed();
+    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "managed" }, reason: "limited" }));
+    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
+    expect(reply.status).toBe(403);
+    expect(f.frames("start")).toHaveLength(0);
+  });
+
+  it("keeps another driver's identity when resolving the owner's seat", async () => {
+    const f = routed();
+    const view = f.access.agents.view("");
+    f.access.agents.view = vi.fn((user) => ({ ...view, linkedSlackUser: { id: user === caller().userId ? "U1" : "U2", name: "Person", teamName: "Team" } }));
+    await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
+    await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hello" } });
+    expect(f.access.models.forDelivery).toHaveBeenLastCalledWith({ key: SID, ownerId: "U1" }, "U2");
+  });
+
+  it("keeps managed Claude sessions working without a subscription", async () => {
+    const f = routed();
+    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "managed" }, reason: "no_subscription" }));
+    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "claude-opus-5-5" } });
+    expect(reply.status).toBe(201);
+    expect(f.frames("start")[0]?.session.harness).toBe("claude");
+    expect(f.frames("model")).toHaveLength(0);
+  });
+
+  it("preserves a Slack thread's explicit harness when it is driven through the API", async () => {
+    const f = routed();
+    await created(f);
+    const session = f.frames("start")[0]!.session;
+    f.access.models.harness = () => "codex";
+    const result = await routeApiSession({ access: f.access, profiles: () => [{ name: "chatgpt", vars: [], harness: { codex: {} } }], send: () => true }, {
+      ...session, kind: "thread", owner: { ...session.owner, slackUserId: "U1" }, model: "claude-opus-5-5",
+    }, OWNER);
+    expect(result.session.harness).toBe("codex");
+    expect(f.access.models.setHarness).toHaveBeenLastCalledWith(SID, "codex");
+  });
+});
 
 describe("journal: single writer, no gaps, no duplicates", () => {
   it("stores, mirrors and acks a batch; fences an older epoch", async () => {

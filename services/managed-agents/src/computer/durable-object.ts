@@ -100,6 +100,7 @@ import { hostToken } from "./host-token.js";
 import { failureNotice } from "./failure.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
 import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, modelCredentials, requestManagedModelKey } from "./model-key.js";
+import { apiSubscriptionOwner, routeApiSession } from "./api-model-route.js";
 import { mintOpenComputerKey } from "./opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./parking.js";
@@ -577,7 +578,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       send: (frame) => this.send(frame),
       schedule: (purpose) => this.purposeScheduler(purpose),
       liveSessions: () => this.liveSessions(),
-      session: (key) => this.runnerSession(key),
+      session: (key) => this.modelSession(key),
       // A token connected on the dashboard (`web:<id>`, work 081) has nobody in Slack to tell.
       directMessage: (userId, text) => (userId.startsWith(WEB_OWNER_PREFIX) ? Promise.resolve(false) : this.directMessage(userId, text)),
       threadUrl: (channelId, threadTs) => slackThreadUrl(this.setting("slackTeamId") ?? "", channelId, threadTs) ?? undefined,
@@ -664,6 +665,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       host: () => this.apiHost(),
       enabled: () => this.apiEnabled(),
       send: (frame) => this.send(frame),
+      routeSession: (session, member) => routeApiSession({ access: this.access, profiles: () => this.liveHost()?.profiles, send: (frame) => this.send(frame) }, session, member),
       closeHost: (code, reason) => this.socket()?.close(code, reason),
       wake: () => this.wakeForApi(),
       computerStatus: () => this.apiComputerStatus(),
@@ -3504,9 +3506,22 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   /** Sessions running now, with their conversations and last activity (pushes go to these). */
   private liveSessions(): ModelSession[] {
-    return [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; channelId: string; threadTs: string; status: string; activeAt: number }>(
-      "SELECT runner_key AS key, owner_id AS ownerId, channel_id AS channelId, thread_ts AS threadTs, status, updated_at AS activeAt FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
-    )].flatMap((row) => (row.ownerId ? [{ key: row.key, ownerId: row.ownerId, channelId: row.channelId, threadTs: row.threadTs, status: row.status, activeAt: row.activeAt }] : []));
+    return [...this.ctx.storage.sql.exec<{ key: string; status: string; activeAt: number }>(
+      "SELECT runner_key AS key, COALESCE(api_status, status) AS status, updated_at AS activeAt FROM sessions WHERE COALESCE(api_status, status) IN ('starting', 'idle', 'busy', 'running', 'waiting')",
+    )].flatMap((row) => {
+      const session = this.modelSession(row.key);
+      const status = row.status === "running" ? "busy" : row.status === "waiting" ? "idle" : row.status;
+      return session ? [{ ...session, status, activeAt: row.activeAt }] : [];
+    });
+  }
+
+  /** Subscription refreshes, disconnects and host reconnects include API sessions too. */
+  private modelSession(key: string): ModelSession | undefined {
+    const slack = this.runnerSession(key);
+    if (slack) return slack;
+    const row = this.api.row(key);
+    const ownerId = row?.ownerUserId ? apiSubscriptionOwner(this.access, row.ownerUserId) : undefined;
+    return row && ownerId ? { key: row.key, ownerId, channelId: row.channelId, threadTs: row.threadTs } : undefined;
   }
 
   /** Slack says a person left, was deactivated or became a guest (work 077): their Claude subscription goes. */
