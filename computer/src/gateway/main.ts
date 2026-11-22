@@ -36,7 +36,7 @@ import { App, LogLevel, type CustomRoute, type Installation, type InstallationSt
 import { WebClient } from '@slack/web-api';
 import { loadEnv, setEnv } from '../env.js';
 import { SCOPES, ensureApp, startTunnel, syncManifest } from '../provision.js';
-import { type HostCredentials, isSlackSpec, type PermissionMode, type SlackPerson } from '../protocol.js';
+import { type HostCredentials, type PermissionMode, type SlackPerson } from '../protocol.js';
 import type { ModelRoute, ModelRoutes } from '../protocol-model.js';
 import { modelKey } from '../model-key.js';
 import { openSecrets, type Secrets } from '../setup/secrets.js';
@@ -45,7 +45,7 @@ import { slackApi } from '../setup/slack.js';
 import { mintInstallationToken } from '../github/app.js';
 import { Store } from './db.js';
 import { Hub } from './hosts.js';
-import { Vault } from './vault.js';
+import { Vault, vaultSecretsFor } from './vault.js';
 import { createSecretsUi, SECRET_VIEW, type SecretsUi } from './secrets-ui.js';
 import { createVariablesUi } from './variables-ui.js';
 import { createRouter, type Ctx, type Msg, type Router } from './routing.js';
@@ -135,7 +135,7 @@ const hub = new Hub({
     if (!slackRouter) throw new Error('Slack is not set up on the gateway');
     return slackRouter.threads.post(from, host, req, new WebClient(get('SLACK_BOT_TOKEN'), slackClientOptions));
   },
-  secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
+  secretsFor: (spec) => vaultSecretsFor(vault, spec),
   requestSecret: (from, req) => secretsUi.request(from, req, new WebClient(get('SLACK_BOT_TOKEN'), slackClientOptions)),
 });
 const secretsUi: SecretsUi = createSecretsUi({

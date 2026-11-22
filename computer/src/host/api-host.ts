@@ -232,9 +232,7 @@ export function apiHost(d: ApiHostDeps) {
   }
 
   const waker = apiWake({
-    spec: (sessionId) => specs.get(sessionId),
     send: (m) => d.send(m),
-    start: d.start,
     failQueued: (sessionId, message) => void hostWriters.get(sessionId)?.w.then((w) => w.failQueued(message), () => {}),
   });
   const wake = waker.wake;
