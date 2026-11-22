@@ -62,6 +62,24 @@ const job = (team: string, messageTs: string, text: string) => ({
   receivedAt: Date.now(),
 });
 const deliveries = (stub: Stub) => inside(stub, (instance) => instance.deliveries as string[]);
+
+it("tracks web sessions on the linked subscription for refreshes and reconnects", async () => {
+  const stub = computers().getByName("org_web_subscription_tracking");
+  const tracked = await inside(stub, (instance, state) => {
+    const member = "usr_01jabcdefghjkmnpqrstvwxyz0";
+    const key = "cs_0000000000000001";
+    instance.access.agents.view = () => ({ linkedSlackUser: { id: "ULINKED" } });
+    state.storage.sql.exec(
+      `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, created_at, updated_at,
+        session_id, origin_type, owner_user_id, api_status)
+       VALUES (?, '', '', '', 'Web session', 1, 2, ?, 'dashboard', ?, 'running')`,
+      key, key, member,
+    );
+    return { session: instance.modelSession(key), live: instance.liveSessions() };
+  });
+  expect(tracked.session).toMatchObject({ key: "cs_0000000000000001", ownerId: "ULINKED" });
+  expect(tracked.live).toEqual([{ ...tracked.session, status: "busy", activeAt: 2 }]);
+});
 // By channel, never by clearing the fake: other files' tests read its calls at the same time.
 const claudeAnswers = async () => (await slackCalls()).filter((c) => c.method === "chat.postEphemeral" && c.body.channel === "CSEAMPUB" && typeof c.body.text === "string" && c.body.text.includes("!claude"));
 

@@ -16,6 +16,7 @@
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
 import type { ApiTelemetry } from "./telemetry/api.js";
+import type { RoutedApiSession } from "./api-model-route.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities, checkSettings } from "./capabilities.js";
@@ -209,6 +210,8 @@ export interface SessionsApiDeps {
   /** The rollout gate (api-gate.ts): false, and every operation but `me` answers 409 feature_unavailable. */
   enabled: () => boolean;
   send: (frame: CalvinGatewayToHost) => boolean;
+  /** Resolves the owner's subscription and runner before starting or delivering a turn. */
+  routeSession?: (session: CalvinSessionSpec, member?: string) => Promise<RoutedApiSession>;
   closeHost: (code: number, reason: string) => void;
   /** Starts or wakes the computer (no Slack notice). */
   wake: () => Promise<void>;
@@ -532,7 +535,8 @@ export class ComputerSessionsApi {
       ({ turn, delivery, seq } = result);
       duplicate = repeat && result.duplicate === true;
     } else if (!repeat) {
-      this.startSession(row);
+      const outcome = await this.startSession(row);
+      if (outcome.error) return hostError(outcome.error);
     } else {
       duplicate = true;
     }
@@ -544,14 +548,16 @@ export class ComputerSessionsApi {
   private async wake(sessionId: string): Promise<void> {
     await this.epochSends.get(sessionId);
     const row = this.row(sessionId);
-    if (row) this.startSession(row);
+    if (row) await this.startSession(row);
   }
 
   /** A session with no first message: the host claims a spare and forks for it (answered by `started`). */
-  private startSession(row: ApiRow): void {
+  private async startSession(row: ApiRow): Promise<HostOutcome> {
     const id = crypto.randomUUID();
-    const sent = this.deps.send({ t: "start", id, session: this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq });
-    if (!sent) return;
+    const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
+    if (routed?.error) return { error: routed.error };
+    const sent = this.deps.send({ t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq });
+    if (!sent) return { error: hostLost() };
     // Nobody waits for it; a refusal is logged (the session stays `starting` until a send).
     this.pending.set(id, {
       resolve: (outcome) => {
@@ -559,6 +565,7 @@ export class ComputerSessionsApi {
       },
       timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS),
     });
+    return {};
   }
 
   private async get(caller: ApiCaller, sessionId: string, minSeq?: number): Promise<ApiReply> {
@@ -906,6 +913,16 @@ export class ComputerSessionsApi {
     }
     const wait = this.answerWait(frame.sessionId, moving !== undefined);
     if (note) note.wait = wait;
+    if (frame.session && ADMITTED.has(frame.method) && this.deps.routeSession) {
+      const routed = await this.deps.routeSession(frame.session, frame.member).catch(() => ({ session: frame.session!, error: hostLost() }));
+      if (routed.error) {
+        const outcome = { error: routed.error };
+        if (key && this.keyed.get(key)?.id === frame.id) this.keyed.delete(key);
+        resolve(outcome);
+        return outcome;
+      }
+      frame = { ...frame, session: routed.session };
+    }
     const sent = this.deps.send(frame);
     if (note) note.sentAt = performance.now();
     if (!sent) {
