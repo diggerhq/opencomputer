@@ -43,6 +43,8 @@
 #   agent, for minutes. The host waits for this lock before each of its own
 #   calls (src/host/sandbox/image-lock.ts) instead of timing out in them. The
 #   file is root's and only the host's group reads it: a session cannot hold it.
+#   Each pull try and the warm-up have a time limit, so the lock is never held
+#   for longer than 3 x SP_PULL_TIMEOUT_S + SP_WARM_TIMEOUT_S and a minute or so.
 # - `prune-images` never forces: an image a container still uses is refused by
 #   Podman and stays.
 set -euo pipefail
@@ -69,6 +71,13 @@ SUBID_COUNT=65536
 STORE_GB=10
 BLOBS=/var/tmp
 BLOBS_GB=2
+# How long one pull try (of 3) and the warm-up may take, in seconds. Both hold
+# $IMAGE_LOCK, and with it every Podman call of the host, and provision.sh's
+# own lock: a pull that hangs on a dead connection must fail, not hold all of
+# them until someone notices. Measured: pull and warm-up 181-214 s together, the
+# warm-up 113-124 s of it (2 vCPU, 3.77 GB).
+PULL_TIMEOUT_S="${SP_PULL_TIMEOUT_S:-900}"
+WARM_TIMEOUT_S="${SP_WARM_TIMEOUT_S:-300}"
 # The same path in src/host/sandbox/image-lock.ts.
 IMAGE_LOCK=/run/slack-presence-image.lock
 HOST_USER="${HOST_USER:-sp-host}"
@@ -76,10 +85,15 @@ HOST_USER="${HOST_USER:-sp-host}"
 log() { printf '\n== sandbox: %s\n' "$*"; }
 die() { echo "sandbox: $*" >&2; exit 1; }
 
-pm() {
+as_agent() {
   sudo -n -u "$AGENT_USER" XDG_RUNTIME_DIR="/run/user/$AGENT_UID" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AGENT_UID/bus" /usr/bin/podman "$@"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AGENT_UID/bus" "$@"
 }
+pm() { as_agent /usr/bin/podman "$@"; }
+# pm_within <seconds> <podman args>: pm, stopped when it runs longer (TERM, then
+# KILL 30 s later); 124 or 137 then. timeout(1) runs as the agent, beside
+# Podman, so its signals reach Podman and not only sudo.
+pm_within() { local s=$1; shift; as_agent /usr/bin/timeout --kill-after=30 "$s" /usr/bin/podman "$@"; }
 
 # write_if_changed <path> <mode>: content on stdin; returns 0 if it changed.
 # The temporary file is beside the target, so the rename is atomic, and has a
@@ -249,7 +263,9 @@ room() {
 # rm, ps and inspect of other containers each waited the 124 s of a warm-up,
 # and up to 13 s while one 300 MB layer was applied. Hence the lock.
 image() {
-  local ref="${1:?usage: sandbox.sh image <ref>}" try t0=$SECONDS group=root
+  local ref="${1:?usage: sandbox.sh image <ref>}" try t0=$SECONDS t group=root rc
+  [[ $PULL_TIMEOUT_S =~ ^[1-9][0-9]*$ && $WARM_TIMEOUT_S =~ ^[1-9][0-9]*$ ]] \
+    || die "SP_PULL_TIMEOUT_S and SP_WARM_TIMEOUT_S are whole seconds, not '$PULL_TIMEOUT_S' and '$WARM_TIMEOUT_S'"
   # Whichever the release's .sp-version.env names: a digest, or a tag (a test computer's, or a release from before the pin).
   [[ $ref == "$REPOSITORY":* || $ref == "$REPOSITORY"@sha256:* ]] || die "$ref is not an image of $REPOSITORY"
   # The lock ends with this process, whatever ends it, and sudo closes it for what
@@ -266,16 +282,23 @@ image() {
   done
   if ! pm image exists "$ref"; then
     room "$ref"
-    log "pulling $ref"
+    log "pulling $ref (at most $PULL_TIMEOUT_S s a try)"
     for try in 1 2 3; do
-      pm pull -q "$ref" >/dev/null && break
+      t=$SECONDS rc=0
+      pm_within "$PULL_TIMEOUT_S" pull -q "$ref" >/dev/null || rc=$?
+      if (( rc == 0 )); then echo "pulled in $(( SECONDS - t )) s"; break; fi
+      if (( rc == 124 || rc == 137 )); then echo "pull $try of 3 timed out after $(( SECONDS - t )) s"
+      else echo "pull $try of 3 failed after $(( SECONDS - t )) s (exit $rc)"; fi
       [[ $try != 3 ]] || die "could not pull $ref"
       sleep $(( try * 5 ))
     done
   fi
   # A run that died between create and rm left the name taken.
   pm rm --ignore sp-warm >/dev/null
-  pm create --name sp-warm "--userns=keep-id:uid=$AGENT_UID,gid=$AGENT_UID" "$ref" >/dev/null
+  t=$SECONDS rc=0
+  pm_within "$WARM_TIMEOUT_S" create --name sp-warm "--userns=keep-id:uid=$AGENT_UID,gid=$AGENT_UID" "$ref" >/dev/null || rc=$?
+  (( rc == 0 )) || die "warming $ref $( (( rc == 124 || rc == 137 )) && echo "timed out after $(( SECONDS - t )) s" || echo "failed (exit $rc)")"
+  echo "warmed in $(( SECONDS - t )) s"
   pm rm sp-warm >/dev/null
   rm -f "$IMAGE_LOCK"
   exec 9<&-
