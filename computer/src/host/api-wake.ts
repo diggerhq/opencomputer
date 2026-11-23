@@ -1,4 +1,5 @@
-// Waking a session's runner for a send the host's writer queued (work 084).
+// Waking a session's runner for a send the host's writer queued, or an attach's
+// `resume` (work 084).
 // The host always asks the gateway (`wake`), whose `start` brings the runner,
 // which runs the queued turns. Even when the host knows the session's spec it
 // does not start the runner itself: only the gateway has the session's vault
@@ -38,13 +39,20 @@ export function apiWake(d: WakeDeps) {
     d.failQueued(sessionId, message);
   }
 
-  /** The session's writer asked for its runner (a send while none ran); the runner takes the turns it queued from the journal. */
-  function wake(sessionId: string) {
-    if (waking.has(sessionId)) return;
-    if (!d.send({ t: 'wake', sessionId })) return failed(sessionId, 'The computer could not reach the gateway to start the agent');
+  /**
+   * The session's writer asked for its runner (a send while none ran), or an attach resumes it; the runner takes the
+   * turns it queued from the journal. False: the gateway could not be reached.
+   */
+  function wake(sessionId: string): boolean {
+    if (waking.has(sessionId)) return true;
+    if (!d.send({ t: 'wake', sessionId })) {
+      failed(sessionId, 'The computer could not reach the gateway to start the agent');
+      return false;
+    }
     const t = setTimeout(() => failed(sessionId), d.waitMs ?? WAKE_WAIT_MS);
     t.unref?.();
     waking.set(sessionId, t);
+    return true;
   }
 
   return {

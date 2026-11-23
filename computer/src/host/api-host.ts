@@ -272,6 +272,12 @@ export function apiHost(d: ApiHostDeps) {
     async resume(sessionId) {
       const spec = specs.get(sessionId);
       if (!spec) return { error: apiError('session_not_found', `no session ${sessionId} on this computer`, 404) };
+      if (pending.has(sessionId)) return { status: 'starting' as const };
+      // No runner: the gateway's `start` brings it with the session's secrets, as a wake does (api-wake.ts).
+      if (!live.has(sessionId)) {
+        if (!waker.wake(sessionId)) return { error: apiError('unavailable', 'The computer could not reach the gateway to start the agent', 503, { retryable: true }) };
+        return { status: 'starting' as const };
+      }
       return d.start(spec, {}).then(
         (s) => ({ status: apiStatus(s) }),
         (e) => ({ error: apiError('internal', String(e?.message ?? e), 500, { retryable: true }) }),
