@@ -52,9 +52,12 @@ case "$1 $2 $3" in
   "show -p MainPID") cat "$S/mainpid" ;;
   "show -p Environment") cat "$S/environment" 2>/dev/null; echo ;;
   "show -p EnvironmentFiles") echo ;;
+  "show -p DropInPaths") cat "$S/dropins" 2>/dev/null; echo ;;
+  "show -p InvocationID") echo inv-1 ;;
   restart*) echo restarted >> "$S/restarted"; cat "$S/after-restart" > "$S/mainpid" ;;
 esac`);
   stub('runuser', 'while [[ $1 != -- ]]; do shift; done; shift; exec "$@"');
+  stub('journalctl', '[[ $* == *_SYSTEMD_INVOCATION_ID=inv-1* ]] && cat "$S/journal" 2>/dev/null; exit 0');
   stub('podman', '[[ $1 == ps ]] && cat "$S/containers" 2>/dev/null; exit 0');
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -126,23 +129,40 @@ describe('sp-host.sh launch podman', () => {
     expect(r.out).toContain('launch running: podman');
   });
 
-  it('refuses a host not migrated to sp-host, and changes nothing', () => {
+  it("says how the drain ended, from the old host's journal", () => {
+    host(100);
+    flipScript();
+    writeFileSync(at('state', 'journal'), 'legacy drain: telling every runner\nlegacy drain: exiting after 42 s (no runner left)\n');
+    expect(launch('podman', { drain: flipped() }).out).toContain('launch: drain clean in 42 s\n');
+  });
+
+  it('says when the drain hit its deadline and how many turns it cut', () => {
+    host(100);
+    flipScript();
+    writeFileSync(at('state', 'journal'), 'legacy drain: deadline, 2 runner(s) told to exit now: a b\nlegacy drain: exiting after 601 s (no runner left)\n');
+    const r = launch('podman', { drain: flipped() });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('launch: drain hit the 10-min deadline, 2 runner(s) cut mid-turn');
+  });
+
+  it('skips a host not migrated to sp-host, and changes nothing', () => {
     host(100);
     rmSync(at('etc', 'host-user-sp-host'));
     const r = launch('podman', { drain: 'exit 9' });
-    expect(r.code).toBe(1);
-    expect(r.err).toContain('not migrated');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('== sp-host: launch: skipped: host not migrated to sp-host');
     expect(r.marker).toBeUndefined();
     expect(r.apply).toBe('');
     expect(r.drained).toBe(false);
   });
 
-  it('refuses when the running systemd host has no drain: a plain restart would orphan its runners', () => {
+  it('skips when the running systemd host has no drain: a plain restart would orphan its runners', () => {
     host(100, undefined, false);
     const r = launch('podman', { drain: 'exit 9' });
-    expect(r.code).toBe(1);
-    expect(r.err).toContain('has no drain');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('== sp-host: launch: skipped: running release has no drain');
     expect(r.marker).toBeUndefined();
+    expect(r.drained).toBe(false);
   });
 
   it('puts the marker back and does not restart when apply fails', () => {
@@ -154,11 +174,18 @@ describe('sp-host.sh launch podman', () => {
     expect(r.drained).toBe(false);
   });
 
-  it('does not restart when another drop-in overrides SP_LAUNCH', () => {
+  it('names the drop-in that overrides SP_LAUNCH, puts the marker back, re-applies it, and does not restart', () => {
     host(100);
+    writeFileSync(at('etc', 'sp-launch'), 'systemd\n');
+    writeFileSync(at('etc', '30-other.conf'), '[Service]\nEnvironment=SP_LAUNCH=systemd\n');
+    writeFileSync(at('state', 'dropins'), `/etc/systemd/system/slack-presence-host.service.d/20-sp-host.conf ${at('etc', '30-other.conf')}`);
     const r = launch('podman', { extraEnv: 'SP_LAUNCH=systemd', drain: 'exit 9' });
     expect(r.code).toBe(1);
-    expect(r.err).toContain("the unit's SP_LAUNCH is 'systemd', not podman");
+    expect(r.err).toContain(`the unit's SP_LAUNCH is 'systemd', not podman, set by ${at('etc', '30-other.conf')}`);
+    expect(r.err).toContain("the marker is back to 'systemd'");
+    expect(r.marker).toBe('systemd');
+    expect(r.apply).toBe('locked\nlocked');
+    expect(read('environment')).toContain('HOME=/x SP_LAUNCH=systemd ');
     expect(r.drained).toBe(false);
     expect(r.restarted).toBe(false);
   });

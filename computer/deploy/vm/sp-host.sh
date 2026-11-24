@@ -300,6 +300,33 @@ launch_host_pid() {
 # The running host's SP_LAUNCH, and only that variable of its environment (the rest holds the host token).
 launch_running() { local pid; pid=$(launch_host_pid); [[ -z $pid ]] || legacy_env_of "$pid" SP_LAUNCH || true; }
 launch_apply() { bash "$0" apply; }
+# <old marker>: put it back and `apply` it, so the drop-in matches it again.
+launch_restore() {
+  if [[ -n $1 ]]; then echo "$1" > "$LAUNCH_MARK"; else rm -f "$LAUNCH_MARK"; fi
+  launch_apply
+}
+# The file that sets the unit's SP_LAUNCH besides our drop-in, as legacy_new_launch reads it (environment files win), path only.
+launch_override() {
+  local f src=''
+  for f in $(systemctl show -p FragmentPath --value "$UNIT" 2>/dev/null) $(systemctl show -p DropInPaths --value "$UNIT" 2>/dev/null); do
+    [[ $f != "$DROPIN" && -r $f ]] && grep -q '^[[:space:]]*Environment=.*SP_LAUNCH=' "$f" && src=$f
+  done
+  for f in $(systemctl show -p EnvironmentFiles --value "$UNIT" 2>/dev/null | tr ' ' '\n' | grep '^/'); do
+    [[ -n $(legacy_launch_of_files "$f") ]] && src=$f
+  done
+  echo "${src:-unknown}"
+}
+# <old invocation id> <old MainPID>: one line on how the drain ended, from the old host's journal (as legacy_drained reads it).
+launch_drain_summary() {
+  local j cut secs
+  if [[ -n $1 ]]; then j=$(journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$1" 2>/dev/null || true)
+  else j=$(journalctl --no-pager -o cat "_SYSTEMD_UNIT=$UNIT" "_PID=$2" 2>/dev/null || true); fi
+  cut=$(sed -n 's/.*legacy drain: deadline, \([0-9]*\) runner(s).*/\1/p' <<< "$j" | tail -n1)
+  secs=$(sed -n 's/.*legacy drain: exiting after \([0-9]*\) s.*/\1/p' <<< "$j" | tail -n1)
+  if [[ -n $cut ]]; then echo "launch: drain hit the 10-min deadline, $cut runner(s) cut mid-turn (journalctl _SYSTEMD_INVOCATION_ID=$1)"
+  elif [[ -n $secs ]]; then echo "launch: drain clean in $secs s"
+  else echo "launch: drain outcome not in the journal (journalctl -u $UNIT)"; fi
+}
 launch_podman() { runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR="/run/user/$AGENT_UID" timeout 60 podman "$@"; }
 
 # Containers: thread (a record that is not `unclaimed`) or spare. Unmigrated threads: forks with no record (legacy-migration/migrate.ts migrates them on their next message).
@@ -337,30 +364,39 @@ launch_status() {
 # launch podman|systemd: write the marker, `apply` it to the drop-in, and restart the host the way provision.sh does:
 # drained when SP_LAUNCH turns from systemd to podman (legacy-drain.sh), a plain restart otherwise. Under provision.sh's
 # lock, so no self-update or deploy runs in between. podman needs the host as sp-host (SP_RUNNER_USER, sandbox/host.ts)
-# and a running release with the drain: a plain restart into podman would leave the systemd runners running beside it.
-# Back to systemd is a plain restart: the podman containers keep running, unseen by the host (stop them by hand).
+# and a running release with the drain: a plain restart into podman would leave the systemd runners running beside it;
+# without either it says `launch: skipped: <why>` and changes nothing (exit 0). Back to systemd is a plain restart: the podman containers keep running, unseen by the host (stop them by hand).
 launch() {
-  local want=$1 old running main
+  local want=$1 old running main inv
   AGENT_UID=${AGENT_UID:-$(id -u "$AGENT_USER")}
   exec 8>"${SP_PROVISION_LOCK:-/run/slack-presence-provision.lock}"
   flock -w 1800 8 || die "launch: provision.sh held its lock for 30 min; try again"
   running=$(launch_running)
   if [[ $want == podman ]]; then
-    [[ -f $MARK ]] || die "launch: this host agent is not migrated to $HOST_USER (sp-host.sh migrate first); podman needs it"
+    if [[ ! -f $MARK ]]; then
+      log "launch: skipped: host not migrated to $HOST_USER (sp-host.sh migrate first); podman needs it"
+      return 0
+    fi
     main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
     if [[ ${running:-systemd} == systemd && -n $main && $main != 0 && ! -f $LEGACY_PROC/$main/cwd/src/host/legacy-migration/drain.ts ]]; then
-      die "launch: the running host has no drain (src/host/legacy-migration/drain.ts): deploy a current release first"
+      log "launch: skipped: running release has no drain (src/host/legacy-migration/drain.ts); deploy a current release first"
+      return 0
     fi
   fi
   old=$(cat "$LAUNCH_MARK" 2>/dev/null || true)
   install -d -m 0755 "$ETC"
   echo "$want" > "$LAUNCH_MARK.tmp" && mv "$LAUNCH_MARK.tmp" "$LAUNCH_MARK"
   if ! launch_apply; then
-    if [[ -n $old ]]; then echo "$old" > "$LAUNCH_MARK"; else rm -f "$LAUNCH_MARK"; fi
+    launch_restore "$old" || true
     die "launch: apply failed; the marker is back to '${old:-none}' and the host was not restarted"
   fi
-  [[ $(legacy_new_launch | grep . || echo systemd) == "$want" ]] \
-    || die "launch: the unit's SP_LAUNCH is '$(legacy_new_launch)', not $want: another drop-in or environment file sets it (systemctl cat $UNIT); not restarted"
+  local eff src
+  eff=$(legacy_new_launch | grep . || echo systemd)
+  if [[ $eff != "$want" ]]; then
+    src=$(launch_override)
+    launch_restore "$old" || die "launch: the unit's SP_LAUNCH is '$eff', not $want, set by $src; re-applying the marker '${old:-none}' failed too: sp-host.sh apply. Not restarted"
+    die "launch: the unit's SP_LAUNCH is '$eff', not $want, set by $src (systemctl cat $UNIT); the marker is back to '${old:-none}' and the host was not restarted"
+  fi
   if [[ -n $(launch_host_pid) && ${running:-systemd} == "$want" ]]; then
     log "launch: already $want; nothing to restart"
     launch_status
@@ -371,7 +407,9 @@ launch() {
     echo "sp-host: launch: the podman containers keep running and the systemd host does not see them; stop them with" \
       "runuser -u $AGENT_USER -- env XDG_RUNTIME_DIR=/run/user/$AGENT_UID podman stop -a" >&2
   fi
-  legacy_drain_restart || systemctl restart "$UNIT"
+  inv=$(systemctl show -p InvocationID --value "$UNIT" 2>/dev/null || true)
+  main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
+  if legacy_drain_restart; then launch_drain_summary "$inv" "$main"; else systemctl restart "$UNIT"; fi
   main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
   local host now
   host=$(legacy_new_host "$main") || die "launch: the host did not come back (MainPID $main runs no src/host/main.ts): journalctl -u $UNIT"
