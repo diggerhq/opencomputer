@@ -19,7 +19,7 @@ function series(column) {
 FROM ${TURNS} GROUP BY time ORDER BY time`;
 }
 
-function panel(id, title, sql, x, y, { type = 'timeseries', unit = 'ms', w = 12, h = 8, description = '' } = {}) {
+export function publicPanel(id, title, sql, x, y, { type = 'timeseries', unit = 'ms', w = 12, h = 8, description = '' } = {}) {
   const defaults = { unit, decimals: unit === 'ms' ? 2 : unit === 'short' ? 0 : 1, noValue: 'No data' };
   if (type === 'timeseries') defaults.custom = { drawStyle: 'line', lineWidth: 2, fillOpacity: 8, spanNulls: false, showPoints: 'always' };
   return {
@@ -30,6 +30,8 @@ function panel(id, title, sql, x, y, { type = 'timeseries', unit = 'ms', w = 12,
       : { legend: { displayMode: 'list', placement: 'bottom' }, tooltip: { mode: 'multi', sort: 'desc' } },
   };
 }
+
+const panel = publicPanel;
 
 export function publicLatencyDashboard() {
   const percentileDescription = 'Completed Slack turns across reporting machines, in six-hour UTC buckets. Median needs one measurement; p95 needs at least 20. Gaps mean insufficient measurements. The latest bucket is partial.';

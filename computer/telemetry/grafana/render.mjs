@@ -13,6 +13,7 @@ import { computerApiDashboard } from './computer-api.mjs';
 import { dashboards } from './dashboards.mjs';
 import { renderRules } from './rules.mjs';
 import { publicLatencyDashboard } from './public-latency.mjs';
+import { addPublicNavigation, publicCollection, publicDirectory } from './public-collection.mjs';
 
 const HERE = import.meta.dirname;
 const { thresholds, computer_api: api = [] } = JSON.parse(readFileSync(path.join(HERE, '../thresholds.json'), 'utf8'));
@@ -87,7 +88,10 @@ function dashboard(d) {
 }
 
 const files = new Map();
-files.set('dashboards/public-latency.json', publicLatencyDashboard());
+const publicLinks = JSON.parse(readFileSync(path.join(HERE, 'public-links.json'), 'utf8'));
+files.set('dashboards/public-latency.json', addPublicNavigation(publicLatencyDashboard(), publicLinks));
+for (const d of publicCollection()) files.set(`dashboards/${d.uid.replace('opencomputer-', '')}.json`, addPublicNavigation(d, publicLinks));
+files.set('dashboards/public-directory.json', publicDirectory(publicLinks));
 for (const d of [...dashboards(thresholds), ...(api.length ? [computerApiDashboard(api)] : [])]) files.set(`dashboards/${d.uid.replace('calvin-', '')}.json`, dashboard(d));
 const rules = renderRules(thresholds, api);
 files.set('alerting/rules.json', rules);

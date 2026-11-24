@@ -1,0 +1,319 @@
+{
+  "uid": "opencomputer-public-reliability",
+  "title": "OpenComputer · Reliability",
+  "schemaVersion": 39,
+  "tags": [
+    "opencomputer",
+    "public"
+  ],
+  "timezone": "utc",
+  "editable": false,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Live response latency",
+      "url": "https://opencomputer.grafana.net/public-dashboards/04826d8266c44db095c5029bf7965421",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Speed",
+      "url": "https://opencomputer.grafana.net/public-dashboards/003d2946a46041659cce0e34278afc07",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Cold path",
+      "url": "https://opencomputer.grafana.net/public-dashboards/9820b7d2a0ff4cd4b8ba7c46ad634597",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Models and harnesses",
+      "url": "https://opencomputer.grafana.net/public-dashboards/c4f492431622456bae32b134ef784150",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Reliability",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8bfcbf94b711457b97b93260a39cf976",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Machine health",
+      "url": "https://opencomputer.grafana.net/public-dashboards/55b07db24aa241c4be0c196fbc4150f4",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Trace timings",
+      "url": "https://opencomputer.grafana.net/public-dashboards/834035649f5846b792b765e9d474d1ee",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Computer API",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8ee8e3892d2e49ada9f36fc29847bfc1",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Dashboard directory",
+      "url": "https://opencomputer.grafana.net/public-dashboards/3849ee69a9bc48289a3ae2bc7aec0ffc",
+      "type": "link",
+      "targetBlank": false
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Reliability",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Live aggregate metrics; refreshes every 30 seconds. Times are UTC. Latency charts use six-hour buckets and show p95 only with 20+ measurements. Current buckets are partial; gaps mean insufficient data. Traffic and model mix can change.\n\nCounts include failures and silent turns. Frontend call events cover slow, failed or rate-limited calls; their latency distribution does not represent every frontend call."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Slack turn outcomes",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time, outcome, count() AS turns FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic AND surface = 'slack' LIMIT 1 BY turn_id) GROUP BY time, outcome ORDER BY time, outcome"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Dispatch and runner trouble",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(occurred_at, INTERVAL 6 HOUR) AS time, event_name, count() AS events FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('queue.retried', 'queue.failed', 'dispatch.parked', 'turn.abandoned') LIMIT 1 BY event_id) GROUP BY time, event_name ORDER BY time, event_name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Frontend rate limiting and errors",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(occurred_at, INTERVAL 6 HOUR) AS time, countIf(JSONExtractBool(data, 'rate_limited')) AS rate_limited, countIf(outcome = 'failed') AS failed FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('surface.call') LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Dropped telemetry by reason",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(occurred_at, INTERVAL 6 HOUR) AS time, JSONExtractString(data, 'reason') AS reason, sum(JSONExtractFloat(data, 'count')) AS dropped FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('telemetry.dropped') LIMIT 1 BY event_id) GROUP BY time, reason ORDER BY time, reason"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}
