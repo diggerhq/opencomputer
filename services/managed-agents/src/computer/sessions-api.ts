@@ -210,6 +210,8 @@ export interface SessionsApiDeps {
   /** The rollout gate (api-gate.ts): false, and every operation but `me` answers 409 feature_unavailable. */
   enabled: () => boolean;
   send: (frame: CalvinGatewayToHost) => boolean;
+  /** Current secrets, sent privately ahead of starts and API deliveries. */
+  secretsFor?: (key: string) => Promise<import("./protocol.js").SessionSecret[]>;
   /** Resolves the owner's subscription and runner before starting or delivering a turn. */
   routeSession?: (session: CalvinSessionSpec, member?: string) => Promise<RoutedApiSession>;
   closeHost: (code: number, reason: string) => void;
@@ -556,7 +558,8 @@ export class ComputerSessionsApi {
     const id = crypto.randomUUID();
     const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
     if (routed?.error) return { error: routed.error };
-    const sent = this.deps.send({ t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq });
+    const secrets = this.deps.secretsFor ? await this.deps.secretsFor(row.key) : undefined;
+    const sent = this.deps.send({ t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq, secrets });
     if (!sent) return { error: hostLost() };
     // Nobody waits for it; a refusal is logged (the session stays `starting` until a send).
     this.pending.set(id, {
@@ -922,6 +925,10 @@ export class ComputerSessionsApi {
         return outcome;
       }
       frame = { ...frame, session: routed.session };
+    }
+    if (frame.session && ADMITTED.has(frame.method) && this.deps.secretsFor) {
+      const secrets = await this.deps.secretsFor(frame.session.key);
+      this.deps.send({ t: "secrets", sessionKey: frame.session.key, secrets });
     }
     const sent = this.deps.send(frame);
     if (note) note.sentAt = performance.now();

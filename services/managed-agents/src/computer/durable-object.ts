@@ -665,6 +665,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       host: () => this.apiHost(),
       enabled: () => this.apiEnabled(),
       send: (frame) => this.send(frame),
+      secretsFor: (key) => this.secrets.forSession(key, this.api.rowByKey(key)?.ownerId ?? ""),
       routeSession: (session, member) => routeApiSession({ access: this.access, profiles: () => this.liveHost()?.profiles, send: (frame) => this.send(frame) }, session, member),
       closeHost: (code, reason) => this.socket()?.close(code, reason),
       wake: () => this.wakeForApi(),
@@ -1636,6 +1637,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
+    if (op.op === "secrets.session.put") {
+      const row = this.api.visible(caller, op.sessionId);
+      if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
+      return this.secrets.api(caller, op, row.key);
+    }
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
     // The Work API's sessions and people (work tracking 3.10), likewise.
     if (op.op === "work.context") return workContext({ sql: this.ctx.storage.sql, api: this.api }, caller, op as WorkContextOp);
@@ -3850,8 +3856,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       "SELECT runner_key AS key, owner_id AS ownerId FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
     )];
     for (const session of live) {
-      if (!session.ownerId || (which.key && session.key !== which.key) || (which.owner && session.ownerId !== which.owner)) continue;
-      const secrets: SessionSecret[] = await this.secrets.forSession(session.key, session.ownerId);
+      if ((which.key && session.key !== which.key) || (which.owner && session.ownerId !== which.owner)) continue;
+      const secrets: SessionSecret[] = await this.secrets.forSession(session.key, session.ownerId ?? "");
       this.send({ t: "secrets", sessionKey: session.key, secrets });
     }
   }

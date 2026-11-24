@@ -196,6 +196,7 @@ export class Tap implements SessionTap {
 
   sent(text: string, slackUser: string | undefined, steer: boolean, from?: SentFrom) {
     const actor = from?.actor ?? this.h.actorOf(slackUser);
+    this.asks.closeReadySecrets(actor);
     if (steer && this.cur) {
       if (from?.recorded) return;
       const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [] }, this.cur.id, actor);

@@ -138,7 +138,7 @@ const event = (seq: number, sessionId = SID): ApiEvent => ({
   data: {},
 });
 
-function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"] } = {}) {
+function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
   const sql = sqlStorage();
   sql.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -176,6 +176,7 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
     host: () => (state.protocol === null ? undefined : { protocol: state.protocol }),
     enabled: () => options.enabled ?? true,
     routeSession: options.routeSession,
+    secretsFor: options.secretsFor,
     send: (frame) => {
       if (state.protocol === null) return false;
       sent.push(frame);
@@ -475,6 +476,19 @@ describe("POST /sessions", () => {
     const reply = await created(f);
     expect(reply.body).toMatchObject({ turn: null, delivery: null, seq: 0, session: { title: "Untitled", status: "starting" } });
     expect(f.frames("start")[0]).toMatchObject({ epoch: 1, lastSeq: 0, session: { kind: "api", sessionId: SID } });
+  });
+
+  it("delivers secrets in start frames and ahead of API turns", async () => {
+    const secrets = [{ name: "TOKEN", value: "private-test-value", scope: "session" as const }];
+    const f = fixture({ secretsFor: async () => secrets });
+    await created(f);
+    expect(f.frames("start")[0]).toMatchObject({ secrets });
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", seq: 1 } }));
+    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "Continue" } });
+    const delivered = f.frames("secrets");
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ sessionKey: SID, secrets });
+    expect(JSON.stringify(f.frames("api"))).not.toContain("private-test-value");
   });
 
   it("a host's wake is answered with a start frame; an unknown session's with nothing", async () => {

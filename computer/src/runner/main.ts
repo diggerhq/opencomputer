@@ -464,6 +464,11 @@ function checkout(repos: string[]) {
 // request_secret: the gateway posts a button in the thread and answers through the host.
 const secretAsks = new Waiters<RunnerToHost, { error?: string }>({ send: toHost, ms: 30_000, late: 'no answer from the gateway within 30 s' });
 function requestSecret(req: SecretRequest) {
+  if (ss?.kind === 'api') {
+    if (!api) return Promise.reject(new Error('The session API is not ready'));
+    api.api.tap.asks.open({ kind: 'secret', secret: { name: req.name, purpose: req.reason, file: !!req.file } }, () => {});
+    return Promise.resolve();
+  }
   return secretAsks.ask(
     (id) => ({ t: 'secret-request', id, req }),
     (m) => {
@@ -506,7 +511,8 @@ async function onHost(m: HostToRunner) {
     case 'previewed':
       return gateway.answer(m.id, m);
     case 'secrets':
-      return secrets.apply(m.secrets);
+      secrets.apply(m.secrets);
+      return api?.api.tap.asks.secretsSet(m.secrets.map((secret) => secret.name));
     case 'preview-ports': return previews.restore(m.ports); // after a resume: its previews answer again without a new `preview` (work 103)
     case 'secret-asked':
       return secretAsks.answer(m.id, m);

@@ -63,8 +63,9 @@ export interface SecretActor {
   surface: "slack" | "dashboard" | "api" | "opc" | "system";
 }
 
-/** The Computer API's secrets operations (work 095 v1: the organization layer). */
+/** Organization secrets and private writes to a visible session. */
 export type SecretsApiOp =
+  | { op: "secrets.session.put"; sessionId: string; name: string; body: unknown }
   | { op: "secrets.list" }
   | { op: "secrets.put"; name: string; body: unknown }
   | { op: "secrets.delete"; name: string }
@@ -485,11 +486,12 @@ export class SecretsStore {
   // ---------------------------------------------------------------- Computer API (work 095 v1)
 
   /**
-   * The organization layer over the Computer API: any member may list, set, replace and delete
+   * The Computer API: organization secrets and writes to a session authorized by the caller.
+   * Any member may list, set, replace and delete organization secrets
    * (2026-11-01). api-http.ts has already refused session keys and checked scopes.
    * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
    */
-  async api(caller: ApiCaller, op: SecretsApiOp): Promise<ApiReply> {
+  async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
     if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows() } };
     if (op.op === "secrets.events") return { status: 200, body: { events: this.orgEvents(op.name) } };
     const actor: SecretActor = { id: caller.member, name: caller.name ?? caller.email, surface: caller.via };
@@ -507,6 +509,7 @@ export class SecretsStore {
       return { status: 204 };
     }
 
+    if (op.op === "secrets.session.put" && !sessionKey) return apiError(404, "session_not_found", "No such session.");
     const body = op.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) return apiError(400, "invalid_request", "The body must be a JSON object.", { field: "" });
     const { value, file = false, variable = false } = body as Record<string, unknown>;
@@ -518,12 +521,16 @@ export class SecretsStore {
     if (problem) return apiError(400, "invalid_name", `Can't use this name: ${problem.replaceAll("`", "")}.`, { field: "name" });
     let replaced: boolean;
     try {
-      replaced = await this.put("workspace", "*", op.name, value, file, actor, variable);
+      replaced = await this.put(sessionKey ? "session" : "workspace", sessionKey ?? "*", op.name, value, file, actor, variable);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not store it.";
       return message === "Too large."
         ? apiError(413, "too_large", `value is at most ${MAX_VALUE} bytes.`, { field: "value", bytes: MAX_VALUE })
         : apiError(409, "limit_reached", message);
+    }
+    if (sessionKey) {
+      await this.deps.push({ key: sessionKey });
+      return { status: 204 };
     }
     console.log(variable ? "variable_set" : "secret_set", { scope: "workspace", name: op.name, by: actor.id, via: actor.surface });
     await this.pushAll();

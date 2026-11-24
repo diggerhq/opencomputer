@@ -38,7 +38,7 @@ export type Resolution =
   | { how: 'dismissed'; message?: string; actor: Actor };
 
 /** What a prompt registers: the ask's body, and how to act on an answer that came from elsewhere. */
-export type AskSpec = (Pick<Ask, 'approval'> & { kind: 'approval' }) | (Pick<Ask, 'question'> & { kind: 'question' });
+export type AskSpec = (Pick<Ask, 'approval'> & { kind: 'approval' }) | (Pick<Ask, 'question'> & { kind: 'question' }) | (Pick<Ask, 'secret'> & { kind: 'secret' });
 
 /** A prompt's hold on its ask. */
 export interface AskHandle {
@@ -71,6 +71,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 export class Asks {
   private all = new Map<string, Entry>();
+  private availableSecrets: readonly string[] = [];
 
   constructor(private j: AskJournal) {}
 
@@ -92,7 +93,7 @@ export class Asks {
       answer: null,
       approval: spec.kind === 'approval' ? spec.approval : null,
       question: spec.kind === 'question' ? spec.question : null,
-      secret: null,
+      secret: spec.kind === 'secret' ? spec.secret : null,
     };
     const e: Entry = { ask, seq: 0, resolve };
     this.all.set(ask.id, e);
@@ -120,6 +121,19 @@ export class Asks {
 
   openIds(): string[] {
     return [...this.all.values()].filter((e) => e.ask.status === 'open').map((e) => e.ask.id);
+  }
+
+  /** Delivery alone does not close the form: resuming may fail and need a retry. */
+  secretsSet(names: readonly string[]) {
+    this.availableSecrets = names;
+  }
+
+  /** Close requests when the next message actually reaches the agent; journal no values. */
+  closeReadySecrets(actor: Actor) {
+    for (const id of this.openIds()) {
+      const ask = this.get(id)!;
+      if (ask.kind === 'secret' && ask.secret && this.availableSecrets.includes(ask.secret.name)) this.settle(id, 'answered', null, actor);
+    }
   }
 
   /** `asks.answer`: the first answer wins; the same one again from the same person is answered as it was. */

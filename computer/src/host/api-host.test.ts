@@ -261,6 +261,24 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
+  it('keeps the latest secrets for a runner woken after it stopped', async () => {
+    const t = setup();
+    t.a.onGateway(welcome(4));
+    t.a.onGateway(api('a1', 'sessions.get', { session: spec, epoch: 1, lastSeq: 0 }));
+    const secrets = [{ name: 'TOKEN', value: 'private-test-value', scope: 'session' as const }];
+    t.a.onGateway({ t: 'secrets', sessionKey: S, secrets });
+    await tick(5);
+    const o = t.opened[0] as { wake(s: string): void };
+    o.wake(S);
+    await tick();
+    expect(t.started[0].o.secrets).toEqual(secrets);
+    t.a.onGateway({ t: 'secrets', sessionKey: S, secrets: [] });
+    o.wake(S);
+    await tick();
+    expect(t.started[1].o.secrets).toEqual([]);
+    await t.a.stop();
+  });
+
   it('wakes a session the host has no spec of through the gateway, and fails its queued turns when no runner comes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

@@ -36,6 +36,7 @@ type MockSession = Json & {
 type MockEvent = Json & { seq: number; type: string }
 
 const sessions: MockSession[] = []
+const availableSecrets = new Map<string, Set<string>>()
 const journal = new Map<string, MockEvent[]>()
 
 function session(
@@ -802,6 +803,13 @@ export function computerSessionsMock(
   if (!s) return undefined
   const sub = m[2] ?? ''
 
+  if (sub.startsWith('/secrets/') && method === 'PUT') {
+    const names = availableSecrets.get(s.id) ?? new Set<string>()
+    names.add(decodeURIComponent(sub.slice('/secrets/'.length)))
+    availableSecrets.set(s.id, names)
+    // No value is retained or returned by the preview.
+    return {}
+  }
   if (sub === '' && method === 'GET') return { session: view(s) }
   if (sub === '' && method === 'PATCH') {
     Object.assign(s, pick(input, ['title', 'archived']))
@@ -853,6 +861,20 @@ export function computerSessionsMock(
     if (text.includes('[offline]'))
       return Promise.reject(new ApiError('Network error', 503))
     s.attention = null
+    for (const ask of s.asks.filter(
+      (a) =>
+        a.status === 'open' &&
+        availableSecrets
+          .get(s.id)
+          ?.has(String((a.secret as Json | null)?.name)),
+    )) {
+      Object.assign(ask, {
+        status: 'answered',
+        closedAt: new Date().toISOString(),
+      })
+      emit(s, 'ask.closed', { ask })
+    }
+    s.asks = s.asks.filter((a) => a.status === 'open')
     if (input.ifBusy === 'steer') {
       for (const ask of s.asks.filter((a) => a.status === 'open')) {
         Object.assign(ask, {

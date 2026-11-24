@@ -76,3 +76,21 @@ export async function deleteOrgSecret(name: string) {
 
 /** The name the server checks too; this only catches typos early. */
 export const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+
+/** Sets a session secret; the response never includes its value. */
+export async function putSessionSecret(
+  sessionId: string,
+  name: string,
+  value: string,
+  file: boolean,
+) {
+  await apiFetch(
+    `${PREFIX}/sessions/${encodeURIComponent(sessionId)}/secrets/${encodeURIComponent(name)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ value, file }),
+    },
+    undefined,
+    '/api',
+  )
+}

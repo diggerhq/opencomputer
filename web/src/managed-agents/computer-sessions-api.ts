@@ -47,7 +47,10 @@ export const AskSchema = z.looseObject({
     .looseObject({ questions: z.array(QuestionSchema) })
     .nullable()
     .optional(),
-  secret: z.unknown().optional(),
+  secret: z
+    .object({ name: z.string(), purpose: z.string(), file: z.boolean() })
+    .nullable()
+    .optional(),
 })
 export type Ask = z.infer<typeof AskSchema>
 
