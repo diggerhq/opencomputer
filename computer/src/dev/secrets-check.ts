@@ -22,11 +22,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 import { WebClient } from '@slack/web-api';
-import { type GatewayToHost, type HostToGateway, isSlackSpec, type RunnerSpec, type SessionSecret, type SlackPerson, type SlackSessionSpec } from '../protocol.js';
+import { type GatewayToHost, type HostToGateway, type RunnerSpec, type SessionSecret, type SlackPerson, type SlackSessionSpec } from '../protocol.js';
 import { Store } from '../gateway/db.js';
 import { Hub } from '../gateway/hosts.js';
 import { createRouter, type Msg } from '../gateway/routing.js';
-import { Vault, SESSION_TTL_MS } from '../gateway/vault.js';
+import { Vault, SESSION_TTL_MS, vaultSecretsFor } from '../gateway/vault.js';
 import { createSecretsUi } from '../gateway/secrets-ui.js';
 import { createVariablesUi } from '../gateway/variables-ui.js';
 import { checkVariables } from './secrets-check-variables.js';
@@ -276,7 +276,7 @@ const hub: Hub = new Hub({
   credentials: () => ({ slackBotToken: 'xoxb', slackBotUserId: BOT }),
   models: () => ({}),
   mintToken: async () => ({ token: 't', expiresAt: new Date().toISOString() }),
-  secretsFor: (spec) => (isSlackSpec(spec) ? vault.forSession(spec.key, spec.owner.slackUserId) : []),
+  secretsFor: (spec) => vaultSecretsFor(vault, spec),
   requestSecret: (from, req) => ui.request(from, req, client),
 });
 const ui = createSecretsUi({ store, vault, hub, deliver: (spec, h, c) => router.deliver(spec, h, c) });

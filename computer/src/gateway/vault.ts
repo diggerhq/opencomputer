@@ -17,7 +17,7 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { SecretScope, SessionSecret } from '../protocol.js';
+import { isSlackSpec, type SecretScope, type SessionSecret, type SessionSpec } from '../protocol.js';
 import { deriveKey } from '../setup/secrets.js';
 import { log } from '../log.js';
 
@@ -124,15 +124,18 @@ export class Vault {
     }
   }
 
-  /** Every secret a session gets, narrowest scope winning per name. Rows that do not decrypt are skipped. */
-  forSession(sessionKey: string, ownerUserId: string): SessionSecret[] {
+  /**
+   * Every secret a session gets, narrowest scope winning per name. Rows that do not decrypt are skipped.
+   * Without `ownerUserId` (a Slack user id): the workspace's and the session's only.
+   */
+  forSession(sessionKey: string, ownerUserId: string | undefined): SessionSecret[] {
     if (!this.aes) return [];
     const rows = this.db
       .prepare(
         `SELECT scope, owner, name, file, variable, iv, tag, data FROM user_secrets
          WHERE (scope = 'workspace' AND owner = '') OR (scope = 'user' AND owner = ?) OR (scope = 'session' AND owner = ?)`,
       )
-      .all(ownerUserId, sessionKey) as unknown as SecretRow[];
+      .all(ownerUserId ?? null, sessionKey) as unknown as SecretRow[];
     const out = new Map<string, SessionSecret>();
     for (const r of rows.sort((a, b) => RANK[a.scope as SecretScope] - RANK[b.scope as SecretScope])) {
       const value = this.open(r);
@@ -150,4 +153,12 @@ export class Vault {
       )
       .run(now - SESSION_TTL_MS).changes as number;
   }
+}
+
+/**
+ * What the vault gives a session (the Hub's `secretsFor`): a Slack session its owner's, the workspace's and its own;
+ * an API session the workspace's and its own, and its owner's only when its spec names their Slack identity.
+ */
+export function vaultSecretsFor(vault: Pick<Vault, 'forSession'>, spec: SessionSpec): SessionSecret[] {
+  return isSlackSpec(spec) || spec.kind === 'api' ? vault.forSession(spec.key, spec.owner.slackUserId) : [];
 }
