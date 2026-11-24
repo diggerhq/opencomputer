@@ -10,10 +10,16 @@ import { workOsUserOf } from "./session-ids.js";
 
 export type RoutedApiSession = { session: CalvinSessionSpec; error?: CalvinApiError };
 
+/** The Slack user a dashboard member (`usr_…`) linked (work 083), if any. */
+export function linkedSlackUser(access: ModelAccess, member: string | undefined): string | undefined {
+  const user = member && workOsUserOf(member);
+  return user ? access.agents.view(user).linkedSlackUser?.id : undefined;
+}
+
 /** The subscription identity shared by a dashboard member and their Slack login. */
 export function apiSubscriptionOwner(access: ModelAccess, member: string | undefined): string | undefined {
   const user = member && workOsUserOf(member);
-  return user ? access.agents.view(user).linkedSlackUser?.id ?? webOwner(user) : undefined;
+  return user ? linkedSlackUser(access, member) ?? webOwner(user) : undefined;
 }
 
 export async function routeApiSession(

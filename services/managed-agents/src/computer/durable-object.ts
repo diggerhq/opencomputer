@@ -100,7 +100,7 @@ import { hostToken } from "./host-token.js";
 import { failureNotice } from "./failure.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
 import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, modelCredentials, requestManagedModelKey } from "./model-key.js";
-import { apiSubscriptionOwner, routeApiSession } from "./api-model-route.js";
+import { apiSubscriptionOwner, linkedSlackUser, routeApiSession } from "./api-model-route.js";
 import { mintOpenComputerKey } from "./opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./parking.js";
@@ -665,7 +665,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       host: () => this.apiHost(),
       enabled: () => this.apiEnabled(),
       send: (frame) => this.send(frame),
-      secretsFor: (key) => this.secrets.forSession(key, this.api.rowByKey(key)?.ownerId ?? ""),
       routeSession: (session, member) => routeApiSession({ access: this.access, profiles: () => this.liveHost()?.profiles, send: (frame) => this.send(frame) }, session, member),
       closeHost: (code, reason) => this.socket()?.close(code, reason),
       wake: () => this.wakeForApi(),
@@ -673,6 +672,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       admitted: () => this.admitForApi(),
       slackPerson: (slackUserId) => this.person(slackUserId),
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      secretsFor: (row) => this.secrets.forSession(row.key, this.secretsOwner(row)),
       slackTeamId: () => this.setting("slackTeamId"),
       keys: this.keys,
       tunnelId: () => this.previews.tunnelId(),
@@ -3850,14 +3850,24 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     return status === "starting" || status === "idle" || status === "busy" ? key : undefined;
   }
 
+  /**
+   * Whose user-scope secrets a session gets: a Slack session's owner; an API session's dashboard owner only through
+   * the Slack user they linked (work 083). Undefined: the session's and the workspace's secrets only.
+   */
+  private secretsOwner(row: { ownerId: string | null; ownerUserId: string | null }): string | undefined {
+    return row.ownerId ?? linkedSlackUser(this.access, row.ownerUserId ?? undefined);
+  }
+
   /** Secrets changed: send each affected running session its new set. */
   private async pushSecrets(which: { key?: string; owner?: string }): Promise<void> {
-    const live = [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null }>(
-      "SELECT runner_key AS key, owner_id AS ownerId FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
+    const live = [...this.ctx.storage.sql.exec<{ key: string; ownerId: string | null; ownerUserId: string | null }>(
+      "SELECT runner_key AS key, owner_id AS ownerId, owner_user_id AS ownerUserId FROM sessions WHERE status IN ('starting', 'idle', 'busy')",
     )];
     for (const session of live) {
-      if ((which.key && session.key !== which.key) || (which.owner && session.ownerId !== which.owner)) continue;
-      const secrets: SessionSecret[] = await this.secrets.forSession(session.key, session.ownerId ?? "");
+      if (!session.ownerId && !session.ownerUserId) continue;
+      const owner = this.secretsOwner(session);
+      if ((which.key && session.key !== which.key) || (which.owner && owner !== which.owner)) continue;
+      const secrets: SessionSecret[] = await this.secrets.forSession(session.key, owner);
       this.send({ t: "secrets", sessionKey: session.key, secrets });
     }
   }

@@ -131,7 +131,6 @@ export function apiHost(d: ApiHostDeps) {
   let v4 = false;
   /** Sessions as the gateway last sent them, by `cs_` id. */
   const specs = new Map<string, SessionSpec>();
-  const sessionSecrets = new Map<string, SessionSecret[]>();
   /** The log's epoch and the DO's lastSeq, as the last frame said. */
   const logs = new Map<string, { epoch: number; lastSeq: number }>();
   const reports = journalReports(journals, (sessionId) => logs.get(sessionId)?.epoch);
@@ -233,9 +232,7 @@ export function apiHost(d: ApiHostDeps) {
   }
 
   const waker = apiWake({
-    spec: (sessionId) => specs.get(sessionId),
     send: (m) => d.send(m),
-    start: (spec, options) => d.start(spec, { ...options, secrets: sessionSecrets.get(spec.key) }),
     failQueued: (sessionId, message) => void hostWriters.get(sessionId)?.w.then((w) => w.failQueued(message), () => {}),
   });
   const wake = waker.wake;
@@ -275,7 +272,13 @@ export function apiHost(d: ApiHostDeps) {
     async resume(sessionId) {
       const spec = specs.get(sessionId);
       if (!spec) return { error: apiError('session_not_found', `no session ${sessionId} on this computer`, 404) };
-      return d.start(spec, { secrets: sessionSecrets.get(spec.key) }).then(
+      if (pending.has(sessionId)) return { status: 'starting' as const };
+      // No runner: the gateway's `start` brings it with the session's secrets, as a wake does (api-wake.ts).
+      if (!live.has(sessionId)) {
+        if (!waker.wake(sessionId)) return { error: apiError('unavailable', 'The computer could not reach the gateway to start the agent', 503, { retryable: true }) };
+        return { status: 'starting' as const };
+      }
+      return d.start(spec, {}).then(
         (s) => ({ status: apiStatus(s) }),
         (e) => ({ error: apiError('internal', String(e?.message ?? e), 500, { retryable: true }) }),
       );
@@ -410,7 +413,6 @@ export function apiHost(d: ApiHostDeps) {
 
   async function start(m: Extract<GatewayToHost, { t: 'start' }>) {
     const sessionId = m.session.sessionId ?? m.session.key;
-    if (m.secrets) sessionSecrets.set(m.session.key, m.secrets);
     seed(m.session, m.session.sessionId, m.epoch, m.lastSeq);
     const started = d.start(m.session, { credentials: m.credentials, secrets: m.secrets, model: m.model });
     if (isSessionId(sessionId)) {
@@ -447,9 +449,6 @@ export function apiHost(d: ApiHostDeps) {
           relay.start();
           bridge.relinked(); // a new socket: everything the DO has not acked goes again
           return false;
-        case 'secrets':
-          sessionSecrets.set(m.sessionKey, m.secrets);
-          return false;
         case 'people':
           relay.people(m.people);
           return false;
@@ -457,7 +456,6 @@ export function apiHost(d: ApiHostDeps) {
           if (v4) relay.previews(m.preview.key);
           return false;
         case 'deliver':
-          if (m.secrets) sessionSecrets.set(m.session.key, m.secrets);
           seed(m.session, m.session.sessionId, m.epoch, m.lastSeq);
           return false;
         case 'start':

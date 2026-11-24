@@ -34,6 +34,7 @@ import {
   type CalvinSessionReport,
   type CalvinSessionSpec,
   CALVIN_API_PROTOCOL,
+  type SessionSecret,
   personForMember,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
@@ -210,8 +211,6 @@ export interface SessionsApiDeps {
   /** The rollout gate (api-gate.ts): false, and every operation but `me` answers 409 feature_unavailable. */
   enabled: () => boolean;
   send: (frame: CalvinGatewayToHost) => boolean;
-  /** Current secrets, sent privately ahead of starts and API deliveries. */
-  secretsFor?: (key: string) => Promise<import("./protocol.js").SessionSecret[]>;
   /** Resolves the owner's subscription and runner before starting or delivering a turn. */
   routeSession?: (session: CalvinSessionSpec, member?: string) => Promise<RoutedApiSession>;
   closeHost: (code: number, reason: string) => void;
@@ -222,6 +221,8 @@ export interface SessionsApiDeps {
   admitted: () => Promise<boolean>;
   slackPerson: (slackUserId: string) => CalvinPerson;
   linkOfSlack: (slackUserId: string) => string | undefined;
+  /** The vault's secrets for a session (secrets-store.ts `forSession`), sent with its `start`. Absent: none. */
+  secretsFor?: (row: Pick<ApiRow, "key" | "ownerId" | "ownerUserId">) => Promise<SessionSecret[]>;
   slackTeamId: () => string | undefined;
   keys: ComputerKeys;
   tunnelId: () => string | null;
@@ -553,13 +554,19 @@ export class ComputerSessionsApi {
     if (row) await this.startSession(row);
   }
 
-  /** A session with no first message: the host claims a spare and forks for it (answered by `started`). */
+  /**
+   * A session with no first message, or one the host's writer woke for a queued turn (`wake`): the host claims a
+   * spare and forks for it (answered by `started`).
+   */
   private async startSession(row: ApiRow): Promise<HostOutcome> {
     const id = crypto.randomUUID();
     const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
     if (routed?.error) return { error: routed.error };
-    const secrets = this.deps.secretsFor ? await this.deps.secretsFor(row.key) : undefined;
-    const sent = this.deps.send({ t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq, secrets });
+    // With the runner, as a Slack delivery's: a later `secrets` frame finds no runner to take it (host/main.ts).
+    const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
+    const sent = this.deps.send({
+      t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq, ...(secrets ? { secrets } : {}),
+    });
     if (!sent) return { error: hostLost() };
     // Nobody waits for it; a refusal is logged (the session stays `starting` until a send).
     this.pending.set(id, {
@@ -925,10 +932,6 @@ export class ComputerSessionsApi {
         return outcome;
       }
       frame = { ...frame, session: routed.session };
-    }
-    if (frame.session && ADMITTED.has(frame.method) && this.deps.secretsFor) {
-      const secrets = await this.deps.secretsFor(frame.session.key);
-      this.deps.send({ t: "secrets", sessionKey: frame.session.key, secrets });
     }
     const sent = this.deps.send(frame);
     if (note) note.sentAt = performance.now();

@@ -249,33 +249,54 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
-  it('wakes the runner for a send the host writer recorded, as an API delivery', async () => {
+  it('wakes the runner for a send the host writer recorded through the gateway even with the spec known, so it starts with its secrets', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));
-    t.a.onGateway(api('a1', 'sessions.get', { session: spec, epoch: 1, lastSeq: 0 }));
+    // The create's `turns.send` seeds the spec: the first send of `opc new` with a message.
+    t.a.onGateway(api('a1', 'turns.send', { session: spec, epoch: 1, lastSeq: 0 }));
     await tick(5);
     const o = t.opened[0] as { wake(s: string, d?: unknown): void };
     o.wake(S, { actor, member: 'usr_1', ifBusy: 'queue', turnId: 'tn_1' });
     await tick();
-    expect(t.started[0].o.msg).toEqual({ userId: 'usr_1', text: '', ts: '', api: { actor, member: 'usr_1', ifBusy: 'queue', turnId: 'tn_1' } });
+    // No runner without secrets: a `secrets` frame would find none to take it.
+    expect(t.started).toEqual([]);
+    expect(t.sent.filter((m) => m.t === 'wake')).toEqual([{ t: 'wake', sessionId: S }]);
+    // The gateway's `start` carries them; the runner takes the queued turn from the journal.
+    const secrets = [{ name: 'ORG_TOKEN', value: 'fixture-org', scope: 'workspace' as const }];
+    t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0, secrets });
+    await tick();
+    expect(t.started).toHaveLength(1);
+    expect(t.started[0].o).toMatchObject({ secrets });
+    expect(t.started[0].o.msg).toBeUndefined();
     await t.a.stop();
   });
 
-  it('keeps the latest secrets for a runner woken after it stopped', async () => {
-    const t = setup();
+  it("resumes a stopped session (attach with resume=1) through the gateway, so its runner starts with its secrets", async () => {
+    const sent: HostToGateway[] = [];
+    let up = true;
+    const t = setup({ send: (m) => (sent.push(m), up) });
     t.a.onGateway(welcome(4));
     t.a.onGateway(api('a1', 'sessions.get', { session: spec, epoch: 1, lastSeq: 0 }));
-    const secrets = [{ name: 'TOKEN', value: 'private-test-value', scope: 'session' as const }];
-    t.a.onGateway({ t: 'secrets', sessionKey: S, secrets });
     await tick(5);
-    const o = t.opened[0] as { wake(s: string): void };
-    o.wake(S);
+    expect(await t.a.hooks.resume(S, actor)).toEqual({ status: 'starting' });
+    // Not started here: `d.start` without the gateway's secrets would leave the runner with none.
+    expect(t.started).toEqual([]);
+    expect(sent.filter((m) => m.t === 'wake')).toEqual([{ t: 'wake', sessionId: S }]);
+    const secrets = [{ name: 'ORG_TOKEN', value: 'fixture-org', scope: 'workspace' as const }];
+    t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0, secrets });
     await tick();
-    expect(t.started[0].o.secrets).toEqual(secrets);
-    t.a.onGateway({ t: 'secrets', sessionKey: S, secrets: [] });
-    o.wake(S);
-    await tick();
-    expect(t.started[1].o.secrets).toEqual([]);
+    expect(t.started).toHaveLength(1);
+    expect(t.started[0].o).toMatchObject({ secrets });
+    // Its runner up: a resume finds it, no wake.
+    await t.a.mint(spec, 'beef');
+    t.a.up('beef');
+    await tick(5);
+    expect(await t.a.hooks.resume(S, actor)).toEqual({ status: 'idle' });
+    expect(sent.filter((m) => m.t === 'wake')).toHaveLength(1);
+    // Gone, and the gateway unreachable: the attach is told, retryable.
+    t.a.down('beef');
+    up = false;
+    expect(await t.a.hooks.resume(S, actor)).toMatchObject({ error: { code: 'unavailable', retryable: true } });
     await t.a.stop();
   });
 

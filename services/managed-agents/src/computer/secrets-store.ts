@@ -200,8 +200,12 @@ export class SecretsStore {
     this.deps.sql.exec("DELETE FROM secret_events WHERE ts < ?", now - EVENTS_KEPT_MS);
   }
 
-  private scopesFor(sessionKey: string | undefined, ownerId: string): Array<[SecretScope, string]> {
-    return [...(sessionKey ? [["session", sessionKey] as [SecretScope, string]] : []), ["user", ownerId], ["workspace", "*"]];
+  private scopesFor(sessionKey: string | undefined, ownerId: string | undefined): Array<[SecretScope, string]> {
+    return [
+      ...(sessionKey ? [["session", sessionKey] as [SecretScope, string]] : []),
+      ...(ownerId ? [["user", ownerId] as [SecretScope, string]] : []),
+      ["workspace", "*"],
+    ];
   }
 
   private meta(scopes: Array<[SecretScope, string]>): SecretMeta[] {
@@ -214,8 +218,12 @@ export class SecretsStore {
     );
   }
 
-  /** Every secret a session gets, narrowest scope winning; rows that do not decrypt are skipped and logged. */
-  async forSession(sessionKey: string, ownerId: string): Promise<SessionSecret[]> {
+  /**
+   * Every secret a session gets, narrowest scope winning; rows that do not decrypt are skipped and logged.
+   * `ownerId` is a Slack user id; without one (an API session whose owner linked no Slack user) only the
+   * session's and the workspace's secrets.
+   */
+  async forSession(sessionKey: string, ownerId: string | undefined): Promise<SessionSecret[]> {
     const now = Date.now();
     const expired = [...this.deps.sql.exec<{ owner: string; name: string; variable: number }>(
       "SELECT owner, name, variable FROM secrets WHERE scope = 'session' AND last_used < ?",

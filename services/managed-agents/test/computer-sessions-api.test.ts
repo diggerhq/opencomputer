@@ -176,7 +176,7 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
     host: () => (state.protocol === null ? undefined : { protocol: state.protocol }),
     enabled: () => options.enabled ?? true,
     routeSession: options.routeSession,
-    secretsFor: options.secretsFor,
+    ...(options.secretsFor ? { secretsFor: options.secretsFor } : {}),
     send: (frame) => {
       if (state.protocol === null) return false;
       sent.push(frame);
@@ -478,19 +478,6 @@ describe("POST /sessions", () => {
     expect(f.frames("start")[0]).toMatchObject({ epoch: 1, lastSeq: 0, session: { kind: "api", sessionId: SID } });
   });
 
-  it("delivers secrets in start frames and ahead of API turns", async () => {
-    const secrets = [{ name: "TOKEN", value: "private-test-value", scope: "session" as const }];
-    const f = fixture({ secretsFor: async () => secrets });
-    await created(f);
-    expect(f.frames("start")[0]).toMatchObject({ secrets });
-    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", seq: 1 } }));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "Continue" } });
-    const delivered = f.frames("secrets");
-    expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatchObject({ sessionKey: SID, secrets });
-    expect(JSON.stringify(f.frames("api"))).not.toContain("private-test-value");
-  });
-
   it("a host's wake is answered with a start frame; an unknown session's with nothing", async () => {
     const f = fixture();
     await created(f);
@@ -501,6 +488,25 @@ describe("POST /sessions", () => {
     await f.api.onHostFrame({ t: "wake", sessionId: "cs_0000000000000000" });
     await Promise.all(f.pending());
     expect(f.frames("start")).toHaveLength(2);
+  });
+
+  it("start carries the vault's secrets for the session (its key, no Slack owner, its dashboard owner), on create and on a host's wake", async () => {
+    const asked: unknown[] = [];
+    const secrets = [{ name: "ORG_TOKEN", value: "org-fixture", scope: "workspace" as const }];
+    const f = fixture({ secretsFor: async (row) => (asked.push({ key: row.key, ownerId: row.ownerId, ownerUserId: row.ownerUserId }), secrets) });
+    await created(f);
+    expect(f.frames("start")[0]).toMatchObject({ session: { kind: "api", sessionId: SID }, secrets });
+    expect(asked).toEqual([{ key: SID, ownerId: null, ownerUserId: OWNER }]);
+    // The host's writer queued a turn and asked for the runner (api-wake.ts): the start that brings it has them too.
+    await f.api.onHostFrame({ t: "wake", sessionId: SID });
+    await vi.waitFor(() => expect(f.frames("start")).toHaveLength(2));
+    expect(f.frames("start")[1]).toMatchObject({ session: { sessionId: SID }, secrets });
+  });
+
+  it("without a vault, start carries no secrets field", async () => {
+    const f = fixture();
+    await created(f);
+    expect(f.frames("start")[0]).not.toHaveProperty("secrets");
   });
 
   it("a wake waits for an in-flight epoch send: epoch goes first, and start carries the new epoch", async () => {
