@@ -12,6 +12,7 @@ import path from 'node:path';
 import { computerApiDashboard } from './computer-api.mjs';
 import { dashboards } from './dashboards.mjs';
 import { renderRules } from './rules.mjs';
+import { publicLatencyDashboard } from './public-latency.mjs';
 
 const HERE = import.meta.dirname;
 const { thresholds, computer_api: api = [] } = JSON.parse(readFileSync(path.join(HERE, '../thresholds.json'), 'utf8'));
@@ -86,6 +87,7 @@ function dashboard(d) {
 }
 
 const files = new Map();
+files.set('dashboards/public-latency.json', publicLatencyDashboard());
 for (const d of [...dashboards(thresholds), ...(api.length ? [computerApiDashboard(api)] : [])]) files.set(`dashboards/${d.uid.replace('calvin-', '')}.json`, dashboard(d));
 const rules = renderRules(thresholds, api);
 files.set('alerting/rules.json', rules);
