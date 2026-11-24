@@ -20,7 +20,7 @@ FROM ${TURNS} GROUP BY time ORDER BY time`;
 }
 
 function panel(id, title, sql, x, y, { type = 'timeseries', unit = 'ms', w = 12, h = 8, description = '' } = {}) {
-  const defaults = { unit, decimals: unit === 'ms' ? 0 : 1, noValue: 'No data' };
+  const defaults = { unit, decimals: unit === 'ms' ? 2 : unit === 'short' ? 0 : 1, noValue: 'No data' };
   if (type === 'timeseries') defaults.custom = { drawStyle: 'line', lineWidth: 2, fillOpacity: 8, spanNulls: false, showPoints: 'always' };
   return {
     id, title, description, type, datasource: DS, gridPos: { x, y, w, h }, targets: [target(sql, type !== 'timeseries')],

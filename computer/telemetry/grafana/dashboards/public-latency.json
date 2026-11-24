@@ -77,7 +77,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data"
         },
         "overrides": []
@@ -126,7 +126,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data"
         },
         "overrides": []
@@ -175,7 +175,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 1,
+          "decimals": 0,
           "noValue": "No data"
         },
         "overrides": []
@@ -273,7 +273,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data",
           "custom": {
             "drawStyle": "line",
@@ -327,7 +327,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data",
           "custom": {
             "drawStyle": "line",
@@ -381,7 +381,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data",
           "custom": {
             "drawStyle": "line",
@@ -435,7 +435,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "decimals": 0,
+          "decimals": 2,
           "noValue": "No data",
           "custom": {
             "drawStyle": "line",
@@ -543,7 +543,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 1,
+          "decimals": 0,
           "noValue": "No data",
           "custom": {
             "drawStyle": "line",
@@ -597,7 +597,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 1,
+          "decimals": 0,
           "noValue": "No data"
         },
         "overrides": []
