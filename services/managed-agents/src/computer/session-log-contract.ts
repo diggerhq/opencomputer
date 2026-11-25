@@ -2,6 +2,7 @@
 // `cs_` id (`SESSION_LOG.getByName(sessionId)`). The Computer DO is its only writer (journal
 // batches from the host, recovery); the routes read it directly. Implemented in session-log.ts.
 
+import type { EventsReset, Principal, Summary } from "../actor/index.js";
 import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
 
 export interface SessionLogIdentity {
@@ -62,14 +63,19 @@ export const EPOCH_TAIL_MAX = 1_000;
 /** `recover`'s answer: an append's, with the new epoch's tail when it went through. */
 export type RecoverResult = { ok: true; ack: number; summary: LogSummary; tail: EpochTail; stats?: AppendStats } | Extract<AppendResult, { ok: false }>;
 
-/** A read refused: `cursor_ahead` (`after` > lastSeq) or `unavailable` (`minSeq` not reached in 2 s). */
+/**
+ * A read refused: `cursor_ahead` (a numeric `after` > lastSeq), `unavailable` (`minSeq` not reached: in
+ * 2 s without a principal, at once with one), or `not_found` (the principal may not read the session).
+ */
 export type LogReadRefusal =
+  | { ok: false; error: "not_found" }
   | { ok: false; error: "cursor_ahead"; lastSeq: number; logEpoch: number }
   | { ok: false; error: "unavailable"; lastSeq: number; retryAfterMs: number }
   | { ok: false; error: "turn_not_found" | "ask_not_found" | "subagent_not_found" | "invalid_cursor" };
 
 export interface EventsQuery {
-  after?: number;
+  /** An events cursor (spec 37.1). A seq only on the internal path that gives no principal. */
+  after?: number | string;
   limit?: number;
   turnId?: string;
   /** Exact types, or a prefix with a trailing `*` (`tool.*`). */
@@ -80,7 +86,9 @@ export interface EventsQuery {
 }
 
 export type EventsPage =
-  | { ok: true; events: ApiEvent[]; lastSeq: number; hasMore: boolean; earlierTurns?: Turn[]; syncedAt: string | null }
+  /** `cursor`: after the last event returned, or the one given when there is none. */
+  | { ok: true; events: ApiEvent[]; cursor: string; lastSeq: number; hasMore: boolean; earlierTurns?: Turn[]; syncedAt: string | null }
+  | EventsReset
   | LogReadRefusal;
 
 export interface TurnsQuery {
@@ -148,19 +156,22 @@ export interface SessionLogRpc {
   recover(input: RecoverInput): Promise<RecoverResult>;
   /** The current epoch's tail (the `epoch` frame's body); null for another organization's or session's log. */
   epochTail(identity: SessionLogIdentity): Promise<EpochTail | null>;
-  /** The current summary; `minSeq` waits up to 2 s, like every read. */
-  summary(minSeq?: number): Promise<{ ok: true; summary: LogSummary } | LogReadRefusal>;
-  events(query: EventsQuery): Promise<EventsPage>;
-  turns(query: TurnsQuery): Promise<TurnsPage>;
-  turn(turnId: string, query: TurnQuery): Promise<TurnResult>;
-  asks(query: AsksQuery): Promise<AsksPage>;
-  ask(askId: string, minSeq?: number): Promise<AskResult>;
+  /**
+   * Every read takes the principal last. With one, it answers only a principal that may read the
+   * session (else `not_found`) and never waits; without one (the internal path) `minSeq` waits up to 2 s.
+   */
+  summary(minSeq?: number, p?: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
+  events(query: EventsQuery, p?: Principal): Promise<EventsPage>;
+  turns(query: TurnsQuery, p?: Principal): Promise<TurnsPage>;
+  turn(turnId: string, query: TurnQuery, p?: Principal): Promise<TurnResult>;
+  asks(query: AsksQuery, p?: Principal): Promise<AsksPage>;
+  ask(askId: string, minSeq?: number, p?: Principal): Promise<AskResult>;
   /**
    * Subagents (subagents.md): folded from `subagent.started`/`subagent.ended`, with the latest
    * progress (below) merged in for a running one. Running first by createdAt, then ended newest first.
    */
-  subagents(query: SubagentsQuery): Promise<SubagentsPage>;
-  subagent(subagentId: string, minSeq?: number): Promise<SubagentResult>;
+  subagents(query: SubagentsQuery, p?: Principal): Promise<SubagentsPage>;
+  subagent(subagentId: string, minSeq?: number, p?: Principal): Promise<SubagentResult>;
   /**
    * The latest `subagent.progress` values (never journaled): kept per running subagent, not
    * persisted past an eviction (a read then shows the started/ended values), ignored for an epoch
