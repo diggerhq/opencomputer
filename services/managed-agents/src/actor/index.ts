@@ -8,3 +8,5 @@ export { base64url, canonicalJson, constantTimeEqual, errorText, hashOf, isRecor
 export { emitter, type Emitter } from "./emit.js";
 export { type Access, type Principal, byOf, mayRead, platformPrincipal } from "./principal.js";
 export { unavailable } from "./shell.js";
+export type * from "./contracts.js";
+export { type ActorEnv, type DeliveryKind, computerOf, deliveryOf, liveOf, logOf, orgOf, slackOf } from "./stubs.js";
