@@ -54,6 +54,20 @@ export const AskSchema = z.looseObject({
 })
 export type Ask = z.infer<typeof AskSchema>
 
+// Who may read and drive a session besides its owner, who always may:
+// `owner` nobody else, `org` every member, `people` the listed member ids
+// (`usr_…`). Sessions from before access existed read as `org`.
+export const ACCESS_MODES = ['owner', 'org', 'people'] as const
+export type AccessMode = (typeof ACCESS_MODES)[number]
+
+const AccessSchema = z.looseObject({
+  mode: z.enum(ACCESS_MODES),
+  people: z.array(z.string()).default([]),
+})
+export type SessionAccess = z.infer<typeof AccessSchema>
+/** What create and update take: `people` only for `people`. */
+export type AccessInput = { mode: AccessMode; people?: string[] }
+
 export const SessionSchema = z.looseObject({
   id: z.string(),
   title: z.string().nullable(),
@@ -82,6 +96,10 @@ export const SessionSchema = z.looseObject({
   lastSeq: z.number(),
   createdAt: z.string(),
   lastActiveAt: z.string().nullable(),
+  // Optional until every backend sends them.
+  access: AccessSchema.optional(),
+  // The caller may change `access`: the owner, a listed person, an org admin.
+  canManageAccess: z.boolean().optional(),
 })
 export type Session = z.infer<typeof SessionSchema>
 
@@ -177,7 +195,7 @@ const START_TIMEOUT_MS = 5 * 60_000
  */
 export async function createSession(
   input: string,
-  settings: SessionSettings = {},
+  settings: SessionSettings & { access?: AccessInput } = {},
   onComputerStarting?: () => void,
 ) {
   const deadline = Date.now() + START_TIMEOUT_MS
@@ -218,7 +236,11 @@ export function getSession(id: string) {
 
 export function updateSession(
   id: string,
-  patch: SessionSettings & { title?: string; archived?: boolean },
+  patch: SessionSettings & {
+    title?: string
+    archived?: boolean
+    access?: AccessInput
+  },
 ) {
   return apiFetch(
     `${PREFIX}/sessions/${encodeURIComponent(id)}`,
@@ -327,6 +349,45 @@ export function getCapabilities() {
   ).then((r) => r.capabilities)
 }
 
+// The caller as the Computer API knows them: `person.id` is their member id
+// (`usr_…`), the id `access.people` lists.
+export function getComputerMe() {
+  return apiFetch(
+    `${PREFIX}/me`,
+    undefined,
+    z.looseObject({ person: PersonSchema }),
+    '/api',
+  ).then((r) => r.person)
+}
+
+// The organization's session settings. `apiAccessDefault`: the access of
+// sessions started from the web, opc and the API when they ask for none
+// (Slack keeps its own default). Admins change it.
+const OrganizationSettingsSchema = z.looseObject({
+  apiAccessDefault: z.enum(['owner', 'org']).catch('owner'),
+})
+export type OrganizationSettings = z.infer<typeof OrganizationSettingsSchema>
+
+export function getOrganizationSettings() {
+  return apiFetch(
+    `${PREFIX}/organization/settings`,
+    undefined,
+    z.looseObject({ settings: OrganizationSettingsSchema }),
+    '/api',
+  ).then((r) => r.settings)
+}
+
+export function updateOrganizationSettings(
+  patch: Partial<Pick<OrganizationSettings, 'apiAccessDefault'>>,
+) {
+  return apiFetch(
+    `${PREFIX}/organization/settings`,
+    { method: 'PATCH', body: JSON.stringify(patch) },
+    z.looseObject({ settings: OrganizationSettingsSchema }),
+    '/api',
+  ).then((r) => r.settings)
+}
+
 export const sessionKeys = {
   all: ['computer-sessions'] as const,
   list: (q: ListSessionsQuery) => ['computer-sessions', 'list', q] as const,
@@ -334,4 +395,6 @@ export const sessionKeys = {
   events: (id: string, q: object) =>
     ['computer-sessions', 'events', id, q] as const,
   capabilities: ['computer-sessions', 'capabilities'] as const,
+  me: ['computer-sessions', 'me'] as const,
+  orgSettings: ['computer-sessions', 'organization-settings'] as const,
 }

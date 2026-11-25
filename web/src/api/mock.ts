@@ -163,6 +163,8 @@ const orgMembers = [
   {
     membershipId: 'mem_1',
     id: 'user_2abc',
+    // The computer's member id for Igor is `usr_igor` (mock-computer-sessions).
+    workosUserId: 'user_igor',
     email: 'igor@digger.dev',
     name: 'Igor',
     role: 'admin',

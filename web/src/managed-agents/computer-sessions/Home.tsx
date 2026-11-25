@@ -7,10 +7,14 @@ import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
 import {
   createSession,
+  getOrganizationSettings,
   listSessions,
   sessionKeys,
+  type AccessInput,
   type SessionSettings,
 } from '../computer-sessions-api'
+import { AccessPicker } from './AccessPicker'
+import { useMyMemberId } from './members'
 import { AskCard, SettingsPickers } from './parts'
 import { NEEDS_YOU, WORKING } from './state'
 
@@ -20,7 +24,19 @@ export default function ComputerSessionsHome() {
   const qc = useQueryClient()
   const [input, setInput] = useState('')
   const [settings, setSettings] = useState<SessionSettings>({})
+  // Unset: the organization's default for web sessions, sent as no choice.
+  const [access, setAccess] = useState<AccessInput | null>(null)
   const [computerStarting, setComputerStarting] = useState(false)
+  const me = useMyMemberId()
+  const orgSettings = useQuery({
+    queryKey: sessionKeys.orgSettings,
+    queryFn: getOrganizationSettings,
+    retry: false,
+    staleTime: 60_000,
+  })
+  const defaultAccess: AccessInput = {
+    mode: orgSettings.data?.apiAccessDefault ?? 'owner',
+  }
   const needs = useQuery({
     queryKey: sessionKeys.list(NEEDS_YOU),
     queryFn: () => listSessions(NEEDS_YOU),
@@ -33,10 +49,15 @@ export default function ComputerSessionsHome() {
   })
   const start = useMutation({
     mutationFn: () =>
-      createSession(input.trim(), settings, () => setComputerStarting(true)),
+      createSession(
+        input.trim(),
+        access ? { ...settings, access } : settings,
+        () => setComputerStarting(true),
+      ),
     onSettled: () => setComputerStarting(false),
     onSuccess: (session) => {
       setInput('')
+      setAccess(null)
       void qc.invalidateQueries({ queryKey: sessionKeys.all })
       void navigate(`/computer/sessions/${session.id}`)
     },
@@ -66,7 +87,15 @@ export default function ComputerSessionsHome() {
             className="min-h-20 resize-none border-0 bg-transparent px-4 pt-3.5 text-[15px] shadow-none focus-visible:ring-0 dark:bg-transparent"
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <SettingsPickers value={settings} onChange={setSettings} />
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <SettingsPickers value={settings} onChange={setSettings} />
+              <AccessPicker
+                value={access ?? defaultAccess}
+                onSave={setAccess}
+                isOwner
+                ownerIds={me ? [me] : []}
+              />
+            </div>
             <Button
               size="icon"
               className="rounded-full"
