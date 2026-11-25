@@ -1,0 +1,99 @@
+// The Slack actor with fakes of the three actors it calls. A fake keeps what it was told in
+// memory; a test sets its answers and reads its calls over RPC.
+
+import { DurableObject } from "cloudflare:workers";
+
+import type { AcceptResult, ExportedSlackRow, MutateReply, Principal } from "../../src/actor/contracts.js";
+
+export { SlackDurableObject } from "../../src/slack/durable-object.js";
+
+export type Call = { method: string; args: unknown[] };
+
+class Recorder extends DurableObject {
+  protected seen: Call[] = [];
+
+  protected record(method: string, ...args: unknown[]): void {
+    this.seen.push({ method, args: structuredClone(args) });
+  }
+
+  async calls(): Promise<Call[]> {
+    return this.seen;
+  }
+}
+
+export class FakeOrg extends Recorder {
+  private readable = true;
+  private mutateError: string | null = null;
+
+  async set(next: { readable?: boolean; mutateError?: string | null }): Promise<void> {
+    if (next.readable !== undefined) this.readable = next.readable;
+    if (next.mutateError !== undefined) this.mutateError = next.mutateError;
+  }
+
+  async createSession(p: Principal, body: { id?: string }) {
+    this.record("createSession", p, body);
+    const duplicate = this.seen.filter((c) => c.method === "createSession" && (c.args[1] as { id?: string }).id === body.id).length > 1;
+    return { ok: true as const, session: { id: body.id } as never, place: null, duplicate };
+  }
+
+  async getSession(p: Principal, id: string) {
+    this.record("getSession", p, id);
+    return this.readable ? { ok: true as const, session: { id } as never } : { ok: false as const, code: "not_found", status: 404 };
+  }
+
+  async mutate(p: Principal, m: unknown): Promise<MutateReply> {
+    this.record("mutate", p, m);
+    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1 };
+  }
+
+  async linkPerson(from: string, to: string): Promise<void> {
+    this.record("linkPerson", from, to);
+  }
+}
+
+export class FakeSessionLog extends Recorder {
+  private answer: AcceptResult | null = null;
+  private delayMs = 0;
+
+  async set(next: { answer?: AcceptResult | null; delayMs?: number }): Promise<void> {
+    if (next.answer !== undefined) this.answer = next.answer;
+    if (next.delayMs !== undefined) this.delayMs = next.delayMs;
+  }
+
+  async accept(p: Principal, entry: { id: string; kind: string; body: unknown }): Promise<AcceptResult> {
+    this.record("accept", p, entry);
+    // The first call is slow: a later message that overtook it would be recorded first.
+    if (this.delayMs && this.seen.length === 1) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    return this.answer ?? { ok: true, id: entry.id, duplicate: false, machine: "org_a" };
+  }
+}
+
+export class FakeComputer extends Recorder {
+  private rows: ExportedSlackRow[] = [];
+
+  async set(next: { rows?: ExportedSlackRow[] }): Promise<void> {
+    if (next.rows) this.rows = next.rows;
+  }
+
+  async command(p: Principal, c: { name: string; args: string; sessionId?: string }): Promise<{ reply: string }> {
+    this.record("command", p, c);
+    return { reply: `did ${c.name}` };
+  }
+
+  async changed(source: string): Promise<void> {
+    this.record("changed", source);
+  }
+
+  async exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }> {
+    this.record("exportSlack", after, limit);
+    const start = after === null ? 0 : Number(after);
+    const end = Math.min(start + limit, this.rows.length);
+    return { rows: this.rows.slice(start, end), next: end < this.rows.length ? String(end) : null };
+  }
+}
+
+export default {
+  fetch(): Response {
+    return new Response("Not found.", { status: 404 });
+  },
+};

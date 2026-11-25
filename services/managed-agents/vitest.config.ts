@@ -5,6 +5,7 @@ import { defineConfig } from "vitest/config";
 
 import { fakeWorkerdRuntime } from "./test/fixtures/fake-workerd-runtime.mjs";
 import { fakeLiveEdge } from "./test/fixtures/live-fakes.mjs";
+import { fakeSlackOutbound } from "./test/fixtures/slack-fakes.mjs";
 import { fakeComputerOutbound, fakeComputerPlatform } from "./test/fixtures/computer-fakes.mjs";
 import { artifactBundle, mockModel } from "./test/fixtures/memory-integrated-fixture.mjs";
 import {
@@ -41,6 +42,16 @@ export default defineConfig({
           }),
         ],
         test: { name: "live", include: ["test/live.test.ts"] },
+      },
+      {
+        // Tracks and threads: the Slack actor alone, with fakes of Org, SessionLog, Computer and Slack's Web API.
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.slack-test.jsonc" },
+            miniflare: { outboundService: fakeSlackOutbound },
+          }),
+        ],
+        test: { name: "slack", include: ["test/slack-actor.test.ts"] },
       },
       {
         plugins: [
