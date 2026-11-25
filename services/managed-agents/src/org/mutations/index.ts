@@ -11,6 +11,10 @@
 // - It answers `applied(value?)` or a refusal. `runMutation` undoes whatever a refused function
 //   wrote, so a mutation may call another through `runMutation` and pass its refusal on.
 // The envelope (the client's `n`, `idem`, the publish) is `Org.mutate`'s, not a mutation's.
+//
+// Files: thread.ts, track.ts (40.7), doc.ts (doc.save, read.set, pref.set), result.ts, proposal.ts,
+// undo.ts; common.ts holds the argument checks and `Changes`, which writes field changes with their
+// effects and makes every op's `fields` and `inverse` (undo.ts replays them); outcome.ts the shapes.
 
 import { byOf, type Principal } from "../../actor/principal.js";
 import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, seesSession, type Tx } from "../tx.js";
@@ -20,6 +24,7 @@ import { TRACK_MUTATIONS } from "./track.js";
 import { DOC_MUTATIONS } from "./doc.js";
 import { RESULT_MUTATIONS } from "./result.js";
 import { PROPOSAL_MUTATIONS } from "./proposal.js";
+import { UNDO_MUTATIONS } from "./undo.js";
 
 export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
@@ -60,6 +65,7 @@ export const MUTATIONS: Record<string, MutationFn> = {
   ...DOC_MUTATIONS,
   ...RESULT_MUTATIONS,
   ...PROPOSAL_MUTATIONS,
+  ...UNDO_MUTATIONS,
 };
 
 /** Run one mutation by name. A refusal leaves no write behind. */

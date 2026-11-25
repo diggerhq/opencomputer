@@ -484,3 +484,107 @@ describe("proposals", () => {
     });
   });
 });
+
+const state = (sql: Sql) => ({
+  place: sql.exec("SELECT session_id, track_id, placed_by, done_at, outcome, done_by, keep, earlier_at, brought_back_at FROM place ORDER BY session_id"),
+  track: sql.exec("SELECT id, name, name_by, former_names, keep, done_at, outcome FROM track ORDER BY id"),
+  session: sql.exec("SELECT id, title, title_by, writers FROM session WHERE role IS NULL ORDER BY id"),
+  doc: sql.exec("SELECT track_id, rev, text FROM doc ORDER BY track_id"),
+});
+const opOf = (out: MutationOutcome) => (ok(out).value as { op: string }).op;
+
+describe("undo (19.3)", () => {
+  // Each mutation with an inverse, from a track with sid(1) and a thread sid(2) on its own.
+  const cases: [string, Record<string, unknown>][] = [
+    ["thread.rename", { sid: sid(2), title: "Login" }],
+    ["thread.place", { sid: sid(2), trackId: tid(1) }],
+    ["thread.place", { sid: sid(1), trackId: null }],
+    ["thread.done", { sid: sid(1) }],
+    ["thread.keep", { sid: sid(2), keep: true }],
+    ["thread.writers", { sid: sid(2), writers: ["user:usr_a"] }],
+    ["track.create", { tid: tid(2), agentSessionId: agentSid(2), sid: sid(2), name: "Login" }],
+    ["track.rename", { tid: tid(1), name: "Harbor" }],
+    ["track.done", { tid: tid(1), outcome: "shipped" }],
+    ["track.keep", { tid: tid(1), keep: true }],
+    ["track.dissolve", { tid: tid(1), threads: "keep" }],
+  ];
+  for (const [name, args] of cases) {
+    it(`${name} ${JSON.stringify(args)} is undone back to the rows before it`, async () => {
+      await withOrg((sql) => {
+        seedTrack(sql);
+        seedThread(sql, sid(2));
+        ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "Goal", spans: [] }));
+        const before = state(sql);
+        const op = opOf(run(sql, A, name, args));
+        expect(run(sql, B, "undo", { opId: op })).toMatchObject({ ok: false, code: "not_found" });
+        expect(run(sql, agent(sid(1)), "undo", { opId: op })).toMatchObject({ ok: false, code: "not_found" });
+        ok(run(sql, A, "undo", { opId: op }));
+        expect(state(sql)).toEqual(before);
+        expect(sql.exec("SELECT undone_by FROM op WHERE id = ?", op)).toEqual([{ undone_by: "user:usr_a" }]);
+        expect(run(sql, A, "undo", { opId: op })).toMatchObject({ ok: false, code: "refused", reason: "undone" });
+      });
+    });
+  }
+
+  it("thread.reopen is undone", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      ok(run(sql, A, "thread.done", { sid: sid(1) }));
+      const before = state(sql);
+      ok(run(sql, A, "undo", { opId: opOf(run(sql, A, "thread.reopen", { sid: sid(1) })) }));
+      expect(state(sql)).toEqual(before);
+    });
+  });
+
+  it("a field changed since is refused `changed` with what a reversal would do; `force` does it; undo of the undo redoes", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      const op = opOf(run(sql, A, "track.rename", { tid: tid(1), name: "Harbor" }));
+      ok(run(sql, A, "track.rename", { tid: tid(1), name: "Port" }));
+      expect(run(sql, A, "undo", { opId: op })).toMatchObject({
+        ok: false,
+        code: "refused",
+        reason: "changed",
+        would: expect.arrayContaining([{ row: `track:${tid(1)}`, column: "name", now: "Port", op: "Harbor", back: "Dock" }]),
+      });
+      const back = opOf(run(sql, A, "undo", { opId: op, resolution: "force" }));
+      expect(track(sql, tid(1))).toMatchObject({ name: "Dock" });
+      ok(run(sql, A, "undo", { opId: back }));
+      expect(track(sql, tid(1))).toMatchObject({ name: "Port" });
+      expect(sql.exec("SELECT undone_by FROM op WHERE id = ?", op)).toEqual([{ undone_by: null }]);
+    });
+  });
+
+  it("track.dissolve's undo restores the track, its Doc and places, with a new agent session", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "Goal", spans: [] }));
+      const op = opOf(run(sql, A, "track.dissolve", { tid: tid(1), threads: "keep" }));
+      sql.exec("DELETE FROM _owed");
+      ok(run(sql, A, "undo", { opId: op }));
+      const t = track(sql, tid(1))!;
+      expect(t).toMatchObject({ name: "Dock" });
+      expect(t.agent_session).not.toBe(agentSid(1));
+      expect(doc(sql)).toMatchObject({ rev: 1, text: "Goal" });
+      expect(place(sql, sid(1))).toMatchObject({ track_id: tid(1) });
+      expect(owedCalls(sql).some((c) => c.startsWith("Computer.start") && c.includes(t.agent_session as string))).toBe(true);
+    });
+  });
+
+  it("T8u: undo of a wrap whose agent started threads asks keep or stop", async () => {
+    for (const threads of ["keep", "stop"] as const) {
+      await withOrg((sql) => {
+        seedThread(sql, sid(1));
+        const op = opOf(run(sql, agent(sid(1)), "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) }));
+        seedThread(sql, sid(3), "usr_a", { parent: agentSid(1) });
+        ok(run(sql, agent(agentSid(1)), "thread.place", { sid: sid(3), trackId: tid(1) }));
+        expect(run(sql, A, "undo", { opId: op })).toMatchObject({ ok: false, code: "refused", reason: "choose_threads", threads: [sid(3)] });
+        ok(run(sql, A, "undo", { opId: op, threads }));
+        expect(track(sql, tid(1))).toBeUndefined();
+        expect(place(sql, sid(1))).toMatchObject({ track_id: null });
+        if (threads === "keep") expect(place(sql, sid(3))).toMatchObject({ track_id: null });
+        else expect(place(sql, sid(3))).toBeUndefined();
+      });
+    }
+  });
+});
