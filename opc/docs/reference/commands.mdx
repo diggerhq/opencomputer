@@ -1,0 +1,349 @@
+---
+title: "Commands"
+description: "Every opc command and option."
+---
+
+## Conventions
+
+- **Choosing a session.** Every command that acts on a session accepts `-s`, `--session <id>`. Commands whose first operand is a session also take it in that place: `opc send cs_7f3a9k2m4q8r1t6v "…"` and `opc send -s cs_7f3a9k2m4q8r1t6v "…"` are the same.
+- **Session arguments.** Wherever a command takes `<id>`, it accepts a full id (`cs_7f3a9k2m4q8r1t6v`), a unique prefix of four or more characters (`7f3a`), `-` for the last session on this machine, or a Slack thread link. A word that is a valid prefix of a session you can see is an id; any other word is a title search, where the command allows one. Prefixes are for people: scripts should pass full ids, which never become ambiguous.
+- **The last session** is the one most recently created or attached on this machine, including by `opc -p`. `push`, `pull`, `shell` and `subagents` use it when you name no session, but only when standard input is a terminal. In a script they fail with `usage` and `pass -s <id>`. `opc a` with no session opens the picker, which also needs a terminal. `send`, `wait`, `watch`, `interrupt`, `log` and `diff` always need a session.
+- **Output.** Every command that prints data accepts `--json`. Commands that print a session's activity also accept `--output-format text|json|stream-json`; `--json` is short for `--output-format json`. JSON goes to standard output, messages for people to standard error.
+- **Outcomes and errors.** The outcome of a turn (completed, failed, cancelled, waiting) is a [Result](/api/reference/objects#result) object on standard output. A command failure (usage, authentication, unreachable…) is `{"error": …}` on standard error. Errors are JSON whenever any JSON output format is selected. See [Exit codes](/reference/exit-codes).
+- **Idempotency keys.** `--idempotency-key <k>` on `opc -p`, `opc new`, `opc send` and `opc push` makes a retry safe: a repeat within 24 hours does nothing new. Commands that make several requests derive one key per request: `<k>:create`, `<k>:upload:<n>`, `<k>:send`. See [Scripting](/cli/scripting#retrying-safely).
+- **Metadata.** `--metadata key=value`, repeatable, sets a new session's [metadata](/api/reference/objects#session). On `opc ls` it filters.
+- **Durations** are written `90s`, `20m` or `2h`.
+- **No secrets on the command line.** Keys are read from the environment, a hidden prompt or standard input.
+
+## Global options
+
+| Option | Does |
+| --- | --- |
+| `--timing` | On exit, prints where the time went to standard error. See [Timing](/reference/timing). |
+| `--no-color` | No colors. Same as `NO_COLOR=1`. |
+| `-q`, `--quiet` | No progress messages on standard error. The [handle line](/cli/scripting#the-handle-comes-first) is still printed. |
+| `-v`, `--verbose` | Debug logs to standard error. Same as `OPC_LOG=debug`. |
+| `-h`, `--help` | Help for the command. `opc --help` ends with the exit codes and `opc help scripting`. |
+| `-V`, `--version` | Version and protocol |
+
+## opc
+
+```
+opc [options] [message]
+opc -p [options] [message]
+```
+
+Starts a new session. With a message, sends it. With `-p`, runs one turn non-interactively. When standard input or standard output is not a terminal, `opc "message"` behaves like `opc -p "message"`. With no credential and a terminal, `opc` runs the [login](/cli/auth) first and then continues. See [Sessions](/cli/sessions) and [Scripting](/cli/scripting).
+
+| Option | Does |
+| --- | --- |
+| `-p`, `--print` | Non-interactive: send, wait, print the result. With a message as an argument, reads standard input too, only when it is a file or a pipe with data within 200 ms; `-` waits for it. |
+| `-s`, `--session <id>` | With `-p`, sends to an existing session instead of creating one |
+| `--steer`, `--queue`, `--interrupt` | With `-p -s`: how the message is delivered if a turn is running. Default `--queue`. |
+| `--model <model>` | Model for the new session |
+| `--effort <level>` | Effort level for the new session |
+| `--speed <fast\|standard>` | Speed for the new session. Default `fast`. |
+| `--mode <mode>`, `--permission-mode <mode>` | Permission mode for the new session |
+| `--title <title>` | Title, instead of one from the first message |
+| `--metadata <key=value>` | Metadata for the new session. Repeatable. |
+| `--push <dir>` | Pushes a directory into the new session before sending. Repeatable. `opc` prints `opc: session <id> <url>` on standard error before the uploads start. |
+| `--idempotency-key <k>` | With `-p`: a repeat re-attaches to the original turn and waits for it |
+| `--output-format <format>` | With `-p`: `text`, `json` or `stream-json` |
+| `--json` | With `-p`: short for `--output-format json` |
+| `--include-partial-messages` | With `stream-json`: also print deltas: text, reasoning, tool calls being written and tool output |
+| `--on-ask <action>` | With `-p`: what to do when an ask opens. `fail` (default) exits `5`; `dismiss` dismisses it and carries on; `wait` waits for someone to answer elsewhere. |
+| `--timeout <duration>` | With `-p`: give up after this long, exit `124` |
+| `--interrupt-on-timeout` | With `--timeout`: interrupt the turn before exiting |
+| `--interrupt-on-exit` | With `-p`: interrupt the turn whenever `opc` exits before it ends: `--timeout`, `Ctrl+C` or a signal |
+| `--wait-subagents` | With `-p`: also wait for the background subagents the turn started. The Result then shows them ended. |
+
+## opc new
+
+```
+opc new [message | -] [options]
+```
+
+Creates a session, sends the message if given, and returns at once. Prints the session id. `-` reads the message from standard input.
+
+| Option | Does |
+| --- | --- |
+| `--push <dir>` | Pushes a directory into the new session before sending. Repeatable. |
+| `--model`, `--effort`, `--speed`, `--mode`, `--title` | As for `opc` |
+| `--metadata <key=value>` | Repeatable |
+| `--idempotency-key <k>` | A repeat returns the same session and turn |
+| `--json` | Prints what [creating a session](/api/http/sessions#create-a-session) returned: `{ session, turn, delivery, duplicate, seq }`. `turn` and `delivery` are `null` without a message. |
+
+## opc a
+
+```
+opc a [<id> | <words>] [options]
+```
+
+Attaches to a session. Alias: `opc attach`. Attaching resumes a suspended session; `opc watch`, `opc wait` and `opc log` never do.
+
+| Option | Does |
+| --- | --- |
+| `--read-only` | Attach without the ability to send or answer |
+| `--history <n>` | Print the last `n` turns in full. Default: the last turn in full, one line for each of the 10 before it. |
+| `--no-history` | Do not print earlier turns |
+
+Detaching exits `0`.
+
+## opc ls
+
+```
+opc ls [options]
+```
+
+Lists sessions. Alias: `opc list`.
+
+| Option | Does |
+| --- | --- |
+| `--status <status>` | `starting`, `running`, `waiting`, `idle` or `suspended`. Repeatable. |
+| `--metadata <key=value>` | Only sessions with this metadata. Repeatable: every pair must match. |
+| `--archived` | Only archived sessions. Archived sessions are left out otherwise. |
+| `--limit <n>` | At most `n` rows, up to 500. Default 50. `opc` pages through the API as needed. |
+| `--long` | Adds the last line the agent wrote |
+| `--json` | A JSON array of [session objects](/api/reference/objects#session) |
+
+## opc log
+
+```
+opc log <id> [options]
+```
+
+Prints a session's history and exits. Reads the recorded log: it never resumes a suspended session.
+
+| Option | Does |
+| --- | --- |
+| `--details` | Everything, as the session screen shows it with details open. The default is one line per message, tool call and answer. |
+| `--after <seq>` | Only events after this `seq` |
+| `--turn <tn_…>` | Only this turn |
+| `--types <glob>` | Only these event types, such as `tool.*`. Repeatable. |
+| `--output-format <format>` | `text`, `json` for `{ events, lastSeq, hasMore }`, or `stream-json` for one recorded [event](/api/reference/events) per line |
+| `--json` | Short for `--output-format json` |
+
+## opc send
+
+```
+opc send <id> <message | -> [options]
+```
+
+Sends a message and returns when it is accepted. `-` reads the message from standard input. Prints the turn id, and on standard error, when it is a terminal, `opc wait tn_…`.
+
+| Option | Does |
+| --- | --- |
+| `--queue` | If a turn is running, run as its own turn after it. The default. |
+| `--steer` | If a turn is running, deliver into it |
+| `--interrupt` | Stop the running turn and every queued one, then run |
+| `--wait` | Then wait for the turn the message ended up in, as `opc wait`, and print its Result |
+| `--timeout <duration>` | With `--wait`: give up after this long, exit `124` |
+| `--wait-subagents` | With `--wait`: also wait for the background subagents the turn started |
+| `--on-ask <action>` | With `--wait`: `fail`, `dismiss` or `wait`, as for `opc -p`. Default `fail`. |
+| `--idempotency-key <k>` | A repeat sends nothing new and prints the original turn |
+| `--json` | Prints what [sending](/api/http/turns#send-a-message) returned: `{ turn, delivery, duplicate, seq }`. With `--wait`, the Result. |
+
+## opc wait
+
+```
+opc wait <id> [--turn <tn_…>] [options]
+opc wait <tn_…> [options]
+opc wait --any|--all <id | tn_…>… [options]
+```
+
+With a session, blocks until no turn is running or queued. With a turn, through `--turn` or alone, blocks until that turn ends or waits for a person. `opc wait tn_…` alone works for the last 500 turns sent from this machine; for others, name the session too. The handle line gives both ids.
+
+| Option | Does |
+| --- | --- |
+| `--any` | With several ids: return when the first of them is done, with its exit code |
+| `--all` | With several ids: return when every one is done |
+| `--wait-subagents` | Also wait for the background subagents the turn started. The Result then shows them ended. |
+| `--on-ask <action>` | What to do when an ask opens: `fail`, `dismiss` or `wait`, as for `opc -p`. Default `fail`. |
+| `--timeout <duration>` | Give up after this long, exit `124` |
+| `--json` | The [Result](/api/reference/objects#result) of the last turn. With several ids, one Result per line, as each is done. |
+
+Without `--json`, prints the last turn's final message; with several ids, each under a `── <session id>` line. Exit `0` completed, `1` failed or cancelled, `5` waiting for a person, `124` timed out. With `--all`, `0` when every one completed, else `5` if any is waiting, else `1`.
+
+With several ids, a lost session, one whose attach was refused or that the server stopped sending, is reported on its own and the others go on: a Result line with `subtype` `error` and its `sessionId`, or `opc: <id>: <message>` without `--json`. It counts as `1` for `--all`, and never as the first for `--any`. With one id, it fails the command.
+
+## opc watch
+
+```
+opc watch <id>… [options]
+```
+
+Prints a session's activity, read-only, until it is idle or waiting, and exits as `opc wait` does. With several sessions, until every one is; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
+
+| Option | Does |
+| --- | --- |
+| `--after <seq>` | Print recorded events after this `seq` first, then live ones |
+| `--from-start` | Print the whole history first. Same as `--after 0`. |
+| `--follow` | Keep watching across turns until interrupted |
+| `--timeout <duration>` | Give up after this long, exit `124` |
+| `--output-format <format>` | `text`, `json` for the Result of the last turn it saw end, or `stream-json` |
+| `--include-partial-messages` | With `stream-json`: also print deltas: text, reasoning, tool calls being written and tool output |
+
+## opc interrupt
+
+```
+opc interrupt <id> [--no-wait] [--json]
+```
+
+Interrupts the running turn, with its subagents, and cancels queued ones.
+
+| Option | Does |
+| --- | --- |
+| `--no-wait` | Return as soon as the interrupt is recorded, instead of when the turn has stopped |
+| `--json` | Prints the turns the interrupt reached: `{ "cancelled": [Turn…] }`. With `--no-wait`, the one that was running may still be `cancelling`. |
+
+## opc ask
+
+```
+opc ask ls [<id>] [--json]
+opc ask allow|deny|always <ak_…> [-m <message>] [--mode <mode>] [--json]
+opc ask answer <ak_…> --choice <label>… [--text <text>] [--json]
+opc ask answer <ak_…> - [--json]
+opc ask dismiss <ak_…> [-m <message>] [--json]
+```
+
+Lists and answers [asks](/terminal/asks) without attaching. Every subcommand accepts `-s <id>`; without it, `opc` finds the ask among the open asks of sessions you can see.
+
+| Subcommand | Does |
+| --- | --- |
+| `ls` | Open asks in a session, or in all your sessions. `--json`: `{ "asks": [Ask…] }`. |
+| `allow`, `deny`, `always` | Answers an approval. `always` also allows the calls its `alwaysAllows` rule describes, for the rest of the session. `-m` is a message the agent reads with the decision. For a plan, `--mode` is the permission mode to switch to when allowing it, such as `acceptEdits`. |
+| `answer` | Answers a question. `--choice` takes an option label exactly as given, repeatable for `multiSelect`; `--text` is an answer in your own words. For an ask with several questions, pass the API's [answer body](/api/http/asks#answer-an-ask) on standard input with `-`. |
+| `dismiss` | Closes any ask without an answer. `-m` is a message the agent reads. |
+
+`--json` prints the [Ask](/api/reference/objects#ask) as it closed.
+
+## opc subagents
+
+```
+opc subagents [ls] [-s <id>] [--all-statuses] [--json]
+opc subagents stop <sa_…> [-s <id>] [--json]
+opc subagents result <sa_…> [-s <id>] [--json]
+```
+
+Lists, stops and reads a session's [subagents](/terminal/session-screen#subagents) without attaching.
+
+| Subcommand | Does |
+| --- | --- |
+| `ls` | The running subagents, with their status, name, type, activity, tool calls, tokens and time. `--all-statuses` lists ended ones too. `--json`: `{ "subagents": [Subagent…] }`. The default. |
+| `stop` | Stops a subagent. `--json` prints the [Subagent](/api/reference/objects#subagent) once it has ended. |
+| `result` | Prints its full result. `--json` prints the Subagent, with its whole `result`. |
+
+## opc rename
+
+```
+opc rename <id> <title>
+```
+
+Sets a session's title. In a session, `/rename` or `/title`.
+
+## opc archive, unarchive
+
+```
+opc archive <id>
+opc unarchive <id>
+```
+
+Archives a session, which hides it from `opc ls` and the picker, or brings it back. Any new message un-archives it. In a session, `/archive`. `opc ls --archived` lists archived sessions.
+
+## opc open
+
+```
+opc open [id]
+```
+
+Opens the session on the dashboard. Prints the link when there is no browser. In a session, `/web`.
+
+## opc diff
+
+```
+opc diff <id> [--stat]
+```
+
+Prints `git diff` for every repository in the session's workspace, each under its path, through `$PAGER` when standard output is a terminal. `--stat` prints a summary per file. In a session, `/diff`.
+
+## opc push
+
+```
+opc push [dir] [-s <id>] [--to <name>] [--no-ignore] [--dry-run] [--idempotency-key <k>] [--json]
+```
+
+Copies a local directory into a session's workspace. Without `-s`, prints the target first: `pushing to 7f3a "flaky test…" (attached 3d ago)`. With `--dry-run --json`, prints what would be sent. See [Files](/cli/files#push).
+
+## opc pull
+
+```
+opc pull <path> [dir] [-s <id>] [--force] [--dry-run] [--json]
+```
+
+Copies a directory or file from a session's workspace. With `--dry-run --json`, prints what would be written. See [Files](/cli/files#pull).
+
+## opc shell
+
+```
+opc shell [id] [-c <command>] [--no-tty]
+```
+
+Opens a shell in a session's workspace. See [Shell](/cli/shell).
+
+## opc login, logout, whoami
+
+```
+opc login [--no-browser] [--force]
+opc logout
+opc whoami [--json]
+```
+
+`whoami --json` prints what [`GET /me`](/api/authentication) returns. See [Logging in](/cli/auth).
+
+## opc doctor
+
+```
+opc doctor [--json]
+```
+
+Checks, in order, and stops at the first failure: the configuration file, the credential, the API, your computer, the connection to it, and a round trip through it. Prints each step's time. `--json` prints `{ "steps": [{ name, ok, ms, detail, error }] }`, with the failure in its step's `error` rather than on standard error. Run it first when something is wrong. See [Troubleshooting](/troubleshooting).
+
+## opc schema
+
+```
+opc schema [result|event|session|turn|ask]
+```
+
+Prints the JSON Schema of the API's objects, the one published at `https://raw.githubusercontent.com/diggerhq/opc/main/schema/computer-api.v1.json`, or of one of them.
+
+## opc help
+
+```
+opc help [topic]
+```
+
+Help for a command, or a topic: `opc help scripting` is the [Scripting](/cli/scripting) page in the terminal.
+
+## opc completion
+
+```
+opc completion bash|zsh|fish
+```
+
+Prints a completion script. See [Install](/install#shell-completions).
+
+## opc config
+
+```
+opc config telemetry [on|off] [--json]
+```
+
+Shows or sets whether `opc` sends [telemetry](/reference/telemetry). Without `on` or `off` it prints the setting and why (the default, the environment or the file). `--json` prints `{ telemetry, source, settings }`. `OPC_TELEMETRY` and `DO_NOT_TRACK` win over what is set here.
+
+## Messages that look like commands
+
+- A single argument that contains whitespace is always a message: `opc "push the fix to main"`.
+- A first argument that is the name of a command on this page is that command.
+- If that command then cannot parse the rest, `opc` does nothing and exits `2` with `opc: "push the fix to main" looks like a message. Quote it: opc "push the fix to main"`.
+- Several unquoted words that do not start with a command name are joined into one message: `opc why is the build red` sends "why is the build red".
+- `opc -- <words>` always sends: `opc -- ls` sends "ls".

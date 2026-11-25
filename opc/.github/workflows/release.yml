@@ -1,0 +1,106 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-16-64-20 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: aarch64-apple-darwin, os: macos-14 }
+    runs-on: ${{ matrix.os }}
+    env:
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The binary reports the tag's version (v0.1.0-rc.8 → 0.1.0-rc.8), not Cargo.toml's.
+          v="${GITHUB_REF_NAME#v}"
+          perl -0pi -e "s/(\[package\]\nname = \"opc\"\nversion = )\"[^\"]*\"/\$1\"$v\"/" Cargo.toml
+          perl -0pi -e "s/(name = \"opc\"\nversion = )\"[^\"]*\"/\$1\"$v\"/" Cargo.lock
+          grep -qx "version = \"$v\"" Cargo.toml
+          if [[ "${{ matrix.target }}" == *musl ]]; then
+            t=$(echo "${{ matrix.target }}" | tr - _)
+            export "CC_$t=musl-gcc"
+          fi
+          cargo build --release --locked --target "${{ matrix.target }}"
+          bin="target/${{ matrix.target }}/release/opc"
+          if [[ "${{ matrix.target }}" == *musl ]]; then
+            # Static, or the release is wrong.
+            file "$bin" | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+          fi
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl|aarch64-unknown-linux-musl|aarch64-apple-darwin) "$bin" --version ;;
+          esac
+      # Signing and notarization run only when the Apple credentials are
+      # configured as repository secrets; they never appear in the log.
+      - if: contains(matrix.target, 'apple') && env.HAS_APPLE_SIGNING == 'true'
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/sign.keychain-db"; kp=$(openssl rand -hex 16)
+          echo "$APPLE_CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kp" "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$kp" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc"
+          bin="target/${{ matrix.target }}/release/opc"
+          codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$bin"
+          echo "$APPLE_NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k "$bin" "$RUNNER_TEMP/opc.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/opc.zip" --key "$RUNNER_TEMP/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER" --wait
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
+      - name: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="opc-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/opc" README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp ci/install.sh dist/install.sh
+          (cd dist && sha256sum *.tar.gz install.sh > SHA256SUMS)
+          cat dist/SHA256SUMS
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --title "opc $GITHUB_REF_NAME" --generate-notes $pre

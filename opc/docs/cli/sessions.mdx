@@ -1,0 +1,149 @@
+---
+title: "Sessions"
+description: "Start, list, attach, detach and resume."
+---
+
+`opc` alone always starts a new session. Everything about finding and returning to sessions is under `opc ls` and `opc a`.
+
+## Start a session
+
+```bash
+opc                                   # new session, type at the prompt
+opc "why does the nightly build fail?"   # new session, message already sent
+opc --model "sonnet 5.5" --mode plan  # with settings for this session
+```
+
+A new session starts from a fresh copy of your organization's workspace. It does not matter which directory you run `opc` in: `opc` does not read it. `--mode` is the [permission mode](/concepts#settings); `--permission-mode` is the same option.
+
+The prompt line is live at once. If the session cannot be created, because the network is down or the computer is starting, the prompt stays live and `opc` keeps trying. If you leave before it succeeds, `opc` prints what you typed, so it is never lost.
+
+`opc new "…"` creates a session, sends the message and returns at once with the session's id, without drawing the session screen. See [For agents and scripts](/cli/agents).
+
+### Messages and commands
+
+`opc` decides whether its arguments are a message or a command by these rules, in order:
+
+1. A single argument with whitespace in it is always a message: `opc "ls the repositories"`.
+2. A first argument that is the name of an `opc` command is that command: `opc ls`.
+3. If that command cannot use the rest of the arguments, nothing happens and `opc` exits with code `2`:
+   ```
+   $ opc push the fix to main
+   opc: "push the fix to main" looks like a message. Quote it: opc "push the fix to main"
+   ```
+4. Several unquoted words that do not start with a command name are joined into one message: `opc fix the flaky test` sends "fix the flaky test".
+
+`opc --` followed by words always sends them: `opc -- ls` sends "ls".
+
+## List sessions
+
+```
+$ opc ls
+   ID    TITLE                              STATUS            WHERE      ACTIVE
+ ◆ 7f3a  flaky test in segment.test.ts      waiting for you   #build     2m
+ ● 9c1e  billing api contract review        running           opc        14m
+   b20d  upgrade the eslint config          idle              #build     3h
+   e4k8  old spike                          suspended         opc        2d
+```
+
+- **ID** is the shortest unique prefix, at least four characters.
+- **WHERE** is the Slack channel for sessions started in Slack, and the client name for the rest: `opc`, `api` or the name a client gave.
+- **ACTIVE** is the time since the last event.
+
+`opc ls` shows your sessions, most recently active first, up to 50. It prints the list cached from the last run at once and refreshes it in one round trip. Archived sessions are left out. Options:
+
+| Option | Does |
+| --- | --- |
+| `--status <status>` | Only sessions in this status. Repeat for several: `--status running --status waiting`. |
+| `--archived` | Only archived sessions |
+| `--metadata <key>=<value>` | Only sessions with this metadata. Repeat to require several. |
+| `--limit <n>` | Up to `n` rows, at most 500. Default 50. |
+| `--long` | Adds the last line the agent wrote |
+| `--json` | One JSON array of [session objects](/api/reference/objects#session), for scripts |
+
+## Choosing a session
+
+Every command that acts on a session takes `-s` or `--session <id>`. Commands whose first argument is a session, such as `opc a 7f3a`, also take it in that place.
+
+- **An id or a title.** A word that is the prefix of the id of a session you can see is that id. Any other word searches titles.
+- **The last session.** `-` means the session most recently created or attached on this machine, including by `opc -p`. It is kept in `~/.opencomputer/opc/state.json`, so it does not follow you across machines.
+- **Leaving it out.** `push`, `pull` and `shell` use the last session when you name none, but only when standard input is a terminal. From a script they fail with `pass -s <id>`. `send`, `wait`, `watch`, `interrupt`, `log` and `diff` always need a session.
+
+Prefixes and titles are for people. Scripts should pass full ids, such as `cs_7f3a9k2m4q8r1t6v`.
+
+## Attach
+
+```bash
+opc a                 # picker
+opc a flaky           # by title words
+opc a 7f3a            # by id or unique prefix
+opc a -               # the last session on this machine
+opc a https://acme.slack.com/archives/C07ABC/p1761400000000100   # by Slack thread
+```
+
+`opc a` with no argument, and `/sessions` inside a session, open a **picker**, a list drawn under the prompt line, not a full-screen view: type to filter on titles and last lines, `↑` `↓` to move, `Enter` to attach, `Esc` to cancel. The picker opens instantly on the list cached from the last run and refreshes in place.
+
+With words, `opc a` attaches when exactly one of your sessions matches, and opens the picker filtered to the matches otherwise. Words and the picker match only your sessions; to attach to a colleague's, use its id or Slack link.
+
+`opc a -` attaches to the last session on this machine. With no such session it attaches to your most recently active one.
+
+Attaching does not change the session: the agent never notices a client arriving or leaving. To open a session on the dashboard instead, use `opc open 7f3a`, or `/web` inside it.
+
+### History on attach
+
+Attaching prints what led here, then the live part. By default that is the last turn in full and one line for each earlier turn, up to 10, then a line for the rest:
+
+```
+  ── 14 earlier turns · Ctrl+O for all
+```
+
+`--history <n>` prints the last `n` turns in full, and `--no-history` prints none. Attaching again in the same terminal with `opc a -` prints only what happened since you detached. A session you opened before on this machine draws at once from `opc`'s local copy of its events, then catches up.
+
+## Look without attaching
+
+```bash
+opc log 7f3a          # the session's history, then exit
+opc diff 7f3a         # what the agent changed, as a git diff
+opc open 7f3a         # the session on the dashboard
+```
+
+`opc log` prints the history in the same short form as the session screen and exits. `--details` prints every step in full; `--after <seq>`, `--turn <tn_…>` and `--types <glob>` narrow it, and `--json` prints the recorded [events](/api/reference/events) instead. `opc diff` shows the git diff of every repository in the session's workspace through `$PAGER`; `--stat` summarizes it. See [Commands](/reference/commands) for every option.
+
+None of them starts a suspended session's agent.
+
+## Detach
+
+`Ctrl+D` on an empty prompt line, `Ctrl+C` twice while the agent is idle, `/detach`, or closing the terminal. `opc` prints where you were:
+
+```
+[detached from "flaky test in segment.test.ts" · running · opc a - to return]
+```
+
+A running turn finishes on the computer. Text that was typed but not yet sent is printed after this line, so it is never lost. A lost connection is not a detach: `opc` reconnects on its own and catches up.
+
+## Suspended sessions
+
+A session that has been idle for two hours is suspended: its agent process stops. Nothing is lost. Attaching to it shows its history at once and starts the agent in the background. Resuming takes a few seconds; `opc` starts it the moment you pick the session, and the status line says `resuming`. In the picker, it starts as soon as the cursor rests on a suspended session. A session that suspends while you are attached starts again at your first keystroke.
+
+Only the session screen resumes a session. `opc watch`, `opc wait` and `opc log` read it as it is.
+
+`/suspend` suspends a session right away, which frees the computer's memory for others.
+
+## Rename and archive
+
+```bash
+opc rename 7f3a "segment test timer fix"
+opc archive 7f3a
+opc unarchive 7f3a
+```
+
+`/title` and its alias `/rename` rename the session you are in, and `/archive` archives it. An archived session is left out of `opc ls`, the picker and title matches; `opc ls --archived` lists them. Any new message un-archives it.
+
+## Many clients, one session
+
+Any number of terminals, the Slack thread and the dashboard can show one session at once. Each one sees every message and answer, with who sent it and from where. A message sent from any of them steers or queues the same way. To watch without any risk of typing into a session, attach with `--read-only`.
+
+See [Sharing](/cli/sharing) for who can attach to what.
+
+## Moving between Slack and the terminal
+
+Every session started in Slack can be attached with its thread link. In the other direction, `/id` in `opc` prints the session's dashboard link, and `opc open` opens it. Sessions started from `opc` are not posted to Slack.

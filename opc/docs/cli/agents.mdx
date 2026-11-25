@@ -1,0 +1,109 @@
+---
+title: "For agents and scripts"
+description: "Every non-interactive opc command, what it prints, and four recipes."
+---
+
+Everything here runs without a terminal: nothing prompts, opens a browser or waits for a key. Pass full session ids (`cs_7f3a9k2m4q8r1t6v`), never prefixes, and `-s` wherever a command acts on a session. [Scripting](/cli/scripting) explains each command; [Commands](/reference/commands) lists every option.
+
+## What each command prints
+
+| Command | Does | Prints on standard output, with `--json` or `--output-format` |
+| --- | --- | --- |
+| `opc -p` | Runs one turn and waits for it | `json`: the [Result](/api/reference/objects#result). `stream-json`: an `init` line, [events](/api/reference/events), the Result. |
+| `opc new` | Creates a session, sends a message, returns at once | The session id. `--json`: `{ session, turn, delivery, duplicate, seq }` |
+| `opc send` | Sends to a session, returns once accepted | The turn id. `--json`: `{ turn, delivery, duplicate, seq }`. `--wait`: the Result. |
+| `opc wait` | Waits for a session, a turn, or several | The Result; one per line with several ids |
+| `opc watch` | Follows sessions as they work | `stream-json`: events. `json`: the Result of the last turn it saw end. |
+| `opc log` | Prints history and exits | `stream-json`: recorded events. `json`: `{ events, lastSeq, hasMore }` |
+| `opc ls` | Lists sessions, filtered by status or `--metadata` | `[Session…]` |
+| `opc interrupt` | Stops the running turn and the queue | `{ cancelled: [Turn…] }` |
+| `opc ask ls` | Lists open asks | `{ asks: [Ask…] }` |
+| `opc ask allow`, `deny`, `always`, `answer`, `dismiss` | Answers or dismisses an ask | The [Ask](/api/reference/objects#ask) as it closed |
+| `opc subagents ls`, `stop`, `result` | Lists, stops and reads the session's subagents | `{ subagents: [Subagent…] }`; the [Subagent](/api/reference/objects#subagent); `result` prints the full result as text |
+| `opc rename`, `archive`, `unarchive` | Changes a session | Nothing |
+| `opc push`, `opc pull` | Moves files | `{ sessionId, path, files, bytes, … }`, also with `--dry-run` |
+| `opc diff` | The agent's changes | A git diff, as text |
+| `opc whoami` | Who the credential is | What `GET /me` returns |
+| `opc doctor` | Checks the path to your computer | `{ steps: [{ name, ok, ms, detail, error }] }` |
+| `opc schema` | The JSON Schema of the objects above | JSON Schema |
+
+The objects are the API's, in camelCase, with every documented field present. Their JSON Schema is published at `https://raw.githubusercontent.com/diggerhq/opc/main/schema/computer-api.v1.json`; `opc schema result`, `event`, `session`, `turn` or `ask` prints one.
+
+**Outcomes and errors.** A turn's outcome (completed, failed, cancelled, waiting) is the Result on standard output. A failure of the command is `{"error": {code, message, retryable, …}}` on standard error. The exit code says which: see [Exit codes](/reference/exit-codes). Retry exit `4`; act on `5`; stop on `2`, `3` and `6`.
+
+**The handle.** `opc -p` writes `opc: session cs_… turn tn_… <url>` to standard error as soon as the session exists, and `stream-json` starts with the same as its `init` line. If you are killed, that is how you get back.
+
+## A CI job that fixes the tests
+
+```bash
+opc -p --push . --mode auto --on-ask dismiss --timeout 30m --output-format json \
+  --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-fix-tests" \
+  --metadata repo="$GITHUB_REPOSITORY" --metadata run="$GITHUB_RUN_ID" \
+  "make the tests in ./$(basename "$PWD") pass and open a pull request" > result.json
+jq -r .result result.json
+```
+
+`--mode auto` runs the tests without approvals, `--on-ask dismiss` carries on past a question, and the idempotency key makes a retry within the same workflow attempt re-attach to the same turn. Exit `0` means the turn completed. See [CI and agents](/cli/ci) for the key.
+
+## An orchestrator that fans out
+
+Ten sessions, one per repository, tagged so they can be found again from anywhere:
+
+```bash
+batch="deps-2026-10-26"
+ids=()
+while read -r repo; do
+  ids+=("$(opc new --mode auto --metadata batch="$batch" --metadata repo="$repo" \
+    --idempotency-key "$batch-$repo" "update the dependencies of $repo and open a pull request")")
+done < repos.txt
+
+opc wait --all --json --timeout 2h "${ids[@]}" > results.jsonl || true
+jq -r '[.sessionId, .status, .result] | @tsv' results.jsonl
+```
+
+`opc wait --all` follows all ten over one connection and prints one Result per line as each is done. Its exit code is `0` only if every turn completed. Later, or from another process, the metadata finds them:
+
+```bash
+opc ls --metadata batch="$batch" --json \
+  | jq -r '.[] | [.metadata.repo, .status, .lastTurn.status, .lastTurn.text] | @tsv'
+```
+
+Run again, the same idempotency keys return the same sessions instead of starting ten more.
+
+## A bot that answers asks
+
+A worker started with `--on-ask wait` blocks on an ask instead of exiting; a second process answers it. This one allows test runs and dismisses everything else:
+
+```bash
+opc watch "$id" --follow --output-format stream-json \
+  | jq -c --unbuffered 'select(.type == "ask.opened") | .data.ask' \
+  | while read -r ask; do
+      ak=$(jq -r .id <<<"$ask")
+      if jq -e '.kind == "approval" and (.approval.alwaysAllows // "" | startswith("Bash(npm test"))' <<<"$ask" >/dev/null; then
+        opc ask always "$ak" -s "$id"
+      else
+        opc ask dismiss "$ak" -s "$id" -m "no person is available; carry on without it"
+      fi
+    done
+```
+
+`opc ask ls --json` lists the asks already open when the bot starts. An ask someone else answered first gets `409 ask_closed`, exit `2`: skip it.
+
+## An agent that follows a long session
+
+An agent that reads a session for hours, and may itself be restarted, keeps the `seq` of the last event it handled and starts from there:
+
+```bash
+id=cs_7f3a9k2m4q8r1t6v
+cursor=".cursor-$id"
+after=$(cat "$cursor" 2>/dev/null || echo 0)
+
+opc watch "$id" --after "$after" --follow --output-format stream-json \
+  | while read -r event; do
+      handle "$event"
+      seq=$(jq -r '.seq // empty' <<<"$event")
+      [ -n "$seq" ] && echo "$seq" > "$cursor"
+    done
+```
+
+`--after` prints every recorded event after the cursor, then live ones, with no gap and no repeat. To catch up and exit instead of following, use `opc log "$id" --after "$after" --output-format stream-json`. Neither resumes a suspended session. Lines without a `seq` (deltas, the Result) are not cursors. In the rare case that a computer is lost mid-turn, the session's `logEpoch` changes and its last events are replaced: see [If a computer is lost](/api/model#if-a-computer-is-lost).

@@ -1,0 +1,73 @@
+---
+title: "Quickstart"
+description: "Install opc and run your first session."
+---
+
+You need an OpenComputer organization with Computer set up. If your team uses Computer in Slack, you have one.
+
+Two steps: install, then run `opc`.
+
+<Steps>
+  <Step title="Install">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+    ```
+
+    See [Install](/install) for other platforms. If `~/.local/bin` is not on your `PATH`, the script prints the line to add. It ends with `Run opc to start.`
+  </Step>
+  <Step title="Run opc">
+    ```bash
+    opc
+    ```
+
+    The first time, `opc` logs you in before it starts the session. It prints a short code and opens your browser. Confirm the code there, and the terminal says who you are and carries on:
+
+    ```
+      Open https://app.opencomputer.dev/device and enter the code
+          WDJB-MJHT
+      Waiting for confirmation… (Ctrl+C to cancel)
+    ✓ Logged in as Ada Lovelace (ada@acme.dev) · acme
+      Credential "ada-mbp" saved to ~/.opencomputer/config.json
+    ```
+
+    If you already use the `opencomputer` CLI, you are logged in already: both read the same file. `opc login` logs in without starting a session. If your organization's computer is not set up yet, `opc` says where to finish setup and exits:
+
+    ```
+    opc: your organization's computer is not set up. Finish setup: https://app.opencomputer.dev/computer
+    ```
+
+    The prompt line appears at once. Type a task and press Enter:
+
+    ```
+    > what repositories do you have checked out, and which ones changed this week?
+    ```
+
+    Text streams in as the agent writes it. Tool calls fold into one line per run of steps. Press `Ctrl+O` for the full detail, and `q` to come back.
+  </Step>
+  <Step title="Leave and come back">
+    Press `Ctrl+D` on an empty prompt, or `Ctrl+C` twice while the agent is idle. The session keeps running on the computer:
+
+    ```
+    [detached from "repositories changed this week" · idle · opc a - to return]
+    ```
+
+    `opc a -` brings you back to it. `opc ls` lists your sessions.
+  </Step>
+</Steps>
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Answer the agent's questions" href="/terminal/asks">
+    Approvals and choices, inline in the terminal.
+  </Card>
+  <Card title="Send it your local code" href="/cli/files">
+    `opc push` copies a directory into the session's workspace.
+  </Card>
+  <Card title="Run it from a script" href="/cli/scripting">
+    `opc -p "…"` runs one turn and prints the result.
+  </Card>
+  <Card title="Use it from CI" href="/cli/ci">
+    An API key in `OPENCOMPUTER_API_KEY` is all it takes.
+  </Card>
+</CardGroup>

@@ -1,0 +1,64 @@
+---
+title: "Install"
+description: "One static binary for macOS and Linux."
+---
+
+`opc` is a single file with no runtime dependencies. Put it anywhere on your `PATH`.
+
+## macOS and Linux
+
+<Tabs>
+  <Tab title="Install script">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+    ```
+
+    The script detects your platform, downloads the matching release, checks its SHA-256 against the published checksums and installs it to `~/.local/bin/opc`. Set `OPC_INSTALL_DIR` to install somewhere else, and `OPC_VERSION` to install one release, a tag from [GitHub releases](https://github.com/diggerhq/opc/releases); pre-releases count. Without it, the script installs the latest release, or the newest pre-release while there is no full release yet. It never asks for `sudo` and never edits your shell's startup files: if the install directory is not on your `PATH`, it prints the line to add. It ends with `Run opc to start.`
+  </Tab>
+  <Tab title="Manual">
+    Download the archive for your platform from [GitHub releases](https://github.com/diggerhq/opc/releases), check it against `SHA256SUMS`, and move `opc` onto your `PATH`.
+  </Tab>
+</Tabs>
+
+| Platform | Architectures | Notes |
+| --- | --- | --- |
+| macOS 12 and later | Apple silicon, Intel | Not signed or notarized; see below |
+| Linux, any distribution | x86-64, arm64 | Statically linked against musl; no glibc version requirement |
+| Windows | x86-64 under WSL 2 | Use the Linux build inside WSL. There is no native Windows build. |
+
+The macOS builds are not signed or notarized, so macOS may block the first run. To allow it, remove the quarantine attribute, using the path you installed to:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/opc
+```
+
+Check the install:
+
+```bash
+opc --version
+# opc 0.1.0 (protocol opc.v1, schema computer-api.v1)
+```
+
+## Updating
+
+Run the install script again. `opc` does not update itself and does not check for updates in the background. When the server stops supporting your version's protocol, every command fails with exit code 2 and says which version to install. See [Versioning](/api/reference/versioning).
+
+## Shell completions
+
+```bash
+opc completion zsh  > "${fpath[1]}/_opc"
+opc completion bash > ~/.local/share/bash-completion/completions/opc
+opc completion fish > ~/.config/fish/completions/opc.fish
+```
+
+Completions include session ids and titles, read from the cached session list so they never wait on the network.
+
+## Uninstall
+
+```bash
+opc logout             # revokes this machine's credential
+rm "$(command -v opc)"
+rm -rf ~/.opencomputer/opc   # session cache, history and TLS cache
+```
+
+`~/.opencomputer/config.json` is shared with the `opencomputer` CLI. Delete it only if you use neither.
