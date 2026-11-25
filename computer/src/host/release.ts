@@ -6,6 +6,9 @@
 //   slack-presence-self-update.path (deploy/vm/self-update.sh) watches. Asking
 //   again is harmless: the update does nothing until a newer release is
 //   published, and the link's backoff paces the asking.
+// - A gateway whose `welcome` says another protocol than this release's
+//   (work 118: one number, both sides) is not spoken to: the host asks for the
+//   self-update the same way and drops the link, which dials again with backoff.
 // - A runner of another release speaks that release's frames. A host stops
 //   every such runner when it starts: a turn in flight ends interrupted, its
 //   journal is kept, and the session cold-starts on this release at its next
@@ -25,15 +28,27 @@ export const UPGRADE_REQUIRED = 4426;
 /** The file whose existence starts the self-update (self-update.sh removes it as it starts). */
 export const UPDATE_NOW = 'update-now';
 
-/** On a gateway close: ask for the self-update when the code says this release is too old. True when asked. */
-export function updateOnClose(code: number, run: string, write: (file: string) => void = (f) => writeFileSync(f, '')): boolean {
-  if (code !== UPGRADE_REQUIRED) return false;
+/** Ask for the self-update (`why` is logged). */
+export function requestUpdate(run: string, why: string, write: (file: string) => void = (f) => writeFileSync(f, '')) {
   try {
     write(path.join(run, UPDATE_NOW));
-    log.warn('the gateway asks for a newer release (4426): self-update requested');
+    log.warn(`${why}: self-update requested`);
   } catch (e) {
-    log.warn(`self-update not requested: ${(e as Error)?.message ?? e}`);
+    log.warn(`${why}: self-update not requested: ${(e as Error)?.message ?? e}`);
   }
+}
+
+/** On a gateway close: ask for the self-update when the code says this release is too old. True when asked. */
+export function updateOnClose(code: number, run: string, write?: (file: string) => void): boolean {
+  if (code !== UPGRADE_REQUIRED) return false;
+  requestUpdate(run, 'the gateway asks for a newer release (4426)', write);
+  return true;
+}
+
+/** On `welcome`: a gateway that says another protocol than this release's is not spoken to; ask for the self-update. True when it is another. */
+export function updateOnWelcome(protocol: number, own: number, run: string, write?: (file: string) => void): boolean {
+  if (protocol === own) return false;
+  requestUpdate(run, `the gateway speaks protocol ${protocol}, this release ${own}`, write);
   return true;
 }
 

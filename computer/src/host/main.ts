@@ -87,7 +87,7 @@ import { hostModelAccess } from './model-access.js';
 import { unitExists } from './launch.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
-import { ofAnotherRelease, updateOnClose } from './release.js';
+import { ofAnotherRelease, updateOnClose, updateOnWelcome } from './release.js';
 import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
@@ -311,6 +311,7 @@ async function onGateway(m: GatewayToHost) {
       () => toGateway({ t: 'reply', id, ok: true }),
       (e) => toGateway({ t: 'reply', id, ok: false, error: String(e?.message ?? e) }),
     );
+  if (m.t === 'welcome' && updateOnWelcome(m.protocol, PROTOCOL_VERSION, HOST_RUN)) return link.refuse(); // one protocol, both sides (release.ts)
   if (subs.onGateway(m)) return; // `model`, `model-request` (work 097); reads `models` from `welcome` and `credentials`
   if (await api.onGateway(m)) return; // `start`, `api`, `journal-ack`, `access`, `revoked` (work 084, api-host.ts)
   switch (m.t) {
@@ -386,7 +387,7 @@ interface Received {
   model?: ModelRoute;
 }
 
-async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
+async function deliver(spec: SessionSpec, msg: Delivery | undefined, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
   rx: Received) {
   const deliveryCredentials = await subs.delivered(spec.key, delivered, rx.model, spec.harness);
   for (let attempt = 0; ; attempt++) {
@@ -428,6 +429,7 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
     const trace = rx.trace && forwardTrace(rx.trace, cold);
     r.forwarded = { trace, at: Date.now() };
     saveForwarded(r.key, r.forwarded);
+    if (!msg) return; // a start, or an `api` call that needs the agent: its turn comes through the session's writer
     const answered = call(r, { t: 'deliver', msg, trace });
     tm.emit('deliver.forwarded', { ...rx.f, path: decidePath(cold), duration_ms: Date.now() - rx.at,
       data: { credentials_sent: !!delivered, secrets_count: secrets?.length ?? 0 } });
@@ -442,14 +444,7 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
 
 /** Work 084: start the session's runner for the API (`start`, a wake, `resume`), with `msg` delivered when given; its status. */
 async function startSession(spec: SessionSpec, o: StartOptions) {
-  const f = traceFields(spec.key);
-  if (o.msg) await deliver(spec, o.msg, o.credentials, o.secrets, { at: Date.now(), f, model: o.model });
-  else {
-    const c = await subs.delivered(spec.key, o.credentials, o.model, spec.harness);
-    const r = await ensureRunner(spec, f, c);
-    if (c) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-    if (o.secrets) send(r.sock, { t: 'secrets', secrets: o.secrets } satisfies HostToRunner);
-  }
+  await deliver(spec, o.msg, o.credentials, o.secrets, { at: Date.now(), f: traceFields(spec.key), model: o.model });
   return runners.get(spec.key)?.report?.status;
 }
 

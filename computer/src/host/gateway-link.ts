@@ -40,6 +40,8 @@ export interface GatewayLink {
   ask(m: HostToGateway): boolean;
   dial(): void;
   redial(): void;
+  /** Drop the link and dial again only after the longest backoff: a gateway this release does not speak to. */
+  refuse(): void;
 }
 
 const PING_MS = 25_000;
@@ -117,6 +119,10 @@ export function gatewayLink(hooks: LinkHooks, connect = (url: string, token: str
     dial,
     redial() {
       backoff = 200;
+      ws?.terminate();
+    },
+    refuse() {
+      backoff = MAX_BACKOFF_MS;
       ws?.terminate();
     },
   };
