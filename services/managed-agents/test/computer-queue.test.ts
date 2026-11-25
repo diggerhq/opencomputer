@@ -54,7 +54,7 @@ async function organization(org: string, team: string): Promise<{ stub: Stub; fr
   socket.accept();
   const frames: any[] = [];
   socket.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data))));
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions: [] }));
   await until(() => frames, (all) => all.some((frame) => frame.t === "welcome"), "welcome");
   return { stub, frames, socket };
 }

@@ -91,7 +91,7 @@ async function connectHost(): Promise<{ socket: WebSocket; welcome: any; frames:
   socket.accept();
   const frames = record(socket);
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "host-1", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "host-1", sessions: [] }));
   return { socket, welcome: await welcomed, frames };
 }
 
@@ -199,7 +199,7 @@ describe("computer telemetry", () => {
         const next = again.webSocket!;
         next.accept();
         const frame = nextMessage(next, "deliver");
-        next.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "host-1", sessions: [] }));
+        next.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "host-1", sessions: [] }));
         resolve({ socket: next, frame: await frame });
       })();
     });
@@ -287,7 +287,7 @@ describe("computer telemetry", () => {
     const socket = upgraded.webSocket!;
     socket.accept();
     const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: poolId, version: "host-1", sessions: [] }));
+    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: poolId, version: "host-1", sessions: [] }));
     expect(await welcomed).not.toHaveProperty("telemetryCredential");
     socket.close();
   });

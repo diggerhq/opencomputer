@@ -70,7 +70,7 @@ async function connect(org: string): Promise<{ socket: WebSocket; frames: any[] 
   socket.accept();
   const frames: any[] = [];
   socket.addEventListener("message", (event: MessageEvent) => void frames.push(JSON.parse(String(event.data))));
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "host-1", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "host-1", sessions: [] }));
   await until(() => frames, (all) => all.some((frame) => frame.t === "welcome"), "welcome");
   return { socket, frames };
 }

@@ -60,7 +60,7 @@ async function connectHost(id: string): Promise<{ socket: WebSocket; welcome: an
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: id, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: id, version: "test", sessions: [] }));
   return { socket, welcome: await welcomed };
 }
 
@@ -172,7 +172,7 @@ describe("warm pool", () => {
     const replay = again.webSocket!;
     replay.accept();
     const reassigned = nextMessage(replay, "assign");
-    replay.send(JSON.stringify({ t: "hello", protocol: 1, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
+    replay.send(JSON.stringify({ t: "hello", protocol: 6, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
     expect(await reassigned).toMatchObject({ organizationId: "org_b", hostToken: await hostToken(KEY, "org_b") });
     replay.close();
 

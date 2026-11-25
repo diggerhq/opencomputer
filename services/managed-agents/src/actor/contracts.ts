@@ -267,7 +267,14 @@ export interface ComputerRpcAdded {
   /** Org only; relayed as the host's `access` frame. */
   setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
   /** The Slack actor only. */
-  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant"; args: string; sessionId?: string }): Promise<{ reply: string }>;
+  /**
+   * `args`: the command's text after its name; for `grant`, the clicked button's action id, with Slack's `triggerId`.
+   * `channelId` and `threadTs`: where the command was sent (absent: the session's thread).
+   */
+  command(
+    p: Principal,
+    c: { name: "secret" | "var" | "claude" | "codex" | "grant"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
+  ): Promise<{ reply: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;

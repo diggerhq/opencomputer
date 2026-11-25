@@ -84,7 +84,7 @@ async function connectHost(org: string, sessions: Array<{ key: string; status: s
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions }));
   await welcomed;
   return socket;
 }

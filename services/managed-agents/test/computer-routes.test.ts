@@ -118,7 +118,7 @@ describe("computer routes", () => {
     const socket = upgraded.webSocket!;
     socket.accept();
     const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ACCOUNT, version: "test", sessions: [] }));
+    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ACCOUNT, version: "test", sessions: [] }));
     const welcome = await welcomed;
     expect(welcome).toMatchObject({ protocol: CALVIN_PROTOCOL_VERSION, people: [], credentials: { slackBotToken: "", anthropicApiKey: "sk-ant-test" } });
     // No managed key bound for the organization yet: the shared key, on Anthropic.
@@ -459,7 +459,7 @@ describe("computer routes", () => {
     const socket = upgraded.webSocket!;
     socket.accept();
     const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "test", sessions: [{ key: KEY, status: "busy" }] }));
+    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "test", sessions: [{ key: KEY, status: "busy" }] }));
     const { credentials } = await welcomed;
     expect(credentials).toMatchObject({ anthropicApiKey: "sk-or-org-billed", anthropicBaseUrl: "https://openrouter.ai/api" });
     expect(credentials.claudeOAuthToken).toBeUndefined();
@@ -891,7 +891,7 @@ describe("computer routes", () => {
       if (frame.t === "deliver") delivers.push(frame);
     });
     const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "test", sessions: [] }));
+    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "test", sessions: [] }));
     expect((await welcomed).credentials.anthropicApiKey).toBe("sk-or-first");
 
     // The first lookup stored the key sealed in this object's own storage, never in plaintext.
