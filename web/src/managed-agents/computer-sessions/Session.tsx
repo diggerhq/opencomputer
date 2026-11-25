@@ -1,6 +1,5 @@
 import {
-  lazy,
-  Suspense,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -14,13 +13,14 @@ import {
   ArchiveRestore,
   ArrowUp,
   Loader2,
+  PanelRight,
   Square,
-  SquareTerminal,
 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
 import { Button } from '@/components/ui/button'
+import { AuthContext } from '@/hooks/useAuth'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -46,11 +46,8 @@ import {
   useCapabilities,
 } from './state'
 import { buildTranscript, mergeEvents } from './transcript'
-
-// xterm is heavy: loaded when a terminal is first opened.
-const SessionTerminal = lazy(() =>
-  import('./SessionTerminal').then((m) => ({ default: m.SessionTerminal })),
-)
+import { SessionSidebar } from './SessionSidebar'
+import { useSidebarPrefs } from './sidebar-prefs'
 
 // Events that change what the session row says (status, asks, title).
 const SESSION_EVENTS = /^(session\.|turn\.|ask\.|runtime\.)/
@@ -130,7 +127,8 @@ function SessionPage({ id }: { id: string }) {
     void qc.invalidateQueries({ queryKey: sessionKeys.all })
   })
   const items = useMemo(() => buildTranscript(events), [events])
-  const [terminal, setTerminal] = useState(false)
+  const userId = useContext(AuthContext)?.user?.id ?? 'anonymous'
+  const [sidebar, setSidebar] = useSidebarPrefs(userId)
   const s = session.data
   const emails = useMemberEmails()
 
@@ -165,66 +163,69 @@ function SessionPage({ id }: { id: string }) {
     <div className="flex h-full flex-col">
       <Header
         id={id}
-        terminal={terminal}
-        onTerminal={() => setTerminal((t) => !t)}
+        sidebar={sidebar.open}
+        onSidebar={() => setSidebar({ open: !sidebar.open })}
       />
-      {terminal ? (
-        <Suspense fallback={null}>
-          <SessionTerminal id={id} onClose={() => setTerminal(false)} />
-        </Suspense>
-      ) : null}
-      <div
-        ref={scroller}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        }}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
-          {!loaded ? (
-            <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" />
-          ) : items.length === 0 ? (
-            <p className="text-muted-foreground text-center text-sm">
-              Nothing here yet.
-            </p>
-          ) : (
-            items.map((item, i) => (
-              <Item
-                key={item.key}
-                item={item}
-                emails={emails}
-                // A reply opens with who is speaking: the first agent item after a person's message.
-                leads={i === 0 || items[i - 1].kind === 'user'}
-              />
-            ))
-          )}
-          {s && isBusy(s.status) && !openAsks.length ? (
-            <p className="text-muted-foreground flex items-center gap-2 text-sm">
-              <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              {s.status === 'starting' ? 'Starting the computer…' : 'Working…'}
-            </p>
-          ) : null}
-          {s
-            ? openAsks.map((ask) => (
-                <AskCard key={ask.id} ask={ask} session={s} />
-              ))
-            : null}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              pinned.current =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            }}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
+              {!loaded ? (
+                <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" />
+              ) : items.length === 0 ? (
+                <p className="text-muted-foreground text-center text-sm">
+                  Nothing here yet.
+                </p>
+              ) : (
+                items.map((item, i) => (
+                  <Item
+                    key={item.key}
+                    item={item}
+                    emails={emails}
+                    // A reply opens with who is speaking: the first agent item after a person's message.
+                    leads={i === 0 || items[i - 1].kind === 'user'}
+                  />
+                ))
+              )}
+              {s && isBusy(s.status) && !openAsks.length ? (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  {s.status === 'starting'
+                    ? 'Starting the computer…'
+                    : 'Working…'}
+                </p>
+              ) : null}
+              {s
+                ? openAsks.map((ask) => (
+                    <AskCard key={ask.id} ask={ask} session={s} />
+                  ))
+                : null}
+            </div>
+          </div>
+          <Composer id={id} />
         </div>
+        <SessionSidebar sessionId={id} prefs={sidebar} onChange={setSidebar} />
       </div>
-      <Composer id={id} />
     </div>
   )
 }
 
 function Header({
   id,
-  terminal,
-  onTerminal,
+  sidebar,
+  onSidebar,
 }: {
   id: string
-  terminal: boolean
-  onTerminal: () => void
+  sidebar: boolean
+  onSidebar: () => void
 }) {
   const qc = useQueryClient()
   const { data: s } = useQuery({
@@ -265,14 +266,14 @@ function Header({
         </Button>
       ) : null}
       <Button
-        size="sm"
-        variant={terminal ? 'secondary' : 'ghost'}
-        aria-pressed={terminal}
-        title="Open a shell in this session's computer"
-        onClick={onTerminal}
+        size="icon-sm"
+        variant={sidebar ? 'secondary' : 'ghost'}
+        aria-pressed={sidebar}
+        aria-label={sidebar ? 'Hide the sidebar' : 'Show the sidebar'}
+        title="Terminal, browser and desktop of this session's computer"
+        onClick={onSidebar}
       >
-        <SquareTerminal className="size-3.5" aria-hidden />
-        Terminal
+        <PanelRight />
       </Button>
       {s ? (
         <Button

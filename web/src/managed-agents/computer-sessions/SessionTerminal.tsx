@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Loader2, X } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { mintTerminalTicket, resumeSession } from '../computer-sessions-api'
@@ -11,6 +11,7 @@ import {
   type TerminalConnection,
   type TerminalState,
 } from './terminal-wire'
+import type { SidebarTabProps } from './sidebar-tabs'
 
 const THEME = {
   background: '#14120f',
@@ -33,15 +34,10 @@ function ticketError(e: unknown): Error {
   return e instanceof Error ? e : new Error('Could not open a terminal.')
 }
 
-// An interactive shell in the session's computer, over the same wire
-// `opc shell` uses (terminal-wire.ts). Remounting (`key`) reconnects.
-export function SessionTerminal({
-  id,
-  onClose,
-}: {
-  id: string
-  onClose: () => void
-}) {
+// The sidebar's Terminal tab: an interactive shell in the session's computer,
+// over the same wire `opc shell` uses (terminal-wire.ts). It refits whenever
+// its box changes size, so dragging or reopening the sidebar resizes the shell.
+export function SessionTerminal({ sessionId: id }: SidebarTabProps) {
   const host = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<TerminalState>({ kind: 'connecting' })
   const [waking, setWaking] = useState(false)
@@ -58,7 +54,12 @@ export function SessionTerminal({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(host.current)
-    fit.fit()
+    const el = host.current
+    // A hidden tab or closed sidebar has no size to fit to.
+    const refit = () => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit()
+    }
+    refit()
     let conn: TerminalConnection | null = openTerminal(
       {
         sessionId: id,
@@ -79,8 +80,8 @@ export function SessionTerminal({
     )
     const input = term.onData((d) => conn?.send(d))
     const resize = term.onResize(({ cols, rows }) => conn?.resize(cols, rows))
-    const observer = new ResizeObserver(() => fit.fit())
-    observer.observe(host.current)
+    const observer = new ResizeObserver(refit)
+    observer.observe(el)
     return () => {
       observer.disconnect()
       input.dispose()
@@ -111,25 +112,14 @@ export function SessionTerminal({
   }
 
   return (
-    <div className="border-border flex h-[45%] min-h-48 shrink-0 flex-col border-b bg-[#14120f]">
-      <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-xs text-[#c2bcae]">
-        <span className="font-medium">Terminal</span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 px-3 py-1 text-xs text-[#c2bcae]">
         <Status
           state={state}
           waking={waking}
           onWake={() => void wake()}
           onReconnect={() => setDial((n) => n + 1)}
         />
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          className="ml-auto text-[#c2bcae]"
-          aria-label="Close terminal"
-          title="Close terminal"
-          onClick={onClose}
-        >
-          <X />
-        </Button>
       </div>
       <div ref={host} className="min-h-0 flex-1 px-2 pb-2" />
     </div>
@@ -154,7 +144,7 @@ function Status({
     case 'waking-computer':
       return <Line spin text="Waking the computer…" />
     case 'open':
-      return null
+      return <span>Connected</span>
     case 'not-running':
       return (
         <>
