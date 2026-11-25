@@ -355,3 +355,132 @@ describe("track mutations", () => {
     });
   });
 });
+
+const doc = (sql: Sql) => sql.exec<{ rev: number; text: string; spans: string }>("SELECT rev, text, spans FROM doc WHERE track_id = ?", tid(1))[0]!;
+const proposals = (sql: Sql) => sql.exec<{ id: string; kind: string; state: string }>("SELECT id, kind, state FROM proposal ORDER BY id");
+
+describe("doc.save (22.3)", () => {
+  it("a person saves with spans; a stale base is a conflict with the current rev and text", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      expect(ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "Goal\nShip it", spans: [{ from: 0, to: 2, by: "user:usr_a" }] })).value).toEqual({ rev: 1 });
+      expect(doc(sql)).toMatchObject({ rev: 1, text: "Goal\nShip it" });
+      expect(sql.exec("SELECT rev, by FROM doc_rev")).toEqual([{ rev: 1, by: "user:usr_a" }]);
+      expect(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "x", spans: [] })).toMatchObject({ ok: false, code: "conflict", rev: 1, text: "Goal\nShip it" });
+      expect(run(sql, B, "doc.save", { tid: tid(1), baseRev: 1, text: "x", spans: [] })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(1)), "doc.save", { tid: tid(1), baseRev: 1, text: "x" })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+
+  it("the track's agent adds lines around a person's (span moved), and a change to them becomes an edit proposal; accepting it saves", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      const bot = agent(agentSid(1));
+      ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "Goal: ship", spans: [{ from: 0, to: 1, by: "user:usr_a" }] }));
+      ok(run(sql, bot, "doc.save", { tid: tid(1), baseRev: 1, text: "# Dock\nGoal: ship\nPlan: two threads" }));
+      expect(JSON.parse(doc(sql).spans)).toEqual([{ from: 1, to: 2, by: "user:usr_a" }]);
+
+      const out = run(sql, bot, "doc.save", { tid: tid(1), baseRev: 2, text: "# Dock\nGoal: ship by Friday\nPlan: two threads" });
+      expect(out).toMatchObject({ ok: false, code: "refused", reason: "proposed" });
+      expect(doc(sql).rev).toBe(2);
+      const [p] = proposals(sql);
+      expect(p).toMatchObject({ kind: "edit", state: "open", id: (out as unknown as { proposalId: string }).proposalId });
+      expect(occurrences(sql)).toContain("proposal.created");
+
+      ok(run(sql, A, "proposal.accept", { proposalId: p!.id }));
+      expect(doc(sql)).toMatchObject({ rev: 3, text: "# Dock\nGoal: ship by Friday\nPlan: two threads" });
+      expect(proposals(sql)[0]).toMatchObject({ state: "accepted" });
+    });
+  });
+
+  it("an edit proposal whose base moved is voided on accept, with the conflict", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 0, text: "Mine", spans: [{ from: 0, to: 1, by: "user:usr_a" }] }));
+      run(sql, agent(agentSid(1)), "doc.save", { tid: tid(1), baseRev: 1, text: "Not yours" });
+      ok(run(sql, A, "doc.save", { tid: tid(1), baseRev: 1, text: "Mine, edited", spans: [{ from: 0, to: 1, by: "user:usr_a" }] }));
+      const [p] = proposals(sql);
+      expect(run(sql, A, "proposal.accept", { proposalId: p!.id })).toMatchObject({ ok: false, code: "conflict", rev: 2 });
+      expect(proposals(sql)[0]).toMatchObject({ state: "void" });
+    });
+  });
+});
+
+describe("read, pref, result, review", () => {
+  it("read.set keeps the max; pref.set is the member's own; agents may do neither", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      ok(run(sql, A, "read.set", { sid: sid(1), seq: 7 }));
+      ok(run(sql, A, "read.set", { sid: sid(1), seq: 3 }));
+      expect(sql.exec("SELECT member, read_seq, audience FROM read")).toEqual([{ member: "usr_a", read_seq: 7, audience: "member:usr_a" }]);
+      ok(run(sql, A, "pref.set", { key: "list.width", value: 320 }));
+      expect(sql.exec("SELECT member, key, value FROM pref")).toEqual([{ member: "usr_a", key: "list.width", value: "320" }]);
+      expect(run(sql, agent(sid(1)), "read.set", { sid: sid(1), seq: 9 })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(1)), "pref.set", { key: "k", value: 1 })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+
+  it("result.add upserts on (session, kind, ref) with result.changed; review.save; the agent's own session only", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      const pr = { sid: sid(1), kind: "pr", ref: "https://github.com/o/r/pull/1", title: "Fix login" };
+      expect(ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000001", ...pr })).value).toEqual({ resultId: "res_0000000000000001" });
+      expect(ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000002", ...pr, title: "Fix login redirect" })).value).toEqual({ resultId: "res_0000000000000001" });
+      expect(sql.exec("SELECT id, title FROM result")).toEqual([{ id: "res_0000000000000001", title: "Fix login redirect" }]);
+      expect(occurrences(sql)).toEqual(["result.changed", "result.changed"]);
+      ok(run(sql, agent(sid(1)), "review.save", { resultId: "res_0000000000000001", head: "abc123", parts: [{ title: "Redirect" }] }));
+      expect(sql.exec("SELECT head FROM review")).toEqual([{ head: "abc123" }]);
+      expect(run(sql, A, "result.add", { resultId: "res_0000000000000003", ...pr })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(2)), "review.save", { resultId: "res_0000000000000001", head: "x", parts: [] })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+});
+
+describe("proposals", () => {
+  const pid = (n: number) => `prp_${String(n).padStart(16, "0")}`;
+
+  it("proposal.create voids an older open one of the same kind and target, and writes proposal.created", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      ok(run(sql, agent(sid(1)), "proposal.create", { proposalId: pid(1), kind: "done", target: sid(1), what: "PR merged" }));
+      ok(run(sql, agent(sid(1)), "proposal.create", { proposalId: pid(2), kind: "done", target: sid(1), what: "PR merged, tests pass" }));
+      expect(proposals(sql).map((p) => p.state)).toEqual(["void", "open"]);
+      expect(occurrences(sql)).toEqual(["proposal.created", "proposal.created"]);
+      expect(run(sql, A, "proposal.create", { proposalId: pid(3), kind: "done", target: sid(1), what: "x" })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(2)), "proposal.create", { proposalId: pid(3), kind: "done", target: sid(1), what: "x" })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+
+  it("proposal.accept runs the proposed mutation as the person, with its op; only the owner may accept or dismiss", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      seedThread(sql, sid(2));
+      seedThread(sql, sid(3));
+      ok(run(sql, agent(sid(2)), "proposal.create", { proposalId: pid(1), kind: "done", target: sid(2), what: "Done" }));
+      expect(run(sql, B, "proposal.accept", { proposalId: pid(1) })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(2)), "proposal.accept", { proposalId: pid(1) })).toMatchObject({ ok: false, code: "not_found" });
+      ok(run(sql, A, "proposal.accept", { proposalId: pid(1) }));
+      expect(place(sql, sid(2))).toMatchObject({ done_by: "user:usr_a" });
+      expect(sql.exec("SELECT name, by FROM op WHERE session_id = ?", sid(2))).toEqual([{ name: "thread.done", by: "user:usr_a" }]);
+      expect(run(sql, A, "proposal.accept", { proposalId: pid(1) })).toMatchObject({ ok: false, code: "refused", reason: "not_open" });
+
+      ok(run(sql, agent(sid(3)), "proposal.create", { proposalId: pid(2), kind: "wrap", target: sid(3), what: "Several pieces of work", args: { name: "Login" } }));
+      ok(run(sql, A, "proposal.accept", { proposalId: pid(2) }));
+      expect(sql.exec("SELECT name FROM track WHERE id != ?", tid(1))).toEqual([{ name: "Login" }]);
+
+      ok(run(sql, agent(agentSid(1)), "proposal.create", { proposalId: pid(3), kind: "done", target: tid(1), what: "All shipped" }));
+      ok(run(sql, A, "proposal.dismiss", { proposalId: pid(3) }));
+      expect(sql.exec("SELECT state FROM proposal WHERE id = ?", pid(3))).toEqual([{ state: "dismissed" }]);
+    });
+  });
+
+  it("a move proposal accepted places the thread", async () => {
+    await withOrg((sql) => {
+      seedTrack(sql);
+      seedThread(sql, sid(2));
+      ok(run(sql, agent(sid(2)), "proposal.create", { proposalId: pid(1), kind: "move", target: sid(2), what: "Belongs in Dock", args: { trackId: tid(1) } }));
+      ok(run(sql, A, "proposal.accept", { proposalId: pid(1) }));
+      expect(place(sql, sid(2))).toMatchObject({ track_id: tid(1), placed_by: "user:usr_a" });
+    });
+  });
+});
