@@ -43,7 +43,7 @@ import { useGrantingInstallations } from './queries'
 // one per organization, chosen from what its GitHub connection can reach.
 // One control shows the choice and opens a searchable list of what the
 // installations grant, as GitHub's and Vercel's repository pickers do. The
-// board's first-time state uses it (`BoardIntro`); the setting with its
+// first-time state uses it; the setting with its
 // state and fixes is KnowledgeRepositorySection.
 
 /**
