@@ -144,6 +144,25 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
 
 /** The socket of tracks and threads (spec 38), relative to the mount. */
 export const COMPUTER_LIVE_SUFFIX = "/computer/live";
+export const LIVE_SUBPROTOCOL = "oc.live.v1";
+const BEARER_SUBPROTOCOL = "oc.bearer.";
+
+/**
+ * What a `/live` upgrade offers (spec 18.7, 38): whether it asks for
+ * `oc.live.v1`, and the token of an `oc.bearer.<token>` subprotocol, the only
+ * place a browser can put one.
+ */
+export function liveOffer(request: Request): { live: boolean; token: string | null } {
+  const offered = (request.headers.get("sec-websocket-protocol") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const bearer = offered.find((value) => value.startsWith(BEARER_SUBPROTOCOL));
+  return {
+    live: offered.includes(LIVE_SUBPROTOCOL),
+    token: bearer ? bearer.slice(BEARER_SUBPROTOCOL.length) || null : null,
+  };
+}
 
 const WORKSPACE_ROUTE = new RegExp(
   `^/computer/sessions/(${SEG})/workspace/(archive|file|files)$`,
@@ -342,10 +361,19 @@ export const computerApiFamily: RouteFamily = {
     const requestID = clientRequestID(request);
     if (requestID) headers.set("x-request-id", requestID);
     else headers.delete("x-request-id");
+    // The Live upgrade: only `oc.live.v1` goes on, never the bearer token.
+    // Live answers 101 echoing it, and the socket is returned as it is.
+    const upgrade = target.pathname.endsWith(COMPUTER_LIVE_SUFFIX);
+    if (upgrade) {
+      headers.set("upgrade", "websocket");
+      headers.set("sec-websocket-protocol", LIVE_SUBPROTOCOL);
+    }
     const init: RequestInit = { method, headers, redirect: "manual" };
     if (hasBody(method)) init.body = request.body;
     try {
-      return streamBack(await fetch(target, init), API_RESPONSE_HEADERS);
+      const upstream = await fetch(target, init);
+      if (upgrade && upstream.status === 101) return upstream;
+      return streamBack(upstream, API_RESPONSE_HEADERS);
     } catch (error) {
       return upstreamUnavailable(request, "computer_api.upstream_failed", error);
     }
