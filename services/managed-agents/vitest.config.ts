@@ -4,6 +4,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 import { fakeWorkerdRuntime } from "./test/fixtures/fake-workerd-runtime.mjs";
+import { fakeDeliveryOutbound } from "./test/fixtures/delivery-fakes.mjs";
 import { fakeLiveEdge } from "./test/fixtures/live-fakes.mjs";
 import { fakeComputerOutbound, fakeComputerPlatform } from "./test/fixtures/computer-fakes.mjs";
 import { artifactBundle, mockModel } from "./test/fixtures/memory-integrated-fixture.mjs";
@@ -41,6 +42,17 @@ export default defineConfig({
           }),
         ],
         test: { name: "live", include: ["test/live.test.ts"] },
+      },
+      {
+        // Tracks and threads: Delivery alone, with fakes of Org, SessionLog, the Slack actor and
+        // the network a webhook is sent into.
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.delivery-test.jsonc" },
+            miniflare: { outboundService: fakeDeliveryOutbound },
+          }),
+        ],
+        test: { name: "delivery", include: ["test/delivery.test.ts"] },
       },
       {
         plugins: [
