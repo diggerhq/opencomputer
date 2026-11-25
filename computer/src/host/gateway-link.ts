@@ -22,6 +22,8 @@ export interface LinkHooks {
   token(): string;
   hello(): Extract<HostToGateway, { t: 'hello' }>;
   message(m: GatewayToHost): void;
+  /** The gateway closed the link, with its close code (4426: this release speaks a protocol it no longer does; release.ts). */
+  closed?(code: number): void;
 }
 
 export interface GatewayLink {
@@ -79,9 +81,10 @@ export function gatewayLink(hooks: LinkHooks, connect = (url: string, token: str
       hooks.message(m);
     });
     sock.on('error', (e) => log.warn('gateway link:', e.message));
-    sock.on('close', () => {
+    sock.on('close', (code) => {
       clearInterval(ping);
       if (ws === sock) ws = undefined;
+      hooks.closed?.(code);
       const wait = backoff * (0.75 + Math.random() / 2);
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       setTimeout(dial, wait);

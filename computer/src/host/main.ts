@@ -2,7 +2,8 @@
 // WebSocket, forks sessions, starts runners outside its own process tree,
 // forwards deliveries, relays GitHub tokens, and finds its runners again
 // after a restart: by their sockets, or on a `podman` host from its records
-// and Podman's inventory (sandbox/sweep.ts). Restarting it never ends a turn.
+// and Podman's inventory (sandbox/sweep.ts). Restarting it on the same release
+// never ends a turn; a runner of another release is stopped (release.ts).
 //
 //   SP_GATEWAY_URL=ws://…/host SP_HOST_TOKEN=… [SP_HOST_ID] [SP_DATA] [SP_RUN]
 //   [SP_DEFINITION]            workspace definition: fork with src/workspaces (VM); unset: ensureWorkdir (laptop).
@@ -86,6 +87,7 @@ import { hostModelAccess } from './model-access.js';
 import { unitExists } from './launch.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
+import { ofAnotherRelease, updateOnClose } from './release.js';
 import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
@@ -286,6 +288,7 @@ const link = gatewayLink({
   hello: () => ({ t: 'hello', protocol: PROTOCOL_VERSION, hostId: identity.hostId, version: VERSION,
     sessions: [...runners.values()].flatMap((r) => (r.report ? [r.report] : [])), profiles: subs.profiles(), journals: api.journals() }),
   message: (m) => void onGateway(m).catch((e) => log.error('gateway message', m.t, e)),
+  closed: (code) => void updateOnClose(code, HOST_RUN),
 });
 function toGateway(m: HostToGateway) {
   link.send(m);
@@ -477,6 +480,8 @@ await api.boot(); // settles the journals no runner holds (work 084); none on a 
 api.rediscovered(sandbox ? await sandbox.reconcile()
   : await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 sandbox?.sweeping();
+// A runner another release started is stopped (release.ts): its turn ends interrupted, its next delivery cold-starts it on this one.
+for (const r of ofAnotherRelease(runners.values(), VERSION)) (log.info(`runner ${r.id} (${r.key}) is of release ${r.report?.runnerVersion ?? 'unknown'}; stopping it`), void retireRunner(r.id));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();
