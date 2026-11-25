@@ -25,7 +25,7 @@ describe("secrets routes", () => {
   const key = { id: "key_1", hash: "a".repeat(64), name: "laptop", kind: "user" as const, expiresAt: null, createdAt: null };
   const put = () => new Request("https://blue.test/v1/computer/sessions/cs_1/secrets/API_KEY", { method: "PUT", body: "{}" });
   const route = (identity: RequestIdentity, request = put()) => {
-    const stub: ComputerApiStub = { computerApi: vi.fn() };
+    const stub: ComputerApiStub = { computerApi: vi.fn(async () => ({ status: 204 })) };
     return routeComputerApi(request, {} as never, identity, "org_1", stub, new URL(request.url).pathname.slice("/v1/computer".length));
   };
   const code = async (res: Response) => ((await res.json()) as { error: { reason?: string; code: string } }).error;
@@ -43,8 +43,18 @@ describe("secrets routes", () => {
     const wildcard = await route({ ...person, apiKey: { ...key, scopes: ["sandbox:*"] } });
     expect(wildcard.status).toBe(403);
     expect(await code(wildcard)).toMatchObject({ reason: "missing_scope", scope: "secrets:write" });
-    expect((await route({ ...person, apiKey: { ...key, scopes: ["secrets:write"] } })).status).toBe(409);
-    expect((await route(person)).status).toBe(409);
+    expect((await route({ ...person, apiKey: { ...key, scopes: ["secrets:write"] } })).status).toBe(204);
+    expect((await route(person)).status).toBe(204);
+  });
+
+  it("routes session writes with the session id and validates names", async () => {
+    const seen: unknown[] = [];
+    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
+    const go = (name: string) => routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/cs_test/secrets/${name}`, { method: "PUT", body: '{"value":"private"}' }), {} as never, person, "org_1", stub, `/sessions/cs_test/secrets/${name}`);
+    expect((await go("TOKEN")).status).toBe(204);
+    expect(seen).toEqual([{ op: "secrets.session.put", sessionId: "cs_test", name: "TOKEN", body: { value: "private" } }]);
+    expect((await go("9BAD")).status).toBe(400);
+    expect(seen).toHaveLength(1);
   });
 
   it("routes organization secrets to the Computer, needing secrets:write to change one", async () => {

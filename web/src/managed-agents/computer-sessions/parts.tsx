@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, KeyRound, Terminal, X } from 'lucide-react'
+import { Check, Terminal, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/form'
 import { SlackMark } from '@/components/slack-mark'
@@ -17,6 +17,7 @@ import {
   type SessionSettings,
 } from '../computer-sessions-api'
 import { askTitle, isBusy, sessionTitle, useCapabilities } from './state'
+import { SecretRequest } from './SecretRequest'
 import { ApprovalDetail } from './ask-detail'
 
 export function StatusDot({
@@ -155,7 +156,7 @@ function modeLabel(mode: string) {
 }
 
 // An open ask, answerable here: approve or deny a tool call, or answer the
-// agent's questions. A secret is set privately, so it points to Secrets.
+// agent's questions. A secret is set privately in its own form.
 // `hideTitle` leaves out the ask's title where the page already heads with it;
 // `onAnswered` runs once an answer or a skip is accepted.
 export function AskCard({
@@ -217,15 +218,7 @@ export function AskCard({
           onDismiss={() => dismiss.mutate()}
         />
       ) : (
-        <div className="flex items-center justify-between gap-3">
-          <p className="flex items-center gap-2 text-sm">
-            <KeyRound className="size-4 opacity-60" aria-hidden />
-            {askTitle(ask)}
-          </p>
-          <Button asChild size="sm" variant="outline">
-            <Link to="/computer/secrets">Open Secrets</Link>
-          </Button>
-        </div>
+        <SecretRequest key={ask.id} ask={ask} onAnswered={onAnswered} />
       )}
     </div>
   )

@@ -56,7 +56,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   const is = (m: string, n: number) => method === m && p.length === n;
   if (is("GET", 1) && p[0] === "me") return { op: "me" };
   if (is("POST", 1) && p[0] === "tickets") return { op: "ticket" };
-  // Secrets (secrets.mdx). Work 095 v1: the organization layer; personal and session secrets answer 409 feature_unavailable.
+  // Secret writes: organization and session layers; personal secrets remain unavailable over HTTP.
   if (is("GET", 1) && p[0] === "secrets") return { op: "secrets.list" };
   if (is("GET", 3) && p[0] === "secrets" && p[2] === "events") return { op: "secrets.events", sub: p[1] };
   if (p[0] === "organization" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) {
@@ -105,7 +105,8 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     if (is("GET", 4)) return { op: "subagents.get", sessionId, sub: p[3] };
     if (is("POST", 5) && p[4] === "stop") return { op: "subagents.stop", sessionId, sub: p[3] };
   }
-  if (r === "secrets" && p.length === 4 && (method === "PUT" || method === "DELETE")) return { op: "secrets", sessionId };
+  if (r === "secrets" && is("PUT", 4)) return { op: "secrets.session.put", sessionId, sub: p[3] };
+  if (r === "secrets" && is("DELETE", 4)) return { op: "secrets", sessionId };
   return null;
 }
 
@@ -113,7 +114,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
 function scopeOf(op: string): ApiScope | null {
   if (op === "me" || op === "ticket") return null;
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
-  if (op === "secrets" || op === "secrets.put" || op === "secrets.delete") return "secrets:write";
+  if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
   if (op === "work.repository.put") return "work:write";
   if (op.startsWith("work.")) return "work:read";
@@ -269,7 +270,7 @@ export function routeFamily(op: string): string {
 }
 
 const OPS = new Set([
-  "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "list", "create", "get", "patch", "capabilities",
+  "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "list", "create", "get", "patch", "capabilities",
   "aside.set", "aside.clear",
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
@@ -413,13 +414,15 @@ async function routeApi(
   if (route.op.startsWith("secrets.")) {
     const name = route.sub!;
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
-      return route.op === "secrets.put" ? out.error(400, "invalid_name", "A name is letters, digits and _, not starting with a digit (at most 64).", { field: "name" }) : out.error(404, "secret_not_found", "No such organization secret.");
+      return (route.op === "secrets.put" || route.op === "secrets.session.put") ? out.error(400, "invalid_name", "A name is letters, digits and _, not starting with a digit (at most 64).", { field: "name" }) : out.error(404, "secret_not_found", "No such organization secret.");
     }
     if (route.op === "secrets.events") return call({ op: "secrets.events", name });
     if (route.op === "secrets.delete") return call({ op: "secrets.delete", name });
     const parsed = await bodyOf(request);
     if ("error" in parsed) return out.error(...parsed.error);
-    return call({ op: "secrets.put", name, body: parsed.value });
+    return call(route.op === "secrets.session.put"
+      ? { op: "secrets.session.put", sessionId: route.sessionId!, name, body: parsed.value }
+      : { op: "secrets.put", name, body: parsed.value });
   }
   if (route.op === "me") return call({ op: "me" });
   if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities() });

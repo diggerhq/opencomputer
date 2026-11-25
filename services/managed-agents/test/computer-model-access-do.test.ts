@@ -145,6 +145,23 @@ describe("vault secrets for API sessions", () => {
     expect(named(of(B).secrets)).toEqual(["workspace:ORG_TOKEN", "workspace:SHARED"]);
   });
 
+  it("a web form write preserves scope resolution for pushes and later starts", async () => {
+    const org = "org_api_secret_form";
+    const stub = await seeded(org);
+    const caller = { member: LINKED, userId: "user_01JABCDEFGHJKMNPQRSTVWXYZ0", name: "Owner", email: null, via: "dashboard", client: null, scopes: ["secrets:write"], requestId: "req_form" };
+    const write = (sessionId: string) => inside(stub, (instance) => instance.computerApi(org, caller, {
+      op: "secrets.session.put", sessionId, name: "FORM_TOKEN", body: { value: "form-fixture" },
+    }));
+    expect(await write(A)).toEqual({ status: 204 });
+    const pushed = (await frames(stub)).filter((f) => f.t === "secrets");
+    expect(pushed.map((f) => f.sessionKey)).toEqual([A]);
+    expect(named(pushed[0]?.secrets)).toEqual(["session:FORM_TOKEN", "session:SESSION_KEY", "user:SHARED", "user:USER_KEY", "workspace:ORG_TOKEN"]);
+    await inside(stub, (instance) => instance.api.onHostFrame({ t: "wake", sessionId: A }));
+    const starts = await until(async () => (await frames(stub)).filter((f) => f.t === "start"), (s) => s.length === 1, "form session start");
+    expect(named(starts[0]?.secrets)).toEqual(named(pushed[0]?.secrets));
+    expect(await write("cs_00000000000000ff")).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+  });
+
   it("pushSecrets reaches API sessions with no Slack owner, by linked owner too; Slack sessions as before", async () => {
     const stub = await seeded("org_api_secrets_push");
     await inside(stub, (instance) => instance.pushSecrets({}));

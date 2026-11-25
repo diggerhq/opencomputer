@@ -262,6 +262,16 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
   const MEMBER = { member: "usr_01jabcdefghjkmnpqrstvwxyz0", userId: "user_1", name: "Owner", email: null, via: "dashboard" as const, client: null, scopes: [], requestId: "req_1" };
   const VALUE = "sk-live-do-not-show";
 
+  it("sets a sealed session-only secret through the API without returning the value", async () => {
+    const reply = await s.api(MEMBER, { op: "secrets.session.put", sessionId: "cs_test", name: "TOKEN", body: { value: "private-value", file: true } }, SESSION.key);
+    expect(reply).toEqual({ status: 204 });
+    expect(pushes.at(-1)).toEqual({ key: SESSION.key });
+    expect(await s.forSession(SESSION.key, SESSION.ownerId)).toContainEqual({ name: "TOKEN", value: "private-value", file: true, scope: "session" });
+    expect(await s.forSession("other-session", SESSION.ownerId)).toEqual([]);
+    expect((await s.api(MEMBER, { op: "secrets.list" })).body).toEqual({ secrets: [] });
+    expect(JSON.stringify(calls)).not.toContain("private-value");
+  });
+
   it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
     const created = await s.api(MEMBER, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: VALUE } });
     expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.member, name: "Owner" } } } });

@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import {
-  ArrowRight,
-  ArrowUp,
-  ArrowUpRight,
-  Check,
-  KeyRound,
-  Loader2,
-} from 'lucide-react'
+import { ArrowRight, ArrowUp, Check, Loader2 } from 'lucide-react'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
@@ -22,6 +14,7 @@ import {
   type Ask,
   type AskAnswer,
 } from '../computer-sessions-api'
+import { SecretRequest } from './SecretRequest'
 import { ApprovalDetail } from './ask-detail'
 import { isPlan } from './ask-line'
 import { useCapabilities } from './state'
@@ -189,7 +182,11 @@ export function AnswerDock({
         </Attached>
       ) : kind === 'secret' && ask ? (
         <Attached>
-          <SecretRequest ask={ask} />
+          <SecretRequest
+            key={ask.id}
+            ask={ask}
+            onAnswered={() => onAnswered('Secret saved')}
+          />
         </Attached>
       ) : null}
 
@@ -423,42 +420,5 @@ function Options({
         })}
       </div>
     </fieldset>
-  )
-}
-
-// A secret is set privately, in Secrets; the agent goes on once it is. A
-// masked field can take the button's place here when the API takes values.
-function SecretRequest({ ask }: { ask: Ask }) {
-  const req = (ask.secret ?? {}) as {
-    name?: string
-    purpose?: string
-    file?: boolean
-  }
-  return (
-    <div className="flex items-start gap-3">
-      <KeyRound
-        className="text-muted-foreground mt-0.5 size-4 shrink-0"
-        aria-hidden
-      />
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p className="flex items-baseline gap-2 text-sm">
-          <span className="font-mono font-medium break-all">
-            {req.name ?? 'A secret'}
-          </span>
-          {req.file ? (
-            <span className="text-muted-foreground text-xs">file</span>
-          ) : null}
-        </p>
-        {req.purpose ? (
-          <p className="text-muted-foreground text-sm">{req.purpose}</p>
-        ) : null}
-      </div>
-      <Button asChild size="sm" variant="outline" className="shrink-0">
-        <Link to="/computer/secrets">
-          Add in Secrets
-          <ArrowUpRight aria-hidden />
-        </Link>
-      </Button>
-    </div>
   )
 }
