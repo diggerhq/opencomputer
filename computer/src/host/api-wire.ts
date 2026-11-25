@@ -18,10 +18,8 @@
 //   per-name record survives a reboot.
 
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import type { WireHooks, WireLinkLike } from './api-relay.js';
-import { runnerMaxCap, systemdRunPrefix } from './runner-limits.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 import type { RunnerUser } from './runner-user.js';
 import { createTerminals, type TerminalsOptions } from './terminal.js';
@@ -32,8 +30,8 @@ export interface WireOptions {
   launch: string;
   /** The runners' user; absent (runners run as the host's user): no relay. */
   user?: RunnerUser;
-  /** SP_SYSTEMD_RUN; absent: the runners' default prefix (runner-limits.ts). */
-  systemdRun?: string;
+  /** The prefix of the runners' units (host-config.ts): terminals start in one like it. */
+  systemdRun: string;
   path?: string;
   /** Upload records (HOST_DATA/state/uploads). */
   stateDir: string;
@@ -67,7 +65,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       dir: path.join(dir, 'terminals'),
       launch: podman ? 'podman' : o.launch === 'systemd' ? 'systemd' : 'detached',
       user: o.user,
-      systemdRun: o.systemdRun ?? systemdRunPrefix(os.totalmem(), runnerMaxCap(process.env.SP_RUNNER_MEMORY_MAX).cap),
+      systemdRun: o.systemdRun,
       path: o.path,
       group,
       inside: podman ? o.terminal : undefined,
