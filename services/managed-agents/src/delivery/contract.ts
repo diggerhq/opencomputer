@@ -18,9 +18,8 @@ export const RETRY_MS = [5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000, 
 export const SEND_TIMEOUT_MS = 10_000;
 export const MAX_ENDPOINTS = 20;
 
-/** `PUT /webhooks/{id}`'s body, with the id of its path. */
+/** `PUT /webhooks/{id}`'s body. */
 export interface EndpointInput {
-  id: string;
   /** `https:` on port 443. */
   url: string;
   /** The occurrence kinds delivered; absent or empty, all of them. */
@@ -43,7 +42,7 @@ export type WebhookBody = Occurrence;
 
 export interface DeliveryRpcFull extends DeliveryRpc {
   // webhook only; a member or a key with `work:write`, never an agent
-  setEndpoint(p: Principal, e: EndpointInput): Promise<Reply<{ endpoint: Endpoint }>>;
+  setEndpoint(p: Principal, id: string, e: EndpointInput): Promise<Reply<{ endpoint: Endpoint }>>;
   listEndpoints(p: Principal): Promise<Reply<{ endpoints: Endpoint[] }>>;
   removeEndpoint(p: Principal, id: string): Promise<Reply<{ removed: boolean }>>;
 }
