@@ -30,13 +30,15 @@ export type EdgeAuth =
   | "origin"
   | "key_required"
   | "disabled"
+  | "principal_mismatch"
+  | "scope"
   | "none";
 
 /** What the edge learns about one request while it handles it. */
 export interface EdgeRequestFacts {
   started: number;
   auth: EdgeAuth;
-  via: "key" | "dashboard" | "none";
+  via: "key" | "dashboard" | "app" | "none";
   upstream: "blue" | "wire" | "edge";
   rateLimited: boolean;
   orgId?: string;

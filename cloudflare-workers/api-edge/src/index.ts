@@ -72,6 +72,7 @@ import {
   computerApiKey,
   computerApiOriginAllowed,
   computerApiPreflight,
+  computerApiRouteScope,
   computerWorkspaceRoute,
   isComputerApiRoute,
   proxyComputerWorkspace,
@@ -86,6 +87,14 @@ import {
   reportEdgeRequest,
 } from "./computer_telemetry";
 import { computerEnabledFor } from "./computer";
+import {
+  cookieCredentialId,
+  keyPrincipal,
+  memberPrincipal,
+  principalHeaderMatches,
+  SESSION_ID,
+  type Principal,
+} from "./principal";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
@@ -184,6 +193,7 @@ interface Caller {
   key?: AssertedAPIKey;
   userName?: string | null;
   userEmail?: string | null;
+  ocPrincipal?: Principal;
 }
 
 const COMPUTER_PRINCIPAL = "computer";
@@ -221,6 +231,21 @@ function callerFromRow(row: AuthRow): Caller {
         }
       : {}),
   };
+}
+
+/** The principal of a caller that authenticated with an API key (spec 34.3). */
+function principalOfKeyCaller(caller: Caller, req: Request | null): Promise<Principal> {
+  const expiresAt = caller.key?.expiresAt ? Date.parse(caller.key.expiresAt) : null;
+  return keyPrincipal({
+    org: caller.orgID,
+    createdBy: caller.userID,
+    admin: caller.role === "admin",
+    keyId: caller.key?.id ?? "",
+    scopes: caller.key?.scopes ?? [],
+    expiresAt,
+    sessionKey: caller.sessionKey ?? null,
+    userAgent: req?.headers.get("user-agent") ?? null,
+  });
 }
 
 function epochToISO(seconds: number | null | undefined): string | null {
@@ -1583,21 +1608,56 @@ async function computerApiCall(
         facts.auth = "not_member";
         return computerApiError(req, 401, "unauthenticated", "Sign in again.");
       }
+      const role =
+        membership.role === "owner" || membership.role === "admin"
+          ? "admin"
+          : membership.role;
       caller = {
         orgID: session.orgID,
         userID: session.userID,
-        role:
-          membership.role === "owner" || membership.role === "admin"
-            ? "admin"
-            : membership.role,
+        role,
         userName: membership.user_name ?? null,
         userEmail: membership.user_email ?? null,
+        ocPrincipal: await memberPrincipal({
+          org: session.orgID,
+          userId: session.userID,
+          admin: role === "admin",
+          via: "dashboard",
+          credential: {
+            id: await cookieCredentialId(
+              readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
+              session.orgID,
+              session.userID,
+              session.claims.exp,
+            ),
+            expiresAt: session.claims.exp * 1000,
+          },
+        }),
       };
     }
   }
   if (!caller) {
     facts.auth = credential.key ? "invalid" : "missing";
     return computerApiError(req, 401, "unauthenticated", "Missing or invalid API key.");
+  }
+  if (!caller.ocPrincipal) caller = { ...caller, ocPrincipal: await principalOfKeyCaller(caller, req) };
+  const principal = caller.ocPrincipal!;
+  if (!principalHeaderMatches(req, principal)) {
+    facts.auth = "principal_mismatch";
+    return computerApiError(
+      req,
+      403,
+      "principal_mismatch",
+      "x-oc-principal does not name the credential's principal.",
+    );
+  }
+  const scope = computerApiRouteScope(method, suffix);
+  if (scope && !principal.scopes.includes(scope)) {
+    facts.auth = "scope";
+    return computerApiError(req, 403, "forbidden", `This credential lacks the ${scope} scope.`, {
+      reason: "missing_scope",
+      scope,
+    });
   }
   facts.orgId = caller.orgID;
   if (caller.key?.id) facts.keyId = caller.key.id;
@@ -2191,8 +2251,13 @@ export default {
       const parsed = JSON.parse(body) as { org_id?: string; session_key?: unknown };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);
       const sessionKey = parsed.session_key;
-      if (sessionKey !== undefined && (typeof sessionKey !== "string" || !SESSION_KEY_RE.test(sessionKey))) {
-        return json({ error: "session_key must be team:channel:thread" }, 400);
+      // A `cs_…` session id makes the key that session's agent principal
+      // (tracks and threads spec 34.3); a Slack thread key is today's shape.
+      if (
+        sessionKey !== undefined &&
+        (typeof sessionKey !== "string" || !(SESSION_KEY_RE.test(sessionKey) || SESSION_ID.test(sessionKey)))
+      ) {
+        return json({ error: "session_key must be a cs_ session id or team:channel:thread" }, 400);
       }
       const org = await env.OPENCOMPUTER_DB.prepare(`SELECT id FROM orgs WHERE id = ?1`).bind(parsed.org_id).first();
       if (!org) return json({ error: "org not found" }, 404);
