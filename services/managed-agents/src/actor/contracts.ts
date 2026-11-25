@@ -266,8 +266,8 @@ export interface ComputerRpcAdded {
   block(sessionId: string, blockId: string): Promise<void>;
   /** Org only; relayed as the host's `access` frame. */
   setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
-  /** The Slack actor only. */
-  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant"; args: string; sessionId?: string }): Promise<{ reply: string }>;
+  /** The Slack actor only. `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user it linked the Slack person to. */
+  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string }): Promise<{ reply: string; member?: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
