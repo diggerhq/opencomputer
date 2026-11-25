@@ -131,23 +131,40 @@ describe('SessionApi', () => {
     expect((d.error as { code: string }).code).toBe('idempotency_conflict');
   });
 
-  it('a Delivery.api with an idempotency key is one turn too, and one the host recorded starts in its turn', async () => {
+  it('turns.send starts the turn the caller names; a Slack message goes to the runner\'s Slack handling, a Slack button to its prompt', async () => {
     const w = await world();
-    const d = { actor: ANN, member: 'usr_ann', ifBusy: 'queue' as const, idempotencyKey: 'k-2' };
-    await w.api.deliver('hello', d);
-    await w.api.deliver('hello', d);
-    await w.t.settle();
-    expect(w.of('message.received')).toHaveLength(1);
-    await w.t.feed(w.T.first(), ...w.T.text('0', 'hi'), w.T.done());
-    // Recorded by the host's writer while no runner ran.
     const turnId = 'tn_0000000000zz';
-    w.log.append('message.received', { input: 'queued', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
-    w.log.append('turn.queued', { position: 1 }, { turnId, actor: ANN });
-    await w.api.deliver('queued', { ...d, idempotencyKey: undefined, turnId });
-    await w.t.settle();
-    expect(w.of('message.received')).toHaveLength(2);
+    const a = result(await w.call('turns.send', { input: 'hello', turnId }));
+    expect(a.turn.id).toBe(turnId);
     expect(w.of('turn.started').at(-1)?.turnId).toBe(turnId);
-    expect(w.sends()).toHaveLength(2);
+    await w.t.feed(w.T.first(), ...w.T.text('0', 'hi'), w.T.done());
+
+    // A Slack message: only from the Slack actor, through `slack` with the turn it names.
+    const heard: unknown[] = [];
+    (w.api as unknown as { o: { slack: unknown } }).o.slack = async (text: string, m: { userId: string }, from: { actor: { id: string }; turnId: string }) => {
+      heard.push([text, m.userId, from.actor.id, from.turnId]);
+      await w.t.sess.send(text, m.userId, [], undefined, from as never);
+    };
+    const SLACK = { actor: { id: 'usr_ann', name: 'Ann', via: 'slack', client: null }, member: 'usr_ann' };
+    const slack = { userId: 'U_ANN', ts: '1.2' };
+    const t2 = 'tn_0000000000zy';
+    const b = result(await w.call('turns.send', { input: 'from slack', turnId: t2, slack }, SLACK));
+    expect(heard).toEqual([['from slack', 'U_ANN', 'usr_ann', t2]]);
+    expect(b.delivery).toBe('started');
+    expect(b.turn.id).toBe(t2);
+    result(await w.call('turns.send', { input: 'not slack', slack }, BOB));
+    expect(heard).toHaveLength(1);
+
+    // A Slack button: the prompt its ask id names gets the click, for the person who pressed it.
+    const { prompts } = await import('../prompts.js');
+    const clicks: unknown[] = [];
+    const askId = 'ak_0000000000aa';
+    prompts.set(askId, { session: w.t.sess as never, asked: 'U_BOB', onAction: async (v, u) => void clicks.push([v, u]), onText: async () => {}, cancel: async () => {} });
+    const no = await w.call('asks.answer', { askId, slack: { userId: 'U_CAT', value: 'allow' } }, SLACK);
+    expect((no.error as { code: string }).code).toBe('not-asked');
+    result(await w.call('asks.answer', { askId, slack: { userId: 'U_BOB', value: 'allow' } }, SLACK));
+    expect(clicks).toEqual([['allow', 'U_BOB']]);
+    prompts.delete(askId);
   });
 
   it('sessions.interrupt returns at once; the turn is cancelling, then cancelled forced after 10 s', async () => {
@@ -414,8 +431,6 @@ describe('SessionApi', () => {
       log.append('turn.queued', { position: 2 }, { turnId: c, actor: BOB.actor });
       log.append('turn.failed', { error: { code: 'runtime_lost', message: 'the runner ended' } }, { turnId: run });
     });
-    // The host's Delivery.api for a turn already queued does not queue it again.
-    await w.api.deliver('third', { actor: BOB.actor, member: 'usr_bob', ifBusy: 'queue', turnId: c });
     await w.t.settle();
     expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['second']);
     await w.t.feed(w.T.first(), ...w.T.text('0', 'two'), w.T.done());

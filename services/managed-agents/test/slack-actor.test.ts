@@ -1,8 +1,9 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { SlackDurableObject } from "../src/slack/durable-object.js";
 import { seal } from "../src/computer/crypto.js";
+import { routeSlackPublic, type SlackRouteEnv } from "../src/slack/routes.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../src/slack/store.js";
 import type { Call, FakeComputer, FakeOrg, FakeSessionLog } from "./fixtures/slack-test-worker.js";
 
@@ -277,3 +278,31 @@ describe("the Slack actor: install, unlink, import", () => {
   });
 });
 
+describe("the edge's Slack routes", () => {
+  async function signed(body: string, secret: string): Promise<Request> {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`v0:${ts}:${body}`)));
+    const signature = `v0=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    return new Request("https://edge.test/v1/webhooks/computer/slack/events", { method: "POST", body, headers: { "x-slack-request-timestamp": ts, "x-slack-signature": signature } });
+  }
+
+  it("verifies an event's signature and accepts it in the workspace's organization", async () => {
+    const org = "org_edge";
+    await linked(org);
+    await slackOf("slack-team:T1").claimTeam("T1", org);
+    const routeEnv = { ...bindings, SLACK_COMPUTER_SIGNING_SECRET: "shh" } as unknown as SlackRouteEnv;
+    const e = message({ text: "from the edge", ts: "900.1" });
+
+    const forged = await routeSlackPublic(await signed(JSON.stringify(e.body), "wrong"), routeEnv, createExecutionContext());
+    expect(forged?.status).toBe(401);
+
+    const context = createExecutionContext();
+    const response = await routeSlackPublic(await signed(JSON.stringify(e.body), "shh"), routeEnv, context);
+    expect(response?.status).toBe(200);
+    await waitOnExecutionContext(context);
+    await settled(org);
+    const sid = await sessionIdFor("T1:C1:900.1");
+    expect((await callsOf(logOf(sid))).map((c) => (c.args[1] as { id: string }).id)).toEqual([await turnIdFor("T1:C1:900.1", "900.1")]);
+  });
+});

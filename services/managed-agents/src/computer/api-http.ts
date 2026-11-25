@@ -16,9 +16,9 @@
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
-import { base64url, computerOf, cursor, hashOf, liveOf, logOf, orgOf } from "../actor/index.js";
+import { base64url, computerOf, cursor, deliveryOf, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
-import { eventsStream } from "../live/contract.js";
+import { eventsStream, type LiveUpgrade, PRINCIPAL_HEADER, signPrincipal } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { API_SCOPES } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
@@ -26,7 +26,9 @@ import type { ComputerEdgeEnv } from "./config.js";
 import { apiScopes } from "./keys.js";
 import { COMPUTER_PRINCIPAL, principalOf } from "../edge/computer-principal.js";
 import { CROCKFORD, isId, isSessionId, memberId } from "./session-ids.js";
-import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
+import { type ApiCaller, type ApiOp, type ApiReply, validatePatch, type WriteMethod } from "./sessions-api.js";
+import { type ComputerInstallation, selectTokenTarget } from "./github.js";
+import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import type { WorkContextOp, WorkRefsOp, WorkStampOp } from "./work/briefs.js";
 import { repositoryChoice, workRepositories } from "./work/api.js";
@@ -76,12 +78,15 @@ function workRoute(method: string, s: string[]): Route | null {
       if (is("POST", 3) && c === "dissolve") return m("track.dissolve", { tid: b! });
       if (method === "GET" && c === "doc" && d === "revisions" && (n === 4 || n === 5)) return { op: "work.doc.revisions", sub: b!, ...(n === 5 ? { args: { rev: s[4]! } } : {}) };
       return null;
+    case "tell-track":
+      return is("POST", 1) ? { op: "work.tell" } : null;
     case "reads":
       return is("PUT", 2) ? m("read.set", { sid: b! }) : null;
     case "prefs":
       return is("PUT", 2) ? m("pref.set", { key: b! }) : null;
     case "results":
       if (is("PUT", 2)) return m("result.add", { resultId: b! });
+      if (is("GET", 3) && c === "diff") return { op: "work.diff", sub: b! };
       if (n === 3 && c === "review") return method === "PUT" ? m("review.save", { resultId: b! }) : method === "GET" ? { op: "work.review", sub: b! } : null;
       return null;
     case "proposals":
@@ -128,6 +133,14 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (is("GET", 1) && p[0] === "feed") return { op: "feed" };
   if (is("POST", 2) && p[0] === "feed" && p[1] === "mismatch") return { op: "feed.mismatch" };
   if (is("GET", 1) && p[0] === "occurrences") return { op: "occurrences" };
+  if (is("GET", 1) && p[0] === "live") return { op: "live" };
+  if (p[0] === "webhooks") {
+    if (is("GET", 1)) return { op: "webhooks.list" };
+    if (is("PUT", 2)) return { op: "webhooks.put", sub: p[1] };
+    if (is("DELETE", 2)) return { op: "webhooks.delete", sub: p[1] };
+    return null;
+  }
+  if (is("POST", 4) && p[0] === "slack" && p[1] === "threads" && p[3] === "messages") return { op: "slack.post", sub: p[2] };
   // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
   if (p[0] === "work") {
     const tracked = workRoute(method, p.slice(1));
@@ -175,7 +188,8 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
-  if (op === "work.repository.put" || op === "mutate") return "work:write";
+  if (op === "work.repository.put" || op === "mutate" || op === "work.tell" || op.startsWith("webhooks.")) return "work:write";
+  if (op === "live") return "sessions:read";
   if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
@@ -325,8 +339,8 @@ export function routeFamily(op: string): string {
   if (op.startsWith("subagents.")) return "subagents";
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
-  if (op.startsWith("work.") || op === "mutate") return "work";
-  if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "feed";
+  if (op.startsWith("work.") || op === "mutate" || op.startsWith("webhooks.")) return "work";
+  if (op === "feed" || op === "feed.mismatch" || op === "occurrences" || op === "live") return "feed";
   return "other";
 }
 
@@ -438,7 +452,7 @@ async function routeApi(
     return out.error(403, "principal_mismatch", "x-oc-principal is not this credential's principal.");
   }
   if (ACTOR_OPS.has(route.op)) return actorRoute(request, env, p, route, out);
-  // The Computer's own routes (secrets, tickets, Work settings, session controls) keep today's caller and scopes.
+  // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop) keep today's caller and scopes.
   const caller = await callerOf(request, identity, out.requestId);
   if (!caller) return out.error(403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
   // Only people set secrets (work 095): a session's own key, whatever it names, is refused.
@@ -493,11 +507,7 @@ async function routeApi(
     return out.error(404, `${what}_not_found`, `No such ${what}.`);
   }
 
-  if (route.op === "patch") return call({ op: "patch", sessionId, body, ...(idem ? { idempotencyKey: idem } : {}) });
-  if (route.op === "aside.set") return call({ op: "aside.set", sessionId, body });
-  if (route.op === "aside.clear") return call({ op: "aside.clear", sessionId });
-
-  // Writes to the session's writer.
+  // The controls the actors do not serve yet, to the session's writer.
   if (needsBody) {
     const input = asObject(body);
     if (!input) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
@@ -568,14 +578,18 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
 
 /** The routes served by the actors of tracks and threads, not the Computer object. */
 const ACTOR_OPS = new Set([
-  "list", "create", "get",
+  "list", "create", "get", "patch", "aside.set", "aside.clear",
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
   "work.threads", "work.overview", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put",
+  "live", "work.tell", "work.diff", "slack.post", "webhooks.list", "webhooks.put", "webhooks.delete",
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
+const ENDED_TURNS = new Set(["completed", "failed", "cancelled"]);
+/** How long `GET /sessions/{id}?minSeq` waits for the log without `waitMs`. */
+const MIN_SEQ_WAIT_MS = 10_000;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
 const ENTRY_KINDS = { "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt" } as const;
 
@@ -687,21 +701,26 @@ async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, 
 }
 
 /**
- * The wait rule (spec 37.1): the owner was read and had nothing new; wait on Live's stream, then read
- * again. Without Live, poll the owner every second until the timeout.
+ * The wait rule (spec 37.1): the owner was read and had nothing new; wait on Live's stream from
+ * `after` (empty: from wherever Live's head is), read the owner again, until `done` or the time is
+ * up. Live takes the session's lease. Without Live, poll the owner every second.
  */
-async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, after: string, waitMs: number, first: T, read: () => Promise<T>, fresh: (r: T) => boolean): Promise<T> {
+async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, after: string, waitMs: number, first: T, read: () => Promise<T>, done: (r: T) => boolean): Promise<T> {
   const live = liveOf(env, p.org);
-  if (live) {
-    const waited = await live.wait(p, stream, after, waitMs).catch(() => null);
-    return waited?.moved ? read() : first;
-  }
   const deadline = Date.now() + waitMs;
   let r = first;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, deadline - Date.now())));
+  let head = after;
+  while (!done(r)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    if (live) {
+      const waited = await live.wait(p, stream, head, remaining).catch(() => null);
+      if (!waited?.moved || waited.head === null) break;
+      head = waited.head;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, remaining)));
+    }
     r = await read();
-    if (fresh(r)) return r;
   }
   return r;
 }
@@ -859,7 +878,21 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     return out.send(duplicate ? 200 : 201, { session, turn: result.turn ?? null, delivery: result.delivery ?? null, duplicate, seq: result.seq ?? session.lastSeq });
   }
 
-  if (!route.sessionId) return orgRoute(request, p, route, query, idem, trace, org, out);
+  switch (route.op) {
+    case "live":
+      return liveUpgrade(request, env, p, out);
+    case "work.tell":
+      return tellTrack(request, env, p, idem, trace, org, out);
+    case "work.diff":
+      return resultDiff(request, env, p, route.sub!, org, out);
+    case "slack.post":
+      return slackPost(request, env, p, route.sub!, out);
+    case "webhooks.list":
+    case "webhooks.put":
+    case "webhooks.delete":
+      return webhooks(request, env, p, route, out);
+  }
+  if (!route.sessionId) return orgRoute(request, env, p, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
@@ -871,12 +904,33 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (minSeq === null) return out.error(400, "invalid_request", "minSeq must be a non-negative integer.", { field: "minSeq" });
 
   if (route.op === "get") {
-    const [got, summary] = await Promise.all([
-      timedDo(out.facts, org().getSession(p, sessionId)),
-      timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null),
-    ]);
+    const waitMs = intParam(query, "waitMs", 0, 60_000);
+    if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
+    const readSummary = () => timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null);
+    let [got, summary] = await Promise.all([timedDo(out.facts, org().getSession(p, sessionId)), readSummary()]);
     if (!got.ok) return refusalOf(out, got);
+    // With minSeq, until the log has it (spec 37.1's wait rule).
+    const behind = (r: typeof summary) => !!r && !r.ok && r.error === "unavailable";
+    if (behind(summary)) {
+      out.facts.waitMs = waitMs ?? MIN_SEQ_WAIT_MS;
+      summary = await waitFor(env, p, eventsStream(sessionId), "", waitMs ?? MIN_SEQ_WAIT_MS, summary, readSummary, (r) => !behind(r));
+      if (summary && !summary.ok && behind(summary)) return logRefusalOf(out, summary);
+    }
     return out.send(200, { session: withSummary(got.session, summary?.ok ? summary.summary : null) });
+  }
+
+  if (route.op === "patch") return patchSession(request, env, p, sessionId, idem, trace, org, out);
+  if (route.op === "aside.set" || route.op === "aside.clear") {
+    let aside: string | null = null;
+    if (route.op === "aside.set") {
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      const ref = asObject(parsed.value)?.ref;
+      if (typeof ref !== "string" || !/^[\x21-\x7e]{1,255}$/.test(ref)) return out.error(400, "invalid_request", "ref is the id of what is set aside: 1 to 255 printable characters.", { field: "ref" });
+      aside = ref;
+    }
+    const r = await timedDo(out.facts, org().patchSession(p, sessionId, { aside }));
+    return r.ok ? out.send(200, { session: r.session }) : refusalOf(out, r);
   }
 
   // The four writes, through the session's inbox (spec 37.2, 40.2).
@@ -930,7 +984,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       if (waitMs && r.ok && !r.events.length) {
         out.facts.waitMs = waitMs;
         const head = r.cursor ?? after;
-        if (head) r = await waitFor(env, p, eventsStream(sessionId), head, waitMs, r, read, (n) => !n.ok || n.events.length > 0);
+        r = await waitFor(env, p, eventsStream(sessionId), head ?? "", waitMs, r, read, (n) => !n.ok || n.events.length > 0);
       }
       if (r.ok) delivered(out.facts, r.events);
       return answer(r);
@@ -945,8 +999,18 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       const waitMs = intParam(query, "waitMs", 0, 60_000);
       if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
       const status = query.get("status") ?? undefined;
-      if (waitMs !== undefined) out.facts.waitMs = waitMs;
-      return answer(await timedLog(out.facts, log.turn(route.sub!, { ...(waitMs !== undefined ? { waitMs } : {}), ...(status ? { status } : {}), ...(minSeq !== undefined ? { minSeq } : {}) }, p)), "turn");
+      const read = () => timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p));
+      // Until the turn leaves `status`, or ends; the edge waits, not the log (spec 37.1).
+      const done = (r: LogPage | LogRefused) => {
+        const turnStatus = r.ok ? (r.turn as { status?: string } | undefined)?.status : undefined;
+        return !r.ok || turnStatus === undefined || (status ? turnStatus !== status : ENDED_TURNS.has(turnStatus));
+      };
+      let r = await read();
+      if (waitMs && !done(r)) {
+        out.facts.waitMs = waitMs;
+        r = await waitFor(env, p, eventsStream(sessionId), "", waitMs, r, read, done);
+      }
+      return answer(r, "turn");
     }
     case "asks.list": {
       const lim = limit(100);
@@ -990,6 +1054,7 @@ function mutateReplyOf(out: Reply, r: MutateReply): Response {
 /** The feed, the occurrence stream, the mutations and the work reads: Org's, as the principal. */
 async function orgRoute(
   request: Request,
+  env: ComputerEdgeEnv,
   p: Principal,
   route: Route,
   query: URLSearchParams,
@@ -1122,9 +1187,219 @@ async function orgRoute(
       const choice = repositoryChoice(parsed.value);
       if ("error" in choice) return out.of(choice.error);
       const r = await timed(org().setRepository(p, choice.value));
-      return r.ok ? out.send(200, { repository: r.repository }) : refusalOf(out, r);
+      if (!r.ok) return refusalOf(out, r);
+      await indexInstallation(env, p.org, choice.value.installationId);
+      return out.send(200, { repository: r.repository });
     }
     default:
       return out.error(404, "not_found", "No such route.");
   }
+}
+
+/**
+ * Records that the organization uses this GitHub installation, so the App's pull request webhooks
+ * reach its Org (spec 40.9, git-deploy-service.ts). The repository is already chosen; a failed
+ * write is logged and the next choice writes it again.
+ */
+async function indexInstallation(env: ComputerEdgeEnv, org: string, installationId: string): Promise<void> {
+  if (!env.SERVERLESS_AGENTS_DB) return;
+  try {
+    const account = env.ACCOUNTS.getByName(org) as unknown as { getGitHubInstallation(id: string): Promise<{ githubInstallationId: number } | null> };
+    const installation = await account.getGitHubInstallation(installationId);
+    if (!installation) return;
+    await env.SERVERLESS_AGENTS_DB.prepare(
+      "INSERT OR REPLACE INTO github_installation_orgs (github_installation_id, account_id, installation_id) VALUES (?, ?, ?)",
+    ).bind(installation.githubInstallationId, org, installationId).run();
+  } catch (error) {
+    console.error(JSON.stringify({ level: "error", event: "work.installation_index_failed", message: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
+// ------------------------------------------------------------------ slice 3: the socket, PATCH, agents' routes, webhooks, diffs
+
+/** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal signed. */
+async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal, out: Reply): Promise<Response> {
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return out.error(426, "upgrade_required", "GET /live is a WebSocket.");
+  const live = liveOf(env, p.org) as unknown as LiveUpgrade | null;
+  const key = (env as { LIVE_KEY?: string }).LIVE_KEY;
+  if (!live || !key) return out.error(503, "unavailable", "Live is not available.", { retryAfterMs: 60_000 });
+  const headers = new Headers(request.headers);
+  headers.delete("x-opencomputer-agent-token");
+  headers.set(PRINCIPAL_HEADER, await signPrincipal(key, p));
+  return live.fetch(new Request(request.url, { method: "GET", headers }));
+}
+
+/**
+ * `PATCH /sessions/{id}` (spec 37.2): `title` is `thread.rename`, `archived` `thread.done` or
+ * `thread.reopen`, `metadata` Org's column, the settings one `settings` inbox entry. Each part's
+ * idempotency key is the request's with the part's name, so one key covers the whole request.
+ */
+async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal, sessionId: string, idem: string | undefined, trace: string | undefined, org: () => OrgRpc, out: Reply): Promise<Response> {
+  const parsed = await bodyOf(request);
+  if ("error" in parsed) return out.error(...parsed.error);
+  const patch = validatePatch(parsed.value);
+  if ("error" in patch) return out.of(patch.error);
+  const { title, archived, metadata, model, effort, mode, speed } = patch.value;
+  const settings = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
+  if (!settings.ok) return out.error(400, settings.code, settings.message, { field: settings.field });
+  const mutate = async (name: string, args: Record<string, unknown>, part: string): Promise<Response | null> => {
+    const r = await timedDo(out.facts, org().mutate(p, { name, args: { ...args, sid: sessionId }, ...(idem ? { idem: `${idem}:${part}` } : {}), ...(trace ? { trace } : {}) }));
+    return "error" in r ? mutateReplyOf(out, r) : null;
+  };
+  if (title !== undefined) {
+    const refused = await mutate("thread.rename", { title }, "title");
+    if (refused) return refused;
+  }
+  if (archived !== undefined) {
+    const refused = await mutate(archived ? "thread.done" : "thread.reopen", {}, "archived");
+    if (refused) return refused;
+  }
+  if (metadata) {
+    const r = await timedDo(out.facts, org().patchSession(p, sessionId, { metadata }));
+    if (!r.ok) return refusalOf(out, r);
+  }
+  let waking: string | null = null;
+  if (model !== undefined || effort !== undefined || mode !== undefined || speed !== undefined) {
+    const body = { ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}), ...(speed !== undefined ? { speed } : {}) };
+    const id = await entryId("ie", 16, idem ? ["settings", p.org, p.subject, sessionId, idem] : undefined);
+    const sent = await sendEntry(env, p, sessionId, { id, kind: "settings", body }, trace, out);
+    if ("response" in sent) return sent.response;
+    if ("waking" in sent) waking = id;
+  }
+  const got = await timedDo(out.facts, org().getSession(p, sessionId));
+  if (!got.ok) return refusalOf(out, got);
+  return waking ? out.send(202, { accepted: true, id: waking, session: got.session }) : out.send(200, { session: got.session });
+}
+
+/** A body of exactly one string field of 1 to `max` characters. */
+async function oneString(request: Request, field: string, max: number): Promise<{ value: string } | { error: [number, string, string, Record<string, unknown>] }> {
+  const parsed = await bodyOf(request);
+  if ("error" in parsed) return parsed;
+  const body = asObject(parsed.value);
+  const extra = body && Object.keys(body).find((k) => k !== field);
+  if (extra) return { error: [400, "invalid_request", `Unknown field ${extra}.`, { field: extra }] };
+  const value = body?.[field];
+  if (typeof value !== "string" || !value.trim() || value.length > max) return { error: [400, "invalid_request", `${field} is a string of 1 to ${max} characters.`, { field }] };
+  return { value };
+}
+
+/** `POST /work/tell-track` (spec 37.2): an agent's message to its track's agent, as a turn there. */
+async function tellTrack(request: Request, env: ComputerEdgeEnv, p: Principal, idem: string | undefined, trace: string | undefined, org: () => OrgRpc, out: Reply): Promise<Response> {
+  if (p.kind !== "agent") return out.error(403, "forbidden", "Only a session's agent tells its track.", { reason: "agents_only" });
+  const message = await oneString(request, "message", 100_000);
+  if ("error" in message) return out.error(...message.error);
+  const target = await timedDo(out.facts, org().trackAgent(p));
+  if (!target) return out.error(404, "not_found", "This session's track has no agent.");
+  const id = await entryId("tn", 12, idem ? ["tell", p.org, p.subject, idem] : undefined);
+  const sent = await sendEntry(env, p, target, { id, kind: "turn", body: { input: message.value, ifBusy: "queue" } }, trace, out);
+  if ("response" in sent) return sent.response;
+  if ("waking" in sent) return out.send(202, { accepted: true, id });
+  return out.send(200, sent.delivered);
+}
+
+const THREAD_KEY = /^[A-Za-z0-9:._-]{1,128}$/;
+
+/** `POST /slack/threads/{key}/messages` (spec 37.2): an agent's `post_thread`, through the Slack actor. */
+async function slackPost(request: Request, env: ComputerEdgeEnv, p: Principal, key: string, out: Reply): Promise<Response> {
+  if (p.kind !== "agent") return out.error(403, "forbidden", "Only a session's agent posts to a Slack thread.", { reason: "agents_only" });
+  const threadKey = decodeURIComponent(key);
+  if (!THREAD_KEY.test(threadKey)) return out.error(404, "not_found", "No such Slack thread.");
+  const text = await oneString(request, "text", 40_000);
+  if ("error" in text) return out.error(...text.error);
+  const r = await timedDo(out.facts, slackOf(env, p.org).post(p, threadKey, text.value));
+  return r.ok ? out.send(200, { ts: r.ts }) : refusalOf(out, r);
+}
+
+/** Delivery's webhook endpoints (spec 37.1), as that actor's lane adds them. */
+interface WebhookEndpoints {
+  listEndpoints(p: Principal): Promise<unknown>;
+  setEndpoint(p: Principal, id: string, body: Record<string, unknown>): Promise<unknown>;
+  removeEndpoint(p: Principal, id: string): Promise<unknown>;
+}
+const WEBHOOK_ID = /^wh_[0-9a-hjkmnp-tv-z]{16}$/;
+
+/** An `https:` URL on port 443, without credentials. */
+function webhookUrl(value: unknown): boolean {
+  if (typeof value !== "string" || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.port === "" || url.port === "443") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+/** `GET /webhooks`, `PUT`/`DELETE /webhooks/{id}`: a member or a key, never an agent. */
+async function webhooks(request: Request, env: ComputerEdgeEnv, p: Principal, route: Route, out: Reply): Promise<Response> {
+  if (p.kind === "agent") return out.error(403, "forbidden", "Sessions cannot manage webhooks.", { reason: "computer_principal" });
+  if (route.sub !== undefined && !WEBHOOK_ID.test(route.sub)) return out.error(404, "not_found", "No such webhook.");
+  let body: Record<string, unknown> | null = null;
+  if (route.op === "webhooks.put") {
+    const parsed = await bodyOf(request);
+    if ("error" in parsed) return out.error(...parsed.error);
+    body = asObject(parsed.value);
+    if (!body) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
+    if (!webhookUrl(body.url)) return out.error(400, "invalid_request", "url is an https: URL on port 443.", { field: "url" });
+  }
+  let r: unknown;
+  try {
+    const delivery = deliveryOf(env, p.org, "webhook") as unknown as WebhookEndpoints;
+    r = await timedDo(out.facts,
+      route.op === "webhooks.list" ? delivery.listEndpoints(p)
+      : route.op === "webhooks.put" ? delivery.setEndpoint(p, route.sub!, body!)
+      : delivery.removeEndpoint(p, route.sub!));
+  } catch {
+    return out.error(503, "unavailable", "Webhooks are not available yet.", { retryAfterMs: 60_000 });
+  }
+  const reply = asObject(r);
+  if (reply?.ok === false) return refusalOf(out, reply as unknown as Refusal);
+  if (route.op === "webhooks.delete") return out.send(204, null);
+  const { ok: _ok, ...rest } = reply ?? {};
+  return out.send(200, Array.isArray(r) ? { endpoints: r } : rest);
+}
+
+const PULL_URL = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/pull\/([1-9]\d{0,9})\/?$/;
+
+/**
+ * `GET /work/results/{id}/diff` (spec 37.1): the result's pull request diff, fetched with an
+ * installation token as the Computer gets one. `ETag` is the head commit.
+ */
+async function resultDiff(request: Request, env: ComputerEdgeEnv, p: Principal, resultId: string, org: () => OrgRpc, out: Reply): Promise<Response> {
+  if (!PATH_ID.resultId!.test(resultId)) return out.error(404, "not_found", "No such result.");
+  const row = await timedDo(out.facts, org().result(p, resultId));
+  const pull = row ? PULL_URL.exec(row.ref) : null;
+  if (!pull) return out.error(404, "not_found", "This result is not a GitHub pull request.");
+  const [, owner, repo, number] = pull;
+  const account = env.ACCOUNTS.getByName(p.org) as unknown as {
+    listGitHubInstallations(): Promise<{ id: string | number; accountLogin: string; state: string }[]>;
+    mintGitHubInstallationToken(input: { installationId: string; repositories?: string[]; permissions?: Record<string, "read" | "write"> }): Promise<GitHubTokenMint>;
+  };
+  const unavailable = () => out.error(503, "unavailable", "GitHub did not answer. Try again shortly.", { retryAfterMs: 5_000 });
+  const installations: ComputerInstallation[] = (await timedDo(out.facts, account.listGitHubInstallations()))
+    .filter((i) => i.state === "active")
+    .map((i) => ({ id: String(i.id), accountLogin: i.accountLogin }));
+  const target = selectTokenTarget([`${owner}/${repo}`], installations, []);
+  if (!target.ok) return out.error(409, "github_not_connected", target.error);
+  const minted = await timedDo(out.facts, account.mintGitHubInstallationToken({ installationId: target.installationId, repositories: [repo!], permissions: { contents: "read", pull_requests: "read" } }));
+  if (minted.outcome !== "minted") return unavailable();
+  const github = (accept: string) =>
+    timedDo(out.facts, fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
+      headers: { authorization: `Bearer ${minted.token}`, accept, "user-agent": "opencomputer-managed-agents", "x-github-api-version": "2022-11-28" },
+    }));
+  const meta = await github("application/vnd.github+json").catch(() => null);
+  if (meta?.status === 404) return out.error(404, "not_found", "No such pull request.");
+  if (!meta?.ok) return unavailable();
+  const head = ((await meta.json()) as { head?: { sha?: unknown } }).head?.sha;
+  if (typeof head !== "string") return unavailable();
+  const etag = `"${head}"`;
+  if (request.headers.get("if-none-match") === etag) {
+    const response = out.send(304, null);
+    response.headers.set("etag", etag);
+    return response;
+  }
+  const diff = await github("application/vnd.github.diff").catch(() => null);
+  if (!diff?.ok) return unavailable();
+  const response = out.send(200, { protocol: PROTOCOL, head, diff: await diff.text() });
+  response.headers.set("etag", etag);
+  return response;
 }

@@ -25,9 +25,9 @@ describe('retire', () => {
     const bystander = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
     writeFileSync(pidFileFor(r.socket), String(bystander.pid));
     const did: string[] = [];
-    const went = await retire(r.sock, r.socket, () => void did.push('stop'), { ms: 30, kill: async () => void (did.push('kill'), r.sock.destroy()) });
+    const went = await retire(r.sock, r.socket, { ms: 30, kill: async () => void (did.push('kill'), r.sock.destroy()) });
     expect(went).toBe(true);
-    expect(did).toEqual(['stop', 'kill']);
+    expect(did).toEqual(['kill']);
     expect(r.got.join('')).toContain('"t":"exit"');
     expect(bystander.exitCode).toBeNull();
     expect(bystander.signalCode).toBeNull();
@@ -39,7 +39,7 @@ describe('retire', () => {
     const r = await deaf();
     const did: string[] = [];
     setTimeout(() => r.sock.destroy(), 5);
-    expect(await retire(r.sock, r.socket, () => {}, { ms: 2000, kill: async () => void did.push('kill') })).toBe(true);
+    expect(await retire(r.sock, r.socket, { ms: 2000, kill: async () => void did.push('kill') })).toBe(true);
     expect(did).toEqual([]);
     r.close();
   });
