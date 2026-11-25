@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Tracks and threads tests: Live alone, with fakes of SessionLog, Computer and the edge.
+  "name": "live-test",
+  "main": "test/fixtures/live-test-worker.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "LIVE_KEY": "test-live-key" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIVE", "class_name": "LiveDurableObject" },
+      { "name": "SESSION_LOG", "class_name": "FakeSessionLog" },
+      { "name": "COMPUTERS", "class_name": "FakeComputer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LiveDurableObject", "FakeSessionLog", "FakeComputer"] }]
+}

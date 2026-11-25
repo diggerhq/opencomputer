@@ -270,15 +270,16 @@ describe("SessionLog recover", () => {
     expect(await log.stub.append(log.identity, 1, [log.ev(15, "x.y", null, {})])).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 3 });
   });
 
-  it("recovers a log the host never wrote, at the row's next epoch", async () => {
-    // A new row is at epoch 1 but its log is at 0 until the host's first append, so the recover comes at 2.
+  it("recovers a log the host never wrote, at the log's next epoch only", async () => {
+    // Only the log's epoch + 1 (spec 36.2): a log the host never wrote is at 0, so the recover comes at 1; a guess is refused.
     const log = open();
-    const result = await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" });
-    expect(result).toMatchObject({ ok: true, summary: { logEpoch: 2, status: "suspended" } });
-    // Settled: the same recover again is refused, and so is the lost writer at the row's old epoch.
-    expect(await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 2 });
+    expect(await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 0 });
+    const result = await log.stub.recover({ ...log.identity, epoch: 1, at: "2026-10-26T10:00:00.000Z" });
+    expect(result).toMatchObject({ ok: true, summary: { logEpoch: 1, status: "suspended" } });
+    // Settled: the same recover again is refused, and so is a writer below the log's epoch.
+    expect(await log.stub.recover({ ...log.identity, epoch: 1, at: "2026-10-26T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 1 });
     if (!result.ok) throw new Error("refused");
-    expect(await log.stub.append(log.identity, 1, [log.ev(result.ack + 1, "x.y", null, {})])).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 2 });
+    expect(await log.stub.append(log.identity, 0, [log.ev(result.ack + 1, "x.y", null, {})])).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 1 });
   });
 
   it("with nothing open records the suspension only", async () => {

@@ -185,7 +185,7 @@ jobs:
       - run: npm run build
       - name: Dry-run each Worker
         run: |
-          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc; do
+          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc wrangler.live.jsonc; do
             npx wrangler deploy --config "$config" --dry-run --outdir "$RUNNER_TEMP/$config"
           done
       - name: Profile Workerd runtime startup
