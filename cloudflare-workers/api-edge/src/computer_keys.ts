@@ -93,10 +93,8 @@ export async function revokeComputerKey(
   actingUserID: string | null,
   keyID: string,
 ): Promise<void> {
-  await Promise.all([
-    post(env, orgID, actingUserID, "/v1/computer/keys/revoke", { keyId: keyID }),
-    revokeLiveCredential(env, orgID, keyID),
-  ]);
+  await post(env, orgID, actingUserID, "/v1/computer/keys/revoke", { keyId: keyID });
+  await revokeLiveCredential(env, orgID, keyID);
 }
 
 /**
