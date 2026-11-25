@@ -234,3 +234,46 @@ describe("the Slack actor: commands, buttons, held messages", () => {
     expect(await slackOf(org).announce({ sessionId: "cs_child", parent: sid, brief: "a child" })).toEqual(first);
   });
 });
+
+describe("the Slack actor: install, unlink, import", () => {
+  it("imports Computer's Slack state in two pages, once", async () => {
+    const org = "org_import";
+    const people = Array.from({ length: 199 }, (_, i) => ({ type: "row" as const, table: "people", row: { slack_user_id: `UP${i}`, dir: `up${i}`, git_name: `P ${i}`, git_email: `p${i}@example.com`, updated_at: 1 } }));
+    const rows = [
+      { type: "setting" as const, key: "slackTeamId", value: "T9" },
+      { type: "setting" as const, key: "slackBotUserId", value: "UBOT" },
+      ...people,
+      { type: "link" as const, slackUser: "UP1", member: "usr_p1" },
+      { type: "thread" as const, key: "T9:C1:1.1", sessionId: "cs_imported" },
+      { type: "dispatch" as const, sessionId: "cs_imported", entry: { id: "tn_imported", kind: "turn" as const, body: { input: "pending" }, by: "user:usr_p1" } },
+    ];
+    await computerOf(org).set({ rows });
+    await Promise.all([slackOf(org).import(), slackOf(org).import()]);
+    await slackOf(org).import();
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "exportSlack").map((c) => c.args)).toEqual([[null, 200], ["200", 200]]);
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM people"))).toEqual([{ n: 199 }]);
+    expect(await inSlack(org, (exec) => exec("SELECT slack_user, member FROM link"))).toEqual([{ slack_user: "UP1", member: "usr_p1" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT key, session_id FROM thread"))).toEqual([{ key: "T9:C1:1.1", session_id: "cs_imported" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT imported FROM meta"))).toEqual([{ imported: 1 }]);
+    const [accepted] = await callsOf(logOf("cs_imported"));
+    expect(accepted!.args[0]).toMatchObject({ org, subject: "usr_p1", kind: "member" });
+    expect(accepted!.args[1]).toEqual({ id: "tn_imported", kind: "turn", body: { input: "pending" } });
+    // The workspace routes to this organization.
+    expect(await slackOf("slack-team:T9").teamOrg()).toBe(org);
+  });
+
+  it("installs and unlinks a workspace", async () => {
+    const org = "org_install";
+    const p = { org, subject: "usr_admin", kind: "member" as const, via: "app" as const, scopes: [], audiences: ["org"], admin: true, credential: { id: "k", expiresAt: null } };
+    await slackOf(org).startInstall(p as never, "nonce-1");
+    expect(await slackOf(org).consumeInstall("nonce-1")).toEqual({ ok: true, subject: "usr_admin" });
+    expect(await slackOf(org).consumeInstall("nonce-1")).toEqual({ ok: false, reason: "invalid_state" });
+    await slackOf(org).install(p as never, { teamId: "T1", teamName: "Acme", botUserId: "UBOT", botToken: "xoxb-new", installerUserId: "UINST" });
+    expect((await slackOf(org).forHost()).slack).toEqual({ botToken: "xoxb-new", botUserId: "UBOT", teamId: "T1" });
+    expect((await callsOf(orgOf(org))).filter((c) => c.method === "linkPerson")).toEqual([{ method: "linkPerson", args: ["slack:T1:UINST", "usr_admin"] }]);
+    await slackOf(org).unlink(p as never);
+    expect((await slackOf(org).forHost()).slack).toBeNull();
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "changed")).toHaveLength(2);
+  });
+});
+
