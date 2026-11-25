@@ -20,6 +20,8 @@ import {
   type SlackEcho,
   type SlackGrant,
   type SlackRpc,
+  slackOf,
+  type ExportedSlackRow,
   sqlOf,
   unavailable,
   type Reply,
@@ -28,7 +30,7 @@ import {
   platformPrincipal,
 } from "../actor/index.js";
 import type { Origin } from "../computer/api-types.js";
-import { unseal } from "../computer/crypto.js";
+import { seal, sha256Hex, unseal } from "../computer/crypto.js";
 import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../computer/protocol.js";
 import {
   ACCESS_USAGE,
@@ -56,6 +58,7 @@ import {
   stateText,
 } from "./access.js";
 import {
+  joinRequestMessages,
   normalizeJob,
   OFFLINE_NOTICE,
   parseInteraction,
@@ -65,6 +68,7 @@ import {
   type SlackResult,
   slackApi,
   slackThreadUrl,
+  slackTokenDead,
   STARTING_NOTICE,
   WAKING_NOTICE,
 } from "./slack-api.js";
@@ -73,6 +77,8 @@ import { entryIdFor, links, sessionIdFor, settings, STEPS, threads, turnIdFor } 
 
 export interface SlackEnv extends ActorEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
+  COMPUTER_PUBLIC_ORIGIN?: string;
+  OPENCOMPUTER_APP_URL?: string;
 }
 
 /** The queue's purpose on the shared alarm. */
@@ -86,6 +92,12 @@ const STRANDED_GRACE_MS = 5_000;
 const FALLBACK_MS = 30_000;
 /** Slack retries an event for an hour at most; ids and message keys are kept a day. */
 const DEDUP_TTL_MS = 24 * 60 * 60_000;
+
+const INSTALL_NONCE_TTL_MS = 10 * 60_000;
+const JOIN_REQUEST_INTERVAL_MS = 24 * 3600_000;
+const IMPORT_PAGE = 200;
+/** Computer's tables the import copies (spec 43.1); the queue's rows come over as they are. */
+const IMPORTED_TABLES = new Set(["people", "slack_messages", "slack_queue", "install_nonces", "join_requests", "notices", "billing_warnings", "session_context", "access_requests"]);
 
 const MEMBER_SCOPES: Principal["scopes"] = ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"];
 const ONLY_MEMBERS_TEXT = "Only full members of this workspace can drive sessions.";
@@ -110,6 +122,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   private readonly inFlight = new Set<number>();
   private access?: { teamId: string; threads: ThreadAccess };
   private token?: { sealed: string; plain: string };
+  private importing: Promise<void> | undefined;
 
   constructor(ctx: DurableObjectState, env: SlackEnv) {
     super(ctx, env);
@@ -607,6 +620,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       const { from, to } = body as { from: string; to: string };
       return orgOf(this.env, this.org()).linkPerson(from, to);
     }
+    if (call === "changed") return computerOf(this.env, this.org()).changed("slack");
     console.warn(JSON.stringify({ level: "warn", event: "slack.owed_unknown", call }));
   }
 
@@ -759,13 +773,6 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   // ------------------------------------------------------------------ the rest of SlackRpc (slices 2 and 3)
 
-  async install(_p: Principal, _grant: SlackGrant): Promise<void> {
-    throw new Error("not yet");
-  }
-
-  async unlink(_p: Principal): Promise<void> {
-    throw new Error("not yet");
-  }
 
   /** A child of a Slack thread's session: its brief posted at the top level of the parent's channel, and that thread recorded as the child's. */
   async announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }> {
@@ -833,7 +840,210 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     return { ok: true, ts: posted.ts };
   }
 
+  // ------------------------------------------------------------------ the install (moved from Computer)
+
+  /** The workspace linked: its settings and sealed bot token; the installer linked to the person who installed; the host told. */
+  async install(p: Principal, grant: SlackGrant): Promise<void> {
+    const org = this.org();
+    this.mayInstall(p);
+    const sealed = await seal(grant.botToken, this.env.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0${grant.teamId}`);
+    this.sql.transaction(() => {
+      if (settings.get(this.sql, "slackTeamId") !== grant.teamId) this.sql.exec("DELETE FROM join_requests");
+      settings.put(this.sql, "slackTeamId", grant.teamId);
+      settings.put(this.sql, "slackTeamName", grant.teamName);
+      settings.put(this.sql, "slackBotUserId", grant.botUserId);
+      settings.put(this.sql, "slackBotToken", sealed);
+      if (grant.installerUserId) settings.put(this.sql, "slackInstallerUserId", grant.installerUserId);
+      else settings.drop(this.sql, "slackInstallerUserId");
+      // The installer approved the install as this member: their Slack sessions are theirs.
+      if (grant.installerUserId && p.subject.startsWith("usr_")) {
+        links.put(this.sql, grant.installerUserId, p.subject);
+        owed.add(this.sql, { group: `link:${grant.installerUserId}`, key: `link:${grant.installerUserId}`, call: "linkPerson", body: { from: `slack:${grant.teamId}:${grant.installerUserId}`, to: p.subject } });
+      }
+      owed.add(this.sql, { group: "changed", key: "changed:slack", call: "changed", body: "slack" });
+    });
+    this.token = undefined;
+    this.access = undefined;
+    await this.sendOwedNow();
+  }
+
+  /** The bot token and the workspace's settings go; the app stays installed in Slack until removed there. */
+  async unlink(p: Principal): Promise<void> {
+    this.org();
+    this.mayInstall(p);
+    this.forget();
+    await this.sendOwedNow();
+  }
+
+  private mayInstall(p: Principal): void {
+    if (p.org !== this.org() || (p.kind !== "member" && p.kind !== "key" && p.kind !== "platform")) throw new Error("forbidden: only a member of the organization links Slack");
+  }
+
+  private forget(): void {
+    this.sql.transaction(() => {
+      for (const key of ["slackTeamId", "slackTeamName", "slackBotUserId", "slackBotToken", "slackInstallerUserId"]) settings.drop(this.sql, key);
+      this.sql.exec("DELETE FROM join_requests");
+      owed.add(this.sql, { group: "changed", key: "changed:slack", call: "changed", body: "slack" });
+    });
+    this.token = undefined;
+    this.access = undefined;
+  }
+
+  async startInstall(p: Principal, nonce: string): Promise<void> {
+    this.org();
+    this.mayInstall(p);
+    const now = Date.now();
+    this.sql.exec("DELETE FROM install_nonces WHERE expires_at < ?", now);
+    this.sql.exec("INSERT INTO install_nonces (nonce_hash, user_id, expires_at) VALUES (?, ?, ?)", await sha256Hex(nonce), p.subject, now + INSTALL_NONCE_TTL_MS);
+  }
+
+  async consumeInstall(nonce: string): Promise<{ ok: true; subject: string } | { ok: false; reason: "invalid_state" | "state_expired" }> {
+    const hash = await sha256Hex(nonce);
+    const row = this.sql.exec<{ subject: string; expiresAt: number }>("SELECT user_id AS subject, expires_at AS expiresAt FROM install_nonces WHERE nonce_hash = ?", hash)[0];
+    if (!row) return { ok: false, reason: "invalid_state" };
+    this.sql.exec("DELETE FROM install_nonces WHERE nonce_hash = ?", hash);
+    if (row.expiresAt < Date.now()) return { ok: false, reason: "state_expired" };
+    return { ok: true, subject: row.subject };
+  }
+
+  async unlinkRevoked(teamId: string): Promise<{ unlinked: boolean }> {
+    if (settings.get(this.sql, "slackTeamId") !== teamId || !settings.get(this.sql, "slackBotToken")) return { unlinked: false };
+    const answer = await this.slack("auth.test", {});
+    if (!slackTokenDead(answer)) return { unlinked: false };
+    this.forget();
+    await this.sendOwedNow();
+    console.log(JSON.stringify({ level: "info", event: "slack.revoked_unlinked", teamId, error: answer.error }));
+    return { unlinked: true };
+  }
+
+  async joinRequest(teamId: string, requesterUserId: string): Promise<{ installerNotified: boolean }> {
+    if (settings.get(this.sql, "slackTeamId") !== teamId || !settings.get(this.sql, "slackBotToken")) return { installerNotified: false };
+    const now = Date.now();
+    this.sql.exec("DELETE FROM join_requests WHERE notified_at < ?", now - JOIN_REQUEST_INTERVAL_MS);
+    const earlier = this.sql.exec<{ notified: number }>("SELECT installer_notified AS notified FROM join_requests WHERE slack_user_id = ?", requesterUserId)[0];
+    if (earlier) return { installerNotified: earlier.notified === 1 };
+    const installerUserId = settings.get(this.sql, "slackInstallerUserId") ?? null;
+    const origin = (this.env.COMPUTER_PUBLIC_ORIGIN || this.env.OPENCOMPUTER_APP_URL || "https://app.opencomputer.dev").replace(/\/+$/, "");
+    const messages = joinRequestMessages({ requesterUserId, installerUserId, settingsUrl: `${origin}/settings` });
+    const requesterSent = await this.directMessage(requesterUserId, messages.requester);
+    const installerNotified = installerUserId && messages.installer ? await this.directMessage(installerUserId, messages.installer) : false;
+    if (requesterSent || installerNotified) {
+      this.sql.exec(
+        "INSERT INTO join_requests (slack_user_id, installer_notified, notified_at) VALUES (?, ?, ?) ON CONFLICT(slack_user_id) DO UPDATE SET installer_notified = excluded.installer_notified, notified_at = excluded.notified_at",
+        requesterUserId,
+        installerNotified ? 1 : 0,
+        now,
+      );
+    }
+    return { installerNotified };
+  }
+
+  private async directMessage(userId: string, text: string): Promise<boolean> {
+    const opened = await this.slack("conversations.open", { users: userId });
+    const channel = opened.ok ? opened.channel?.id : undefined;
+    const posted = channel ? await this.slack("chat.postMessage", { channel, text }) : opened;
+    return posted.ok;
+  }
+
+  // ------------------------------------------------------------------ the team router (`slack-team:<teamId>`)
+
+  async claimTeam(teamId: string, org: string): Promise<{ ok: true } | { ok: false; holder: string }> {
+    const holder = settings.get(this.sql, "teamLinkOrg");
+    if (holder && holder !== org) return { ok: false, holder };
+    settings.put(this.sql, "teamLinkTeamId", teamId);
+    settings.put(this.sql, "teamLinkOrg", org);
+    return { ok: true };
+  }
+
+  async teamOrg(): Promise<string | null> {
+    return settings.get(this.sql, "teamLinkOrg") ?? null;
+  }
+
+  async releaseTeam(org: string): Promise<void> {
+    if (settings.get(this.sql, "teamLinkOrg") !== org) return;
+    settings.drop(this.sql, "teamLinkOrg");
+    settings.drop(this.sql, "teamLinkTeamId");
+  }
+
+  // ------------------------------------------------------------------ the import (spec 43.1)
+
+  /**
+   * Computer's Slack state, once, in pages: its tables, settings, links and threads; a pending
+   * dispatch becomes a SessionLog entry. Each page's dispatches are accepted (idempotent on their
+   * ids) before the page's rows and the cursor are written, so a failed page is read again.
+   */
   async import(): Promise<void> {
-    throw new Error("not yet");
+    const org = this.org();
+    this.importing ??= (async () => {
+      try {
+        for (;;) {
+          const meta = this.sql.exec<{ imported: number; after: string | null }>("SELECT imported, import_after AS after FROM meta WHERE k = 1")[0];
+          if (meta?.imported) return;
+          const page = await computerOf(this.env, org).exportSlack(meta?.after ?? null, IMPORT_PAGE);
+          for (const row of page.rows) {
+            if (row.type !== "dispatch") continue;
+            const r = await logOf(this.env, row.sessionId).accept(this.principalOfBy(row.entry.by), { id: row.entry.id, kind: row.entry.kind, body: row.entry.body });
+            if (!r.ok && r.code !== "idempotency_conflict") console.warn(JSON.stringify({ level: "warn", event: "slack.import_dispatch_refused", code: r.code }));
+          }
+          this.sql.transaction(() => {
+            for (const row of page.rows) this.importRow(row);
+            this.sql.exec(
+              "INSERT INTO meta (k, imported, import_after) VALUES (1, ?, ?) ON CONFLICT(k) DO UPDATE SET imported = excluded.imported, import_after = excluded.import_after",
+              page.next === null ? 1 : 0,
+              page.next,
+            );
+          });
+          if (page.next === null) break;
+        }
+        this.token = undefined;
+        this.access = undefined;
+        // Rows Computer had queued are worked here now.
+        this.reschedule();
+        // The workspace's route moves to this namespace's router.
+        const teamId = settings.get(this.sql, "slackTeamId");
+        if (teamId) {
+          const claim = await slackOf(this.env, `slack-team:${teamId}`).claimTeam(teamId, org);
+          if (!claim.ok) console.warn(JSON.stringify({ level: "warn", event: "slack.import_team_held", teamId }));
+        }
+      } finally {
+        this.importing = undefined;
+      }
+    })();
+    return this.importing;
+  }
+
+  private importRow(row: ExportedSlackRow): void {
+    if (row.type === "setting") return settings.put(this.sql, row.key, row.value);
+    if (row.type === "link") return links.put(this.sql, row.slackUser, row.member);
+    if (row.type === "thread") return threads.put(this.sql, row.key, row.sessionId);
+    if (row.type !== "row") return;
+    if (!IMPORTED_TABLES.has(row.table)) return console.warn(JSON.stringify({ level: "warn", event: "slack.import_table_unknown", table: row.table }));
+    const columns = Object.keys(row.row).filter((c) => /^[a-z_]+$/.test(c));
+    if (!columns.length) return;
+    this.sql.exec(
+      `INSERT OR IGNORE INTO ${row.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+      ...columns.map((c) => {
+        const v = row.row[c];
+        return v === null || typeof v === "number" || typeof v === "string" ? v : JSON.stringify(v);
+      }),
+    );
+  }
+
+  /** An exported dispatch's author: a person's `user:` by as their principal, anything else the platform. */
+  private principalOfBy(by: string): Principal {
+    const org = this.org();
+    if (!by.startsWith("user:")) return platformPrincipal(org);
+    const subject = by.slice(5);
+    const member = subject.startsWith("usr_");
+    return {
+      org,
+      subject,
+      kind: "member",
+      via: "slack",
+      scopes: [...MEMBER_SCOPES],
+      audiences: member ? ["org", `member:${subject}`] : [],
+      admin: false,
+      credential: { id: subject.startsWith("slack:") ? subject : `import:${subject}`, expiresAt: null },
+    };
   }
 }
