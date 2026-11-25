@@ -9,7 +9,7 @@ description: "A terminal is a shell or command the host starts in a session's wo
 
 | Item | Rule |
 | --- | --- |
-| Caller | The session's owner or an admin, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
+| Caller | Someone who may use the session ([Access](/api/sessions#access)) and is its owner, a member listed in its `people`, or an admin in an `org` session, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"`. Losing access closes the terminal |
 | Process user | The agent's Unix user |
 | Environment | `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `TERM`. No session secrets |
 

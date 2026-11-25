@@ -27,6 +27,10 @@ HTTP only: `POST /sessions` with a `CreateSessionBody`, and `GET /sessions`.
 
 Every field is optional ([API schema](/reference/api-schema#operations)). `id` is a session id chosen by the client; `input` is the first message. Accepted values for `model`, `effort`, `speed` and `mode` are in the session's `capabilities`.
 
+`access` sets who may use the session ([Access](#access)). Without it, the session gets the organization's `apiAccessDefault`.
+
+`GET /sessions` lists only the sessions you may use. That holds for admins too: an admin changes the access of a session they cannot use by its id ([Access](#access)).
+
 ## Read
 
 `sessions.get` (`GET /sessions/{id}`) returns the `Session`, including the active turn id, queued turns, open asks, running subagents and `lastSeq`. `minSeq` waits for the journal: [Session journal](/api/overview#session-journal).
@@ -60,7 +64,7 @@ Every field is optional ([API schema](/reference/api-schema#operations)). `id` i
 
 ## Update
 
-`sessions.update` (`PATCH /sessions/{id}`) changes any of `title`, `model`, `effort`, `speed`, `mode`, `archived` and `metadata`. It returns the session and a `seq`.
+`sessions.update` (`PATCH /sessions/{id}`) changes any of `title`, `model`, `effort`, `speed`, `mode`, `archived` and `metadata`. It returns the session and a `seq`. Over HTTP it also takes `access` ([Access](#access)).
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"sessions.update","params":{"sessionId":"cs_0123456789abcdef","mode":"plan","metadata":{"ticket":"ENG-124"}}}
@@ -71,6 +75,41 @@ Every field is optional ([API schema](/reference/api-schema#operations)). `id` i
 | `metadata` | Keys (up to 40 characters) are merged one by one. Values are strings of up to 500 characters, or null |
 | `session.updated` event | `changes` maps each changed field to `{from, to}`. A metadata key is `metadata.<key>` |
 | Model the harness does not accept | `invalid_request` with `field: "model"`. The session stays on its model |
+
+## Access
+
+Sessions started from the dashboard, opc or the API have an `access` field, `{"mode", "people"}`:
+
+| `mode` | Who may use the session |
+| --- | --- |
+| `owner` | Only its owner |
+| `org` | Every member of the organization |
+| `people` | Its owner and the members in `people` (`usr_` ids). The owner is never listed |
+
+Using a session means everything that reads or drives it: get, list, attach, history (events, turns, asks, subagents), writes, terminals and workspace files. Anyone with access drives the session with its owner's secrets and subscription. To someone without access, the session does not exist: `404 session_not_found`.
+
+Set it when you create the session, or change it with `PATCH /sessions/{id}`:
+
+```json
+{"access":{"mode":"people","people":["usr_01j...","sam@example.com"]}}
+```
+
+| Item | Rule |
+| --- | --- |
+| Who may change it | The owner, anyone in `people`, or an organization admin. `canManageAccess` on the session says whether you may |
+| A member of an `org` session who is not an admin | `403 forbidden` with `reason: "not_member"` |
+| Admins | An admin may change the access of any session but may use only the ones its access lets them into. To get into an `owner` session, an admin adds themselves to `people`. While changing the access of a session they cannot use, an admin may send only `access`, and the response is `{"session":null,"access",...,"canManageAccess":true,"seq"}` |
+| `people` | Up to 50 entries: `usr_` member ids, WorkOS `user_` ids or emails. Each must be someone in the organization who has used OpenComputer here. Otherwise the response is `400 invalid_request` with `field: "access.people"` and `reason: "unknown_member"` |
+| Slack sessions | `access` shows `owner` and cannot be changed over the API: `403 forbidden` with `reason: "access_in_slack"`. Manage who drives a Slack session in its thread |
+| Sessions from before access modes | `org` until someone changes them |
+| Terminals | Owner, the members in `people`, or an admin in an `org` session ([Terminals](/api/terminals)) |
+| After a change | Attached connections and open terminals that lose access are closed. HTTP reads may keep working for up to 30 seconds |
+
+Access is HTTP only. `sessions.update` over the WebSocket does not take it.
+
+### Organization default
+
+`GET /settings` returns `{"settings":{"apiAccessDefault":"owner"}}`. `apiAccessDefault` is the access of new sessions started from the dashboard, opc or the API without `access`: `owner` (the default) or `org`. An organization admin changes it with `PATCH /settings` and `{"apiAccessDefault":"org"}`. Anyone else gets `403 admin_required`. Slack sessions keep their own default, set in Slack.
 
 ## Set aside
 
