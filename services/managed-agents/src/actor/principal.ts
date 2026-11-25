@@ -24,6 +24,8 @@ export interface Access {
   /** `org` or `member:<usr_…>`. */
   audience: string;
   writers: "members" | string[];
+  /** `by` of agents that may write whatever `writers` says (spec 40.7 step 4): they are also in `writers` when it is a list. */
+  agents?: string[];
   /** `by` of agents that may read, beyond the audience. */
   readers: string[];
   machine: string;

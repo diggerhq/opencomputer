@@ -424,6 +424,20 @@ export default defineConfig({
         },
       },
       {
+        // Tracks and threads: the Org Durable Object and its mutations, on their own instance.
+        plugins: [
+          cloudflareTest({
+            wrangler: {
+              configPath: "./wrangler.jsonc",
+            },
+          }),
+        ],
+        test: {
+          name: "org",
+          include: ["test/org*.test.ts"],
+        },
+      },
+      {
         // Work 084: the wire Worker alone, with a local KV namespace; the
         // tunnel is a fetch stub in the tests.
         plugins: [
