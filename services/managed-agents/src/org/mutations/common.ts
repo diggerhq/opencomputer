@@ -105,7 +105,7 @@ export type Table = "place" | "track" | "session";
 const KEY: Record<Table, string> = { place: "session_id", track: "id", session: "id" };
 const COLUMNS: Record<Table, Set<string>> = {
   place: new Set(["track_id", "position", "placed_by", "done_at", "outcome", "done_by", "keep", "brought_back_at", "earlier_at"]),
-  track: new Set(["name", "name_by", "keep", "done_at", "outcome"]),
+  track: new Set(["name", "name_by", "former_names", "keep", "done_at", "outcome"]),
   session: new Set(["title", "title_by", "writers"]),
 };
 

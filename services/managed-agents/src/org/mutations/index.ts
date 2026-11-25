@@ -16,6 +16,7 @@ import { byOf, type Principal } from "../../actor/principal.js";
 import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, seesSession, type Tx } from "../tx.js";
 import { applied, keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
 import { THREAD_MUTATIONS } from "./thread.js";
+import { TRACK_MUTATIONS } from "./track.js";
 
 export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
@@ -52,6 +53,7 @@ const threadRename: MutationFn = (tx, p, args) => {
 export const MUTATIONS: Record<string, MutationFn> = {
   "thread.rename": threadRename,
   ...THREAD_MUTATIONS,
+  ...TRACK_MUTATIONS,
 };
 
 /** Run one mutation by name. A refusal leaves no write behind. */
