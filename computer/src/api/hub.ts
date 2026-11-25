@@ -17,8 +17,8 @@
 // - Reaching live the first time, a subscriber with deltas gets one catch-up
 //   delta per open text block (the text so far), per open tool call (the
 //   last 4 KiB of its output) and per running subagent (its latest progress).
-// - The host's mirror (`mirror`) is given subagent progress alone, the only
-//   delta it forwards: text and tool output never cross its socket.
+// - The host's mirror (`mirror`) gets every delta, as any subscriber does: it
+//   forwards those of a watched session (host/delta-link.ts, work 118).
 
 import type { ApiError, JournalDelta, JournalEvent } from '../protocol.js';
 import type { Journal } from './journal.js';
@@ -43,9 +43,9 @@ interface OpenBlock {
   delta: JournalDelta;
 }
 
-type Keyed = { blockId?: string; callId?: string; subagentId?: string; subagent?: { id?: string } };
+export type Keyed = { blockId?: string; callId?: string; subagentId?: string; subagent?: { id?: string } };
 
-const blockKey = (type: string, data: Keyed): string | undefined => {
+export const blockKey = (type: string, data: Keyed): string | undefined => {
   if (type.startsWith('subagent.')) {
     const id = data.subagentId ?? data.subagent?.id;
     return id && `s:${id}`;
@@ -55,8 +55,8 @@ const blockKey = (type: string, data: Keyed): string | undefined => {
   if (type.startsWith('tool.')) return data.callId && `t:${data.callId}`;
   return undefined;
 };
-const COMPLETES = new Set(['message.completed', 'reasoning.completed', 'tool.completed', 'tool.failed', 'subagent.ended']);
-const ENDS_TURN = new Set(['turn.completed', 'turn.failed', 'turn.cancelled']);
+export const COMPLETES = new Set(['message.completed', 'reasoning.completed', 'tool.completed', 'tool.failed', 'subagent.ended']);
+export const ENDS_TURN = new Set(['turn.completed', 'turn.failed', 'turn.cancelled']);
 
 const tail = (s: string, n: number) => (Buffer.byteLength(s) <= n ? s : Buffer.from(s).subarray(-n).toString('utf8').replace(/^�+/, ''));
 
@@ -85,11 +85,6 @@ class Sub {
     readonly liveFrom: number,
   ) {
     this.sent = after;
-  }
-
-  /** The deltas of block `k` go to this subscriber. */
-  private wants(k: string): boolean {
-    return !this.o.mirror || k.startsWith('s:');
   }
 
   writable(): boolean {
@@ -127,7 +122,7 @@ class Sub {
       if (!this.o.deltas || this.closed || this.sent < this.hub.lastSeq) return;
       if (!this.caughtUp) {
         this.caughtUp = true;
-        for (const [k, b] of this.hub.openBlocks()) if (this.wants(k)) this.pending.set(k, b.delta);
+        for (const [k, b] of this.hub.openBlocks()) this.pending.set(k, b.delta);
       }
       for (const [k, d] of this.pending) {
         if (!this.writable()) break;
@@ -140,7 +135,7 @@ class Sub {
   }
 
   delta(key: string, d: JournalDelta): void {
-    if (!this.o.deltas || !this.caughtUp || !this.wants(key)) return;
+    if (!this.o.deltas || !this.caughtUp) return;
     const p = this.pending.get(key);
     this.pending.set(key, p ? merge(p, d) : d);
     if (this.sent === this.hub.lastSeq) this.pump();

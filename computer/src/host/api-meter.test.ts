@@ -90,10 +90,8 @@ describe('apiMeter: the host\'s own units', () => {
     meter.stop();
   });
 
-  it('api.sample carries gauges only, and nothing on a v3 host', async () => {
+  it('api.sample carries gauges only', async () => {
     const { meter, out, journals } = setup();
-    await meter.sample();
-    expect(await out()).toEqual([]);
     mkdirSync(path.join(journals, sid));
     writeFileSync(path.join(journals, sid, `${sid}.jsonl`), 'x'.repeat(100));
     // Not journals: a file directly in journals/ (the layout before work 103), and a link where a journal would be.
@@ -101,11 +99,11 @@ describe('apiMeter: the host\'s own units', () => {
     const linked = mintId('cs');
     mkdirSync(path.join(journals, linked));
     symlinkSync(path.join(journals, sid, `${sid}.jsonl`), path.join(journals, linked, `${linked}.jsonl`));
-    meter.setGauges(() => ({ v4: true, runnerWriters: 2, hostWriters: 1, heldFrames: 0, mirrorSpooledBytes: 5 }));
+    meter.setGauges(() => ({ runnerWriters: 2, hostWriters: 1, heldFrames: 0, mirrorSpooledBytes: 5 }));
     await meter.sample();
     const [s] = await out();
     expect(s.event_name).toBe('api.sample');
-    expect(s.data).toEqual({ host_protocol: 4, open_journals: 3, runner_writers: 2, host_writers: 1, journal_bytes: 100, mirror_spooled_bytes: 5, mirror_unacked_max: 0, held_frames: 0 });
+    expect(s.data).toEqual({ host_protocol: 6, open_journals: 3, runner_writers: 2, host_writers: 1, journal_bytes: 100, mirror_spooled_bytes: 5, mirror_unacked_max: 0, held_frames: 0 });
     meter.stop();
   });
 });

@@ -5,8 +5,13 @@
 # the version every 5 minutes (and 2 minutes after boot, so a computer waking
 # from parking catches up) and, when it differs from the running release,
 # re-runs the boot script code-only: fetch the bundle, build the release,
-# switch `current`, restart the host agent. Running runners keep their release
-# and pick up the new one when they next start, like every deploy.
+# switch `current`, restart the host agent, which stops the runners of the
+# previous release (src/host/release.ts): a turn in flight ends interrupted and
+# the session starts on the new release at its next message.
+#
+# The host also asks for a check at once, when the gateway closes it with 4426
+# (its protocol is no longer spoken): it creates $TRIGGER, which
+# slack-presence-self-update.path watches. This script removes it as it starts.
 #
 # provision.sh runs `self-update.sh install`: it copies itself to
 # /usr/local/sbin/slack-presence-self-update, run by
@@ -23,6 +28,7 @@ set -euo pipefail
 ENV_FILE="${CALVIN_COMPUTER_ENV:-/root/calvin-computer.env}"
 BOOT_SCRIPT=/opt/bootstrap/calvin-src/deploy/vm/azure-computer-boot.sh
 CURRENT=/opt/slack-presence/current
+TRIGGER="${SP_RUN:-/run/slack-presence}/update-now"
 
 if [[ ${1:-} == install ]]; then
   install -m 0755 "${BASH_SOURCE[0]}" /usr/local/sbin/slack-presence-self-update
@@ -36,6 +42,7 @@ ConditionPathExists=$ENV_FILE
 
 [Service]
 Type=oneshot
+Environment=SP_RUN=${SP_RUN:-/run/slack-presence}
 ExecStart=/usr/local/sbin/slack-presence-self-update
 UNIT
   cat > /etc/systemd/system/slack-presence-self-update.timer <<UNIT
@@ -51,11 +58,25 @@ RandomizedDelaySec=60
 [Install]
 WantedBy=timers.target
 UNIT
+  cat > /etc/systemd/system/slack-presence-self-update.path <<UNIT
+# Written by deploy/vm/self-update.sh install: the host asks for an update now (close 4426).
+[Unit]
+Description=Update Calvin when its host agent asks
+ConditionPathExists=$ENV_FILE
+
+[Path]
+PathExists=$TRIGGER
+
+[Install]
+WantedBy=paths.target
+UNIT
   systemctl daemon-reload
   systemctl enable --now slack-presence-self-update.timer
+  systemctl enable --now slack-presence-self-update.path
   exit 0
 fi
 
+rm -f "$TRIGGER" # first: while it exists the path unit starts this again
 [[ -r $ENV_FILE ]] || { echo "no $ENV_FILE: not a computer made by the backend; nothing to do"; exit 0; }
 BOOTSTRAP_URL="" CLIENT_ID=""
 while IFS='=' read -r k v; do
