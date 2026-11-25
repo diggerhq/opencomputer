@@ -420,7 +420,7 @@ export default defineConfig({
         ],
         test: {
           name: "session-log",
-          include: ["test/session-log.test.ts", "test/actor-shells.test.ts", "test/actor-module.test.ts"],
+          include: ["test/session-log*.test.ts", "test/actor-shells.test.ts", "test/actor-module.test.ts"],
         },
       },
       {
@@ -451,6 +451,10 @@ export default defineConfig({
           name: "wire",
           include: ["test/wire-*.test.ts"],
         },
+      },
+      {
+        // Tracks and threads: the HTTP API (spec 37) with fakes of the actors.
+        test: { name: "computer-api", environment: "node", include: ["test/computer-api-http*.test.ts"] },
       },
       {
         resolve: egressRegistryFixture,

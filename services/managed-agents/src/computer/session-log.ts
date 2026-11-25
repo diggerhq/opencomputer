@@ -26,6 +26,36 @@ import { TelemetryBatch } from "./telemetry/batch.js";
 import { gatewayTelemetry, type TelemetryEnv } from "./telemetry/gateway.js";
 import { DurableObject } from "cloudflare:workers";
 
+import {
+  alarms,
+  byOf,
+  computerOf,
+  cursor,
+  hashOf,
+  liveOf,
+  mayRead,
+  migrate,
+  orgOf,
+  owed,
+  OWED_PURPOSE,
+  sqlOf,
+  type AcceptResult,
+  type Access,
+  type ActorEnv,
+  type ComputerRpcAdded,
+  type DeliveredOutcome,
+  type Inbox,
+  type InboxEntry,
+  type InboxKind,
+  type LiveRpc,
+  type OrgRpc,
+  type Principal,
+  type SessionLogRpcAdded,
+  type Summary,
+  type SummaryPub,
+  type Sql,
+} from "../actor/index.js";
+import type { FoldSummary } from "./session-fold.js";
 import { decodeCursor, encodeCursor } from "./list-cursor.js";
 import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
 import {
@@ -68,8 +98,65 @@ import {
   type TurnsQuery,
 } from "./session-log-contract.js";
 
-export interface SessionLogEnv extends TelemetryEnv {
+export interface SessionLogEnv extends TelemetryEnv, ActorEnv {
   SESSION_LOG_BLOBS?: R2Bucket;
+}
+
+/** The actors a log calls (spec 36.2). A seam: tests put fakes here. */
+export interface SessionLogPeers {
+  org(org: string): Pick<OrgRpc, "access" | "acceptSummary">;
+  computer(machine: string): Pick<ComputerRpcAdded, "drain">;
+  /** Null where Live is not bound: nothing is published. */
+  live(org: string): Pick<LiveRpc, "publish"> | null;
+}
+
+/** Where big event data lives outside the object (spec 17.9): the only R2 access of the log. */
+export interface Blobs {
+  put(key: string, json: string): Promise<void>;
+  get(key: string): Promise<string | null>;
+  /** Delete every blob under the prefix. */
+  removeAll(prefix: string): Promise<void>;
+}
+
+export function r2Blobs(bucket: R2Bucket): Blobs {
+  return {
+    put: async (key, json) => void (await bucket.put(key, json, { httpMetadata: { contentType: "application/json" } })),
+    get: async (key) => (await bucket.get(key))?.text() ?? null,
+    removeAll: async (prefix) => {
+      for (let cursor: string | undefined; ; ) {
+        const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}) });
+        if (page.objects.length) await bucket.delete(page.objects.map((o) => o.key));
+        if (!page.truncated) return;
+        cursor = page.cursor;
+      }
+    },
+  };
+}
+
+/** The prefix of a session's blobs. */
+export function blobPrefix(organizationId: string, sessionId: string): string {
+  return `sessions/${organizationId}/${sessionId}/`;
+}
+
+/** The inbox holds at most this many waiting entries (the host's `QUEUE_MAX`). */
+export const INBOX_MAX_WAITING = 20;
+/** A turn by an agent or the platform is refused once the session accepted this many since its last turn by a person. */
+export const AGENT_TURNS_MAX = 30;
+/** A delivered or refused entry is kept this long (idempotency; "not sent" in the list), then removed. */
+export const INBOX_KEEP_MS = 24 * 60 * 60 * 1_000;
+/** `inbox[].text` in the summary: this many characters of a turn's input. */
+export const INBOX_TEXT_CHARS = 280;
+/** An append during a running turn writes the summary slot when it was last written longer ago than this. */
+export const SLOT_REFRESH_MS = 30_000;
+/** The events that count as occurrences when appended (spec 35.2). */
+const OCCURRENCES = new Set(["message.received", "ask.opened", "ask.closed", "turn.completed", "turn.failed", "turn.cancelled"]);
+const SWEEP_PURPOSE = "sweep";
+
+/** The `by` of an event's actor (spec 34.1), or null without one. */
+function byOfActor(actor: ApiEvent["actor"]): string | null {
+  if (!actor) return null;
+  if (actor.id === "platform" || actor.id === "system" || (actor.via as string) === "platform" || actor.via === "system") return "platform";
+  return actor.id.startsWith("cs_") ? `agent:${actor.id}` : `user:${actor.id}`;
 }
 
 /** Event `data` whose JSON is longer than this many bytes goes to R2. */
@@ -95,7 +182,74 @@ interface Meta {
   ack: number;
   syncedAt: string | null;
   state: FoldState;
-  summary: LogSummary;
+  summary: FoldSummary;
+  /** Counts changes to the summary Org holds (spec 35.2); never reused. */
+  revision: number;
+  /** Until when Live holds a lease on this log's events (spec 40.4). */
+  watchedUntil: number;
+  /** When the summary slot was last written (the 30 s rule, spec 40.3). */
+  slotAt: number;
+  /** Turns accepted from agents or the platform since the last turn by a person. */
+  agentTurns: number;
+}
+
+type InboxRow = {
+  n: number;
+  id: string;
+  kind: InboxKind;
+  body: string;
+  hash: string;
+  by: string;
+  actor: string;
+  trace: string | null;
+  at: number;
+  state: "waiting" | "delivered" | "refused";
+  result: string | null;
+  error: string | null;
+  done_at: number | null;
+};
+
+/** The tables of spec 35.2, after the existing ones (`SCHEMA`, as before). Never edit a step; add one. */
+const MIGRATIONS: ((sql: Sql) => void)[] = [
+  (sql) => {
+    sql.exec(`CREATE TABLE inbox (n INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+      body TEXT NOT NULL, hash TEXT NOT NULL, "by" TEXT NOT NULL, actor TEXT NOT NULL, trace TEXT, at INTEGER NOT NULL,
+      state TEXT NOT NULL, result TEXT, error TEXT, done_at INTEGER)`);
+    sql.exec("CREATE INDEX inbox_state ON inbox (state, n)");
+    sql.exec(`CREATE TABLE access (k INTEGER PRIMARY KEY CHECK (k = 1), owner TEXT NOT NULL, audience TEXT NOT NULL,
+      writers TEXT NOT NULL, readers TEXT NOT NULL, machine TEXT NOT NULL, revision INTEGER NOT NULL)`);
+    sql.exec(`CREATE TABLE occ_pending (epoch INTEGER, seq INTEGER, kind TEXT NOT NULL, "by" TEXT, at INTEGER NOT NULL, PRIMARY KEY (epoch, seq))`);
+    for (const column of ["revision", "watched_until", "slot_at", "agent_turns"]) sql.exec(`ALTER TABLE meta ADD COLUMN ${column} INTEGER`);
+  },
+];
+
+const isPerson = (p: Principal) => p.kind === "member" || p.kind === "key";
+
+/** Who may put an entry of this kind in the inbox (spec 36.2). */
+function mayWrite(p: Principal, kind: InboxKind, access: Access): boolean {
+  const by = byOf(p);
+  const listed = access.writers !== "members" && access.writers.includes(by);
+  const members = access.writers === "members" && isPerson(p);
+  if (kind === "settings") return members || (isPerson(p) && (access.owner === p.subject || access.owner === by));
+  if (kind === "interrupt") return p.kind === "platform" || isPerson(p) || listed;
+  return p.kind === "platform" || members || listed;
+}
+
+const entryOfRow = (row: InboxRow): InboxEntry => ({
+  id: row.id,
+  kind: row.kind,
+  body: JSON.parse(row.body),
+  by: row.by,
+  actor: JSON.parse(row.actor) as InboxEntry["actor"],
+  trace: row.trace,
+  at: row.at,
+});
+
+/** The refused entry a `dismiss` names (spec 40.2 step 6): `body.entryId`, or the id under the names an ask's dismiss uses. */
+function namedEntry(body: unknown): string[] {
+  if (typeof body !== "object" || body === null) return [];
+  const b = body as Record<string, unknown>;
+  return [b.entryId, b.id, b.turnId, b.askId].filter((v): v is string => typeof v === "string");
 }
 
 interface EventRow {
@@ -207,7 +361,8 @@ const turnOfRow = (row: TurnRow): TurnRecord => ({
   usage: row.usage === null ? null : JSON.parse(row.usage),
 });
 
-const withSubagents = (summary: LogSummary): LogSummary => (summary.subagents ? summary : { ...summary, subagents: [] });
+/** A summary saved before a field existed. */
+const withSubagents = (summary: FoldSummary): FoldSummary => ({ ...summary, subagents: summary.subagents ?? [], lastAgentSeq: summary.lastAgentSeq ?? 0 });
 
 const subagentOfRow = (row: SubagentRow): SubagentRecord => ({
   subagent: JSON.parse(row.data) as Subagent,
@@ -328,7 +483,19 @@ interface PreparedRow {
   spill: string | null;
 }
 
-export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implements SessionLogRpc {
+export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implements SessionLogRpc, SessionLogRpcAdded {
+  /** The actors this log calls; tests replace it. */
+  peers: SessionLogPeers = {
+    org: (org) => orgOf(this.env, org),
+    computer: (machine) => computerOf(this.env, machine),
+    live: (org) => liveOf(this.env, org),
+  };
+  /** Null where no bucket is bound: event data stays inline. */
+  blobs: Blobs | null = this.env.SESSION_LOG_BLOBS ? r2Blobs(this.env.SESSION_LOG_BLOBS) : null;
+  private readonly db: Sql;
+  /** The copy of Org's access row, or null while the log holds none. */
+  private access: Access | null = null;
+
   /** How long a read with `minSeq` waits for the log to reach it. A knob for tests. */
   minSeqWaitMs = MIN_SEQ_WAIT_MS;
 
@@ -345,9 +512,276 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   constructor(ctx: DurableObjectState, env: SessionLogEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    void ctx.blockConcurrencyWhile(async () => {
-      this.sql.exec(SCHEMA);
-      this.meta = this.loadMeta();
+    this.db = sqlOf(ctx.storage);
+    void ctx.blockConcurrencyWhile(async () => this.open());
+  }
+
+  private open() {
+    this.sql.exec(SCHEMA);
+    migrate(this.db, MIGRATIONS);
+    this.meta = this.loadMeta();
+    this.access = this.loadAccess();
+  }
+
+  // ---- the one alarm, and the calls owed after a transaction (spec 36.7) ------------------------
+
+  override async alarm(): Promise<void> {
+    await alarms.run(this.db, Date.now(), {
+      [OWED_PURPOSE]: () => owed.run(this.db, this.send, Date.now()),
+      [SWEEP_PURPOSE]: () => this.sweep(),
+    });
+  }
+
+  /** Send what is owed and due at `now`; resolves when the pass is over. Never throws. Tests await it. */
+  flush(now = Date.now()): Promise<void> {
+    return owed.run(this.db, this.send, now).catch(() => undefined);
+  }
+
+  /** After a transaction that added an owed call: send it at once, without making the caller wait. */
+  private kick() {
+    this.ctx.waitUntil(this.flush());
+  }
+
+  private readonly send = async (call: string, _body: unknown): Promise<void> => {
+    if (call === "drain") return this.sendDrain();
+    if (call === "summary") return this.sendSummary();
+  };
+
+  /** `Computer.drain`, owed until `delivered` leaves no entry waiting: a `waking` answer keeps it owed. */
+  private async sendDrain(): Promise<void> {
+    if (this.waiting() === 0) return;
+    const sessionId = this.sessionId();
+    if (!this.access || !sessionId) throw new Error("drain: the log holds no access");
+    const answer = await this.peers.computer(this.access.machine).drain(sessionId, { wait: false });
+    if (this.waiting() > 0) throw new Error(`drain answered ${answer.state}; entries still wait`);
+  }
+
+  // ---- access (spec 36.2) -----------------------------------------------------------------------
+
+  async setAccess(access: Access): Promise<void> {
+    this.putAccess(access);
+  }
+
+  /** Kept only if its revision is newer than the one held. */
+  private putAccess(access: Access) {
+    if (this.access && access.revision <= this.access.revision) return;
+    this.sql.exec(
+      "INSERT OR REPLACE INTO access (k, owner, audience, writers, readers, machine, revision) VALUES (1, ?, ?, ?, ?, ?, ?)",
+      access.owner,
+      access.audience,
+      JSON.stringify(access.writers),
+      JSON.stringify(access.readers),
+      access.machine,
+      access.revision,
+    );
+    this.access = { owner: access.owner, audience: access.audience, writers: access.writers, readers: access.readers, machine: access.machine, revision: access.revision };
+  }
+
+  private loadAccess(): Access | null {
+    const row = this.sql
+      .exec<{ owner: string; audience: string; writers: string; readers: string; machine: string; revision: number }>("SELECT * FROM access WHERE k = 1")
+      .toArray()[0];
+    if (!row) return null;
+    return { owner: row.owner, audience: row.audience, writers: JSON.parse(row.writers), readers: JSON.parse(row.readers), machine: row.machine, revision: row.revision };
+  }
+
+  /** The session this log is: the object's name, or what its writer said. */
+  private sessionId(): string | null {
+    return this.ctx.id.name ?? this.meta.sessionId;
+  }
+
+  /**
+   * The access a principal's call is judged by, or null (`not_found`): a principal of another
+   * organization, or a session Org does not have. A log that holds no access row, or does not know
+   * its organization yet, reads `Org.access` first and learns both from the answer.
+   */
+  private async accessFor(p: Principal): Promise<Access | null> {
+    const sessionId = this.sessionId();
+    if (!sessionId) return null;
+    if (this.meta.organizationId !== null && this.meta.organizationId !== p.org) return null;
+    if (this.access && this.meta.organizationId !== null) return this.access;
+    const got = await this.peers.org(p.org).access(sessionId);
+    if (!got) return null;
+    if (this.meta.organizationId === null) {
+      const next = { ...this.meta, organizationId: p.org, sessionId };
+      this.saveMeta(next);
+      this.meta = next;
+    } else if (this.meta.organizationId !== p.org) return null;
+    this.putAccess(got);
+    return this.access;
+  }
+
+  /** Live's lease on this log's events (spec 40.4): the head cursor, or null when `p` may not read. */
+  async watch(p: Principal, until: number): Promise<{ head: string } | null> {
+    const access = await this.accessFor(p);
+    if (!access || !mayRead(p, access, this.sessionId()!)) return null;
+    if (until > this.meta.watchedUntil) {
+      const next = { ...this.meta, watchedUntil: until };
+      this.saveMeta(next);
+      this.meta = next;
+    }
+    return { head: this.head() };
+  }
+
+  /** The events cursor of the log's end. */
+  private head(): string {
+    return cursor.encode("e", [this.meta.logEpoch, this.meta.ack]);
+  }
+
+  /** The session is deleted: its storage and its spilled blobs. */
+  async destroy(): Promise<void> {
+    await this.exclusive(async () => {
+      await this.spilling.catch(() => undefined);
+      const { organizationId } = this.meta;
+      const sessionId = this.sessionId();
+      if (this.blobs && organizationId && sessionId) await this.blobs.removeAll(blobPrefix(organizationId, sessionId));
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      this.progressById.clear();
+      this.open();
+      this.wake();
+    });
+  }
+
+  // ---- the inbox (spec 36.2, 40.2) --------------------------------------------------------------
+
+  async accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }): Promise<AcceptResult> {
+    const access = await this.accessFor(p);
+    if (!access) return { ok: false, code: "not_found" };
+    if (!mayWrite(p, entry.kind, access)) return { ok: false, code: "forbidden" };
+    const body = entry.body ?? null;
+    const hash = await hashOf({ kind: entry.kind, body });
+    const now = Date.now();
+    const by = byOf(p);
+    const actor = JSON.stringify({ subject: p.subject, kind: p.kind, via: p.via, admin: p.admin });
+    const machine = this.access?.machine ?? access.machine;
+    const result = this.db.transaction((): AcceptResult => {
+      const existing = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", entry.id).toArray()[0];
+      if (existing) {
+        if (existing.hash !== hash) return { ok: false, code: "idempotency_conflict" };
+        const stored = existing.state === "delivered" && existing.result !== null ? { result: JSON.parse(existing.result) as unknown } : {};
+        return { ok: true, id: entry.id, duplicate: true, machine, ...stored };
+      }
+      const insert = (state: "waiting" | "delivered") =>
+        this.sql.exec(
+          `INSERT INTO inbox (id, kind, body, hash, "by", actor, trace, at, state, done_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          entry.id,
+          entry.kind,
+          JSON.stringify(body),
+          hash,
+          by,
+          actor,
+          entry.trace ?? null,
+          now,
+          state,
+          state === "waiting" ? null : now,
+        );
+      if (entry.kind === "dismiss") {
+        // A dismiss naming a refused entry removes it, and is itself done: nothing goes to the host.
+        for (const id of namedEntry(body)) {
+          if (this.sql.exec("DELETE FROM inbox WHERE id = ? AND state = 'refused' RETURNING n", id).toArray().length === 0) continue;
+          insert("delivered");
+          alarms.set(this.db, SWEEP_PURPOSE, now + INBOX_KEEP_MS);
+          this.bump(this.meta, now);
+          return { ok: true, id: entry.id, duplicate: false, machine };
+        }
+      }
+      if (this.waiting() >= INBOX_MAX_WAITING) return { ok: false, code: "inbox_full" };
+      let agentTurns = this.meta.agentTurns;
+      if (entry.kind === "turn") {
+        if (isPerson(p)) agentTurns = 0;
+        else if (agentTurns >= AGENT_TURNS_MAX) return { ok: false, code: "agent_turns" };
+        else agentTurns += 1;
+      }
+      insert("waiting");
+      owed.add(this.db, { group: "drain", key: "drain", call: "drain" });
+      this.bump({ ...this.meta, agentTurns }, now);
+      return { ok: true, id: entry.id, duplicate: false, machine };
+    });
+    if (result.ok && !result.duplicate) this.kick();
+    return result;
+  }
+
+  async inbox(): Promise<Inbox> {
+    const entries = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE state = 'waiting' ORDER BY n").toArray().map(entryOfRow);
+    return { entries, epoch: this.meta.logEpoch, lastSeq: this.meta.ack };
+  }
+
+  async delivered(id: string, outcome: DeliveredOutcome): Promise<void> {
+    const now = Date.now();
+    this.db.transaction(() => {
+      // Only a waiting entry: a repeated report changes nothing.
+      const changed = outcome.ok
+        ? this.sql.exec("UPDATE inbox SET state = 'delivered', result = ?, done_at = ? WHERE id = ? AND state = 'waiting' RETURNING n", JSON.stringify(outcome.result ?? null), now, id)
+        : this.sql.exec(
+            "UPDATE inbox SET state = 'refused', error = ?, done_at = ? WHERE id = ? AND state = 'waiting' RETURNING n",
+            JSON.stringify({ code: outcome.code, message: outcome.message }),
+            now,
+            id,
+          );
+      if (changed.toArray().length === 0) return;
+      if (this.waiting() === 0) owed.drop(this.db, { key: "drain" });
+      alarms.set(this.db, SWEEP_PURPOSE, now + INBOX_KEEP_MS);
+      this.bump(this.meta, now);
+    });
+    this.kick();
+  }
+
+  /** Delivered and refused entries leave after 24 h. */
+  private sweep() {
+    const now = Date.now();
+    this.db.transaction(() => {
+      const gone = this.sql.exec<{ state: string }>("DELETE FROM inbox WHERE state != 'waiting' AND done_at <= ? RETURNING state", now - INBOX_KEEP_MS).toArray();
+      // A refused entry was in the summary's inbox.
+      if (gone.some((row) => row.state === "refused")) this.bump(this.meta, now);
+      const next = this.sql.exec<{ at: number | null }>("SELECT MIN(done_at) AS at FROM inbox WHERE state != 'waiting'").toArray()[0]?.at;
+      if (next !== null && next !== undefined) alarms.set(this.db, SWEEP_PURPOSE, next + INBOX_KEEP_MS);
+    });
+    this.kick();
+  }
+
+  private waiting(): number {
+    return this.sql.exec<{ c: number }>("SELECT COUNT(*) AS c FROM inbox WHERE state = 'waiting'").toArray()[0]!.c;
+  }
+
+  /** In the caller's transaction: the summary changed (spec 40.3 step 1). Saves `m` with the next revision. */
+  private bump(m: Meta, now: number) {
+    const next: Meta = { ...m, revision: m.revision + 1, slotAt: now };
+    this.saveMeta(next);
+    this.meta = next;
+    owed.add(this.db, { group: "summary", key: "summary", call: "summary" });
+  }
+
+  /** The summary Org receives (spec 35.2): the log's, its revision, and the inbox entries that wait or were refused. */
+  private orgSummary(): Summary {
+    const inbox = this.sql
+      .exec<InboxRow>("SELECT * FROM inbox WHERE state IN ('waiting', 'refused') ORDER BY n")
+      .toArray()
+      .map((row) => {
+        const input = row.kind === "turn" ? (JSON.parse(row.body) as { input?: unknown } | null)?.input : null;
+        const error = row.error === null ? null : (JSON.parse(row.error) as { code: string }).code;
+        return { id: row.id, kind: row.kind, by: row.by, at: new Date(row.at).toISOString(), text: typeof input === "string" ? input.slice(0, INBOX_TEXT_CHARS) : null, error };
+      });
+    return { ...this.meta.summary, revision: this.meta.revision, agentTitle: this.meta.summary.title, inbox };
+  }
+
+  /**
+   * The summary slot (spec 40.3): the body is built now, so it carries the latest. Org answering this
+   * revision or a later one clears the occurrences sent; the owed row goes with this call's return,
+   * and one written meanwhile (a newer revision) is another row, sent next.
+   */
+  private async sendSummary(): Promise<void> {
+    const sessionId = this.sessionId();
+    const org = this.meta.organizationId;
+    if (!sessionId || !org) throw new Error("summary: the log does not know its organization");
+    const occurrences = this.sql
+      .exec<{ epoch: number; seq: number; kind: string; by: string | null; at: number }>(`SELECT epoch, seq, kind, "by", at FROM occ_pending ORDER BY epoch, seq`)
+      .toArray();
+    const pub: SummaryPub = { sessionId, revision: this.meta.revision, summary: this.orgSummary(), occurrences };
+    const answer = await this.peers.org(org).acceptSummary(pub);
+    if (answer.revision < pub.revision) throw new Error(`summary: Org holds revision ${answer.revision}, sent ${pub.revision}`);
+    this.db.transaction(() => {
+      for (const o of occurrences) this.sql.exec("DELETE FROM occ_pending WHERE epoch = ? AND seq = ?", o.epoch, o.seq);
     });
   }
 
@@ -364,9 +798,9 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return this.exclusive(async (): Promise<RecoverResult> => {
       this.claim(input);
       const m = this.meta;
-      // Any newer epoch, not only logEpoch + 1: a log the host never wrote is at 0 while its row starts at 1,
-      // so the recover comes at 2. A lagging row's recover (epoch <= logEpoch) is still refused.
-      if (input.epoch <= m.logEpoch) return { ok: false, reason: "stale_epoch", logEpoch: m.logEpoch, ack: m.ack };
+      // Only the log's epoch + 1 (spec 36.2, 40.10): the caller read it from `epochTail` just before; one
+      // that lost a race, or guessed, is refused and reads again.
+      if (input.epoch !== m.logEpoch + 1) return { ok: false, reason: "stale_epoch", logEpoch: m.logEpoch, ack: m.ack };
       const result = await this.store(input.epoch, this.recoveryEvents(input));
       return result.ok ? { ...result, tail: await this.tailOf() } : result;
     });
@@ -500,7 +934,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const refoldAt = performance.now();
     const rebuilt = truncateFrom === null ? null : await this.refold(truncateFrom - 1);
     const refoldMs = rebuilt ? performance.now() - refoldAt : 0;
-    const syncedAt = new Date().toISOString();
+    const now = Date.now();
+    const syncedAt = new Date(now).toISOString();
 
     this.ctx.storage.transactionSync(() => {
       let state: FoldState = structuredClone(m.state);
@@ -544,12 +979,35 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
         subagentsTouched ? this.runningSubagents() : m.summary.subagents,
         { lastSeq: ack, logEpoch, epochStartSeq, syncedAt },
       );
-      const next: Meta = { ...m, logEpoch, epochStartSeq, ack, syncedAt, state, summary };
-      this.saveMeta(next);
-      this.meta = next;
+      // The inbox's transactions ran while this one's rows were prepared: their counters are the object's, not `m`'s.
+      const { revision, watchedUntil, slotAt, agentTurns } = this.meta;
+      const next: Meta = { ...m, revision, watchedUntil, slotAt, agentTurns, logEpoch, epochStartSeq, ack, syncedAt, state, summary };
+      let occurred = false;
+      for (const r of rows) {
+        if (!OCCURRENCES.has(r.event.type)) continue;
+        occurred = true;
+        this.sql.exec(
+          `INSERT OR REPLACE INTO occ_pending (epoch, seq, kind, "by", at) VALUES (?, ?, ?, ?, ?)`,
+          epoch,
+          r.event.seq,
+          r.event.type,
+          byOfActor(r.event.actor),
+          Date.parse(r.event.createdAt) || now,
+        );
+      }
+      // Spec 40.3 step 1. Any other append's lastSeq, lastText and lastActiveAt go with the next revision.
+      const was = m.summary;
+      const changed = newEpoch || was.status !== summary.status || was.title !== summary.title || JSON.stringify(was.asks) !== JSON.stringify(summary.asks);
+      const running = summary.activeTurnId !== null && now - slotAt > SLOT_REFRESH_MS;
+      if (occurred || changed || running) this.bump(next, now);
+      else {
+        this.saveMeta(next);
+        this.meta = next;
+      }
       if (subagentsTouched) this.pruneProgress();
     });
     this.wake();
+    this.kick();
     this.spill(epoch, rows);
     let bytes = 0;
     for (const r of rows) bytes += r.data?.length ?? 0;
@@ -570,7 +1028,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       syncSpillMs,
       refolded: rebuilt !== null,
       refoldMs,
-      spillsDue: this.env.SESSION_LOG_BLOBS ? rows.filter((r) => r.spill !== null).length : 0,
+      spillsDue: this.blobs ? rows.filter((r) => r.spill !== null).length : 0,
       storageBytes,
     };
     return { ok: true, ack: this.meta.ack, summary: this.meta.summary, stats };
@@ -578,7 +1036,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   /** After the commit: big inline data to R2, then the row points at it (unless it was replaced meanwhile). */
   private spill(epoch: number, rows: PreparedRow[]) {
-    const bucket = this.env.SESSION_LOG_BLOBS;
+    const bucket = this.blobs;
     const due = bucket ? rows.filter((r) => r.spill !== null) : [];
     if (due.length === 0) return;
     // One `sessionlog.spill` per batch's spills (work 084, Q2), into the object's telemetry batch after them.
@@ -587,7 +1045,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       due.map(async (r) => {
         const began = performance.now();
         try {
-          await bucket!.put(r.spill!, r.data!, { httpMetadata: { contentType: "application/json" } });
+          await bucket!.put(r.spill!, r.data!);
           this.sql.exec("UPDATE events SET data = NULL, blob = ? WHERE seq = ? AND epoch = ? AND id = ? AND blob IS NULL", r.spill, r.event.seq, epoch, r.event.id);
           fact.spills++;
           fact.bytes += r.data!.length;
@@ -652,7 +1110,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   /** Serialize the rows; data over 8 KiB is marked to spill, and only data near SQLite's limit goes to R2 first. */
   private async prepare(epoch: number, events: ApiEvent[], sync: { spills: number; bytes: number }): Promise<PreparedRow[]> {
-    const bucket = this.env.SESSION_LOG_BLOBS;
+    const bucket = this.blobs;
     const puts: Promise<unknown>[] = [];
     const rows = events.map((event): PreparedRow => {
       const json = JSON.stringify(event.data ?? null);
@@ -661,7 +1119,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
         const key = blobKey(this.meta.organizationId!, this.meta.sessionId!, epoch, event.seq);
         // ≤ 3 UTF-8 bytes per UTF-16 unit: below the bound it fits a SQLite value.
         if (json.length * 3 <= SYNC_SPILL_BYTES) return { event, actor, data: json, blob: null, spill: key };
-        puts.push(bucket.put(key, json, { httpMetadata: { contentType: "application/json" } }));
+        puts.push(bucket.put(key, json));
         sync.spills++;
         sync.bytes += json.length;
         return { event, actor, data: null, blob: key, spill: null };
@@ -970,9 +1428,9 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const blobs = await Promise.all(
       rows.map(async (row) => {
         if (row.blob === null) return null;
-        const object = await this.env.SESSION_LOG_BLOBS?.get(row.blob);
-        if (!object) throw new Error(`session log blob missing: ${row.blob}`);
-        return object.text();
+        const text = await this.blobs?.get(row.blob);
+        if (text === null || text === undefined) throw new Error(`session log blob missing: ${row.blob}`);
+        return text;
       }),
     );
     return rows.map((row, i) => ({
@@ -1027,6 +1485,10 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
         synced_at: string | null;
         state: string;
         summary: string;
+        revision: number | null;
+        watched_until: number | null;
+        slot_at: number | null;
+        agent_turns: number | null;
       }>("SELECT * FROM meta WHERE k = 1")
       .toArray()[0];
     if (!row) {
@@ -1040,6 +1502,10 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
         syncedAt: null,
         state,
         summary: summarize(state, [], [], [], { lastSeq: 0, logEpoch: 0, epochStartSeq: 1, syncedAt: null }),
+        revision: 0,
+        watchedUntil: 0,
+        slotAt: 0,
+        agentTurns: 0,
       };
     }
     return {
@@ -1051,14 +1517,19 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       syncedAt: row.synced_at,
       state: JSON.parse(row.state) as FoldState,
       // A summary saved before subagents existed has none.
-      summary: withSubagents(JSON.parse(row.summary) as LogSummary),
+      summary: withSubagents(JSON.parse(row.summary) as FoldSummary),
+      revision: row.revision ?? 0,
+      watchedUntil: row.watched_until ?? 0,
+      slotAt: row.slot_at ?? 0,
+      agentTurns: row.agent_turns ?? 0,
     };
   }
 
   private saveMeta(m: Meta) {
     this.sql.exec(
-      `INSERT OR REPLACE INTO meta (k, organization_id, session_id, log_epoch, epoch_start_seq, ack, synced_at, state, summary)
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO meta (k, organization_id, session_id, log_epoch, epoch_start_seq, ack, synced_at, state, summary,
+         revision, watched_until, slot_at, agent_turns)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       m.organizationId,
       m.sessionId,
       m.logEpoch,
@@ -1067,6 +1538,10 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       m.syncedAt,
       JSON.stringify(m.state),
       JSON.stringify(m.summary),
+      m.revision,
+      m.watchedUntil,
+      m.slotAt,
+      m.agentTurns,
     );
   }
 }
