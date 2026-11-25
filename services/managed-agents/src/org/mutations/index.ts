@@ -17,6 +17,9 @@ import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, se
 import { applied, keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
 import { THREAD_MUTATIONS } from "./thread.js";
 import { TRACK_MUTATIONS } from "./track.js";
+import { DOC_MUTATIONS } from "./doc.js";
+import { RESULT_MUTATIONS } from "./result.js";
+import { PROPOSAL_MUTATIONS } from "./proposal.js";
 
 export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
@@ -54,6 +57,9 @@ export const MUTATIONS: Record<string, MutationFn> = {
   "thread.rename": threadRename,
   ...THREAD_MUTATIONS,
   ...TRACK_MUTATIONS,
+  ...DOC_MUTATIONS,
+  ...RESULT_MUTATIONS,
+  ...PROPOSAL_MUTATIONS,
 };
 
 /** Run one mutation by name. A refusal leaves no write behind. */
