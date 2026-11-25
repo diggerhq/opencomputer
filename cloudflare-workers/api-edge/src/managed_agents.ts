@@ -2,6 +2,7 @@ import { getAutumnCustomer } from "./autumn_webhook";
 import { FREE_CREDITS_PAYWALL } from "./billing_onramp";
 import { computerFamily } from "./computer";
 import { computerApiFamily } from "./computer_api";
+import type { Principal } from "./principal";
 import type { RouteFamily } from "./route_family";
 
 export interface ManagedAgentsEnv {
@@ -53,6 +54,8 @@ export interface ManagedAgentsCaller {
   /** The key creator's (or the dashboard member's) name and email, when the auth read loaded them. */
   userName?: string | null;
   userEmail?: string | null;
+  /** Who is asking (tracks and threads spec 34.3), as the `oc_principal` claim. */
+  ocPrincipal?: Principal;
 }
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
@@ -147,6 +150,7 @@ export async function mintManagedAgentsAssertion(
   // A key's creator, or a dashboard session's member (work tracking 3.10).
   if (caller.userName) payload.user_name = caller.userName;
   if (caller.userEmail) payload.user_email = caller.userEmail;
+  if (caller.ocPrincipal) payload.oc_principal = caller.ocPrincipal;
   const encoder = new TextEncoder();
   const signingInput =
     `${b64url(encoder.encode(JSON.stringify(header)))}.` +
