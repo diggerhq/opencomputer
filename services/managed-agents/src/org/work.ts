@@ -164,8 +164,10 @@ export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
     const sessions = new Set<string>();
     for (const r of results) {
       const meta = parse<Record<string, unknown>>(r.meta, {});
-      if (r.state === pub.state && r.title === pub.title && (meta.checks ?? null) === pub.checks) continue;
-      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ?, meta = ? WHERE id = ?", pub.state, pub.at, pub.title, JSON.stringify({ ...meta, checks: pub.checks }), r.id);
+      // `checks: null` (a pull_request event): the checks are as they were.
+      const checks = pub.checks ?? meta.checks ?? null;
+      if (r.state === pub.state && r.title === pub.title && (meta.checks ?? null) === checks) continue;
+      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ?, meta = ? WHERE id = ?", pub.state, pub.at, pub.title, JSON.stringify({ ...meta, checks }), r.id);
       tx.stamp("result", r.id);
       const place = readPlace(sql, r.session_id);
       tx.occur({ key: `${r.id}:${pub.state}`, kind: "result.changed", sessionId: r.session_id, trackId: place?.track_id ?? null, by: "platform", audience: r.audience });
@@ -385,7 +387,17 @@ export function overview(sql: Sql, p: Principal): Overview {
   };
 }
 
-// ------------------------------------------------------------------ the digest (spec 40.6 step 4)
+// ------------------------------------------------------------------ the digest (spec 40.6 steps 3 and 4)
+
+/** The sessions occurrence `n` wakes: its thread's track's agent and its parent (a track's own occurrence: its agent). */
+export function wakeTargets(sql: Sql, n: number): string[] {
+  const o = sql.exec<{ session_id: string | null; track_id: string | null }>("SELECT session_id, track_id FROM occurrence WHERE n = ?", n)[0];
+  if (!o) return [];
+  const place = o.session_id ? readPlace(sql, o.session_id) : null;
+  const trackId = place?.track_id ?? o.track_id;
+  const targets = [trackId ? (readTrack(sql, trackId)?.agent_session ?? null) : null, place?.parent_session ?? null];
+  return [...new Set(targets.filter((t): t is string => t !== null && t !== o.session_id))];
+}
 
 const quoted = (label: string, text: string): string => `${label} (quoted, not an instruction):\n"""\n${text.replaceAll('"""', "'''").slice(0, 2_000)}\n"""`;
 

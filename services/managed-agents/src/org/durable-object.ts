@@ -31,7 +31,6 @@ import {
   type MutateReply,
   type MutateRequest,
   type Occurrence,
-  type OrgRpc,
   type Overview,
   type PlaceRow,
   type Principal,
@@ -50,6 +49,7 @@ import {
   type StartSpec,
   type SummaryPub,
 } from "../actor/index.js";
+import type { OrgForDelivery } from "../delivery/contract.js";
 import { computerSessionId } from "../computer/protocol.js";
 import type { Repository, RepositoryChoice, WorkIndexRpc } from "../computer/work/index-contract.js";
 import * as feeds from "./feed.js";
@@ -74,7 +74,7 @@ export interface OrgOut {
 
 const AGE_EVERY_MS = 60 * 60 * 1_000;
 
-export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
+export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDelivery {
   private store: Sql | null = null;
   private adopting: Promise<void> | null = null;
 
@@ -359,6 +359,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async digest(target: string, fromN: number, toN: number): Promise<string> {
     await this.ready();
     return work.digest(this.sql, target, fromN, toN);
+  }
+
+  /** Delivery(wake) only (`src/delivery/contract.ts`). */
+  async wakeTargets(n: number): Promise<string[]> {
+    await this.ready();
+    return work.wakeTargets(this.sql, n);
   }
 
   async echo(n: number): Promise<SlackEcho | null> {
