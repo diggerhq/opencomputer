@@ -60,6 +60,7 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
+import { isSessionId } from "./session-ids.js";
 import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackRpc, StartSpec } from "../actor/contracts.js";
 import type { Access, Principal } from "../actor/principal.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
@@ -1639,7 +1640,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * when the session is not live here, so the key reaches only grants for everyone.
    */
   async grantAudience(sessionKey: string): Promise<{ sessionKey: string; ownerId: string } | null> {
-    const key = this.liveSessionKey(sessionKey);
+    // A key of tracks and threads is minted for the session's `cs_…` id: its runner's key is the row's.
+    const runner = isSessionId(sessionKey)
+      ? [...this.ctx.storage.sql.exec<{ key: string }>("SELECT runner_key AS key FROM sessions WHERE session_id = ?", sessionKey)][0]?.key
+      : sessionKey;
+    const key = this.liveSessionKey(runner);
     const ownerId = key ? this.runnerSession(key)?.ownerId : undefined;
     return key && ownerId ? { sessionKey: key, ownerId } : null;
   }
@@ -3449,7 +3454,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         try {
           const result =
             event.kind === "opencomputer"
-              ? await mintOpenComputerKey(this.env, this.accountId(), this.liveSessionKey(event.sessionKey))
+              ? await mintOpenComputerKey(this.env, this.accountId(), this.keySession(event.sessionKey))
               : event.kind === "automation-repo"
                 ? await this.automationPushCredential()
                 : await this.mintToken(event.repos);
@@ -4148,6 +4153,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * this organization's workspace (work 080). The host vouches for which of its
    * sessions asked; the gateway vouches that the session exists here.
    */
+  /**
+   * The `cs_…` id of the session a host names (by its runner's key) for an OpenComputer key: the key's
+   * `session_key`, which the edge makes an agent principal of that session. Undefined: no session here.
+   */
+  private keySession(key: unknown): string | undefined {
+    if (typeof key !== "string") return undefined;
+    return [...this.ctx.storage.sql.exec<{ id: string }>("SELECT session_id AS id FROM sessions WHERE runner_key = ? AND session_id IS NOT NULL", key)][0]?.id;
+  }
+
   private liveSessionKey(key: unknown): string | undefined {
     if (typeof key !== "string" || !this.runnerSession(key)) return undefined;
     const status = this.session(key)?.status;
