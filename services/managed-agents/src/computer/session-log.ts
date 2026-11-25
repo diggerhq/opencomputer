@@ -51,8 +51,11 @@ import {
   type OrgRpc,
   type Principal,
   type SessionLogRpcAdded,
+  type Summary,
+  type SummaryPub,
   type Sql,
 } from "../actor/index.js";
+import type { FoldSummary } from "./session-fold.js";
 import { decodeCursor, encodeCursor } from "./list-cursor.js";
 import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
 import {
@@ -143,7 +146,18 @@ export const AGENT_TURNS_MAX = 30;
 export const INBOX_KEEP_MS = 24 * 60 * 60 * 1_000;
 /** `inbox[].text` in the summary: this many characters of a turn's input. */
 export const INBOX_TEXT_CHARS = 280;
+/** An append during a running turn writes the summary slot when it was last written longer ago than this. */
+export const SLOT_REFRESH_MS = 30_000;
+/** The events that count as occurrences when appended (spec 35.2). */
+const OCCURRENCES = new Set(["message.received", "ask.opened", "ask.closed", "turn.completed", "turn.failed", "turn.cancelled"]);
 const SWEEP_PURPOSE = "sweep";
+
+/** The `by` of an event's actor (spec 34.1), or null without one. */
+function byOfActor(actor: ApiEvent["actor"]): string | null {
+  if (!actor) return null;
+  if (actor.id === "platform" || actor.id === "system" || (actor.via as string) === "platform" || actor.via === "system") return "platform";
+  return actor.id.startsWith("cs_") ? `agent:${actor.id}` : `user:${actor.id}`;
+}
 
 /** Event `data` whose JSON is longer than this many bytes goes to R2. */
 export const INLINE_DATA_BYTES = 8 * 1024;
@@ -168,7 +182,7 @@ interface Meta {
   ack: number;
   syncedAt: string | null;
   state: FoldState;
-  summary: LogSummary;
+  summary: FoldSummary;
   /** Counts changes to the summary Org holds (spec 35.2); never reused. */
   revision: number;
   /** Until when Live holds a lease on this log's events (spec 40.4). */
@@ -347,7 +361,8 @@ const turnOfRow = (row: TurnRow): TurnRecord => ({
   usage: row.usage === null ? null : JSON.parse(row.usage),
 });
 
-const withSubagents = (summary: LogSummary): LogSummary => (summary.subagents ? summary : { ...summary, subagents: [] });
+/** A summary saved before a field existed. */
+const withSubagents = (summary: FoldSummary): FoldSummary => ({ ...summary, subagents: summary.subagents ?? [], lastAgentSeq: summary.lastAgentSeq ?? 0 });
 
 const subagentOfRow = (row: SubagentRow): SubagentRecord => ({
   subagent: JSON.parse(row.data) as Subagent,
@@ -529,6 +544,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   private readonly send = async (call: string, _body: unknown): Promise<void> => {
     if (call === "drain") return this.sendDrain();
+    if (call === "summary") return this.sendSummary();
   };
 
   /** `Computer.drain`, owed until `delivered` leaves no entry waiting: a `waking` answer keeps it owed. */
@@ -733,6 +749,40 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const next: Meta = { ...m, revision: m.revision + 1, slotAt: now };
     this.saveMeta(next);
     this.meta = next;
+    owed.add(this.db, { group: "summary", key: "summary", call: "summary" });
+  }
+
+  /** The summary Org receives (spec 35.2): the log's, its revision, and the inbox entries that wait or were refused. */
+  private orgSummary(): Summary {
+    const inbox = this.sql
+      .exec<InboxRow>("SELECT * FROM inbox WHERE state IN ('waiting', 'refused') ORDER BY n")
+      .toArray()
+      .map((row) => {
+        const input = row.kind === "turn" ? (JSON.parse(row.body) as { input?: unknown } | null)?.input : null;
+        const error = row.error === null ? null : (JSON.parse(row.error) as { code: string }).code;
+        return { id: row.id, kind: row.kind, by: row.by, at: new Date(row.at).toISOString(), text: typeof input === "string" ? input.slice(0, INBOX_TEXT_CHARS) : null, error };
+      });
+    return { ...this.meta.summary, revision: this.meta.revision, agentTitle: this.meta.summary.title, inbox };
+  }
+
+  /**
+   * The summary slot (spec 40.3): the body is built now, so it carries the latest. Org answering this
+   * revision or a later one clears the occurrences sent; the owed row goes with this call's return,
+   * and one written meanwhile (a newer revision) is another row, sent next.
+   */
+  private async sendSummary(): Promise<void> {
+    const sessionId = this.sessionId();
+    const org = this.meta.organizationId;
+    if (!sessionId || !org) throw new Error("summary: the log does not know its organization");
+    const occurrences = this.sql
+      .exec<{ epoch: number; seq: number; kind: string; by: string | null; at: number }>(`SELECT epoch, seq, kind, "by", at FROM occ_pending ORDER BY epoch, seq`)
+      .toArray();
+    const pub: SummaryPub = { sessionId, revision: this.meta.revision, summary: this.orgSummary(), occurrences };
+    const answer = await this.peers.org(org).acceptSummary(pub);
+    if (answer.revision < pub.revision) throw new Error(`summary: Org holds revision ${answer.revision}, sent ${pub.revision}`);
+    this.db.transaction(() => {
+      for (const o of occurrences) this.sql.exec("DELETE FROM occ_pending WHERE epoch = ? AND seq = ?", o.epoch, o.seq);
+    });
   }
 
   // ---- writes ---------------------------------------------------------------------------------
@@ -884,7 +934,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const refoldAt = performance.now();
     const rebuilt = truncateFrom === null ? null : await this.refold(truncateFrom - 1);
     const refoldMs = rebuilt ? performance.now() - refoldAt : 0;
-    const syncedAt = new Date().toISOString();
+    const now = Date.now();
+    const syncedAt = new Date(now).toISOString();
 
     this.ctx.storage.transactionSync(() => {
       let state: FoldState = structuredClone(m.state);
@@ -931,11 +982,32 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       // The inbox's transactions ran while this one's rows were prepared: their counters are the object's, not `m`'s.
       const { revision, watchedUntil, slotAt, agentTurns } = this.meta;
       const next: Meta = { ...m, revision, watchedUntil, slotAt, agentTurns, logEpoch, epochStartSeq, ack, syncedAt, state, summary };
-      this.saveMeta(next);
-      this.meta = next;
+      let occurred = false;
+      for (const r of rows) {
+        if (!OCCURRENCES.has(r.event.type)) continue;
+        occurred = true;
+        this.sql.exec(
+          `INSERT OR REPLACE INTO occ_pending (epoch, seq, kind, "by", at) VALUES (?, ?, ?, ?, ?)`,
+          epoch,
+          r.event.seq,
+          r.event.type,
+          byOfActor(r.event.actor),
+          Date.parse(r.event.createdAt) || now,
+        );
+      }
+      // Spec 40.3 step 1. Any other append's lastSeq, lastText and lastActiveAt go with the next revision.
+      const was = m.summary;
+      const changed = newEpoch || was.status !== summary.status || was.title !== summary.title || JSON.stringify(was.asks) !== JSON.stringify(summary.asks);
+      const running = summary.activeTurnId !== null && now - slotAt > SLOT_REFRESH_MS;
+      if (occurred || changed || running) this.bump(next, now);
+      else {
+        this.saveMeta(next);
+        this.meta = next;
+      }
       if (subagentsTouched) this.pruneProgress();
     });
     this.wake();
+    this.kick();
     this.spill(epoch, rows);
     let bytes = 0;
     for (const r of rows) bytes += r.data?.length ?? 0;
@@ -1445,7 +1517,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       syncedAt: row.synced_at,
       state: JSON.parse(row.state) as FoldState,
       // A summary saved before subagents existed has none.
-      summary: withSubagents(JSON.parse(row.summary) as LogSummary),
+      summary: withSubagents(JSON.parse(row.summary) as FoldSummary),
       revision: row.revision ?? 0,
       watchedUntil: row.watched_until ?? 0,
       slotAt: row.slot_at ?? 0,
