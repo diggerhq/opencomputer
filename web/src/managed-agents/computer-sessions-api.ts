@@ -5,8 +5,8 @@ import { ApiError } from '@/api/errors'
 // The Computer API v1 (computer/schema/computer-api.v1.json), called with the
 // dashboard's session cookie on the public `/api` base: the api-edge accepts a
 // cookie on these routes and the backend records the caller `via: dashboard`.
-// Live updates long-poll `GET /events?waitMs`, since tickets for the WebSocket
-// still require an API key (work 107).
+// Live updates long-poll `GET /events?waitMs`; a login's WebSocket ticket is
+// read-only (work 113), or a terminal ticket for one session (terminal-wire.ts).
 
 const PREFIX = '/managed-agents/computer'
 
@@ -255,6 +255,38 @@ export function sendTurn(id: string, input: string, ifBusy: IfBusy) {
     `${PREFIX}/sessions/${encodeURIComponent(id)}/turns`,
     { method: 'POST', body: JSON.stringify({ input, ifBusy }) },
     SendResultSchema,
+    '/api',
+  )
+}
+
+const TicketSchema = z.looseObject({
+  ticket: z.looseObject({ token: z.string(), url: z.string() }),
+})
+
+/** A ticket for one terminal connection to session `id`; refused unless the caller may drive it. */
+export async function mintTerminalTicket(id: string) {
+  const { ticket } = await apiFetch(
+    `${PREFIX}/tickets`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        client: 'dashboard',
+        terminal: true,
+        sessionIds: [id],
+      }),
+    },
+    TicketSchema,
+    '/api',
+  )
+  return ticket
+}
+
+/** Starts a stopped (suspended or idle) session's computer again. */
+export function resumeSession(id: string) {
+  return apiFetch<unknown>(
+    `${PREFIX}/sessions/${encodeURIComponent(id)}/resume`,
+    { method: 'POST', body: '{}' },
+    undefined,
     '/api',
   )
 }

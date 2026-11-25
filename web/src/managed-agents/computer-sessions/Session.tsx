@@ -1,7 +1,22 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, ArchiveRestore, ArrowUp, Loader2, Square } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowUp,
+  Loader2,
+  Square,
+  SquareTerminal,
+} from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
@@ -31,6 +46,11 @@ import {
   useCapabilities,
 } from './state'
 import { buildTranscript, mergeEvents } from './transcript'
+
+// xterm is heavy: loaded when a terminal is first opened.
+const SessionTerminal = lazy(() =>
+  import('./SessionTerminal').then((m) => ({ default: m.SessionTerminal })),
+)
 
 // Events that change what the session row says (status, asks, title).
 const SESSION_EVENTS = /^(session\.|turn\.|ask\.|runtime\.)/
@@ -110,6 +130,7 @@ function SessionPage({ id }: { id: string }) {
     void qc.invalidateQueries({ queryKey: sessionKeys.all })
   })
   const items = useMemo(() => buildTranscript(events), [events])
+  const [terminal, setTerminal] = useState(false)
   const s = session.data
   const emails = useMemberEmails()
 
@@ -142,7 +163,16 @@ function SessionPage({ id }: { id: string }) {
   const openAsks = s?.asks.filter((a) => a.status === 'open') ?? []
   return (
     <div className="flex h-full flex-col">
-      <Header id={id} />
+      <Header
+        id={id}
+        terminal={terminal}
+        onTerminal={() => setTerminal((t) => !t)}
+      />
+      {terminal ? (
+        <Suspense fallback={null}>
+          <SessionTerminal id={id} onClose={() => setTerminal(false)} />
+        </Suspense>
+      ) : null}
       <div
         ref={scroller}
         onScroll={(e) => {
@@ -187,7 +217,15 @@ function SessionPage({ id }: { id: string }) {
   )
 }
 
-function Header({ id }: { id: string }) {
+function Header({
+  id,
+  terminal,
+  onTerminal,
+}: {
+  id: string
+  terminal: boolean
+  onTerminal: () => void
+}) {
   const qc = useQueryClient()
   const { data: s } = useQuery({
     queryKey: sessionKeys.one(id),
@@ -226,6 +264,16 @@ function Header({ id }: { id: string }) {
           </a>
         </Button>
       ) : null}
+      <Button
+        size="sm"
+        variant={terminal ? 'secondary' : 'ghost'}
+        aria-pressed={terminal}
+        title="Open a shell in this session's computer"
+        onClick={onTerminal}
+      >
+        <SquareTerminal className="size-3.5" aria-hidden />
+        Terminal
+      </Button>
       {s ? (
         <Button
           size="icon-sm"
