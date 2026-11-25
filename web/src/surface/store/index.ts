@@ -1,0 +1,701 @@
+import { createStore, type StoreApi } from 'zustand/vanilla'
+import {
+  createClient,
+  makeId,
+  type Answer,
+  type ApiEvent,
+  type Client,
+  type Delta,
+  type EventsUpdate,
+  type Failure,
+  type FeedFrame,
+  type MutationArgs,
+  type MutationName,
+  type Pending,
+  type ResultRow,
+  type Review,
+  type Row,
+  type SearchReply,
+  type Storage,
+  type ThreadsPage,
+} from '@opencomputer/sdk/computer'
+import type { Host, Location } from '../host'
+import { NOWHERE } from '../host'
+import { overlay } from './overlay'
+import { applyFrame, Draft, emptyRows, type Rows } from './rows'
+import type { OpenBlock } from './transcript'
+import { askLine, listView, threadView, type Counts, type ListView } from './views'
+
+// The surface's one store (spec 26.2): what the server last said, the
+// person's unconfirmed writes replayed on top, and what is open on screen.
+// Components read it through selectors and never await.
+
+export type Layout = 'L1' | 'L2' | 'L3'
+export type TrackTab = 'activity' | 'doc' | 'results'
+export type Theme = 'system' | 'light' | 'dark'
+
+export interface Toast {
+  id: string
+  text: string
+  tone?: 'error'
+  undo?: () => void
+}
+
+export interface Convo {
+  events: ApiEvent[]
+  // The first page has arrived (from storage or the server).
+  loaded: boolean
+  // Text still streaming; never stored (spec 26.4).
+  open: OpenBlock | null
+}
+
+// What is kept across reloads, beside the rows.
+interface Kept {
+  loc: Location
+  layout: Record<string, Layout>
+  trackTab: Record<string, TrackTab>
+  listHidden: boolean
+  openTracks: Record<string, boolean>
+  earlierOpen: boolean
+  trackEarlierOpen: Record<string, boolean>
+  drafts: Record<string, string>
+  theme: Theme
+  reviewMode: 'summary' | 'full'
+}
+
+export interface State extends Kept {
+  me: string
+  // Storage has been read: what was seen before is on screen (R43).
+  ready: boolean
+  // The server has answered since this page opened.
+  synced: boolean
+  status: 'connecting' | 'online' | 'offline'
+  // The feed's rows, then those with Earlier's pages beneath and pending writes on top.
+  base: Rows
+  rows: Rows
+  pending: Pending[]
+  counts: Counts
+  convos: Record<string, Convo>
+  toasts: Toast[]
+  palette: boolean
+  keysSheet: boolean
+  earlierNext: Record<string, string | null | undefined>
+}
+
+const KEPT: (keyof Kept)[] = [
+  'loc',
+  'layout',
+  'trackTab',
+  'listHidden',
+  'openTracks',
+  'earlierOpen',
+  'trackEarlierOpen',
+  'drafts',
+  'theme',
+  'reviewMode',
+]
+
+const NO_COUNTS: Counts = { earlier: 0, trackEarlier: {} }
+const EMPTY_CONVO: Convo = { events: [], loaded: false, open: null }
+
+export interface SurfaceOptions {
+  host: Host
+  storage: Storage
+  // Where UI state is kept; localStorage in a browser.
+  kept?: { get(): string | null; set(v: string): void }
+  visible?: () => boolean
+}
+
+export type Surface = ReturnType<typeof createSurface>
+
+export function createSurface(o: SurfaceOptions) {
+  const { host } = o
+  const me = host.principal.subject
+  const client: Client = createClient({
+    principal: host.principal,
+    fetch: (path, init) => host.api.fetch(path, init),
+    connect: () => host.connect(),
+    storage: o.storage,
+    lock:
+      typeof navigator !== 'undefined' && navigator.locks
+        ? (name, fn) => navigator.locks.request(name, fn)
+        : undefined,
+  })
+
+  let kept: Partial<Kept> = {}
+  try {
+    kept = JSON.parse(o.kept?.get() ?? '{}') as Partial<Kept>
+  } catch {
+    // A cache that does not parse is dropped.
+  }
+  const here = host.location.get()
+  const somewhere = here.thread || here.track || here.start
+
+  const store: StoreApi<State> = createStore<State>(() => ({
+    me,
+    ready: false,
+    synced: false,
+    status: 'connecting',
+    base: emptyRows(),
+    rows: emptyRows(),
+    pending: [],
+    counts: NO_COUNTS,
+    convos: {},
+    toasts: [],
+    palette: false,
+    keysSheet: false,
+    earlierNext: {},
+    layout: {},
+    trackTab: {},
+    listHidden: false,
+    openTracks: {},
+    earlierOpen: false,
+    trackEarlierOpen: {},
+    drafts: {},
+    theme: 'system',
+    reviewMode: 'summary',
+    ...kept,
+    loc: somewhere ? here : (kept.loc ?? NOWHERE),
+  }))
+  const get = store.getState
+  const set = store.setState
+
+  // ---- rows ----
+
+  // Rows read by query (Earlier's pages, search): beneath the feed's.
+  let under: Rows = emptyRows()
+  const compose = (base: Rows, pending: Pending[]): Rows => {
+    const d = new Draft(base)
+    for (const kind of ['session', 'place', 'track', 'result'] as const)
+      for (const row of under[kind].values()) {
+        const have = d.get(kind, row.id)
+        if (!have || have.version < row.version) d.set(row)
+      }
+    return overlay(d.done(), pending, me)
+  }
+  const recompose = (change: Partial<State> = {}) => {
+    const s = { ...get(), ...change }
+    set({ ...change, rows: compose(s.base, s.pending) })
+    after()
+  }
+  const addUnder = (rows: Row[]) => {
+    const d = new Draft(under)
+    for (const row of rows) d.set(row)
+    under = d.done()
+    recompose()
+  }
+
+  const stops: (() => void)[] = []
+  const onFrame = (frame: FeedFrame) => {
+    const s = get()
+    // The pending copies this frame confirms have already left `pending()`
+    // (the SDK drops them in the same step), so one set shows neither twice.
+    set({
+      base: applyFrame(s.base, frame),
+      pending: client.pending().get(),
+      counts: frame.counts ?? s.counts,
+      synced: s.synced || s.status === 'online',
+    })
+    for (const sid of watching.keys()) begin(sid)
+    recompose()
+  }
+
+  // ---- what follows a change: reading, notifying, staying somewhere real ----
+
+  let blockedBefore: Set<string> | null = null
+  const list = (): ListView => {
+    const s = get()
+    return listView(s.rows, me, s.loc.thread, s.counts)
+  }
+  const visible = o.visible ?? (() => typeof document === 'undefined' || document.visibilityState === 'visible')
+
+  function after() {
+    const s = get()
+    if (!s.ready) return
+    // Opening a thread reads it (R7): the bold and the ring clear.
+    const sid = s.loc.thread
+    if (sid && visible() && !s.loc.result) {
+      const row = s.rows.session.get(sid)
+      const read = s.rows.read.get(`${me}:${sid}`)?.readSeq ?? 0
+      if (row && row.lastSeq > read && s.base.session.has(sid)) mutate('read.set', { sid, seq: row.lastSeq })
+    }
+    // The thread that was open is gone: a start-box thread that became a track
+    // lands on the track (J5), anything else on the start box.
+    if (sid && s.synced && !s.rows.session.has(sid)) {
+      let track: string | null = null
+      for (const t of s.rows.track.values()) if (t.createdBy === `agent:${sid}`) track = t.id
+      go({ ...NOWHERE, track, start: !track }, { replace: true })
+    } else if (!sid && s.loc.track && s.synced && !s.rows.track.has(s.loc.track)) {
+      go({ ...NOWHERE, start: true }, { replace: true })
+    }
+    // Only a new block is announced outside the app (R27).
+    const l = list()
+    const now = new Map<string, { title: string; body: string; askId?: string; approval: boolean }>()
+    for (const t of [...l.threads, ...l.tracks.flatMap((k) => k.threads)])
+      if (t.mark === 'blocked')
+        now.set(t.id, {
+          title: t.title,
+          body: t.ask ? askLine(t.ask) : (t.line ?? 'Needs you'),
+          askId: t.ask?.id,
+          approval: t.ask?.kind === 'approval',
+        })
+    for (const k of l.tracks)
+      if (k.agent?.blocked) {
+        const ask = k.agent.asks.find((a) => a.status === 'open')
+        now.set(k.agentSession, { title: k.name, body: ask ? askLine(ask) : 'Needs you', askId: ask?.id, approval: ask?.kind === 'approval' })
+      }
+    if (blockedBefore && s.synced)
+      for (const [id, b] of now)
+        if (!blockedBefore.has(id))
+          host.notify({
+            threadId: id,
+            askId: b.askId,
+            title: b.title,
+            body: b.body,
+            choices: b.approval
+              ? [
+                  { id: 'allow', label: 'Allow' },
+                  { id: 'deny', label: 'Deny' },
+                ]
+              : undefined,
+          })
+    if (!blockedBefore || blockedBefore.size !== now.size) host.badge(now.size)
+    blockedBefore = new Set(now.keys())
+  }
+
+  // ---- where the person is ----
+
+  function go(loc: Location, opt?: { replace?: boolean }) {
+    const s = get()
+    const change: Partial<State> = { loc }
+    const track = loc.thread ? (s.rows.place.get(loc.thread)?.trackId ?? null) : loc.track
+    // A track opens in the list when something in it is selected (R12).
+    if (track && !s.openTracks[track]) change.openTracks = { ...s.openTracks, [track]: true }
+    set(change)
+    host.location.set(loc, opt)
+    after()
+  }
+  stops.push(
+    host.location.onChange((loc) => {
+      set({ loc })
+      after()
+    }),
+  )
+  host.onOpen((t) => {
+    if (t.threadId) {
+      // A track's agent has no row of its own: open its track.
+      const s = get()
+      for (const k of s.rows.track.values())
+        if (k.agentSession === t.threadId) return go({ ...NOWHERE, track: k.id })
+      go({ ...NOWHERE, thread: t.threadId })
+    } else if (t.trackId) go({ ...NOWHERE, track: t.trackId })
+  })
+  host.onAnswer?.((a) => {
+    client.answer(a.threadId, a.askId, { decision: a.choice === 'allow' ? 'allow' : 'deny' })
+    sync()
+  })
+
+  // ---- writes ----
+
+  const sync = () => recompose({ pending: client.pending().get() })
+  const toast = (t: Omit<Toast, 'id'>) => {
+    const id = makeId('op')
+    set({ toasts: [...get().toasts.slice(-2), { ...t, id }] })
+    setTimeout(() => dismissToast(id), t.undo ? 8000 : 5000)
+  }
+  const dismissToast = (id: string) => set({ toasts: get().toasts.filter((t) => t.id !== id) })
+
+  function mutate<N extends MutationName>(name: N, args: MutationArgs[N]) {
+    const r = client.mutate(name, args)
+    r.settled.catch(() => {})
+    sync()
+    return r
+  }
+  const settle = (r: { settled: Promise<void> }) => {
+    r.settled.catch(() => {})
+    sync()
+  }
+
+  const SAID: Partial<Record<string, string>> = {
+    'thread.done': 'Could not mark it done',
+    'thread.place': 'Could not move it',
+    'thread.rename': 'Could not rename it',
+    'track.create': 'Could not make the track',
+    'doc.save': 'The Doc changed while you were editing',
+    undo: 'Could not undo that',
+  }
+  const onFailure = (f: Failure) => {
+    sync()
+    const e = f.entry
+    if (e.kind === 'mutation' && e.name === 'read.set') return
+    const what =
+      e.kind === 'mutation'
+        ? (SAID[e.name] ?? 'That did not go through')
+        : e.kind === 'turn' || e.kind === 'session'
+          ? 'Your message was not sent'
+          : 'That did not go through'
+    toast({ text: `${what}: ${f.reason || f.code}`, tone: 'error' })
+  }
+
+  // ---- conversations ----
+
+  const watching = new Map<string, { n: number; started: boolean; stop: () => void }>()
+  const patchConvo = (sid: string, fn: (c: Convo) => Convo) => {
+    const convos = get().convos
+    const next = fn(convos[sid] ?? EMPTY_CONVO)
+    if (next !== convos[sid]) set({ convos: { ...convos, [sid]: next } })
+  }
+  const onEvents = (sid: string, u: EventsUpdate) =>
+    patchConvo(sid, (c) => {
+      let events = c.events
+      if (u.reset) events = u.reset.seq === null ? [] : events.filter((e) => e.seq <= u.reset!.seq!)
+      if (u.events.length) {
+        const last = events.length ? events[events.length - 1].seq : -1
+        if (u.events[0].seq > last) events = [...events, ...u.events]
+        else {
+          const bySeq = new Map(events.map((e) => [e.seq, e]))
+          for (const e of u.events) bySeq.set(e.seq, e)
+          events = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+        }
+      }
+      // The block that was streaming has arrived whole, or its turn is over.
+      const closes = u.events.some((e) => e.type === 'message.completed' || e.type.startsWith('turn.'))
+      return { events, loaded: true, open: closes || u.reset ? null : c.open }
+    })
+
+  // Deltas are applied at most every 50 ms (spec 26.4).
+  const buffered = new Map<string, OpenBlock | null>()
+  let flush: ReturnType<typeof setTimeout> | null = null
+  const onDelta = (sid: string, d: Delta) => {
+    if (d.type !== 'message.delta' || typeof d.data.text !== 'string') return
+    const blockId = d.data.blockId ?? d.turnId
+    const held = buffered.has(sid) ? buffered.get(sid)! : (get().convos[sid]?.open ?? null)
+    let text: string
+    if (d.whole || !held || held.blockId !== blockId) text = d.offset === 0 || d.whole ? d.data.text : ''
+    else if (d.offset === held.text.length) text = held.text + d.data.text
+    else if (d.offset < held.text.length) text = held.text.slice(0, d.offset) + d.data.text
+    else return
+    buffered.set(sid, { blockId, type: d.type, turnId: d.turnId, text })
+    flush ??= setTimeout(() => {
+      flush = null
+      for (const [id, open] of buffered) {
+        // A delta that trails its completed message is dropped.
+        const done = get().convos[id]?.events.some(
+          (e) => e.type === 'message.completed' && (e.data as { blockId?: string } | null)?.blockId === open?.blockId,
+        )
+        patchConvo(id, (c) => ({ ...c, open: done ? null : open }))
+      }
+      buffered.clear()
+    }, 50)
+  }
+
+  // Ref-counted: a pane watches the session it shows; the last to leave stops
+  // the streams, and what was read stays in memory.
+  // A session still being created has no log to read yet: its streams start
+  // when its row arrives.
+  const begin = (sid: string) => {
+    const w = watching.get(sid)
+    if (!w || w.started || !get().base.session.has(sid)) return
+    const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
+    const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
+    w.started = true
+    w.stop = () => (a(), b())
+  }
+  function watch(sid: string): () => void {
+    let w = watching.get(sid)
+    if (!w) {
+      w = { n: 0, started: false, stop: () => {} }
+      watching.set(sid, w)
+      begin(sid)
+    }
+    w.n++
+    let left = false
+    return () => {
+      if (left) return
+      left = true
+      // Let a pane that remounts at once keep its streams.
+      setTimeout(() => {
+        if (--w.n === 0) {
+          w.stop()
+          watching.delete(sid)
+        }
+      }, 1000)
+    }
+  }
+
+  // ---- start ----
+
+  void client.ready.then(() => {
+    stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
+    stops.push(client.pending().subscribe((pending) => recompose({ pending })))
+    stops.push(client.failures.subscribe(onFailure))
+    stops.push(
+      client.status.subscribe((status) => {
+        set({ status })
+        if (status === 'online') set({ synced: true })
+      }),
+    )
+    set({ ready: true, status: client.status.get(), pending: client.pending().get() })
+    recompose()
+  })
+  stops.push(
+    store.subscribe((s, p) => {
+      if (KEPT.some((k) => s[k] !== p[k])) o.kept?.set(JSON.stringify(Object.fromEntries(KEPT.map((k) => [k, s[k]]))))
+    }),
+  )
+
+  const place = (sid: string) => get().rows.place.get(sid)
+  const stopIfWorking = (sid: string) => {
+    const st = get().rows.session.get(sid)?.status
+    if (st === 'running' || st === 'starting') settle(client.interrupt(sid))
+  }
+
+  const actions = {
+    // -- going places (only ever on the person's click, R22) --
+    openThread(sid: string) {
+      go({ ...NOWHERE, thread: sid })
+    },
+    openTrack(tid: string) {
+      go({ ...NOWHERE, track: tid })
+    },
+    openStart() {
+      go({ ...NOWHERE, start: true })
+    },
+    openResult(r: ResultRow) {
+      // A preview is a new tab on the web (spec 25).
+      if (r.type === 'preview' && host.platform === 'web') return host.openExternal(r.ref)
+      if (r.type === 'file' || r.type === 'document') {
+        if (/^https?:/.test(r.ref)) host.openExternal(r.ref)
+        return
+      }
+      const s = get()
+      go({ ...NOWHERE, thread: s.loc.thread, track: s.loc.track, result: r.id })
+    },
+    closeResult() {
+      const s = get()
+      if (s.loc.result) go({ ...s.loc, result: null })
+    },
+    setLayout(tid: string, layout: Layout) {
+      set({ layout: { ...get().layout, [tid]: layout } })
+    },
+    setTrackTab(tid: string, tab: TrackTab) {
+      set({ trackTab: { ...get().trackTab, [tid]: tab } })
+    },
+    toggleList() {
+      set({ listHidden: !get().listHidden })
+    },
+    toggleTrack(tid: string) {
+      const s = get()
+      set({ openTracks: { ...s.openTracks, [tid]: !s.openTracks[tid] } })
+    },
+    toggleEarlier(tid?: string) {
+      const s = get()
+      if (tid) set({ trackEarlierOpen: { ...s.trackEarlierOpen, [tid]: !s.trackEarlierOpen[tid] } })
+      else set({ earlierOpen: !s.earlierOpen })
+      const key = tid ?? ''
+      if (get().earlierNext[key] === undefined) void actions.loadEarlier(tid)
+    },
+    setDraft(key: string, text: string) {
+      const drafts = { ...get().drafts }
+      if (text) drafts[key] = text
+      else delete drafts[key]
+      set({ drafts })
+    },
+    setTheme(theme: Theme) {
+      set({ theme })
+    },
+    setReviewMode(reviewMode: 'summary' | 'full') {
+      set({ reviewMode })
+    },
+    setPalette(palette: boolean) {
+      set({ palette })
+    },
+    setKeysSheet(keysSheet: boolean) {
+      set({ keysSheet })
+    },
+    toast,
+    dismissToast,
+
+    // -- talking --
+    // A1, A22: the agent decides what this becomes; `open` lands on it.
+    start(input: string, opt: { open: boolean }) {
+      const r = client.createSession({ input, role: 'start' })
+      settle(r)
+      if (opt.open) go({ ...NOWHERE, thread: r.id })
+      return r.id
+    },
+    // A2, A3: a reply to a working agent steers it.
+    send(sid: string, input: string) {
+      const st = get().rows.session.get(sid)?.status
+      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined }))
+    },
+    answer(sid: string, askId: string, answer: Answer) {
+      settle(client.answer(sid, askId, answer))
+    },
+    dismissAsk(sid: string, askId: string) {
+      settle(client.dismiss(sid, askId))
+    },
+    stop(sid: string) {
+      settle(client.interrupt(sid))
+    },
+
+    // -- threads --
+    // A9: lands on the track if it has one, else the start box.
+    done(sid: string, opt?: { stay?: boolean }) {
+      const p = place(sid)
+      if (!p || p.doneAt !== null) return
+      stopIfWorking(sid)
+      mutate('thread.done', { sid })
+      const s = get()
+      if (s.loc.thread === sid && !opt?.stay) go({ ...NOWHERE, track: p.trackId, start: !p.trackId })
+      toast({ text: 'Marked done', undo: () => actions.reopen(sid) })
+    },
+    reopen(sid: string) {
+      mutate('thread.reopen', { sid })
+    },
+    rename(sid: string, title: string) {
+      if (title.trim()) mutate('thread.rename', { sid, title: title.trim() })
+    },
+    // A7: the thread becomes the first thread of a new track.
+    trackIt(sid: string) {
+      const tid = makeId('trk')
+      mutate('track.create', { tid, agentSessionId: makeId('cs'), sid })
+      set({ openTracks: { ...get().openTracks, [tid]: true } })
+      toast({ text: 'Now in a track', undo: () => mutate('track.dissolve', { tid, threads: 'keep' }) })
+    },
+    place(sid: string, trackId: string | null) {
+      const from = place(sid)?.trackId ?? null
+      if (from === trackId) return
+      mutate('thread.place', { sid, trackId })
+      toast({ text: trackId ? 'Moved' : 'Taken out of the track', undo: from ? () => mutate('thread.place', { sid, trackId: from }) : undefined })
+    },
+    keep(sid: string, keep: boolean) {
+      mutate('thread.keep', { sid, keep })
+    },
+    deleteThread(sid: string) {
+      const s = get()
+      const p = place(sid)
+      stopIfWorking(sid)
+      if (s.loc.thread === sid) go({ ...NOWHERE, track: p?.trackId ?? null, start: !p?.trackId })
+      mutate('thread.delete', { sid })
+    },
+
+    // -- tracks --
+    renameTrack(tid: string, name: string) {
+      if (name.trim()) mutate('track.rename', { tid, name: name.trim() })
+    },
+    stopAll(tid: string) {
+      for (const p of get().rows.place.values()) if (p.trackId === tid) stopIfWorking(p.id)
+    },
+    // A11: lands on the start box.
+    trackDone(tid: string) {
+      actions.stopAll(tid)
+      mutate('track.done', { tid })
+      const s = get()
+      const open = s.loc.thread ? place(s.loc.thread)?.trackId : s.loc.track
+      if (open === tid) go({ ...NOWHERE, start: true })
+      toast({ text: 'Marked done', undo: () => mutate('track.reopen', { tid }) })
+    },
+    trackReopen(tid: string) {
+      mutate('track.reopen', { tid })
+    },
+    trackKeep(tid: string, keep: boolean) {
+      mutate('track.keep', { tid, keep })
+    },
+    // A13: lands on the thread that was open, on its own.
+    dissolve(tid: string) {
+      const s = get()
+      mutate('track.dissolve', { tid, threads: 'keep' })
+      if (!s.loc.thread && s.loc.track === tid) go({ ...NOWHERE, start: true })
+    },
+    deleteTrack(tid: string) {
+      const s = get()
+      const open = s.loc.thread ? place(s.loc.thread)?.trackId : s.loc.track
+      if (open === tid) go({ ...NOWHERE, start: true })
+      mutate('track.delete', { tid })
+    },
+    saveDoc(tid: string, text: string, baseRev: number) {
+      const doc = get().rows.doc.get(tid)
+      // What the person changed is theirs; the agent does not rewrite it (S4).
+      const before = (doc?.text ?? '').split('\n')
+      const lines = text.split('\n')
+      const spans: { from: number; to: number; by: string }[] = []
+      lines.forEach((line, i) => {
+        if (before.includes(line)) return
+        const last = spans[spans.length - 1]
+        if (last && last.to === i) last.to = i + 1
+        else spans.push({ from: i, to: i + 1, by: me })
+      })
+      return mutate('doc.save', { tid, baseRev, text, spans }).settled
+    },
+
+    // -- suggestions and undo --
+    accept(proposalId: string) {
+      const p = get().rows.proposal.get(proposalId)
+      mutate('proposal.accept', { proposalId })
+      if (p?.type === 'done') toast({ text: 'Marked done', undo: () => mutate('thread.reopen', { sid: p.target }) })
+    },
+    dismissProposal(proposalId: string) {
+      mutate('proposal.dismiss', { proposalId })
+    },
+    undo(opId: string) {
+      mutate('undo', { opId })
+    },
+    // Z: the last thing that offered an Undo.
+    undoLast() {
+      const t = [...get().toasts].reverse().find((x) => x.undo)
+      if (!t) return false
+      t.undo!()
+      dismissToast(t.id)
+      return true
+    },
+
+    // -- reads that are not streams --
+    async loadEarlier(tid?: string) {
+      const key = tid ?? ''
+      const before = get().earlierNext[key]
+      if (before === null) return
+      const q = new URLSearchParams({ earlier: '1', limit: '50' })
+      if (tid) q.set('track', tid)
+      if (before) q.set('before', before)
+      try {
+        const page = await client.read<ThreadsPage>(`/work/threads?${q}`)
+        set({ earlierNext: { ...get().earlierNext, [key]: page.next } })
+        addUnder(page.rows)
+      } catch {
+        // Offline: Earlier shows what is held.
+      }
+    },
+    async search(q: string) {
+      const reply = await client.read<SearchReply>(`/work/search?q=${encodeURIComponent(q)}&limit=20`)
+      addUnder(reply.rows)
+      return reply.rows
+    },
+    review(resultId: string) {
+      return client.read<Review>(`/work/results/${resultId}/review`)
+    },
+    async diff(resultId: string) {
+      return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff
+    },
+    openExternal(url: string) {
+      host.openExternal(url)
+    },
+  }
+
+  return {
+    host,
+    client,
+    me,
+    store,
+    get,
+    list,
+    thread: (sid: string) => threadView(get().rows, me, sid),
+    watch,
+    ...actions,
+    close() {
+      for (const stop of stops) stop()
+      for (const w of watching.values()) w.stop()
+      client.close()
+    },
+  }
+}

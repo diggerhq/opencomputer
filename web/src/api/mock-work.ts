@@ -1,5 +1,6 @@
-// Preview data for the Work routes (tech design 3.10): the board, an item and
-// its history. Invented people and work only.
+// Preview data for the Work routes (tech design 3.10): the repository
+// setting, the open items and a session's items. Invented people and work
+// only.
 //
 // `?work=` picks a scenario: no-github (GitHub not connected, so no
 // repository), none (no repository set), empty (a repository with nothing
@@ -418,87 +419,6 @@ const closed: Json[] = [
   }),
 ]
 
-// Only a declared owner is in the doc.
-const ownerLine = (it: Json) => {
-  const o = it.owner as { email: string; source: string } | null
-  return o?.source === 'declared' ? o.email : ''
-}
-
-const body = (it: Json) => `---
-number: ${String(it.number)}
-title: ${String(it.title)}
-owner: ${ownerLine(it)}
-tags: [${(it.tags as string[]).join(', ')}]
----
-
-# ${String(it.title)}
-
-## Why
-
-Customers on long sessions pay the same as short ones, and finance cannot
-forecast compute. We want each session billed by the minutes it actually runs,
-with the price shown before anyone commits.
-
-## State
-
-${(it.stateLine as string | null) ?? 'Just started.'}
-
-- Metering records minutes per session in the usage table.
-- The invoice preview renders from those records; see [the design](../design/billing.md).
-
-## Left
-
-- [ ] Decide the price per minute for the Pro plan
-- [ ] Ship the invoice preview to everyone
-- [x] Meter session minutes
-
-## Decisions
-
-| When | What | Who |
-| --- | --- | --- |
-| Monday | Round up to the minute | Maya |
-| Last week | No charge for idle time | Igor |
-
-\`\`\`sql
-select session_id, sum(minutes) from usage group by 1;
-\`\`\`
-`
-
-const revisions = (it: Json) => [
-  {
-    sha: '9f2c1a7e4b3d2c1a0f9e8d7c6b5a4f3e2d1c0b9a',
-    url: 'https://github.com/acme/knowledge/commit/9f2c1a7',
-    at: (it.updatedAt as string | null) ?? ago(H),
-    authorName: 'Computer for Igor',
-    summary: 'Record the price-table question; metering merged',
-    sessionId: S1,
-  },
-  {
-    sha: '7b1d0e9c8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d',
-    url: 'https://github.com/acme/knowledge/commit/7b1d0e9',
-    at: ago(5 * H),
-    authorName: 'Computer for Maya Chen',
-    summary: 'Add the invoice preview to Left',
-    sessionId: S2,
-  },
-  {
-    sha: '3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b',
-    url: 'https://github.com/acme/knowledge/commit/3a4b5c6',
-    at: ago(2 * D),
-    authorName: 'Igor',
-    summary: 'Fix a typo in Why',
-    sessionId: null,
-  },
-  {
-    sha: '1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d',
-    url: 'https://github.com/acme/knowledge/commit/1c2d3e4',
-    at: (it.createdAt as string | null) ?? ago(6 * D),
-    authorName: 'Computer for Igor',
-    summary: 'Track usage-based billing',
-    sessionId: S1,
-  },
-]
-
 function scenario() {
   return typeof window === 'undefined'
     ? null
@@ -529,10 +449,9 @@ export function workMock(
   method: string,
   input: unknown,
 ): unknown {
-  const [pathname, search = ''] = path.split('?')
+  const [pathname] = path.split('?')
   if (!pathname.startsWith(PREFIX)) return undefined
   const rest = pathname.slice(PREFIX.length)
-  const query = new URLSearchParams(search)
   const s = scenario()
   if (s === 'missing') throw new ApiError('Not found', 404)
   const current =
@@ -561,9 +480,6 @@ export function workMock(
         ? list.map((i) => ({ ...i, mine: false }))
         : list
   if (rest === '/items' && method === 'GET') {
-    if (query.get('stage') === 'closed') {
-      return { items: visible(closed), nextCursor: null }
-    }
     return {
       repository: current,
       head: current ? '9f2c1a7e4b3d' : null,
@@ -581,14 +497,6 @@ export function workMock(
         (i.sessions as { id: string }[]).some((x) => x.id === id),
       ),
     }
-  }
-  const m = rest.match(/^\/items\/(\d+)(\/history)?$/)
-  if (m) {
-    const it = [...open, ...closed].find((i) => i.number === Number(m[1]))
-    if (!it || !current)
-      throw new ApiError('No such item.', 404, 'item_not_found')
-    if (m[2]) return { revisions: revisions(it), nextCursor: null }
-    return { item: it, body: body(it) }
   }
   return undefined
 }
