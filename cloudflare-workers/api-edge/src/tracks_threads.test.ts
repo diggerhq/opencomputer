@@ -290,3 +290,148 @@ describe("the allowlist of tracks and threads", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+function settlingCtx(): { ctx: ExecutionContext; settle: () => Promise<void> } {
+  const pending: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil: (p: Promise<unknown>) => pending.push(p),
+    passThroughOnException: () => {},
+  } as unknown as ExecutionContext;
+  return { ctx, settle: async () => void (await Promise.allSettled(pending)) };
+}
+
+/** What Live answers an upgrade (Node's Response cannot carry a 101). */
+function upgraded(): Response {
+  return { status: 101, ok: false, headers: new Headers({ "sec-websocket-protocol": "oc.live.v1" }), webSocket: {} } as unknown as Response;
+}
+
+function liveRequest(headers: Record<string, string>): Request {
+  return api("/live", { headers: { upgrade: "websocket", ...headers } });
+}
+
+describe("GET /live", () => {
+  it("passes a cookie's upgrade from the exact Origin, with only oc.live.v1", async () => {
+    const { env } = seeded();
+    const fetchMock = vi.fn().mockResolvedValue(upgraded());
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(
+      liveRequest({ cookie: await sessionCookie(), origin: ORIGIN, "sec-websocket-protocol": "oc.live.v1" }),
+      env,
+      ctx(),
+    );
+    expect(res.status).toBe(101);
+    expect(res.headers.get("sec-websocket-protocol")).toBe("oc.live.v1");
+    const [url, init] = fetchMock.mock.calls[0] as [string | URL, RequestInit];
+    expect(String(url)).toBe(`${BLUE}/v1/computer/live`);
+    const headers = new Headers(init.headers);
+    expect(headers.get("upgrade")).toBe("websocket");
+    expect(headers.get("sec-websocket-protocol")).toBe("oc.live.v1");
+    expect(assertedPrincipal(fetchMock)).toMatchObject({ subject: SUBJECT, kind: "member", via: "dashboard" });
+  });
+
+  it("refuses a cookie without the exact Origin", async () => {
+    const { env } = seeded();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const origin of [null, "https://evil.example", `${ORIGIN}.evil.example`]) {
+      const headers: Record<string, string> = { cookie: await sessionCookie(), "sec-websocket-protocol": "oc.live.v1" };
+      if (origin) headers.origin = origin;
+      expect((await worker.fetch(liveRequest(headers), env, ctx())).status).toBe(403);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("authenticates a key or a session's key offered as oc.bearer, and never forwards it", async () => {
+    const { db, env } = seeded();
+    const person = await addKey(db);
+    const agent = await addKey(db, { createdBy: "computer", sessionKey: SESSION });
+    const fetchMock = vi.fn().mockImplementation(async () => upgraded());
+    vi.stubGlobal("fetch", fetchMock);
+    for (const { key } of [person, agent]) {
+      const res = await worker.fetch(liveRequest({ "sec-websocket-protocol": `oc.live.v1, oc.bearer.${key}` }), env, ctx());
+      expect(res.status).toBe(101);
+    }
+    expect(assertedPrincipal(fetchMock, 0)).toMatchObject({ kind: "key", subject: SUBJECT, credential: { id: person.id } });
+    expect(assertedPrincipal(fetchMock, 1)).toMatchObject({ kind: "agent", subject: SESSION, credential: { id: agent.id } });
+    for (const [, init] of fetchMock.mock.calls as [string, RequestInit][]) {
+      expect(new Headers(init.headers).get("sec-websocket-protocol")).toBe("oc.live.v1");
+    }
+  });
+
+  it("refuses a bad token, a missing upgrade and a missing oc.live.v1", async () => {
+    const { db, env } = seeded();
+    const { key } = await addKey(db);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await worker.fetch(liveRequest({ "sec-websocket-protocol": "oc.live.v1, oc.bearer.osb_nope" }), env, ctx())).status).toBe(401);
+    expect((await worker.fetch(api("/live", { headers: { "sec-websocket-protocol": `oc.live.v1, oc.bearer.${key}` } }), env, ctx())).status).toBe(426);
+    expect((await worker.fetch(liveRequest({ "sec-websocket-protocol": `oc.bearer.${key}` }), env, ctx())).status).toBe(426);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Live's credential check", () => {
+  const LIVE_KEY = "live-key";
+  const check = (env: Env, body: unknown, key = LIVE_KEY) =>
+    worker.fetch(
+      new Request(`${ORIGIN}/internal/live/credentials`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { ...env, LIVE_KEY } as Env,
+      ctx(),
+    );
+
+  it("answers only Live", async () => {
+    const { env } = seeded();
+    expect((await check(env, { check: [] }, "wrong")).status).toBe(401);
+  });
+
+  it("answers a token's principal, null when it does not verify", async () => {
+    const { db, env } = seeded();
+    const { key, id } = await addKey(db, { createdBy: "computer", sessionKey: SESSION });
+    const res = await check(env, { token: key });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ principal: { org: ORG, subject: SESSION, kind: "agent", credential: { id } } });
+    expect(await (await check(env, { token: "osb_nope" })).json()).toEqual({ principal: null });
+  });
+
+  it("names the credentials that no longer verify", async () => {
+    const { db, env } = seeded();
+    const kept = await addKey(db);
+    const expired = await addKey(db, { expiresAt: 1_000 });
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const cookie = `ck:${ORG}:${USER}:${future}:0011223344556677`;
+    const stale = `ck:${ORG}:${USER}:1000:0011223344556677`;
+    const stranger = `ck:${ORG}:user_someone:${future}:0011223344556677`;
+    const res = await check(env, { check: [kept.id, expired.id, "key-deleted", cookie, stale, stranger] });
+    expect(await res.json()).toEqual({ revoked: [expired.id, "key-deleted", stale, stranger] });
+  });
+
+  it("tells managed agents when a key is deleted or a cookie signs out", async () => {
+    const { db, env } = seeded();
+    const { id } = await addKey(db);
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const cookie = await sessionCookie();
+    for (const request of [
+      new Request(`${ORIGIN}/api/dashboard/api-keys/${id}`, { method: "DELETE", headers: { cookie } }),
+      new Request(`${ORIGIN}/auth/logout`, { method: "POST", headers: { cookie } }),
+    ]) {
+      const { ctx, settle } = settlingCtx();
+      expect((await worker.fetch(request, env, ctx)).status).toBeLessThan(300);
+      await settle();
+    }
+    const revokes = (fetchMock.mock.calls as [string, RequestInit][])
+      .filter(([url]) => String(url) === `${BLUE}/v1/internal/live/revoke`)
+      .map(([, init]) => {
+        expect(claims(new Headers(init.headers).get("x-opencomputer-agent-token")!).org_id).toBe(ORG);
+        return JSON.parse(String(init.body)) as { org: string; credentialId: string };
+      });
+    expect(revokes).toHaveLength(2);
+    expect(revokes[0]).toEqual({ org: ORG, credentialId: id });
+    expect(revokes[1].org).toBe(ORG);
+    expect(revokes[1].credentialId).toMatch(new RegExp(`^ck:${ORG}:${USER}:\\d+:[0-9a-f]{16}$`));
+  });
+});
