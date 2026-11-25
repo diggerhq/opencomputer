@@ -24,10 +24,14 @@ class Recorder extends DurableObject {
 export class FakeOrg extends Recorder {
   private readable = true;
   private mutateError: string | null = null;
+  private owner = "slack:T1:U1";
+  private writers: "members" | string[] = "members";
 
-  async set(next: { readable?: boolean; mutateError?: string | null }): Promise<void> {
+  async set(next: { readable?: boolean; mutateError?: string | null; owner?: string; writers?: "members" | string[] }): Promise<void> {
     if (next.readable !== undefined) this.readable = next.readable;
     if (next.mutateError !== undefined) this.mutateError = next.mutateError;
+    if (next.owner !== undefined) this.owner = next.owner;
+    if (next.writers !== undefined) this.writers = next.writers;
   }
 
   async createSession(p: Principal, body: { id?: string }) {
@@ -38,7 +42,7 @@ export class FakeOrg extends Recorder {
 
   async getSession(p: Principal, id: string) {
     this.record("getSession", p, id);
-    return this.readable ? { ok: true as const, session: { id } as never } : { ok: false as const, code: "not_found", status: 404 };
+    return this.readable ? { ok: true as const, session: { id, owner: { id: this.owner, name: "", email: null }, writers: this.writers } as never } : { ok: false as const, code: "not_found", status: 404 };
   }
 
   async mutate(p: Principal, m: unknown): Promise<MutateReply> {

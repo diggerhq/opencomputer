@@ -17,7 +17,7 @@
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, computerOf, cursor, hashOf, liveOf, logOf, orgOf } from "../actor/index.js";
-import type { CreateSession, DrainResult, InboxKind, ListQuery, Principal, Refusal, SessionRow } from "../actor/index.js";
+import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
 import { eventsStream } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { API_SCOPES } from "./api-types.js";
@@ -29,7 +29,7 @@ import { CROCKFORD, isId, isSessionId, memberId } from "./session-ids.js";
 import type { ApiCaller, ApiOp, ApiReply, WriteMethod } from "./sessions-api.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import type { WorkContextOp, WorkRefsOp, WorkStampOp } from "./work/briefs.js";
-import { type WorkRoute, workApi } from "./work/api.js";
+import { repositoryChoice, workRepositories } from "./work/api.js";
 import type { WorkIndexRpc } from "./work/index-contract.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
@@ -47,7 +47,68 @@ interface Route {
   op: string;
   sessionId?: string;
   sub?: string;
+  /** `mutate`: the mutation (spec 39) and its arguments from the path. */
+  name?: string;
+  args?: Record<string, string>;
 }
+
+const THREAD_MARKS: Record<string, string> = { title: "thread.rename", track: "thread.place", done: "thread.done", keep: "thread.keep", ready: "thread.ready", attention: "thread.attention", writers: "thread.writers" };
+const TRACK_MARKS: Record<string, string> = { name: "track.rename", stand: "track.set_stand", done: "track.done", keep: "track.keep", doc: "doc.save" };
+
+/** The work routes of tracks and threads (spec 37.1, 37.3): the reads and one route per mutation. */
+function workRoute(method: string, s: string[]): Route | null {
+  const m = (name: string, args: Record<string, string> = {}): Route => ({ op: "mutate", name, args });
+  const [a, b, c, d] = s;
+  const n = s.length;
+  const is = (verb: string, length: number) => method === verb && n === length;
+  switch (a) {
+    case "threads":
+      if (is("GET", 1)) return { op: "work.threads" };
+      if (is("DELETE", 2)) return m("thread.delete", { sid: b! });
+      if (is("PUT", 3) && THREAD_MARKS[c!]) return m(THREAD_MARKS[c!]!, { sid: b! });
+      if (is("DELETE", 3) && c === "done") return m("thread.reopen", { sid: b! });
+      return null;
+    case "tracks":
+      if (is("POST", 1)) return m("track.create");
+      if (is("DELETE", 2)) return m("track.delete", { tid: b! });
+      if (is("PUT", 3) && TRACK_MARKS[c!]) return m(TRACK_MARKS[c!]!, { tid: b! });
+      if (is("DELETE", 3) && c === "done") return m("track.reopen", { tid: b! });
+      if (is("POST", 3) && c === "dissolve") return m("track.dissolve", { tid: b! });
+      if (method === "GET" && c === "doc" && d === "revisions" && (n === 4 || n === 5)) return { op: "work.doc.revisions", sub: b!, ...(n === 5 ? { args: { rev: s[4]! } } : {}) };
+      return null;
+    case "reads":
+      return is("PUT", 2) ? m("read.set", { sid: b! }) : null;
+    case "prefs":
+      return is("PUT", 2) ? m("pref.set", { key: b! }) : null;
+    case "results":
+      if (is("PUT", 2)) return m("result.add", { resultId: b! });
+      if (n === 3 && c === "review") return method === "PUT" ? m("review.save", { resultId: b! }) : method === "GET" ? { op: "work.review", sub: b! } : null;
+      return null;
+    case "proposals":
+      if (is("POST", 1)) return m("proposal.create");
+      if (is("POST", 3) && (c === "accept" || c === "dismiss")) return m(`proposal.${c}`, { proposalId: b! });
+      return null;
+    case "ops":
+      return is("POST", 3) && c === "undo" ? m("undo", { opId: b! }) : null;
+    case "overview":
+      return is("GET", 1) ? { op: "work.overview" } : null;
+    case "search":
+      return is("GET", 1) ? { op: "work.search" } : null;
+    default:
+      return null;
+  }
+}
+
+/** A path id's shape, by its argument's name: a malformed one is `not_found`. */
+const PATH_ID: Record<string, RegExp> = {
+  sid: /^cs_[0-9a-hjkmnp-tv-z]{16}$/,
+  tid: /^trk_[0-9a-hjkmnp-tv-z]{16}$/,
+  resultId: /^res_[0-9a-hjkmnp-tv-z]{16}$/,
+  proposalId: /^prp_[0-9a-hjkmnp-tv-z]{16}$/,
+  opId: /^op_[0-9a-hjkmnp-tv-z]{16}$/,
+  key: /^[A-Za-z0-9_.:-]{1,64}$/,
+  rev: /^(0|[1-9]\d{0,8})$/,
+};
 
 /** `METHOD /suffix` → the route; null when it is not one of the API's. */
 export function matchApiRoute(method: string, suffix: string): Route | null {
@@ -64,16 +125,15 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (p[0] === "me" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) return { op: "secrets" };
   // The same for every session, so the new-session screen can read it before there is one.
   if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
+  if (is("GET", 1) && p[0] === "feed") return { op: "feed" };
+  if (is("POST", 2) && p[0] === "feed" && p[1] === "mismatch") return { op: "feed.mismatch" };
+  if (is("GET", 1) && p[0] === "occurrences") return { op: "occurrences" };
   // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
   if (p[0] === "work") {
+    const tracked = workRoute(method, p.slice(1));
+    if (tracked) return tracked;
     if (p[1] === "repository" && p.length === 2) return method === "GET" ? { op: "work.repository.get" } : method === "PUT" ? { op: "work.repository.put" } : null;
     if (p[1] === "repositories") return is("GET", 2) ? { op: "work.repositories" } : null;
-    // The items a session worked on, for the session's screen.
-    if (p[1] === "sessions") return is("GET", 4) && p[3] === "items" ? { op: "work.session.items", sub: p[2] } : null;
-    if (p[1] !== "items") return null;
-    if (is("GET", 2)) return { op: "work.items" };
-    if (is("GET", 3)) return { op: "work.item", sub: p[2] };
-    if (is("GET", 4) && p[3] === "history") return { op: "work.history", sub: p[2] };
     return null;
   }
   if (p[0] !== "sessions") return null;
@@ -115,7 +175,8 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
-  if (op === "work.repository.put") return "work:write";
+  if (op === "work.repository.put" || op === "mutate") return "work:write";
+  if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
   return "sessions:write";
@@ -264,7 +325,8 @@ export function routeFamily(op: string): string {
   if (op.startsWith("subagents.")) return "subagents";
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
-  if (op.startsWith("work.")) return "work";
+  if (op.startsWith("work.") || op === "mutate") return "work";
+  if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "feed";
   return "other";
 }
 
@@ -274,7 +336,8 @@ const OPS = new Set([
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
-  "work.repository.get", "work.repository.put", "work.repositories", "work.items", "work.item", "work.history", "work.session.items",
+  "work.repository.get", "work.repository.put", "work.repositories",
+  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -382,10 +445,6 @@ async function routeApi(
   if ((route.op === "secrets" || route.op.startsWith("secrets.")) && identity.principal === COMPUTER_PRINCIPAL) {
     return out.error(403, "forbidden", "Sessions cannot read or set secrets over this API.", { reason: "computer_principal" });
   }
-  // Only people change the Work setting (3.9, 3.10): a session's own key is refused on writes.
-  if (route.op === "work.repository.put" && identity.principal === COMPUTER_PRINCIPAL) {
-    return out.error(403, "forbidden", "Sessions cannot change Work over this API.", { reason: "computer_principal" });
-  }
   const scope = scopeOf(route.op);
   if (scope && !caller.scopes.includes(scope)) {
     return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
@@ -396,25 +455,9 @@ async function routeApi(
   const query = url.searchParams;
   const call = (op: ApiOp | SecretsApiOp) => computer.computerApi(accountId, caller, op).then((reply) => out.of(reply));
 
-  if (route.op.startsWith("work.")) {
-    let body: unknown;
-    if (request.method === "PUT") {
-      const parsed = await bodyOf(request);
-      if ("error" in parsed) return out.error(...parsed.error);
-      body = parsed.value;
-    }
+  if (route.op === "work.repositories") {
     const index = env.WORK_INDEX ? (env.WORK_INDEX.getByName(accountId) as unknown as WorkIndexRpc) : null;
-    const reply = await workApi(
-      { accountId, caller, index, context: (op) => computer.computerApi(accountId, caller, op) },
-      route as WorkRoute,
-      query,
-      body,
-      request.headers.get("if-none-match"),
-    );
-    const response = out.of(reply);
-    if (reply.etag) response.headers.set("etag", reply.etag);
-    if (reply.asOf) response.headers.set("work-as-of", reply.asOf);
-    return response;
+    return out.of(await workRepositories(accountId, index, query));
   }
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
   if (route.op === "secrets.list") return call({ op: "secrets.list" });
@@ -528,6 +571,8 @@ const ACTOR_OPS = new Set([
   "list", "create", "get",
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
+  "feed", "feed.mismatch", "occurrences", "mutate",
+  "work.threads", "work.overview", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put",
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
@@ -814,7 +859,9 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     return out.send(duplicate ? 200 : 201, { session, turn: result.turn ?? null, delivery: result.delivery ?? null, duplicate, seq: result.seq ?? session.lastSeq });
   }
 
-  const sessionId = route.sessionId!;
+  if (!route.sessionId) return orgRoute(request, p, route, query, idem, trace, org, out);
+
+  const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
   if (route.sub !== undefined && !ID.test(route.sub)) {
     const what = route.op.split(".")[0]!.replace(/s$/, "");
@@ -919,6 +966,164 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     }
     case "subagents.get":
       return answer(await timedLog(out.facts, log.subagent(route.sub!, minSeq, p)), "subagent");
+    default:
+      return out.error(404, "not_found", "No such route.");
+  }
+}
+
+/** The feed's kinds a principal without `work:read` may read (spec 37.1). */
+const CORE_KINDS = ["session", "machine"];
+const CLIENT_ID = /^cl_[0-9a-hjkmnp-tv-z]{16}$/;
+const PROTOCOL = 1;
+
+const reset = (out: Reply, message: string) => out.error(409, "reset", message, { cursor: null });
+
+/** A mutation's reply (spec 37.3): 200 with `protocol`, or its error with the status of spec 34.2. */
+function mutateReplyOf(out: Reply, r: MutateReply): Response {
+  if ("error" in r) {
+    const { code, message, ...extra } = r.error;
+    return out.error(statusOf(code), code, message ?? `Refused: ${code}.`, extra);
+  }
+  return out.send(200, r);
+}
+
+/** The feed, the occurrence stream, the mutations and the work reads: Org's, as the principal. */
+async function orgRoute(
+  request: Request,
+  p: Principal,
+  route: Route,
+  query: URLSearchParams,
+  idem: string | undefined,
+  trace: string | undefined,
+  org: () => OrgRpc,
+  out: Reply,
+): Promise<Response> {
+  const timed = <T>(call: Promise<T>) => timedDo(out.facts, call);
+  const protocol = query.get("protocol");
+  if (protocol !== null && !(Number(protocol) >= PROTOCOL)) return reset(out, `This server speaks protocol ${PROTOCOL}.`);
+  // Path ids of the wrong shape name nothing.
+  for (const [name, value] of Object.entries(route.args ?? {})) {
+    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) return out.error(404, "not_found", `No such ${name}.`);
+  }
+  if (route.sub !== undefined && route.op !== "work.review" && !PATH_ID.tid!.test(route.sub)) return out.error(404, "not_found", "No such track.");
+  if (route.op === "work.review" && !PATH_ID.resultId!.test(route.sub!)) return out.error(404, "not_found", "No such result.");
+
+  switch (route.op) {
+    case "feed": {
+      const after = query.get("after") ?? undefined;
+      if (after !== undefined && !cursor.read("f", after)) return reset(out, "after is not a cursor of the feed.");
+      let kinds = query.get("kinds")?.split(",").filter(Boolean);
+      if (!p.scopes.includes("work:read")) {
+        if (kinds?.some((k) => !CORE_KINDS.includes(k))) return out.error(403, "forbidden", "Work kinds need the work:read scope.", { reason: "missing_scope", scope: "work:read" });
+        kinds ??= CORE_KINDS;
+      }
+      const clientId = query.get("client") ?? undefined;
+      if (clientId !== undefined && !CLIENT_ID.test(clientId)) return out.error(400, "invalid_request", "client is cl_ and 16 lowercase Crockford base32 characters.", { field: "client" });
+      const ack = intParam(query, "ack", 0, Number.MAX_SAFE_INTEGER);
+      if (ack === null) return out.error(400, "invalid_request", "ack is a non-negative integer.", { field: "ack" });
+      const frame = await timed(org().feed(p, {
+        ...(after !== undefined ? { after } : {}),
+        ...(kinds?.length ? { kinds } : {}),
+        ...(clientId ? { clientId } : {}),
+        ...(ack !== undefined ? { ack } : {}),
+        ...(query.get("sum") === "1" ? { sum: true } : {}),
+      }));
+      if ("reset" in frame) return reset(out, "The feed has moved past this cursor; read a snapshot.");
+      return out.send(200, frame);
+    }
+    case "feed.mismatch": {
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      const b = asObject(parsed.value);
+      if (!b || !CLIENT_ID.test(String(b.clientId)) || ["cursor", "server", "client"].some((f) => typeof b[f] !== "string" || (b[f] as string).length > 1_024)) {
+        return out.error(400, "invalid_request", "The body is { clientId, cursor, server, client }.", { field: "" });
+      }
+      await timed(org().mismatch(p, { clientId: b.clientId as string, cursor: b.cursor as string, server: b.server as string, client: b.client as string }));
+      return out.send(204, null);
+    }
+    case "occurrences": {
+      const after = query.get("after") ?? undefined;
+      if (after !== undefined && !cursor.read("o", after)) return reset(out, "after is not a cursor of the occurrence stream.");
+      const limit = intParam(query, "limit", 1, 1_000);
+      if (limit === null) return out.error(400, "invalid_request", "limit is 1 to 1000.", { field: "limit" });
+      const r = await timed(org().occurrences(p, { ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) }));
+      if ("reset" in r) return reset(out, "The occurrence stream has moved past this cursor.");
+      return out.send(200, { protocol: PROTOCOL, entries: r.entries, to: r.to });
+    }
+    case "mutate": {
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      const body = asObject(parsed.value);
+      if (!body) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
+      // A member's client numbers its mutations; an agent or a key sends an Idempotency-Key instead.
+      const clientId = request.headers.get("x-oc-client");
+      const n = request.headers.get("x-oc-n");
+      let client: { id: string; n: number } | undefined;
+      if (clientId !== null || n !== null) {
+        if (clientId === null || !CLIENT_ID.test(clientId)) return out.error(400, "invalid_request", "x-oc-client is cl_ and 16 lowercase Crockford base32 characters.", { field: "x-oc-client" });
+        if (n === null || !/^[1-9]\d{0,15}$/.test(n) || !Number.isSafeInteger(Number(n))) return out.error(400, "invalid_request", "x-oc-n is a positive integer.", { field: "x-oc-n" });
+        client = { id: clientId, n: Number(n) };
+      }
+      const r = await timed(org().mutate(p, {
+        name: route.name!,
+        args: { ...body, ...route.args },
+        ...(client ? { client } : idem ? { idem } : {}),
+        ...(trace ? { trace } : {}),
+      }));
+      return mutateReplyOf(out, r);
+    }
+    case "work.threads": {
+      const limit = intParam(query, "limit", 1, 200);
+      if (limit === null) return out.error(400, "invalid_request", "limit is 1 to 200.", { field: "limit" });
+      const earlier = query.get("earlier");
+      if (earlier !== null && earlier !== "1" && earlier !== "true" && earlier !== "0" && earlier !== "false") return out.error(400, "invalid_request", "earlier is true or false.", { field: "earlier" });
+      const track = query.get("track") ?? undefined;
+      if (track !== undefined && !PATH_ID.tid!.test(track)) return out.error(400, "invalid_request", "track is a track id.", { field: "track" });
+      const before = query.get("before") ?? undefined;
+      if (before !== undefined && !cursor.read("p", before)) return reset(out, "before is not a page cursor.");
+      const r = await timed(org().threads(p, {
+        ...(earlier === "1" || earlier === "true" ? { earlier: true } : {}),
+        ...(track ? { trackId: track } : {}),
+        ...(before ? { before } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      }));
+      return out.send(200, { protocol: PROTOCOL, rows: r.rows, next: r.next });
+    }
+    case "work.overview":
+      return out.send(200, { protocol: PROTOCOL, ...(await timed(org().overview(p))) });
+    case "work.doc.revisions": {
+      const rev = route.args?.rev;
+      const revisions = await timed(org().docRevisions(p, route.sub!, rev !== undefined ? Number(rev) : undefined));
+      if (rev !== undefined) {
+        const one = revisions.find((r) => r.rev === Number(rev));
+        return one ? out.send(200, { protocol: PROTOCOL, revision: one }) : out.error(404, "not_found", "No such revision.");
+      }
+      return out.send(200, { protocol: PROTOCOL, revisions });
+    }
+    case "work.review": {
+      const review = await timed(org().review(p, route.sub!));
+      return review ? out.send(200, { protocol: PROTOCOL, review }) : out.error(404, "not_found", "No such review.");
+    }
+    case "work.search": {
+      const q = query.get("q") ?? "";
+      if (!q.trim() || q.length > 200) return out.error(400, "invalid_request", "q is 1 to 200 characters.", { field: "q" });
+      const limit = intParam(query, "limit", 1, 50);
+      if (limit === null) return out.error(400, "invalid_request", "limit is 1 to 50.", { field: "limit" });
+      const r = await timed(org().search(p, { q, ...(limit !== undefined ? { limit } : {}) }));
+      return out.send(200, { protocol: PROTOCOL, rows: r.rows });
+    }
+    case "work.repository.get":
+      return out.send(200, { repository: await timed(org().repository(p)) });
+    case "work.repository.put": {
+      // Only people change the Work setting (3.9, 3.10): a session's own key is refused.
+      if (p.kind === "agent") return out.error(403, "forbidden", "Sessions cannot change Work over this API.", { reason: "computer_principal" });
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      const choice = repositoryChoice(parsed.value);
+      if ("error" in choice) return out.of(choice.error);
+      const r = await timed(org().setRepository(p, choice.value));
+      return r.ok ? out.send(200, { repository: r.repository }) : refusalOf(out, r);
+    }
     default:
       return out.error(404, "not_found", "No such route.");
   }

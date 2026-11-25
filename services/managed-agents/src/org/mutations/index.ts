@@ -14,19 +14,11 @@
 
 import { byOf, type Principal } from "../../actor/principal.js";
 import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, seesSession, type Tx } from "../tx.js";
+import { applied, keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
+import { THREAD_MUTATIONS } from "./thread.js";
+import { TRACK_MUTATIONS } from "./track.js";
 
-export type MutationRefusal = {
-  ok: false;
-  code: "refused" | "not_found" | "taken" | "conflict" | "invalid_request" | "forbidden";
-  reason: string;
-  /** More for the reply's `error` (a `conflict`'s current `rev` and `text`, what a forced undo would do). */
-  [field: string]: unknown;
-};
-export type MutationOutcome = { ok: true; value?: unknown } | MutationRefusal;
-export type MutationFn = (tx: Tx, p: Principal, args: Record<string, unknown>) => MutationOutcome;
-
-export const applied = (value?: unknown): MutationOutcome => (value === undefined ? { ok: true } : { ok: true, value });
-export const refuse = (code: MutationRefusal["code"], reason: string = code, more: Record<string, unknown> = {}): MutationRefusal => ({ ...more, ok: false, code, reason });
+export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
 /** `thread.rename { sid, title }`: sets `title`, `title_by`; the old title joins `former_titles`. Inverse: the old two. */
 const threadRename: MutationFn = (tx, p, args) => {
@@ -60,6 +52,8 @@ const threadRename: MutationFn = (tx, p, args) => {
 
 export const MUTATIONS: Record<string, MutationFn> = {
   "thread.rename": threadRename,
+  ...THREAD_MUTATIONS,
+  ...TRACK_MUTATIONS,
 };
 
 /** Run one mutation by name. A refusal leaves no write behind. */
@@ -67,5 +61,14 @@ export function runMutation(tx: Tx, p: Principal, name: string, args: unknown): 
   const fn = MUTATIONS[name];
   if (!fn) return refuse("invalid_request", "unknown_mutation");
   const input = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
-  return tx.attempt(() => fn(tx, p, input));
+  const out = tx.attempt(() => fn(tx, p, input));
+  const keep = out.ok ? undefined : keeps.get(out);
+  if (keep) {
+    keeps.delete(out as never);
+    tx.attempt(() => {
+      keep(tx);
+      return { ok: true };
+    });
+  }
+  return out;
 }

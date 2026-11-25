@@ -51,6 +51,10 @@ export const STEPS: ((sql: Sql) => void)[] = [
     `.split(";"))
       if (statement.trim()) sql.exec(statement);
   },
+  // The message whose status or 👀 a thread shows, so `notify` can take it off.
+  (sql) => sql.exec("CREATE TABLE IF NOT EXISTS acks (thread_key TEXT PRIMARY KEY, user_id TEXT NOT NULL, ts TEXT NOT NULL)"),
+  // The import's cursor: the next page of Computer's export.
+  (sql) => sql.exec("ALTER TABLE meta ADD COLUMN import_after TEXT"),
 ];
 
 export const settings = {

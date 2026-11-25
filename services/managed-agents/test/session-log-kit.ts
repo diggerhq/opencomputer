@@ -49,7 +49,7 @@ export interface Fakes {
   /** Everything Org was sent. */
   summaries: SummaryPub[];
   /** The revision `Org.acceptSummary` answers; default: the one sent. A function may throw. */
-  orgAnswers: ((pub: SummaryPub) => number) | null;
+  orgAnswers: ((pub: SummaryPub, log: SessionLogDurableObject) => number | Promise<number>) | null;
   /** Every drain call's machine. */
   drains: string[];
   /** What `Computer.drain` does; default: answers `waking`. */
@@ -87,13 +87,16 @@ export async function openLog(over: Partial<Fakes> = {}) {
           return fakes.access;
         },
         acceptSummary: async (pub) => {
-          const revision = fakes.orgAnswers ? fakes.orgAnswers(pub) : pub.revision;
+          // A real stub never answers in the caller's own tick.
+          await Promise.resolve();
+          const revision = fakes.orgAnswers ? await fakes.orgAnswers(pub, instance) : pub.revision;
           fakes.summaries.push(pub);
           return { accepted: revision === pub.revision, revision };
         },
       }),
       computer: (machine) => ({
         drain: async () => {
+          await Promise.resolve();
           fakes.drains.push(machine);
           return fakes.drain(instance);
         },

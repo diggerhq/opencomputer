@@ -99,6 +99,8 @@ export interface FoldState {
   lastText: string | null;
   context: SessionContext;
   lastActiveAt: string | null;
+  /** seq of the newest top-level `message.completed`, `ask.opened`, `turn.completed` or `turn.failed` (absent in state folded before it). */
+  lastAgentSeq?: number;
   /** Steered messages of running turns. */
   pending: PendingMessage[];
   /** Messages of the turn that just ended unread: the next turn under an unknown id takes the oldest. */
@@ -288,11 +290,15 @@ export function publicTurn(record: TurnRecord): Turn {
   return ended && record.usage ? { ...record.turn, usage: record.usage } : record.turn;
 }
 
+/** The events in which the agent said something to the session's people (spec 35.2, `lastAgentSeq`). */
+const AGENT_SPOKE = new Set(["message.completed", "ask.opened", "turn.completed", "turn.failed"]);
+
 /** Fold one recorded event into `state` and `store`. */
 export function applyEvent(state: FoldState, store: FoldStore, sessionId: string, event: ApiEvent): void {
   state.lastActiveAt = event.createdAt;
   const data = obj(event.data);
   const turnId = event.turnId;
+  if (AGENT_SPOKE.has(event.type) && (event.type !== "message.completed" || data.parentCallId == null)) state.lastAgentSeq = event.seq;
   switch (event.type) {
     case "session.created": {
       state.title = str(data.title) ?? state.title;
@@ -543,9 +549,13 @@ export interface LogPosition {
   syncedAt: string | null;
 }
 
+/** A LogSummary, and what the summary Org receives adds from the fold (spec 35.2). */
+export type FoldSummary = LogSummary & { lastAgentSeq: number };
+
 /** The LogSummary from the fold state, the queued turns (run order), the open asks and running subagents (oldest first). */
-export function summarize(state: FoldState, queued: Turn[], openAsks: Ask[], subagents: Subagent[], position: LogPosition): LogSummary {
+export function summarize(state: FoldState, queued: Turn[], openAsks: Ask[], subagents: Subagent[], position: LogPosition): FoldSummary {
   return {
+    lastAgentSeq: state.lastAgentSeq ?? 0,
     lastSeq: position.lastSeq,
     logEpoch: position.logEpoch,
     epochStartSeq: position.epochStartSeq,

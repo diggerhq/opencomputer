@@ -44,6 +44,8 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type DeliveredOutcome,
+  type EventPush,
+  type EventsReset,
   type Inbox,
   type InboxEntry,
   type InboxKind,
@@ -51,10 +53,13 @@ import {
   type OrgRpc,
   type Principal,
   type SessionLogRpcAdded,
+  type Summary,
+  type SummaryPub,
   type Sql,
 } from "../actor/index.js";
+import type { FoldSummary } from "./session-fold.js";
 import { decodeCursor, encodeCursor } from "./list-cursor.js";
-import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
+import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
 import {
   applyEvent,
   ENDED_TURN_STATUSES,
@@ -143,7 +148,18 @@ export const AGENT_TURNS_MAX = 30;
 export const INBOX_KEEP_MS = 24 * 60 * 60 * 1_000;
 /** `inbox[].text` in the summary: this many characters of a turn's input. */
 export const INBOX_TEXT_CHARS = 280;
+/** An append during a running turn writes the summary slot when it was last written longer ago than this. */
+export const SLOT_REFRESH_MS = 30_000;
+/** The events that count as occurrences when appended (spec 35.2). */
+const OCCURRENCES = new Set(["message.received", "ask.opened", "ask.closed", "turn.completed", "turn.failed", "turn.cancelled"]);
 const SWEEP_PURPOSE = "sweep";
+
+/** The `by` of an event's actor (spec 34.1), or null without one. */
+function byOfActor(actor: ApiEvent["actor"]): string | null {
+  if (!actor) return null;
+  if (actor.id === "platform" || actor.id === "system" || (actor.via as string) === "platform" || actor.via === "system") return "platform";
+  return actor.id.startsWith("cs_") ? `agent:${actor.id}` : `user:${actor.id}`;
+}
 
 /** Event `data` whose JSON is longer than this many bytes goes to R2. */
 export const INLINE_DATA_BYTES = 8 * 1024;
@@ -168,7 +184,7 @@ interface Meta {
   ack: number;
   syncedAt: string | null;
   state: FoldState;
-  summary: LogSummary;
+  summary: FoldSummary;
   /** Counts changes to the summary Org holds (spec 35.2); never reused. */
   revision: number;
   /** Until when Live holds a lease on this log's events (spec 40.4). */
@@ -347,7 +363,8 @@ const turnOfRow = (row: TurnRow): TurnRecord => ({
   usage: row.usage === null ? null : JSON.parse(row.usage),
 });
 
-const withSubagents = (summary: LogSummary): LogSummary => (summary.subagents ? summary : { ...summary, subagents: [] });
+/** A summary saved before a field existed. */
+const withSubagents = (summary: FoldSummary): FoldSummary => ({ ...summary, subagents: summary.subagents ?? [], lastAgentSeq: summary.lastAgentSeq ?? 0 });
 
 const subagentOfRow = (row: SubagentRow): SubagentRecord => ({
   subagent: JSON.parse(row.data) as Subagent,
@@ -529,7 +546,24 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   private readonly send = async (call: string, _body: unknown): Promise<void> => {
     if (call === "drain") return this.sendDrain();
+    if (call === "summary") return this.sendSummary();
+    if (call === "live") return this.sendLive();
   };
+
+  /** The push of the append that owes the `live:events` call, until its first try takes it. */
+  private push: EventPush | null = null;
+
+  /**
+   * `Live.publish` on `events:<id>` (spec 40.4): the append's events on the first try, `{ head }` on a
+   * retry (or when a newer append replaced the call), nothing once the lease has passed.
+   */
+  private async sendLive(): Promise<void> {
+    const frame = this.push ?? { head: this.head() };
+    this.push = null;
+    const org = this.meta.organizationId;
+    if (!org || this.meta.watchedUntil <= Date.now()) return;
+    await this.peers.live(org)?.publish(`events:${this.sessionId()}`, frame);
+  }
 
   /** `Computer.drain`, owed until `delivered` leaves no entry waiting: a `waking` answer keeps it owed. */
   private async sendDrain(): Promise<void> {
@@ -622,6 +656,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       this.progressById.clear();
+      this.push = null;
       this.open();
       this.wake();
     });
@@ -733,6 +768,40 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const next: Meta = { ...m, revision: m.revision + 1, slotAt: now };
     this.saveMeta(next);
     this.meta = next;
+    owed.add(this.db, { group: "summary", key: "summary", call: "summary" });
+  }
+
+  /** The summary Org receives (spec 35.2): the log's, its revision, and the inbox entries that wait or were refused. */
+  private orgSummary(): Summary {
+    const inbox = this.sql
+      .exec<InboxRow>("SELECT * FROM inbox WHERE state IN ('waiting', 'refused') ORDER BY n")
+      .toArray()
+      .map((row) => {
+        const input = row.kind === "turn" ? (JSON.parse(row.body) as { input?: unknown } | null)?.input : null;
+        const error = row.error === null ? null : (JSON.parse(row.error) as { code: string }).code;
+        return { id: row.id, kind: row.kind, by: row.by, at: new Date(row.at).toISOString(), text: typeof input === "string" ? input.slice(0, INBOX_TEXT_CHARS) : null, error };
+      });
+    return { ...this.meta.summary, revision: this.meta.revision, agentTitle: this.meta.summary.title, inbox };
+  }
+
+  /**
+   * The summary slot (spec 40.3): the body is built now, so it carries the latest. Org answering this
+   * revision or a later one clears the occurrences sent; the owed row goes with this call's return,
+   * and one written meanwhile (a newer revision) is another row, sent next.
+   */
+  private async sendSummary(): Promise<void> {
+    const sessionId = this.sessionId();
+    const org = this.meta.organizationId;
+    if (!sessionId || !org) throw new Error("summary: the log does not know its organization");
+    const occurrences = this.sql
+      .exec<{ epoch: number; seq: number; kind: string; by: string | null; at: number }>(`SELECT epoch, seq, kind, "by", at FROM occ_pending ORDER BY epoch, seq`)
+      .toArray();
+    const pub: SummaryPub = { sessionId, revision: this.meta.revision, summary: this.orgSummary(), occurrences };
+    const answer = await this.peers.org(org).acceptSummary(pub);
+    if (answer.revision < pub.revision) throw new Error(`summary: Org holds revision ${answer.revision}, sent ${pub.revision}`);
+    this.db.transaction(() => {
+      for (const o of occurrences) this.sql.exec("DELETE FROM occ_pending WHERE epoch = ? AND seq = ?", o.epoch, o.seq);
+    });
   }
 
   // ---- writes ---------------------------------------------------------------------------------
@@ -884,8 +953,11 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const refoldAt = performance.now();
     const rebuilt = truncateFrom === null ? null : await this.refold(truncateFrom - 1);
     const refoldMs = rebuilt ? performance.now() - refoldAt : 0;
-    const syncedAt = new Date().toISOString();
+    const now = Date.now();
+    const syncedAt = new Date(now).toISOString();
 
+    let push: EventPush | null = null;
+    let owes = false;
     this.ctx.storage.transactionSync(() => {
       let state: FoldState = structuredClone(m.state);
       let touched = false;
@@ -931,11 +1003,40 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       // The inbox's transactions ran while this one's rows were prepared: their counters are the object's, not `m`'s.
       const { revision, watchedUntil, slotAt, agentTurns } = this.meta;
       const next: Meta = { ...m, revision, watchedUntil, slotAt, agentTurns, logEpoch, epochStartSeq, ack, syncedAt, state, summary };
-      this.saveMeta(next);
-      this.meta = next;
+      let occurred = false;
+      for (const r of rows) {
+        if (!OCCURRENCES.has(r.event.type)) continue;
+        occurred = true;
+        this.sql.exec(
+          `INSERT OR REPLACE INTO occ_pending (epoch, seq, kind, "by", at) VALUES (?, ?, ?, ?, ?)`,
+          epoch,
+          r.event.seq,
+          r.event.type,
+          byOfActor(r.event.actor),
+          Date.parse(r.event.createdAt) || now,
+        );
+      }
+      // Spec 40.3 step 1. Any other append's lastSeq, lastText and lastActiveAt go with the next revision.
+      const was = m.summary;
+      const changed = newEpoch || was.status !== summary.status || was.title !== summary.title || JSON.stringify(was.asks) !== JSON.stringify(summary.asks);
+      const running = summary.activeTurnId !== null && now - slotAt > SLOT_REFRESH_MS;
+      if (occurred || changed || running) this.bump(next, now);
+      else {
+        this.saveMeta(next);
+        this.meta = next;
+      }
+      // Spec 40.4: Live holds a lease on these events. Spilled data does not travel: `{ head }`, and the client reads.
+      if ((rows.length > 0 || newEpoch) && watchedUntil > now && this.peers.live(m.organizationId!)) {
+        owed.add(this.db, { group: "live", key: "live:events", call: "live" });
+        const inline = rows.every((r) => r.spill === null && r.blob === null);
+        push = inline ? { from: cursor.encode("e", [m.logEpoch, m.ack]), to: cursor.encode("e", [logEpoch, ack]), events: rows.map((r) => r.event) } : null;
+        owes = true;
+      }
       if (subagentsTouched) this.pruneProgress();
     });
     this.wake();
+    if (owes) this.push = push;
+    this.kick();
     this.spill(epoch, rows);
     let bytes = 0;
     for (const r of rows) bytes += r.data?.length ?? 0;
@@ -1106,21 +1207,35 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   // ---- reads ----------------------------------------------------------------------------------
 
-  async summary(minSeq?: number): Promise<{ ok: true; summary: LogSummary } | LogReadRefusal> {
-    const refused = await this.reach(minSeq);
+  async summary(minSeq?: number, p?: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal> {
+    const refused = await this.admit(minSeq, p);
     if (refused) return refused;
-    const summary = this.meta.summary;
+    const summary = this.orgSummary();
     if (this.progressById.size === 0 || summary.subagents.length === 0) return { ok: true, summary };
     return { ok: true, summary: { ...summary, subagents: summary.subagents.map((s) => this.withProgress(s)) } };
   }
 
-  async events(query: EventsQuery): Promise<EventsPage> {
-    const refused = await this.reach(query.minSeq);
+  async events(query: EventsQuery, p?: Principal): Promise<EventsPage> {
+    const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
-    const after = Math.max(0, Math.floor(query.after ?? 0));
-    if (after > this.meta.ack) return { ok: false, error: "cursor_ahead", lastSeq: this.meta.ack, logEpoch: this.meta.logEpoch };
+    let after: number;
+    /** The cursor answered when the page is empty: the one given. */
+    let given: string;
+    if (typeof query.after === "string" || (p && query.after !== undefined)) {
+      // An opaque cursor (spec 37.1). A principal's read takes nothing else.
+      const read = typeof query.after === "string" ? this.afterCursor(query.after) : null;
+      if (read === null) return { ok: false, error: "reset", cursor: null };
+      if (typeof read !== "number") return read;
+      after = read;
+      given = query.after as string;
+    } else {
+      // The legacy internal path: a seq.
+      after = Math.max(0, Math.floor(query.after ?? 0));
+      if (after > this.meta.ack) return { ok: false, error: "cursor_ahead", lastSeq: this.meta.ack, logEpoch: this.meta.logEpoch };
+      given = cursor.encode("e", [this.meta.logEpoch, after]);
+    }
     const limit = clamp(query.limit, EVENTS_DEFAULT_LIMIT, 1, EVENTS_MAX_LIMIT);
-    const waitMs = clamp(query.waitMs, 0, 0, MAX_WAIT_MS);
+    const waitMs = p ? 0 : clamp(query.waitMs, 0, 0, MAX_WAIT_MS);
     const tailTurns = query.tailTurns && after === 0 ? clamp(query.tailTurns, 1, 1, MAX_TAIL_TURNS) : 0;
 
     let from = after + 1;
@@ -1178,13 +1293,14 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       lastSeq: this.meta.ack,
       hasMore,
       syncedAt: this.meta.syncedAt,
+      cursor: rows.length ? cursor.encode("e", [this.meta.logEpoch, rows.at(-1)!.seq]) : given,
     };
     if (earlierTurns) page.earlierTurns = earlierTurns;
     return page;
   }
 
-  async turns(query: TurnsQuery): Promise<TurnsPage> {
-    const refused = await this.reach(query.minSeq);
+  async turns(query: TurnsQuery, p?: Principal): Promise<TurnsPage> {
+    const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
     const limit = clamp(query.limit, LIST_DEFAULT_LIMIT, 1, LIST_MAX_LIMIT);
     const where: string[] = [];
@@ -1210,10 +1326,11 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     };
   }
 
-  async turn(turnId: string, query: TurnQuery = {}): Promise<TurnResult> {
-    const refused = await this.reach(query.minSeq);
+  async turn(turnId: string, query: TurnQuery = {}, p?: Principal): Promise<TurnResult> {
+    const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
-    const waitMs = clamp(query.waitMs, 0, 0, MAX_WAIT_MS);
+    // A principal's read never waits here: the edge waits through Live (spec 37.1).
+    const waitMs = p ? 0 : clamp(query.waitMs, 0, 0, MAX_WAIT_MS);
     const done = (status: TurnStatus) => (query.status ? status !== query.status : ENDED_TURN_STATUSES.has(status));
     const deadline = Date.now() + waitMs;
     let turn = this.readTurn(turnId);
@@ -1227,8 +1344,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return { ok: true, turn, lastSeq: this.meta.ack };
   }
 
-  async asks(query: AsksQuery): Promise<AsksPage> {
-    const refused = await this.reach(query.minSeq);
+  async asks(query: AsksQuery, p?: Principal): Promise<AsksPage> {
+    const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
     const limit = clamp(query.limit, LIST_DEFAULT_LIMIT, 1, LIST_MAX_LIMIT);
     const status = query.status ?? "open";
@@ -1254,8 +1371,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     };
   }
 
-  async ask(askId: string, minSeq?: number): Promise<AskResult> {
-    const refused = await this.reach(minSeq);
+  async ask(askId: string, minSeq?: number, p?: Principal): Promise<AskResult> {
+    const refused = await this.admit(minSeq, p);
     if (refused) return refused;
     const row = this.sql.exec<AskRow>("SELECT seq, data FROM asks WHERE id = ?", askId).toArray()[0];
     if (!row) return { ok: false, error: "ask_not_found" };
@@ -1263,8 +1380,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   }
 
   /** Newest first (by start), like asks; `running` (default) or `all`. */
-  async subagents(query: SubagentsQuery): Promise<SubagentsPage> {
-    const refused = await this.reach(query.minSeq);
+  async subagents(query: SubagentsQuery, p?: Principal): Promise<SubagentsPage> {
+    const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
     const limit = clamp(query.limit, LIST_DEFAULT_LIMIT, 1, LIST_MAX_LIMIT);
     const status = query.status === "all" ? "all" : "running";
@@ -1293,8 +1410,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     };
   }
 
-  async subagent(subagentId: string, minSeq?: number): Promise<SubagentResult> {
-    const refused = await this.reach(minSeq);
+  async subagent(subagentId: string, minSeq?: number, p?: Principal): Promise<SubagentResult> {
+    const refused = await this.admit(minSeq, p);
     if (refused) return refused;
     const row = this.sql.exec<SubagentRow>("SELECT seq, end_seq, result_seq, data FROM subagents WHERE id = ?", subagentId).toArray()[0];
     if (!row) return { ok: false, error: "subagent_not_found" };
@@ -1373,6 +1490,35 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     }));
   }
 
+  /**
+   * Where a reader holding this events cursor reads on from (a seq), a `reset`, or null for text that
+   * is no events cursor (a bare integer too). Spec 37.1, 40.10 step 5.
+   */
+  private afterCursor(text: string): number | EventsReset | null {
+    const parts = cursor.read("e", text);
+    if (!parts) return null;
+    const [epoch, seq] = parts as [number, number];
+    const m = this.meta;
+    if (epoch > m.logEpoch) return null;
+    // Past the log's end: back to its end.
+    if (epoch === m.logEpoch) return seq > m.ack ? { ok: false, error: "reset", cursor: this.head(), seq: m.ack } : seq;
+    // An older epoch's: the same events below the first seq a later epoch wrote (the lowest, across several epochs).
+    const rewritten = this.sql.exec<{ seq: number | null }>("SELECT MIN(seq) AS seq FROM events WHERE epoch > ?", epoch).toArray()[0]?.seq;
+    const first = Math.min(rewritten ?? m.epochStartSeq, m.epochStartSeq);
+    if (seq < first) return seq;
+    return { ok: false, error: "reset", cursor: cursor.encode("e", [m.logEpoch, first - 1]), seq: first - 1 };
+  }
+
+  /** A read's gate: the principal, when one is given (`not_found` to one that may not read), then `minSeq`. */
+  private async admit(minSeq: number | undefined, p: Principal | undefined): Promise<LogReadRefusal | null> {
+    if (!p) return this.reach(minSeq);
+    const access = await this.accessFor(p);
+    if (!access || !mayRead(p, access, this.sessionId()!)) return { ok: false, error: "not_found" };
+    // No waiting for a principal: the edge retries, or waits through Live.
+    if (minSeq !== undefined && this.meta.ack < minSeq) return { ok: false, error: "unavailable", lastSeq: this.meta.ack, retryAfterMs: UNAVAILABLE_RETRY_AFTER_MS };
+    return null;
+  }
+
   /** Wait (≤ minSeqWaitMs) for `ack` to reach `minSeq`; a refusal when it does not. */
   private async reach(minSeq: number | undefined): Promise<LogReadRefusal | null> {
     if (minSeq === undefined || this.meta.ack >= minSeq) return null;
@@ -1445,7 +1591,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       syncedAt: row.synced_at,
       state: JSON.parse(row.state) as FoldState,
       // A summary saved before subagents existed has none.
-      summary: withSubagents(JSON.parse(row.summary) as LogSummary),
+      summary: withSubagents(JSON.parse(row.summary) as FoldSummary),
       revision: row.revision ?? 0,
       watchedUntil: row.watched_until ?? 0,
       slotAt: row.slot_at ?? 0,
