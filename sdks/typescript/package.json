@@ -8,6 +8,14 @@
       "types": "./dist/agents/index.d.ts",
       "import": "./dist/agents/index.js"
     },
+    "./computer": {
+      "types": "./dist/computer/index.d.ts",
+      "import": "./dist/computer/index.js"
+    },
+    "./computer/fake": {
+      "types": "./dist/computer/fake/index.d.ts",
+      "import": "./dist/computer/fake/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
