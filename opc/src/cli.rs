@@ -153,6 +153,12 @@ pub struct NewSession {
     /// Make a retry safe: a repeat within 24 hours does nothing new
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+    /// Who may use the new session: owner (only you), org or people
+    #[arg(long, value_name = "WHO", value_parser = ["owner", "org", "people"])]
+    pub access: Option<String>,
+    /// With --access people: someone to share with, by user id or email (repeatable)
+    #[arg(long = "people", visible_alias = "person", value_name = "USER")]
+    pub people: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args, Default)]
@@ -243,6 +249,9 @@ pub enum Command {
     Subagents(SubagentsArgs),
     /// Set a session's title
     Rename(RenameArgs),
+    /// Show or change who may use a session
+    #[command(override_usage = "opc access <ID> [owner | org | people <USER>...] [--add <USER>] [--remove <USER>]")]
+    Access(AccessArgs),
     /// Archive a session
     Archive(SessionOnly),
     /// Bring an archived session back
@@ -290,6 +299,7 @@ impl Command {
             Command::Ask(_) => "ask",
             Command::Subagents(_) => "subagents",
             Command::Rename(_) => "rename",
+            Command::Access(_) => "access",
             Command::Archive(_) => "archive",
             Command::Unarchive(_) => "unarchive",
             Command::Open(_) => "open",
@@ -319,6 +329,7 @@ impl Command {
             Command::Wait(a) => a.json,
             Command::Watch(a) => a.json || a.output_format.is_some_and(|f| f != Format::Text),
             Command::Interrupt(a) => a.json,
+            Command::Access(a) => a.json,
             Command::Ask(a) => a.json(),
             Command::Subagents(a) => a.json(),
             Command::Push(a) => a.json,
@@ -653,6 +664,24 @@ pub struct RenameArgs {
     pub args: Vec<String>,
     #[command(flatten)]
     pub session: SessionOpt,
+}
+
+#[derive(Debug, Args)]
+pub struct AccessArgs {
+    /// The session, then owner, org, or people and who
+    #[arg(value_name = "ARGS")]
+    pub args: Vec<String>,
+    #[command(flatten)]
+    pub session: SessionOpt,
+    /// Share with someone too, by user id or email (repeatable)
+    #[arg(long, value_name = "USER")]
+    pub add: Vec<String>,
+    /// Stop sharing with someone (repeatable)
+    #[arg(long, value_name = "USER")]
+    pub remove: Vec<String>,
+    /// Print the session's access as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]

@@ -25,6 +25,7 @@ curl -s "$API/sessions" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
 | `speed` | string, optional | `fast` or `standard`. Default: `fast`. |
 | `mode` | string, optional | A permission mode from `capabilities.modes`. Default: `bypassPermissions`, as for Slack sessions. |
 | `metadata` | object, optional | Your own labels: up to 20 keys of at most 40 characters, each a string of at most 500 characters. Filter lists by them. |
+| `access` | object, optional | `{ "mode": "owner" \| "org" \| "people", "people": [...] }`: who may see and drive the session, as in [`Session.access`](/api/reference/objects#session). `people`, only with `people`, lists user ids or the emails of members of your organization. Default: your organization's `apiAccessDefault` setting, `owner` unless an admin changed it. |
 
 The response is `201`:
 
@@ -141,9 +142,10 @@ curl -s -X PATCH "$API/sessions/cs_7f3a9k2m4q8r1t6v" -H "x-api-key: $OPENCOMPUTE
 | `mode` | At once, to the running turn too. Must be in `capabilities.modes`. |
 | `archived` | At once. `true` hides the session from lists unless they ask for `archived`. A new message sets it back to `false`. |
 | `metadata` | At once. Merged into the session's `metadata`: keys you send are set, a key sent as `null` is removed. Limits as for [create](#create-a-session). |
+| `access` | At once. `{ mode, people }` as for [create](#create-a-session); `people` replaces the list. Anyone who loses access is detached. |
 
 Fields you leave out are not changed. The response is `{ "session": …, "seq" }` after the change, and a `session.updated` event records who changed what. While your computer is down, a change to `archived` or `metadata` still applies, but records no `session.updated` and does not move `seq`.
 
 Changing `model` resets `effort` to the new model's default when the current effort is not one of its `efforts`. The response shows the result.
 
-Any member who can see the session can update it. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.
+Anyone with access to the session can update it. `access` may be changed only by the owner, the session's `people` and organization admins; anyone else gets `403 forbidden`. An admin who changes `access` does not get access by it: to see or drive an owner-only session, they add themselves to `people`. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.

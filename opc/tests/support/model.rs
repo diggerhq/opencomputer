@@ -143,6 +143,8 @@ pub struct Sess {
     pub speed: Option<String>,
     pub mode: String,
     pub metadata: Map<String, Value>,
+    /// `{mode, people}`: who may use the session.
+    pub access: Value,
     pub created_at: String,
     pub last_active_at: String,
     pub turns: Vec<Value>,
@@ -215,6 +217,11 @@ impl Sess {
             "idle"
         }
     }
+    /// The owner and the people it is shared with may change its access.
+    pub fn may_manage(&self, member: &str) -> bool {
+        self.owner["id"] == member || self.access["people"].as_array().is_some_and(|p| p.iter().any(|x| x == member))
+    }
+
     pub fn settings(&self) -> Value {
         json!({"model": self.model, "effort": self.effort, "mode": self.mode, "speed": self.speed})
     }
@@ -246,6 +253,8 @@ impl Sess {
             "lastActiveAt": self.last_active_at,
             "syncedAt": null,
             "urls": {"dashboard": format!("https://app.opencomputer.dev/computer/sessions/{}", self.id)},
+            "access": self.access,
+            "canManageAccess": self.may_manage(&st(&me(), "id")),
         });
         validate("Session", &v);
         v
@@ -341,6 +350,7 @@ impl World {
             speed: None,
             mode: settings.2,
             metadata,
+            access: json!({"mode": "owner", "people": []}),
             created_at: t.clone(),
             last_active_at: t,
             turns: vec![],

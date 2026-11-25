@@ -584,7 +584,8 @@ pub fn worth_saying(attempt: u32, retry_in: std::time::Duration) -> bool {
 /// The error for `session.detached` with this reason.
 pub fn detached_error(sid: &str, reason: &str) -> Error {
     let code = if reason.contains("archived") || reason.contains("deleted") || reason.contains("not_found") { "session_not_found" } else { "forbidden" };
-    Error::new(code, format!("stopped receiving {sid}: {reason}")).with("sessionId", sid).with("reason", reason)
+    let message = if reason == "access_lost" { format!("you no longer have access to {sid}") } else { format!("stopped receiving {sid}: {reason}") };
+    Error::new(code, message).with("sessionId", sid).with("reason", reason)
 }
 
 /// Pumps steps into `sink` and the trackers until one that was not done is

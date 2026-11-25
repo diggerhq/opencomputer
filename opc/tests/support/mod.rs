@@ -258,6 +258,8 @@ pub struct Seed {
     pub suspended: bool,
     /// Turns to run to completion before returning, as messages from the owner.
     pub turns: Vec<String>,
+    /// `access` instead of owner only.
+    pub access: Option<Value>,
 }
 
 impl Default for Seed {
@@ -274,6 +276,7 @@ impl Default for Seed {
             mode: "default".into(),
             suspended: false,
             turns: vec![],
+            access: None,
         }
     }
 }
@@ -314,6 +317,11 @@ impl Seed {
     }
     pub fn suspended(mut self) -> Self {
         self.suspended = true;
+        self
+    }
+    /// `{mode, people}`, as the API stores it.
+    pub fn access(mut self, mode: &str, people: &[&str]) -> Self {
+        self.access = Some(json!({"mode": mode, "people": people}));
         self
     }
     pub fn turn(mut self, input: &str) -> Self {
@@ -509,6 +517,9 @@ impl Fake {
             w.create_session(id.clone(), seed.title.clone(), seed.owner.clone(), origin, (Some(seed.model.clone()), Some(seed.effort.clone()), seed.mode.clone()), seed.metadata.clone(), Some(&actor));
             let s = w.s(&id);
             s.archived = seed.archived;
+            if let Some(a) = &seed.access {
+                s.access = a.clone();
+            }
         });
         for t in &seed.turns {
             let (tid, _) = self.send_as(&id, t, "queue", &actor).expect("seed turn");

@@ -125,6 +125,9 @@ fn create_body(id: &str, run: &RunArgs) -> Value {
         let m: Map<String, Value> = n.metadata.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
         b.insert("metadata".into(), Value::Object(m));
     }
+    if let Some(a) = super::run::access_body(n) {
+        b.insert("access".into(), a);
+    }
     Value::Object(b)
 }
 
@@ -135,6 +138,7 @@ pub async fn run_new(ctx: &mut Ctx, run: RunArgs, message: Option<String>) -> Re
     if !ctx.tty.interactive() {
         return Err(Error::usage("the interactive session needs a terminal: use opc -p"));
     }
+    super::run::check_access(ctx, &run.new)?;
     let id = super::run::new_session_id(ctx, &run.new)?;
     let key = run.new.idempotency_key.clone().unwrap_or_else(crate::ids::idempotency_key);
     let create = Create { body: create_body(&id, &run), key, push: run.new.push.clone() };
@@ -170,6 +174,8 @@ mod tests {
         assert_eq!(create_body("cs_x", &r), json!({"id": "cs_x", "model": "opus", "metadata": {"ticket": "ENG-1"}}));
         r.new.speed = Some("standard".into());
         assert_eq!(create_body("cs_x", &r)["speed"], "standard");
+        r.new.people = vec!["mo@example.com".into()];
+        assert_eq!(create_body("cs_x", &r)["access"], json!({"mode": "people", "people": ["mo@example.com"]}));
     }
 
     #[test]

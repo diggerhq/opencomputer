@@ -49,7 +49,39 @@ pub fn create_body(id: &str, new: &NewSession, input: Option<&str>) -> Value {
         let m: Map<String, Value> = new.metadata.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
         b.insert("metadata".into(), Value::Object(m));
     }
+    if let Some(a) = access_body(new) {
+        b.insert("access".into(), a);
+    }
     Value::Object(b)
+}
+
+/// What opc says whenever a session is shared: the agent runs as its owner.
+pub const SHARED_WARNING: &str = "shared: others who can drive this session use your secrets and subscription";
+
+/// Checks `--access` and `--people`, and warns when the new session will be
+/// shared. `--people` alone means `--access people`.
+pub fn check_access(ctx: &Ctx, new: &NewSession) -> Result<()> {
+    match (new.access.as_deref(), new.people.is_empty()) {
+        (Some(m @ ("owner" | "org")), false) => return Err(Error::usage(format!("--people is for --access people, not --access {m}"))),
+        (Some("people"), true) => return Err(Error::usage("who? --access people needs --people <user id or email>")),
+        _ => {}
+    }
+    if matches!(access_mode(new), Some("org" | "people")) {
+        ctx.note(SHARED_WARNING);
+    }
+    Ok(())
+}
+
+fn access_mode(new: &NewSession) -> Option<&str> {
+    new.access.as_deref().or(if new.people.is_empty() { None } else { Some("people") })
+}
+
+/// `access` for `POST /sessions`; none leaves it to the organization's default.
+pub fn access_body(new: &NewSession) -> Option<Value> {
+    Some(match access_mode(new)? {
+        "people" => json!({"mode": "people", "people": new.people}),
+        m => json!({"mode": m}),
+    })
 }
 
 /// The idempotency key for one request: the derived key when the person gave
@@ -80,9 +112,12 @@ pub fn reject_new_session_options(new: &NewSession) -> Result<()> {
         (new.title.is_some(), "--title"),
         (!new.metadata.is_empty(), "--metadata"),
         (!new.push.is_empty(), "--push"),
+        (new.access.is_some(), "--access"),
+        (!new.people.is_empty(), "--people"),
     ];
     if let Some((_, name)) = given.iter().find(|(g, _)| *g) {
-        return Err(Error::usage(format!("{name} is for a new session; with -s, change settings in the session (/model, /speed, /mode) or use opc push")));
+        let instead = if matches!(*name, "--access" | "--people") { "use opc access" } else { "change settings in the session (/model, /speed, /mode) or use opc push" };
+        return Err(Error::usage(format!("{name} is for a new session; with -s, {instead}")));
     }
     Ok(())
 }
@@ -90,6 +125,7 @@ pub fn reject_new_session_options(new: &NewSession) -> Result<()> {
 /// Creates a session: with the message in the same request, or, with
 /// `--push`, without it, then the uploads, then the message.
 pub async fn create(ctx: &Ctx, id: &str, new: &NewSession, input: Option<&str>) -> Result<(Created, Option<Sent>)> {
+    check_access(ctx, new)?;
     let key = new.idempotency_key.as_deref();
     let started = Instant::now();
     let with_input = if new.push.is_empty() { input } else { None };

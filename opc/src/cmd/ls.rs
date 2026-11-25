@@ -46,7 +46,7 @@ pub async fn run(ctx: &mut Ctx, args: LsArgs) -> Result<i32> {
     let style = Style { color: ctx.color };
     let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
     let now = time::OffsetDateTime::now_utc();
-    let rows: Vec<[String; 5]> = out
+    let rows: Vec<[String; 6]> = out
         .iter()
         .map(|s| {
             [
@@ -54,11 +54,12 @@ pub async fn run(ctx: &mut Ctx, args: LsArgs) -> Result<i32> {
                 truncate(&s.title, 40),
                 status_label(s).to_string(),
                 where_label(s),
+                s.access.as_ref().map(|a| a.label()).unwrap_or_default(),
                 s.last_active_at.as_deref().and_then(crate::api::result::parse_time).map(|t| ago((now - t).whole_seconds())).unwrap_or_default(),
             ]
         })
         .collect();
-    let head = ["ID", "TITLE", "STATUS", "WHERE", "ACTIVE"];
+    let head = ["ID", "TITLE", "STATUS", "WHERE", "ACCESS", "ACTIVE"];
     let mut w = head.map(|h| h.width());
     for r in &rows {
         for (i, c) in r.iter().enumerate() {
@@ -66,7 +67,7 @@ pub async fn run(ctx: &mut Ctx, args: LsArgs) -> Result<i32> {
         }
     }
     let pad = |s: &str, n: usize| format!("{s}{}", " ".repeat(n.saturating_sub(s.width())));
-    let line = |cells: &[String; 5]| (0..5).map(|i| pad(&cells[i], w[i])).collect::<Vec<_>>().join("  ").trim_end().to_string();
+    let line = |cells: &[String; 6]| (0..6).map(|i| pad(&cells[i], w[i])).collect::<Vec<_>>().join("  ").trim_end().to_string();
     println_out(&style.dim(&format!("   {}", line(&head.map(String::from)))));
     for (s, r) in out.iter().zip(&rows) {
         let mark = match s.status.as_str() {

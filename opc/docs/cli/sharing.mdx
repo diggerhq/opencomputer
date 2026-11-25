@@ -3,19 +3,45 @@ title: "Sharing"
 description: "Who can see, attach to and talk in a session."
 ---
 
-Sessions are shared within an organization, the same way a Slack thread is shared within a channel.
+Each session has an access setting that says who may see and drive it.
+
+| Access | Who |
+| --- | --- |
+| `owner` | Only the owner, who started the session |
+| `people` | The owner and the people it is shared with |
+| `org` | Every member of the organization, the same way a Slack thread is shared within a channel |
+
+Sessions you start with `opc`, on the dashboard or over the API are `owner` unless your organization's admins chose `org` as the default. Sessions started in Slack follow the organization's Slack setting. Sessions created before access settings existed stay `org`.
+
+Set it when you start a session, or change it later:
+
+```bash
+opc new --access people --people mo@acme.dev "triage the failing deploy"
+opc access 7f3a                     # who may use it now
+opc access 7f3a org                 # everyone in the organization
+opc access 7f3a people mo@acme.dev  # only you and Mo
+opc access 7f3a --add ada@acme.dev  # Ada too
+opc access 7f3a owner               # only you again
+```
+
+`opc ls` shows each session's access. Members without access do not see the session in lists, and attaching, sending or opening a shell fails with `you don't have access to this session` (exit code `3`).
 
 | Who | Can |
 | --- | --- |
-| The owner, who started the session | Everything, including opening a [shell](/cli/shell) in its workspace |
-| An organization admin | What any member can, and open a shell |
-| Any member of the organization | See it on the dashboard, attach by id or Slack link, send messages, answer asks, change settings. Not open a shell. |
-| Anyone but the owner, for a session started in Slack | Nothing: the session is not listed and attaching fails with `session not found`. |
+| Anyone with access | See it, attach, send messages, answer asks, change settings, read its history |
+| The owner and the people it is shared with | Also change who has access |
+| An organization admin | Change who has access. Not see or drive a session they do not have access to: they add themselves first. |
 | An API key | What the member who created it can do |
 
 Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).
 
-The agent runs as the session's owner: it uses the owner's GitHub identity for commits and pull requests, and the owner's secrets. A member who sends a message to someone else's session asks the agent to act as the owner. `opc` says so the first time you send in a session you do not own:
+The agent runs as the session's owner: it uses the owner's GitHub identity for commits and pull requests, and the owner's secrets and subscription. Sharing does not remove them, so `opc` warns whenever you share a session:
+
+```
+opc: shared: others who can drive this session use your secrets and subscription
+```
+
+A member who sends a message to someone else's session asks the agent to act as the owner. `opc` says so the first time you send in a session you do not own:
 
 ```
   this is Mo's session. The agent acts as Mo. Send anyway? [y/N]

@@ -146,6 +146,22 @@ impl Error {
     }
 }
 
+/// `forbidden` reasons about the credential rather than the session's access
+/// (`docs/api/reference/errors.mdx`).
+pub fn is_credential_reason(reason: Option<&str>) -> bool {
+    matches!(reason, Some("project_key" | "missing_scope" | "read_only" | "terminal_owner_only" | "computer_principal"))
+}
+
+/// A `forbidden` from a session's route that is not about the credential: the
+/// caller is not among the people who may use the session.
+pub fn session_access(mut e: Error) -> Error {
+    if e.code == "forbidden" && !is_credential_reason(e.extra.get("reason").and_then(Value::as_str)) {
+        e.message = "you don't have access to this session".into();
+        e.hint.get_or_insert_with(|| "ask its owner to share it with you".into());
+    }
+    e
+}
+
 fn default_code_for_status(status: u16) -> &'static str {
     match status {
         400 => "invalid_request",
@@ -234,6 +250,14 @@ mod tests {
         let e = Error::from_api(500, &json!({"error": {"code": "internal", "message": "m", "retryable": true}}));
         assert_eq!(e.exit_code(), 4);
         assert!(e.retryable);
+    }
+
+    #[test]
+    fn session_forbidden_says_no_access() {
+        let e = session_access(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "not_member"}})));
+        assert_eq!((e.message.as_str(), e.exit_code()), ("you don't have access to this session", exit::AUTH));
+        let e = session_access(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "missing_scope"}})));
+        assert_eq!(e.message, "m");
     }
 
     #[test]

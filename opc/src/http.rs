@@ -304,7 +304,8 @@ impl Http {
     /// A JSON request under the Computer API's prefix, with retries.
     pub async fn call(&self, method: Method, path: &str, query: &[(String, String)], body: Option<&Value>, idempotency_key: Option<&str>) -> Result<Response> {
         let full = format!("{}{}{}", self.inner.base_path, path, net::query_string(query));
-        self.call_at(method, &full, body, idempotency_key, true).await
+        let res = self.call_at(method, &full, body, idempotency_key, true).await;
+        if path.starts_with("/sessions/") { res.map_err(crate::error::session_access) } else { res }
     }
 
     /// A JSON request at the root of the API's host (`/auth/cli/…`).
@@ -427,7 +428,10 @@ impl Http {
             let headers = res.headers().clone();
             let bytes = res.into_body().collect().await.map(|c| c.to_bytes()).unwrap_or_default();
             let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            let err = api_error(status.as_u16(), &value, &headers);
+            let mut err = api_error(status.as_u16(), &value, &headers);
+            if path.starts_with("/sessions/") {
+                err = crate::error::session_access(err);
+            }
             if method == Method::GET
                 && let Some(wait) = self.retry_wait(&err, attempt, budget_end)
             {

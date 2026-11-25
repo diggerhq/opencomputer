@@ -486,6 +486,85 @@ fn rename_and_archive() {
 }
 
 #[test]
+fn new_sessions_take_access() {
+    let fake = Fake::start();
+    let o = run(&fake, &["new", "--access", "people", "--people", "other@example.com", "--json"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json()["session"]["access"], serde_json::json!({"mode": "people", "people": ["usr_other8q2x7c1"]}));
+    assert!(o.stderr.contains("use your secrets and subscription"), "{}", o.stderr);
+    let o = run(&fake, &["new", "--json"]);
+    assert!(fake.requests_to("POST /sessions").last().unwrap().json().get("access").is_none());
+    assert_eq!(o.json()["session"]["access"]["mode"], "owner");
+    assert!(!o.stderr.contains("secrets"), "{}", o.stderr);
+    // -p takes them too; --people alone means people.
+    let o = run(&fake, &["-p", "--people", "usr_other8q2x7c1", "reply hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(fake.requests_to("POST /sessions").last().unwrap().json()["access"]["mode"], "people");
+    assert_eq!(run(&fake, &["new", "--access", "people"]).code, 2);
+    assert_eq!(run(&fake, &["new", "--access", "org", "--people", "usr_x"]).code, 2);
+    let sid = fake.seed_session(Seed::new("s"));
+    assert_eq!(run(&fake, &["-p", "-s", &sid, "--access", "org", "hi"]).code, 2);
+}
+
+#[test]
+fn access_shows_and_changes_who_may_use_a_session() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("mine"));
+    let o = run(&fake, &["access", &sid]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.starts_with("access  owner only\nowner   Test User"), "{}", o.stdout);
+
+    let o = run(&fake, &["access", &sid, "org"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stderr.contains("use your secrets and subscription"), "{}", o.stderr);
+    assert_eq!(fake.session(&sid)["access"]["mode"], "org");
+    assert_eq!(fake.requests_to("PATCH /sessions/*").last().unwrap().json(), serde_json::json!({"access": {"mode": "org"}}));
+
+    // --add on an org session would narrow it: refused before any request.
+    assert_eq!(run(&fake, &["access", &sid, "--add", "usr_other8q2x7c1"]).code, 2);
+
+    let o = run(&fake, &["access", &sid, "people", "other@example.com", "--json"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json(), serde_json::json!({"sessionId": sid, "access": {"mode": "people", "people": ["usr_other8q2x7c1"]}, "canManageAccess": true}));
+
+    let o = run(&fake, &["access", "-s", &sid, "--remove", "usr_other8q2x7c1"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(fake.session(&sid)["access"]["mode"], "owner");
+    assert!(!o.stderr.contains("secrets"), "{}", o.stderr);
+
+    let o = run(&fake, &["access", &sid, "people", "nobody@example.com"]);
+    assert_eq!(o.code, 2, "{}", o.stderr);
+
+    let o = run(&fake, &["ls"]);
+    assert!(o.stdout.contains("ACCESS") && o.stdout.contains("owner only"), "{}", o.stdout);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn access_refused_says_who_may_change_it() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("theirs").owner(support::other_person()).access("org", &[]));
+    let o = run(&fake, &["access", &sid, "--json"]);
+    assert_eq!(o.json()["canManageAccess"], false);
+    let o = run(&fake, &["access", &sid, "owner", "--json"]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    let e = o.err_json();
+    assert_eq!((e["error"]["code"].as_str(), e["error"]["reason"].as_str()), (Some("forbidden"), Some("not_member")));
+    assert!(e["error"]["message"].as_str().unwrap().contains("only its owner"), "{e}");
+    assert_eq!(fake.session(&sid)["access"]["mode"], "org");
+}
+
+#[test]
+fn a_session_you_cannot_use_says_so() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    fake.fail_next("POST /sessions/*/turns", 1, Failure::new(403, "forbidden").with("reason", "not_member"));
+    let o = run(&fake, &["send", "-s", &sid, "hi"]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(o.stderr.contains("you don't have access to this session"), "{}", o.stderr);
+}
+
+#[test]
 fn interrupt_cancels_the_running_turn() {
     let fake = Fake::start();
     let sid = fake.seed_session(Seed::new("busy"));

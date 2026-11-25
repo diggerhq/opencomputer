@@ -492,7 +492,8 @@ async fn wait_min_seq(sh: &Arc<Shared>, c: &Call) -> ApiResult<()> {
 }
 
 async fn create(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
-    c.allow(&["id", "input", "title", "model", "effort", "speed", "mode", "metadata"])?;
+    c.allow(&["id", "input", "title", "model", "effort", "speed", "mode", "metadata", "access"])?;
+    let access = access_of(c.b("access"))?;
     let id = c.bs("id")?;
     if let Some(id) = &id
         && !valid_session_id(id)
@@ -523,6 +524,9 @@ async fn create(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
         let settings = (Some(model.clone().unwrap_or_else(|| "opus-5.5".into())), Some(effort.clone().unwrap_or_else(|| "high".into())), mode.clone().unwrap_or_else(|| "default".into()));
         w.create_session(id.clone(), title, me(), origin, settings, metadata.clone(), Some(&c.actor));
         w.s(&id).speed = speed.clone();
+        if let Some(a) = &access {
+            w.s(&id).access = a.clone();
+        }
         let (turn, delivery) = match &input {
             Some(i) => {
                 let (tid, d) = w.send(&id, i.clone(), "queue", &c.actor)?;
@@ -537,6 +541,29 @@ async fn create(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
         validate("Turn", &v["turn"]);
     }
     Ok((201, v))
+}
+
+/// `access` from a body: `{mode, people?}`, people as `usr_…` ids or the
+/// emails of the organization's members, stored as ids.
+fn access_of(v: Option<&Value>) -> ApiResult<Option<Value>> {
+    let Some(v) = v else { return Ok(None) };
+    let mode = v.get("mode").and_then(Value::as_str).unwrap_or("");
+    if !["owner", "org", "people"].contains(&mode) {
+        return Err(ApiErr::bad("access.mode", "access.mode is owner, org or people"));
+    }
+    let given: Vec<&str> = v.get("people").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if (mode == "people") == given.is_empty() {
+        return Err(ApiErr::bad("access.people", "access.people is required with people, and only with people"));
+    }
+    let members = [me(), other_person()];
+    let mut people = Vec::new();
+    for p in given {
+        let Some(m) = members.iter().find(|m| m["id"] == p || m["email"] == p) else {
+            return Err(ApiErr::bad("access.people", format!("{p} is not a member of this organization")));
+        };
+        people.push(m["id"].clone());
+    }
+    Ok(Some(json!({"mode": mode, "people": people})))
 }
 
 fn list_sessions(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
@@ -585,8 +612,9 @@ fn list_sessions(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
 }
 
 fn update(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
-    c.allow(&["title", "model", "effort", "speed", "mode", "archived", "metadata"])?;
-    let fields = ["title", "model", "effort", "speed", "mode", "archived", "metadata"];
+    c.allow(&["title", "model", "effort", "speed", "mode", "archived", "metadata", "access"])?;
+    let fields = ["title", "model", "effort", "speed", "mode", "archived", "metadata", "access"];
+    let access = access_of(c.b("access"))?;
     if !fields.iter().any(|f| c.body.get(*f).is_some()) {
         return Err(ApiErr::bad("body", "nothing to change"));
     }
@@ -607,6 +635,9 @@ fn update(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
     };
     let v = sh.with(|w| -> ApiResult<Value> {
         let s = w.sess(c.sid())?;
+        if access.is_some() && !s.may_manage(&st(&c.actor, "id")) {
+            return Err(ApiErr::new(403, "forbidden", "You may not change who can use this session.").with("reason", "not_member"));
+        }
         let m = model.clone().or(s.model.clone());
         check_settings(&m, &effort, &mode)?;
         let s = w.s(c.sid());
@@ -635,6 +666,10 @@ fn update(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
         if let Some(x) = &mode {
             set("mode", json!(s.mode), json!(x));
             s.mode = x.clone();
+        }
+        if let Some(a) = &access {
+            set("access", s.access.clone(), a.clone());
+            s.access = a.clone();
         }
         if let Some(a) = archived {
             set("archived", json!(s.archived), json!(a));

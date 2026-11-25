@@ -278,8 +278,40 @@ pub struct Session {
     pub last_active_at: Option<String>,
     pub synced_at: Option<String>,
     pub urls: Urls,
+    /// Who may see and drive it; absent from servers that predate access settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<Access>,
+    /// Whether the caller may change `access`; absent from older servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_manage_access: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// `Session.access`: `owner` (only the owner), `org` (every member of the
+/// organization) or `people` (the owner and `people`, `usr_…` ids).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Access {
+    pub mode: String,
+    pub people: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Access {
+    /// One word or a short phrase for people: `owner only`, `organization`, `3 people`.
+    pub fn label(&self) -> String {
+        match self.mode.as_str() {
+            "owner" => "owner only".into(),
+            "org" => "organization".into(),
+            "people" => match self.people.len() {
+                1 => "1 person".into(),
+                n => format!("{n} people"),
+            },
+            other => other.into(),
+        }
+    }
 }
 
 impl Session {
