@@ -50,6 +50,7 @@ test.skipIf(!built)('the surface loads in the shell and shows the rows the edge 
   await page.getByText(title).first().waitFor()
   expect(edge.seen).toContain('UPGRADE /api/managed-agents/computer/live')
   expect(edge.seen.some((s) => s.startsWith('GET /api/managed-agents/computer/'))).toBe(true)
-  await page.screenshot({ path: join(root, 'test-results/surface.png') })
+  // For a person to look at; some CI displays cannot capture.
+  await page.screenshot({ path: join(root, 'test-results/surface.png') }).catch(() => {})
   expect(errors).toEqual([])
 })
