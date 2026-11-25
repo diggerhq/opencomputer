@@ -7,7 +7,6 @@ import {
   PRINCIPAL_HEADER,
   type Principal,
   type ServerFrame,
-  liveOf,
   signPrincipal,
 } from "../src/live/contract.js";
 import type { LiveDurableObject } from "../src/live/durable-object.js";
@@ -20,13 +19,16 @@ const bindings = env as unknown as {
   LIVE_KEY: string;
 };
 
+const events = (...seqs: number[]): never => seqs.map((seq) => ({ seq })) as never;
+const liveOf = (org: string): DurableObjectStub<LiveDurableObject> => bindings.LIVE.getByName(org);
+
 const member = (org: string, over: Partial<Principal> = {}): Principal => ({
   org,
   subject: "user_1",
   kind: "member",
   via: "app",
   scopes: ["sessions:read", "work:read"],
-  audiences: ["org", "user_1"],
+  audiences: ["org", "member:user_1"],
   admin: false,
   credential: { id: "cred_1", expiresAt: null },
   ...over,
@@ -96,7 +98,7 @@ class Client {
 async function upgrade(org: string, principal: Principal | null, header?: string): Promise<Response> {
   const headers: Record<string, string> = { upgrade: "websocket", "sec-websocket-protocol": LIVE_SUBPROTOCOL };
   if (principal) headers[PRINCIPAL_HEADER] = header ?? (await signPrincipal(bindings.LIVE_KEY, principal));
-  return liveOf(bindings, org).fetch(new Request("https://live/v3/live", { headers }));
+  return liveOf(org).fetch(new Request("https://live/v3/live", { headers }));
 }
 
 async function connect(org: string, principal: Principal = member(org), clientId = "client_1"): Promise<Client> {
@@ -136,9 +138,9 @@ describe("Live: the socket", () => {
 
 describe("Live: the feed", () => {
   it("sends each subscriber the rows of its audiences, and its own mutations", async () => {
-    const live = liveOf(bindings, "org_feed");
+    const live = liveOf("org_feed");
     const mine = await connect("org_feed", member("org_feed"), "client_mine");
-    const other = await connect("org_feed", member("org_feed", { subject: "user_2", audiences: ["org", "user_2"] }), "client_other");
+    const other = await connect("org_feed", member("org_feed", { subject: "user_2", audiences: ["org", "member:user_2"] }), "client_other");
     mine.send({ t: "sub", stream: "feed" });
     other.send({ t: "sub", stream: "feed", kinds: ["thread"] });
     expect(await mine.next("subd")).toEqual({ t: "subd", stream: "feed", head: null });
@@ -148,11 +150,11 @@ describe("Live: the feed", () => {
       from: "f1.4",
       to: "f1.5",
       rows: [
-        { kind: "thread", id: "th_1", audience: "org", title: "For all" },
-        { kind: "thread", id: "th_2", audience: "user_1", title: "Private" },
-        { kind: "track", id: "tr_1", audience: "org" },
+        { kind: "thread", id: "th_1", version: 1, audience: "org", title: "For all" },
+        { kind: "thread", id: "th_2", version: 1, audience: "member:user_1", title: "Private" },
+        { kind: "track", id: "tr_1", version: 1, audience: "org" },
       ],
-      gone: [{ kind: "thread", id: "th_3", audience: "user_2" }],
+      gone: [{ kind: "thread", id: "th_3", audience: "member:user_2" }],
       mutations: [{ clientId: "client_mine", n: 7, errors: [{ n: 6, code: "conflict", reason: "Taken." }] }],
     });
     expect(published).toEqual({ head: "f1.5" });
@@ -166,7 +168,7 @@ describe("Live: the feed", () => {
     expect(b.lastMutation).toBeUndefined();
 
     // A range with nothing for a subscriber still reaches it, so it can tell a gap from nothing.
-    await live.publish("feed", { from: "f1.5", to: "f1.6", rows: [{ kind: "thread", id: "th_4", audience: "user_9" }], gone: [] });
+    await live.publish("feed", { from: "f1.5", to: "f1.6", rows: [{ kind: "thread", id: "th_4", version: 1, audience: "member:user_9" }], gone: [], mutations: [] });
     expect(await mine.next("feed")).toMatchObject({ from: "f1.5", to: "f1.6", rows: [] });
 
     // After a reconnect the client resumes by its cursor: Live tells it the head it holds.
@@ -174,31 +176,32 @@ describe("Live: the feed", () => {
     const again = await connect("org_feed", member("org_feed"), "client_mine");
     again.send({ t: "sub", stream: "feed", after: "f1.5" });
     expect(await again.next("subd")).toEqual({ t: "subd", stream: "feed", head: "f1.6" });
-    await live.publish("feed", { from: "f1.6", to: "f1.7", rows: [], gone: [] });
+    await live.publish("feed", { from: "f1.6", to: "f1.7", rows: [], gone: [], mutations: [] });
     expect(await again.next("feed")).toMatchObject({ from: "f1.6", to: "f1.7" });
     expect(other.frames.filter((f) => f.t === "feed")).toHaveLength(3);
   });
 
   it("limits a principal without work:read to the core kinds", async () => {
-    const live = liveOf(bindings, "org_core");
+    const live = liveOf("org_core");
     const client = await connect("org_core", member("org_core", { scopes: ["sessions:read"] }));
     client.send({ t: "sub", stream: "feed", kinds: ["thread", "session"] });
     await client.next("subd");
     await live.publish("feed", {
       from: "f1.1",
       to: "f1.2",
-      rows: [{ kind: "thread", id: "th_1", audience: "org" }, { kind: "session", id: "cs_1", audience: "org" }],
+      rows: [{ kind: "thread", id: "th_1", version: 1, audience: "org" }, { kind: "session", id: "cs_1", version: 1, audience: "org" }],
       gone: [],
+      mutations: [],
     });
-    expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", audience: "org" }]);
+    expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", version: 1, audience: "org" }]);
   });
 
   it("tells subscribers they are behind when a range does not fit a frame", async () => {
-    const live = liveOf(bindings, "org_big");
+    const live = liveOf("org_big");
     const client = await connect("org_big");
     client.send({ t: "sub", stream: "feed" });
     await client.next("subd");
-    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [{ kind: "thread", id: "th_1", audience: "org", body: "x".repeat(70_000) }], gone: [] });
+    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [{ kind: "thread", id: "th_1", version: 1, audience: "org", body: "x".repeat(70_000) }], gone: [], mutations: [] });
     expect(await client.next("behind")).toEqual({ t: "behind", stream: "feed", head: "f1.2" });
     await live.publish("feed", { head: "f1.3" });
     expect(await client.next("behind")).toEqual({ t: "behind", stream: "feed", head: "f1.3" });
@@ -208,7 +211,7 @@ describe("Live: the feed", () => {
 describe("Live: a session", () => {
   it("takes the lease, pushes events and deltas, and resumes by cursor after a reconnect", async () => {
     const org = "org_session";
-    const live = liveOf(bindings, org);
+    const live = liveOf(org);
     const log = bindings.SESSION_LOG.getByName("cs_one");
     await log.set({ head: "e1.1.4" });
 
@@ -219,13 +222,14 @@ describe("Live: a session", () => {
     expect(lease!.subject).toBe("user_1");
     expect(lease!.until - Date.now()).toBeGreaterThan(25_000);
 
-    await live.publish("events:cs_one", { from: "e1.1.4", to: "e1.1.6", events: [{ seq: 5 }, { seq: 6 }] });
-    expect(await client.next("events")).toEqual({ t: "events", session: "cs_one", from: "e1.1.4", to: "e1.1.6", events: [{ seq: 5 }, { seq: 6 }] });
+    await live.publish("events:cs_one", { from: "e1.1.4", to: "e1.1.6", events: events(5, 6) });
+    expect(await client.next("events")).toEqual({ t: "events", session: "cs_one", from: "e1.1.4", to: "e1.1.6", events: events(5, 6) });
 
     await log.set({ head: "e1.1.6" });
     client.send({ t: "sub", stream: "deltas:cs_one" });
     expect(await client.next("subd")).toEqual({ t: "subd", stream: "deltas:cs_one", head: "e1.1.6" });
     await live.publish("deltas:cs_one", {
+      epoch: 1,
       deltas: [
         { type: "text", turnId: "tn_1", data: { blockId: "b1", text: "Hel" }, offset: 0 },
         { type: "text", turnId: "tn_1", data: { blockId: "b1", text: "Hello" }, offset: 0, whole: true },
@@ -247,13 +251,13 @@ describe("Live: a session", () => {
     again.send({ t: "sub", stream: "events:cs_one", after: "e1.1.6" });
     // The head is past the client's cursor: it reads the gap over HTTP, then the pushes continue.
     expect(await again.next("subd")).toEqual({ t: "subd", stream: "events:cs_one", head: "e1.1.8" });
-    await live.publish("events:cs_one", { from: "e1.1.8", to: "e1.1.9", events: [{ seq: 9 }] });
+    await live.publish("events:cs_one", { from: "e1.1.8", to: "e1.1.9", events: events(9) });
     expect(await again.next("events")).toMatchObject({ from: "e1.1.8", to: "e1.1.9" });
     expect(client.frames.filter((f) => f.t === "events")).toHaveLength(1);
 
     again.send({ t: "unsub", stream: "events:cs_one" });
     await again.sync();
-    await live.publish("events:cs_one", { from: "e1.1.9", to: "e1.1.10", events: [{ seq: 10 }] });
+    await live.publish("events:cs_one", { from: "e1.1.9", to: "e1.1.10", events: events(10) });
     await again.sync();
     expect(again.frames.filter((f) => f.t === "events")).toHaveLength(1);
   });
@@ -269,7 +273,7 @@ describe("Live: a session", () => {
 
   it("detaches a subscriber the session refuses, at once and at a renewal", async () => {
     const org = "org_refused";
-    const live = liveOf(bindings, org);
+    const live = liveOf(org);
     const log = bindings.SESSION_LOG.getByName("cs_refused");
     await log.set({ allowed: false });
     const client = await connect(org);
@@ -285,7 +289,7 @@ describe("Live: a session", () => {
     await log.set({ allowed: false });
     expect(await runDurableObjectAlarm(live)).toBe(true);
     expect(await client.next("detached")).toEqual({ t: "detached", stream: "events:cs_refused", reason: "forbidden" });
-    await live.publish("events:cs_refused", { from: "e1.1.0", to: "e1.1.1", events: [{ seq: 1 }] });
+    await live.publish("events:cs_refused", { from: "e1.1.0", to: "e1.1.1", events: events(1) });
     await client.sync();
     expect(client.frames.filter((f) => f.t === "events")).toHaveLength(0);
   });
@@ -305,19 +309,19 @@ describe("Live: a session", () => {
 describe("Live: wait and revoke", () => {
   it("releases a long-poll when the stream moves, and answers at the timeout otherwise", async () => {
     const org = "org_wait";
-    const live = liveOf(bindings, org);
+    const live = liveOf(org);
     await bindings.SESSION_LOG.getByName("cs_wait").set({ head: "e1.1.2" });
     expect(await live.wait(member(org), "events:cs_wait", "e1.1.1", 1_000)).toEqual({ moved: true, head: "e1.1.2" });
     expect(await live.wait(member(org), "events:cs_wait", "e1.1.2", 50)).toEqual({ moved: false, head: "e1.1.2" });
 
     const waiting = live.wait(member(org), "events:cs_wait", "e1.1.2", 5_000);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await live.publish("events:cs_wait", { from: "e1.1.2", to: "e1.1.3", events: [{ seq: 3 }] });
+    await live.publish("events:cs_wait", { from: "e1.1.2", to: "e1.1.3", events: events(3) });
     expect(await waiting).toEqual({ moved: true, head: "e1.1.3" });
 
     const feed = live.wait(member(org), "feed", "f1.1", 5_000);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [], gone: [] });
+    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [], gone: [], mutations: [] });
     expect(await feed).toEqual({ moved: true, head: "f1.2" });
 
     await bindings.SESSION_LOG.getByName("cs_wait_no").set({ allowed: false });
@@ -326,7 +330,7 @@ describe("Live: wait and revoke", () => {
 
   it("closes the sockets of a revoked credential, by revoke and by the periodic check", async () => {
     const org = "org_revoke";
-    const live = liveOf(bindings, org);
+    const live = liveOf(org);
     const kept = await connect(org);
     const revoked = await connect(org, member(org, { credential: { id: "cred_2", expiresAt: null } }));
     await live.revoke("cred_2");
@@ -353,9 +357,9 @@ describe("Live: wait and revoke", () => {
     const client = await connect(org, member(org, { credential: { id: "cred_4", expiresAt: Date.now() + 60_000 } }));
     client.send({ t: "auth", token: "renewed" });
     const credentials = (): Promise<string[]> =>
-      runInDurableObject(liveOf(bindings, org), (_, state) => state.getWebSockets().map((s) => (s.deserializeAttachment() as LiveAttachment).p.cred));
+      runInDurableObject(liveOf(org), (_, state) => state.getWebSockets().map((s) => (s.deserializeAttachment() as LiveAttachment).p.cred));
     await expect.poll(credentials).toEqual(["cred_renewed"]);
-    await liveOf(bindings, org).revoke("cred_4");
+    await liveOf(org).revoke("cred_4");
     await client.sync();
     client.send({ t: "auth", token: "other" });
     expect(await client.end()).toMatchObject({ code: 4003 });

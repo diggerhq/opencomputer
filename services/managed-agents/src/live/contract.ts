@@ -2,18 +2,9 @@
 // the edge and a client know of the fan-out actor. Nothing here imports `cloudflare:workers`, so
 // `managed-agents` can import it without pulling the class into its bundle.
 
-/** Section 34.3. `scopes` is the edge's list; Live reads only `work:read` from it. */
-export interface Principal {
-  org: string;
-  subject: string;
-  kind: "member" | "key" | "agent" | "platform";
-  via: "dashboard" | "app" | "opc" | "api" | "slack" | "agent";
-  scopes: string[];
-  audiences: string[];
-  session?: string;
-  admin: boolean;
-  credential: { id: string; expiresAt: number | null };
-}
+import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../actor/contracts.js";
+
+export type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal };
 
 // ---------------------------------------------------------------- constants (section 44)
 
@@ -36,35 +27,8 @@ export const CLOSE_PROTOCOL = 4400;
 
 // ---------------------------------------------------------------- publishers
 
-/** Org's publish of one feed range (section 40.4). A row is the feed's row with its `audience`. */
-export interface FeedPush {
-  from: string;
-  to: string;
-  rows: ({ kind: string; id: string; audience: string } & Record<string, unknown>)[];
-  gone: { kind: string; id: string; audience: string }[];
-  mutations?: { clientId: string; n: number; errors?: { n: number; code: string; reason: string }[] }[];
-}
-
-/** SessionLog's publish of appended events; `from` and `to` are events cursors. */
-export interface EventPush {
-  from: string;
-  to: string;
-  events: unknown[];
-}
-
-/** `JournalDelta` plus `offset`: the length of the block's text before this delta (section 38.4). */
-export interface Delta {
-  type: string;
-  turnId: string | null;
-  data: unknown;
-  offset: number;
-  whole?: boolean;
-}
-
-/** Computer's forward of the host's `delta` frame. Never stored, never numbered. */
-export interface DeltaPush {
-  deltas: Delta[];
-}
+// The push shapes and `LiveRpc` are in ../actor/contracts.ts; a publisher names a Live with
+// `liveOf` of ../actor/stubs.ts, the only place its key is read (section 18.8).
 
 /** "The head is now N": what a publish too large to send, or a retried one, carries. */
 export interface HeadPush {
@@ -73,39 +37,22 @@ export interface HeadPush {
 
 export type Push = FeedPush | EventPush | DeltaPush | HeadPush;
 
-export interface LiveRpc {
-  /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. Answers the head Live now holds (`""` for deltas). */
-  publish(stream: string, frame: Push): Promise<{ head: string }>;
-  /** A long-poll's wait: answers when the stream's head is not `after`, or at the timeout. */
-  wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }>;
-  revoke(credentialId: string): Promise<void>;
-  /** The socket upgrade; the principal is in `PRINCIPAL_HEADER`, signed by `signPrincipal`. */
+/**
+ * The socket upgrade, which the edge passes to the stub `liveOf` names: `fetch` with the request's
+ * own `Upgrade` and `Sec-WebSocket-Protocol` headers and the principal in `PRINCIPAL_HEADER`,
+ * signed by `signPrincipal`.
+ */
+export interface LiveUpgrade {
   fetch(request: Request): Promise<Response>;
-}
-
-/** The only way a publisher or the edge names a Live (section 18.8): its key can change here alone. */
-export function liveOf<T>(env: { LIVE: { getByName(name: string): T } }, org: string): T {
-  return env.LIVE.getByName(org);
 }
 
 export const feedStream = "feed";
 export const eventsStream = (sessionId: string): string => `events:${sessionId}`;
 export const deltasStream = (sessionId: string): string => `deltas:${sessionId}`;
 
-/**
- * Which stream a cursor is of (`e1.<epoch>.<seq>`, `f1.<version>`), null when it is not one. Live
- * never reads a position out of a cursor; it only refuses what no owner would accept.
- */
-export function cursorKind(text: unknown): "e" | "f" | null {
-  if (typeof text !== "string") return null;
-  if (/^e1\.\d+\.\d+$/.test(text)) return "e";
-  if (/^f1\.\d+$/.test(text)) return "f";
-  return null;
-}
-
 // ---------------------------------------------------------------- what Live calls
 
-/** `SessionLog.watch` (section 36.2). `machine` names the Computer that serves the session; absent, the organization's first. */
+/** `SessionLog.watch` (section 36.2). `machine` names the Computer that serves the session (its `Access.machine`); absent, the organization's first. */
 export interface SessionLogWatch {
   watch(p: Principal, until: number): Promise<{ head: string; machine?: string } | null>;
 }

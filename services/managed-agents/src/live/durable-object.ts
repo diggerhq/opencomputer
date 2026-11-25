@@ -12,35 +12,31 @@ import {
   CORE_KINDS,
   type ClientFrame,
   type ComputerWatch,
-  type DeltaPush,
   EDGE_CREDENTIALS_URL,
-  type EventPush,
-  type FeedPush,
   LEASE_MS,
   LEASE_RENEW_MS,
   LIVE_PROTOCOL,
   LIVE_SUBPROTOCOL,
   type LiveAttachment,
-  type LiveRpc,
   MAX_ATTACHMENT_BYTES,
   MAX_FRAME_BYTES,
   MAX_WAIT_MS,
   MAX_WATCHED_SESSIONS,
   PRINCIPAL_HEADER,
-  type Principal,
   type Push,
   REVALIDATE_MS,
   type ServerFrame,
   type SessionLogWatch,
-  cursorKind,
   feedStream,
   verifyPrincipal,
 } from "./contract.js";
+import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../actor/contracts.js";
+import { cursor } from "../actor/cursor.js";
 
 export interface LiveEnv {
   SESSION_LOG: { getByName(name: string): SessionLogWatch };
   COMPUTERS: { getByName(name: string): ComputerWatch };
-  /** api-edge, for the credential check. Unbound: credentials end at their expiry only. */
+  /** The edge Worker, for the credential check. Unbound: credentials end at their expiry only. */
   EDGE?: { fetch(request: Request): Promise<Response> };
   /** Signs the principal on an upgrade and authenticates Live to the edge. */
   LIVE_KEY: string;
@@ -300,7 +296,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     if (stream !== feedStream && !watched) return this.send(socket, { t: "error", code: "unknown_stream", message: "Unknown stream." });
     if (frame.after !== undefined && (!watched || watched.bit === EVENTS)) {
       // A cursor that cannot be read, or of another stream: its position does not exist.
-      if (cursorKind(frame.after) !== (watched ? "e" : "f")) return this.send(socket, { t: "reset", stream, cursor: null });
+      if (typeof frame.after !== "string" || !cursor.read(watched ? "e" : "f", frame.after)) return this.send(socket, { t: "reset", stream, cursor: null });
     }
 
     if (!watched) {
