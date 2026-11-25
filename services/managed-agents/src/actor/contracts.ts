@@ -319,4 +319,18 @@ export interface SlackRpc {
   post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;
   /** Computer only, once: spec 43.1. */
   import(): Promise<void>;
+
+  // The install's edges, moved from Computer with the install (the edge's Slack routes call them).
+  /** A nonce for the install's OAuth state, bound to the person starting it; ten minutes. */
+  startInstall(p: Principal, nonce: string): Promise<void>;
+  /** Spends an install nonce, once: the subject that started it. */
+  consumeInstall(nonce: string): Promise<{ ok: true; subject: string } | { ok: false; reason: "invalid_state" | "state_expired" }>;
+  /** Unlinks when Slack says the bot token is dead (asked with the token itself). Whether it did. */
+  unlinkRevoked(teamId: string): Promise<{ unlinked: boolean }>;
+  /** Someone in this workspace tried to link it to another organization: they and the installer are told. */
+  joinRequest(teamId: string, requesterUserId: string): Promise<{ installerNotified: boolean }>;
+  // The team router: the Slack object named `slack-team:<teamId>` holds which organization a workspace links to.
+  claimTeam(teamId: string, org: string): Promise<{ ok: true } | { ok: false; holder: string }>;
+  teamOrg(): Promise<string | null>;
+  releaseTeam(org: string): Promise<void>;
 }
