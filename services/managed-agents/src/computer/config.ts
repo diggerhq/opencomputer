@@ -89,6 +89,10 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   SESSION_LOG?: DurableObjectNamespace;
   /** Work tracking 3.6: the Work index, one per organization (work/index-do.ts). */
   WORK_INDEX?: DurableObjectNamespace;
+  /** Tracks and threads: Org and Slack, one per organization; Delivery, one per organization and kind. */
+  ORGS?: DurableObjectNamespace;
+  SLACK?: DurableObjectNamespace;
+  DELIVERY?: DurableObjectNamespace;
   /** Work 084: the SessionLog's large payloads and sealed segments (`<org>/<session>/…`). */
   SESSION_LOG_BLOBS?: R2Bucket;
   /** Work 084: `h:<sha256(key)>` → the wire's key record, `k:<keyId>` → its hash; written by keys.ts, read by the wire Worker. */
