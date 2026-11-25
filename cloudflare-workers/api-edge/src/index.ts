@@ -73,6 +73,9 @@ import {
   computerApiOriginAllowed,
   computerApiPreflight,
   computerApiRouteScope,
+  COMPUTER_LIVE_SUFFIX,
+  LIVE_SUBPROTOCOL,
+  liveOffer,
   computerWorkspaceRoute,
   isComputerApiRoute,
   proxyComputerWorkspace,
@@ -91,15 +94,19 @@ import {
   cookieCredentialId,
   keyPrincipal,
   memberPrincipal,
+  parseCookieCredentialId,
   principalHeaderMatches,
   SESSION_ID,
   type Principal,
 } from "./principal";
-import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
+import { appDeviceLive, appTokenPrincipal, handleAppAuth, verifyAppToken } from "./app_auth";
+import { createdKeyForSync, revokeComputerKey, revokeLiveCredential, syncComputerKey } from "./computer_keys";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
 export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
   CF_ADMIN_SECRET: string;
+  /** Live's key (tracks and threads): Live presents it on the credential check. */
+  LIVE_KEY?: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
   // Coarse distributed abuse limits for the two unauthenticated WorkOS device
@@ -1544,7 +1551,14 @@ async function computerApiCall(
     return computerApiError(req, 404, "not_found", "No such route.");
   }
 
-  const credential = computerApiKey(req);
+  // `GET /live` (spec 38): a WebSocket asking for `oc.live.v1`, with a token
+  // as a second subprotocol or else the cookie from an exact Origin.
+  const live = method === "GET" && suffix === COMPUTER_LIVE_SUFFIX;
+  const offer = live ? liveOffer(req) : null;
+  if (offer && (!isWebSocketUpgrade(req) || !offer.live)) {
+    return computerApiError(req, 426, "upgrade_required", `GET /live is a WebSocket with the ${LIVE_SUBPROTOCOL} subprotocol.`);
+  }
+  const credential = offer?.token ? { key: offer.token } : computerApiKey(req);
   if ("conflict" in credential) {
     facts.auth = "conflicting";
     return computerApiError(
@@ -1556,7 +1570,17 @@ async function computerApiCall(
   }
   let caller: Caller | null = null;
   let viaKey = false;
-  if (credential.key) {
+  // A member: by cookie (the dashboard) or by the Mac app's access token.
+  let member: { orgID: string; userID: string; via: "dashboard" | "app"; credential: Principal["credential"] } | null = null;
+  if (credential.key && !credential.key.startsWith("osb_")) {
+    facts.via = "app";
+    const claims = await verifyAppToken(env.SESSION_JWT_SECRET, credential.key);
+    // A socket outlives the token, so the device is checked before Live
+    // takes it; a call is short and needs only the signature.
+    if (claims && (!live || (await appDeviceLive(env.OPENCOMPUTER_DB, claims.dev)))) {
+      member = { orgID: claims.org_id, userID: claims.user_id, via: "app", credential: { id: claims.dev, expiresAt: claims.exp * 1000 } };
+    }
+  } else if (credential.key) {
     viaKey = true;
     facts.via = "key";
     caller = await authenticateKey(credential.key, env, ctx);
@@ -1589,52 +1613,60 @@ async function computerApiCall(
       facts.via = "dashboard";
       // A cookie rides along on cross-site requests SameSite=Lax still
       // allows (sibling subdomains); unsafe methods need an allowed Origin.
-      if (!SAFE_METHODS.has(method) && !computerApiOriginAllowed(req, env)) {
+      if ((live || !SAFE_METHODS.has(method)) && !computerApiOriginAllowed(req, env)) {
         facts.auth = "origin";
         return computerApiError(req, 403, "forbidden", "Cross-origin request refused.", {
           reason: "origin_not_allowed",
         });
       }
-      // The member's name and email ride along (work tracking 3.10: the Work
-      // API's `mine` and the author of a person's write need them).
-      const membership = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT m.role, u.name AS user_name, u.email AS user_email
-           FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
-          WHERE m.org_id = ?1 AND m.user_id = ?2`,
-      )
-        .bind(session.orgID, session.userID)
-        .first<{ role: string; user_name: string | null; user_email: string | null }>();
-      if (!membership) {
-        facts.auth = "not_member";
-        return computerApiError(req, 401, "unauthenticated", "Sign in again.");
-      }
-      const role =
-        membership.role === "owner" || membership.role === "admin"
-          ? "admin"
-          : membership.role;
-      caller = {
+      member = {
         orgID: session.orgID,
         userID: session.userID,
-        role,
-        userName: membership.user_name ?? null,
-        userEmail: membership.user_email ?? null,
-        ocPrincipal: await memberPrincipal({
-          org: session.orgID,
-          userId: session.userID,
-          admin: role === "admin",
-          via: "dashboard",
-          credential: {
-            id: await cookieCredentialId(
-              readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
-              session.orgID,
-              session.userID,
-              session.claims.exp,
-            ),
-            expiresAt: session.claims.exp * 1000,
-          },
-        }),
+        via: "dashboard",
+        credential: {
+          id: await cookieCredentialId(
+            readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
+            session.orgID,
+            session.userID,
+            session.claims.exp,
+          ),
+          expiresAt: session.claims.exp * 1000,
+        },
       };
     }
+  }
+  if (member) {
+    // The member's name and email ride along (work tracking 3.10: the Work
+    // API's `mine` and the author of a person's write need them).
+    const membership = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT m.role, u.name AS user_name, u.email AS user_email
+         FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = ?1 AND m.user_id = ?2`,
+    )
+      .bind(member.orgID, member.userID)
+      .first<{ role: string; user_name: string | null; user_email: string | null }>();
+    if (!membership) {
+      facts.auth = "not_member";
+      return computerApiError(req, 401, "unauthenticated", "Sign in again.");
+    }
+    const role =
+      membership.role === "owner" || membership.role === "admin"
+        ? "admin"
+        : membership.role;
+    caller = {
+      orgID: member.orgID,
+      userID: member.userID,
+      role,
+      userName: membership.user_name ?? null,
+      userEmail: membership.user_email ?? null,
+      ocPrincipal: await memberPrincipal({
+        org: member.orgID,
+        userId: member.userID,
+        admin: role === "admin",
+        via: member.via,
+        credential: member.credential,
+      }),
+    };
   }
   if (!caller) {
     facts.auth = credential.key ? "invalid" : "missing";
@@ -1754,7 +1786,7 @@ function workosSessionIdFromAccessToken(accessToken?: string): string | undefine
   }
 }
 
-async function authLogout(req: Request, env: Env): Promise<Response> {
+async function authLogout(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const clearCookie = `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
 
   // Clearing oc_session alone leaves the WorkOS SSO session alive, so the
@@ -1769,6 +1801,14 @@ async function authLogout(req: Request, env: Env): Promise<Response> {
   const m = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
   if (m) {
     const claims = await verifySessionJWT(env.SESSION_JWT_SECRET, m[1]);
+    // The Live sockets this cookie opened end with it.
+    if (claims) {
+      ctx.waitUntil(
+        cookieCredentialId(m[1], claims.org_id, claims.user_id, claims.exp).then((id) =>
+          revokeLiveCredential(env, claims.org_id, id),
+        ),
+      );
+    }
     if (claims?.wsid) {
       const u = new URL("https://api.workos.com/user_management/sessions/logout");
       u.searchParams.set("session_id", claims.wsid);
@@ -1780,6 +1820,60 @@ async function authLogout(req: Request, env: Env): Promise<Response> {
     status: 200,
     headers: { "content-type": "application/json", "set-cookie": clearCookie },
   });
+}
+
+const LIVE_CHECK_MAX = 500;
+
+/**
+ * Live's credential check (spec 18.7; services/managed-agents/src/live/
+ * contract.ts EDGE_CREDENTIALS_URL): `POST /internal/live/credentials` with
+ * `Authorization: Bearer <LIVE_KEY>`. `{check: [ids]}` answers `{revoked:
+ * [ids]}`, the ids that no longer verify; `{token}` answers `{principal}`,
+ * null when the token does not verify.
+ */
+async function liveCredentials(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/)?.[1] ?? "";
+  if (!env.LIVE_KEY || !constantTimeEqual(bearer, env.LIVE_KEY)) return json({ error: "unauthorized" }, 401);
+  const body = (await req.json().catch(() => null)) as { check?: unknown; token?: unknown } | null;
+  if (body && typeof body.token === "string") {
+    return json({ principal: await principalOfToken(body.token, env, ctx) });
+  }
+  if (body && Array.isArray(body.check) && body.check.length <= LIVE_CHECK_MAX && body.check.every((id) => typeof id === "string")) {
+    const ids = body.check as string[];
+    const live = await Promise.all(ids.map((id) => credentialLive(id, env)));
+    return json({ revoked: ids.filter((_, i) => !live[i]) });
+  }
+  return json({ error: "expected {check: [ids]} or {token}" }, 400);
+}
+
+/** The principal of a token Live was handed: an API key, null otherwise. */
+async function principalOfToken(token: string, env: Env, ctx: ExecutionContext): Promise<Principal | null> {
+  if (!token.startsWith("osb_")) return appTokenPrincipal(env, token);
+  const caller = await authenticateKey(token, env, ctx);
+  return caller ? principalOfKeyCaller(caller, null) : null;
+}
+
+/** Whether a credential id still verifies, read from D1 (no cache). */
+async function credentialLive(id: string, env: Env): Promise<boolean> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cookie = parseCookieCredentialId(id);
+  if (cookie) {
+    if (cookie.expSec <= nowSec) return false;
+    const member = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT 1 AS ok FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+    )
+      .bind(cookie.org, cookie.userId)
+      .first<{ ok: number }>();
+    return member !== null;
+  }
+  if (id.startsWith("dev_")) return appDeviceLive(env.OPENCOMPUTER_DB, id);
+  const key = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT 1 AS ok FROM api_keys WHERE id = ?1 AND (expires_at IS NULL OR expires_at > ?2)`,
+  )
+    .bind(id, nowSec)
+    .first<{ ok: number }>();
+  return key !== null;
 }
 
 async function authRefresh(req: Request, env: Env): Promise<Response> {
@@ -2079,6 +2173,8 @@ export default {
       return handleAgentFeedback(req, env, path, ctx);
     }
 
+    if (path === "/internal/live/credentials") return liveCredentials(req, env, ctx);
+
     // Reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
     if (path === "/internal/autumn-project") {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
@@ -2285,9 +2381,10 @@ export default {
     }
 
     // Browser auth flow.
+    if (path.startsWith("/auth/app/")) return handleAppAuth(req, env, ctx, path);
     if (path === "/auth/login")    { if (req.method === "GET")  return withFirstTouchCookie(req, await authLogin(req, env)); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
-    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
+    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env, ctx); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 
     // Stripe webhook (test mode in app2, live in app).

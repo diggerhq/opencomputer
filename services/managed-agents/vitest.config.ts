@@ -453,6 +453,10 @@ export default defineConfig({
         },
       },
       {
+        // Tracks and threads: the HTTP API (spec 37) with fakes of the actors.
+        test: { name: "computer-api", environment: "node", include: ["test/computer-api-http*.test.ts"] },
+      },
+      {
         resolve: egressRegistryFixture,
         test: {
           name: "node",
