@@ -257,22 +257,25 @@ describe("httpapi.request: one per blue computer-API request", () => {
 
   it("names the route and op, the status and the DO time; never the URL or the body", async () => {
     const c = capture();
-    const stub: ComputerApiStub = { computerApi: vi.fn(async () => ({ status: 202, body: { delivery: "queued", duplicate: true } })) };
+    const stub: ComputerApiStub = { computerApi: vi.fn() };
+    // The turn goes through the session's inbox: a repeat already delivered answers its stored result.
+    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_000000000000", duplicate: true, machine: "org_1", result: { delivery: "queued" } })) };
+    const env = { ...ON, SESSION_LOG: { getByName: () => log } };
     const res = await routeComputerApi(
       new Request(`https://blue.test/v1/computer/sessions/${SID}/turns?secret=1`, {
         method: "POST",
         headers: { "user-agent": "opc/1.0.0", "content-type": "application/json" },
         body: JSON.stringify({ input: SECRET_TEXT }),
       }),
-      ON as never, identity, "org_1", stub, `/sessions/${SID}/turns`, c.waitUntil,
+      env as never, identity, "org_1", stub, `/sessions/${SID}/turns`, c.waitUntil,
     );
-    expect(res.status).toBe(202);
+    expect(res.status).toBe(200);
     await c.settle();
     expect(c.lines).toHaveLength(1);
     const e = c.lines[0]!;
     expect(e).toMatchObject({ event_name: "httpapi.request", surface: "cli", session_key: SID, org_id: "org_1", outcome: "completed" });
-    expect(JSON.parse(e.data)).toMatchObject({ route: "turns", op: "turns.send", method: "POST", status: 202, replayed: true });
-    expect(typeof JSON.parse(e.data).do_ms).toBe("number");
+    expect(JSON.parse(e.data)).toMatchObject({ route: "turns", op: "turns.send", method: "POST", status: 200, replayed: true });
+    expect(typeof JSON.parse(e.data).log_ms).toBe("number");
     const text = JSON.stringify(e);
     expect(text).not.toContain(SECRET_TEXT);
     expect(text).not.toContain("secret=1");
