@@ -1,0 +1,32 @@
+{
+  "name": "@opencomputer/desktop",
+  "productName": "OpenComputer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The OpenComputer Mac app: an Electron shell around the tracks-and-threads surface",
+  "author": "OpenComputer",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node build.mjs && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:e2e": "node build.mjs && vitest run test/e2e",
+    "pack": "node build.mjs && electron-builder --mac --dir",
+    "dist": "node build.mjs && electron-builder --mac"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.25.0",
+    "playwright-core": "^1.50.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "ws": "^8.18.0"
+  }
+}
