@@ -155,7 +155,7 @@ function switchRunner(key: string, r = runners.get(key)) {
 }
 /** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s (a container: stopped with no grace). */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
-  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {}),
+  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id),
     { kill: r.sandbox && (() => sandbox!.stop(r.id, 0)) }));
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
@@ -337,26 +337,11 @@ async function onGateway(m: GatewayToHost) {
       return link.redial(); // the next dial is as the new identity
     }
     case 'people': return org.peopleChanged(m);
-    case 'deliver': {
-      const at = Date.now();
-      const f = { ...traceFields(m.session.key, m.trace), dispatch_id: m.id };
-      tm.emit('deliver.received', { ...f, duration_ms: m.trace?.dispatchedAt && at - m.trace.dispatchedAt });
-      return reply(m.id, deliver(m.session, m.msg, m.credentials, m.secrets, { trace: m.trace, at, f, model: m.model }));
-    }
     case 'secrets': {
       // A session without a runner gets them with its next delivery.
       const r = runners.get(m.sessionKey);
       if (r) send(r.sock, { t: 'secrets', secrets: m.secrets } satisfies HostToRunner);
       return;
-    }
-    case 'action': {
-      const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId, ...(m.role ? { role: m.role } : {}) })
-        : Promise.reject(new Error('no runner for this session (the prompt ended with it)')));
-    }
-    case 'stop': {
-      const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'stop' }) : Promise.resolve());
     }
     case 'pushed':
       // Only a push to the branch forks start from fetches (not sessions' own sp/* branches).
@@ -387,7 +372,7 @@ interface Received {
   model?: ModelRoute;
 }
 
-async function deliver(spec: SessionSpec, msg: Delivery | undefined, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
+async function deliver(spec: SessionSpec, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
   rx: Received) {
   const deliveryCredentials = await subs.delivered(spec.key, delivered, rx.model, spec.harness);
   for (let attempt = 0; ; attempt++) {
@@ -429,22 +414,13 @@ async function deliver(spec: SessionSpec, msg: Delivery | undefined, delivered: 
     const trace = rx.trace && forwardTrace(rx.trace, cold);
     r.forwarded = { trace, at: Date.now() };
     saveForwarded(r.key, r.forwarded);
-    if (!msg) return; // a start, or an `api` call that needs the agent: its turn comes through the session's writer
-    const answered = call(r, { t: 'deliver', msg, trace });
-    tm.emit('deliver.forwarded', { ...rx.f, path: decidePath(cold), duration_ms: Date.now() - rx.at,
-      data: { credentials_sent: !!delivered, secrets_count: secrets?.length ?? 0 } });
-    try {
-      return await answered;
-    } catch (e: any) {
-      // Raced an exit: start it again.
-      if (attempt || !(wasExiting || r.report?.status === 'stopped') || e?.message !== 'runner gone') throw e;
-    }
+    return; // its turns come through the session's writer (`api`)
   }
 }
 
 /** Work 084: start the session's runner for the API (`start`, a wake, `resume`), with `msg` delivered when given; its status. */
 async function startSession(spec: SessionSpec, o: StartOptions) {
-  await deliver(spec, o.msg, o.credentials, o.secrets, { at: Date.now(), f: traceFields(spec.key), model: o.model });
+  await deliver(spec, o.credentials, o.secrets, { at: Date.now(), f: traceFields(spec.key), model: o.model });
   return runners.get(spec.key)?.report?.status;
 }
 

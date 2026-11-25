@@ -451,6 +451,40 @@
                     "steer",
                     "interrupt"
                   ]
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                },
+                "slack": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "ts": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "type": "array"
+                    },
+                    "mentioned": {
+                      "type": "boolean"
+                    },
+                    "mentionedInline": {
+                      "type": "boolean"
+                    },
+                    "context": {},
+                    "linked": {
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "ts"
+                  ],
+                  "additionalProperties": true
                 }
               },
               "required": [
@@ -700,12 +734,27 @@
                       "$ref": "#/$defs/QuestionAnswer"
                     }
                   ]
+                },
+                "slack": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "value"
+                  ],
+                  "additionalProperties": true
                 }
               },
               "required": [
                 "sessionId",
-                "askId",
-                "answer"
+                "askId"
               ],
               "additionalProperties": true
             },

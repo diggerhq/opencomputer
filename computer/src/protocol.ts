@@ -17,7 +17,7 @@
 import type { Tier } from './tiers.js';
 import type { Linked } from './links.js';
 import type { Batch } from './telemetry/emitter.js';
-import type { ApiDelivery, GatewayToHostV4, HostToGatewayV4, HostToRunnerV4, JournalReport, RunnerApi, WireConfig } from './protocol-api.js';
+import type { GatewayToHostV4, HostToGatewayV4, HostToRunnerV4, JournalReport, RunnerApi, WireConfig } from './protocol-api.js';
 import type { GatewayToHostModel, HostToGatewayModel, ModelProfile, ModelRoute, ModelRoutes, RunnerModel, RunnerRefused } from './protocol-model.js';
 import type { WorkspaceDefinition } from './protocol-workspace.js';
 
@@ -147,8 +147,6 @@ export interface Delivery {
    * allows it, else the reason (work 049). Older runners ignore it.
    */
   linked?: Linked[];
-  /** Work 084: a message from the API (opc, dashboard): who, and how it is delivered when busy. */
-  api?: ApiDelivery;
   /**
    * Work 112: the sender's role in the session, as the gateway decided it (access.ts).
    * `participant` only on `!stop`, `!esc`, `!help`, `!status`. A runner remembers a
@@ -455,10 +453,6 @@ export interface SpareReport {
 }
 
 export type HostToRunner =
-  | { t: 'deliver'; id: string; msg: Delivery; trace?: TraceContext }
-  /** `role`: as on the gateway's `action` (work 112). */
-  | { t: 'action'; id: string; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
-  | { t: 'stop'; id: string }
   /** Credentials refreshed (e.g. after a host reconnect). */
   | { t: 'credentials'; credentials: HostCredentials }
   /** Exit when no turn is running (idle timeout, code update, drain); `ms`: quit after it anyway (a retired runner, work 084). */

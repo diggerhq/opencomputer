@@ -252,7 +252,9 @@ describe('Slack golden (work 084): what a session posts is unchanged', () => {
     });
     it(`${name}, with the API tap`, async () => {
       const { got, events } = await tapped(name);
-      expect(got).toBe(readFileSync(file, 'utf8'));
+      // With the tap a prompt's buttons name its ask (`ak_…`), not a local id (work 118).
+      const noPrompt = (t: string) => t.replace(/("action_id": "p:[^:"]+:)[^:"]+/g, '$1<prompt>');
+      expect(noPrompt(got)).toBe(noPrompt(readFileSync(file, 'utf8')));
       for (const e of events) assertEvent(e);
       const jfile = path.join(DIR, `${name}.journal.ndjson`);
       if (RECORD_JOURNAL) return void writeFileSync(jfile, normalise(events));
