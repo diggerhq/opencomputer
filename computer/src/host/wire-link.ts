@@ -50,6 +50,11 @@ export interface WireLinkHooks {
    * this host runs, or no fork yet.
    */
   workspace(sessionId: string): Workspace | undefined | Promise<Workspace | undefined>;
+  /**
+   * The session is this host's though `workspace` cannot place it now (its spec not yet seen since the host started, its
+   * container gone): a terminal is refused as not running, never as no such session.
+   */
+  known?(sessionId: string): boolean | Promise<boolean>;
   /** Record an event in the session's log through its writer; resolves with its seq. */
   record?(sessionId: string, type: 'terminal.opened' | 'terminal.closed' | 'files.pushed', data: unknown, actor: ApiActor): Promise<number | undefined>;
   /** One relay telemetry event (`wire.*`, or an opc `cli.*` event), checked and emitted by api-meter.ts. */
@@ -114,7 +119,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       }
       case 'terminal.open': {
         const ws = await hooks.workspace(m.sessionId);
-        if (!ws) return { error: sessionNotFound() };
+        if (!ws) return { error: (await hooks.known?.(m.sessionId)) ? sessionNotRunning() : sessionNotFound() };
         if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
