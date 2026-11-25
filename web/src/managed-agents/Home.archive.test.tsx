@@ -89,7 +89,7 @@ describe('archiving many projects at once', () => {
     expect(button('Select Support').getAttribute('aria-pressed')).toBe('true')
     expect(document.body.textContent).toContain('2 selected')
 
-    click('Archive 2')
+    click('Archive')
     await settle()
     expect(document.body.textContent).toContain('Archive 2 projects?')
 
