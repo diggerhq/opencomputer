@@ -65,6 +65,7 @@ export interface SessionRec {
   revision: number;
   summary: string;
   create_hash: string | null;
+  last_active_at: number | null;
   version: number;
   audience: string;
 }
@@ -417,6 +418,8 @@ export interface NewSession {
   createdAt?: number;
   revision?: number;
   aside?: string | null;
+  /** Default: `audienceOf(owner, origin, role)`. */
+  audience?: string;
 }
 
 export interface NewPlace {
@@ -527,11 +530,12 @@ export class Tx {
 
   /** Insert a session (spec 40.1, 40.7). The caller inserts its `place` (none for a track's agent) and owes `start`. */
   addSession(n: NewSession): SessionRec {
-    const audience = audienceOf(n.owner, n.origin, n.role ?? null);
+    const audience = n.audience ?? audienceOf(n.owner, n.origin, n.role ?? null);
+    const active = n.summary.lastActiveAt ? Date.parse(n.summary.lastActiveAt) : NaN;
     this.sql.exec(
       `INSERT INTO session (id, owner, owner_name, owner_email, origin, slack_thread_key, machine, role, created_at, created_by, title, title_by,
-         writers, aside, metadata, blocked, revision, summary, create_hash, version, audience)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+         writers, aside, metadata, blocked, revision, summary, create_hash, last_active_at, version, audience)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
       n.id,
       n.owner,
       n.ownerName ?? null,
@@ -550,6 +554,7 @@ export class Tx {
       n.revision ?? 0,
       JSON.stringify(n.summary),
       n.createHash ?? null,
+      Number.isFinite(active) ? active : (n.createdAt ?? this.now),
       this.version(),
       audience,
     );

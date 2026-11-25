@@ -66,6 +66,8 @@ export type CreateSession = CreateSessionBody & {
   role?: "start";
   writers?: "members" | string[];
   slackThread?: string;
+  /** The creating member's name and email, for `Session.owner`: the edge's, from its credential. An agent's child takes its parent's. */
+  person?: { name: string | null; email: string | null };
 };
 export interface SessionPatch {
   title?: string;
@@ -79,7 +81,10 @@ export interface ListQuery {
   owner?: string;
   status?: string[];
   origin?: string[];
-  archived?: boolean;
+  /** Absent: false. `all`: both. */
+  archived?: boolean | "all";
+  /** `metadata[key]=value` filters. */
+  metadata?: Record<string, string>;
   q?: string;
   order?: "active" | "created";
   limit?: number;
