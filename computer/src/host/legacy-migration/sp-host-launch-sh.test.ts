@@ -66,7 +66,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
  * `sp-host.sh launch <args>`, sourced, with `apply` and the drain as functions: `apply` writes the marker into the
  * unit's environment (`extraEnv` after it, as a later drop-in would), and records whether provision.sh's lock was held.
  */
-function launch(args: string, opts: { applyFails?: boolean; extraEnv?: string; drain?: string } = {}) {
+function launch(args: string, opts: { applyFails?: boolean; extraEnv?: string; drain?: string; dropin?: boolean } = {}) {
   const S = JSON.stringify(at('state'));
   const lock = JSON.stringify(at('state', 'provision.lock'));
   const driver = `
@@ -78,7 +78,11 @@ launch_apply() {
   echo "HOME=/x $(launch_env | sed 's/^Environment=//') ${opts.extraEnv ?? ''}" > ${S}/environment
 }
 ${opts.drain === undefined ? '' : `legacy_drain_restart() { echo drain >> ${S}/drained; ${opts.drain}; }`}
-case $1 in status) launch_status ;; env) launch_env ;; *) launch "$1" ;; esac`;
+DROPIN=${JSON.stringify(at('etc', '20-sp-host.conf'))}
+${opts.dropin ? 'echo "[Service]" > "$DROPIN"' : ''}
+new_apply() { ${opts.applyFails ? 'return 1' : `echo applied >> ${S}/apply`}; }
+run_dirs_as_is() { if [[ -f $MARK ]]; then echo sp-host >> ${S}/run-dirs; else echo agent >> ${S}/run-dirs; fi; }
+case $1 in status) launch_status ;; env) launch_env ;; note) launch_note ;; new) new_computer ;; *) launch "$1" ;; esac`;
   const r = spawnSync('bash', ['-c', driver, 'sp-host.sh', args], {
     env: {
       ...process.env, PATH: `${at('bin')}:${process.env.PATH}`, LEGACY_PROC: at('proc'), SP_ETC: at('etc'), SP_DATA: at('data'),
@@ -112,6 +116,44 @@ describe('sp-host.sh apply: the SP_LAUNCH line', () => {
     const r = launch('env');
     expect(r.out).toBe('');
     expect(r.err).toContain("'docker' is not podman or systemd");
+  });
+});
+
+describe('sp-host.sh new: a new computer (provision.sh, before its host has ever run)', () => {
+  beforeEach(() => rmSync(at('etc', 'host-user-sp-host')));
+
+  it('is migrated to sp-host and podman', () => {
+    const r = launch('new');
+    expect(r.code).toBe(0);
+    expect(existsSync(at('etc', 'host-user-sp-host'))).toBe(true);
+    expect(r.marker).toBe('podman');
+    expect(r.apply).toBe('applied');
+    expect(launch('env').out).toBe('Environment=SP_LAUNCH=podman\n');
+  });
+
+  it('keeps a marker that is already there', () => {
+    writeFileSync(at('etc', 'sp-launch'), 'systemd\n');
+    expect(launch('new').marker).toBe('systemd');
+  });
+
+  it('starts unmigrated and systemd when apply fails: podman needs the host as sp-host', () => {
+    const r = launch('new', { applyFails: true, dropin: true });
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('it runs as agent, under systemd');
+    expect(existsSync(at('etc', 'host-user-sp-host'))).toBe(false);
+    expect(existsSync(at('etc', '20-sp-host.conf'))).toBe(false);
+    expect(r.marker).toBeUndefined();
+    expect(read('run-dirs').trim()).toBe('agent');
+  });
+});
+
+describe('sp-host.sh apply: a host with no marker (an existing computer)', () => {
+  it('stays systemd, with a note: its runners need the drain of `launch podman`', () => {
+    host(100);
+    expect(launch('env').out).toBe('');
+    expect(launch('note').err).toContain('this host stays systemd; `sp-host.sh launch podman` switches it, drained');
+    writeFileSync(at('etc', 'sp-launch'), 'podman\n');
+    expect(launch('note').err).toBe('');
   });
 });
 
