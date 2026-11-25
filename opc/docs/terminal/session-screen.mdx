@@ -1,0 +1,175 @@
+---
+title: "The session screen"
+description: "What opc draws, and how it fits in your terminal."
+---
+
+`opc` draws into your terminal's normal screen, not a full-screen overlay. Output scrolls like any other command's, and your terminal's scrollback, search and copy work as usual. When you leave, everything stays on screen above your prompt.
+
+```
+▸ 7f3a · flaky test in segment.test.ts · opus 5.5 · high · acceptEdits
+you   fix the flaky test in segment.test.ts and open a PR
+      I'll run the test a few times to see how it fails.
+  ✓ Ran 3 steps · Bash, Read ×2 · 6.2 s
+      The test depends on timer order: `flush()` runs before the
+      debounce settles when the machine is busy.
+  ⠋ Edit  src/segment.test.ts                                 2 s
+    2 earlier: ✓ Read · ✓ Edit +4 −1
+  ◐ 2/4 Fixing the timer order
+  queued  then run the whole suite
+────────────────────────────────────────────────────────────────
+> │
+● running · 1 queued                                    ctrl+o details
+```
+
+From the top:
+
+- **The header** names the session by its short id and title, then its model, effort, speed (only when it is `standard`) and permission mode. It is printed once, when you attach, and again when a setting changes. In a new session started without a message, it is printed when your first message gives the session its title.
+- **The transcript** is the conversation. Your messages are marked `you`. Messages from other people carry their name and where they wrote from, such as `Mo · slack`. The agent's text is indented beneath.
+- **Steps** are the agent's tool calls, one line for each run of them. See [Steps](#steps).
+- **The todo line**, when the agent keeps a todo list, says where it is in it. See [Todos](#todos).
+- **Queued messages** wait above the rule, one dim `queued` line each, until their turn starts. `↑` on an empty prompt line takes the last one back for editing.
+- **Background subagents** that are running wait there too, one dim line each, across turns. See [Subagents](#subagents).
+- **The prompt line** is where you type. It is live from the moment `opc` starts, even before the connection is up.
+- **The status line** under it says what the session is doing. See [Status line](/terminal/status-line).
+
+## What changes and what doesn't
+
+The screen has two parts. Everything above the rule is final: once a line is there, `opc` never changes it, so what you scroll back to, search or copy is what was said. Below the rule, and just above it, is the live area: the text being written, the step running, the todo line, an open ask, queued messages, lists such as `/subagents`, the prompt and the status line. Only the live area is redrawn.
+
+Something moves from the live area into the transcript when it is settled: a paragraph when it ends, a run of steps when the agent writes after it, an ask when it is answered. The transcript is in the order things settled. A message from someone else that arrives while a step runs is printed above that step, which settles after it.
+
+The live area is at most 12 lines tall, or half the screen when that is smaller, so it never pushes the transcript around. When a step's output or a long table needs more, the live area shows its last lines.
+
+## Text as it arrives
+
+The agent's text appears as the model produces it, drawn on the next screen refresh, at most 16 ms later. `opc` draws whole words: a word cut off at the end of a fragment appears when the rest of it arrives.
+
+Markdown is rendered as it streams. Inline code and emphasis are styled once their closing mark arrives, so you never see a stray `**` turn into bold. A code block is shown as code from its first line. A table is drawn with its rows so far and laid out once more when it ends. Links are clickable in terminals that support them.
+
+Code blocks are set off by color and indentation, with no border or gutter characters, and their long lines are never broken by `opc`. A copied command is the command. `/copy code` copies the last code block exactly, and `/copy` the agent's last message as markdown.
+
+## Steps
+
+Consecutive tool calls share one block in the live area. It shows the step running, with the most useful part of its input and a timer. Earlier steps of the run fold into one line under it.
+
+```
+  ⠋ Bash  Run the segment test 20 times                      12 s
+    3 earlier: ✓ Read ×2 · ✓ Grep
+```
+
+A `Bash` step is titled with the description the agent gave the command. The command itself is in the [details](#details). Claude Code does not stream a command's output while it runs, so a running step shows its timer, and its last lines of output when it ends.
+
+A step shows up before it starts, while the agent is still writing its input. For a long `Write` or `Edit`, that can take seconds, and the step counts the lines written so far:
+
+```
+  ⠋ Write  src/x.ts · writing… 212 lines
+```
+
+While a step waits on an [ask](/terminal/asks), its timer stops and it says `waiting for your answer`, so a 1 s command after a two-minute approval reads 1 s.
+
+When the agent writes again, the run settles into the transcript as one line. A run of one step stays as that step:
+
+```
+  ✓ Ran 4 steps · Read ×2, Grep, Bash · 16 s
+  ✓ Bash  Run the segment test 20 times · 4.1 s
+  ✓ Edit  src/segment.test.ts  +12 −3
+```
+
+- `✓` means the run is done. A step that failed and that the agent moved past, such as a search with no match or an edit it retried, is counted as `1 failed` beside the run but does not mark it failed.
+- `✗` means a step was cut off: the turn was interrupted or failed while it ran.
+- Edits show the lines they added and removed.
+- A foreground subagent is a step with its own nested run, shown while it works and folded into its line when it finishes. See [Subagents](#subagents).
+
+Reasoning is part of the run. While the model thinks, and from the moment a turn starts until its first event arrives, the live area shows `thinking` and a timer:
+
+```
+  ⠋ thinking · 8 s
+```
+
+The first event usually arrives within a few seconds, and can take over ten when the model starts cold. A run that included reasoning says so when it settles, as `thought 6 s`. Reasoning shorter than 1.5 s is not mentioned, unless it is the first thing in a turn.
+
+### Todos
+
+When the agent keeps a todo list, one line pinned above the prompt shows how far it is and what it is doing now:
+
+```
+  ◐ 3/7 Running the suite
+```
+
+Each item is printed in the transcript once, when it is done. The line goes when the list is finished or the turn ends.
+
+### End of a turn
+
+At the end of a turn, one dim line says how long it took and what changed:
+
+```
+  ── 1m 12s · 6 steps · 3 files changed, +40 −12
+```
+
+## Subagents
+
+A subagent is an agent the session's agent starts to do part of the work. A **foreground** subagent is a step: the turn waits for it. While it works, its line shows its type, its name, what it is doing now, its tool calls and the time:
+
+```
+  ◐ Explore · auth flow · reading src/auth/session.ts · 14 tools · 1m 12s
+```
+
+When it finishes it folds into one line. The [details](#details) have its tool calls, nested under it, and its result:
+
+```
+  ✓ Explore · auth flow · 41 tools · 3m
+```
+
+A **background** subagent runs apart from its turn, which can end while it works. Each running one is a dim line above the prompt, next to queued messages, until it ends, across turns. Then the transcript says so:
+
+```
+  ✓ background subagent "auth flow" finished · 4m · /subagents to read
+```
+
+`/subagents` lists them in the live area: one row each, with its status, name, type, what it is doing, tool calls, tokens and time, the running ones first, then those that ended this session. `Enter` prints a subagent's result, or shows its details so far while it runs, and `x` stops it. `/subagents 2` goes straight to the second row. See [Keys](/terminal/keys#in-the-subagents-list).
+
+When a background subagent ends, the agent starts a turn on its own to read its result. It is shown like a turn you sent, marked as started by the agent instead of `you`:
+
+```
+agent ↳ background subagent "auth flow" finished
+      The auth flow keeps the session in a signed cookie…
+```
+
+[Interrupting](/terminal/keys#stopping-and-leaving) a turn stops it and all of its subagents, background ones included. A background subagent of a turn that completed keeps running until it ends or you stop it from `/subagents`. Stopping a subagent anywhere, from `opc`, Slack or the API, ends it everywhere.
+
+## Details
+
+The transcript holds the short form. `Ctrl+O` pipes the session's details through `$PAGER`: its turns with every step's full input and output, edits as diffs, and the reasoning, as of the moment you pressed it. Quitting the pager returns to the session screen as you left it. The details never add to your scrollback, and `opc` itself draws nothing full-screen.
+
+Reasoning is hidden by default. `Ctrl+T` shows it as it streams, dimmed, and keeps it in the transcript from then on, above the text it led to. Earlier reasoning is in the details.
+
+## When you attach to a session with history
+
+`opc a` prints the session's earlier turns before the live part, so you see what led here, in the same short form. The last turn is printed in full, and up to 10 earlier ones as one line each. Anything older is one line:
+
+```
+  ── 14 earlier turns · Ctrl+O for all
+```
+
+The details have all of it. `--history <n>` prints the last `n` turns in full, and `--no-history` none. Attaching again in the same terminal with `opc a -` prints only what happened since you detached. This costs nothing on a long session: `opc` asks for the last turns only, and draws sessions you opened before on this machine from its local copy at once.
+
+## Messages from elsewhere
+
+If someone writes in the Slack thread, or another terminal is attached, their messages appear in the transcript with their name, as they are received. Asks show who answered them. `opc` never hides activity from other clients.
+
+## When you look away
+
+Turns take minutes, so `opc` tells you when it needs you:
+
+- **The terminal's title** shows the session's state and title, such as `◆ flaky test in segment.test.ts`, so you can see it from another tab. `opc` puts the old title back when it exits.
+- **A notification** is sent when an ask opens, when a turn that ran longer than 10 seconds ends, or when a background subagent ends, if the terminal does not have focus. It uses your terminal's desktop notifications where they exist, and the bell otherwise. `OPC_NOTIFY=0` turns them off.
+
+Notifications are for things that happen while you are attached. Events that `opc` catches up on after a reconnect, or prints as history, never send one, and an ask sends one only when it opens, however long it stays open.
+
+## Narrow terminals and plain output
+
+Lines wrap to the terminal width, and steps truncate their summary rather than wrap. Resizing redraws the live area at the new width. The transcript keeps the width it was printed at. Below 40 columns, the status line drops its right side.
+
+When standard output is not a terminal, `opc` does not draw this screen. It prints the transcript as plain text and exits when the turn ends, as `opc -p` does. See [Scripting](/cli/scripting).
+
+Colors follow your terminal's palette. `NO_COLOR=1` turns them off. `opc` uses 16 colors only, so themes look right in every terminal. Where the terminal or locale cannot show the symbols above, `opc` uses ASCII.

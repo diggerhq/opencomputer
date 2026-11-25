@@ -1,0 +1,170 @@
+---
+title: "Connecting"
+description: "Open a WebSocket, attach in the same request, keep it alive and reconnect without losing events."
+---
+
+One connection can watch and act in up to 20 sessions at once. `opc` opens one per process, and `opc shell` opens its own.
+
+## Open
+
+Connect to `wss://wire.opencomputer.dev/v1`, offering the protocol version `opc.v1` as a subprotocol. How you authenticate depends on the client.
+
+**With a key**, for `opc` and programs on a server: send the key on the upgrade request, in `Authorization: Bearer <key>` or `x-api-key`. There is no ticket round trip.
+
+```ts
+import WebSocket from "ws";
+
+const ws = new WebSocket("wss://wire.opencomputer.dev/v1", ["opc.v1"], {
+  headers: { authorization: `Bearer ${process.env.OPENCOMPUTER_API_KEY}` },
+});
+```
+
+**With a ticket**, for browsers, which cannot set headers: [get a ticket](/api/http/tickets) over HTTP, then connect to its `url` with the ticket as a second subprotocol.
+
+```ts
+const ws = new WebSocket(ticket.url, ["opc.v1", `opc.ticket.${ticket.token}`]);
+```
+
+The server selects `opc.v1`, which you can check in `ws.protocol`. The credential is read during the upgrade, so a connection that opens is already authenticated: there is no login message. A credential never goes in the URL.
+
+The server's first message is `ready`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "ready",
+  "params": {
+    "connectionId": "wc_8d2k4m7q1x9v",
+    "server": { "version": "2026-10-26.1", "region": "iad" },
+    "protocol": { "features": [] },
+    "limits": { "maxAttached": 20, "maxMessageBytes": 1048576, "maxRequestsPerSecond": 100 },
+    "expiresAt": "2026-10-26T10:01:03.004Z",
+    "expiresInMs": 3600000
+  }
+}
+```
+
+| Param | Meaning |
+| --- | --- |
+| `connectionId` | `wc_…`, for support |
+| `server` | `version` is for support requests: do not branch on it. `region` is where the connection ends. |
+| `protocol.features` | Optional protocol features this server offers. Use one only when it is listed. See [Versioning](/api/reference/versioning#the-websocket-protocol-version). |
+| `limits` | The limits on this connection |
+| `expiresAt`, `expiresInMs` | For a connection opened with a ticket: when the server will close it with `4001`. Use `expiresInMs`, which does not depend on your clock. For a connection opened with a key: the key's `expiresAt`, or `null` for a key without an expiry. |
+
+You do not have to wait for `ready`. Requests sent right after the socket opens are answered in order after it.
+
+## Attach in the upgrade
+
+The URL can attach to sessions during the upgrade, which saves a round trip on every launch, reattach and reconnect:
+
+```
+wss://wire.opencomputer.dev/v1?attach=cs_7f3a9k2m4q8r1t6v&after=1180&deltas=1&tailTurns=1&resume=1
+```
+
+| Query | Meaning |
+| --- | --- |
+| `attach` | A session id. Repeat it for several sessions, up to 20. |
+| `after` | As in [`sessions.attach`](/api/websocket/methods#attach). With several `attach`, repeat it too: each `after` pairs with the `attach` in the same position. |
+| `tailTurns` | As in `sessions.attach`, paired the same way |
+| `deltas` | `1` to send deltas, for every session in the URL |
+| `resume` | `1` to resume every suspended session in the URL |
+
+The query holds ids and numbers only, never a credential. Right after `ready`, the server sends one `sessions.attached` notification per session, with the same fields as the [result of `sessions.attach`](/api/websocket/methods#attach), then that session's events:
+
+```json
+{ "jsonrpc": "2.0", "method": "sessions.attached", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "error": null, "session": { "…": "Session" }, "logEpoch": 1, "epochStartSeq": 1, "capabilities": { "…": "…" }, "earlierTurns": [], "timing": { "serverUs": 840 } } }
+```
+
+If one attach fails, its `sessions.attached` has `error`, the same object as a method error's `data`, and the other fields `null`. The connection stays open, and the other sessions attach.
+
+An id for a session that is still being created, such as one a client chose and is creating over HTTP at the same moment, is held for up to 2 seconds while the create arrives. `opc` creates a new session and attaches to it this way, in parallel.
+
+To attach later on an open connection, call [`sessions.attach`](/api/websocket/methods#attach).
+
+## Messages
+
+Every message is [JSON-RPC 2.0](https://www.jsonrpc.org/specification), one per text frame. Batches are not supported.
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "method": "turns.send", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "input": "also add a regression test", "ifBusy": "steer", "idempotencyKey": "5b0d6c1e-2f7a-4a8e-9d3c-1e2f3a4b5c6d" } }
+```
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "result": { "turn": { "id": "tn_4m8q2x7c1v9b", "status": "running", "…": "…" }, "delivery": "steered", "duplicate": false, "seq": 1190, "timing": { "serverUs": 1210 } } }
+```
+
+- `id` is yours: a number or a string. Responses can come back in a different order than requests, so match on `id`.
+- The server sends notifications, which have no `id`: `ready`, `sessions.attached`, `event`, `delta`, `session.detached` and `terminal.exited`. See [Methods](/api/websocket/methods#notifications).
+- Binary frames carry terminal data only. See [Terminals](/api/websocket/terminals).
+- A message is at most 1 MiB. A larger one is not read: the connection closes with `1009`.
+
+The response to a request is always sent before any event the request caused. When the response to `turns.send` arrives, you know the turn's `id` before you see its `message.received`.
+
+## Keeping it alive
+
+The server sends a WebSocket ping every 30 seconds. Browsers and most libraries answer on their own. A connection that misses two is closed with `1001`.
+
+To check the connection or measure the round trip, call `ping`. `opc --timing` shows the median of the last 20.
+
+```json
+{ "jsonrpc": "2.0", "id": 8, "method": "ping" }
+```
+
+A socket can look open long after the network under it is gone. Send a `ping`, with a timeout of three round trips and at least 750 ms:
+
+- When the machine wakes from sleep: the wall clock jumped further than the monotonic clock
+- When the network changes
+- Before sending on a socket that has been quiet for more than 15 seconds
+
+If it times out, dial a new connection while the old one is still open, attach, and resend anything unanswered with the same idempotency key. `opc` does this.
+
+## Close codes
+
+A connection the server refuses is still accepted, then closed at once with one of these codes, so browsers see the code instead of `1006`.
+
+| Code | Means | Do |
+| --- | --- | --- |
+| `1000` | You closed it | |
+| `1001` | The server is going away, or you missed two pings | Reconnect after a random wait of up to 250 ms, then with backoff if it closes again |
+| `1009` | You sent a message over 1 MiB | Reconnect. Do not resend that message. |
+| `1011` | Server error | Reconnect with backoff |
+| `1012` | The server is restarting | Reconnect after a random wait of up to 250 ms, then with backoff if it closes again |
+| `4001` | The credential expired or was revoked, or a ticket connection reached its one-hour lifetime | With a ticket, reconnect with a new one, better before `expiresInMs`. With a key, check it: a request with it fails with `401` if it was revoked. |
+| `4003` | Forbidden: the ticket is invalid, the credential may not use the computer, or the upgrade carried both a ticket and a key (reason `ticket_and_key`) | Send one credential. Get a new ticket. If that fails with `401`, the key was revoked. |
+| `4008` | You stopped reading, and more than 16 MiB waited to be sent | Reconnect and catch up. See [Flow control](/api/websocket/flow-control#after-4008). |
+| `4029` | Too many connections for this member: more than 50 | Close some |
+| `4400` | No supported protocol version was offered | Upgrade your client. `opc` exits with code `2`. |
+| `4503` | Your computer is unavailable: starting or being updated | Reconnect after `retryAfterMs`, from the reason |
+
+Close reasons are short text for logs, except for `4503`, whose reason is JSON: `{ "retryAfterMs": 4000 }`. Branch on the code.
+
+## Reconnecting
+
+A connection holds nothing you cannot rebuild. To reconnect:
+
+1. Open a new connection: with a key, or with a cached ticket if it has not expired.
+2. Attach to each session again with `after` set to the last `seq` you applied, in the URL or with `sessions.attach`.
+
+You get exactly the events you missed, then live ones. Deltas sent while you were away are gone, but the completed blocks they belonged to are not, and a block or tool call still being written resends its text so far.
+
+**Before `4001`.** For a ticket connection, about 5 minutes before it expires, open the new connection first, attach, and close the old one once the new one is attached. Events seen on both are skipped by `seq`. Nothing visible happens. `opc` does this.
+
+**After an unexpected close.** Reconnect at once when the network changes, the machine wakes, or the person acts, such as pressing `Enter`. Otherwise retry at once, then after 250 ms, doubling up to 8 seconds, with up to 20% random jitter. A server's `Retry-After` on a refused upgrade, or `retryAfterMs` in a close reason, is a longer wait when it is longer; `opc` honours it up to 30 seconds. Reset after a connection stays up for a minute. Show the person that you are reconnecting once it takes more than a second.
+
+## Without a library
+
+Any WebSocket client works. With `websocat` and a key:
+
+```bash
+websocat -H "x-api-key: $OPENCOMPUTER_API_KEY" --protocol opc.v1 \
+  "wss://wire.opencomputer.dev/v1?attach=cs_7f3a9k2m4q8r1t6v&deltas=1"
+```
+
+With a ticket:
+
+```bash
+t=$(curl -s -X POST "$API/tickets" -H "x-api-key: $OPENCOMPUTER_API_KEY")
+websocat --protocol "opc.v1, opc.ticket.$(jq -r .ticket.token <<<"$t")" "$(jq -r .ticket.url <<<"$t")"
+{"jsonrpc":"2.0","id":1,"method":"sessions.attach","params":{"sessionId":"cs_7f3a9k2m4q8r1t6v","deltas":true}}
+```
