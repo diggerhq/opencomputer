@@ -72,4 +72,13 @@ const V0 = [
   ...FEED_KINDS.map((table) => `CREATE INDEX ${table}_feed ON ${table} (version, audience)`),
 ];
 
-export const STEPS: ((sql: Sql) => void)[] = [(sql) => V0.forEach((statement) => sql.exec(statement))];
+/** `session.last_active_at`: the summary's `lastActiveAt` (else the creation time), a column so the list orders by it. */
+const V1 = [
+  `ALTER TABLE session ADD COLUMN last_active_at INTEGER`,
+  `UPDATE session SET last_active_at = created_at`,
+  `CREATE INDEX session_active ON session (last_active_at)`,
+  `CREATE INDEX session_created ON session (created_at)`,
+];
+
+const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
+export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1)];

@@ -42,7 +42,6 @@ export interface HostWriterOptions {
   journal: string;
   epoch: number;
   lastSeq: number;
-  epochStartSeq?: number;
   seed: SessionSeed;
   /** Recorded first when the journal is empty (created.ts). */
   created?: SessionCreated;
@@ -76,7 +75,6 @@ export class HostSessionWriter implements Writer {
       sessionId: o.sessionId,
       epoch: o.epoch,
       lastSeq: o.lastSeq,
-      epochStartSeq: o.epochStartSeq,
       waitMs: o.waitMs,
       redact: o.redact,
       seed: o.seed,

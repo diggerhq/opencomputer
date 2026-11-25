@@ -124,37 +124,9 @@ const OpenItemsSchema = z.looseObject({
 })
 export type OpenItems = z.infer<typeof OpenItemsSchema>
 
-const ClosedItemsSchema = z.looseObject({
-  items: z.array(ItemSchema),
-  nextCursor: z.string().nullable(),
-})
-export type ClosedItems = z.infer<typeof ClosedItemsSchema>
-
-const ItemResultSchema = z.looseObject({
-  item: ItemSchema,
-  body: z.string(),
-})
-export type ItemResult = z.infer<typeof ItemResultSchema>
-
 const SessionItemsSchema = z.looseObject({
   items: z.array(ItemSchema),
 })
-
-const RevisionSchema = z.looseObject({
-  sha: z.string(),
-  url: z.string(),
-  at: z.string(),
-  authorName: z.string(),
-  summary: z.string(),
-  sessionId: z.string().nullable(),
-})
-export type Revision = z.infer<typeof RevisionSchema>
-
-const HistorySchema = z.looseObject({
-  revisions: z.array(RevisionSchema),
-  nextCursor: z.string().nullable(),
-})
-export type History = z.infer<typeof HistorySchema>
 
 const RepositoryResultSchema = z.looseObject({
   repository: RepositorySchema.nullable(),
@@ -317,38 +289,6 @@ export function keepOpenItems(
   return { ...prev, page: { ...prev.page, asOf: next.asOf } }
 }
 
-export function getClosedItems(cursor: string | undefined, limit = 50) {
-  const params = new URLSearchParams({ stage: 'closed', limit: String(limit) })
-  if (cursor) params.set('cursor', cursor)
-  return apiFetch(
-    `${PREFIX}/items?${params}`,
-    undefined,
-    ClosedItemsSchema,
-    '/api',
-  )
-}
-
-export function getItem(number: number) {
-  return apiFetch(
-    `${PREFIX}/items/${number}`,
-    undefined,
-    ItemResultSchema,
-    '/api',
-  )
-}
-
-export function getHistory(number: number, cursor: string | undefined) {
-  const params = new URLSearchParams()
-  if (cursor) params.set('cursor', cursor)
-  const query = params.size ? `?${params}` : ''
-  return apiFetch(
-    `${PREFIX}/items/${number}/history${query}`,
-    undefined,
-    HistorySchema,
-    '/api',
-  )
-}
-
 /** The items a session worked on (its commits' `Session:` trailers). */
 export function getSessionItems(sessionId: string) {
   return apiFetch(
@@ -381,9 +321,6 @@ export const workKeys = {
   repository: (org: string) => ['work', org, 'repository'] as const,
   repositories: (org: string) => ['work', org, 'repositories'] as const,
   open: (org: string) => ['work', org, 'items', 'open'] as const,
-  closed: (org: string) => ['work', org, 'items', 'closed'] as const,
-  item: (org: string, n: number) => ['work', org, 'item', n] as const,
-  history: (org: string, n: number) => ['work', org, 'history', n] as const,
   session: (org: string, id: string) => ['work', org, 'session', id] as const,
 }
 
