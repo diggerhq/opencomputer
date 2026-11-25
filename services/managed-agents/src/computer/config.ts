@@ -93,6 +93,8 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   ORGS?: DurableObjectNamespace;
   SLACK?: DurableObjectNamespace;
   DELIVERY?: DurableObjectNamespace;
+  /** The opencomputer-live script's class (tracks and threads, spec 36.4), bound by script_name. */
+  LIVE?: DurableObjectNamespace;
   /** Work 084: the SessionLog's large payloads and sealed segments (`<org>/<session>/…`). */
   SESSION_LOG_BLOBS?: R2Bucket;
   /** Work 084: `h:<sha256(key)>` → the wire's key record, `k:<keyId>` → its hash; written by keys.ts, read by the wire Worker. */

@@ -1,0 +1,322 @@
+// The whole contract between the actors of tracks and threads (spec sections 35 to 37): each
+// class's RPC methods and the values they pass. No actor reads another's storage, and none calls a
+// method not listed here. `p` is the caller's principal. Types only; nothing here runs.
+
+import type { ApiErrorBody, ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
+import type { PublicComputerState } from "../computer/config.js";
+import type { CalvinPerson } from "../computer/protocol.js";
+import type { Repository, RepositoryChoice } from "../computer/work/index-contract.js";
+import type { Access, Principal } from "./principal.js";
+
+export type { Access, Principal };
+
+// ------------------------------------------------------------------ shared values
+
+/** What SessionLog hands Org (spec 35.2): today's summary and four fields. */
+export interface Summary extends LogSummary {
+  /** Counts changes to this summary; never reused, also across epochs. */
+  revision: number;
+  /** seq of the newest message.completed, ask.opened, turn.completed or turn.failed. */
+  lastAgentSeq: number;
+  agentTitle: string | null;
+  /** The entries that are `waiting` or `refused`. `text` is the first 280 characters of a turn's input. */
+  inbox: { id: string; kind: string; by: string; at: string; text: string | null; error: string | null }[];
+}
+
+/** The `session` feed row and the API's object (spec 35.1): today's `Session` and Org's fields. */
+export interface SessionRow extends Session {
+  titleBy: string | null;
+  agentTitle: string | null;
+  lastAgentSeq: number;
+  blocked: boolean;
+  inbox: Summary["inbox"];
+  machine: string;
+  role: "track" | "start" | null;
+}
+
+/** A feed row: `{ kind, id, version, …the table's fields in camelCase }`. `audience` only between actors. */
+export type Row = { kind: string; id: string; version: number; audience?: string; [field: string]: unknown };
+export type PlaceRow = Row & { kind: "place"; trackId: string | null; position: number; parentSession: string | null; doneAt: string | null };
+/** `kind` is the table; the table's own `kind` column is sent as `type` (lane 4's log). */
+export type ResultRow = Row & { kind: "result"; sessionId: string; type: string; ref: string; title: string | null; state: string | null };
+export type ReviewRow = { resultId: string; head: string; parts: unknown };
+export type DocRev = { trackId: string; rev: number; by: string; at: string; text: string };
+
+export type MachineState = PublicComputerState;
+export type RoleSpec = { name: "track"; trackId: string } | { name: "start" };
+
+export interface CreateSessionBody {
+  id?: string;
+  input?: string;
+  title?: string;
+  model?: string;
+  effort?: string;
+  mode?: string;
+  speed?: "fast" | "standard";
+  metadata?: Record<string, string>;
+  /** `claude` | `codex`: the Slack actor's `!claude` or `!codex` prefix. Absent: the owner's. */
+  harness?: string;
+  /** The Slack actor only: the thread's origin, as the API shows it. */
+  origin?: Origin;
+}
+export type CreateSession = CreateSessionBody & {
+  trackId?: string;
+  /** The agent caller's own session; set by the edge, never read from a request's body. */
+  parent?: string;
+  role?: "start";
+  writers?: "members" | string[];
+  slackThread?: string;
+};
+export interface SessionPatch {
+  title?: string;
+  archived?: boolean;
+  metadata?: Record<string, string | null>;
+  /** `PUT`/`DELETE …/aside`: the ask the session is set aside for, or null. */
+  aside?: string | null;
+}
+/** `GET /sessions`'s query, as today, plus `slackThread`. */
+export interface ListQuery {
+  owner?: string;
+  status?: string[];
+  origin?: string[];
+  archived?: boolean;
+  q?: string;
+  order?: "active" | "created";
+  limit?: number;
+  cursor?: string;
+  slackThread?: string;
+}
+export interface SessionPage {
+  sessions: SessionRow[];
+  nextCursor: string | null;
+}
+
+/** A refusal an actor answers in place of throwing; the edge turns it into the HTTP error of spec 34.2. */
+export type Refusal = { ok: false; code: string; status?: number; reason?: string; message?: string; [field: string]: unknown };
+export type Reply<T> = ({ ok: true } & T) | Refusal;
+
+// ------------------------------------------------------------------ Org (36.1)
+
+export type FeedFrame = {
+  protocol: 1;
+  org: string;
+  subject: string;
+  /** Cursors; `from` is null for a snapshot. */
+  from: string | null;
+  to: string;
+  /** true: read again from `to`. */
+  more: boolean;
+  rows: Row[];
+  gone: { kind: string; id: string }[];
+  lastMutation?: number;
+  errors?: { n: number; code: string; reason: string }[];
+  counts?: { earlier: number; trackEarlier: Record<string, number> };
+  sum?: string;
+};
+/** What Org publishes to Live on `feed` (spec 40.4): rows and gone entries with their audience. */
+export type FeedPush = {
+  from: string;
+  to: string;
+  rows: (Row & { audience: string })[];
+  gone: { kind: string; id: string; audience: string }[];
+  mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[];
+};
+export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string };
+export type MutateRequest = { name: string; args: unknown; client?: { id: string; n: number }; idem?: string; trace?: string };
+export type MutateReply =
+  | { protocol: 1; lastMutation?: number; value?: unknown }
+  | { error: { code: "refused" | "not_found" | "taken" | "conflict" | "out_of_order" | "principal_mismatch" | "idempotency_conflict" | "invalid_request" | "forbidden"; message?: string; reason?: string; lastMutation?: number; [field: string]: unknown } };
+export type Overview = { tracks: unknown[]; threads: unknown[] };
+export type SlackEcho =
+  | { kind: "refused"; threadKey: string; person: string; code: string }
+  | { kind: "machine"; state: MachineState; threadKeys: string[] };
+export type SummaryPub = {
+  sessionId: string;
+  revision: number;
+  summary: Summary;
+  occurrences: { epoch: number; seq: number; kind: string; by: string | null; at: number }[];
+};
+export type MachinePub = {
+  machine: string;
+  revision: number;
+  state: MachineState;
+  previews: { sessionId: string; name: string; url: string }[];
+  newestCreatedAt: number;
+};
+export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number };
+
+export interface OrgRpc {
+  // the directory
+  createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>>;
+  getSession(p: Principal, id: string): Promise<Reply<{ session: SessionRow }>>;
+  patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>>;
+  listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>>;
+
+  // the feed and the work part
+  feed(p: Principal, q: { after?: string; kinds?: string[]; clientId?: string; ack?: number; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;
+  mutate(p: Principal, m: MutateRequest): Promise<MutateReply>;
+  threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }>;
+  search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
+  result(p: Principal, id: string): Promise<ResultRow | null>;
+  overview(p: Principal): Promise<Overview>;
+  /** tell_track: the agent session of the caller's track. */
+  trackAgent(p: Principal): Promise<string | null>;
+  docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]>;
+  review(p: Principal, resultId: string): Promise<ReviewRow | null>;
+  mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void>;
+
+  // the occurrence stream
+  occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }>;
+  /** Delivery(wake) only. */
+  digest(target: string, fromN: number, toN: number): Promise<string>;
+  /** Delivery(slack) only: what occurrence n means in Slack. */
+  echo(n: number): Promise<SlackEcho | null>;
+
+  // arrows in
+  acceptSummary(pub: SummaryPub): Promise<{ accepted: boolean; revision: number }>;
+  acceptMachine(pub: MachinePub): Promise<{ accepted: boolean }>;
+  acceptPull(pub: PullPub): Promise<void>;
+  /** SessionLog only, when it holds none. */
+  access(sessionId: string): Promise<Access | null>;
+  /** Computer only. */
+  forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }>;
+  repository(p: Principal): Promise<Repository | null>;
+  setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>>;
+  /** The Slack actor only: `slack:` sessions now owned by a member. */
+  linkPerson(from: string, to: string): Promise<void>;
+  /** Computer only, once: spec 43.1. */
+  adopt(): Promise<void>;
+}
+
+// ------------------------------------------------------------------ SessionLog (36.2)
+
+export type InboxKind = "turn" | "answer" | "dismiss" | "interrupt" | "settings";
+export interface InboxEntry {
+  id: string;
+  kind: InboxKind;
+  body: unknown;
+  /** `by` of who sent it (spec 34.1). */
+  by: string;
+  /** The principal it was accepted from, less its credential: what the host records as the actor. */
+  actor: { subject: string; kind: Principal["kind"]; via: Principal["via"]; admin: boolean };
+  trace: string | null;
+  at: number;
+}
+export type Inbox = { entries: InboxEntry[]; epoch: number; lastSeq: number };
+export type AcceptResult =
+  | { ok: true; id: string; duplicate: boolean; machine: string; result?: unknown }
+  | { ok: false; code: "not_found" | "forbidden" | "idempotency_conflict" | "inbox_full" | "agent_turns" };
+export type DeliveredOutcome = { ok: true; result?: unknown } | { ok: false; code: string; message: string };
+/** What SessionLog publishes to Live on `events:<cs_…>` (spec 40.4). */
+export type EventPush = { from: string; to: string; events: ApiEvent[] };
+/** The events read's answers (spec 37.1): a page with the cursor after its last event, or `reset`. */
+export type EventsReset = { ok: false; error: "reset"; cursor: string | null; seq?: number };
+
+/** Added to the existing `SessionLogRpc` (session-log-contract.ts), whose methods keep their signatures. */
+export interface SessionLogRpcAdded {
+  /** Kept only if `access.revision` is newer. */
+  setAccess(access: Access): Promise<void>;
+  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }): Promise<AcceptResult>;
+  /** The entries that are `waiting`, in order. */
+  inbox(): Promise<Inbox>;
+  delivered(id: string, outcome: DeliveredOutcome): Promise<void>;
+  /** The events cursor of the log's end; null when `p` may not read. */
+  watch(p: Principal, until: number): Promise<{ head: string } | null>;
+  destroy(): Promise<void>;
+}
+
+// ------------------------------------------------------------------ Computer (36.3)
+
+export type StartSpec = { session: SessionRow; settings: SessionSettings; role: RoleSpec | null; harness?: string; trace?: string };
+export type DrainResult =
+  | { state: "delivered"; results: { id: string; result?: unknown; error?: ApiErrorBody["error"] }[] }
+  | { state: "waking" };
+/** One row of the export Org adopts from (spec 43.1). */
+export interface ExportedSession {
+  id: string;
+  owner: string;
+  origin: Origin;
+  title: string;
+  archived: boolean;
+  metadata: Record<string, string>;
+  asideRef: string | null;
+  writers: "members" | string[];
+  slackThreadKey: string | null;
+  createdAt: number;
+  updatedAt: number;
+  lastActiveAt: number | null;
+  summary: LogSummary | null;
+  /** `sessions.create` idempotency rows younger than 24 h for this session: the body's hash. */
+  createHash: string | null;
+}
+/** One row of the export the Slack actor imports (spec 43.1): a table's row, a setting, or a pending dispatch. */
+export type ExportedSlackRow =
+  | { type: "row"; table: string; row: Record<string, unknown> }
+  | { type: "setting"; key: string; value: string }
+  | { type: "link"; slackUser: string; member: string }
+  | { type: "thread"; key: string; sessionId: string }
+  | { type: "dispatch"; sessionId: string; entry: { id: string; kind: InboxKind; body: unknown; by: string } };
+
+export interface ComputerRpcAdded {
+  start(spec: StartSpec): Promise<void>;
+  stop(sessionId: string): Promise<void>;
+  drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult>;
+  watch(sessionId: string, until: number): Promise<void>;
+  /** "Send this block so far." */
+  block(sessionId: string, blockId: string): Promise<void>;
+  /** Org only; relayed as the host's `access` frame. */
+  setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
+  /** The Slack actor only. */
+  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant"; args: string; sessionId?: string }): Promise<{ reply: string }>;
+  /** Org: the knowledge repository; Slack: people or credentials. */
+  changed(source: "org" | "slack"): Promise<void>;
+  exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
+  exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }>;
+}
+
+// ------------------------------------------------------------------ Live (36.4), lane 2's
+
+/** A delta as the host sends it (`C/protocol-api.ts`'s `JournalDelta` plus `offset`), with its session's epoch. */
+export type DeltaPush = { epoch: number; deltas: { type: string; turnId: string; data: unknown; offset: number; whole?: boolean }[] };
+
+export interface LiveRpc {
+  /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. The reply is the head Live now holds. */
+  publish(stream: string, frame: FeedPush | EventPush | DeltaPush | { head: string }): Promise<{ head: string }>;
+  wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }>;
+  revoke(credentialId: string): Promise<void>;
+}
+
+// ------------------------------------------------------------------ Delivery (36.5), lane 2's
+
+export interface DeliveryRpc {
+  /** "The occurrence stream's head moved." */
+  poke(head: number): Promise<void>;
+  status(): Promise<{ cursor: number; behind: number; dead: number }>;
+}
+
+// ------------------------------------------------------------------ Slack (36.6)
+
+export interface SlackGrant {
+  teamId: string;
+  teamName: string;
+  botUserId: string;
+  botToken: string;
+  installerUserId: string;
+}
+
+export interface SlackRpc {
+  /** Deduplicated, queued; the edge acknowledges Slack after it. */
+  accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void>;
+  install(p: Principal, grant: SlackGrant): Promise<void>;
+  unlink(p: Principal): Promise<void>;
+  /** Computer only. */
+  forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }>;
+  /** Org only. Idempotent on `sessionId`. */
+  announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
+  /** Delivery(slack) only. */
+  notify(e: SlackEcho): Promise<void>;
+  /** post_thread. */
+  post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;
+  /** Computer only, once: spec 43.1. */
+  import(): Promise<void>;
+}
