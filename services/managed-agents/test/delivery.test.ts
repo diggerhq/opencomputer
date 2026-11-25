@@ -65,11 +65,11 @@ describe("Delivery: webhook", () => {
   it("delivers a signed occurrence, retries a failing endpoint on the schedule, and moves its cursor regardless", async () => {
     const org = "org_hook";
     const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
-    const created = await delivery.setEndpoint(member(org), { id: "wh_ok", url: "https://ok.hooks.test/in" });
+    const created = await delivery.setEndpoint(member(org), "wh_ok", { url: "https://ok.hooks.test/in" });
     if (!created.ok) throw new Error("refused");
     const secret = created.endpoint.secret!;
     expect(secret).toMatch(/^whsec_/);
-    await delivery.setEndpoint(member(org), { id: "wh_flaky", url: "https://fail-2.hooks.test/in", kinds: ["turn.completed"] });
+    await delivery.setEndpoint(member(org), "wh_flaky", { url: "https://fail-2.hooks.test/in", kinds: ["turn.completed"] });
 
     const head = await bindings.ORGS.getByName(org).add([
       occurrence(1, "turn.completed"),
@@ -108,7 +108,7 @@ describe("Delivery: webhook", () => {
     const org = "org_dead";
     const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
     for (const [id, host] of [["wh_private", "private"], ["wh_meta", "metadata"], ["wh_redirect", "redirect"]] as const) {
-      expect(await delivery.setEndpoint(member(org), { id, url: `https://${host}.hooks.test/in` })).toMatchObject({ ok: true });
+      expect(await delivery.setEndpoint(member(org), id, { url: `https://${host}.hooks.test/in` })).toMatchObject({ ok: true });
     }
     await delivery.poke(await bindings.ORGS.getByName(org).add([occurrence(1, "turn.completed")]));
     await expect.poll(async () => (await owedRows(delivery)).map((row) => row.tries)).toEqual([1, 1, 1]);
@@ -124,15 +124,15 @@ describe("Delivery: webhook", () => {
   it("keeps endpoints for members and keys with work:write only, on https and port 443", async () => {
     const org = "org_endpoints";
     const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
-    expect(await delivery.setEndpoint(member(org, { kind: "agent", session: "cs_x" }), { id: "wh_1", url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
-    expect(await delivery.setEndpoint(member(org, { scopes: ["work:read"] }), { id: "wh_1", url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
-    expect(await delivery.setEndpoint(member(org), { id: "wh_1", url: "http://ok.hooks.test/" })).toMatchObject({ ok: false, code: "invalid_request" });
-    expect(await delivery.setEndpoint(member(org), { id: "wh_1", url: "https://ok.hooks.test:8443/" })).toMatchObject({ ok: false, code: "invalid_request" });
+    expect(await delivery.setEndpoint(member(org, { kind: "agent", session: "cs_x" }), "wh_1", { url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await delivery.setEndpoint(member(org, { scopes: ["work:read"] }), "wh_1", { url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await delivery.setEndpoint(member(org), "wh_1", { url: "http://ok.hooks.test/" })).toMatchObject({ ok: false, code: "invalid_request" });
+    expect(await delivery.setEndpoint(member(org), "wh_1", { url: "https://ok.hooks.test:8443/" })).toMatchObject({ ok: false, code: "invalid_request" });
     expect(await bindings.DELIVERY.getByName(`${org}:wake`).listEndpoints(member(org))).toMatchObject({ ok: false, code: "not_found" });
 
-    const created = await delivery.setEndpoint(member(org), { id: "wh_1", url: "https://ok.hooks.test/", kinds: ["thread.done"] });
+    const created = await delivery.setEndpoint(member(org), "wh_1", { url: "https://ok.hooks.test/", kinds: ["thread.done"] });
     expect(created).toMatchObject({ ok: true, endpoint: { id: "wh_1", kinds: ["thread.done"], enabled: true, createdBy: "user:usr_1" } });
-    const updated = await delivery.setEndpoint(member(org), { id: "wh_1", url: "https://ok.hooks.test/two", enabled: false });
+    const updated = await delivery.setEndpoint(member(org), "wh_1", { url: "https://ok.hooks.test/two", enabled: false });
     expect(updated).toMatchObject({ ok: true, endpoint: { url: "https://ok.hooks.test/two", enabled: false } });
     // The secret is shown once, when the endpoint is made.
     expect((updated as { endpoint: { secret?: string } }).endpoint.secret).toBeUndefined();
