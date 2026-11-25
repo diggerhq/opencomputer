@@ -1,20 +1,19 @@
 // One client WebSocket (opc docs websocket/connect.mdx and methods.mdx): the
-// `ready` greeting, JSON-RPC dispatch, scopes and access, the attached
-// sessions, terminals, keepalive and the connection's own close codes.
+// `ready` greeting, JSON-RPC dispatch, scopes and access, calls to session
+// writers, terminals, keepalive and the connection's own close codes. It
+// carries no session events: clients watch sessions through the cloud (work
+// 118), so there is no attach.
 //
 // Invariants:
-// - `ready` is the first frame; attaches named in the URL follow it as
-//   `sessions.attached`, each before that session's events.
+// - `ready` is the first frame.
 // - Every method is checked in this order: known, params, scope, the ticket's
 //   sessions, the session's access list (an unknown id waits up to 2 s for its
 //   create), read-only, then run. A refusal never reaches a writer.
-// - A write's response is queued before any event of its session that arrived
-//   while it was in flight (the outbox holds the session).
 // - The connection closes with 1001 after two missed pings, 4001 when its
 //   credential's `until` passes or its key is revoked, 4008 when more than
 //   16 MiB wait to be sent; closing hangs up its terminals and links.
-// - Telemetry (catalog v2): one event per unit (attach, write batch, detach,
-//   error response, opc telemetry frame), sent as it happens; never per frame
+// - Telemetry (catalog v2): one event per unit (write batch, error response,
+//   opc telemetry frame), sent as it happens; never per frame
 //   or per event. Error events are capped per connection (a flood of refused
 //   requests is not a flood of events). opc's `telemetry` notification is
 //   checked against api/cli-telemetry.ts, rate limited, never answered; a
@@ -29,7 +28,6 @@ import { decodeParams, isMethod, type Method, WRITES } from '../api/schema.js';
 import type { CallOutcome } from '../api/writer.js';
 import { isSessionId, mintId } from '../session-ids.js';
 import type { WireClaims } from '../signed-header.js';
-import { Attachment, type AttachRequest, type EpochMoved, type WireDetachReason, WriterLinks } from './attachment.js';
 import { actorFor, hasScope, inTicket, mayAttach, scopeFor } from './edge-auth.js';
 import type { HostLink } from './host-link.js';
 import { LIMITS, TokenBucket } from './limits.js';
@@ -38,6 +36,7 @@ import { encodeError, encodeNotification, encodeResult, encodeRpcError, errors, 
 import { FlushWindow, type WireEmit } from './telemetry.js';
 import { type OpenParams, WireTerminals } from './terminal.js';
 import type { DialWriter } from './writer-client.js';
+import { WriterLinks } from './writer-links.js';
 
 export interface ConnectionDeps {
   host: HostLink;
@@ -55,16 +54,11 @@ export interface ConnectionDeps {
 
 /** The connection's own totals, for `wire.close`. */
 export interface ConnectionStats {
-  attaches: number;
   frames_in: number;
   bytes_in: number;
   frames_out: number;
   bytes_out: number;
   duration_ms: number;
-}
-
-export interface UrlAttach extends AttachRequest {
-  sessionId: string;
 }
 
 const TIMED: ReadonlySet<string> = new Set(['turns.send', 'sessions.compact', 'ping']);
@@ -76,7 +70,6 @@ export class Connection {
   readonly member: string;
   readonly keyId: string;
   readonly outbox: Outbox;
-  private attached = new Map<string, Attachment>();
   private links: WriterLinks;
   private terminals: WireTerminals;
   private bucket = new TokenBucket(LIMITS.maxRequestsPerSecond, LIMITS.requestBurst);
@@ -85,7 +78,7 @@ export class Connection {
   private timers: NodeJS.Timeout[] = [];
   private done = false;
   private readonly openedAt = Date.now();
-  private stats = { attaches: 0, frames_in: 0, bytes_in: 0, frames_out: 0, bytes_out: 0 };
+  private stats = { frames_in: 0, bytes_in: 0, frames_out: 0, bytes_out: 0 };
   private window: FlushWindow | undefined;
   /** Error events: at most 5 a second (burst 20) per connection. */
   private errorEvents = new TokenBucket(5, 20);
@@ -111,8 +104,8 @@ export class Connection {
           w?.frame(data.length);
           ws.send(data, { binary: typeof data !== 'string' }, () => done());
         },
-        onPause: (sid) => this.attached.get(sid)?.pause(),
-        onResume: (sid) => this.attached.get(sid)?.resume(),
+        onPause: () => {},
+        onResume: () => {},
         onOverflow: () => this.close(4008, 'more than 16 MiB waited to be sent'),
         handed: w && ((_sid, waited, createdMs, delta) => (delta ? w.delta(waited) : w.event(createdMs, waited))),
       },
@@ -121,8 +114,8 @@ export class Connection {
     this.terminals = new WireTerminals({ host: deps.host, outbox: this.outbox, member: this.member, route: deps.routeTerminal, emit, connectionId: this.id });
   }
 
-  /** Greet, attach what the URL names, and start reading. */
-  start(urlAttaches: UrlAttach[]) {
+  /** Greet and start reading. */
+  start() {
     const { ws } = this;
     const until = this.claims.scope.until;
     const now = Date.now();
@@ -131,7 +124,7 @@ export class Connection {
         connectionId: this.id,
         server: { version: this.deps.version, region: this.deps.region },
         protocol: { features: [] },
-        limits: { maxAttached: LIMITS.maxAttached, maxMessageBytes: LIMITS.maxMessageBytes, maxRequestsPerSecond: LIMITS.maxRequestsPerSecond },
+        limits: { maxMessageBytes: LIMITS.maxMessageBytes, maxRequestsPerSecond: LIMITS.maxRequestsPerSecond },
         expiresAt: until === undefined ? null : new Date(until).toISOString(),
         expiresInMs: until === undefined ? null : Math.max(0, until - now),
       }),
@@ -158,8 +151,6 @@ export class Connection {
     });
     ws.on('close', () => this.teardown());
     ws.on('error', () => this.teardown());
-    for (const a of urlAttaches.slice(0, LIMITS.maxAttached)) void this.urlAttach(a);
-    for (const a of urlAttaches.slice(LIMITS.maxAttached)) this.outbox.urgent(attachedError(a.sessionId, errors.tooManyAttached()));
   }
 
   close(code: number, reason: string) {
@@ -170,31 +161,12 @@ export class Connection {
     this.teardown();
   }
 
-  /** The host pushed a new access list: drop attachments the member may no longer see. */
-  accessChanged(access: SessionAccess) {
-    const a = this.attached.get(access.sessionId);
-    if (a && !mayAttach(access, this.member)) this.detach(access.sessionId, 'access_lost');
-  }
-
-  /** After a host `welcome`: every attached session is checked against the new lists (absent: lost). */
-  recheckAccess(get: (sessionId: string) => SessionAccess | undefined) {
-    for (const sid of [...this.attached.keys()]) {
-      const access = get(sid);
-      if (!access || !mayAttach(access, this.member)) this.detach(sid, 'access_lost');
-    }
-  }
-
   revoked(keyId: string) {
     if (keyId === this.keyId) this.close(4001, 'credential revoked');
   }
 
   moved(sessionId: string) {
     this.links.forget(sessionId);
-    void this.attached.get(sessionId)?.moved();
-  }
-
-  get attachedCount() {
-    return this.attached.size;
   }
 
   /** The connection's totals so far (`wire.close`). */
@@ -205,17 +177,6 @@ export class Connection {
   private emitError(method: string, code: string) {
     if (!this.deps.emit || this.errorEvents.take() > 0) return;
     this.deps.emit('wire.error', { connection_id: this.id, person_id: this.member, method: isMethod(method) ? method : undefined, code });
-  }
-
-  private async urlAttach(a: UrlAttach) {
-    const t0 = process.hrtime.bigint();
-    if (!isSessionId(a.sessionId)) return this.outbox.urgent(attachedError(a.sessionId, errors.invalidParams('attach', 'not a session id')));
-    const access = await this.access(a.sessionId, true);
-    if ('error' in access) return this.outbox.urgent(attachedError(a.sessionId, access.error));
-    const out = await this.attach(a, 'url');
-    if (out.error) this.outbox.urgent(attachedError(a.sessionId, out.error));
-    else this.outbox.urgent(encodeNotification('sessions.attached', { sessionId: a.sessionId, error: null, ...(out.result as object), timing: { serverUs: us(t0) } }));
-    this.outbox.release(a.sessionId);
   }
 
   private async onText(text: string) {
@@ -234,20 +195,13 @@ export class Connection {
     }
     if (!isMethod(m.method)) return this.outbox.urgent(encodeRpcError(m.id, -32601, 'Method not found'));
     const t0 = process.hrtime.bigint();
-    const sid = (m.params as { sessionId?: unknown } | undefined)?.sessionId;
-    // A write holds its session's events until its response is queued; an attach holds them in Attachment.start.
-    const held = typeof sid === 'string' && WRITES.has(m.method) ? sid : undefined;
-    if (held) this.outbox.hold(held);
-    const call = { attached: false };
     let out: CallOutcome;
     try {
-      out = await this.run(m.method, m.params, call);
+      out = await this.run(m.method, m.params);
     } catch {
       out = { error: errors.internal() };
     }
     this.respond(m.id, m.method, out, t0);
-    if (held) this.outbox.release(held);
-    if (call.attached) this.outbox.release(sid as string);
   }
 
   private respond(id: RpcId, method: Method, out: CallOutcome, t0: bigint) {
@@ -256,15 +210,12 @@ export class Connection {
       return this.outbox.urgent(encodeError(id, out.error.requestId ? out.error : { ...out.error, requestId: requestId() }));
     }
     let result = out.result;
-    if (method === 'sessions.attach' || TIMED.has(method)) result = { ...(result as object), timing: { serverUs: us(t0) } };
+    if (TIMED.has(method)) result = { ...(result as object), timing: { serverUs: us(t0) } };
     this.outbox.urgent(encodeResult(id, result));
   }
 
   private onNotification(method: string, params: unknown, bytes: number) {
     if (method === 'telemetry') return this.onTelemetry(params, bytes);
-    if (method !== 'sessions.ack') return;
-    const p = params as { sessionId?: unknown; seq?: unknown } | undefined;
-    if (typeof p?.sessionId === 'string' && typeof p.seq === 'number' && Number.isInteger(p.seq)) this.attached.get(p.sessionId)?.ack(p.seq);
   }
 
   /** opc's `telemetry` notification: checked, rate limited, forwarded event by event; one `wire.telemetry` per frame let through. */
@@ -285,7 +236,7 @@ export class Connection {
     emit('wire.telemetry', { connection_id: this.id, person_id: this.member, events: checked.events.length, rejected: checked.rejected, result });
   }
 
-  private async run(method: Method, raw: unknown, call: { attached: boolean }): Promise<CallOutcome> {
+  private async run(method: Method, raw: unknown): Promise<CallOutcome> {
     const decoded = decodeParams(method, raw);
     if (!decoded.ok) return { error: errors.invalidParams(decoded.field, decoded.message) };
     const params = decoded.value as Record<string, unknown>;
@@ -299,21 +250,9 @@ export class Connection {
     const sessionId = params.sessionId as string;
     const access = await this.access(sessionId, true);
     if ('error' in access) return access;
-    const a = this.attached.get(sessionId);
-    if (WRITES.has(method) && (this.claims.scope.readOnly || a?.readOnly)) return { error: errors.readOnly() };
-
-    switch (method) {
-      case 'sessions.attach':
-        if (!a && this.attached.size >= LIMITS.maxAttached) return { error: errors.tooManyAttached() };
-        call.attached = true;
-        return this.attach({ ...(params as unknown as AttachRequest), sessionId, deltas: !!params.deltas }, 'method');
-      case 'sessions.detach':
-        if (a) this.detach(sessionId, undefined);
-        return { result: {} };
-      case 'terminals.open':
-        return this.terminals.open(params as unknown as OpenParams, access.access);
-    }
-    const link = a?.link && !a.link.closed ? a.link : await this.links.get(sessionId);
+    if (WRITES.has(method) && this.claims.scope.readOnly) return { error: errors.readOnly() };
+    if (method === 'terminals.open') return this.terminals.open(params as unknown as OpenParams, access.access);
+    const link = await this.links.get(sessionId);
     if ('error' in link) return { error: link.error };
     const rid = requestId();
     const out = await link.call(method, raw, {
@@ -333,46 +272,6 @@ export class Connection {
     return { access };
   }
 
-  private async attach(o: UrlAttach, via: 'url' | 'method'): Promise<CallOutcome> {
-    const t0 = Date.now();
-    this.attached.get(o.sessionId)?.close();
-    this.outbox.drop(o.sessionId);
-    const w = this.window;
-    const a = new Attachment(
-      o.sessionId,
-      { host: this.deps.host, dial: this.deps.dial, outbox: this.outbox, detached: (sid, r, m) => this.detach(sid, r, m), metered: !!w, duplicate: w && (() => w.duplicate()) },
-      o,
-    );
-    this.attached.set(o.sessionId, a);
-    const out = await a.start(o, this.actor);
-    this.deps.emit?.('wire.attach', {
-      connection_id: this.id, person_id: this.member, session_key: o.sessionId, attach_ms: Date.now() - t0, via, resume: !!o.resume,
-      replay: o.after !== undefined || o.tailTurns !== undefined, deltas: !!o.deltas,
-      outcome: out.error ? 'failed' : 'completed', error_code: out.error?.code,
-    });
-    if (out.error) {
-      a.close();
-      if (this.attached.get(o.sessionId) === a) {
-        this.attached.delete(o.sessionId);
-        this.outbox.drop(o.sessionId);
-      }
-    } else this.stats.attaches++;
-    return out;
-  }
-
-  /** Stop sending a session; `reason` set: tell the client (`session.detached`). */
-  private detach(sessionId: string, reason: WireDetachReason | undefined, moved?: EpochMoved) {
-    const a = this.attached.get(sessionId);
-    if (!a) return;
-    a.close();
-    this.attached.delete(sessionId);
-    this.outbox.drop(sessionId);
-    if (reason) {
-      this.deps.emit?.('wire.detached', { connection_id: this.id, person_id: this.member, session_key: sessionId, reason });
-      this.outbox.urgent(encodeNotification('session.detached', { sessionId, reason, ...moved }));
-    }
-  }
-
   private timer(ms: number, fn: () => void) {
     const t = setTimeout(fn, Math.min(ms, 2 ** 31 - 1));
     t.unref?.();
@@ -384,17 +283,9 @@ export class Connection {
     this.done = true;
     this.window?.close();
     for (const t of this.timers) clearTimeout(t);
-    for (const a of this.attached.values()) a.close();
-    this.attached.clear();
     this.links.close();
     this.terminals.closeAll();
     this.outbox.close();
     this.deps.closed(this);
   }
-}
-
-function attachedError(sessionId: string, error: NonNullable<CallOutcome['error']>) {
-  return encodeNotification('sessions.attached', {
-    sessionId, error, session: null, logEpoch: null, epochStartSeq: null, capabilities: null, earlierTurns: null, timing: null,
-  });
 }

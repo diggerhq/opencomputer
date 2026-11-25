@@ -9,7 +9,7 @@
 // type or field (informational, as readers must); every object it returns has
 // every field present (null when it does not apply) and is a fresh copy. What
 // the log does not say comes from the seed (owner, dashboard url) and from the
-// journal (`setLog`: lastSeq, logEpoch, epochStartSeq).
+// journal (`setLog`: lastSeq).
 //
 // `snapshot` / `Fold.restore` carry the fold's state through a journal
 // checkpoint (journal-checkpoint.ts): restoring a snapshot taken after events
@@ -80,7 +80,7 @@ export class Fold {
   private lastActiveAt: string | null = null;
   private lastText: string | null = null;
   private context: { usedTokens: number | null; windowTokens: number | null } = { usedTokens: null, windowTokens: null };
-  private log = { lastSeq: 0, logEpoch: 1, epochStartSeq: 1 };
+  private log = { lastSeq: 0 };
   private turnMap = new Map<string, TurnState>();
   /** Turns not ended, in creation order. */
   private live = new Set<string>();
@@ -129,7 +129,7 @@ export class Fold {
     return f;
   }
 
-  setLog(info: { lastSeq: number; logEpoch: number; epochStartSeq: number }): void {
+  setLog(info: { lastSeq: number }): void {
     this.log = { ...info };
   }
 
@@ -390,8 +390,6 @@ export class Fold {
       lastText: this.lastText,
       context: { ...this.context },
       lastSeq: this.log.lastSeq,
-      logEpoch: this.log.logEpoch,
-      epochStartSeq: this.log.epochStartSeq,
       createdAt: this.createdAt ?? now,
       lastActiveAt: this.lastActiveAt ?? this.createdAt ?? now,
       syncedAt: null,

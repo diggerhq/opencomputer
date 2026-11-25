@@ -12,12 +12,12 @@
 //   call is in flight the subscription's sink holds events (the hub pulls
 //   them from the log later, never queued here). A connection is one
 //   session's writer, so only that session's events wait, and only on this
-//   connection (each relay attachment dials its own). Deltas still go while
+//   connection. Deltas still go while
 //   no event is held (the hub sends deltas only when caught up, so none
 //   overtakes a held event), so a slow write (a model switch, a suspend) does
 //   not freeze streaming text. A full socket holds both until `drain`.
-// - At most one subscription per connection; its `result` (the
-//   `sessions.attached` body less sessionId) goes out before its events.
+// - At most one subscription per connection; its `result` (writer.ts
+//   `Attached`) goes out before its events.
 // - Closing the connection closes its subscription; a client's pending calls
 //   resolve `unavailable` (retryable) when the socket closes first.
 

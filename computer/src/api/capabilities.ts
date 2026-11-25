@@ -1,5 +1,4 @@
-// What a session may use (objects.mdx#capabilities), as the writer serves it in
-// `sessions.attached`. Published as schema/capabilities.v1.json (scripts/
+// What a session may use (objects.mdx#capabilities). Published as schema/capabilities.v1.json (scripts/
 // api-schema.mjs; capabilities.test.ts holds this list to it): blue vendors
 // that file and tests its own copy, which it checks create and PATCH against
 // and serves over HTTP, against it (review r1 contract 7, r2 P2-5). Static: it

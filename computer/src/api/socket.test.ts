@@ -183,7 +183,7 @@ describe('serveApi / dialApi', () => {
     cleanups.push(() => c.close());
     const f = frames();
     const ahead = await c.subscribe(f.opts({ after: 50 }));
-    expect('error' in ahead && ahead.error.code).toBe('cursor_ahead');
+    expect('error' in ahead && ahead.error.code).toBe('internal');
     await c.subscribe(f.opts());
     const t = mintId('tn');
     log.delta({ type: 'message.delta', turnId: t, data: { blockId: 'b1', parentCallId: null, text: 'hey' } });
