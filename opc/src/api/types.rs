@@ -36,7 +36,7 @@ pub struct Settings {
     pub effort: Option<String>,
     pub mode: Option<String>,
     /// `fast` or `standard`; absent or null (older servers) means fast.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Printed as `null` then: the schema requires the field.
     pub speed: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -434,7 +434,7 @@ mod tests {
     fn speed_is_optional_in_settings() {
         let s: Settings = serde_json::from_value(json!({"model": "m", "effort": "high", "mode": "default"})).unwrap();
         assert_eq!(s.speed, None);
-        assert!(serde_json::to_value(&s).unwrap().get("speed").is_none());
+        assert!(serde_json::to_value(&s).unwrap()["speed"].is_null());
         let s: Settings = serde_json::from_value(json!({"model": "m", "effort": null, "mode": "default", "speed": "standard"})).unwrap();
         assert_eq!(s.speed.as_deref(), Some("standard"));
     }
