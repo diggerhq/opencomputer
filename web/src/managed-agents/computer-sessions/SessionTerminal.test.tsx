@@ -53,7 +53,7 @@ let container: HTMLDivElement
 let root: Root
 let size = 0
 
-beforeEach(() => {
+beforeEach(async () => {
   ;(
     globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true
@@ -81,6 +81,10 @@ beforeEach(() => {
   document.body.append(container)
   root = createRoot(container)
   act(() => root.render(<SessionTerminal sessionId="cs_1" />))
+  // The terminal opens once the web font has loaded.
+  await act(async () => {
+    await Promise.resolve()
+  })
 })
 afterEach(() => {
   act(() => root.unmount())

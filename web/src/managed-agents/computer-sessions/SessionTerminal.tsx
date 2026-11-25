@@ -20,6 +20,8 @@ const THEME = {
   selectionBackground: 'rgba(230, 225, 216, 0.16)',
 }
 
+const FONT_NAME = '"Geist Mono Variable"'
+
 /** How long Wake waits for the session's computer before trying the terminal again. */
 const WAKE_RETRY_MS = 3_000
 
@@ -44,51 +46,67 @@ export function SessionTerminal({ sessionId: id }: SidebarTabProps) {
   const [dial, setDial] = useState(0)
 
   useEffect(() => {
-    if (!host.current) return
-    const term = new XTerm({
-      cursorBlink: true,
-      fontSize: 13,
-      fontFamily: '"Geist Mono Variable", Menlo, Monaco, Consolas, monospace',
-      theme: THEME,
-    })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
-    term.open(host.current)
     const el = host.current
-    // A hidden tab or closed sidebar has no size to fit to.
-    const refit = () => {
-      if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit()
-    }
-    refit()
-    let conn: TerminalConnection | null = openTerminal(
-      {
-        sessionId: id,
-        cols: term.cols,
-        rows: term.rows,
-        ticket: () =>
-          mintTerminalTicket(id).catch((e: unknown) =>
-            Promise.reject(ticketError(e)),
-          ),
-      },
-      {
-        onState: (s) => {
-          setState(s)
-          if (s.kind === 'open') term.focus()
+    if (!el) return
+    let stop: (() => void) | null = null
+    let cancelled = false
+    // xterm measures its cells once, on open: with the web font not yet
+    // loaded it measures a fallback and the text comes out unevenly spaced.
+    const font = document.fonts?.load(`13px ${FONT_NAME}`) ?? Promise.resolve()
+    void font
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) stop = start(el)
+      })
+    const start = (el: HTMLDivElement) => {
+      const term = new XTerm({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: `${FONT_NAME}, Menlo, Monaco, Consolas, monospace`,
+        theme: THEME,
+      })
+      const fit = new FitAddon()
+      term.loadAddon(fit)
+      term.open(el)
+      // A hidden tab or closed sidebar has no size to fit to.
+      const refit = () => {
+        if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit()
+      }
+      refit()
+      let conn: TerminalConnection | null = openTerminal(
+        {
+          sessionId: id,
+          cols: term.cols,
+          rows: term.rows,
+          ticket: () =>
+            mintTerminalTicket(id).catch((e: unknown) =>
+              Promise.reject(ticketError(e)),
+            ),
         },
-        onData: (bytes) => term.write(bytes),
-      },
-    )
-    const input = term.onData((d) => conn?.send(d))
-    const resize = term.onResize(({ cols, rows }) => conn?.resize(cols, rows))
-    const observer = new ResizeObserver(refit)
-    observer.observe(el)
+        {
+          onState: (s) => {
+            setState(s)
+            if (s.kind === 'open') term.focus()
+          },
+          onData: (bytes) => term.write(bytes),
+        },
+      )
+      const input = term.onData((d) => conn?.send(d))
+      const resize = term.onResize(({ cols, rows }) => conn?.resize(cols, rows))
+      const observer = new ResizeObserver(refit)
+      observer.observe(el)
+      return () => {
+        observer.disconnect()
+        input.dispose()
+        resize.dispose()
+        conn?.close()
+        conn = null
+        term.dispose()
+      }
+    }
     return () => {
-      observer.disconnect()
-      input.dispose()
-      resize.dispose()
-      conn?.close()
-      conn = null
-      term.dispose()
+      cancelled = true
+      stop?.()
     }
   }, [id, dial])
 
@@ -121,7 +139,16 @@ export function SessionTerminal({ sessionId: id }: SidebarTabProps) {
           onReconnect={() => setDial((n) => n + 1)}
         />
       </div>
-      <div ref={host} className="min-h-0 flex-1 px-2 pb-2" />
+      {/* Geist Mono joins runs like `--` and `..`; xterm measures each glyph
+          from such a run and would pad single ones apart. */}
+      <div
+        ref={host}
+        style={{
+          fontVariantLigatures: 'none',
+          fontFeatureSettings: '"liga" 0, "calt" 0',
+        }}
+        className="min-h-0 flex-1 px-2 pb-2"
+      />
     </div>
   )
 }
