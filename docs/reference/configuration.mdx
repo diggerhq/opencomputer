@@ -64,7 +64,7 @@ description: "Every environment variable, by the process that reads it, with its
 |---|---|---|
 | `SP_IDLE_MS` | `7200000` | Milliseconds without a message before the host stops a runner. |
 | `SP_POOL_SIZE` | `2` | Spare runners kept started for new sessions. `0`: no pool. |
-| `SP_LAUNCH` | `systemd` on Linux, `detached` elsewhere | `systemd`: runners are transient systemd user units. `detached`: detached processes that log to `<SP_RUN>/logs/`. |
+| `SP_LAUNCH` | `systemd` on Linux, `detached` elsewhere | `systemd`: runners are transient systemd user units. `detached`: detached processes that log to `<SP_RUN>/logs/`. `podman`: each session runs in its own container of `SP_IMAGE`, started in a user unit of the runner user; needs `SP_RUNNER_USER`, `SP_IMAGE` and `SP_IMAGE_ABI`. A restarted host takes back its running containers; spares are removed. |
 | `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. See Resource limits. |
 | `SP_RUNNER_USER` | unset: runners run as the host's user | Start runners as this user through `sudo`. Where the host runs as `sp-host`, the install sets `agent`, with `SP_RUNNER_PATH`. |
 | `SP_RUNNER_PATH` | unset | `PATH` of runners and workspace commands when `SP_RUNNER_USER` is set. |
