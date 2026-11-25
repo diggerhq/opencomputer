@@ -19,7 +19,7 @@ import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { HOST_RUN, type RunnerSpec } from '../protocol.js';
 import { definitionFile } from '../workspaces/index.js';
-import { systemdRunPrefix } from './runner-limits.js';
+import { runnerMaxCap, systemdRunPrefix } from './runner-limits.js';
 import { runnerUser } from './runner-user.js';
 import { runnerVars } from '../runner-env.js';
 import { PODMAN, type PodmanError, runBounded } from './sandbox/podman.js';
@@ -27,7 +27,7 @@ import { startArgs, unitName } from './sandbox/podman-args.js';
 
 export type LaunchMode = 'systemd' | 'podman' | 'detached';
 
-const SYSTEMD_RUN = systemdRunPrefix(os.totalmem());
+const SYSTEMD_RUN = systemdRunPrefix(os.totalmem(), runnerMaxCap(process.env.SP_RUNNER_MEMORY_MAX).cap);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The command that starts a runner from the release at `root`. */

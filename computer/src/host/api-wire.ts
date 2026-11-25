@@ -21,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import type { WireHooks, WireLinkLike } from './api-relay.js';
-import { systemdRunPrefix } from './runner-limits.js';
+import { runnerMaxCap, systemdRunPrefix } from './runner-limits.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 import type { RunnerUser } from './runner-user.js';
 import { createTerminals, type TerminalsOptions } from './terminal.js';
@@ -67,7 +67,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       dir: path.join(dir, 'terminals'),
       launch: podman ? 'podman' : o.launch === 'systemd' ? 'systemd' : 'detached',
       user: o.user,
-      systemdRun: o.systemdRun ?? systemdRunPrefix(os.totalmem()),
+      systemdRun: o.systemdRun ?? systemdRunPrefix(os.totalmem(), runnerMaxCap(process.env.SP_RUNNER_MEMORY_MAX).cap),
       path: o.path,
       group,
       inside: podman ? o.terminal : undefined,

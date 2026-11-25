@@ -95,7 +95,8 @@ wait_unit_gone() { local i; for ((i = 0; i < 100; i++)); do unit_active "$1" || 
 
 # systemdRunPrefix(os.totalmem()) of src/host/runner-limits.ts: 60% and 75% of
 # the machine in whole MiB, capped at 12G and 16G. SP_SYSTEMD_RUN replaces it,
-# as it does for the host.
+# as it does for the host. The gates keep the default caps whatever
+# SP_RUNNER_MEMORY_MAX is: they check isolation, not the sizes.
 default_prefix() {
   if [[ -n ${SP_SYSTEMD_RUN:-} ]]; then echo "$SP_SYSTEMD_RUN"; return; fi
   local kib high max

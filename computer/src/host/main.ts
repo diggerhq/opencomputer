@@ -17,6 +17,8 @@
 //                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
 //                              unit gets no --setenv); the
 //                              default sizes MemoryHigh/MemoryMax from the machine (runner-limits.ts)
+//   [SP_RUNNER_MEMORY_MAX=16G] the default prefix's MemoryMax cap (MemoryHigh's is 75% of it); still at most 75% of RAM.
+//                              Bytes or K/M/G/T (powers of 1024), at least 1G; else 16G and a warning. Ignored with SP_SYSTEMD_RUN
 //   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off
 //   [SP_VERSION]               code version (the release's commit); else `git rev-parse`
 //   [SP_TELEMETRY_URL]         telemetry collector (work 054); unset: telemetry is validated and discarded
@@ -84,6 +86,7 @@ import type { Dimensions } from '../telemetry/envelope.js';
 import { assignedIdentity, codeVersion, identityFile, loadIdentity, saveIdentity } from './identity.js';
 import { hostModelAccess } from './model-access.js';
 import { unitExists } from './launch.js';
+import { runnerMaxCap } from './runner-limits.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
 import { gatewayUpdates } from './gateway-updates.js';
@@ -105,6 +108,11 @@ const VERSION = codeVersion(env.SP_VERSION, ROOT);
 
 // Workspace writes as the runners' user (077): `people` stays theirs on a computer whose host is sp-host.
 configureAsRunner(runnerUser(env), env);
+
+// The runners' memory cap is read where their prefix is built (launch.ts, api-wire.ts); a bad one is said once, here.
+const memoryCap = runnerMaxCap(env.SP_RUNNER_MEMORY_MAX);
+if (memoryCap.error) log.warn(`${memoryCap.error}; runners keep MemoryMax at most 16G`);
+else if (env.SP_RUNNER_MEMORY_MAX?.trim() && env.SP_SYSTEMD_RUN) log.warn('SP_RUNNER_MEMORY_MAX is ignored: SP_SYSTEMD_RUN sets the runners\' memory limits');
 
 // ---------------------------------------------------------------- telemetry (work 054)
 
