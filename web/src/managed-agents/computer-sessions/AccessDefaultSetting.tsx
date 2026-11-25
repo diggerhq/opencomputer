@@ -11,6 +11,7 @@ import {
 } from '@/components/settings'
 import { useAuth } from '@/hooks/useAuth'
 import { notifyError } from '@/lib/errors'
+import { explainAccessError } from './access'
 import {
   getOrganizationSettings,
   sessionKeys,
@@ -55,7 +56,8 @@ export function SessionAccessDefaultSection({ id }: { id?: string }) {
       qc.setQueryData(sessionKeys.orgSettings, next)
       setConfirming(false)
     },
-    onError: (e) => notifyError("Couldn't change the default access.", e),
+    onError: (e) =>
+      notifyError("Couldn't change the default access.", explainAccessError(e)),
   })
 
   // Not on this backend yet: nothing to set.

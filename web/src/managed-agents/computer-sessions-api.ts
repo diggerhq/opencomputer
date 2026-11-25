@@ -239,7 +239,6 @@ export function updateSession(
   patch: SessionSettings & {
     title?: string
     archived?: boolean
-    access?: AccessInput
   },
 ) {
   return apiFetch(
@@ -248,6 +247,21 @@ export function updateSession(
     SessionResultSchema,
     '/api',
   ).then((r) => r.session)
+}
+
+// Changes who has access. An org admin outside the session gets no session
+// back (Q4), only what its access now is.
+export function updateSessionAccess(id: string, access: AccessInput) {
+  return apiFetch(
+    `${PREFIX}/sessions/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify({ access }) },
+    z.looseObject({
+      session: SessionSchema.nullable(),
+      access: AccessSchema.optional(),
+      canManageAccess: z.boolean().optional(),
+    }),
+    '/api',
+  )
 }
 
 // Sets the session aside in triage until something newer needs its owner:
@@ -370,7 +384,7 @@ export type OrganizationSettings = z.infer<typeof OrganizationSettingsSchema>
 
 export function getOrganizationSettings() {
   return apiFetch(
-    `${PREFIX}/organization/settings`,
+    `${PREFIX}/settings`,
     undefined,
     z.looseObject({ settings: OrganizationSettingsSchema }),
     '/api',
@@ -381,7 +395,7 @@ export function updateOrganizationSettings(
   patch: Partial<Pick<OrganizationSettings, 'apiAccessDefault'>>,
 ) {
   return apiFetch(
-    `${PREFIX}/organization/settings`,
+    `${PREFIX}/settings`,
     { method: 'PATCH', body: JSON.stringify(patch) },
     z.looseObject({ settings: OrganizationSettingsSchema }),
     '/api',

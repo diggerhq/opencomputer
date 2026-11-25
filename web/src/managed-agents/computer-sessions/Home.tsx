@@ -5,6 +5,7 @@ import { ArrowUp, Loader2 } from 'lucide-react'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { Button } from '@/components/ui/button'
 import { notifyError } from '@/lib/errors'
+import { explainAccessError } from './access'
 import {
   createSession,
   getOrganizationSettings,
@@ -61,7 +62,8 @@ export default function ComputerSessionsHome() {
       void qc.invalidateQueries({ queryKey: sessionKeys.all })
       void navigate(`/computer/sessions/${session.id}`)
     },
-    onError: (e) => notifyError('Could not start the session', e),
+    onError: (e) =>
+      notifyError('Could not start the session', explainAccessError(e)),
   })
   const send = () => {
     if (input.trim() && !start.isPending) start.mutate()

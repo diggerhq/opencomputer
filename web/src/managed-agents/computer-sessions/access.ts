@@ -1,3 +1,4 @@
+import { ApiError } from '@/api/errors'
 import type {
   AccessInput,
   AccessMode,
@@ -74,4 +75,35 @@ export function shareWarning(isOwner: boolean) {
   return isOwner
     ? 'Anyone who can drive this session runs it as you: with your secrets, your connections and your model subscription.'
     : 'Anyone who can drive this session runs it as its owner: with their secrets, their connections and their model subscription.'
+}
+
+/**
+ * Why a change of access was refused, in words: the server's reasons (CTO-37)
+ * mapped to what the person can do about them. Anything else stays as it came.
+ */
+export function explainAccessError(
+  e: unknown,
+  nameOf: (id: string) => string | undefined = () => undefined,
+): unknown {
+  if (!(e instanceof ApiError)) return e
+  const reason = e.details?.reason
+  if (reason === 'unknown_member') {
+    // The message opens with the person as they were sent.
+    const id = e.message.split(' ')[0]
+    const who = (id && nameOf(id)) || 'Someone you picked'
+    return new Error(
+      `${who} hasn't used OpenComputer in this organization yet. They can be added once they have signed in to it.`,
+    )
+  }
+  if (reason === 'not_member')
+    return new Error(
+      'Only its owner, the people it is shared with and admins can change who has access.',
+    )
+  if (reason === 'access_in_slack')
+    return new Error(
+      'This session runs in Slack: change who has access in its thread, with !access.',
+    )
+  if (e.type === 'admin_required')
+    return new Error('Only an organization admin can change this.')
+  return e
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { ApiError } from '@/api/errors'
 import { SessionSchema } from '../computer-sessions-api'
 import {
   accessLabel,
+  explainAccessError,
   normalizeAccess,
   sameAccess,
   widens,
@@ -153,5 +155,35 @@ describe('SessionSchema', () => {
   })
   it('accepts a session without them', () => {
     expect(SessionSchema.parse(base).access).toBeUndefined()
+  })
+})
+
+describe('explainAccessError', () => {
+  it('names the unknown person and says how they get known', () => {
+    const e = new ApiError(
+      'usr_a is not a member of this organization (or has never signed in to OpenComputer).',
+      400,
+      'invalid_request',
+      { field: 'access.people', reason: 'unknown_member' },
+    )
+    expect(
+      (
+        explainAccessError(e, (id) =>
+          id === 'usr_a' ? 'Ana' : undefined,
+        ) as Error
+      ).message,
+    ).toBe(
+      "Ana hasn't used OpenComputer in this organization yet. They can be added once they have signed in to it.",
+    )
+  })
+
+  it('explains a refusal to change access', () => {
+    const e = new ApiError('x', 403, 'forbidden', { reason: 'not_member' })
+    expect((explainAccessError(e) as Error).message).toMatch(/Only its owner/)
+  })
+
+  it('passes anything else through', () => {
+    const e = new ApiError('boom', 500)
+    expect(explainAccessError(e)).toBe(e)
   })
 })

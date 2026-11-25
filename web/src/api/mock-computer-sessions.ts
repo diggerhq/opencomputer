@@ -780,7 +780,7 @@ export function computerSessionsMock(
 
   if (rest === '/capabilities') return { capabilities }
   if (rest === '/me') return { person }
-  if (rest === '/organization/settings') {
+  if (rest === '/settings') {
     if (method === 'PATCH')
       Object.assign(orgSettings, pick(input, ['apiAccessDefault']))
     return { settings: orgSettings }

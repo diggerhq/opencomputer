@@ -22,18 +22,17 @@ import {
   sendTurn,
   sessionKeys,
   updateSession,
-  SessionSchema,
+  updateSessionAccess,
   type AccessInput,
   type IfBusy,
   type Session,
   type SessionEvent,
-  type SessionPage as SessionListPage,
   type SessionSettings,
 } from '../computer-sessions-api'
-import { withPerson } from './access'
+import { explainAccessError, withPerson } from './access'
 import { AccessPicker } from './AccessPicker'
 import { Item } from './conversation'
-import { useMemberEmails, useMyMemberId } from './members'
+import { useMemberEmails, useMyMemberId, useOrgPeople } from './members'
 import { SessionWork } from '../work/SessionWork'
 import { AskCard, SettingsPickers, StatusDot } from './parts'
 import {
@@ -93,7 +92,7 @@ function useSessionEvents(id: string, onSessionEvent: () => void) {
             continue
           }
           // Gone, or not shared with the caller: nothing to follow.
-          if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+          if (e instanceof ApiError && e.status === 404) {
             setLoaded(true)
             return
           }
@@ -110,10 +109,18 @@ function useSessionEvents(id: string, onSessionEvent: () => void) {
 
 export default function ComputerSession() {
   const { id = '' } = useParams()
-  return <SessionPage key={id} id={id} />
+  // Getting into a session starts its page over, events and all.
+  const [entered, setEntered] = useState(0)
+  return (
+    <SessionPage
+      key={`${id}:${entered}`}
+      id={id}
+      onEntered={() => setEntered((n) => n + 1)}
+    />
+  )
 }
 
-function SessionPage({ id }: { id: string }) {
+function SessionPage({ id, onEntered }: { id: string; onEntered: () => void }) {
   const qc = useQueryClient()
   const session = useQuery({
     queryKey: sessionKeys.one(id),
@@ -142,19 +149,9 @@ function SessionPage({ id }: { id: string }) {
     if (el && pinned.current) el.scrollTop = el.scrollHeight
   }, [items.length, events.length, s?.asks.length])
 
+  // Gone, or not shared with the caller: the API doesn't say which (CTO-37).
   if (session.error instanceof ApiError && session.error.status === 404) {
-    return (
-      <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
-        <p>This session does not exist or is not shared with you.</p>
-        <Link to="/computer/sessions" className="text-primary hover:underline">
-          Start a new session
-        </Link>
-      </div>
-    )
-  }
-
-  if (session.error instanceof ApiError && session.error.status === 403) {
-    return <NoAccess id={id} error={session.error} />
+    return <NotFound id={id} onEntered={onEntered} />
   }
 
   const openAsks = s?.asks.filter((a) => a.status === 'open') ?? []
@@ -207,13 +204,22 @@ function SessionPage({ id }: { id: string }) {
 
 function useUpdateAccess(id: string) {
   const qc = useQueryClient()
+  const people = useOrgPeople()
+  const nameOf = (pid: string) => {
+    const p = people?.find((x) => x.ids.includes(pid))
+    return p ? p.name || p.email : undefined
+  }
   return useMutation({
-    mutationFn: (access: AccessInput) => updateSession(id, { access }),
-    onSuccess: (session) => {
-      qc.setQueryData(sessionKeys.one(id), session)
+    mutationFn: (access: AccessInput) => updateSessionAccess(id, access),
+    onSuccess: (r) => {
+      if (r.session) qc.setQueryData(sessionKeys.one(id), r.session)
       void qc.invalidateQueries({ queryKey: sessionKeys.all })
     },
-    onError: (e) => notifyError('Could not change who has access', e),
+    onError: (e) =>
+      notifyError(
+        'Could not change who has access',
+        explainAccessError(e, nameOf),
+      ),
   })
 }
 
@@ -237,57 +243,60 @@ function SessionAccess({ session: s }: { session: Session }) {
   )
 }
 
-// A session the caller may not open (Q4: admins neither). An admin, or anyone
-// else who may manage it, still changes who has access, and may add themselves
-// to get in. What the session is comes from the 403 when it says, else from a
-// list that showed it.
-function NoAccess({ id, error }: { id: string; error: ApiError }) {
-  const qc = useQueryClient()
+// A session that isn't there for the caller. The API answers the same for one
+// that doesn't exist and one not shared with them, so nothing leaks. An org
+// admin may still change who has access by id, without seeing it (Q4): the
+// current access is hidden until a change answers with it, and including
+// themselves lets them in.
+function NotFound({ id, onEntered }: { id: string; onEntered: () => void }) {
   const me = useMyMemberId()
+  const people = useOrgPeople()
   const update = useUpdateAccess(id)
-  const listed = qc
-    .getQueriesData<SessionListPage>({ queryKey: [...sessionKeys.all, 'list'] })
-    .flatMap(([, page]) => page?.sessions ?? [])
-    .find((x) => x.id === id)
-  const s = SessionSchema.safeParse(error.details?.session).data ?? listed
-  const manage = !!s?.access && !!s.canManageAccess
+  const [known, setKnown] = useState<AccessInput | null>(null)
+  const admin = !!me && !!people?.find((p) => p.ids.includes(me))?.admin
+  const change = async (next: AccessInput) => {
+    const r = await update.mutateAsync(next)
+    if (r.session) onEntered()
+    else if (r.access) setKnown(r.access)
+  }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm">
-      <Lock className="text-muted-foreground size-5" aria-hidden />
-      <p className="font-medium">You don't have access to this session.</p>
-      {s && manage && s.access ? (
+      {admin ? (
+        <Lock className="text-muted-foreground size-5" aria-hidden />
+      ) : null}
+      <p className={admin ? 'font-medium' : 'text-muted-foreground'}>
+        This session does not exist or is not shared with you.
+      </p>
+      {admin ? (
         <>
           <p className="text-muted-foreground max-w-sm">
-            You can change who has access. To open it, add yourself: you would
-            drive it with its owner's secrets and subscription.
+            As an admin you can change who has access to it without seeing it.
+            To open it, include yourself: you would drive it with its owner's
+            secrets and subscription.
           </p>
           <div className="flex items-center gap-2">
             <AccessPicker
-              value={s.access}
+              value={known ?? { mode: 'owner' }}
+              unknown={!known}
               isOwner={false}
-              ownerIds={s.owner?.id ? [s.owner.id] : []}
-              onSave={(next) => update.mutateAsync(next)}
+              onSave={change}
               pending={update.isPending}
             />
-            {me ? (
+            {known && me && known.mode !== 'org' ? (
               <Button
                 size="sm"
                 variant="outline"
                 disabled={update.isPending}
-                onClick={() => update.mutate(withPerson(s.access!, me))}
+                onClick={() =>
+                  void change(withPerson(known, me)).catch(() => {})
+                }
               >
                 Add me
               </Button>
             ) : null}
           </div>
         </>
-      ) : (
-        <p className="text-muted-foreground max-w-sm">
-          {s?.owner?.name
-            ? `Ask ${s.owner.name} to share it with you.`
-            : 'Ask its owner to share it with you.'}
-        </p>
-      )}
+      ) : null}
       <Link to="/computer/sessions" className="text-primary hover:underline">
         Start a new session
       </Link>
