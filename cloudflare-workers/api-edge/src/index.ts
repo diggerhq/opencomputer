@@ -82,6 +82,13 @@ import {
   withComputerApiCors,
   COMPUTER_API_PREFIX,
 } from "./computer_api";
+import {
+  appDeviceLive,
+  authenticateAppToken,
+  handleAppAuth,
+  looksLikeAppToken,
+  parseAppCredentialId,
+} from "./app_auth";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import { sendLoopsEvent, type LoopsEnv } from "./loops";
 import {
@@ -1569,7 +1576,21 @@ async function computerApiCall(
   }
   let caller: Caller | null = null;
   let viaKey = false;
-  if (credential.key) {
+  if (credential.key && looksLikeAppToken(credential.key)) {
+    // The Mac app's token (spec 34.3): a member, as the cookie is.
+    const app = await authenticateAppToken(credential.key, env);
+    if (app) {
+      facts.via = "app";
+      caller = {
+        orgID: app.orgID,
+        userID: app.userID,
+        role: app.role,
+        userName: app.userName,
+        userEmail: app.userEmail,
+        ocPrincipal: app.principal,
+      };
+    }
+  } else if (credential.key) {
     viaKey = true;
     facts.via = "key";
     caller = await authenticateKey(credential.key, env, ctx);
@@ -1830,6 +1851,7 @@ async function liveCredentials(req: Request, env: Env, ctx: ExecutionContext): P
 
 /** The principal of a token Live was handed: an API key, null otherwise. */
 async function principalOfToken(token: string, env: Env, ctx: ExecutionContext): Promise<Principal | null> {
+  if (looksLikeAppToken(token)) return (await authenticateAppToken(token, env))?.principal ?? null;
   if (!token.startsWith("osb_")) return null;
   const caller = await authenticateKey(token, env, ctx);
   return caller ? principalOfKeyCaller(caller, null) : null;
@@ -1838,6 +1860,8 @@ async function principalOfToken(token: string, env: Env, ctx: ExecutionContext):
 /** Whether a credential id still verifies, read from D1 (no cache). */
 async function credentialLive(id: string, env: Env): Promise<boolean> {
   const nowSec = Math.floor(Date.now() / 1000);
+  const device = parseAppCredentialId(id);
+  if (device) return appDeviceLive(device, env);
   const cookie = parseCookieCredentialId(id);
   if (cookie) {
     if (cookie.expSec <= nowSec) return false;
@@ -2363,6 +2387,13 @@ export default {
     // Browser auth flow.
     if (path === "/auth/login")    { if (req.method === "GET")  return withFirstTouchCookie(req, await authLogin(req, env)); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
+    if (path.startsWith("/auth/app/")) {
+      return handleAppAuth(req, env, path, {
+        session: (r) => authDashboard(r, env),
+        revoke: (org, id) => revokeLiveCredential(env, org, id),
+        waitUntil: (p) => ctx.waitUntil(p),
+      });
+    }
     if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env, ctx); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 
