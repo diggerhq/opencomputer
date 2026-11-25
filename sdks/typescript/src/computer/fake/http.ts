@@ -148,9 +148,10 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
     const r = org.need("result", id);
     const diff = org.diffs.get(id);
     if (r.type !== "pr" || diff == null) throw new Refusal("not_found", "not a pull request with a diff");
-    const etag = `"${org.reviews.get(id)?.head ?? (r.meta?.head as string | undefined) ?? id}"`;
+    const head = org.reviews.get(id)?.head ?? (r.meta?.head as string | undefined) ?? id;
+    const etag = `"${head}"`;
     if (headers.get("if-none-match") === etag) return { status: 304, headers: { etag } };
-    return { status: 200, text: diff, headers: { etag, "content-type": "text/x-diff; charset=utf-8" } };
+    return { status: 200, body: { protocol: 1, head, diff }, headers: { etag } };
   }
   if (method === "GET" && (m = /^\/work\/tracks\/([^/]+)\/doc\/revisions(?:\/(\d+))?$/.exec(path))) {
     const tid = decodeURIComponent(m[1]);
