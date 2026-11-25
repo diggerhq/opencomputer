@@ -103,6 +103,9 @@ describe("PATCH and aside (spec 37.2)", () => {
     expect((await call("DELETE", `/sessions/${SID}/aside`)).status).toBe(200);
     expect(org.patchSession).toHaveBeenLastCalledWith(expect.anything(), SID, { aside: null });
     expect((await call("PUT", `/sessions/${SID}/aside`, { body: { ref: "a b" } })).status).toBe(400);
+    const reader = { ...member, apiKey: { id: "key_1", hash: "a".repeat(64), name: "r", kind: "user", scopes: ["sessions:read"], expiresAt: null, createdAt: null } } as RequestIdentity;
+    expect((await call("PUT", `/sessions/${SID}/aside`, { body: { ref: "x" }, identity: reader })).status).toBe(403);
+    expect(org.patchSession).toHaveBeenCalledTimes(2);
   });
 });
 
