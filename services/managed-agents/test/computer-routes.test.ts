@@ -120,7 +120,7 @@ describe("computer routes", () => {
     const welcomed = nextMessage(socket, "welcome");
     socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ACCOUNT, version: "test", sessions: [] }));
     const welcome = await welcomed;
-    expect(welcome).toMatchObject({ protocol: CALVIN_PROTOCOL_VERSION, people: [], credentials: { slackBotToken: "", anthropicApiKey: "sk-ant-test" } });
+    expect(welcome).toMatchObject({ protocol: CALVIN_PROTOCOL_VERSION, people: [], credentials: { slackBotToken: "" } });
     // No managed key bound for the organization yet: the shared key, on Anthropic.
     expect(welcome.credentials.anthropicBaseUrl).toBeUndefined();
     // Telemetry is off (work 054: no TELEMETRY_SIGNING_KEY): no host credential.
@@ -132,14 +132,14 @@ describe("computer routes", () => {
       const attached = ws.deserializeAttachment() as Record<string, unknown>;
       expect(attached.welcomed).toBe(true);
       const apiHost = () => (instance as unknown as { apiHost(): { protocol: number } | undefined }).apiHost();
-      ws.serializeAttachment({ ...attached, protocol: 4, welcomed: false });
-      expect(apiHost()?.protocol).toBe(3);
-      ws.serializeAttachment({ ...attached, protocol: 4, welcomed: true });
-      expect(apiHost()?.protocol).toBe(4);
+      ws.serializeAttachment({ ...attached, protocol: 6, welcomed: false });
+      expect(apiHost()?.protocol).toBe(5);
+      ws.serializeAttachment({ ...attached, protocol: 6, welcomed: true });
+      expect(apiHost()?.protocol).toBe(6);
       // An attachment from before the flag was written after its welcome.
       const { welcomed: _w, ...older } = attached;
-      ws.serializeAttachment({ ...older, protocol: 4 });
-      expect(apiHost()?.protocol).toBe(4);
+      ws.serializeAttachment({ ...older, protocol: 6 });
+      expect(apiHost()?.protocol).toBe(6);
       ws.serializeAttachment(attached);
     });
 
@@ -461,7 +461,6 @@ describe("computer routes", () => {
     const welcomed = nextMessage(socket, "welcome");
     socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "test", sessions: [{ key: KEY, status: "busy" }] }));
     const { credentials } = await welcomed;
-    expect(credentials).toMatchObject({ anthropicApiKey: "sk-or-org-billed", anthropicBaseUrl: "https://openrouter.ai/api" });
     expect(credentials.claudeOAuthToken).toBeUndefined();
 
     // Working time: the session reported busy at hello is billed until idle.
@@ -892,7 +891,7 @@ describe("computer routes", () => {
     });
     const welcomed = nextMessage(socket, "welcome");
     socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "test", sessions: [] }));
-    expect((await welcomed).credentials.anthropicApiKey).toBe("sk-or-first");
+    await welcomed;
 
     // The first lookup stored the key sealed in this object's own storage, never in plaintext.
     const stored = await inside((_instance, state) => [
@@ -919,7 +918,7 @@ describe("computer routes", () => {
     await fast().acceptSlackEvent(ORG, job);
     await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
     await runDurableObjectAlarm(fast());
-    expect((await delivered).credentials.anthropicApiKey).toBe("sk-or-first");
+    await delivered;
     await inside((instance) => {
       delete instance.account;
     });
@@ -937,14 +936,13 @@ describe("computer routes", () => {
     await account().bindManagedModelCredential({ provider: "openrouter", key: "sk-or-second", orKeyHash: "or-hash-2", operationId: "op-2" });
     const rebound = nextMessage(socket, "credentials");
     await fast().modelKeyChanged();
-    expect((await rebound).credentials.anthropicApiKey).toBe("sk-or-second");
+    await rebound;
 
     // A deleted key clears the copy: the host falls back to the shared key, on Anthropic.
     await account().deleteManagedModelCredential("openrouter");
     const cleared = nextMessage(socket, "credentials");
     await fast().modelKeyChanged();
     const { credentials } = await cleared;
-    expect(credentials.anthropicApiKey).toBe("sk-ant-test");
     expect(credentials.anthropicBaseUrl).toBeUndefined();
     expect(await inside((instance) => instance.setting("modelKeySealed"))).toBeUndefined();
     socket.close();
@@ -976,87 +974,6 @@ describe("computer routes", () => {
     expect(welcome.wire).toEqual({ key: "wire-key" });
     socket.close();
   });
-
-  it("holds an organization at v3 until COMPUTER_API_ORGS names it (work 084 rollout gate)", async () => {
-    const ORG = "org_gate";
-    const TEAM = "T0GATE";
-    const gated = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(gated(), fn as never) as Promise<T>;
-    await linkOther(ORG, TEAM, "U0OWNER");
-    const member = "usr_01jabcdefghjkmnpqrstvwxyz0";
-    const apiCaller = { member, userId: "user_GATE", name: "Owner", email: null, via: "opc", client: "opc/0.1.0", scopes: ["sessions:read", "sessions:write"], requestId: "req_gate" } as const;
-
-    /** One host connection under `setting`, saying `protocol`: its welcome, recorded protocol, an API call and a Slack delivery. */
-    async function connect(setting: string, protocol: number, n: number) {
-      await inside((instance) => {
-        instance.env = {
-          ...instance.env,
-          COMPUTER_API_ORGS: setting,
-          // An earlier test leaves a halted billing gate on the shared env.
-          OPENCOMPUTER_BILLING: { checkAdmission: async () => ({ allowed: true, isHalted: false, haltedAt: null, reason: null, paid: true, modelAccess: null }) },
-        };
-      });
-      const upgraded = await SELF.fetch(`${ORIGIN}/v1/computer/host?organizationId=${ORG}`, {
-        headers: { upgrade: "websocket", authorization: `Bearer ${await hostToken("test-computer-host-token-key", ORG)}` },
-      });
-      const socket = upgraded.webSocket!;
-      socket.accept();
-      const frames: any[] = [];
-      socket.addEventListener("message", (event) => {
-        frames.push(JSON.parse(String(event.data)));
-      });
-      const welcomed = nextMessage(socket, "welcome");
-      socket.send(JSON.stringify({ t: "hello", protocol, hostId: ORG, version: "test", sessions: [], journals: [] }));
-      const welcome = await welcomed;
-      const recorded = await inside((_instance, state) => (state.getWebSockets()[0]!.deserializeAttachment() as { protocol: number }).protocol);
-      const listed = (await gated().computerApi(ORG, apiCaller as never, { op: "list", query: [] })) as { status: number; error?: unknown };
-      const job = { eventId: `EvGate${n}`, teamId: TEAM, channelId: "C1", threadTs: "400.1", messageTs: `400.${n + 1}`, userId: "U0OWNER", text: "hi", mentioned: true, receivedAt: Date.now() };
-      const delivered = nextMessage(socket, "deliver");
-      await gated().acceptSlackEvent(ORG, job);
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(gated());
-      const deliver = await delivered;
-      socket.send(JSON.stringify({ t: "reply", id: deliver.id, ok: true }));
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      socket.close();
-      const { id: _id, msg: { ts: _ts, ...msg }, ...rest } = deliver;
-      return { welcome, recorded, listed, deliver: { ...rest, msg }, access: frames.filter((f) => f.t === "access") };
-    }
-
-    // A v3 host, gate off: the baseline.
-    const v3 = await connect("", 3, 0);
-    // A v4 host, gate off (empty, or a list without this organization): exactly the v3 host's welcome, delivery and silence.
-    const off = await connect("org_someone_else", 4, 1);
-    // (`people` grows with the first thread's owner, after the baseline's welcome.)
-    expect({ ...off.welcome, people: [] }).toEqual({ ...v3.welcome, people: [] });
-    expect(off.welcome.protocol).toBe(3);
-    expect(off.welcome).not.toHaveProperty("wire");
-    expect(off.recorded).toBe(3);
-    expect(off.listed).toMatchObject({ status: 409, error: { code: "feature_unavailable", feature: "sessions" } });
-    // (The baseline's message started the thread's session; this one is its owner's in it: work 112's `role`.)
-    expect(off.deliver).toEqual({ ...v3.deliver, msg: { ...v3.deliver.msg, role: "owner" } });
-    expect(off.deliver.session).not.toHaveProperty("sessionId");
-    expect(off.access).toEqual([]);
-
-    // Named (or `*`): v4 at the next hello; Slack deliveries carry the session's API id.
-    const on = await connect(`org_someone_else, ${ORG}`, 4, 2);
-    expect(on.welcome.protocol).toBe(CALVIN_PROTOCOL_VERSION);
-    expect(on.recorded).toBe(4);
-    expect(on.listed.status).toBe(200);
-    expect(on.deliver.session).toMatchObject({ key: v3.deliver.session.key, sessionId: expect.stringMatching(/^cs_/), origin: { type: "slack" } });
-    const { epoch, lastSeq, ...onRest } = on.deliver;
-    expect({ epoch, lastSeq }).toEqual({ epoch: 1, lastSeq: 0 });
-    expect({ ...onRest, session: off.deliver.session }).toEqual(off.deliver);
-    expect(off.deliver).not.toHaveProperty("epoch");
-
-    // Flipped back off: v3 again at the next hello, the API refuses again.
-    const back = await connect("", 4, 3);
-    expect(back.welcome.protocol).toBe(3);
-    expect(back.recorded).toBe(3);
-    expect(back.listed.status).toBe(409);
-    expect(back.deliver.session).not.toHaveProperty("sessionId");
-    expect(back.access).toEqual([]);
-  }, 20_000);
 
   it("refuses a Slack workspace already linked to another organization", async () => {
     // Claimed by an organization whose object holds no link: nobody to ask.

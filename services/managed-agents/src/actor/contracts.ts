@@ -318,7 +318,11 @@ export interface SlackRpc {
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
   /** Computer only. */
-  forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }>;
+  /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
+  forHost(): Promise<{
+    people: CalvinPerson[];
+    slack: { botToken: string; botUserId: string; teamId: string; installer?: { slackUser: string; member: string | null } } | null;
+  }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
   /** Delivery(slack) only. */

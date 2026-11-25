@@ -60,7 +60,7 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
-import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, StartSpec } from "../actor/contracts.js";
+import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackRpc, StartSpec } from "../actor/contracts.js";
 import type { Access, Principal } from "../actor/principal.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
 import { DurableObject } from "cloudflare:workers";
@@ -953,8 +953,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   }
 
   async changed(source: "org" | "slack"): Promise<void> {
+    // An organization whose first act is the Slack install: this object is named by its id and not bound yet.
+    const named = this.ctx.id.name;
+    if (!this.setting("accountId") && named && !named.startsWith("computer-")) this.bind(named);
     if (!this.setting("accountId")) return;
-    await (source === "org" ? this.readOrg() : this.readSlack());
+    await (source === "org" ? this.readOrg() : this.readSlack(true));
   }
 
   async exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }> {
@@ -976,15 +979,38 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   }
 
   /** The Slack actor's part: people and the bot's credentials (kept in memory, never stored here). Never throws. */
-  private async readSlack(): Promise<void> {
+  private async readSlack(changed = false): Promise<void> {
     try {
       const got = await this.actors.slack().forHost();
       this.slackHost = got.slack;
+      if (changed) await this.slackChanged(got.slack);
       if (!this.socket()) return;
       if (got.people.length) this.send({ t: "people", people: got.people });
       if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials()) });
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", event: "computer.slack_read_failed", message: errorText(error) }));
+    }
+  }
+
+  /**
+   * The Slack actor said its link changed. Linked: the machine starts (installing Slack is the moment someone
+   * means to use it) and the installer's model access moves from their dashboard id to their Slack id;
+   * unlinked: it moves back. `slackLinked` is the link this Computer last saw, so each happens once.
+   */
+  private async slackChanged(slack: Awaited<ReturnType<SlackRpc["forHost"]>>["slack"]): Promise<void> {
+    const before = this.setting("slackLinked");
+    if (slack) {
+      const installer = slack.installer;
+      if (before !== slack.teamId) {
+        this.put("slackLinked", slack.teamId);
+        if (installer?.member) await this.access.agents.rekey(installer.member, installer.slackUser);
+        if (installer) this.put("slackLinkedInstaller", installer.slackUser);
+        else this.remove("slackLinkedInstaller");
+      }
+      await this.ensureComputerOnInstall(this.accountId());
+    } else if (before) {
+      await this.access.agents.unrekey(this.setting("slackLinkedInstaller"));
+      this.remove("slackLinked", "slackLinkedInstaller");
     }
   }
 

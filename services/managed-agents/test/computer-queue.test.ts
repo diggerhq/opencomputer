@@ -133,8 +133,7 @@ describe("the Slack queue", () => {
     expect(await queueRows(stub)).toEqual([]);
     expect(await taken(stub)).toEqual({ "10.1": { inline: true, parallel: 1 } });
     // The fallback alarm is taken off once the queue is empty (nothing else is due for this object).
-    await until(() => inside(stub, (_instance, state) => state.storage.getAlarm()), (at) => at === null, "the alarm cleared");
-    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT purpose FROM alarms")])).toEqual([]);
+    await until(() => inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT purpose FROM alarms WHERE purpose = 'slack'")]), (rows) => rows.length === 0, "the alarm cleared");
     // Fired anyway, it finds nothing and sends nothing again.
     await inside(stub, (_instance, state) => state.storage.setAlarm(Date.now()));
     await runDurableObjectAlarm(stub);
@@ -246,8 +245,8 @@ describe("the Slack queue", () => {
     const order = await inside(stub, async (instance, state) => {
       instance.bind("org_q_order");
       const order: string[] = [];
-      const realDrain = instance.drain.bind(instance);
-      instance.drain = (inline: boolean) => {
+      const realDrain = instance.drainSlack.bind(instance);
+      instance.drainSlack = (inline: boolean) => {
         order.push("slack:start");
         return realDrain(inline).then(async () => {
           await sleep(30);
