@@ -98,7 +98,7 @@ Set it when you create the session, or change it with `PATCH /sessions/{id}`:
 | --- | --- |
 | Who may change it | The owner, anyone in `people`, or an organization admin. `canManageAccess` on the session says whether you may |
 | A member of an `org` session who is not an admin | `403 forbidden` with `reason: "not_member"` |
-| Admins | An admin may change the access of any session but may use only the ones its access lets them into. To get into an `owner` session, an admin adds themselves to `people`. While changing the access of a session they cannot use, an admin may send only `access`, and the response is `{"session":null,"access",...,"canManageAccess":true,"seq"}` |
+| Admins | An admin may change the access of any session but may use only the ones its access lets them into. To get into an `owner` session, an admin adds themselves to `people`. While changing the access of a session they cannot use, an admin may send only `access`, and the response is `{"session":null,"access",...,"canManageAccess":true,"seq"}`. `GET /sessions/{id}` returns the same, so the admin can read the current access first |
 | `people` | Up to 50 entries: `usr_` member ids, WorkOS `user_` ids or emails. Each must be someone in the organization who has used OpenComputer here. Otherwise the response is `400 invalid_request` with `field: "access.people"` and `reason: "unknown_member"` |
 | Slack sessions | `access` shows `owner` and cannot be changed over the API: `403 forbidden` with `reason: "access_in_slack"`. Manage who drives a Slack session in its thread |
 | Sessions from before access modes | `org` until someone changes them |

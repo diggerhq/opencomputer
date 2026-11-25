@@ -656,7 +656,12 @@ export class ComputerSessionsApi {
 
   private async get(caller: ApiCaller, sessionId: string, minSeq?: number): Promise<ApiReply> {
     let row = this.visible(caller, sessionId);
-    if (!row) return notFound();
+    if (!row) {
+      // An admin outside the session reads its access and nothing else, as the PATCH returns it (Q4).
+      const found = this.anyRow(sessionId);
+      if (!found || !mayManage(found, caller)) return notFound();
+      return { status: 200, body: { session: null, access: accessOf(found), canManageAccess: true, seq: found.lastSeq } };
+    }
     if (minSeq !== undefined && row.lastSeq < minSeq) {
       await this.waitSeq(sessionId, minSeq, MIN_SEQ_WAIT_MS);
       row = this.row(sessionId)!;

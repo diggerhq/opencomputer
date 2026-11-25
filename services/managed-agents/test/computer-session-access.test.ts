@@ -55,8 +55,9 @@ describe("the access matrix", () => {
         const f = await session(mode);
         const c = who[w];
         const get = await f.api.handle(c, { op: "get", sessionId: SID });
-        expect(get.status).toBe(uses ? 200 : 404);
+        expect(get.status).toBe(uses || manages ? 200 : 404);
         if (uses) expect(get.body).toMatchObject({ session: { access: { mode }, canManageAccess: manages } });
+        else if (manages) expect(get.body).toMatchObject({ session: null, access: { mode }, canManageAccess: true });
         else expect(get.error).toMatchObject({ code: "session_not_found" });
         expect((await f.api.handle(c, { op: "access", sessionId: SID })).status).toBe(uses ? 200 : 404);
         f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 1 } }));
@@ -82,7 +83,8 @@ describe("admins (Q4)", () => {
     expect(f.api.row(SID)!.accessMode).toBe("owner");
     const shared = await f.api.handle(admin, { op: "patch", sessionId: SID, body: { access: { mode: "people", people: [MO] } } });
     expect(shared).toEqual({ status: 200, body: { session: null, access: { mode: "people", people: [MO] }, canManageAccess: true, seq: 0 } });
-    expect((await f.api.handle(admin, { op: "get", sessionId: SID })).status).toBe(404);
+    expect(await f.api.handle(admin, { op: "get", sessionId: SID })).toEqual(shared);
+    expect((await f.api.handle(who.other, { op: "get", sessionId: SID })).status).toBe(404);
     expect(await listed(f, admin)).toEqual([]);
     const added = await f.api.handle(admin, { op: "patch", sessionId: SID, body: { access: { mode: "people", people: [MO, ADMIN] } } });
     expect(added).toMatchObject({ status: 200, body: { session: { id: SID, access: { mode: "people", people: [ADMIN, MO].sort() }, canManageAccess: true } } });
