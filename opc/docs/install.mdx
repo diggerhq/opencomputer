@@ -10,13 +10,13 @@ description: "One static binary for macOS and Linux."
 <Tabs>
   <Tab title="Install script">
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
     ```
 
-    The script detects your platform, downloads the matching release, checks its SHA-256 against the published checksums and installs it to `~/.local/bin/opc`. Set `OPC_INSTALL_DIR` to install somewhere else, and `OPC_VERSION` to install one release, a tag from [GitHub releases](https://github.com/diggerhq/opc/releases); pre-releases count. Without it, the script installs the latest release, or the newest pre-release while there is no full release yet. It never asks for `sudo` and never edits your shell's startup files: if the install directory is not on your `PATH`, it prints the line to add. It ends with `Run opc to start.`
+    The script detects your platform, downloads the matching release, checks its SHA-256 against the published checksums and installs it to `~/.local/bin/opc`. Set `OPC_INSTALL_DIR` to install somewhere else, and `OPC_VERSION` to install one release, an opc version from [GitHub releases](https://github.com/diggerhq/opencomputer/releases?q=opc-v), such as `v0.1.0-rc.10` (the release tag, `opc-v0.1.0-rc.10`, works too); pre-releases count. Without it, the script installs the highest opc release, or the highest pre-release while there is no full release yet. It never asks for `sudo` and never edits your shell's startup files: if the install directory is not on your `PATH`, it prints the line to add. It ends with `Run opc to start.`
   </Tab>
   <Tab title="Manual">
-    Download the archive for your platform from [GitHub releases](https://github.com/diggerhq/opc/releases), check it against `SHA256SUMS`, and move `opc` onto your `PATH`.
+    Download the archive for your platform from [GitHub releases](https://github.com/diggerhq/opencomputer/releases?q=opc-v), check it against `SHA256SUMS`, and move `opc` onto your `PATH`.
   </Tab>
 </Tabs>
 

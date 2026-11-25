@@ -27,7 +27,7 @@ Everything here runs without a terminal: nothing prompts, opens a browser or wai
 | `opc doctor` | Checks the path to your computer | `{ steps: [{ name, ok, ms, detail, error }] }` |
 | `opc schema` | The JSON Schema of the objects above | JSON Schema |
 
-The objects are the API's, in camelCase, with every documented field present. Their JSON Schema is published at `https://raw.githubusercontent.com/diggerhq/opc/main/schema/computer-api.v1.json`; `opc schema result`, `event`, `session`, `turn` or `ask` prints one.
+The objects are the API's, in camelCase, with every documented field present. Their JSON Schema is published at `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/schema/computer-api.v1.json`; `opc schema result`, `event`, `session`, `turn` or `ask` prints one.
 
 **Outcomes and errors.** A turn's outcome (completed, failed, cancelled, waiting) is the Result on standard output. A failure of the command is `{"error": {code, message, retryable, …}}` on standard error. The exit code says which: see [Exit codes](/reference/exit-codes). Retry exit `4`; act on `5`; stop on `2`, `3` and `6`.
 

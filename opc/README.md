@@ -7,7 +7,7 @@
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
 ```
 
 This works on macOS and Linux, and on Windows under WSL 2. The script verifies the checksum, installs to `~/.local/bin` and never asks for `sudo`. To update, run it again. [Install](docs/install.mdx) has the options.

@@ -108,11 +108,11 @@
   "navbar": {
     "links": [
       { "label": "OpenComputer docs", "href": "https://docs.opencomputer.dev" },
-      { "label": "GitHub", "href": "https://github.com/diggerhq/opc" }
+      { "label": "GitHub", "href": "https://github.com/diggerhq/opencomputer/tree/main/opc" }
     ],
     "primary": { "type": "button", "label": "Install opc", "href": "/install" }
   },
-  "footer": { "socials": { "github": "https://github.com/diggerhq/opc" } },
+  "footer": { "socials": { "github": "https://github.com/diggerhq/opencomputer/tree/main/opc" } },
   "fonts": {
     "heading": { "family": "Newsreader", "weight": 600 },
     "body": { "family": "Inter", "weight": 400 }

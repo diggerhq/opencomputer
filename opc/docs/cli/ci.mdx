@@ -31,7 +31,7 @@ Where there is no person to confirm a login, give `opc` an API key. For the comm
       env:
         OPENCOMPUTER_API_KEY: ${{ secrets.OPENCOMPUTER_API_KEY }}
       run: |
-        curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+        curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
         ~/.local/bin/opc -p --mode auto --on-ask dismiss --timeout 20m \
           --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-fix-tests" \
           --metadata repo="$GITHUB_REPOSITORY" --metadata run="$GITHUB_RUN_ID" \

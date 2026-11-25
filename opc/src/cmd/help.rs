@@ -6,7 +6,7 @@ use crate::error::{Error, Result, exit};
 use clap::CommandFactory;
 use serde_json::{Value, json};
 
-/// The schema published at `https://raw.githubusercontent.com/diggerhq/opc/main/schema/computer-api.v1.json`.
+/// The schema published at `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/schema/computer-api.v1.json`.
 pub const SCHEMA: &str = include_str!("../../schema/computer-api.v1.json");
 
 const OBJECTS: &[(&str, &str)] = &[("result", "Result"), ("event", "Event"), ("session", "Session"), ("turn", "Turn"), ("ask", "Ask"), ("subagent", "Subagent"), ("error", "Error")];

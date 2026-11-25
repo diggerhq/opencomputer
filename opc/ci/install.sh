@@ -1,19 +1,24 @@
 #!/bin/sh
-# opc installer: curl -fsSL https://raw.githubusercontent.com/diggerhq/opc/main/ci/install.sh | sh
+# opc installer: curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
 #
 # Detects the platform, downloads the matching release from GitHub, checks
 # its SHA-256 against the release's SHA256SUMS and installs it to
 # ~/.local/bin/opc (or $OPC_INSTALL_DIR). Never uses sudo, never edits shell
 # startup files.
 #
-#   OPC_VERSION=v0.1.0-rc.3   install this release (pre-releases included)
+#   OPC_VERSION=v0.1.0-rc.3   install this release (pre-releases included);
+#                             the tag opc-v0.1.0-rc.3 works too
 #   OPC_INSTALL_DIR=/opt/bin  install there instead of ~/.local/bin
 #
 # Without OPC_VERSION it installs the latest release, or the newest
 # pre-release while there is no full release yet.
+#
+# opc lives in diggerhq/opencomputer, whose releases it shares with other
+# components: its tags are opc-v*, and its assets are named after the version
+# without the prefix (opc-v0.1.0-<target>.tar.gz in the release opc-v0.1.0).
 set -eu
 
-repo=diggerhq/opc
+repo=diggerhq/opencomputer
 # Test hooks (ci/install-test.sh); the defaults are GitHub's.
 gh=${OPC_GITHUB_URL:-https://github.com}
 api=${OPC_GITHUB_API:-https://api.github.com}
@@ -40,20 +45,41 @@ case "$os" in
 esac
 
 if [ "$version" = latest ]; then
-  # The redirect of /releases/latest names the tag, with no API rate limit.
-  # While only pre-releases exist it is a 404 or a redirect to /releases:
-  # then ask the API for the newest.
-  version=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$gh/$repo/releases/latest" 2>/dev/null | sed 's#.*/##') || version=
-  case "$version" in v*) ;; *) version= ;; esac
-  if [ -z "$version" ]; then
-    version=$(curl -fsSL "$api/repos/$repo/releases?per_page=1" 2>/dev/null \
-      | tr "," "\n" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) || version=
-  fi
+  # /releases/latest may be another component's, so list the releases and
+  # take the highest opc-v* version that is not a pre-release, or the highest
+  # pre-release while there is no full release. The API orders releases by
+  # date, not version, and puts "prerelease" after "tag_name" in each.
+  version=$(curl -fsSL "$api/repos/$repo/releases?per_page=100" 2>/dev/null \
+    | tr "," "\n" \
+    | sed -n -e 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/t \1/p' \
+             -e 's/.*"prerelease"[[:space:]]*:[[:space:]]*\([a-z]*\).*/p \1/p' \
+    | awk '
+      # A key that sorts as the version does: 0.1.0-rc.9 < 0.1.0-rc.10 < 0.1.0.
+      function key(v,   core, pre, i, n, a, k) {
+        sub(/^opc-v/, "", v); core = v; pre = ""
+        if ((i = index(v, "-")) > 0) { core = substr(v, 1, i - 1); pre = substr(v, i + 1) }
+        n = split(core, a, "."); k = ""
+        for (i = 1; i <= 3; i++) k = k sprintf("%06d.", a[i] + 0)
+        if (pre == "") return k "~"
+        n = split(pre, a, ".")
+        for (i = 1; i <= n; i++) k = k (a[i] ~ /^[0-9]+$/ ? sprintf("%06d", a[i]) : a[i]) "."
+        return k
+      }
+      $1 == "t" { tag = $2; next }
+      $1 == "p" && tag ~ /^opc-v/ {
+        k = key(tag)
+        if ($2 != "true" && k > fullk) { full = tag; fullk = k }
+        if (k > anyk) { any = tag; anyk = k }
+        tag = ""
+      }
+      END { print (full != "" ? full : any) }') || version=
   [ -n "$version" ] || fail "could not find a release of opc; set OPC_VERSION (see https://github.com/$repo/releases)"
 fi
+version=${version#opc-}
+tag="opc-$version"
 
 name="opc-$version-$target"
-base="$gh/$repo/releases/download/$version"
+base="$gh/$repo/releases/download/$tag"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

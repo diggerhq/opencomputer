@@ -470,7 +470,7 @@ pub fn api_error(status: u16, body: &Value, headers: &HeaderMap) -> Error {
         "upgrade_required" => {
             let min = err.extra.get("minVersion").and_then(Value::as_str).unwrap_or("a newer version").to_string();
             err.message = format!("this version of opc ({VERSION}) is no longer supported: install opc {min} or newer");
-            err.hint = Some("see https://github.com/diggerhq/opc#install".into());
+            err.hint = Some("see https://github.com/diggerhq/opencomputer/tree/main/opc#install".into());
         }
         "unauthenticated" => {
             err.hint = Some("run `opc login`, or check OPENCOMPUTER_API_KEY".into());

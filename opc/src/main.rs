@@ -61,7 +61,7 @@ fn run(args: Vec<String>) -> i32 {
     if !quiet && tty.stderr
         && let Some(latest) = http::latest_version()
             && newer(latest, env!("CARGO_PKG_VERSION")) {
-                eprintln!("opc: opc {latest} is out (you have {}): https://github.com/diggerhq/opc#install", env!("CARGO_PKG_VERSION"));
+                eprintln!("opc: opc {latest} is out (you have {}): https://github.com/diggerhq/opencomputer/tree/main/opc#install", env!("CARGO_PKG_VERSION"));
             }
     code
 }

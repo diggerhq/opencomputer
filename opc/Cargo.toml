@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "A terminal client for your organization's Computer"
 license = "Apache-2.0"
-repository = "https://github.com/diggerhq/opc"
+repository = "https://github.com/diggerhq/opencomputer/tree/main/opc"
 default-run = "opc"
 
 [[bin]]

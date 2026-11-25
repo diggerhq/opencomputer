@@ -35,6 +35,8 @@ truth they come from.
 - `proto/` — inter-tier contracts
 - `docs/docs.json` — docs navigation
 - `cli/` — the `opencomputer` CLI (TypeScript, published as `@opencomputer/cli`)
+- `opc/` — `opc`, the Rust terminal client for Computer sessions (own
+  `AGENTS.md`; releases are tagged `opc-v*`, never `v*`)
 - `sdks/typescript/` and `sdks/python/` — published SDKs
 
 Managed-agent product behavior is mostly **not** implemented here:
