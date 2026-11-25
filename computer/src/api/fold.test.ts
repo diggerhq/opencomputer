@@ -16,7 +16,7 @@ function feed() {
     Schema.decodeUnknownSync(EVENT_DATA[type] as unknown as Schema.Codec<unknown, unknown>)(data);
     const e: JournalEvent = { id: mintId('ev'), seq: ++seq, createdAt: new Date(1_700_000_000_000 + seq * 1000).toISOString(), sessionId: sid, turnId, type, actor: ann, data };
     fold.apply(e);
-    fold.setLog({ lastSeq: seq, logEpoch: 1, epochStartSeq: 1 });
+    fold.setLog({ lastSeq: seq });
     return e;
   };
   return { fold, add };
@@ -166,7 +166,7 @@ describe('Fold', () => {
       add('turn.completed', { text: 'done', durationMs: 1, silent: false }, t1),
     ];
     for (const e of rest) restored.apply(e);
-    restored.setLog({ lastSeq: events.length + rest.length, logEpoch: 1, epochStartSeq: 1 });
+    restored.setLog({ lastSeq: events.length + rest.length });
     const view = (f: Fold) => ({ s: { ...f.session(), lastActiveAt: null }, t: f.turns(), a: f.asks(), sa: f.subagents(), c: f.openCalls(t1), q: f.seqOf(sa) });
     expect(view(restored)).toEqual(view(fold));
     expect(view(fold).s).toMatchObject({ title: 'hello', metadata: { k: 'v' }, context: { usedTokens: 10 }, lastText: 'done' });

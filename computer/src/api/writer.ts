@@ -1,5 +1,5 @@
 // The session writer's interface (work 084): what serves one session's API, so
-// the socket facade (socket.ts), the relay and the host's api-bridge see one
+// the socket facade (socket.ts), the relay's calls and the host's api-bridge see one
 // shape whether the runner writes (runner/api/api.ts, a tap on its Session) or
 // the host does because no runner runs (host/session-writer.ts).
 //
@@ -30,7 +30,7 @@ export interface CallContext {
 /** A call's outcome: the method's result body (schema-methods.ts METHODS[method].result), or an API error. */
 export type CallOutcome = { result: unknown; error?: undefined } | { error: ApiError; result?: undefined };
 
-export type DetachReason = 'too_far_behind' | 'moved' | 'access_lost' | 'epoch_changed';
+export type DetachReason = 'too_far_behind' | 'moved' | 'access_lost';
 
 export interface SubscribeOptions {
   /** Events with seq > after; absent with `tailTurns` absent: live only (after = lastSeq). */
@@ -46,7 +46,7 @@ export interface SubscribeOptions {
   mirror?: boolean;
 }
 
-/** The `sessions.attached` body less `sessionId`, as the writer knows it at subscribe time. */
+/** What a subscriber is told first, as the writer knows it at subscribe time. */
 export interface Attached {
   /** The Session object (schema-objects.ts Session). */
   session: unknown;
@@ -54,16 +54,11 @@ export interface Attached {
   after: number;
   lastSeq: number;
   epoch: number;
-  /** The rest of AttachResult (schema-methods.ts), filled by SessionLog.subscribe. */
-  logEpoch?: number;
-  epochStartSeq?: number;
-  capabilities?: unknown;
-  earlierTurns?: unknown[] | null;
 }
 
 export interface Subscription {
   readonly attached: Attached;
-  /** The client has everything up to `seq` (`sessions.ack`). */
+  /** The subscriber has everything up to `seq`. */
   ack(seq: number): void;
   close(): void;
 }
