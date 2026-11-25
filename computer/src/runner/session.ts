@@ -28,6 +28,7 @@ import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
 import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
 import type { Work } from './work.js';
+import { prefaced } from './role-notes.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
 import { cardSender } from './post-card.js';
@@ -221,11 +222,12 @@ export class Session {
     if (stopping) await (this.hooks.turns?.interrupting('interrupted'), this.stopTurn());
     else if (this.busy) this.rotate();
     const h = this.ensureHarness();
+    const body = this.used ? text : prefaced(this.hooks.work, text);
     this.used = true;
     if (this.busy) this.pending = true;
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
     // Mid-turn messages land at the next tool boundary, like Claude Code's queue.
-    Effect.runSync(h.send({ text, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
+    Effect.runSync(h.send({ text: body, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
     this.hooks.turns?.pushed(this.busy && !urgent), this.busy && !urgent && this.heldSteer.arm();
     if (!this.busy) this.addressed = mentioned === undefined || mentioned === true;
     // An addressed turn's message opens now, before the model answers (work 068); a steer's output follows its turn's.
