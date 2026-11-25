@@ -33,7 +33,7 @@ async function post(
   env: SyncEnv,
   orgID: string,
   userID: string | null,
-  op: "sync" | "revoke",
+  path: string,
   body: unknown,
 ): Promise<void> {
   const base = env.MANAGED_AGENTS_API_URL?.replace(/\/+$/, "");
@@ -43,7 +43,7 @@ async function post(
       env.OC_MANAGED_AGENTS_SECRET,
       { orgID, userID },
     );
-    const response = await fetch(`${base}/v1/computer/keys/${op}`, {
+    const response = await fetch(`${base}${path}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -55,7 +55,8 @@ async function post(
       console.error(
         JSON.stringify({
           level: "error",
-          event: `computer_keys.${op}_failed`,
+          event: `computer_keys.${path.split("/").pop()}_failed`,
+          path,
           status: response.status,
         }),
       );
@@ -65,7 +66,8 @@ async function post(
     console.error(
       JSON.stringify({
         level: "error",
-        event: `computer_keys.${op}_failed`,
+        event: `computer_keys.${path.split("/").pop()}_failed`,
+        path,
         message: error instanceof Error ? error.message : String(error),
       }),
     );
@@ -78,17 +80,35 @@ export function syncComputerKey(
   orgID: string,
   key: SyncedComputerKey,
 ): Promise<void> {
-  return post(env, orgID, key.userId, "sync", { key });
+  return post(env, orgID, key.userId, "/v1/computer/keys/sync", { key });
 }
 
-/** A key was revoked: asserted as its organization and the person revoking. */
-export function revokeComputerKey(
+/**
+ * A key was revoked: asserted as its organization and the person revoking.
+ * Live closes the sockets it authenticated, too.
+ */
+export async function revokeComputerKey(
   env: SyncEnv,
   orgID: string,
   actingUserID: string | null,
   keyID: string,
 ): Promise<void> {
-  return post(env, orgID, actingUserID, "revoke", { keyId: keyID });
+  await post(env, orgID, actingUserID, "/v1/computer/keys/revoke", { keyId: keyID });
+  await revokeLiveCredential(env, orgID, keyID);
+}
+
+/**
+ * A credential ended (a key deleted, a device revoked, a sign-out): managed
+ * agents tells the organization's Live to close the sockets it opened
+ * (spec 18.7). `POST /v1/internal/live/revoke {org, credentialId}`, asserted
+ * as the organization; best effort, Live's revalidation catches a lost call.
+ */
+export function revokeLiveCredential(
+  env: SyncEnv,
+  orgID: string,
+  credentialId: string,
+): Promise<void> {
+  return post(env, orgID, null, "/v1/internal/live/revoke", { org: orgID, credentialId });
 }
 
 /** The sync shape of a key just created, from what createAPIKey returned. */

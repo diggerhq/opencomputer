@@ -1,0 +1,106 @@
+name: Desktop
+
+# CI for desktop/ (the Mac app's Electron shell): typecheck, unit tests, the
+# end-to-end test against a fake edge, and a Mac build uploaded as an
+# artifact. Nothing here deploys or publishes.
+#
+# The Mac build is signed with a Developer ID and notarised when the signing
+# secrets exist (desktop/README.md lists them); without them it is ad-hoc
+# signed, which runs on the machine that removes its quarantine flag and
+# cannot auto-update.
+
+on:
+  pull_request:
+    paths:
+      - desktop/**
+      - .github/workflows/desktop.yml
+  push:
+    branches: [main, tracks-and-threads]
+    paths:
+      - desktop/**
+      - web/src/surface/**
+      - .github/workflows/desktop.yml
+  workflow_dispatch:
+    inputs:
+      edge:
+        description: The edge this build signs in against
+        default: https://app.opencomputer.dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: desktop
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: xvfb-run -a npm run test:e2e
+
+  mac:
+    name: Mac build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      OC_EDGE_URL: ${{ inputs.edge || 'https://app.opencomputer.dev' }}
+      CSC_FOR_PULL_REQUEST: "true"
+      CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: The end-to-end test, on the Mac
+        run: npm run test:e2e
+      - name: Build
+        run: |
+          if [ -n "$CSC_LINK" ]; then
+            if [ -n "$APPLE_API_KEY_BASE64" ]; then
+              echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/apple-api-key.p8"
+              export APPLE_API_KEY="$RUNNER_TEMP/apple-api-key.p8"
+            fi
+            echo "Signing with the Developer ID certificate"
+            npm run dist -- --publish never
+          else
+            echo "::warning::No signing certificate: this build is ad-hoc signed and not notarised"
+            unset CSC_LINK CSC_KEY_PASSWORD
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            npm run dist -- --publish never -c.mac.identity=- -c.mac.notarize=false
+          fi
+      - name: Check the signature and the fuses
+        run: |
+          app="$(ls -d release/mac*/OpenComputer.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E 'Identifier|Authority|Signature|TeamIdentifier' || true
+          npx --yes @electron/fuses read --app "$app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenComputer-mac
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+          retention-days: 14
