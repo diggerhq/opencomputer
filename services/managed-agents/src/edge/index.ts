@@ -317,6 +317,9 @@ import {
 } from "./computer-grants.js";
 import { SessionLogDurableObject } from "../computer/session-log.js";
 import { WorkIndexDurableObject } from "../computer/work/index-do.js";
+import { DeliveryDurableObject } from "../delivery/durable-object.js";
+import { OrgDurableObject } from "../org/durable-object.js";
+import { SlackDurableObject } from "../slack/durable-object.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import {
   type Latency,
@@ -331,11 +334,14 @@ import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.j
 export {
   AccountDurableObject,
   ComputerDurableObject,
+  DeliveryDurableObject,
   DeploymentPoolDurableObject,
   MemoryDurableObject,
+  OrgDurableObject,
   ProjectDatabaseDurableObject,
   SessionDurableObject,
   SessionLogDurableObject,
+  SlackDurableObject,
   WorkIndexDurableObject,
 };
 
