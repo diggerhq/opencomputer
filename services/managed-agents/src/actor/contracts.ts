@@ -266,15 +266,16 @@ export interface ComputerRpcAdded {
   block(sessionId: string, blockId: string): Promise<void>;
   /** Org only; relayed as the host's `access` frame. */
   setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
-  /** The Slack actor only. */
   /**
-   * `args`: the command's text after its name; for `grant`, the clicked button's action id, with Slack's `triggerId`.
-   * `channelId` and `threadTs`: where the command was sent (absent: the session's thread).
+   * The Slack actor only. `args`: the command's text after its name; for `grant`, the clicked button's action
+   * id, with Slack's `triggerId`. `channelId` and `threadTs`: where the command was sent (absent: the
+   * session's thread). `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user
+   * it linked the Slack person to.
    */
   command(
     p: Principal,
-    c: { name: "secret" | "var" | "claude" | "codex" | "grant"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
-  ): Promise<{ reply: string }>;
+    c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
+  ): Promise<{ reply: string; member?: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
@@ -326,4 +327,18 @@ export interface SlackRpc {
   post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;
   /** Computer only, once: spec 43.1. */
   import(): Promise<void>;
+
+  // The install's edges, moved from Computer with the install (the edge's Slack routes call them).
+  /** A nonce for the install's OAuth state, bound to the person starting it; ten minutes. */
+  startInstall(p: Principal, nonce: string): Promise<void>;
+  /** Spends an install nonce, once: the subject that started it. */
+  consumeInstall(nonce: string): Promise<{ ok: true; subject: string } | { ok: false; reason: "invalid_state" | "state_expired" }>;
+  /** Unlinks when Slack says the bot token is dead (asked with the token itself). Whether it did. */
+  unlinkRevoked(teamId: string): Promise<{ unlinked: boolean }>;
+  /** Someone in this workspace tried to link it to another organization: they and the installer are told. */
+  joinRequest(teamId: string, requesterUserId: string): Promise<{ installerNotified: boolean }>;
+  // The team router: the Slack object named `slack-team:<teamId>` holds which organization a workspace links to.
+  claimTeam(teamId: string, org: string): Promise<{ ok: true } | { ok: false; holder: string }>;
+  teamOrg(): Promise<string | null>;
+  releaseTeam(org: string): Promise<void>;
 }

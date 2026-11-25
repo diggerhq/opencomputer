@@ -1045,7 +1045,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * The Slack actor's commands that are this Computer's: `!secret`, `!var`, `!claude`, `!codex` and a
    * connection grant. The existing handlers answer in Slack themselves (ephemerals, modals): `reply` is empty.
    */
-  async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string }> {
+  async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string; member?: string }> {
     this.bind(p.org);
     if (!p.subject.startsWith("slack:")) return { reply: "This command works from Slack." };
     const userId = p.subject.slice(p.subject.lastIndexOf(":") + 1);
@@ -1055,8 +1055,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
           c.sessionId,
         )][0]
       : undefined;
-    const channelId = c.channelId ?? row?.channelId;
-    if (!channelId) return { reply: "" };
+    // Where the handlers answer: the command's channel, the session's thread, else the person (a direct message).
+    const channelId = c.channelId ?? (row?.channelId || userId);
     const threadTs = c.threadTs ?? (row?.threadTs || undefined);
     const here = { userId, channelId, ...(threadTs ? { threadTs } : {}) };
     const ctx = { ...here, ...(row?.ownerId ? { session: { key: row.key, ownerId: row.ownerId } } : {}) };
@@ -1072,6 +1072,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     } else if (c.name === "var") {
       const command = parseVariableCommand(text);
       if (command) await this.secrets.variableCommand(command, ctx, text);
+    } else if (c.name === "link") {
+      const command = parseLinkCommand(text);
+      if (command && slack) await slack.link.command(command, here);
+      const member = this.access.agents.linkOfSlack(userId);
+      return { reply: "", ...(member ? { member } : {}) };
     } else if (c.name === "claude") {
       const command = parseClaudeCommand(text);
       if (command && slack) await slack.claude.command(command, ctx);
