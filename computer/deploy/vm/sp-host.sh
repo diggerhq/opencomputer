@@ -6,6 +6,9 @@
 #   sp-host.sh status    which user the host runs as, and the checks below
 #   sp-host.sh apply     re-apply everything but the switch on a migrated computer (provision.sh, every run)
 #   sp-host.sh run-dirs  write and create $SP_RUN's tmpfiles entries for whichever user the host is (provision.sh)
+#   sp-host.sh launch podman|systemd|status
+#                        this computer's runners as containers or as systemd units (work 103 rollout, ONE-TIME:
+#                        delete in step 11); see `launch` below
 #
 # Why: sessions run tools as `agent` with no permission prompts. While the host
 # is `agent` too, a session can read the host's environment (the host token),
@@ -56,8 +59,10 @@ HOST_USER=sp-host
 HOST_HOME=/var/lib/sp-host
 DATA="${SP_DATA:-/data}"
 SP_RUN="${SP_RUN:-/run/slack-presence}"
-ETC=/etc/slack-presence
+ETC="${SP_ETC:-/etc/slack-presence}"
 MARK="$ETC/host-user-sp-host"
+# podman|systemd: the host's SP_LAUNCH on this computer, written by `launch` and kept by `apply` (ONE-TIME, work 103).
+LAUNCH_MARK="$ETC/sp-launch"
 UNIT=slack-presence-host.service
 DROPIN="/etc/systemd/system/$UNIT.d/20-sp-host.conf"
 SUDOERS=/etc/sudoers.d/50-sp-host
@@ -75,6 +80,9 @@ log() { printf '\n== sp-host: %s\n' "$*"; }
 die() { echo "sp-host: $*" >&2; exit 1; }
 [[ $(id -u) == 0 ]] || die "run as root"
 id "$AGENT_USER" >/dev/null 2>&1 || die "no user $AGENT_USER"
+# ONE-TIME systemd->podman migration (work 103): the drain-then-flip `launch` restarts with, as provision.sh does. Delete in step 11.
+# shellcheck source=legacy-drain.sh
+source "$(dirname "${BASH_SOURCE[0]}")/legacy-drain.sh"
 
 # $SP_RUN as provision.sh writes it: <owner> is the host's user, group always agent.
 run_dirs() {
@@ -219,6 +227,7 @@ Environment=PATH=$HOST_PATH
 Environment=SP_RUNNER_USER=$AGENT_USER
 Environment=SP_RUNNER_PATH=$AGENT_PATH
 Environment=SP_MODEL_PROXY=$CONTROL
+$(launch_env)
 # sudo needs it (runners start as $AGENT_USER); sudoers allows nothing but becoming $AGENT_USER.
 NoNewPrivileges=no
 EOF
@@ -270,6 +279,150 @@ status() {
   iptables -S OUTPUT | grep -c 169.254.169.254 | sed 's/^/metadata rules: /'
 }
 
+# ---- ONE-TIME systemd->podman migration (work 103). Delete in step 11 (with the `launch` verb in opencomputer-deploy).
+# The marker says what the host's SP_LAUNCH is on this computer; `apply` writes it into the drop-in, so
+# provision.sh (which re-runs `apply`) keeps it. No marker: no SP_LAUNCH, the code's default (systemd).
+launch_marker() {
+  local v
+  [[ -f $LAUNCH_MARK ]] || return 0
+  v=$(tr -d '[:space:]' < "$LAUNCH_MARK")
+  case $v in podman|systemd) echo "$v" ;; *) echo "sp-host: ignoring $LAUNCH_MARK: '$v' is not podman or systemd" >&2 ;; esac
+}
+launch_env() { local v; v=$(launch_marker); [[ -z $v ]] || echo "Environment=SP_LAUNCH=$v"; }
+
+# The process running src/host/main.ts in the unit, or nothing.
+launch_host_pid() {
+  local main
+  main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
+  [[ -n $main && $main != 0 ]] || return 0
+  legacy_host_pid "$main" || true
+}
+# The running host's SP_LAUNCH, and only that variable of its environment (the rest holds the host token).
+launch_running() { local pid; pid=$(launch_host_pid); [[ -z $pid ]] || legacy_env_of "$pid" SP_LAUNCH || true; }
+launch_apply() { bash "$0" apply; }
+# <old marker>: put it back and `apply` it, so the drop-in matches it again.
+launch_restore() {
+  if [[ -n $1 ]]; then echo "$1" > "$LAUNCH_MARK"; else rm -f "$LAUNCH_MARK"; fi
+  launch_apply
+}
+# The file that sets the unit's SP_LAUNCH besides our drop-in, as legacy_new_launch reads it (environment files win), path only.
+launch_override() {
+  local f src=''
+  for f in $(systemctl show -p FragmentPath --value "$UNIT" 2>/dev/null) $(systemctl show -p DropInPaths --value "$UNIT" 2>/dev/null); do
+    [[ $f != "$DROPIN" && -r $f ]] && grep -q '^[[:space:]]*Environment=.*SP_LAUNCH=' "$f" && src=$f
+  done
+  for f in $(systemctl show -p EnvironmentFiles --value "$UNIT" 2>/dev/null | tr ' ' '\n' | grep '^/'); do
+    [[ -n $(legacy_launch_of_files "$f") ]] && src=$f
+  done
+  echo "${src:-unknown}"
+}
+# <old invocation id> <old MainPID>: one line on how the drain ended, from the old host's journal (as legacy_drained reads it).
+launch_drain_summary() {
+  local j cut secs
+  if [[ -n $1 ]]; then j=$(journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$1" 2>/dev/null || true)
+  else j=$(journalctl --no-pager -o cat "_SYSTEMD_UNIT=$UNIT" "_PID=$2" 2>/dev/null || true); fi
+  cut=$(sed -n 's/.*legacy drain: deadline, \([0-9]*\) runner(s).*/\1/p' <<< "$j" | tail -n1)
+  secs=$(sed -n 's/.*legacy drain: exiting after \([0-9]*\) s.*/\1/p' <<< "$j" | tail -n1)
+  if [[ -n $cut ]]; then echo "launch: drain hit the 10-min deadline, $cut runner(s) cut mid-turn (journalctl _SYSTEMD_INVOCATION_ID=$1)"
+  elif [[ -n $secs ]]; then echo "launch: drain clean in $secs s"
+  else echo "launch: drain outcome not in the journal (journalctl -u $UNIT)"; fi
+}
+launch_podman() { runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR="/run/user/$AGENT_UID" timeout 60 podman "$@"; }
+
+# Containers: thread (a record that is not `unclaimed`) or spare. Unmigrated threads: forks with no record (legacy-migration/migrate.ts migrates them on their next message).
+launch_status() {
+  local pid running ids id rec spares=0 threads=0 forks=0 unmigrated=0 migrated f p
+  pid=$(launch_host_pid)
+  running=$(launch_running)
+  if [[ -z $pid ]]; then echo "launch running: none (the host is not running)"
+  else echo "launch running: ${running:-systemd (unset)}"; fi
+  echo "launch configured: $(legacy_new_launch | grep . || echo 'systemd (unset)')"
+  echo "launch marker: $(launch_marker | grep . || echo none)"
+  echo "host user migrated: $([[ -f $MARK ]] && echo yes || echo no)"
+  if ids=$(launch_podman ps --all --filter label=sp.runner --format '{{index .Labels "sp.runner"}}' 2>/dev/null); then
+    while read -r id; do
+      [[ -n $id ]] || continue
+      rec="$DATA/state/sandboxes/$id.json"
+      if [[ -f $rec ]] && ! grep -q '"unclaimed": *true' "$rec"; then threads=$((threads + 1)); else spares=$((spares + 1)); fi
+    done <<< "$ids"
+    echo "containers: $((threads + spares)) ($threads threads, $spares spares)"
+  else
+    echo "containers: unknown (podman ps failed)"
+  fi
+  # A fork is <people>/<p>/sessions/<safeKey(key)> (mounts.ts); records name person and key.
+  migrated=$(find "$DATA/state/sandboxes" -maxdepth 1 -name '*.json' -exec jq -r \
+    '"\(.person)/\(.key | gsub("[^a-zA-Z0-9]+"; "-") | ltrimstr("-") | rtrimstr("-"))"' {} + 2>/dev/null | sort -u || true)
+  for f in "$DATA"/people/*/sessions/*/; do
+    [[ -d $f ]] || continue
+    forks=$((forks + 1))
+    p=${f%/}; p="${p%/sessions/*}"; p=${p##*/}
+    grep -qxF -- "$p/$(basename "$f")" <<< "$migrated" || unmigrated=$((unmigrated + 1))
+  done
+  echo "unmigrated threads: $unmigrated of $forks"
+}
+
+# launch podman|systemd: write the marker, `apply` it to the drop-in, and restart the host the way provision.sh does:
+# drained when SP_LAUNCH turns from systemd to podman (legacy-drain.sh), a plain restart otherwise. Under provision.sh's
+# lock, so no self-update or deploy runs in between. podman needs the host as sp-host (SP_RUNNER_USER, sandbox/host.ts)
+# and a running release with the drain: a plain restart into podman would leave the systemd runners running beside it;
+# without either it says `launch: skipped: <why>` and changes nothing (exit 0). Back to systemd is a plain restart: the podman containers keep running, unseen by the host (stop them by hand).
+launch() {
+  local want=$1 old running main inv
+  AGENT_UID=${AGENT_UID:-$(id -u "$AGENT_USER")}
+  exec 8>"${SP_PROVISION_LOCK:-/run/slack-presence-provision.lock}"
+  flock -w 1800 8 || die "launch: provision.sh held its lock for 30 min; try again"
+  running=$(launch_running)
+  if [[ $want == podman ]]; then
+    if [[ ! -f $MARK ]]; then
+      log "launch: skipped: host not migrated to $HOST_USER (sp-host.sh migrate first); podman needs it"
+      return 0
+    fi
+    main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
+    if [[ ${running:-systemd} == systemd && -n $main && $main != 0 && ! -f $LEGACY_PROC/$main/cwd/src/host/legacy-migration/drain.ts ]]; then
+      log "launch: skipped: running release has no drain (src/host/legacy-migration/drain.ts); deploy a current release first"
+      return 0
+    fi
+  fi
+  old=$(cat "$LAUNCH_MARK" 2>/dev/null || true)
+  install -d -m 0755 "$ETC"
+  echo "$want" > "$LAUNCH_MARK.tmp" && mv "$LAUNCH_MARK.tmp" "$LAUNCH_MARK"
+  if ! launch_apply; then
+    launch_restore "$old" || true
+    die "launch: apply failed; the marker is back to '${old:-none}' and the host was not restarted"
+  fi
+  local eff src
+  eff=$(legacy_new_launch | grep . || echo systemd)
+  if [[ $eff != "$want" ]]; then
+    src=$(launch_override)
+    launch_restore "$old" || die "launch: the unit's SP_LAUNCH is '$eff', not $want, set by $src; re-applying the marker '${old:-none}' failed too: sp-host.sh apply. Not restarted"
+    die "launch: the unit's SP_LAUNCH is '$eff', not $want, set by $src (systemctl cat $UNIT); the marker is back to '${old:-none}' and the host was not restarted"
+  fi
+  if [[ -n $(launch_host_pid) && ${running:-systemd} == "$want" ]]; then
+    log "launch: already $want; nothing to restart"
+    launch_status
+    return 0
+  fi
+  log "launch: restarting the host agent as $want"
+  if [[ $want == systemd ]]; then
+    echo "sp-host: launch: the podman containers keep running and the systemd host does not see them; stop them with" \
+      "runuser -u $AGENT_USER -- env XDG_RUNTIME_DIR=/run/user/$AGENT_UID podman stop -a" >&2
+  fi
+  inv=$(systemctl show -p InvocationID --value "$UNIT" 2>/dev/null || true)
+  main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
+  if legacy_drain_restart; then launch_drain_summary "$inv" "$main"; else systemctl restart "$UNIT"; fi
+  main=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null || echo 0)
+  local host now
+  host=$(legacy_new_host "$main") || die "launch: the host did not come back (MainPID $main runs no src/host/main.ts): journalctl -u $UNIT"
+  now=$(legacy_env_of "$host" SP_LAUNCH)
+  [[ ${now:-systemd} == "$want" ]] || die "launch: the host came back with SP_LAUNCH=${now:-unset}, not $want: journalctl -u $UNIT"
+  log "launch: done, the host agent runs as $want (pid $host)"
+  launch_status
+}
+# ---- end ONE-TIME systemd->podman migration
+
+# Sourced (tests): the functions only.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
 case "${1:-}" in
   migrate)
     log "migrating the host agent to $HOST_USER"
@@ -299,5 +452,11 @@ case "${1:-}" in
   revert) log "reverting the host agent to $AGENT_USER"; revert; status ;;
   status) status ;;
   run-dirs) run_dirs_as_is ;;
-  *) echo "usage: sp-host.sh migrate|revert|status|apply|run-dirs" >&2; exit 2 ;;
+  launch) # ONE-TIME systemd->podman migration (work 103): delete in step 11
+    case "${2:-}" in
+      podman|systemd) launch "$2" ;;
+      status) launch_status ;;
+      *) echo "usage: sp-host.sh launch podman|systemd|status" >&2; exit 2 ;;
+    esac ;;
+  *) echo "usage: sp-host.sh migrate|revert|status|apply|run-dirs|launch" >&2; exit 2 ;;
 esac
