@@ -43,6 +43,8 @@ export interface RelayOptions {
   dial?: DialWriter;
   pingMs?: number;
   telemetryMs?: number;
+  /** Hang up a tty terminal after this long with no input or output (default LIMITS.terminalIdleMs; 0 never). */
+  terminalIdleMs?: number;
 }
 
 export interface Relay {
@@ -142,6 +144,7 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
         version: o.version,
         region: o.region,
         pingMs: o.pingMs,
+        terminalIdleMs: o.terminalIdleMs,
         emit,
         forward: (name, fields) => hostLink.telemetry(name, fields),
         routeTerminal: (id, to) => (to ? terminals.set(id, to) : terminals.delete(id)),

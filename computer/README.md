@@ -523,6 +523,7 @@ environment, which any session can change.
 | `SP_RUN` | `/run/slack-presence` | as the host's; the relay dials session writers at `<SP_RUN>/runners/<id>.api.sock` |
 | `SP_VERSION` | `dev` | the release's commit, in `ready.server.version` (the unit reads it from `.sp-version.env`) |
 | `SP_REGION` | unset (`null`) | `ready.server.region` |
+| `SP_WIRE_TERMINAL_IDLE_MINUTES` | `15` | an interactive (tty) terminal with no input and no output for this many minutes is hung up; its `terminal.exited` carries `reason: "idle"`. `0` turns the timeout off; commands without a tty are never timed out |
 
 Gateway variables, the model credentials among them, are documented at the top of `src/gateway/main.ts`.
 

@@ -67,11 +67,11 @@ export interface SessionAccess {
   sessionId: string;
   /** `usr_…` of the owner; may always attach and open terminals. */
   owner: string;
-  /** Others who may attach (read and write); null: every member of the organization. */
+  /** Others who may attach and drive (read, write, open terminals); null: every member of the organization. */
   members: string[] | null;
   /**
-   * The organization's admins (`usr_…`), who may also open terminals in this session (attaching still follows
-   * `members`). Absent: only the host's own list (the welcome's `people[].admin`) counts.
+   * Older gateways list the organization's admins here. Ignored: an admin opens a terminal only where
+   * `owner` or `members` lets them drive.
    */
   admins?: string[];
 }

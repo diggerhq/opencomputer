@@ -12,7 +12,7 @@
 //   `welcome`, so a relay that restarts starts from the current state.
 // - A terminal belongs to the relay connection that opened it: when that
 //   connection drops, its terminals are hung up.
-// - The host checks again what the relay checked (owner or admin for a
+// - The host checks again what the relay checked (who may drive, for a
 //   terminal; the session is one this host runs), so a confused relay cannot
 //   open a shell in someone else's session.
 // - terminal.opened / terminal.closed / files.pushed are recorded through
@@ -25,6 +25,7 @@ import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ApiActor, ApiError, ApiSessionStatus, HostToWire, SessionAccess, WhereResult, WireToHost } from '../protocol.js';
 import { apiError } from '../api/writer.js';
+import { mayOpenTerminal } from '../api/session-access.js';
 import { lines, send } from '../ipc.js';
 import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
@@ -115,7 +116,9 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       case 'terminal.open': {
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: sessionNotFound() };
-        if (m.member !== ws.owner && !admins.includes(m.member) && !access.get(m.sessionId)?.admins?.includes(m.member)) return { error: apiError('forbidden', "Only the session's owner or an admin can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
+        // Whoever may drive the session (owner, named members, everyone when org-wide); an admin is not enough.
+        const a = access.get(m.sessionId);
+        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member))) return { error: apiError('forbidden', 'Only people who may drive this session can open a terminal in it.', 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(

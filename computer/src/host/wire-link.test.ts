@@ -108,6 +108,25 @@ describe('wire link', () => {
     r.sock.destroy();
   });
 
+  it('lets whoever may drive past the terminal gate, and never an admin the session does not name', async () => {
+    link.setAdmins(['usr_admin']);
+    link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: ['usr_owner', 'usr_invited'], admins: ['usr_admin'] });
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    const open = (id: string, member: string) => r.send({ t: 'terminal.open', id, sessionId: 'cs_stopped', member, cols: 80, rows: 24, tty: true });
+    open('a', 'usr_admin');
+    expect((await r.next((m) => m.id === 'a')).error).toMatchObject({ code: 'forbidden', reason: 'terminal_owner_only' });
+    // Past the gate, a stopped session answers that it is not running.
+    open('b', 'usr_invited');
+    expect((await r.next((m) => m.id === 'b')).error).toMatchObject({ reason: 'session_not_running' });
+    link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: null });
+    await r.next((m) => m.t === 'access');
+    open('c', 'usr_anyone');
+    expect((await r.next((m) => m.id === 'c')).error).toMatchObject({ reason: 'session_not_running' });
+    r.sock.destroy();
+  });
+
   it('opens a terminal for the owner only, records it, and hangs it up when the relay goes', async () => {
     const r = await relay();
     r.send({ t: 'hello', version: 'test' });

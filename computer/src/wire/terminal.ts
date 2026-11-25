@@ -4,8 +4,9 @@
 // `[channel u32 BE][data]` on the WebSocket.
 //
 // Invariants:
-// - Only the session's owner or an admin opens one (checked here against the
-//   host's access list and admins; the host checks the 8-per-session limit).
+// - Only someone who may drive the session opens one (checked here against the
+//   host's access list; an admin who is not named gets nothing extra; the host
+//   checks again, and the 8-per-session limit).
 // - Output goes out ahead of events (the outbox's urgent queue), in frames of
 //   at most 64 KiB, and the terminal's socket is paused while the connection
 //   is congested, so a flood of output cannot grow memory.
@@ -15,6 +16,10 @@
 //   request fails with `rate_limited`.
 // - A terminal belongs to the connection that opened it; closing the
 //   connection hangs up every one of them.
+// - A tty terminal with no input and no output for `idleMs` (LIMITS.terminalIdleMs,
+//   SP_WIRE_TERMINAL_IDLE_MINUTES) is hung up, and its `terminal.exited` says
+//   `reason: "idle"`; one whose session the member may no longer drive is hung
+//   up with `reason: "access_lost"`. A command without a tty is never idle.
 
 import net from 'node:net';
 import type { ApiError, HostToWire, SessionAccess } from '../protocol.js';
@@ -36,6 +41,11 @@ interface Open {
   bucket: TokenBucket;
   exited?: Extract<HostToWire, { t: 'terminal.exited' }>;
   done: boolean;
+  /** Why the relay hung it up, if it did. */
+  reason?: TerminalEndReason;
+  /** Last input or output (ms), for the idle timeout; tty terminals only. */
+  activeAt: number;
+  idleTimer?: NodeJS.Timeout;
   /** For `wire.terminal`. */
   openedAt: number;
   bytesIn: number;
@@ -52,7 +62,12 @@ export interface TerminalDeps {
   /** Telemetry: one `wire.terminal` per terminal when it ends. */
   emit?: WireEmit;
   connectionId?: string;
+  /** Hang up a tty terminal after this long with no input or output; 0 never. Default LIMITS.terminalIdleMs. */
+  idleMs?: number;
 }
+
+/** Why the relay hung a terminal up, in `terminal.exited.reason`. */
+export type TerminalEndReason = 'idle' | 'access_lost';
 
 export interface OpenParams {
   sessionId: string;
@@ -81,7 +96,7 @@ export class WireTerminals {
   async open(p: OpenParams, access: SessionAccess | undefined): Promise<CallOutcome> {
     const { host, member } = this.deps;
     if (!access) return { error: errors.sessionNotFound() };
-    if (!mayOpenTerminal(access, member, host.admins)) return { error: errors.terminalOwnerOnly() };
+    if (!mayOpenTerminal(access, member)) return { error: errors.terminalOwnerOnly() };
     const tty = p.tty ?? true;
     if (tty && (p.cols === undefined || p.rows === undefined)) return { error: errors.invalidParams(p.cols === undefined ? 'cols' : 'rows', 'cols and rows are required with tty') };
     const r = await host.call({
@@ -98,6 +113,7 @@ export class WireTerminals {
       live: 0,
       bucket: new TokenBucket(LIMITS.terminalInputBytesPerSecond, LIMITS.terminalInputBytesPerSecond),
       done: false,
+      activeAt: Date.now(),
       openedAt: Date.now(),
       bytesIn: 0,
       bytesOut: 0,
@@ -112,6 +128,7 @@ export class WireTerminals {
     }
     this.byId.set(t.id, t);
     this.byChannel.set(t.channel, t);
+    if (tty) this.watchIdle(t);
     this.deps.route(t.id, this);
     this.deps.onChange?.();
     return { result: { terminal: { id: t.id, channel: t.channel, stderrChannel: t.stderrChannel } } };
@@ -128,7 +145,18 @@ export class WireTerminals {
       return;
     }
     t.bytesIn += data.length;
+    t.activeAt = Date.now();
     t.sockets[0]?.write(data);
+  }
+
+  /** The sessions this connection has terminals in. */
+  sessions(): Set<string> {
+    return new Set([...this.byId.values()].map((t) => t.sessionId));
+  }
+
+  /** The member may no longer drive `sessionId`: hang up every terminal they have in it. */
+  closeSession(sessionId: string) {
+    for (const t of this.byId.values()) if (t.sessionId === sessionId) this.hangUp(t, 'access_lost');
   }
 
   async resize(terminalId: string, cols: number, rows: number): Promise<CallOutcome> {
@@ -162,6 +190,7 @@ export class WireTerminals {
   closeAll() {
     for (const t of this.byId.values()) {
       t.done = true;
+      clearTimeout(t.idleTimer);
       for (const s of t.sockets) s.destroy();
       void this.deps.host.call({ t: 'terminal.close', terminalId: t.id });
       this.deps.route(t.id, undefined);
@@ -169,6 +198,32 @@ export class WireTerminals {
     }
     this.byId.clear();
     this.byChannel.clear();
+  }
+
+  /** Checks at the earliest moment the terminal could have gone idle, and hangs it up once it has. */
+  private watchIdle(t: Open) {
+    const idleMs = this.deps.idleMs ?? LIMITS.terminalIdleMs;
+    if (!(idleMs > 0)) return;
+    const check = () => {
+      if (t.done) return;
+      const left = t.activeAt + idleMs - Date.now();
+      if (left > 0) return void (t.idleTimer = arm(left));
+      this.hangUp(t, 'idle');
+    };
+    const arm = (ms: number) => {
+      const timer = setTimeout(check, ms);
+      timer.unref?.();
+      return timer;
+    };
+    t.idleTimer = arm(idleMs);
+  }
+
+  /** Ask the host to end the terminal; its `terminal.exited` then carries `reason`. */
+  private hangUp(t: Open, reason: TerminalEndReason) {
+    if (t.done || t.reason) return;
+    t.reason = reason;
+    clearTimeout(t.idleTimer);
+    void this.deps.host.call({ t: 'terminal.close', terminalId: t.id });
   }
 
   private forward(r: { result?: unknown; error?: ApiError }): CallOutcome {
@@ -191,6 +246,7 @@ export class WireTerminals {
       s.on('data', (chunk: Buffer) => {
         const { outbox } = this.deps;
         t.bytesOut += chunk.length;
+        t.activeAt = Date.now();
         const room = LIMITS.terminalFrameBytes - head.length; // a frame is at most 64 KiB with its header
         for (let i = 0; i < chunk.length; i += room) {
           outbox.urgent(Buffer.concat([head, chunk.subarray(i, i + room)]));
@@ -210,11 +266,14 @@ export class WireTerminals {
   private finish(t: Open) {
     if (t.done && !this.byId.has(t.id)) return;
     t.done = true;
+    clearTimeout(t.idleTimer);
     this.byId.delete(t.id);
     this.byChannel.delete(t.channel);
     this.deps.route(t.id, undefined);
     const m = t.exited;
-    this.deps.outbox.urgent(encodeNotification('terminal.exited', { terminalId: t.id, exitCode: m?.exitCode ?? null, signal: m?.signal ?? null }));
+    this.deps.outbox.urgent(
+      encodeNotification('terminal.exited', { terminalId: t.id, exitCode: m?.exitCode ?? null, signal: m?.signal ?? null, ...(t.reason ? { reason: t.reason } : {}) }),
+    );
     this.deps.onChange?.();
     this.ended(t, true);
   }

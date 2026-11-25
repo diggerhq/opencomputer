@@ -12,7 +12,8 @@
 //   while it was in flight (the outbox holds the session).
 // - The connection closes with 1001 after two missed pings, 4001 when its
 //   credential's `until` passes or its key is revoked, 4008 when more than
-//   16 MiB wait to be sent; closing hangs up its terminals and links.
+//   16 MiB wait to be sent; closing hangs up its terminals and links. Losing
+//   access to a session detaches it and hangs up the member's terminals in it.
 // - Telemetry (catalog v2): one event per unit (attach, write batch, detach,
 //   error response, opc telemetry frame), sent as it happens; never per frame
 //   or per event. Error events are capped per connection (a flood of refused
@@ -51,6 +52,8 @@ export interface ConnectionDeps {
   /** Forward one checked opc event to the host (`cli.*`). */
   forward?(name: string, fields: Record<string, number | string | boolean>): void;
   pingMs?: number;
+  /** A tty terminal idle this long is hung up (terminal.ts); default LIMITS.terminalIdleMs, 0 never. */
+  terminalIdleMs?: number;
 }
 
 /** The connection's own totals, for `wire.close`. */
@@ -118,7 +121,7 @@ export class Connection {
       },
       { meter: w },
     );
-    this.terminals = new WireTerminals({ host: deps.host, outbox: this.outbox, member: this.member, route: deps.routeTerminal, emit, connectionId: this.id });
+    this.terminals = new WireTerminals({ host: deps.host, outbox: this.outbox, member: this.member, route: deps.routeTerminal, emit, connectionId: this.id, idleMs: deps.terminalIdleMs });
   }
 
   /** Greet, attach what the URL names, and start reading. */
@@ -170,18 +173,18 @@ export class Connection {
     this.teardown();
   }
 
-  /** The host pushed a new access list: drop attachments the member may no longer see. */
+  /** The host pushed a new access list: drop attachments and hang up terminals the member may no longer have. */
   accessChanged(access: SessionAccess) {
-    const a = this.attached.get(access.sessionId);
-    if (a && !mayAttach(access, this.member)) this.detach(access.sessionId, 'access_lost');
+    if (mayAttach(access, this.member)) return;
+    if (this.attached.has(access.sessionId)) this.detach(access.sessionId, 'access_lost');
+    this.terminals.closeSession(access.sessionId);
   }
 
-  /** After a host `welcome`: every attached session is checked against the new lists (absent: lost). */
+  /** After a host `welcome`: every attached session and open terminal is checked against the new lists (absent: lost). */
   recheckAccess(get: (sessionId: string) => SessionAccess | undefined) {
-    for (const sid of [...this.attached.keys()]) {
-      const access = get(sid);
-      if (!access || !mayAttach(access, this.member)) this.detach(sid, 'access_lost');
-    }
+    const lost = (sid: string) => !mayAttach(get(sid) ?? { sessionId: sid, owner: '', members: [] }, this.member);
+    for (const sid of [...this.attached.keys()]) if (lost(sid)) this.detach(sid, 'access_lost');
+    for (const sid of this.terminals.sessions()) if (lost(sid)) this.terminals.closeSession(sid);
   }
 
   revoked(keyId: string) {
