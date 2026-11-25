@@ -101,7 +101,7 @@ const nameOf = (r: Resolution) => r.actor.name || r.actor.id;
 const MODE_LABEL: Record<string, string> = { acceptEdits: 'auto-accepting edits', auto: 'auto mode', bypassPermissions: 'bypassing permissions' };
 
 export async function permissionPrompt(host: PromptHost, name: string, input: Record<string, unknown>, ask: GateAsk): Promise<GateDecision> {
-  const pid = randomUUID().slice(0, 8);
+  const local = randomUUID().slice(0, 8);
   const asked = host.driver;
   const isPlan = ask.kind === 'plan';
   if (!isPlan) host.patchTask(ask.id, { details: 'waiting for approval ↓', waiting: true });
@@ -137,6 +137,7 @@ export async function permissionPrompt(host: PromptHost, name: string, input: Re
     { kind: 'approval', approval: { toolName: name, callId: ask.id, input: input as never, title, alwaysAllows: isPlan ? 'acceptEdits' : ask.canRemember ? name : null } },
     api.resolve,
   );
+  const pid = tracked?.id ?? local; // the ask's id, so a button names its ask (work 118, section 40.11)
   const ts = await host.thread.post(title, [
     ...head,
     {
@@ -236,7 +237,7 @@ export async function questionPrompt(
   toolUseID: string,
   signal: AbortSignal,
 ): Promise<GateDecision> {
-  const pid = randomUUID().slice(0, 8);
+  const local = randomUUID().slice(0, 8);
   const asked = host.driver;
   host.patchTask(toolUseID, { details: 'waiting for your answer ↓', waiting: true });
   const qs = input.questions ?? [];
@@ -288,6 +289,7 @@ export async function questionPrompt(
     },
     api.resolve,
   );
+  const pid = tracked?.id ?? local;
   let lastUser: string | undefined;
   const ts = await host.thread.post(qs[0]?.question ?? 'Question', [
     ...render(),

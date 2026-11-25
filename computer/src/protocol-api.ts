@@ -276,20 +276,6 @@ export interface RunnerApi {
   token: string;
 }
 
-/** Delivery.api: a message that came through the API, not Slack; recorded already by the host's writer when `turnId` is set. */
-export interface ApiDelivery {
-  actor: ApiActor;
-  member: string;
-  ifBusy: 'queue' | 'steer' | 'interrupt';
-  /** The turn the host's writer recorded (`message.received`, `turn.queued`) while no runner ran. */
-  turnId?: string;
-  idempotencyKey?: string;
-  model?: string;
-  effort?: string;
-  speed?: string;
-  mode?: string;
-}
-
 // ---------------------------------------------------------------- Slack-bound narrowings
 
 /** A person with a Slack identity: everyone the Slack gateway (src/gateway/) knows. */
