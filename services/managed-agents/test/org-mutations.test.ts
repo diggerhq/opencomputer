@@ -2,7 +2,6 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { migrate, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
 import type { Summary } from "../src/actor/contracts.js";
-import { addTrackAgent } from "../src/org/mutations/common.js";
 import { runMutation, type MutationOutcome } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";
 import { emptySummary, transact } from "../src/org/tx.js";
@@ -68,18 +67,7 @@ const occurrences = (sql: Sql) => sql.exec<{ kind: string }>("SELECT kind FROM o
 /** A track owned by usr_a with thread `sid(1)` in it. */
 function seedTrack(sql: Sql, n = 1, thread = sid(n)): void {
   seedThread(sql, thread);
-  transact(sql, Date.now(), (tx) => {
-    tx.sql.exec(
-      "INSERT INTO track (id, owner, name, name_by, agent_session, position, created_by, version, audience) VALUES (?, 'usr_a', 'Dock', 'user:usr_a', ?, ?, 'user:usr_a', ?, 'member:usr_a')",
-      tid(n),
-      agentSid(n),
-      tx.now,
-      tx.version(),
-    );
-    addTrackAgent(tx, { id: agentSid(n), trackId: tid(n), owner: "usr_a", ownerName: null, ownerEmail: null, origin: { type: "api", client: null, slack: null }, machine: "org_t", by: "user:usr_a", name: "Dock", firstInput: "Go." });
-    tx.sql.exec("UPDATE place SET track_id = ? WHERE session_id = ?", tid(n), thread);
-    tx.stamp("place", thread);
-  });
+  ok(run(sql, A, "track.create", { tid: tid(n), agentSessionId: agentSid(n), name: "Dock", sid: thread }));
 }
 
 describe("thread mutations: the happy paths", () => {
@@ -178,7 +166,7 @@ describe("thread mutations: the happy paths", () => {
       ok(run(sql, A, "thread.place", { sid: sid(2), trackId: null }));
       expect(sql.exec("SELECT id FROM track")).toEqual([]);
       expect(sql.exec("SELECT id FROM session WHERE id = ?", agentSid(1))).toEqual([]);
-      expect(sql.exec("SELECT kind FROM gone WHERE id = ?", tid(1))).toEqual([{ kind: "track" }]);
+      expect(sql.exec("SELECT kind FROM gone WHERE id = ? ORDER BY kind", tid(1))).toEqual([{ kind: "doc" }, { kind: "track" }]);
       expect(owedCalls(sql).some((c) => c.startsWith("Computer.stop") && c.includes(agentSid(1)))).toBe(true);
     });
   });
@@ -239,6 +227,131 @@ describe("thread mutations: 19.2's refusals", () => {
       ok(run(sql, agent(sid(5)), "thread.place", { sid: sid(5), trackId: tid(1) }));
       ok(run(sql, A, "thread.place", { sid: sid(5), trackId: null }));
       expect(run(sql, agent(sid(5)), "thread.place", { sid: sid(5), trackId: tid(1) })).toMatchObject({ ok: false });
+    });
+  });
+});
+
+const track = (sql: Sql, id: string) => sql.exec<Record<string, unknown>>("SELECT * FROM track WHERE id = ?", id)[0];
+
+describe("track mutations", () => {
+  it("track.create by a person wraps a thread (40.7): track, empty doc, agent session, place, first input, op", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      sql.exec("DELETE FROM _owed");
+      const out = ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), name: "Dock", sid: sid(1) }));
+      expect(out.value).toMatchObject({ trackId: tid(1) });
+      expect(track(sql, tid(1))).toMatchObject({ owner: "usr_a", name: "Dock", name_by: "user:usr_a", agent_session: agentSid(1), created_by: "user:usr_a", audience: "member:usr_a" });
+      expect(sql.exec("SELECT rev, text FROM doc WHERE track_id = ?", tid(1))).toEqual([{ rev: 0, text: "" }]);
+      expect(sql.exec("SELECT role, writers, audience FROM session WHERE id = ?", agentSid(1))).toEqual([{ role: "track", writers: '["user:usr_a"]', audience: "member:usr_a" }]);
+      expect(place(sql, agentSid(1))).toBeUndefined();
+      expect(place(sql, sid(1))).toMatchObject({ track_id: tid(1) });
+      const calls = owedCalls(sql);
+      expect(calls.some((c) => c.startsWith("Computer.start") && c.includes(agentSid(1)))).toBe(true);
+      const first = calls.find((c) => c.startsWith("SessionLog.accept") && c.includes(agentSid(1)))!;
+      expect(first).toContain("made by user:usr_a");
+      expect(first).toContain(sid(1));
+      expect(first).toContain("Do not start threads");
+      expect(sql.exec("SELECT name FROM op")).toEqual([{ name: "track.create" }]);
+      expect(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(2) })).toMatchObject({ ok: false, code: "taken" });
+    });
+  });
+
+  it("track.create by an agent: its own thread (G3), or from the start box, which removes the calling thread (J5)", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      expect(run(sql, agent(sid(2)), "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) })).toMatchObject({ ok: false, code: "not_found" });
+      ok(run(sql, agent(sid(1)), "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) }));
+      expect(track(sql, tid(1))).toMatchObject({ owner: "usr_a", created_by: `agent:${sid(1)}`, name: null });
+      expect(owedCalls(sql).find((c) => c.startsWith("SessionLog.accept") && c.includes(agentSid(1)))).toContain("You may start threads");
+
+      seedThread(sql, sid(5), "usr_a", { role: "start" });
+      ok(run(sql, agent(sid(5)), "track.create", { tid: tid(2), agentSessionId: agentSid(2), firstInput: "Ship the dock redesign" }));
+      expect(track(sql, tid(2))).toMatchObject({ owner: "usr_a" });
+      expect(sql.exec("SELECT id FROM session WHERE id = ?", sid(5))).toEqual([]);
+      expect(owedCalls(sql).find((c) => c.startsWith("SessionLog.accept") && c.includes(agentSid(2)))).toContain("Ship the dock redesign");
+      // A plain thread's agent cannot start a track with no thread.
+      seedThread(sql, sid(6));
+      expect(run(sql, agent(sid(6)), "track.create", { tid: tid(3), agentSessionId: agentSid(3) })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+
+  const owned: { name: string; args: Record<string, unknown>; check: (sql: Sql) => void; op: boolean }[] = [
+    {
+      name: "track.rename",
+      args: { name: "Harbor" },
+      op: true,
+      check: (sql) => {
+        expect(track(sql, tid(1))).toMatchObject({ name: "Harbor", name_by: "user:usr_a", former_names: '["Dock"]' });
+        expect(sql.exec("SELECT title FROM session WHERE id = ?", agentSid(1))).toEqual([{ title: "Harbor" }]);
+      },
+    },
+    { name: "track.set_stand", args: { stand: "Waiting on review" }, op: false, check: (sql) => expect(track(sql, tid(1))).toMatchObject({ stand: "Waiting on review" }) },
+    {
+      name: "track.done",
+      args: { outcome: "shipped" },
+      op: true,
+      check: (sql) => {
+        expect(track(sql, tid(1))).toMatchObject({ outcome: "shipped" });
+        expect(place(sql, sid(1))).toMatchObject({ outcome: "shipped", done_by: "user:usr_a" });
+        expect(occurrences(sql)).toContain("thread.done");
+      },
+    },
+    { name: "track.reopen", args: {}, op: true, check: (sql) => expect(track(sql, tid(1))).toMatchObject({ done_at: null }) },
+    { name: "track.keep", args: { keep: true }, op: true, check: (sql) => expect(track(sql, tid(1))).toMatchObject({ keep: 1 }) },
+    {
+      name: "track.dissolve",
+      args: { threads: "keep" },
+      op: true,
+      check: (sql) => {
+        expect(track(sql, tid(1))).toBeUndefined();
+        expect(sql.exec("SELECT 1 FROM doc")).toEqual([]);
+        expect(place(sql, sid(1))).toMatchObject({ track_id: null });
+        expect(sql.exec("SELECT id FROM session WHERE id = ?", agentSid(1))).toEqual([]);
+      },
+    },
+    {
+      name: "track.delete",
+      args: {},
+      op: false,
+      check: (sql) => {
+        expect(track(sql, tid(1))).toBeUndefined();
+        expect(sql.exec("SELECT id FROM session")).toEqual([]);
+        expect(sql.exec("SELECT id FROM op")).toEqual([]);
+      },
+    },
+  ];
+  for (const c of owned) {
+    it(`${c.name}: the owner does it; another member and the track's agent${c.name === "track.rename" || c.name === "track.set_stand" ? " (on a person's name)" : ""} cannot`, async () => {
+      await withOrg((sql) => {
+        seedTrack(sql);
+        const args = { tid: tid(1), ...c.args };
+        expect(run(sql, B, c.name, args)).toMatchObject({ ok: false, code: "not_found" });
+        if (c.name !== "track.set_stand") expect(run(sql, agent(agentSid(1)), c.name, args)).toMatchObject({ ok: false, code: c.name === "track.rename" ? "refused" : "not_found" });
+        const before = sql.exec("SELECT COUNT(*) AS n FROM op")[0]!.n as number;
+        ok(run(sql, A, c.name, args));
+        c.check(sql);
+        if (c.name !== "track.delete") expect(sql.exec("SELECT COUNT(*) AS n FROM op")[0]!.n).toBe(before + (c.op ? 1 : 0));
+      });
+    });
+  }
+
+  it("the track's agent sets the stand and renames a track it named", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) }));
+      ok(run(sql, agent(agentSid(1)), "track.set_stand", { tid: tid(1), stand: "Two threads running" }));
+      ok(run(sql, agent(agentSid(1)), "track.rename", { tid: tid(1), name: "Dock" }));
+      expect(track(sql, tid(1))).toMatchObject({ name: "Dock", name_by: `agent:${agentSid(1)}`, stand: "Two threads running" });
+    });
+  });
+
+  it("track.dissolve with threads: 'stop' interrupts the working threads", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1), "usr_a", { summary: { status: "running" } });
+      ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) }));
+      sql.exec("DELETE FROM _owed");
+      ok(run(sql, A, "track.dissolve", { tid: tid(1), threads: "stop" }));
+      expect(owedCalls(sql).some((c) => c.startsWith("SessionLog.accept") && c.includes('"interrupt"') && c.includes(sid(1)))).toBe(true);
     });
   });
 });
