@@ -10,4 +10,6 @@ export class OrgDurableObject extends DurableObject {
   override fetch(): Response {
     return unavailable("Org");
   }
+
+  override alarm(): void {}
 }
