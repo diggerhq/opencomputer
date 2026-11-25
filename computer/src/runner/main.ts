@@ -62,14 +62,12 @@ import type {
   RunnerToHost,
   SecretRequest,
   SessionReport,
-  SpawnRequest,
-  SpawnResult,
-  PostThreadRequest,
-  PostThreadResult,
   PreviewToolResult,
-  ReadThreadRequest,
 } from '../protocol.js';
 import { log } from '../log.js';
+import { askKey, cloudApi } from './cloud.js';
+import type { Work } from './work.js';
+import { fileResult } from './work-tools.js';
 import { createTelemetry } from '../telemetry/emitter.js';
 import type { Dimensions } from '../telemetry/envelope.js';
 import { TIERS, tierOf } from '../tiers.js';
@@ -223,6 +221,14 @@ const previews = servedPreviews(env.SP_PREVIEW_SOCKET, {
   preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
   unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
 });
+// The public API as this session's agent (section 41): the key is the token socket's, bound to the session.
+const work: Work = {
+  api: cloudApi({ key: () => askKey(env.SP_TOKEN_SOCKET!) }),
+  session: () => {
+    if (!ss?.sessionId) throw new Error('this session has no id on the API yet');
+    return { id: ss.sessionId, role: ss.role, ...(isSlackSpec(ss) && ss.teamId && ss.threadTs && { slackThread: `${ss.teamId}:${ss.channel}:${ss.threadTs}` }) };
+  },
+};
 const hooks: SessionHooks = {
   busy: (busy) => {
     out({ t: 'report', report: report() });
@@ -231,8 +237,7 @@ const hooks: SessionHooks = {
     else if (!busy) sub.idle(); // a turn refused its model: retried on the one below (work 077)
   },
   output: () => clearFeedback(),
-  spawn,
-  threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
+  work,
   previews,
   ...(workspacesEnabled() && { checkout }),
   restart: () => {
@@ -317,7 +322,7 @@ function bind(b: Bound, kind?: HarnessKind) {
       speed: b.speed,
       sdkSessionId: b.sdkSessionId,
     },
-    isSlackSpec(b) ? makeClient(botToken) : new NullSurface(),
+    isSlackSpec(b) ? makeClient(botToken) : new NullSurface((f) => fileResult(work, b.forkPath, f)),
     () => out({ t: 'report', report: report() }),
     hooks,
     kind,
@@ -439,18 +444,9 @@ const answered = <T>(m: { result?: T; error?: string }, otherwise: string): T =>
   return m.result;
 };
 
-// spawn_thread, read_thread, post_thread, preview and unpreview: the gateway answers through the host.
+// preview and unpreview: the gateway answers through the host.
 const gateway = new Waiters<RunnerToHost, { result?: unknown; error?: string }>({ send: toHost, ms: 30_000, late: 'no answer from the gateway within 30 s' });
 const askGateway = <T>(frame: (id: string) => RunnerToHost) => gateway.ask(frame, (m) => answered(m, 'no answer') as T);
-function spawn(req: SpawnRequest) {
-  return askGateway<SpawnResult>((id) => ({ t: 'spawn', id, req }));
-}
-function readThread(req: ReadThreadRequest) {
-  return askGateway<Linked>((id) => ({ t: 'read', id, req }));
-}
-function postThread(req: PostThreadRequest) {
-  return askGateway<PostThreadResult>((id) => ({ t: 'post', id, req }));
-}
 
 // checkout_repo: the host clones if needed and adds the worktree; a first clone of a large repository takes a while.
 const checkouts = new Waiters<RunnerToHost, { result?: CheckoutResult[]; error?: string }>({
@@ -493,9 +489,6 @@ async function onHost(m: HostToRunner) {
       return void ((spec.api = m.api), ss && link(ss));
     case 'credentials':
       return applyCredentials(m.credentials);
-    case 'spawned':
-    case 'thread':
-    case 'posted':
     case 'previewed':
       return gateway.answer(m.id, m);
     case 'secrets':

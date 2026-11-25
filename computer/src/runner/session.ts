@@ -26,8 +26,8 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
-import type { ThreadHooks } from './threads.js';
+import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
+import type { Work } from './work.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
 import { cardSender } from './post-card.js';
@@ -79,10 +79,8 @@ export interface SessionHooks {
   busy?(busy: boolean): void;
   /** Model output for the current turn arrived (first stream event or assistant message). */
   output?(): void;
-  /** Start a new thread through the gateway (work 047); offers the spawn_thread tool when set. */
-  spawn?(req: SpawnRequest): Promise<SpawnResult>;
-  /** Read and post Slack threads through the gateway (work 049 L3); offers read_thread and post_thread when set. */
-  threads?: ThreadHooks;
+  /** The public API as this session's agent (work 118, section 41); offers the tools that reach the cloud when set. */
+  work?: Work;
   previews?: PreviewHooks; // public URLs for the session's servers (work 074); offers preview and unpreview
   /** The session's secrets (work 046): usable by commands, redacted from everything posted. */
   secrets?: SessionSecrets;

@@ -1,8 +1,7 @@
-// spawn_thread (work 047): a session starts another Slack thread to run work
-// in parallel. The runner offers it as a tool of the in-process `calvin` MCP
-// server (see session.ts); the request
-// goes runner → host → gateway, and the gateway posts a short message and
-// starts a session on it, owned by the same person, as a mention would.
+// start_thread (work 047, then work 118 section 41): a session starts another
+// thread to run work in parallel. It is `POST /sessions` on the public API
+// with the session's own key (cloud.ts), so the new thread is owned by the
+// same person and, with `track`, starts in this session's track.
 //
 // The brief lives in a repository, not in the message: before asking, the
 // tool fetches the brief's repository and checks the file is on its default
@@ -14,11 +13,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tool } from './tool.js';
 import { z } from 'zod';
-import type { SpawnRequest, SpawnResult } from '../protocol.js';
+import { keyOf, refusal, said, type Work } from './work.js';
 
-export const SPAWN_TOOL = 'mcp__calvin__spawn_thread';
-/** Bounds fan-out per runner, which matters in bypass mode where nobody approves each spawn. */
-const MAX_SPAWNS = 8;
+export const START_THREAD_TOOL = 'mcp__calvin__start_thread';
+/** Bounds fan-out per runner, which matters in bypass mode where nobody approves each start. */
+const MAX_STARTS = 8;
 
 const git = (cwd: string, ...args: string[]) =>
   promisify(execFile)('git', ['-C', cwd, ...args], { encoding: 'utf8' }).then((r) => r.stdout.trim());
@@ -46,42 +45,43 @@ export async function checkBrief(cwd: string, brief: string): Promise<string | u
   return gh && `https://github.com/${gh}/blob/${head.replace(/^origin\//, '')}/${rel}${anchor ? `#${anchor}` : ''}`;
 }
 
-/** The tool; `spawn` asks the gateway through the host. */
-export function spawnTool(cwd: () => string, spawn: (req: SpawnRequest) => Promise<SpawnResult>) {
-  let spawned = 0;
-  const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true });
+/** The track this session is in: its own for a track's session, else what its row says. */
+export async function trackOf(w: Work): Promise<string | undefined> {
+  const me = w.session();
+  if (me.role?.name === 'track') return me.role.trackId;
+  const r = await w.api.call('GET', `/sessions/${me.id}`);
+  const id = r?.session?.trackId;
+  return typeof id === 'string' ? id : undefined;
+}
+
+export function startThreadTool(cwd: () => string, w: Work) {
+  let started = 0;
   return tool(
-    'spawn_thread',
-    'Start a new Slack thread that works on a task in parallel, as the same person, in its own fresh workspace fork. ' +
-      'Put everything the thread needs (goal, constraints, sources, done criteria, where to report) in a Markdown brief in the ' +
-      'knowledge repository work doc that owns the topic, commit and push it to the default branch, then call this with a one-line ' +
-      'task and the brief path. The posted message is only the task and a link, so never put the brief in `task`. ' +
-      'The new thread claims and reports in the brief; returns its link.',
+    'start_thread',
+    'Start a new thread that works on a task in parallel, as the same person, in its own fresh workspace fork. ' +
+      'For anything beyond a one-line task, put what the thread needs (goal, constraints, sources, done criteria, where to report) in a ' +
+      'Markdown brief in the knowledge repository work doc that owns the topic, commit and push it to the default branch, and pass its path: ' +
+      'the new thread gets the task and a link to the brief, and claims and reports there. `track: true` starts it in the track this ' +
+      'session is in. Returns the new thread\'s id, which read_thread reads.',
     {
       task: z.string().min(3).max(150).describe('One line, imperative: what the new thread should do'),
-      brief: z
-        .string()
-        .describe('Workspace-relative path of the brief, with an optional anchor, e.g. docs/work/047-x.md#item-2'),
-      model: z
-        .enum(['smart', 'fast', 'default'])
-        .optional()
-        .describe('Model for the new thread: `smart` for hard, open-ended work, `fast` for quick mechanical work, `default` otherwise. Omit to keep this thread\'s model.'),
+      brief: z.string().optional().describe('Workspace-relative path of the brief, with an optional anchor, e.g. docs/work/047-x.md#item-2'),
+      track: z.boolean().optional().describe('Start it in this session\'s track'),
     },
-    async ({ task, brief, model }) => {
-      if (spawned >= MAX_SPAWNS) return fail(`this session already started ${MAX_SPAWNS} threads; ask the person before starting more`);
-      if (/\n/.test(task.trim())) return fail('task must be one line; the brief holds the rest');
+    async ({ task, brief, track }, call) => {
+      if (started >= MAX_STARTS) return said(`this session already started ${MAX_STARTS} threads; ask the person before starting more`, true);
+      if (/\n/.test(task.trim())) return said('task must be one line; the brief holds the rest', true);
       let briefUrl: string | undefined;
       try {
-        briefUrl = await checkBrief(cwd(), brief.trim());
-      } catch (e: any) {
-        return fail(e?.message ?? String(e));
-      }
-      try {
-        const r = await spawn({ task: task.trim(), brief: brief.trim(), briefUrl, ...(model ? { tier: model } : {}) });
-        spawned++;
-        return { content: [{ type: 'text' as const, text: `Started ${r.url ?? r.key}. It reads the brief and reports there.` }] };
-      } catch (e: any) {
-        return fail(`could not start the thread: ${e?.message ?? e}`);
+        if (brief?.trim()) briefUrl = (await checkBrief(cwd(), brief.trim())) ?? brief.trim();
+        const trackId = track ? await trackOf(w) : undefined;
+        if (track && !trackId) return said('this session is in no track; start the thread without `track`', true);
+        const input = briefUrl ? `Task: ${task.trim()}\nBrief: ${brief!.trim()} (${briefUrl})\nRead the brief first; claim and report there.` : task.trim();
+        const r = await w.api.call('POST', '/sessions', { body: { input, ...(trackId ? { trackId } : {}) }, key: keyOf(call) });
+        started++;
+        return said(`Started ${r?.session?.id ?? 'the thread'}${trackId ? ' in the track' : ''}.${briefUrl ? ' It reads the brief and reports there.' : ''}`);
+      } catch (e) {
+        return said(`could not start the thread: ${refusal(e)}`, true);
       }
     },
     { alwaysLoad: true },
