@@ -3,6 +3,7 @@ import {
   decodeFrame,
   encodeFrame,
   exitMessage,
+  openRefusal,
   openTerminal,
   readClose,
   type SocketFactory,
@@ -138,6 +139,25 @@ it('says the session is not running instead of a raw error', async () => {
   })
   ws.shut(1000)
   expect(last(h.states)).toEqual({ kind: 'not-running' })
+})
+
+it('offers Wake for a stopped session from new and old hosts', () => {
+  expect(
+    openRefusal({
+      message: 'The session is not running',
+      data: { code: 'conflict', reason: 'session_not_running' },
+    }),
+  ).toEqual({ kind: 'not-running' })
+  expect(
+    openRefusal({
+      message: 'No such session on this computer.',
+      data: { code: 'session_not_found' },
+    }),
+  ).toEqual({ kind: 'not-running' })
+  expect(openRefusal({ message: 'boom', data: { code: 'internal' } })).toEqual({
+    kind: 'error',
+    message: 'boom',
+  })
 })
 
 it('waits for a parked computer to wake, then dials again', async () => {

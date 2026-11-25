@@ -125,14 +125,18 @@ interface RpcError {
   data?: { code?: string; reason?: string; message?: string }
 }
 
-/** A refused `terminals.open` as the panel shows it. */
+/**
+ * A refused `terminals.open` as the panel shows it. Hosts answer a stopped
+ * session with `409 session_not_running`; older ones said `404
+ * session_not_found` ("No such session on this computer"). The ticket was
+ * minted for this session, so it exists and is visible: both mean not running.
+ */
 export function openRefusal(e: RpcError): TerminalState {
-  if (e.data?.reason === 'session_not_running') return { kind: 'not-running' }
-  if (e.data?.code === 'session_not_found')
-    return {
-      kind: 'error',
-      message: 'This session does not exist or is not shared with you.',
-    }
+  if (
+    e.data?.reason === 'session_not_running' ||
+    e.data?.code === 'session_not_found'
+  )
+    return { kind: 'not-running' }
   return {
     kind: 'error',
     message: e.data?.message ?? e.message ?? 'Could not open a terminal.',

@@ -9,7 +9,7 @@ description: "A terminal is a shell or command the host starts in a session's wo
 
 | Item | Rule |
 | --- | --- |
-| Caller | The session's owner or an admin, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
+| Caller | Someone who may drive the session (its owner, an invited member, or any org member when access is org-wide), with the `terminals` scope. Org admins get no extra access. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
 | Process user | The agent's Unix user |
 | Environment | `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `TERM`. No session secrets |
 
@@ -62,9 +62,13 @@ A terminal belongs to the connection that opened it.
 | Its id used on another connection | `404 terminal_not_found` |
 | The connection closes | Every terminal it opened closes |
 | The process exits | The server sends `terminal.exited` |
+| No input or output for 15 minutes (interactive terminals only) | The server hangs it up and sends `terminal.exited` with `reason: "idle"`. Self-hosted relays set this with `SP_WIRE_TERMINAL_IDLE_MINUTES`; `0` turns it off |
+| The caller loses access to the session | The server hangs it up and sends `terminal.exited` with `reason: "access_lost"` |
 
 ```json
 {"jsonrpc":"2.0","method":"terminal.exited","params":{"terminalId":"tm_...","exitCode":0,"signal":null}}
 ```
 
-{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (agent user, environment, 8 per session, SIGHUP/SIGKILL); computer/src/host/wire-link.ts (cwd, repeated check, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}
+`reason` is present only when the server ended the terminal: `idle` or `access_lost`.
+
+{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts (terminalIdleMs); computer/src/api/session-access.ts (mayOpenTerminal); computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (agent user, environment, 8 per session, SIGHUP/SIGKILL); computer/src/host/wire-link.ts (cwd, repeated check, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}
