@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Tracks and threads (spec sections 18.8 and 43): the fan-out actor in a script of its own, so
+  // a deploy of `managed-agents` does not drop every socket. No route: `managed-agents` binds
+  // LiveDurableObject by `script_name` and reaches it through `liveOf` (src/live/contract.ts).
+  // Deployed before the `managed-agents` release that binds it. Secret: LIVE_KEY, the same value
+  // as in `managed-agents`; it signs the principal on a socket upgrade.
+  "name": "opencomputer-live",
+  "main": "src/live/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIVE", "class_name": "LiveDurableObject" },
+      { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject", "script_name": "managed-agents" },
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
+    ]
+  },
+  // The credential check (EDGE_CREDENTIALS_URL) goes to the edge Worker. Bound when the edge
+  // serves it; without it a socket ends at its credential's expiry or on `revoke`.
+  // "services": [{ "binding": "EDGE", "service": "<the edge Worker>" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LiveDurableObject"] }
+  ],
+  // Logs to Axiom through cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": { "enabled": true }
+}

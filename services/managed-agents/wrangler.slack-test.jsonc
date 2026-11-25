@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Tracks and threads tests: the Slack actor alone, with fakes of Org, SessionLog and Computer.
+  "name": "slack-test",
+  "main": "test/fixtures/slack-test-worker.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "BLUE_CHANNEL_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SLACK", "class_name": "SlackDurableObject" },
+      { "name": "ORGS", "class_name": "FakeOrg" },
+      { "name": "SESSION_LOG", "class_name": "FakeSessionLog" },
+      { "name": "COMPUTERS", "class_name": "FakeComputer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SlackDurableObject", "FakeOrg", "FakeSessionLog", "FakeComputer"] }]
+}
