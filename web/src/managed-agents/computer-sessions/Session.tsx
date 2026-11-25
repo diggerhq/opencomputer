@@ -23,6 +23,7 @@ import {
   sessionKeys,
   updateSession,
   updateSessionAccess,
+  AccessSchema,
   type AccessInput,
   type IfBusy,
   type Session,
@@ -151,7 +152,7 @@ function SessionPage({ id, onEntered }: { id: string; onEntered: () => void }) {
 
   // Gone, or not shared with the caller: the API doesn't say which (CTO-37).
   if (session.error instanceof ApiError && session.error.status === 404) {
-    return <NotFound id={id} onEntered={onEntered} />
+    return <NotFound id={id} error={session.error} onEntered={onEntered} />
   }
 
   const openAsks = s?.asks.filter((a) => a.status === 'open') ?? []
@@ -245,15 +246,23 @@ function SessionAccess({ session: s }: { session: Session }) {
 
 // A session that isn't there for the caller. The API answers the same for one
 // that doesn't exist and one not shared with them, so nothing leaks. An org
-// admin may still change who has access by id, without seeing it (Q4): the
-// current access is hidden until a change answers with it, and including
-// themselves lets them in.
-function NotFound({ id, onEntered }: { id: string; onEntered: () => void }) {
+// admin still sees and changes who has access, without seeing the session
+// (Q4); including themselves lets them in.
+function NotFound({
+  id,
+  error,
+  onEntered,
+}: {
+  id: string
+  error: ApiError
+  onEntered: () => void
+}) {
   const me = useMyMemberId()
-  const people = useOrgPeople()
   const update = useUpdateAccess(id)
-  const [known, setKnown] = useState<AccessInput | null>(null)
-  const admin = !!me && !!people?.find((p) => p.ids.includes(me))?.admin
+  const [known, setKnown] = useState<AccessInput | undefined>(
+    () => AccessSchema.safeParse(error.details?.access).data,
+  )
+  const admin = !!known && error.details?.canManageAccess === true
   const change = async (next: AccessInput) => {
     const r = await update.mutateAsync(next)
     if (r.session) onEntered()
@@ -261,23 +270,22 @@ function NotFound({ id, onEntered }: { id: string; onEntered: () => void }) {
   }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm">
-      {admin ? (
+      {admin && known ? (
         <Lock className="text-muted-foreground size-5" aria-hidden />
       ) : null}
       <p className={admin ? 'font-medium' : 'text-muted-foreground'}>
         This session does not exist or is not shared with you.
       </p>
-      {admin ? (
+      {admin && known ? (
         <>
           <p className="text-muted-foreground max-w-sm">
-            As an admin you can change who has access to it without seeing it.
-            To open it, include yourself: you would drive it with its owner's
-            secrets and subscription.
+            As an admin you can see and change who has access to it, but not the
+            session itself. To open it, include yourself: you would drive it
+            with its owner's secrets and subscription.
           </p>
           <div className="flex items-center gap-2">
             <AccessPicker
-              value={known ?? { mode: 'owner' }}
-              unknown={!known}
+              value={known}
               isOwner={false}
               onSave={change}
               pending={update.isPending}

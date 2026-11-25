@@ -60,7 +60,7 @@ export type Ask = z.infer<typeof AskSchema>
 export const ACCESS_MODES = ['owner', 'org', 'people'] as const
 export type AccessMode = (typeof ACCESS_MODES)[number]
 
-const AccessSchema = z.looseObject({
+export const AccessSchema = z.looseObject({
   mode: z.enum(ACCESS_MODES),
   people: z.array(z.string()).default([]),
 })
@@ -225,13 +225,26 @@ export async function createSession(
   }
 }
 
+// An org admin outside the session gets its access and nothing else (Q4):
+// for the page that is still a session it can't open, so it is a 404 that
+// carries `access` and `canManageAccess`.
 export function getSession(id: string) {
   return apiFetch(
     `${PREFIX}/sessions/${encodeURIComponent(id)}`,
     undefined,
-    SessionResultSchema,
+    z.looseObject({
+      session: SessionSchema.nullable(),
+      access: AccessSchema.optional(),
+      canManageAccess: z.boolean().optional(),
+    }),
     '/api',
-  ).then((r) => r.session)
+  ).then((r) => {
+    if (r.session) return r.session
+    throw new ApiError('No such session.', 404, 'session_not_found', {
+      access: r.access,
+      canManageAccess: r.canManageAccess,
+    })
+  })
 }
 
 export function updateSession(

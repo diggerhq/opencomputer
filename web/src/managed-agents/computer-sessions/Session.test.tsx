@@ -19,7 +19,6 @@ vi.mock('../computer-sessions-api', async (importOriginal) => ({
   updateSession: api.updateSession,
   updateSessionAccess: api.updateSessionAccess,
 }))
-const members = vi.hoisted(() => ({ admin: true }))
 vi.mock('./members', () => ({
   useMemberEmails: () => undefined,
   useMyMemberId: () => 'usr_admin',
@@ -29,7 +28,7 @@ vi.mock('./members', () => ({
       ids: ['usr_admin'],
       email: 'admin@x.dev',
       name: 'Ada',
-      admin: members.admin,
+      admin: true,
     },
   ],
 }))
@@ -45,7 +44,6 @@ beforeEach(() => {
   document.body.append(container)
   root = createRoot(container)
   api.getEvents.mockRejectedValue(new ApiError('Not found', 404))
-  members.admin = true
   // Nothing here may reach a network.
   vi.stubGlobal(
     'fetch',
@@ -110,33 +108,23 @@ const byText = (selector: string, text: string) =>
     el.textContent?.includes(text),
   )
 
-it('lets an admin change access by id without seeing it, then add themselves', async () => {
-  api.getSession.mockRejectedValue(notFound())
-  api.updateSessionAccess.mockResolvedValueOnce({
-    session: null,
-    access: { mode: 'people', people: ['usr_a'] },
-    canManageAccess: true,
-  })
+it('shows an admin the access of a session they cannot open, and lets them in', async () => {
+  api.getSession.mockRejectedValue(
+    new ApiError('No such session.', 404, 'session_not_found', {
+      access: { mode: 'people', people: ['usr_a'] },
+      canManageAccess: true,
+    }),
+  )
   await render()
   expect(container.textContent).toContain(
     'This session does not exist or is not shared with you.',
   )
-  expect(container.textContent).toContain('As an admin you can change')
+  expect(container.textContent).toContain('As an admin you can see and change')
+  expect(container.textContent).not.toContain('secret transcript text')
   expect(container.querySelector('textarea')).toBeNull()
-  // The current access is hidden: the control says so, and there's no "Add me" yet.
-  expect(container.textContent).toContain('Change who has access')
-  expect(container.textContent).not.toContain('Add me')
+  // The current access, before any change.
+  expect(container.textContent).toContain('Shared with')
 
-  await click(
-    document.querySelector('[aria-label="Who can access this session"]'),
-  )
-  await click(byText('[role="radio"]', 'Only the owner'))
-  await click(byText('[data-slot="popover-content"] button', 'Save'))
-  expect(api.updateSessionAccess).toHaveBeenCalledWith('cs_1', {
-    mode: 'owner',
-  })
-
-  // The answer tells what access is now; adding themselves lets them in.
   api.updateSessionAccess.mockResolvedValueOnce({
     session: {
       ...session,
@@ -151,7 +139,7 @@ it('lets an admin change access by id without seeing it, then add themselves', a
   // A long-poll that waits.
   api.getEvents.mockReturnValue(new Promise(() => {}))
   await click(byText('button', 'Add me'))
-  expect(api.updateSessionAccess).toHaveBeenLastCalledWith('cs_1', {
+  expect(api.updateSessionAccess).toHaveBeenCalledWith('cs_1', {
     mode: 'people',
     people: ['usr_a', 'usr_admin'],
   })
@@ -159,11 +147,11 @@ it('lets an admin change access by id without seeing it, then add themselves', a
 })
 
 it('shows anyone else only that it is not there', async () => {
-  members.admin = false
   api.getSession.mockRejectedValue(notFound())
   await render()
   expect(container.textContent).toContain(
     'This session does not exist or is not shared with you.',
   )
-  expect(container.textContent).not.toContain('Change who has access')
+  expect(container.textContent).not.toContain('As an admin')
+  expect(container.textContent).not.toContain('Add me')
 })

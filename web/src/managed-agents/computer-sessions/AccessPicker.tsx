@@ -45,7 +45,6 @@ export function AccessPicker({
   ownerIds = [],
   pending,
   disabled,
-  unknown,
   className,
 }: {
   value: AccessInput
@@ -56,11 +55,6 @@ export function AccessPicker({
   ownerIds?: string[]
   pending?: boolean
   disabled?: boolean
-  /**
-   * The current access is hidden from the caller (an org admin outside the
-   * session): `value` is only where the choice starts, and saving replaces it.
-   */
-  unknown?: boolean
   className?: string
 }) {
   const people = useOrgPeople()
@@ -99,9 +93,8 @@ export function AccessPicker({
   }
   const save = () => {
     const next = normalizeAccess(draft, ownerIds)
-    if (!unknown && sameAccess(next, normalizeAccess(value, ownerIds)))
-      setOpen(false)
-    else if (widens(unknown ? undefined : value, next)) setConfirming(next)
+    if (sameAccess(next, normalizeAccess(value, ownerIds))) setOpen(false)
+    else if (widens(value, next)) setConfirming(next)
     else void commit(next)
   }
 
@@ -127,12 +120,10 @@ export function AccessPicker({
             className={cn('text-muted-foreground h-7 px-2 text-xs', className)}
           >
             <Icon className="size-3.5" aria-hidden />
-            {unknown
-              ? 'Change who has access'
-              : accessLabel(
-                  { mode: value.mode, people: value.people ?? [] },
-                  { isOwner, nameOf },
-                )}
+            {accessLabel(
+              { mode: value.mode, people: value.people ?? [] },
+              { isOwner, nameOf },
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-80 p-0">
