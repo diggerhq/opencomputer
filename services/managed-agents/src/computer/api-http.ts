@@ -452,7 +452,7 @@ async function routeApi(
     return out.error(403, "principal_mismatch", "x-oc-principal is not this credential's principal.");
   }
   if (ACTOR_OPS.has(route.op)) return actorRoute(request, env, p, route, out);
-  // The Computer's own routes (secrets, tickets, Work settings, session controls) keep today's caller and scopes.
+  // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop) keep today's caller and scopes.
   const caller = await callerOf(request, identity, out.requestId);
   if (!caller) return out.error(403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
   // Only people set secrets (work 095): a session's own key, whatever it names, is refused.
@@ -507,11 +507,7 @@ async function routeApi(
     return out.error(404, `${what}_not_found`, `No such ${what}.`);
   }
 
-  if (route.op === "patch") return call({ op: "patch", sessionId, body, ...(idem ? { idempotencyKey: idem } : {}) });
-  if (route.op === "aside.set") return call({ op: "aside.set", sessionId, body });
-  if (route.op === "aside.clear") return call({ op: "aside.clear", sessionId });
-
-  // Writes to the session's writer.
+  // The controls the actors do not serve yet, to the session's writer.
   if (needsBody) {
     const input = asObject(body);
     if (!input) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
@@ -896,7 +892,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     case "webhooks.delete":
       return webhooks(request, env, p, route, out);
   }
-  if (!route.sessionId) return orgRoute(request, p, route, query, idem, trace, org, out);
+  if (!route.sessionId) return orgRoute(request, env, p, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
@@ -1058,6 +1054,7 @@ function mutateReplyOf(out: Reply, r: MutateReply): Response {
 /** The feed, the occurrence stream, the mutations and the work reads: Org's, as the principal. */
 async function orgRoute(
   request: Request,
+  env: ComputerEdgeEnv,
   p: Principal,
   route: Route,
   query: URLSearchParams,
@@ -1190,10 +1187,31 @@ async function orgRoute(
       const choice = repositoryChoice(parsed.value);
       if ("error" in choice) return out.of(choice.error);
       const r = await timed(org().setRepository(p, choice.value));
-      return r.ok ? out.send(200, { repository: r.repository }) : refusalOf(out, r);
+      if (!r.ok) return refusalOf(out, r);
+      await indexInstallation(env, p.org, choice.value.installationId);
+      return out.send(200, { repository: r.repository });
     }
     default:
       return out.error(404, "not_found", "No such route.");
+  }
+}
+
+/**
+ * Records that the organization uses this GitHub installation, so the App's pull request webhooks
+ * reach its Org (spec 40.9, git-deploy-service.ts). The repository is already chosen; a failed
+ * write is logged and the next choice writes it again.
+ */
+async function indexInstallation(env: ComputerEdgeEnv, org: string, installationId: string): Promise<void> {
+  if (!env.SERVERLESS_AGENTS_DB) return;
+  try {
+    const account = env.ACCOUNTS.getByName(org) as unknown as { getGitHubInstallation(id: string): Promise<{ githubInstallationId: number } | null> };
+    const installation = await account.getGitHubInstallation(installationId);
+    if (!installation) return;
+    await env.SERVERLESS_AGENTS_DB.prepare(
+      "INSERT OR REPLACE INTO github_installation_orgs (github_installation_id, account_id, installation_id) VALUES (?, ?, ?)",
+    ).bind(installation.githubInstallationId, org, installationId).run();
+  } catch (error) {
+    console.error(JSON.stringify({ level: "error", event: "work.installation_index_failed", message: error instanceof Error ? error.message : String(error) }));
   }
 }
 

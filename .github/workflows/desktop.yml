@@ -76,6 +76,15 @@ jobs:
       - run: npm ci
       - name: The end-to-end test, on the Mac
         run: npm run test:e2e
+      - name: The surface's desktop bundle, when web has one
+        working-directory: web
+        run: |
+          if grep -q '"build:desktop"' package.json; then
+            npm ci
+            npm run build:desktop
+          else
+            echo "::warning::web has no build:desktop yet: this build shows the placeholder page"
+          fi
       - name: Build
         run: |
           if [ -n "$CSC_LINK" ]; then
