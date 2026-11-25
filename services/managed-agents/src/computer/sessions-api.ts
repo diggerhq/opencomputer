@@ -38,6 +38,7 @@ import {
   personForMember,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
+import { accessOf, mayDrive } from "./session-access.js";
 import { isSessionId, memberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
@@ -744,12 +745,21 @@ export class ComputerSessionsApi {
 
   private async mint(caller: ApiCaller, body: unknown, facts: { sessions?: number; keyWritten?: boolean }): Promise<ApiReply> {
     const key = caller.apiKey;
-    // A dashboard login has no key; its ticket is read-only (work 113).
+    // A dashboard login has no key; its ticket is read-only (work 113), or a terminal ticket for one session it may drive.
     if (!key && caller.via !== "dashboard") return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
     if (key?.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
     if (!this.deps.env.WIRE_TICKET_KEY) return { status: 503, error: { code: "unavailable", message: "Tickets are not available yet.", retryAfterMs: 60_000 } };
     const request = validateTicketRequest(body, caller.userAgent);
     if (!request.ok) return invalid(request.errors[0]!.field, request.errors[0]!.message);
+    if (request.value.terminal) {
+      // A key's ticket opens terminals by the key's scopes; this one is the dashboard's, for a session the member may drive.
+      if (key) return invalid("terminal", "terminal is for dashboard logins; a key's ticket opens terminals by its scopes.");
+      const row = this.visible(caller, request.value.sessionIds![0]!);
+      if (!row) return notFound();
+      if (!mayDrive(row, caller.member)) {
+        return { status: 403, error: { code: "forbidden", message: "Only people who may drive this session can open a terminal in it.", reason: "terminal_owner_only" } };
+      }
+    }
     const now = this.now();
     const limited = key ? key.id : `login:${caller.member}`;
     const recent = (this.tickets.get(limited) ?? []).filter((at) => now - at < 60_000);
@@ -1208,21 +1218,18 @@ export class ComputerSessionsApi {
     return this.admins().includes(member);
   }
 
-  /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
+  /** Records whether `member` is an admin (access settings, access-flow.ts). Access lists do not carry admins. */
   private noteAdmin(member: string, admin: boolean): void {
     const admins = this.admins();
     if (admins.includes(member) === admin) return;
     this.adminsCache = admin ? [...admins, member].sort() : admins.filter((m) => m !== member);
     this.deps.put("apiAdmins", JSON.stringify(this.adminsCache));
-    if (this.v4Host()) this.sendAllAccess();
   }
 
-  /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
+  /** API sessions: every member drives. Slack sessions: only their linked owner. Admins as anyone else (session-access.ts). */
   private sendAccess(row: { sessionId: string; originType: string; ownerUserId: string | null }): void {
-    const admins = this.admins();
-    const extra = admins.length ? { admins } : {};
-    if (row.originType !== "slack") this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: null, ...extra } });
-    else if (row.ownerUserId) this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId, members: [row.ownerUserId], ...extra } });
+    const access = accessOf(row);
+    if (access) this.deps.send({ t: "access", access });
   }
 
   /**

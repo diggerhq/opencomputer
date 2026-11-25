@@ -63,6 +63,20 @@ describe("ticket v1", () => {
     }
   });
 
+  it("a terminal ticket is a login's, for exactly one session", async () => {
+    const { keyId: _keyId, ...rest } = INPUT;
+    const one = { ...rest, login: true as const, scope: { sessionIds: ["cs_7f3a9k2m4q8r1t6v"], terminal: true as const } };
+    expect((await verifyTicket(KEY, await mintTicket(KEY, one, NOW), NOW))?.scope).toEqual({ sessionIds: ["cs_7f3a9k2m4q8r1t6v"], terminal: true });
+    for (const claims of [
+      { ...INPUT, scope: { sessionIds: ["cs_7f3a9k2m4q8r1t6v"], terminal: true } },
+      { ...one, scope: { terminal: true } },
+      { ...one, scope: { sessionIds: ids(2), terminal: true } },
+      { ...one, scope: { sessionIds: ["cs_7f3a9k2m4q8r1t6v"], terminal: false } },
+    ]) {
+      expect(await verifyTicket(KEY, await signed(claims), NOW)).toBeUndefined();
+    }
+  });
+
   it("refuses more than 20 sessions or a malformed id even when signed", async () => {
     expect(await verifyTicket(KEY, await mintTicket(KEY, { ...INPUT, scope: { sessionIds: ids(21) } }, NOW), NOW)).toBeUndefined();
     expect(await verifyTicket(KEY, await mintTicket(KEY, { ...INPUT, scope: { sessionIds: ["cs_bad"] } }, NOW), NOW)).toBeUndefined();
@@ -115,5 +129,18 @@ describe("POST /tickets body and response", () => {
     expect(await claims("Mozilla/5.0", false)).toMatchObject({ login: true, client: "dashboard", scope: { readOnly: true } });
     expect(await claims("dashboard/1.2.0")).toMatchObject({ login: true, client: "dashboard/1.2.0", scope: { readOnly: true } });
     expect((await claims("dashboard/1.2.0"))?.keyId).toBeUndefined();
+  });
+
+  it("mints a login's terminal ticket for one session, not read-only; validates the request", async () => {
+    const { scope: _scope, keyId: _keyId, ...who } = INPUT;
+    const sessionIds = ["cs_7f3a9k2m4q8r1t6v"];
+    const token = (await mintForRoute({ WIRE_TICKET_KEY: KEY }, { ...who, client: "dashboard", sessionIds, terminal: true }, NOW)).token;
+    expect((await verifyTicket(KEY, token, NOW))?.scope).toEqual({ sessionIds, terminal: true });
+    expect(validateTicketRequest({ terminal: true, sessionIds })).toEqual({ ok: true, value: { client: "", sessionIds, terminal: true } });
+    const field = (body: unknown) => (validateTicketRequest(body) as { errors: { field: string }[] }).errors[0]!.field;
+    expect(field({ terminal: false, sessionIds })).toBe("terminal");
+    expect(field({ terminal: true })).toBe("sessionIds");
+    expect(field({ terminal: true, sessionIds: ids(2) })).toBe("sessionIds");
+    expect(field({ terminal: true, sessionIds, readOnly: false })).toBe("readOnly");
   });
 });

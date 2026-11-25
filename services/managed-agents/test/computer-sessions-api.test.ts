@@ -1072,36 +1072,45 @@ describe("hello and tickets", () => {
     expect(f.frames("access").map((a) => a.access.sessionId)).toEqual([SID]);
   });
 
-  it("admins: a caller's admin role reaches every access list, and a demotion takes it back", async () => {
+  it("admins: an admin's role is remembered, and reaches no access list (admins drive as anyone else)", async () => {
     const f = fixture();
     await created(f);
     f.slackRow("T1:C1:1.2");
     f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
     const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
     f.sent.length = 0;
-    // A member's call says nothing new: no frames.
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // An admin's first call: every session's access list again, with admins.
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
-      [
-        { sessionId: SID, owner: OWNER, members: null, admins: [MO] },
-        { sessionId: slackId, owner: OWNER, members: [OWNER], admins: [MO] },
-      ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
-    );
-    f.sent.length = 0;
     await f.api.handle(caller(MO, { admin: true }), { op: "me" });
     expect(f.frames("access")).toHaveLength(0);
-    // New sessions and the next hello carry them too, from storage.
-    await created(f, "cs_2222222222222222");
-    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: null, admins: [MO] });
+    expect(f.api.isAdmin(MO)).toBe(true);
     expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
-    // Demoted: the lists go out without them.
-    f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(3);
+    await created(f, "cs_2222222222222222");
+    f.api.onHello();
     expect(f.frames("access").every((a) => a.access.admins === undefined)).toBe(true);
+    expect(f.frames("access").find((a) => a.access.sessionId === slackId)!.access).toEqual({ sessionId: slackId, owner: OWNER, members: [OWNER] });
+    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
+    expect(f.api.isAdmin(MO)).toBe(false);
+  });
+
+  it("tickets: a dashboard terminal ticket only for one session the member may drive, never by being an admin", async () => {
+    const f = fixture({ ticketKey: true });
+    await created(f);
+    f.slackRow("T1:C1:1.2");
+    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
+    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
+    const mint = (member: string, sessionIds: string[], extra: Partial<ApiCaller> = {}) =>
+      f.api.handle(caller(member, { via: "dashboard", client: "dashboard/1.0", ...extra }), { op: "ticket", body: { terminal: true, sessionIds } });
+    // The owner of an "only me" (Slack) session, and any member of an API (org-wide) one.
+    const own = await mint(OWNER, [slackId]);
+    expect(own).toMatchObject({ status: 200 });
+    const token = (own.body as { ticket: { token: string } }).ticket.token;
+    expect(JSON.parse(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/")))).toMatchObject({ login: true, scope: { sessionIds: [slackId], terminal: true } });
+    expect(await mint(MO, [SID])).toMatchObject({ status: 200 });
+    // An admin is not named in the "only me" session: it does not exist for them.
+    expect(await mint(MO, [slackId], { admin: true })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    expect(await mint(OWNER, ["cs_9999999999999999"])).toMatchObject({ status: 404 });
+    expect(await mint(OWNER, [SID, slackId])).toMatchObject({ status: 400, error: { field: "sessionIds" } });
+    const key = { id: "key_1", hash: "a".repeat(64), name: "laptop", kind: "user" as const, scopes: ["sessions:read"], expiresAt: null, createdAt: null };
+    expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { terminal: true, sessionIds: [SID] } })).toMatchObject({ status: 400, error: { field: "terminal" } });
   });
 
   it("tickets: API keys only, project keys refused, 60 a minute", async () => {

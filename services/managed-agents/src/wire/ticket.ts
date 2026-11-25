@@ -5,7 +5,7 @@
 //
 //   tk_<b64u(payload JSON)>.<b64u HMAC-SHA256(K, "tk_" + b64u(payload JSON))>
 //   K = HKDF-SHA256(ikm = utf8(WIRE_TICKET_KEY), salt = empty, info = "opc-wire-v1\0"), 32 bytes
-//   payload {"v":1,"org","member","computer","tunnelId","keyId","client","scope":{"sessionIds"?,"readOnly"?},"exp"}
+//   payload {"v":1,"org","member","computer","tunnelId","keyId","client","scope":{"sessionIds"?,"readOnly"?,"terminal"?},"exp"}
 //
 // 10 minutes to present, at most 1024 characters, at most 20 sessionIds. The
 // key's scopes are not carried: the wire Worker reads the key's record by
@@ -14,7 +14,9 @@
 // A login ticket (work 113) is minted for a dashboard login, which has no
 // key: `"login":true` stands where `"keyId"` does, and exactly one of the two
 // is present. It has no record to read, so the Worker grants it a fixed,
-// read-only scope (worker.ts).
+// read-only scope (worker.ts). A login's terminal ticket (web terminal MVP)
+// adds `"terminal":true` and names exactly one session the member may drive
+// (blue checks at minting); the Worker then grants that session's terminals.
 
 import { base64UrlString, equalStrings, fromBase64Url, hmacBase64Url, hmacKey, utf8 } from "./crypto.js";
 
@@ -29,6 +31,8 @@ export const SESSION_ID = /^cs_[0-9a-hjkmnp-tv-z]{16}$/;
 export interface TicketScope {
   sessionIds?: string[];
   readOnly?: boolean;
+  /** A login's terminal ticket: the one session in `sessionIds`, writable for its terminals. */
+  terminal?: true;
 }
 
 /** Whose ticket it is: an API key's, or a dashboard login's. Exactly one. */
@@ -75,6 +79,7 @@ export async function mintTicket(wireTicketKey: string, input: TicketInput, now 
   const scope: TicketScope = {};
   if (input.scope.sessionIds) scope.sessionIds = input.scope.sessionIds;
   if (input.scope.readOnly !== undefined) scope.readOnly = input.scope.readOnly;
+  if (input.scope.terminal) scope.terminal = true;
   const claims: TicketClaims = { v: 1, org, member, computer, tunnelId, ...principal, client, scope, exp: now + TICKET_TTL_MS };
   const body = `tk_${base64UrlString(JSON.stringify(claims))}`;
   const token = `${body}.${await hmacBase64Url(await macKey(wireTicketKey), body)}`;
@@ -105,6 +110,8 @@ export async function verifyTicket(wireTicketKey: string, token: string | null |
   const scope = claims.scope;
   if (!scope || typeof scope !== "object" || Array.isArray(scope)) return undefined;
   if (scope.readOnly !== undefined && typeof scope.readOnly !== "boolean") return undefined;
+  // A terminal ticket is a login's, for exactly one session.
+  if (scope.terminal !== undefined && (scope.terminal !== true || claims.login !== true || scope.sessionIds?.length !== 1)) return undefined;
   if (scope.sessionIds !== undefined) {
     if (!Array.isArray(scope.sessionIds) || scope.sessionIds.length > TICKET_MAX_SESSIONS) return undefined;
     if (!scope.sessionIds.every((id) => typeof id === "string" && SESSION_ID.test(id))) return undefined;

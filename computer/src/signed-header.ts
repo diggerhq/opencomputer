@@ -145,7 +145,8 @@ export interface TicketClaims {
   keyId?: string;
   login?: true;
   client: string;
-  scope: { sessionIds?: string[]; readOnly?: boolean };
+  /** `terminal`: a login's terminal ticket for its one session (managed-agents src/wire/ticket.ts). */
+  scope: { sessionIds?: string[]; readOnly?: boolean; terminal?: true };
   /** Present-by time, ms since the epoch. */
   exp: number;
 }
@@ -161,6 +162,7 @@ export function mintTicket(wireTicketKey: string, claims: Omit<TicketClaims, 'v'
   const scope: TicketClaims['scope'] = {};
   if (claims.scope.sessionIds) scope.sessionIds = claims.scope.sessionIds;
   if (claims.scope.readOnly !== undefined) scope.readOnly = claims.scope.readOnly;
+  if (claims.scope.terminal) scope.terminal = true;
   const body = Buffer.from(JSON.stringify({ v: 1, org, member, computer, tunnelId, ...principal, client, scope, exp: now + TICKET_TTL_MS })).toString('base64url');
   return `tk_${body}.${hmac(ticketKey(wireTicketKey), `tk_${body}`)}`;
 }
@@ -175,6 +177,8 @@ export function verifyTicket(wireTicketKey: string, ticket: string | undefined, 
   for (const f of ['org', 'member', 'computer', 'tunnelId', 'client'] as const) if (typeof claims[f] !== 'string') return undefined;
   if (claims.login === undefined ? typeof claims.keyId !== 'string' : claims.login !== true || claims.keyId !== undefined) return undefined;
   if (!isScope(claims.scope) || (claims.scope.sessionIds?.length ?? 0) > 20) return undefined;
+  const terminal = (claims.scope as { terminal?: unknown }).terminal;
+  if (terminal !== undefined && (terminal !== true || claims.login !== true || claims.scope.sessionIds?.length !== 1)) return undefined;
   return claims as TicketClaims;
 }
 
