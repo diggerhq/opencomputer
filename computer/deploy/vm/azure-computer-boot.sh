@@ -142,7 +142,17 @@ main() {
   for k in SP_GATEWAY_URL SP_HOST_TOKEN SP_HOST_ID; do [[ -n ${!k:-} ]] || die "$k is not set (environment or $ENV_FILE)"; done
   if [[ ${BOOTSTRAP_FETCH:-1} == 1 ]]; then
     [[ -n ${BOOTSTRAP_URL:-} ]] || die "BOOTSTRAP_URL is not set"
+    # Under provision.sh's lock: a pushed update (opencomputer-deploy's
+    # rollout.sh) downloads, fetches and checks out in the same place, and a
+    # provision.sh reads both while it runs. Released before provision.sh, which
+    # opens the file again and would otherwise wait on this script's lock
+    # forever; flock -u, not a close, so a git process left in the background
+    # (git maintenance) with a copy of the descriptor cannot hold it.
+    exec 8>/run/slack-presence-provision.lock
+    flock -w 3600 8 || die "another provision.sh or update held /run/slack-presence-provision.lock for an hour"
     fetch_release
+    flock -u 8
+    exec 8>&-
   fi
   [[ -f $SRC/deploy/vm/provision.sh ]] || die "no $SRC/deploy/vm/provision.sh; run with BOOTSTRAP_FETCH=1"
   log "release $(git -C "$SRC" rev-parse --short=12 HEAD), host id $SP_HOST_ID, data ${DATA_DEVICE:-Azure LUN 0}"
