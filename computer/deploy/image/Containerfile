@@ -29,8 +29,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 # ---- system packages
 # The session's tools as the host has them today (deploy/vm/provision.sh), the
 # fonts tier (Latin, CJK, emoji) and ffmpeg for visuals, and Podman for
-# containers inside (crun is the runtime containers.conf names). procps: the
-# host closes a terminal with pkill. python3: the host's terminal helper.
+# containers inside (crun is the runtime containers.conf names; catatonit is the
+# init Podman adds for `docker run --init`, compose's `init: true` and Compose
+# v2's builds). procps: the host closes a terminal with pkill. python3: the
+# host's terminal helper.
 RUN apt-get update -q \
  && apt-get install -y -q --no-install-recommends \
       ca-certificates curl gnupg git git-lfs openssh-client \
@@ -39,7 +41,7 @@ RUN apt-get update -q \
       python3 python3-venv python3-pip sqlite3 \
       tmux htop sudo util-linux iproute2 tini \
       ffmpeg fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
-      podman podman-docker podman-compose buildah crun uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
+      podman podman-docker podman-compose buildah crun catatonit uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
  && rm -rf /var/lib/apt/lists/* \
  && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
  && setcap cap_setuid=ep /usr/bin/newuidmap && setcap cap_setgid=ep /usr/bin/newgidmap

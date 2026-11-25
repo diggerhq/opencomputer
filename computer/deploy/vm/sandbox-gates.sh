@@ -282,7 +282,7 @@ EOF
 FROM docker.io/library/ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl git iproute2 nodejs python3 sudo tini util-linux \
-      podman podman-docker podman-compose buildah uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
+      podman podman-docker podman-compose buildah catatonit uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
     && rm -rf /var/lib/apt/lists/* \
     && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
     && setcap cap_setuid=ep /usr/bin/newuidmap && setcap cap_setgid=ep /usr/bin/newgidmap
@@ -901,8 +901,9 @@ gate_G9() {
   q in9 /home/agent sh -c '
     mkdir -p g9 && cd g9 &&
     printf "FROM docker.io/library/busybox\nRUN echo built > /built\nCMD cat /built\n" > Dockerfile &&
-    docker build -t g9-built . && [ "$(docker run --rm g9-built)" = built ]' \
-    || { fail "docker build of a three-line Dockerfile, or running what it built (log: $LOG)"; return; }
+    docker build -t g9-built . && [ "$(docker run --rm g9-built)" = built ] &&
+    [ "$(docker run --rm --init g9-built)" = built ]' \
+    || { fail "docker build of a three-line Dockerfile, or running what it built, plain and with --init (log: $LOG)"; return; }
   build_ms=$(($(now_ms) - t))
   # Two services on the network compose makes for them; the second reaches the
   # first by its name. What they print is in capitals, which the commands
@@ -915,7 +916,7 @@ gate_G9() {
   echo "$out" >>"$LOG"
   [[ $out == *ONE-UP* && $out == *TWO-UP* ]] || { fail "docker compose up of two services (log: $LOG): $(echo "$out" | grep -iE 'error|no such' | head -2 | tr '\n' ' ' | cut -c1-200)"; return; }
   [[ $out == *HI-FROM-ONE* ]] || { fail "compose started both services, but the second did not reach the first by its name (log: $LOG)"; return; }
-  pass "docker_run=ok(short name $short, ${run_ms} ms with the pull) docker_build=ok(${build_ms} ms, and a run of it) compose_two_services=ok(by service name, up+down ${up_ms} ms) owners=1500,1500,1500"
+  pass "docker_run=ok(short name $short, ${run_ms} ms with the pull) docker_build=ok(${build_ms} ms, and a run of it, plain and --init) compose_two_services=ok(by service name, up+down ${up_ms} ms) owners=1500,1500,1500"
 }
 
 # --------------------------------------------------------------------------- main
