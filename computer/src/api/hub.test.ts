@@ -159,7 +159,7 @@ describe('Hub via SessionLog', () => {
     expect(late.deltas).toEqual([]);
   });
 
-  it('gives the host\'s mirror subagent progress alone, live and as catch-up (084 perf fix 4)', async () => {
+  it('gives the host\'s mirror every delta, live and as catch-up (work 118: the host sends a watched session\'s on)', async () => {
     const { log } = await fresh();
     const t = mintId('tn');
     log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
@@ -171,8 +171,10 @@ describe('Hub via SessionLog', () => {
     await tick();
     msgDelta(log, t, 'b1', 'lo');
     progress('sa_1', 2);
-    expect(m.deltas.map((d) => [d.type, (d.data as { toolCalls: number }).toolCalls])).toEqual([
+    expect(m.deltas.map((d) => [d.type, (d.data as { toolCalls?: number; text?: string }).toolCalls ?? (d.data as { text?: string }).text])).toEqual([
+      ['message.delta', 'hel'],
       ['subagent.progress', 1],
+      ['message.delta', 'lo'],
       ['subagent.progress', 2],
     ]);
   });
