@@ -150,7 +150,7 @@ describe('dispatch', () => {
     expect((await call('subagents.get', { sessionId: sid, subagentId: mintId('sa') }, ANN_CTX)).error).toMatchObject({ code: 'subagent_not_found', status: 404 });
   });
 
-  it('events.list: after, limit, types, turnId, tailTurns, cursor_ahead and waitMs', async () => {
+  it('events.list: after, limit, types, turnId, tailTurns, a cursor past the end and waitMs', async () => {
     const { log, sid, call } = await fresh();
     const t1 = turn(log);
     const t2 = turn(log);
@@ -168,7 +168,7 @@ describe('dispatch', () => {
     expect(tail.events.map((e) => e.seq)).toEqual([9, 10, 11, 12]);
     expect(tail.earlierTurns?.map((t) => t.id)).toEqual([t2, t1]);
     expect((await call('events.list', { sessionId: sid, tailTurns: 1, after: 0 }, ANN_CTX)).error).toMatchObject({ code: 'invalid_request', field: 'tailTurns' });
-    expect((await call('events.list', { sessionId: sid, after: 13 }, ANN_CTX)).error).toMatchObject({ code: 'cursor_ahead', status: 409 });
+    expect((await ev({ after: 13 })).result).toMatchObject({ events: [], lastSeq: 12, hasMore: false });
     const waiting = ev({ after: 12, waitMs: 2000 });
     setTimeout(() => turn(log), 20);
     expect((await waiting).result.events.map((e) => e.seq)).toEqual([13, 14, 15, 16]);

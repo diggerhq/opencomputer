@@ -307,17 +307,18 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
     return null;
   }
 
-  async setEndpoint(p: Principal, e: EndpointInput): Promise<Reply<{ endpoint: Endpoint }>> {
+  async setEndpoint(p: Principal, id: string, e: EndpointInput): Promise<Reply<{ endpoint: Endpoint }>> {
     const refused = this.refusal(p, "work:write");
     if (refused) return refused;
-    if (typeof e.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(e.id)) return refuse("invalid_request", 400, "The id is 1 to 64 letters, digits, - or _.");
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return refuse("invalid_request", 400, "The id is 1 to 64 letters, digits, - or _.");
+    if (!e || typeof e !== "object") return refuse("invalid_request", 400, "The body must be a JSON object.");
     const bad = typeof e.url === "string" ? urlRefusal(e.url) : "The URL is required.";
     if (bad) return refuse("invalid_request", 400, bad);
     const kinds = e.kinds ?? [];
     if (!Array.isArray(kinds) || kinds.length > 64 || !kinds.every((kind) => typeof kind === "string" && kind.length <= 64)) {
       return refuse("invalid_request", 400, "kinds is a list of occurrence kinds.");
     }
-    const existing = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", e.id)[0];
+    const existing = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", id)[0];
     if (!existing && this.sql.exec<{ c: number }>("SELECT COUNT(*) AS c FROM endpoint")[0]!.c >= MAX_ENDPOINTS) {
       return refuse("limit_reached", 409, `An organization has at most ${MAX_ENDPOINTS} webhooks.`);
     }
@@ -326,7 +327,7 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
     this.sql.exec(
       `INSERT INTO endpoint (id, url, secret, kinds, created_by, audiences, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET url = excluded.url, kinds = excluded.kinds, created_by = excluded.created_by, audiences = excluded.audiences, enabled = excluded.enabled`,
-      e.id,
+      id,
       e.url,
       secret,
       JSON.stringify(kinds),
@@ -334,7 +335,7 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
       JSON.stringify(p.audiences),
       e.enabled === false ? 0 : 1,
     );
-    const row = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", e.id)[0]!;
+    const row = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", id)[0]!;
     return { ok: true, endpoint: { ...publicEndpoint(row), ...(existing ? {} : { secret }) } };
   }
 

@@ -1,6 +1,8 @@
 // The Computer API's operations (work 084; opc/docs/api/websocket/methods.mdx
 // and http/*.mdx): params and result of every WebSocket method, which are also
 // its HTTP route's body/query and response, and the WebSocket notifications.
+// The wire has no attach and carries no session events (work 118): clients
+// watch sessions through the cloud.
 //
 // Invariants: params are decoded strictly (unknown fields are refused with
 // -32602 / 400 invalid_request naming the field: `decodeParams`); results are
@@ -32,23 +34,6 @@ export const SendResult = Schema.Struct({
 export const SessionResult = Schema.Struct({ session: Session, seq: Seq }).annotate({ identifier: 'SessionResult' });
 export const AskResult = Schema.Struct({ ask: Ask, seq: Seq }).annotate({ identifier: 'AskResult' });
 
-export const AttachParams = Schema.Struct({
-  ...sid,
-  after: Schema.optionalKey(Seq),
-  tailTurns: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
-  deltas: Schema.optionalKey(Schema.Boolean),
-  resume: Schema.optionalKey(Schema.Boolean),
-  readOnly: Schema.optionalKey(Schema.Boolean),
-});
-export const AttachResult = Schema.Struct({
-  session: Session,
-  logEpoch: Count,
-  epochStartSeq: Seq,
-  capabilities: Capabilities,
-  earlierTurns: Schema.NullOr(Schema.Array(Turn)),
-  timing: Timing,
-}).annotate({ identifier: 'AttachResult' });
-
 const ApprovalOrQuestion = Schema.Union([ApprovalAnswer, QuestionAnswer]);
 /** Work 118, section 40.11: the Slack message a turn's input is, and the Slack button an answer is. Honoured only from the Slack actor (`via: 'slack'`). */
 const SlackTurn = Schema.Struct({
@@ -64,8 +49,6 @@ const SlackButton = Schema.Struct({ userId: Schema.String, value: Schema.String 
 
 /** Params and result of every method; `http` is the route of the same operation (`-` when WebSocket only). */
 export const METHODS = {
-  'sessions.attach': { params: AttachParams, result: AttachResult, http: '-' },
-  'sessions.detach': { params: Schema.Struct(sid), result: Schema.Struct({}), http: '-' },
   'sessions.get': { params: Schema.Struct({ ...sid, minSeq: Schema.optionalKey(Seq) }), result: Schema.Struct({ session: Session }), http: 'GET /sessions/{id}' },
   'sessions.update': {
     params: Schema.Struct({
@@ -181,7 +164,7 @@ export function decodeParams<M extends Method>(method: M, params: unknown): { ok
 
 // ---------------------------------------------------------------- notifications (server → client)
 
-export const Limits = Schema.Struct({ maxAttached: Count, maxMessageBytes: Count, maxRequestsPerSecond: Count }).annotate({ identifier: 'Limits' });
+export const Limits = Schema.Struct({ maxMessageBytes: Count, maxRequestsPerSecond: Count }).annotate({ identifier: 'Limits' });
 
 export const NOTIFICATIONS = {
   ready: Schema.Struct({
@@ -192,31 +175,11 @@ export const NOTIFICATIONS = {
     expiresAt: Schema.NullOr(Schema.String),
     expiresInMs: Schema.NullOr(Count),
   }),
-  'sessions.attached': Schema.Struct({
-    sessionId: SessionId,
-    error: Schema.NullOr(ApiError),
-    session: Schema.NullOr(Session),
-    logEpoch: Schema.NullOr(Count),
-    epochStartSeq: Schema.NullOr(Seq),
-    capabilities: Schema.NullOr(Capabilities),
-    earlierTurns: Schema.NullOr(Schema.Array(Turn)),
-    timing: Schema.NullOr(Schema.Struct({ serverUs: Count })),
-  }),
-  event: Event,
-  delta: Delta,
-  'session.detached': Schema.Struct({
-    sessionId: SessionId,
-    reason: Schema.String,
-    // epoch_changed: discard from epochStartSeq and re-read from epochStartSeq - 1 (absent for other reasons).
-    logEpoch: Schema.optional(Schema.Number),
-    epochStartSeq: Schema.optional(Schema.Number),
-  }),
   'terminal.exited': Schema.Struct({ terminalId: TerminalId, exitCode: Schema.NullOr(Schema.Int), signal: Schema.NullOr(Schema.String) }),
 } as const;
 
 /** Client → server notifications. */
 export const CLIENT_NOTIFICATIONS = {
-  'sessions.ack': Schema.Struct({ sessionId: SessionId, seq: Seq }),
   /** opc's own measurements (work 084 instrumentation); never answered. The relay checks each event's data against api/cli-telemetry.ts. */
   telemetry: Schema.Struct({
     v: Schema.Literals([1]),

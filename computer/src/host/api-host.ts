@@ -263,13 +263,12 @@ export function apiHost(d: ApiHostDeps) {
       await adopting.get(sessionId);
       await pending.get(sessionId)?.done;
       const r = live.get(sessionId);
-      const epochStartSeq = () => readJournalFile(journalPath(d.dataDir, sessionId), Number.MAX_SAFE_INTEGER, 0).startSeq || undefined;
       if (r) await d.routed?.(r.runnerId);
-      if (r) return { socket: r.api.socket, token: r.api.token, writer: 'runner', epoch: r.api.epoch, epochStartSeq: epochStartSeq() };
+      if (r) return { socket: r.api.socket, token: r.api.token, writer: 'runner', epoch: r.api.epoch };
       const h = hostWriters.get(sessionId) ?? openHost(sessionId);
       if (!h) return undefined;
       return h.w.then(
-        () => ({ socket: h.socket, token: h.token, writer: 'host' as const, epoch: h.epoch, epochStartSeq: epochStartSeq() }),
+        () => ({ socket: h.socket, token: h.token, writer: 'host' as const, epoch: h.epoch }),
         () => undefined,
       );
     },

@@ -3,7 +3,6 @@
 // thing the bridge does, so the shell can be checked by hand and by the
 // end-to-end test.
 import { createDesktopHost } from '../host'
-import { COMPUTER_API_PREFIX } from '../main/config'
 
 const host = createDesktopHost()
 const root = document.getElementById('root')!
@@ -62,7 +61,7 @@ function page(): void {
       'feed',
       'GET /feed',
       async () => {
-        const res = await host.api.fetch(`${COMPUTER_API_PREFIX}/feed`)
+        const res = await host.api.fetch('/api/feed')
         say(`feed ${res.status}`, (await res.text()).slice(0, 600))
       },
     ],

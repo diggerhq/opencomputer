@@ -15,14 +15,14 @@
 // - Refusals after authentication are accept-then-close with the docs' codes:
 //   4400 without `opc.v1`, 4029 over 50 connections per member.
 // - The relay keeps no state worth saving: restarting it closes every
-//   connection (1012) and clients reconnect and re-attach after their seq.
+//   connection (1012) and clients reconnect.
 
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { log } from '../log.js';
 import { authenticate } from './edge-auth.js';
-import { Connection, type UrlAttach } from './connection.js';
+import { Connection } from './connection.js';
 import { filesHandler } from './files.js';
 import { connectHost, type HostLink } from './host-link.js';
 import { closeCode } from '../api/wire-events.js';
@@ -53,21 +53,6 @@ export interface Relay {
   close(code?: number): Promise<void>;
 }
 
-/** `?attach=…&after=…&tailTurns=…&deltas=1&resume=1`, `after`/`tailTurns` paired by position. */
-export function urlAttaches(q: URLSearchParams): UrlAttach[] {
-  const ids = q.getAll('attach');
-  const after = q.getAll('after');
-  const tail = q.getAll('tailTurns');
-  const num = (s: string | undefined) => (s === undefined || s === '' || !/^\d+$/.test(s) ? undefined : Number(s));
-  return ids.map((sessionId, i) => ({
-    sessionId,
-    after: num(after[i]),
-    tailTurns: num(after[i]) === undefined ? num(tail[i]) : undefined,
-    deltas: q.get('deltas') === '1',
-    resume: q.get('resume') === '1',
-  }));
-}
-
 export async function startRelay(o: RelayOptions): Promise<Relay> {
   const conns = new Set<Connection>();
   const perMember = new Map<string, number>();
@@ -76,12 +61,8 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
   const refusals = new TokenBucket(10, 10);
 
   const hostLink = connectHost(o.socket, o.version, {
-    welcome: () => {
-      for (const c of conns) c.recheckAccess((sid) => hostLink.access(sid));
-    },
-    access: (a) => {
-      for (const c of conns) c.accessChanged(a);
-    },
+    welcome: () => {},
+    access: () => {},
     admins: () => {},
     revoked: (keyId) => {
       for (const c of [...conns]) c.revoked(keyId);
@@ -155,7 +136,7 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
       emit('wire.connect', { connection_id: c.id, person_id: member });
       ws.on('close', (code) => emit('wire.close', { connection_id: c.id, person_id: member, code: closeCode(code), ...c.totals() }));
       conns.add(c);
-      c.start(urlAttaches(url.searchParams));
+      c.start();
     });
   });
 
@@ -169,13 +150,9 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
   // Gauges only, read now; nothing while no one is connected.
   const sample = setInterval(() => {
     if (!conns.size) return;
-    let attached = 0;
     let queued = 0;
-    for (const c of conns) {
-      attached += c.attachedCount;
-      queued = Math.max(queued, c.outbox.unsent);
-    }
-    emit('wire.sample', { connections: conns.size, members: perMember.size, attached, terminals: terminals.size, queued_bytes_max: queued });
+    for (const c of conns) queued = Math.max(queued, c.outbox.unsent);
+    emit('wire.sample', { connections: conns.size, members: perMember.size, terminals: terminals.size, queued_bytes_max: queued });
   }, o.telemetryMs ?? 60_000);
   sample.unref?.();
 

@@ -186,13 +186,14 @@ export class Hub {
   subscribe(o: Sink): HubSubscription | { error: ApiError } {
     const last = this.lastSeq;
     const after = o.tailTurns ? this.journal.tailTurnsAfter(o.tailTurns) : (o.after ?? last);
-    if (after > last) return { error: apiError('cursor_ahead', `after ${after} is past the log's last seq ${last}`, 409, { session: this.session() }) };
-    // The docs: an `after` more than 10,000 events back reads over HTTP first (review r1 contract E4).
+    // Only internal readers subscribe (the host's mirror): a cursor past the end means this journal is behind the cloud's
+    // log, which an `epoch` frame mends; the mirror retries on any error.
+    if (after > last) return { error: apiError('internal', `after ${after} is past the log's last seq ${last}`, 500, { retryable: true }) };
     if (!o.tailTurns && last - after > LIMITS.backlogEvents)
       return { error: apiError('too_far_behind', `after ${after} is ${last - after} events back; read them over HTTP first`, 409) };
     const sub = new Sub(this, o, after, last);
     this.subs.add(sub);
-    // The caller sends its result (sessions.attached) first; events follow on the next microtask.
+    // The caller sends its result first; events follow on the next microtask.
     queueMicrotask(() => sub.pump());
     return {
       attached: { session: this.session(), after, lastSeq: last, epoch: this.journal.epoch },

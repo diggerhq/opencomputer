@@ -14,7 +14,6 @@
 // Slack call and mid-turn streaming), after an open and at release. After `release` nothing appends.
 
 import type { ApiActor, ApiError, JournalDelta, JournalEvent } from '../protocol.js';
-import { capabilities } from './capabilities.js';
 import type { SessionCreated } from './created.js';
 import { Fold, isEnding, SYSTEM_ACTOR, type SessionSeed } from './fold.js';
 import { type HubSubscription, Hub, type Sink } from './hub.js';
@@ -88,7 +87,7 @@ export class SessionLog {
   }
 
   private syncFold() {
-    this.fold.setLog({ lastSeq: this.journal.lastSeq, logEpoch: this.journal.epoch, epochStartSeq: this.journal.epochStartSeq });
+    this.fold.setLog({ lastSeq: this.journal.lastSeq });
   }
 
   /** Record one event: journal, ring, fold, then subscribers. */
@@ -110,19 +109,8 @@ export class SessionLog {
     this.hub.delta({ ...d, sessionId: this.sessionId });
   }
 
-  /** Attach: the hub's subscription, its `attached` the full AttachResult less timing (review r1 contract 7). */
   subscribe(o: Sink): HubSubscription | { error: ApiError } {
-    const s = this.hub.subscribe(o);
-    if ('error' in s) return s;
-    const j = this.journal;
-    const attached = {
-      ...s.attached,
-      logEpoch: j.epoch,
-      epochStartSeq: j.epochStartSeq || 1,
-      capabilities: capabilities(),
-      earlierTurns: o.tailTurns ? this.earlierTurns(o.tailTurns) : null,
-    };
-    return Object.assign(s, { attached });
+    return this.hub.subscribe(o);
   }
 
   /** With `tailTurns`: the turns before the last `n`, newest first, at most 50. */

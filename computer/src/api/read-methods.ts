@@ -166,7 +166,6 @@ async function eventsList(log: SessionLog, p: ParamsOf<'events.list'>): Promise<
     after = log.journal.tailTurnsAfter(p.tailTurns);
     earlierTurns = log.earlierTurns(p.tailTurns);
   }
-  if (after > log.lastSeq) return fail('cursor_ahead', `after ${after} is past the log's last seq ${log.lastSeq}`, 409, { session: log.fold.session() });
   if (p.waitMs && after >= log.lastSeq) await log.waitFor(() => log.lastSeq > after, p.waitMs);
   const want = typeFilter(p.types);
   const events: JournalEvent[] = [];
