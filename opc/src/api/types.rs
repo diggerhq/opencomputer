@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn speed_is_optional_in_settings() {
+    fn speed_may_be_absent_and_is_written_as_null() {
         let s: Settings = serde_json::from_value(json!({"model": "m", "effort": "high", "mode": "default"})).unwrap();
         assert_eq!(s.speed, None);
         assert!(serde_json::to_value(&s).unwrap()["speed"].is_null());
