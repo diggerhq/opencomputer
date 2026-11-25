@@ -306,3 +306,73 @@ describe("the edge's Slack routes", () => {
     expect((await callsOf(logOf(sid))).map((c) => (c.args[1] as { id: string }).id)).toEqual([await turnIdFor("T1:C1:900.1", "900.1")]);
   });
 });
+
+describe("the Slack actor: Computer's interactions and people who leave", () => {
+  async function until<T>(fn: () => Promise<T | undefined>): Promise<T> {
+    for (let i = 0; i < 100; i++) {
+      const v = await fn();
+      if (v !== undefined) return v;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("timed out");
+  }
+
+  it("forgets a person who left the workspace and has Computer drop their subscriptions, once", async () => {
+    const org = "org_left";
+    await linked(org);
+    await inSlack(org, (exec) => exec("INSERT INTO people (slack_user_id, dir, git_name, git_email, updated_at) VALUES ('U5', 'u5', 'U5', 'u5@x', 0)"));
+    const left = { kind: "event" as const, id: "EvLeft", body: { type: "event_callback", event_id: "EvLeft", team_id: "T1", event: { type: "team_leave", user: { id: "U5" } } } };
+    await slackOf(org).accept(left);
+    await slackOf(org).accept(left);
+    const calls = await until(async () => {
+      const c = (await callsOf(computerOf(org))).filter((x) => x.method === "memberLeft");
+      return c.length ? c : undefined;
+    });
+    expect(calls).toEqual([{ method: "memberLeft", args: ["U5"] }]);
+    expect(await inSlack(org, (exec) => exec("SELECT * FROM people WHERE slack_user_id = 'U5'"))).toEqual([]);
+  });
+
+  it("hands modals and the secret, connection, variable and subscription buttons to Computer as the presser", async () => {
+    const org = "org_modal";
+    await linked(org);
+    const key = "T1:C1:950.1";
+    const sid = await sessionIdFor(key);
+    await slackOf(org).accept(message({ text: "hi", ts: "950.1" }));
+    await settled(org);
+    const base = { team: { id: "T1" }, user: { id: "U1" }, channel: { id: "C1" }, trigger_id: "tr1" };
+
+    const errors = await slackOf(org).interact("i1", { ...base, type: "view_submission", view: { callback_id: "secret", state: { values: {} } } });
+    expect(errors).toEqual({ errors: { value: "Enter a value" } });
+    await slackOf(org).interact("i2", { ...base, type: "block_actions", actions: [{ action_id: "s:abc" }] });
+    await slackOf(org).interact("i3", { ...base, type: "block_actions", actions: [{ action_id: "cx:connect" }] });
+    await slackOf(org).interact("i4", { ...base, type: "block_actions", actions: [{ action_id: `v:${key}`, value: "X=1" }] });
+    // A variable's button for a session that is gone: answered here, Computer not asked.
+    await slackOf(org).interact("i5", { ...base, type: "block_actions", response_url: "https://hooks.slack.com/r", actions: [{ action_id: "v:T1:C1:1.1" }] });
+
+    const handed = (await callsOf(computerOf(org))).filter((c) => c.method === "interaction");
+    expect(handed.map((c) => (c.args[1] as { interaction: { actions?: { action_id: string }[]; type: string } }).interaction.actions?.[0]?.action_id ?? "view")).toEqual(["view", "s:abc", "cx:connect", `v:${key}`]);
+    expect(handed[0]!.args[0]).toMatchObject({ org, subject: "slack:T1:U1", kind: "member", via: "slack" });
+    expect(handed[3]!.args[1]).toMatchObject({ sessionId: sid });
+    expect(handed[1]!.args[1]).not.toHaveProperty("sessionId");
+  });
+
+  it("returns a modal's errors to Slack from the edge", async () => {
+    const org = "org_modal_edge";
+    await linked(org);
+    await slackOf("slack-team:T1").releaseTeam("org_edge"); // the edge test's link
+    await slackOf("slack-team:T1").claimTeam("T1", org);
+    const payload = { team: { id: "T1" }, user: { id: "U1" }, type: "view_submission", view: { callback_id: "secret", state: { values: {} } } };
+    const body = `payload=${encodeURIComponent(JSON.stringify(payload))}`;
+    const ts = String(Math.floor(Date.now() / 1000));
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode("shh"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(`v0:${ts}:${body}`)));
+    const request = new Request("https://edge.test/v1/webhooks/computer/slack/interactivity", {
+      method: "POST",
+      body,
+      headers: { "x-slack-request-timestamp": ts, "x-slack-signature": `v0=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}` },
+    });
+    const response = await routeSlackPublic(request, { ...bindings, SLACK_COMPUTER_SIGNING_SECRET: "shh" } as unknown as SlackRouteEnv, createExecutionContext());
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toEqual({ response_action: "errors", errors: { value: "Enter a value" } });
+  });
+});

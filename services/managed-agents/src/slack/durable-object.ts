@@ -29,6 +29,7 @@ import {
   isRecord,
   platformPrincipal,
 } from "../actor/index.js";
+import type { SlackModalReply } from "../actor/contracts.js";
 import type { Origin } from "../computer/api-types.js";
 import { seal, sha256Hex, unseal } from "../computer/crypto.js";
 import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../computer/protocol.js";
@@ -56,6 +57,8 @@ import {
   type SlackCommand,
   slackCommand,
   stateText,
+  computerHeld,
+  sessionGoneText,
 } from "./access.js";
 import {
   joinRequestMessages,
@@ -167,6 +170,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (idem.get(this.sql, seen, e.kind)) return;
     let job: Job | null = null;
     let threadKey: string | null = null;
+    let left: string | null = null;
     if (e.kind === "interaction") {
       job = { item: "interaction", id: e.id, body: e.body };
       threadKey = `interaction:${e.id}`;
@@ -180,6 +184,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
           job = normalized;
           threadKey = `${normalized.channelId}:${normalized.threadTs}`;
         }
+      } else if (parsed.kind === "member-left") {
+        if (parsed.teamId === settings.get(this.sql, "slackTeamId")) left = parsed.userId;
       } else if (parsed.kind === "stop") {
         job = { item: "stop", eventId: parsed.eventId, teamId: parsed.teamId, channelId: parsed.channelId, ...(parsed.threadTs ? { threadTs: parsed.threadTs } : {}), ...(parsed.userId ? { userId: parsed.userId } : {}) };
         threadKey = `${parsed.channelId}:${parsed.threadTs ?? ""}`;
@@ -187,6 +193,11 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     }
     this.sql.transaction(() => {
       idem.put(this.sql, seen, e.kind, null, DEDUP_TTL_MS);
+      if (left) {
+        // Work 077: whoever left is forgotten here, and their subscriptions go (Computer's).
+        this.sql.exec("DELETE FROM people WHERE slack_user_id = ?", left);
+        owed.add(this.sql, { group: `left:${left}`, key: `left:${left}`, call: "memberLeft", body: left });
+      }
       if (!job) return;
       if (!isOther(job)) {
         // Slack sends both `message` and `app_mention` for one mention, with different event ids: the first is the one.
@@ -197,7 +208,50 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       this.sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(job), now, threadKey);
       alarms.set(this.sql, QUEUE, now + FALLBACK_MS);
     });
+    if (left) {
+      this.access?.threads.forget(left);
+      this.ctx.waitUntil(this.sendOwedNow());
+    }
     this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.drain_failed", message: errorText(error) }))));
+  }
+
+  /**
+   * An interaction while Slack waits (a button's trigger lasts three seconds; a modal's errors keep it
+   * open). The secret, variable, connection and subscription modals and their buttons are Computer's,
+   * as the presser; any other interaction is accepted and queued.
+   */
+  async interact(id: string, body: unknown): Promise<SlackModalReply> {
+    this.org();
+    const interaction = isRecord(body) ? (body as SlackInteraction) : null;
+    const userId = interaction?.user?.id;
+    if (!interaction || !userId) return {};
+    if (!computerHeld(interaction)) {
+      await this.accept({ kind: "interaction", id, body });
+      return {};
+    }
+    if (interaction.team?.id !== settings.get(this.sql, "slackTeamId")) return {};
+    const actionId = interaction.actions?.[0]?.action_id ?? "";
+    const p = await this.principal(userId);
+    if (!p) {
+      await this.respond(interaction, ONLY_MEMBERS_TEXT);
+      return {};
+    }
+    // "Set it anyway" on a variable that looks like a credential: in its thread's session, which Computer checks the presser may write.
+    let sessionId: string | undefined;
+    if (actionId.startsWith("v:") && actionId.length > 2) {
+      sessionId = threads.sessionOf(this.sql, actionId.slice(2));
+      if (!sessionId) {
+        await this.respond(interaction, sessionGoneText());
+        return {};
+      }
+    }
+    return computerOf(this.env, this.org()).interaction(p, { interaction, ...(sessionId ? { sessionId } : {}) });
+  }
+
+  /** Replaces the message a button was on, through its `response_url`. */
+  private async respond(interaction: SlackInteraction, text: string): Promise<void> {
+    if (!interaction.response_url) return;
+    await fetch(interaction.response_url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ replace_original: true, text }) });
   }
 
   // ------------------------------------------------------------------ the queue (40.11 step 2)
@@ -621,6 +675,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       return orgOf(this.env, this.org()).linkPerson(from, to);
     }
     if (call === "changed") return computerOf(this.env, this.org()).changed("slack");
+    if (call === "memberLeft") return computerOf(this.env, this.org()).memberLeft(body as string);
     console.warn(JSON.stringify({ level: "warn", event: "slack.owed_unknown", call }));
   }
 

@@ -272,6 +272,21 @@ export interface ComputerRpcAdded {
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
   exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }>;
+  /**
+   * The Slack actor only: an interaction whose state is Computer's (secret, variable, connection and
+   * subscription modals and their buttons: a `view_submission`, `s:`, `cn:`, `v:`, `mc:connect`,
+   * `md:disconnect`, `cx:connect`, `cx:disconnect`). `sessionId`: a `v:` button's session. The reply is
+   * the modal's answer: `errors` keep it open, `view` replaces it.
+   */
+  interaction(p: Principal, c: { interaction: unknown; sessionId?: string }): Promise<SlackModalReply>;
+  /** The Slack actor only: a person left the workspace, was deactivated or became a guest; their subscriptions go. */
+  memberLeft(slackUserId: string): Promise<void>;
+}
+
+/** A Slack modal's answer, as the edge returns it to Slack. */
+export interface SlackModalReply {
+  errors?: Record<string, string>;
+  view?: Record<string, unknown>;
 }
 
 // ------------------------------------------------------------------ Live (36.4), lane 2's
@@ -307,6 +322,8 @@ export interface SlackGrant {
 export interface SlackRpc {
   /** Deduplicated, queued; the edge acknowledges Slack after it. */
   accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void>;
+  /** An interaction, answered while Slack waits: a modal's or its button's goes to Computer; any other is `accept`ed. */
+  interact(id: string, interaction: unknown): Promise<SlackModalReply>;
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
   /** Computer only. */

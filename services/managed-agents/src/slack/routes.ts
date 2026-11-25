@@ -26,7 +26,7 @@ function configured(env: SlackRouteEnv): boolean {
 export async function routeSlackPublic(request: Request, env: SlackRouteEnv, context: ExecutionContext): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname === "/v1/webhooks/computer/slack/events" && request.method === "POST") return events(request, env, context);
-  if (url.pathname === "/v1/webhooks/computer/slack/interactivity" && request.method === "POST") return interactions(request, env, context);
+  if (url.pathname === "/v1/webhooks/computer/slack/interactivity" && request.method === "POST") return interactions(request, env);
   if (url.pathname === "/v1/computer/slack/callback" && request.method === "GET") return callback(env, url);
   return null;
 }
@@ -80,7 +80,7 @@ async function events(request: Request, env: SlackRouteEnv, context: ExecutionCo
   if (parsed.kind === "challenge") return json({ challenge: parsed.challenge });
   const teamId = typeof payload.team_id === "string" ? payload.team_id : undefined;
   const eventId = typeof payload.event_id === "string" ? payload.event_id : undefined;
-  if (!teamId || (parsed.kind !== "revoked" && (!eventId || parsed.kind === "ignored" || parsed.kind === "member-left"))) return json({ ok: true });
+  if (!teamId || (parsed.kind !== "revoked" && (!eventId || parsed.kind === "ignored"))) return json({ ok: true });
   // Slack wants an answer within three seconds: the actor accepts after it.
   context.waitUntil(
     (async () => {
@@ -93,7 +93,7 @@ async function events(request: Request, env: SlackRouteEnv, context: ExecutionCo
   return json({ ok: true });
 }
 
-async function interactions(request: Request, env: SlackRouteEnv, context: ExecutionContext): Promise<Response> {
+async function interactions(request: Request, env: SlackRouteEnv): Promise<Response> {
   const raw = await verified(request, env);
   if (raw instanceof Response) return raw;
   const interaction = parseInteraction(raw);
@@ -103,11 +103,14 @@ async function interactions(request: Request, env: SlackRouteEnv, context: Execu
   if (!org) return new Response(null, { status: 200 });
   // Slack gives an interaction no id of its own: its trigger, else the hash of what was sent.
   const id = interaction.trigger_id ?? (await sha256Hex(raw));
-  context.waitUntil(
-    slackOf(env, org)
-      .accept({ kind: "interaction", id, body: interaction })
-      .catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.interaction_failed", message: errorText(error) }))),
-  );
+  // A modal's answer goes back to Slack: errors keep it open, a view replaces it.
+  try {
+    const reply = await slackOf(env, org).interact(id, interaction);
+    if (reply.errors) return json({ response_action: "errors", errors: reply.errors });
+    if (reply.view) return json({ response_action: "update", view: reply.view });
+  } catch (error) {
+    console.error(JSON.stringify({ level: "error", event: "slack.interaction_failed", message: errorText(error) }));
+  }
   return new Response(null, { status: 200 });
 }
 
