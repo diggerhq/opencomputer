@@ -60,6 +60,7 @@ jobs:
     timeout-minutes: 30
     env:
       OC_EDGE_URL: ${{ inputs.edge || 'https://app.opencomputer.dev' }}
+      CSC_FOR_PULL_REQUEST: "true"
       CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
       CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
       APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
