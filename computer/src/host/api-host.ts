@@ -1,15 +1,18 @@
 // The host's side of the Computer's session API (work 084): which process is
 // each session's writer (its runner, or the host's session-writer when none
-// runs), the v4 gateway frames (`start`, `api`, `journal-ack`, `access`,
-// `revoked`, `welcome.wire`), the mirror (api-bridge.ts), what the relay is
-// told (api-relay.ts), and the RunnerApi of every runner start.
+// runs), the gateway's API frames (`start`, `api`, `watch`, `block`,
+// `journal-ack`, `access`, `revoked`, `welcome.wire`), the mirror
+// (api-bridge.ts), what the relay is told (api-relay.ts), and the RunnerApi of
+// every runner start.
 // host/main.ts calls it at a few points and keeps everything else.
 //
 // Invariants:
-// - Off unless the gateway's welcome says protocol ≥ 4: before that (and with
-//   a v3 gateway) no RunnerApi is minted, no `journal` frame is sent, no
-//   socket of the API or the relay is created, and every frame main handled
-//   before reaches main unchanged. Only `cs_` sessions have a writer.
+// - Only `cs_` sessions have a writer. One protocol (6): main closes the link
+//   of a gateway that says another (release.ts), so nothing here asks.
+// - `api` is the only way work reaches a host (work 118, section 36.3): a call
+//   that needs the agent (`NEEDS_AGENT`) first starts the session's runner, or
+//   tells a running one the frame's credentials, secrets and model, as a
+//   delivery did; a session's frames keep their arrival order through it.
 // - One writer per session: the host's session-writer is handed off (lock
 //   released) before a runner is started or claimed for its session, and is
 //   opened only when no runner serves it and none is starting. "Starting"
@@ -57,8 +60,6 @@ import type { Telemetry } from '../telemetry/emitter.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
-  /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
-  msg?: Delivery;
   credentials?: HostCredentials;
   secrets?: SessionSecret[];
   model?: ModelRoute;
@@ -110,10 +111,12 @@ export interface ApiHostDeps {
   holdAskMs?: number;
 }
 
-/** A runner's status as the API names it. */
 /** A failed adoption is retried no sooner than this, doubling to the max (the gateway resends `epoch` every 5 s). */
 const ADOPT_BACKOFF_MS = 10_000;
 const ADOPT_BACKOFF_MAX_MS = 300_000;
+
+/** The methods that need the session's agent running: the host starts it before the call. */
+const NEEDS_AGENT = new Set(['turns.send', 'sessions.resume', 'sessions.compact']);
 
 export const apiStatus = (s: SessionStatus | undefined): ApiSessionStatus =>
   s === 'idle' ? 'idle' : s === 'busy' ? 'running' : s === 'stopped' || s === 'error' ? 'suspended' : 'starting';
@@ -128,7 +131,6 @@ export function apiHost(d: ApiHostDeps) {
   const acks = mirrorAcks(path.join(d.stateDir, 'mirror-acks.json'));
   const meter = d.meter ?? (d.telemetry && apiMeter(d.telemetry, { journals }));
   const openHostWriter = d.openHostWriter ?? ((o: HostWriterOptions) => HostSessionWriter.open(o));
-  let v4 = false;
   /** Sessions as the gateway last sent them, by `cs_` id. */
   const specs = new Map<string, SessionSpec>();
   /** The log's epoch and the DO's lastSeq, as the last frame said. */
@@ -153,11 +155,13 @@ export function apiHost(d: ApiHostDeps) {
   const asking = new Map<string, ReturnType<typeof setInterval>>();
   /** The latest `epoch` frame per session not yet adopted: `down()` reruns it once a failed adoption's writer let go. */
   const kept = new Map<string, Extract<GatewayToHost, { t: 'epoch' }>>();
+  /** Per session: the starts its `api` frames wait for, so they reach the writer in arrival order. */
+  const calls = new Map<string, Promise<void>>();
   const now = d.now ?? Date.now;
   const terminals = new Map<string, number>();
 
   const bridge = apiBridge({
-    send: (m) => v4 && d.send(m),
+    send: (m) => d.send(m),
     buffered: d.buffered,
     writer,
     disk: (sessionId, after, limit) => readJournalFile(journalPath(d.dataDir, sessionId), after, limit).events,
@@ -196,7 +200,7 @@ export function apiHost(d: ApiHostDeps) {
   }
 
   function openHost(sessionId: string) {
-    if (!v4 || !isSessionId(sessionId)) return undefined;
+    if (!isSessionId(sessionId)) return undefined;
     const spec = specs.get(sessionId);
     const journal = journalPath(d.dataDir, sessionId);
     if (!spec && !existsSync(journal)) return undefined;
@@ -241,7 +245,7 @@ export function apiHost(d: ApiHostDeps) {
   function seed(spec: SessionSpec | undefined, sessionId: string | undefined, epoch?: number, lastSeq?: number) {
     if (!isSessionId(sessionId)) return;
     if (spec) specs.set(sessionId, spec);
-    if (!v4 || (epoch === undefined && logs.has(sessionId))) return;
+    if (epoch === undefined && logs.has(sessionId)) return;
     const known = logs.get(sessionId)?.epoch ?? fileEpoch(sessionId);
     const l = { epoch: epoch ?? known ?? 1, lastSeq: lastSeq ?? 0 };
     if (known !== undefined && l.epoch < known) return void meter?.staleDrop(sessionId, l.epoch, known); // a lower epoch is the past: the writer refuses it too
@@ -308,7 +312,7 @@ export function apiHost(d: ApiHostDeps) {
     telemetry: (name, fields) => meter?.wire(name, fields),
   };
   meter?.setGauges(() => ({
-    v4, runnerWriters: live.size, hostWriters: hostWriters.size, mirrorSpooledBytes: bridge.spooledBytes,
+    runnerWriters: live.size, hostWriters: hostWriters.size, mirrorSpooledBytes: bridge.spooledBytes,
     heldFrames: [...held.values()].reduce((n, q) => n + q.length, 0),
   }));
 
@@ -322,7 +326,7 @@ export function apiHost(d: ApiHostDeps) {
    */
   async function adopt(m: Extract<GatewayToHost, { t: 'epoch' }>) {
     const { sessionId } = m;
-    if (!v4 || !isSessionId(sessionId)) return;
+    if (!isSessionId(sessionId)) return;
     await adopting.get(sessionId);
     const file = journalPath(d.dataDir, sessionId);
     const f = readJournalFile(file, Number.MAX_SAFE_INTEGER, 0);
@@ -373,7 +377,7 @@ export function apiHost(d: ApiHostDeps) {
 
   /** The frame's epoch is ahead of the host's journal, or an adoption is under way: it waits for it. */
   const ahead = (sessionId: string | undefined, epoch: number | undefined): sessionId is string => {
-    if (!v4 || epoch === undefined || !isSessionId(sessionId)) return false;
+    if (epoch === undefined || !isSessionId(sessionId)) return false;
     if (adopting.has(sessionId)) return true;
     const known = logs.get(sessionId)?.epoch ?? fileEpoch(sessionId);
     return known !== undefined && epoch > known;
@@ -413,8 +417,9 @@ export function apiHost(d: ApiHostDeps) {
 
   async function start(m: Extract<GatewayToHost, { t: 'start' }>) {
     const sessionId = m.session.sessionId ?? m.session.key;
-    seed(m.session, m.session.sessionId, m.epoch, m.lastSeq);
-    const started = d.start(m.session, { credentials: m.credentials, secrets: m.secrets, model: m.model });
+    const spec = { ...m.session, role: m.role ?? null };
+    seed(spec, spec.sessionId, m.epoch, m.lastSeq);
+    const started = d.start(spec, { credentials: m.credentials, secrets: m.secrets, model: m.model });
     if (isSessionId(sessionId)) {
       const done = started.catch(() => {});
       forking.set(sessionId, done);
@@ -429,6 +434,19 @@ export function apiHost(d: ApiHostDeps) {
     }
   }
 
+  /** `api`: a call that needs the agent has its runner first, with what the frame carries for it; then the session's writer (api-bridge.ts). */
+  function call(m: Extract<GatewayToHost, { t: 'api' }>) {
+    const spec = NEEDS_AGENT.has(m.method) ? specs.get(m.sessionId) : undefined;
+    const step = (calls.get(m.sessionId) ?? Promise.resolve())
+      .then(() => spec && d.start(spec, { credentials: m.credentials, secrets: m.secrets, model: m.model }))
+      .then(
+        () => void bridge.api(m),
+        (e) => void d.send({ t: 'api-result', id: m.id, error: apiError('unavailable', `The agent could not be started: ${e?.message ?? e}`, 503, { retryable: true }) }),
+      );
+    calls.set(m.sessionId, step);
+    void step.then(() => calls.get(m.sessionId) === step && calls.delete(m.sessionId));
+  }
+
   return {
     /**
      * A gateway frame. Returns true when it was the API's alone (main does nothing more); `welcome`, `people`, `previews` and `deliver` are
@@ -436,47 +454,38 @@ export function apiHost(d: ApiHostDeps) {
      * `epoch` frame's adoption commits (main awaits it, so the turn runs under it).
      */
     onGateway(m: GatewayToHost): boolean | Promise<boolean> {
-      const sid = m.t === 'api' ? m.sessionId : m.t === 'deliver' || m.t === 'start' ? m.session.sessionId : undefined;
-      if ((m.t === 'deliver' || m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
+      const sid = m.t === 'api' ? m.sessionId : m.t === 'start' ? m.session.sessionId : undefined;
+      if ((m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
         return hold(sid, m.epoch!, m.t).then(() => this.onGateway(m));
       switch (m.t) {
         case 'welcome':
-          v4 = m.protocol >= 4;
           relay.people(m.people);
-          if (!v4) return false;
           ensureJournalDir(d.dataDir);
           relay.welcome(m.wire?.key);
           relay.start();
           bridge.relinked(); // a new socket: everything the DO has not acked goes again
           return false;
         case 'people':
-          relay.people(m.people);
-          return false;
+          return relay.people(m.people), false;
         case 'previews':
-          if (v4) relay.previews(m.preview.key);
-          return false;
-        case 'deliver':
-          seed(m.session, m.session.sessionId, m.epoch, m.lastSeq);
-          return false;
+          return relay.previews(m.preview.key), false;
         case 'start':
-          void start(m);
-          return true;
+          return void start(m), true;
         case 'api':
           seed(m.session, m.sessionId, m.epoch, m.lastSeq);
-          void bridge.api(m);
-          return true;
+          return call(m), true;
+        case 'watch':
+          return bridge.watch(m.sessionId, m.until), true;
+        case 'block':
+          return bridge.block(m.sessionId, m.blockId), true;
         case 'journal-ack':
-          bridge.ack(m);
-          return true;
+          return bridge.ack(m), true;
         case 'epoch':
-          void adopt(m);
-          return true;
+          return void adopt(m), true;
         case 'access':
-          relay.access(m.access);
-          return true;
+          return relay.access(m.access), true;
         case 'revoked':
-          relay.revoked(m.keyId);
-          return true;
+          return relay.revoked(m.keyId), true;
         default:
           return false;
       }
@@ -485,7 +494,7 @@ export function apiHost(d: ApiHostDeps) {
     /** Before a runner is launched or claimed for `spec`: its RunnerApi, with the host's writer handed off; undefined off the API. `run`: the runner's own run root, when it has one (work 103). */
     async mint(spec: SessionSpec, runnerId: string, run?: RunRoot): Promise<RunnerApi | undefined> {
       const sessionId = spec.sessionId;
-      if (!v4 || !isSessionId(sessionId)) return undefined;
+      if (!isSessionId(sessionId)) return undefined;
       specs.set(sessionId, spec);
       waker.woken(sessionId);
       await adopting.get(sessionId);
@@ -561,9 +570,6 @@ export function apiHost(d: ApiHostDeps) {
     sessionOf: (runnerId: string) => tokens.get(runnerId)?.sessionId,
     get spooledBytes() {
       return bridge.spooledBytes;
-    },
-    get enabled() {
-      return v4;
     },
     /** For tests. */
     bridge,

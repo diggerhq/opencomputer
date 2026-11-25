@@ -50,6 +50,17 @@ export const AttachResult = Schema.Struct({
 }).annotate({ identifier: 'AttachResult' });
 
 const ApprovalOrQuestion = Schema.Union([ApprovalAnswer, QuestionAnswer]);
+/** Work 118, section 40.11: the Slack message a turn's input is, and the Slack button an answer is. Honoured only from the Slack actor (`via: 'slack'`). */
+const SlackTurn = Schema.Struct({
+  userId: Schema.String,
+  ts: Schema.String,
+  files: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  mentioned: Schema.optionalKey(Schema.Boolean),
+  mentionedInline: Schema.optionalKey(Schema.Boolean),
+  context: Schema.optionalKey(Schema.Unknown),
+  linked: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+});
+const SlackButton = Schema.Struct({ userId: Schema.String, value: Schema.String });
 
 /** Params and result of every method; `http` is the route of the same operation (`-` when WebSocket only). */
 export const METHODS = {
@@ -73,7 +84,7 @@ export const METHODS = {
   'sessions.compact': { params: Schema.Struct({ ...sid, ...idem, instructions: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(10_000))) }), result: SendResult, http: 'POST /sessions/{id}/compact' },
   'sessions.suspend': { params: Schema.Struct({ ...sid, ...idem, ifIdle: Schema.optionalKey(Schema.Boolean) }), result: SessionResult, http: 'POST /sessions/{id}/suspend' },
   'sessions.resume': { params: Schema.Struct({ ...sid, ...idem }), result: SessionResult, http: 'POST /sessions/{id}/resume' },
-  'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
+  'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy), turnId: Schema.optionalKey(TurnId), slack: Schema.optionalKey(SlackTurn) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
   'turns.get': {
     params: Schema.Struct({ ...sid, turnId: TurnId, waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))), status: Schema.optionalKey(Schema.String), minSeq: Schema.optionalKey(Seq) }),
     result: Schema.Struct({ turn: Turn }), http: 'GET /sessions/{id}/turns/{turnId}',
@@ -85,7 +96,7 @@ export const METHODS = {
   },
   'asks.get': { params: Schema.Struct({ ...sid, askId: AskId }), result: Schema.Struct({ ask: Ask }), http: 'GET /sessions/{id}/asks/{askId}' },
   'asks.answer': {
-    params: Schema.Struct({ ...sid, ...idem, askId: AskId, answer: ApprovalOrQuestion }),
+    params: Schema.Struct({ ...sid, ...idem, askId: AskId, answer: Schema.optionalKey(ApprovalOrQuestion), slack: Schema.optionalKey(SlackButton) }),
     result: AskResult, http: 'POST /sessions/{id}/asks/{askId}/answer (body: the answer)',
   },
   'asks.dismiss': { params: Schema.Struct({ ...sid, ...idem, askId: AskId, message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2000))) }), result: AskResult, http: 'POST /sessions/{id}/asks/{askId}/dismiss' },

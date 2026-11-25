@@ -120,29 +120,12 @@ const api = (id: string, method: string, extra: object = {}) =>
 const results = (sent: HostToGateway[]) => sent.flatMap((m) => (m.t === 'api-result' ? [m] : []));
 
 describe('apiHost', () => {
-  it('with a v3 gateway does nothing: frames go on to main, no RunnerApi, nothing sent, no file or socket made', async () => {
-    const t = setup();
-    expect(t.a.onGateway(welcome(3))).toBe(false);
-    expect(t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' } })).toBe(false);
-    expect(t.a.onGateway({ t: 'people', people: [] })).toBe(false);
-    expect(await t.a.mint(spec, 'aaaa')).toBeUndefined();
-    await t.a.boot();
-    t.a.up('aaaa');
-    t.a.down('aaaa');
-    await tick(5);
-    expect(t.sent).toEqual([]);
-    expect(t.opened).toEqual([]);
-    expect(t.wireCalls).toEqual([]);
-    expect(readdirSync(t.root)).toEqual([]);
-    await t.a.stop();
-  });
-
   it('answers `start` with `started` and the runner status, or the error', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));
     expect(t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0, secrets: [] })).toBe(true);
     await tick();
-    expect(t.started[0].spec).toBe(spec);
+    expect(t.started[0].spec).toEqual({ ...spec, role: null });
     expect(t.sent).toContainEqual({ t: 'started', id: 's1', sessionId: S, status: 'idle' });
     const f = setup({ start: async () => Promise.reject(new Error('no fork')) });
     f.a.onGateway(welcome(4));
@@ -237,7 +220,7 @@ describe('apiHost', () => {
   it('journals an upload to a session whose runner is gone through the host\'s writer, which it opens for it', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));
-    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    t.a.onGateway({ t: 'start', id: 'd1', session: spec, epoch: 1, lastSeq: 0 });
     await t.a.mint(spec, 'beef');
     t.a.up('beef');
     await tick(5);
@@ -249,25 +232,38 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
-  it('wakes the runner for a send the host writer recorded through the gateway even with the spec known, so it starts with its secrets', async () => {
-    const t = setup();
-    t.a.onGateway(welcome(4));
-    // The create's `turns.send` seeds the spec: the first send of `opc new` with a message.
-    t.a.onGateway(api('a1', 'turns.send', { session: spec, epoch: 1, lastSeq: 0 }));
-    await tick(5);
-    const o = t.opened[0] as { wake(s: string, d?: unknown): void };
-    o.wake(S, { actor, member: 'usr_1', ifBusy: 'queue', turnId: 'tn_1' });
-    await tick();
-    // No runner without secrets: a `secrets` frame would find none to take it.
-    expect(t.started).toEqual([]);
-    expect(t.sent.filter((m) => m.t === 'wake')).toEqual([{ t: 'wake', sessionId: S }]);
-    // The gateway's `start` carries them; the runner takes the queued turn from the journal.
+  it('starts the runner for a `turns.send` with the frame\'s secrets and model before the call, and keeps the session\'s frames in order (protocol 6)', async () => {
+    let go = () => {};
+    const gate = new Promise<void>((r) => (go = r));
+    const started: StartOptions[] = [];
+    const t = setup({ start: async (_s, o) => (started.push(o), await gate, 'idle') });
+    t.a.onGateway(welcome(6));
     const secrets = [{ name: 'ORG_TOKEN', value: 'fixture-org', scope: 'workspace' as const }];
-    t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0, secrets });
-    await tick();
-    expect(t.started).toHaveLength(1);
-    expect(t.started[0].o).toMatchObject({ secrets });
-    expect(t.started[0].o.msg).toBeUndefined();
+    const model = { provider: 'anthropic' } as unknown as StartOptions['model'];
+    t.a.onGateway(api('a1', 'turns.send', { session: spec, epoch: 1, lastSeq: 0, secrets, model, idempotencyKey: 'in_1' }));
+    t.a.onGateway(api('a2', 'sessions.interrupt'));
+    await tick(5);
+    expect(started).toEqual([{ credentials: undefined, secrets, model }]);
+    expect(results(t.sent)).toEqual([]); // neither reaches a writer before the start ends
+    go();
+    await tick(10);
+    expect(results(t.sent).map((r) => r.id)).toEqual(['a1', 'a2']);
+    expect(t.sent.filter((m) => m.t === 'wake')).toEqual([]);
+    // A start that fails answers the call, retryable.
+    const f = setup({ start: async () => Promise.reject(new Error('no fork')) });
+    f.a.onGateway(welcome(6));
+    f.a.onGateway(api('a3', 'turns.send', { session: spec, epoch: 1, lastSeq: 0 }));
+    await tick(5);
+    expect(results(f.sent)).toMatchObject([{ id: 'a3', error: { code: 'unavailable', retryable: true } }]);
+    await t.a.stop();
+    await f.a.stop();
+  });
+
+  it('hands `watch` and `block` to the delta link', async () => {
+    const t = setup();
+    t.a.onGateway(welcome(6));
+    expect(t.a.onGateway({ t: 'watch', sessionId: S, until: Date.now() + 1000 })).toBe(true);
+    expect(t.a.onGateway({ t: 'block', sessionId: S, blockId: 'b1' })).toBe(true);
     await t.a.stop();
   });
 
@@ -324,7 +320,7 @@ describe('apiHost', () => {
       t.a.onGateway({ t: 'start', id: 's1', session: spec, epoch: 1, lastSeq: 0, secrets: [] });
       await t.a.mint(spec, 'aaaa');
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(t.started.map((x) => x.spec)).toEqual([spec]);
+      expect(t.started.map((x) => x.spec)).toMatchObject([spec]);
       expect(t.host.failed.length).toBe(1);
       await t.a.stop();
     } finally {
@@ -360,7 +356,7 @@ describe('apiHost', () => {
   it('mirrors the runner, then the host writer once it exits; forwards access and revocations to the relay', async () => {
     const t = setup();
     t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
-    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    t.a.onGateway({ t: 'start', id: 'd1', session: spec, epoch: 1, lastSeq: 0 });
     await t.a.mint(spec, 'beef');
     t.a.up('beef');
     await tick(5);
@@ -389,7 +385,7 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
-  it('at boot mirrors what the scan left in journals no writer holds, once the gateway speaks v4', async () => {
+  it('at boot mirrors what the scan left in journals no writer holds, and sends it again on a new link', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'apihost-'));
     dirs.push(root);
     const jdir = path.join(root, 'data', 'journals', S);
@@ -399,9 +395,9 @@ describe('apiHost', () => {
     const t = setup({ dataDir: path.join(root, 'data'), scan: async () => [{ sessionId: S, file: '', epoch: 2, lastSeq: 2, closedTurns: ['tn_1'] }] });
     await t.a.boot();
     await tick(5);
-    expect(t.sent).toEqual([]);
-    t.a.onGateway(welcome(4));
     expect(t.sent.filter((m) => m.t === 'journal')).toMatchObject([{ sessionId: S, epoch: 2, events: [{ seq: 1 }, { seq: 2 }] }]);
+    t.a.onGateway(welcome(6));
+    expect(t.sent.filter((m) => m.t === 'journal').at(-1)).toMatchObject({ sessionId: S, epoch: 2, events: [{ seq: 1 }, { seq: 2 }] });
     t.a.onGateway({ t: 'journal-ack', sessionId: S, epoch: 2, seq: 2 });
     expect(t.a.bridge.state(S)).toBeUndefined();
     expect(existsSync(path.join(root, 'data', 'journals'))).toBe(true);

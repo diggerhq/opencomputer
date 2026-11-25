@@ -17,7 +17,7 @@
 //   operation, so one idempotency key covers both.
 // - Ids: sessions `cs_…` (src/session-ids.ts); members are `usr_…` (Person.userId).
 
-import type { HostCredentials, ModelRoute, Person, SessionSecret, SessionSpec } from './protocol.js';
+import type { HostCredentials, ModelRoute, Person, RoleSpec, SessionSecret, SessionSpec } from './protocol.js';
 
 /** Who acted, as every event and write carries it (API `Actor`). */
 export interface ApiActor {
@@ -62,6 +62,12 @@ export interface JournalDelta {
   data: unknown;
 }
 
+/**
+ * A delta on the host link: `offset` is the length (UTF-16 code units, a JavaScript string's `length`) of the block's
+ * text before this delta; `whole`: `data.text` is the block so far and replaces the reader's copy.
+ */
+export type HostDelta = JournalDelta & { offset: number; whole?: true };
+
 /** Who may attach to a session (pushed by the gateway, forwarded to the relay). */
 export interface SessionAccess {
   sessionId: string;
@@ -87,18 +93,25 @@ export type GatewayToHostV4 =
    * Claim a spare and fork for `session` with no input (a session created over the API); answered by
    * `started`. `epoch` and `lastSeq` seed the writer's journal (seq continues at max(local, lastSeq) + 1).
    */
-  | { t: 'start'; id: string; session: SessionSpec; epoch: number; lastSeq: number;
+  | { t: 'start'; id: string; session: SessionSpec; role?: RoleSpec | null; epoch: number; lastSeq: number;
       credentials?: HostCredentials; secrets?: SessionSecret[];
       model?: ModelRoute }
   /**
    * An API write or read for session `sessionId`, from an HTTP route: `method` is the WebSocket method of the same
    * operation, `params` its params. The host hands it to the session's writer; answered by `api-result` (15 s at the gateway).
+   * Protocol 6: the only way work reaches a host. `idempotencyKey` is the inbox entry's id; `credentials`, `secrets` and `model` are
+   * the sender's for the session (what `deliver` carried), and a call that needs the agent starts its runner with them.
    */
   | { t: 'api'; id: string; sessionId: string; method: string; params: unknown; actor: ApiActor;
       /** `usr_…` of the caller (the idempotency scope). */
       member: string; idempotencyKey?: string; requestId?: string;
       /** The session, when the host may not know it yet (a write to a session with no runner and no local journal). */
-      session?: SessionSpec; epoch?: number; lastSeq?: number }
+      session?: SessionSpec; epoch?: number; lastSeq?: number;
+      credentials?: HostCredentials; secrets?: SessionSecret[]; model?: ModelRoute }
+  /** Someone watches the session until `until` (ms since the epoch): its deltas go up as `delta` frames until then. A lease, re-sent on renewal. */
+  | { t: 'watch'; sessionId: string; until: number }
+  /** A watcher lost its place in block `blockId`: answered by one `delta` holding the block so far (`offset: 0`, `whole`). */
+  | { t: 'block'; sessionId: string; blockId: string }
   /**
    * The SessionLog stored every event of `epoch` up to `seq`: the host may drop them from its spool. On a gap the DO
    * acks nothing and closes the socket with 4010 ("journal gap"); the host resends everything unacked after it reconnects.
@@ -144,6 +157,11 @@ export type HostToGatewayV4 =
    * SessionLog merges them into reads). At most once a second per session, only when some changed; best effort, never resent.
    */
   | { t: 'subagent-progress'; sessionId: string; epoch: number; progress: SubagentProgress[] }
+  /**
+   * The deltas of a watched session's open blocks, merged per block for 40 ms (host/delta-link.ts). Never acknowledged,
+   * never resent; dropped while the socket holds more than the journal's holding mark.
+   */
+  | { t: 'delta'; sessionId: string; epoch: number; deltas: HostDelta[] }
   /**
    * A send the host's writer queued for a session the host has no spec of (none came since it booted):
    * the gateway answers with `start`, as for a session created without a message. Ignored for an unknown session.
@@ -256,20 +274,6 @@ export interface RunnerApi {
   /** Where to listen for ApiClientFrame (`<runner id>.api.sock`), and the token every connection must open with. */
   socket: string;
   token: string;
-}
-
-/** Delivery.api: a message that came through the API, not Slack; recorded already by the host's writer when `turnId` is set. */
-export interface ApiDelivery {
-  actor: ApiActor;
-  member: string;
-  ifBusy: 'queue' | 'steer' | 'interrupt';
-  /** The turn the host's writer recorded (`message.received`, `turn.queued`) while no runner ran. */
-  turnId?: string;
-  idempotencyKey?: string;
-  model?: string;
-  effort?: string;
-  speed?: string;
-  mode?: string;
 }
 
 // ---------------------------------------------------------------- Slack-bound narrowings

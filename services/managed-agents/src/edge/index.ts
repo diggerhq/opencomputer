@@ -317,6 +317,9 @@ import {
 } from "./computer-grants.js";
 import { SessionLogDurableObject } from "../computer/session-log.js";
 import { WorkIndexDurableObject } from "../computer/work/index-do.js";
+import { DeliveryDurableObject } from "../delivery/durable-object.js";
+import { OrgDurableObject } from "../org/durable-object.js";
+import { SlackDurableObject } from "../slack/durable-object.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import {
   type Latency,
@@ -326,16 +329,20 @@ import {
 } from "./latency.js";
 import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../computer/routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
-import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
+import { COMPUTER_PRINCIPAL, isComputerGrantRoute, principalOf } from "./computer-principal.js";
+import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../slack/routes.js";
 
 export {
   AccountDurableObject,
   ComputerDurableObject,
+  DeliveryDurableObject,
   DeploymentPoolDurableObject,
   MemoryDurableObject,
+  OrgDurableObject,
   ProjectDatabaseDurableObject,
   SessionDurableObject,
   SessionLogDurableObject,
+  SlackDurableObject,
   WorkIndexDurableObject,
 };
 
@@ -10679,6 +10686,9 @@ export default {
           env as Env & PlatformEnv,
         );
       }
+      // Slack's webhooks and OAuth callback go to the Slack actor (tracks and threads).
+      const slackPublicResponse = await routeSlackPublic(request, env as Env & SlackRouteEnv, context);
+      if (slackPublicResponse) return withCors(slackPublicResponse);
       // The computer's Slack webhooks, OAuth callback and host WebSocket
       // (work 052) carry their own authentication, not the edge assertion.
       const computerPublicResponse = await routeComputerPublic(
@@ -11313,6 +11323,13 @@ export default {
 
       const computerGrants = await routeComputerServiceConnections(request, env, identity);
       if (computerGrants) return withCors(computerGrants);
+
+      const slackResponse = await routeSlackDashboard(
+        request,
+        env as Env & SlackRouteEnv,
+        () => principalOf(identity, request.headers.get("user-agent")),
+      );
+      if (slackResponse) return withCors(slackResponse);
 
       const computerResponse = await routeComputerDashboard(
         request,

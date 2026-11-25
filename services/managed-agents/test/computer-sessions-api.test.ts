@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ApiEvent, Ask, LogSummary } from "../src/computer/api-types.js";
-import { type ComputerApiStub, matchApiRoute, routeComputerApi, writeParams } from "../src/computer/api-http.js";
+import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
 import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
 import { ComputerKeys } from "../src/computer/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
@@ -20,7 +20,6 @@ import {
 } from "../src/computer/sessions-api.js";
 import { ApiTelemetry } from "../src/computer/telemetry/api.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
-import type { RequestIdentity } from "../src/edge/auth.js";
 import { routeApiSession } from "../src/computer/api-model-route.js";
 import { noModelAccess, type ResolvedRoute } from "../src/computer/model-access.js";
 import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
@@ -675,24 +674,6 @@ describe("set aside (work-tracking 3.8)", () => {
     }
     expect(await f.api.handle(caller(), { op: "aside.set", sessionId: "cs_0000000000000000", body: { ref: "ak_1" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
     expect(f.api.row(SID)!.asideRef).toBeNull();
-  });
-
-  it("HTTP: PUT and DELETE reach the Computer DO with sessions:write, never the writer", async () => {
-    const seen: unknown[] = [];
-    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 200, body: {} })) };
-    const person = { kind: "user", organizationId: "org_1", userId: "user_1", role: "member" } as RequestIdentity;
-    const reader = { ...person, apiKey: { id: "key_1", hash: "a".repeat(64), name: "r", kind: "user" as const, expiresAt: null, createdAt: null, scopes: ["sessions:read"] } } as RequestIdentity;
-    const go = (identity: RequestIdentity, method: string, body?: string) =>
-      routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/${SID}/aside`, { method, ...(body ? { body } : {}) }), {} as never, identity, "org_1", stub, `/sessions/${SID}/aside`);
-    expect((await go(person, "PUT", '{"ref":"ak_1"}')).status).toBe(200);
-    expect((await go(person, "DELETE")).status).toBe(200);
-    expect((await go(person, "PUT", "not json")).status).toBe(400);
-    expect((await go(reader, "PUT", '{"ref":"ak_1"}')).status).toBe(403);
-    expect(seen.filter((op) => (op as { op: string }).op !== "access")).toEqual([
-      { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } },
-      { op: "aside.clear", sessionId: SID },
-    ]);
-    expect(matchApiRoute("POST", `/sessions/${SID}/aside`)).toBeNull();
   });
 });
 

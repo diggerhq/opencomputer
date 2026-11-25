@@ -1,0 +1,39 @@
+appId: dev.opencomputer.desktop
+productName: OpenComputer
+copyright: Copyright © OpenComputer
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - ui/**
+  - package.json
+  - "!dist/**/*.map"
+asar: true
+protocols:
+  - name: OpenComputer
+    schemes: [opencomputer]
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+    - target: zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Notarisation runs when APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER
+  # are set and the build is signed with a Developer ID (CSC_LINK); see README.
+  notarize: true
+# Section 24.1, "Signing".
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
+  enableCookieEncryption: true
+  grantFileProtocolExtraPrivileges: false
+publish:
+  provider: generic
+  url: https://app.opencomputer.dev/desktop/updates

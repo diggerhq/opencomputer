@@ -2,7 +2,8 @@
 // WebSocket, forks sessions, starts runners outside its own process tree,
 // forwards deliveries, relays GitHub tokens, and finds its runners again
 // after a restart: by their sockets, or on a `podman` host from its records
-// and Podman's inventory (sandbox/sweep.ts). Restarting it never ends a turn.
+// and Podman's inventory (sandbox/sweep.ts). Restarting it on the same release
+// never ends a turn; a runner of another release is stopped (release.ts).
 //
 //   SP_GATEWAY_URL=ws://…/host SP_HOST_TOKEN=… [SP_HOST_ID] [SP_DATA] [SP_RUN]
 //   [SP_DEFINITION]            workspace definition: fork with src/workspaces (VM); unset: ensureWorkdir (laptop).
@@ -86,6 +87,7 @@ import { hostModelAccess } from './model-access.js';
 import { unitExists } from './launch.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
+import { ofAnotherRelease, updateOnClose, updateOnWelcome } from './release.js';
 import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
 import { apiHost, type StartOptions } from './api-host.js';
@@ -153,7 +155,7 @@ function switchRunner(key: string, r = runners.get(key)) {
 }
 /** Its session's epoch moved on (api-host `epoch`): end its turn now, then exit; killed after 10 s (a container: stopped with no grace). */
 const retireRunner = async (id: string, r = [...runners.values()].find((x) => x.id === id)) =>
-  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id), () => void call(r, { t: 'stop' }, 10_000).catch(() => {}),
+  r && ((r.exiting = true), retire(r.sock, socketFor(r.sandbox?.run ?? HOST_RUN, r.id),
     { kill: r.sandbox && (() => sandbox!.stop(r.id, 0)) }));
 /** spawn, secret and thread requests in flight to the gateway, by id: the runner that asked. */
 const spawning = new Map<string, Runner>();
@@ -286,6 +288,7 @@ const link = gatewayLink({
   hello: () => ({ t: 'hello', protocol: PROTOCOL_VERSION, hostId: identity.hostId, version: VERSION,
     sessions: [...runners.values()].flatMap((r) => (r.report ? [r.report] : [])), profiles: subs.profiles(), journals: api.journals() }),
   message: (m) => void onGateway(m).catch((e) => log.error('gateway message', m.t, e)),
+  closed: (code) => void updateOnClose(code, HOST_RUN),
 });
 function toGateway(m: HostToGateway) {
   link.send(m);
@@ -308,6 +311,7 @@ async function onGateway(m: GatewayToHost) {
       () => toGateway({ t: 'reply', id, ok: true }),
       (e) => toGateway({ t: 'reply', id, ok: false, error: String(e?.message ?? e) }),
     );
+  if (m.t === 'welcome' && updateOnWelcome(m.protocol, PROTOCOL_VERSION, HOST_RUN)) return link.refuse(); // one protocol, both sides (release.ts)
   if (subs.onGateway(m)) return; // `model`, `model-request` (work 097); reads `models` from `welcome` and `credentials`
   if (await api.onGateway(m)) return; // `start`, `api`, `journal-ack`, `access`, `revoked` (work 084, api-host.ts)
   switch (m.t) {
@@ -333,26 +337,11 @@ async function onGateway(m: GatewayToHost) {
       return link.redial(); // the next dial is as the new identity
     }
     case 'people': return org.peopleChanged(m);
-    case 'deliver': {
-      const at = Date.now();
-      const f = { ...traceFields(m.session.key, m.trace), dispatch_id: m.id };
-      tm.emit('deliver.received', { ...f, duration_ms: m.trace?.dispatchedAt && at - m.trace.dispatchedAt });
-      return reply(m.id, deliver(m.session, m.msg, m.credentials, m.secrets, { trace: m.trace, at, f, model: m.model }));
-    }
     case 'secrets': {
       // A session without a runner gets them with its next delivery.
       const r = runners.get(m.sessionKey);
       if (r) send(r.sock, { t: 'secrets', secrets: m.secrets } satisfies HostToRunner);
       return;
-    }
-    case 'action': {
-      const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'action', promptId: m.promptId, value: m.value, userId: m.userId, ...(m.role ? { role: m.role } : {}) })
-        : Promise.reject(new Error('no runner for this session (the prompt ended with it)')));
-    }
-    case 'stop': {
-      const r = runners.get(m.sessionKey);
-      return reply(m.id, r ? call(r, { t: 'stop' }) : Promise.resolve());
     }
     case 'pushed':
       // Only a push to the branch forks start from fetches (not sessions' own sp/* branches).
@@ -383,7 +372,7 @@ interface Received {
   model?: ModelRoute;
 }
 
-async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
+async function deliver(spec: SessionSpec, delivered: HostCredentials | undefined, secrets: SessionSecret[] | undefined,
   rx: Received) {
   const deliveryCredentials = await subs.delivered(spec.key, delivered, rx.model, spec.harness);
   for (let attempt = 0; ; attempt++) {
@@ -425,28 +414,13 @@ async function deliver(spec: SessionSpec, msg: Delivery, delivered: HostCredenti
     const trace = rx.trace && forwardTrace(rx.trace, cold);
     r.forwarded = { trace, at: Date.now() };
     saveForwarded(r.key, r.forwarded);
-    const answered = call(r, { t: 'deliver', msg, trace });
-    tm.emit('deliver.forwarded', { ...rx.f, path: decidePath(cold), duration_ms: Date.now() - rx.at,
-      data: { credentials_sent: !!delivered, secrets_count: secrets?.length ?? 0 } });
-    try {
-      return await answered;
-    } catch (e: any) {
-      // Raced an exit: start it again.
-      if (attempt || !(wasExiting || r.report?.status === 'stopped') || e?.message !== 'runner gone') throw e;
-    }
+    return; // its turns come through the session's writer (`api`)
   }
 }
 
 /** Work 084: start the session's runner for the API (`start`, a wake, `resume`), with `msg` delivered when given; its status. */
 async function startSession(spec: SessionSpec, o: StartOptions) {
-  const f = traceFields(spec.key);
-  if (o.msg) await deliver(spec, o.msg, o.credentials, o.secrets, { at: Date.now(), f, model: o.model });
-  else {
-    const c = await subs.delivered(spec.key, o.credentials, o.model, spec.harness);
-    const r = await ensureRunner(spec, f, c);
-    if (c) send(r.sock, { t: 'credentials', credentials: c } satisfies HostToRunner);
-    if (o.secrets) send(r.sock, { t: 'secrets', secrets: o.secrets } satisfies HostToRunner);
-  }
+  await deliver(spec, o.credentials, o.secrets, { at: Date.now(), f: traceFields(spec.key), model: o.model });
   return runners.get(spec.key)?.report?.status;
 }
 
@@ -477,6 +451,8 @@ await api.boot(); // settles the journals no runner holds (work 084); none on a 
 api.rediscovered(sandbox ? await sandbox.reconcile()
   : await rediscover(HOST_RUN, (id, sock) => starts.adopt(id, sock, { verify: true }).then((r) => log.info('rediscovered runner', id, r.key || 'spare'))));
 sandbox?.sweeping();
+// A runner another release started is stopped (release.ts): its turn ends interrupted, its next delivery cold-starts it on this one.
+for (const r of ofAnotherRelease(runners.values(), VERSION)) (log.info(`runner ${r.id} (${r.key}) is of release ${r.report?.runnerVersion ?? 'unknown'}; stopping it`), void retireRunner(r.id));
 log.info(`host ${identity.hostId} (${VERSION}) run=${HOST_RUN} launch=${LAUNCH} ${workspacesEnabled() ? 'workspaces' : 'laptop'} mode, ${runners.size} live runner(s), pool ${POOL_SIZE}`);
 link.dial();
 setInterval(fillPool, 30_000).unref();

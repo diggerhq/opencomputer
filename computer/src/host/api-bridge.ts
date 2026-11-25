@@ -19,6 +19,9 @@
 //   again in `flushMs`; the spool keeps the events. Frames sent around the
 //   mirror (Slack's, `api-result`s) so queue behind at most that much. Only a
 //   write's own session goes regardless, before its `api-result`.
+// - Every other delta goes to the delta link (delta-link.ts, work 118), which
+//   sends those of a watched session as `delta` frames; so do the events, which
+//   close its blocks.
 // - `subagent.progress` deltas (never journaled) go up as `subagent-progress`
 //   frames: the latest values of the session's running subagents, at most once
 //   per `progressMs` (1 s) per session, best effort (lost with the link).
@@ -36,6 +39,7 @@ import { isMethod, WRITER_METHODS } from '../api/schema-methods.js';
 import type { ApiError, GatewayToHost, HostToGateway, JournalDelta, JournalEvent, SubagentProgress } from '../protocol.js';
 import { log } from '../log.js';
 import { type DiskRead, Spool, SPOOL_BYTES } from './api-spool.js';
+import { deltaLink } from './delta-link.js';
 import type { MirrorMeter } from './mirror-meter.js';
 
 /** A subscription as the mirror holds it. */
@@ -103,6 +107,7 @@ export function apiBridge(d: BridgeDeps) {
   const holdBytes = d.holdBytes ?? HOLD_BYTES;
   /** Since when flushes have waited for the socket to drain (0: they do not). */
   let heldSince = 0;
+  const deltas = deltaLink({ send: d.send, buffered: () => d.buffered?.() ?? 0, holdBytes, epoch: (sessionId) => spool.get(sessionId)?.epoch });
   /** Per session: the latest progress of each running subagent, whether it changed since the last frame, and when that went. */
   type Progress = { by: Map<string, SubagentProgress>; dirty: boolean; at: number; timer?: NodeJS.Timeout };
   const progress = new Map<string, Progress>();
@@ -158,6 +163,7 @@ export function apiBridge(d: BridgeDeps) {
 
   function received(sessionId: string, e: JournalEvent) {
     if (!spool.push(sessionId, e)) return;
+    deltas.event(sessionId, e);
     const f = follows.get(sessionId);
     if (f && ++f.seen % 64 === 0) f.sub?.ack(e.seq);
     const ws = waiters.get(sessionId);
@@ -171,7 +177,7 @@ export function apiBridge(d: BridgeDeps) {
   }
 
   function progressed(sessionId: string, delta: JournalDelta) {
-    if (delta.type !== 'subagent.progress') return;
+    if (delta.type !== 'subagent.progress') return deltas.delta(sessionId, delta);
     const v = delta.data as SubagentProgress;
     if (typeof v?.subagentId !== 'string') return;
     const p: Progress = progress.get(sessionId) ?? { by: new Map(), dirty: false, at: 0 };
@@ -210,6 +216,7 @@ export function apiBridge(d: BridgeDeps) {
     const gen = ++f.gen;
     f.sub?.close();
     f.sub = undefined;
+    deltas.reset(sessionId); // the writer's catch-up says each open block again
     f.following = true; // `reached` waits for the subscription (review r1 P2-4)
     try {
       await subscribe(sessionId, f, gen);
@@ -232,7 +239,7 @@ export function apiBridge(d: BridgeDeps) {
     const r = await w
       .subscribe({
         after,
-        deltas: true, // `subagent.progress` alone: the writer sends a mirror no others (hub.ts)
+        deltas: true,
         mirror: true,
         onEvent: (e) => {
           if (gen !== f.gen) return;
@@ -339,6 +346,9 @@ export function apiBridge(d: BridgeDeps) {
     follow,
     api,
     ack,
+    /** `watch` and `block` frames (delta-link.ts). */
+    watch: deltas.watch,
+    block: deltas.block,
     /** The gateway socket is new (after its hello): everything unacked goes again. */
     relinked() {
       d.meter?.relinked();
@@ -352,6 +362,7 @@ export function apiBridge(d: BridgeDeps) {
       f.gen++;
       f.sub?.close();
       follows.delete(sessionId);
+      deltas.forget(sessionId);
       forgetProgress(sessionId);
       d.meter?.forget(sessionId);
     },
@@ -362,6 +373,7 @@ export function apiBridge(d: BridgeDeps) {
     state: (sessionId: string) => spool.get(sessionId),
     stop() {
       stopped = true;
+      deltas.stop();
       if (timer) clearTimeout(timer);
       for (const id of [...progress.keys()]) forgetProgress(id);
       for (const f of follows.values()) {
