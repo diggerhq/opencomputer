@@ -420,7 +420,7 @@ export default defineConfig({
         ],
         test: {
           name: "session-log",
-          include: ["test/session-log.test.ts", "test/actor-shells.test.ts", "test/actor-module.test.ts"],
+          include: ["test/session-log*.test.ts", "test/actor-shells.test.ts", "test/actor-module.test.ts"],
         },
       },
       {
