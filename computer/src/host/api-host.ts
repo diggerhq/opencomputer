@@ -60,8 +60,6 @@ import type { Telemetry } from '../telemetry/emitter.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
-  /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
-  msg?: Delivery;
   credentials?: HostCredentials;
   secrets?: SessionSecret[];
   model?: ModelRoute;
@@ -456,8 +454,8 @@ export function apiHost(d: ApiHostDeps) {
      * `epoch` frame's adoption commits (main awaits it, so the turn runs under it).
      */
     onGateway(m: GatewayToHost): boolean | Promise<boolean> {
-      const sid = m.t === 'api' ? m.sessionId : m.t === 'deliver' || m.t === 'start' ? m.session.sessionId : undefined;
-      if ((m.t === 'deliver' || m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
+      const sid = m.t === 'api' ? m.sessionId : m.t === 'start' ? m.session.sessionId : undefined;
+      if ((m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
         return hold(sid, m.epoch!, m.t).then(() => this.onGateway(m));
       switch (m.t) {
         case 'welcome':
@@ -471,8 +469,6 @@ export function apiHost(d: ApiHostDeps) {
           return relay.people(m.people), false;
         case 'previews':
           return relay.previews(m.preview.key), false;
-        case 'deliver':
-          return seed(m.session, m.session.sessionId, m.epoch, m.lastSeq), false;
         case 'start':
           return void start(m), true;
         case 'api':

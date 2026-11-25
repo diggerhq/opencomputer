@@ -220,7 +220,7 @@ describe('apiHost', () => {
   it('journals an upload to a session whose runner is gone through the host\'s writer, which it opens for it', async () => {
     const t = setup();
     t.a.onGateway(welcome(4));
-    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    t.a.onGateway({ t: 'start', id: 'd1', session: spec, epoch: 1, lastSeq: 0 });
     await t.a.mint(spec, 'beef');
     t.a.up('beef');
     await tick(5);
@@ -356,7 +356,7 @@ describe('apiHost', () => {
   it('mirrors the runner, then the host writer once it exits; forwards access and revocations to the relay', async () => {
     const t = setup();
     t.a.onGateway(welcome(4, { wire: { key: 'k' } }));
-    t.a.onGateway({ t: 'deliver', id: 'd1', session: spec, msg: { userId: 'U1', text: 'hi', ts: '1' }, epoch: 1, lastSeq: 0 });
+    t.a.onGateway({ t: 'start', id: 'd1', session: spec, epoch: 1, lastSeq: 0 });
     await t.a.mint(spec, 'beef');
     t.a.up('beef');
     await tick(5);

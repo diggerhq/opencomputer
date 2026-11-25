@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ApiActor, ApiDelivery, ApiError } from '../protocol.js';
+import type { ApiActor, ApiError } from '../protocol.js';
 import { log as logger } from '../log.js';
 import { isSessionId, mintId } from '../session-ids.js';
 import type { SessionCreated } from '../api/created.js';
@@ -46,8 +46,8 @@ export interface HostWriterOptions {
   seed: SessionSeed;
   /** Recorded first when the journal is empty (created.ts). */
   created?: SessionCreated;
-  /** Start the session's runner; with `delivery`, the turn it should run (recorded here as queued). */
-  wake(sessionId: string, delivery?: ApiDelivery): void;
+  /** Start the session's runner: it takes the turns queued here from the journal. */
+  wake(sessionId: string): void;
   /** Serve the API on this socket too (the relay's `where`). */
   socket?: { path: string; token: string };
   /** Wait for the journal's lock (a runner handing it back); default 0. */
@@ -117,13 +117,13 @@ export class HostSessionWriter implements Writer {
   }
 
   /** Record that the runner is coming (unless it already is) and wake it. */
-  private starting(actor: ApiActor, delivery?: ApiDelivery): void {
+  private starting(actor: ApiActor): void {
     const s = this.log.fold.status;
     if (s === 'suspended' || s === 'idle') {
       this.status('starting', actor);
       this.log.append('runtime.starting', { phase: 'agent' }, { actor: SYSTEM_ACTOR });
     }
-    this.o.wake(this.sessionId, delivery);
+    this.o.wake(this.sessionId);
   }
 
   /** The runner a send woke never came: the queued turns fail, so a client stops waiting on them. */
@@ -182,10 +182,10 @@ export class HostSessionWriter implements Writer {
         const queued = fold.liveTurns().filter((t) => t.status === 'queued');
         if (queued.length >= QUEUE_MAX) return fail('queue_full', `at most ${QUEUE_MAX} turns may wait`, 409, { retryable: true, retryAfterMs: 5000 });
         const ifBusy = p.ifBusy ?? 'queue';
-        const turnId = mintId('tn');
+        const turnId = p.turnId ?? mintId('tn');
         log.append('message.received', { input: p.input, ifBusy, delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ctx.actor });
         const e = log.append('turn.queued', { position: queued.length + 1, trigger: 'message', subagentId: null }, { turnId, actor: ctx.actor });
-        this.starting(ctx.actor, delivery(ctx, ifBusy, turnId));
+        this.starting(ctx.actor);
         return { result: { turn: fold.turn(turnId), delivery: 'queued', duplicate: false, seq: Math.max(e.seq, log.lastSeq) } };
       },
       'sessions.update': (p, ctx) => {
@@ -278,14 +278,6 @@ export class HostSessionWriter implements Writer {
 }
 
 const actorOf = (a: ApiActor) => ({ ...a, name: a.name ?? a.id });
-
-const delivery = (ctx: CallContext, ifBusy: ApiDelivery['ifBusy'], turnId: string): ApiDelivery => ({
-  actor: ctx.actor,
-  member: ctx.member,
-  ifBusy,
-  turnId,
-  ...(ctx.idempotencyKey ? { idempotencyKey: ctx.idempotencyKey } : {}),
-});
 
 /** A running subagent as ended now. */
 const publicActor = (a: ApiActor) => ({ id: a.id, name: a.name ?? a.id, via: a.via, client: a.client });
