@@ -5,6 +5,7 @@
 // against the vendored schema (test/fixtures/calvin/computer-api.v1.json).
 
 import type { CalvinApiActor, CalvinJournalEvent } from "./protocol.js";
+import type { SessionAccessView } from "./session-access.js";
 
 export type Actor = CalvinApiActor;
 export type ApiEvent = CalvinJournalEvent;
@@ -188,6 +189,10 @@ export interface Session {
   lastActiveAt: string;
   syncedAt: string | null;
   urls: { dashboard: string | null };
+  /** Who may use it (CTO-37, session-access.ts). Optional in the published schema; this service always sends it. */
+  access?: SessionAccessView;
+  /** Whether the caller may change `access`: the owner, a listed person, or an org admin. */
+  canManageAccess?: boolean;
 }
 
 /**

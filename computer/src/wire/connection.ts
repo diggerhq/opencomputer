@@ -174,14 +174,16 @@ export class Connection {
   accessChanged(access: SessionAccess) {
     const a = this.attached.get(access.sessionId);
     if (a && !mayAttach(access, this.member)) this.detach(access.sessionId, 'access_lost');
+    this.terminals.recheck((sid) => (sid === access.sessionId ? access : this.deps.host.access(sid)));
   }
 
-  /** After a host `welcome`: every attached session is checked against the new lists (absent: lost). */
+  /** After a host `welcome`: every attached session and open terminal is checked against the new lists (absent: lost). */
   recheckAccess(get: (sessionId: string) => SessionAccess | undefined) {
     for (const sid of [...this.attached.keys()]) {
       const access = get(sid);
       if (!access || !mayAttach(access, this.member)) this.detach(sid, 'access_lost');
     }
+    this.terminals.recheck(get);
   }
 
   revoked(keyId: string) {

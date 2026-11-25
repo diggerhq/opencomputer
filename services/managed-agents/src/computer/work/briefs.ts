@@ -90,7 +90,7 @@ export interface WorkContextDeps {
     row(sessionId: string): ApiRow | undefined;
     rowByKey(key: string): ApiRow | undefined;
     visible(caller: ApiCaller, sessionId: string): ApiRow | undefined;
-    compose(row: ApiRow): Session;
+    compose(row: ApiRow, fresh?: undefined, caller?: ApiCaller): Session;
   };
 }
 
@@ -112,7 +112,7 @@ export function workContext(deps: WorkContextDeps, caller: ApiCaller, op: WorkCo
   for (const ref of op.sessionIds.slice(0, CONTEXT_MAX)) {
     const row = deps.api.row(ref) ?? deps.api.rowByKey(ref);
     if (!row?.sessionId || !deps.api.visible(caller, row.sessionId)) continue;
-    const s = deps.api.compose(row);
+    const s = deps.api.compose(row, undefined, caller);
     const open = s.asks.filter((a) => a.status === "open").map((a) => a.createdAt).sort();
     sessions[ref] = {
       id: s.id,
