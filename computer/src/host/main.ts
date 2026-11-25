@@ -222,13 +222,9 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       return pool.changed(r);
     case 'reply':
       return r.calls.get(m.id)?.(m);
-    case 'spawn':
-    case 'read':
-    case 'post':
     case 'secret-request': {
       // The ids are UUIDs, so the runner's id carries through to the gateway and back.
-      const answer = ({ spawn: 'spawned', read: 'thread', post: 'posted', 'secret-request': 'secret-asked' } as const)[m.t];
-      if (!link.connected) return send(r.sock, { t: answer, id: m.id, error: 'gateway not connected' } satisfies HostToRunner);
+      if (!link.connected) return send(r.sock, { t: 'secret-asked', id: m.id, error: 'gateway not connected' } satisfies HostToRunner);
       spawning.set(m.id, r);
       setTimeout(() => spawning.delete(m.id), 60_000).unref();
       return toGateway({ ...m, from: r.key });
@@ -352,9 +348,6 @@ async function onGateway(m: GatewayToHost) {
       );
     case 'token':
       return tokens.answer(m);
-    case 'spawned':
-    case 'thread':
-    case 'posted':
     case 'secret-asked': {
       const r = spawning.get(m.id);
       spawning.delete(m.id);

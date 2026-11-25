@@ -196,15 +196,12 @@ describe('a new thread on a podman host with a spare', () => {
     { t: 'token', id: 'q1' },
     { t: 'preview', id: 'q2', req: { port: 3000 } },
     { t: 'unpreview', id: 'q3', req: { name: 'x' } },
-    { t: 'spawn', id: 'q4', req: {} as never },
-    { t: 'read', id: 'q5', req: {} as never },
-    { t: 'post', id: 'q6', req: {} as never },
-    { t: 'secret-request', id: 'q7', req: {} as never },
-    { t: 'checkout', id: 'q8', repos: ['a'] },
+    { t: 'secret-request', id: 'q4', req: {} as never },
+    { t: 'checkout', id: 'q5', repos: ['a'] },
     { t: 'out-of-credits' },
     { t: 'model-denied', model: 'm', fallbackTo: 'n' },
   ];
-  const refusals = ['token', 'previewed', 'previewed', 'spawned', 'thread', 'posted', 'secret-asked', 'checked-out'].map((t, i) => ({ t, id: `q${i + 1}`, error: 'this runner serves no thread' }));
+  const refusals = ['token', 'previewed', 'previewed', 'secret-asked', 'checked-out'].map((t, i) => ({ t, id: `q${i + 1}`, error: 'this runner serves no thread' }));
 
   it('what a parked spare asks for is refused, never handled: it serves no thread', async () => {
     const t = await rig();
