@@ -34,6 +34,10 @@ for (const f of ['index.html', 'placeholder.css']) cpSync(at('src/placeholder', 
 
 // Lane 4's second Vite entry. Its output directory is theirs to name; either is taken.
 rmSync(at('ui'), { recursive: true, force: true })
-const surface = [process.env.OC_UI_DIR, at('../web/dist-desktop'), at('../web/dist/desktop')].find((d) => d && existsSync(join(d, 'index.html')))
-if (surface) cpSync(surface, at('ui'), { recursive: true })
+// The surface's desktop build (`npm run build:desktop` in web): its document is desktop.html.
+const surface = [process.env.OC_UI_DIR, at('../web/dist-desktop')].find((d) => d && existsSync(join(d, 'desktop.html')))
+if (surface) {
+  cpSync(surface, at('ui'), { recursive: true })
+  cpSync(at('ui/desktop.html'), at('ui/index.html'))
+}
 console.log(`built for ${edge}; UI: ${surface ?? 'placeholder'}`)

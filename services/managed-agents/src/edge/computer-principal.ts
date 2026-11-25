@@ -15,7 +15,7 @@
 import type { Principal } from "../actor/principal.js";
 import { API_SCOPES, type ApiScope } from "../computer/api-types.js";
 import { apiScopes } from "../computer/keys.js";
-import { memberId } from "../computer/session-ids.js";
+import { isSessionId, memberId } from "../computer/session-ids.js";
 import type { RequestIdentity } from "./auth.js";
 
 export const COMPUTER_PRINCIPAL = "computer";
@@ -97,7 +97,8 @@ export async function principalOf(identity: RequestIdentity, userAgent: string |
   const expiresAt = key?.expiresAt ? Date.parse(key.expiresAt) : NaN;
   const credential = { id: key?.id ?? `login:${identity.userId}`, expiresAt: Number.isFinite(expiresAt) ? expiresAt : null };
   if (identity.principal === COMPUTER_PRINCIPAL) {
-    const session = identity.sessionKey;
+    // A `cs_…` session key binds the agent to that session; an older Slack thread key binds it to none.
+    const session = identity.sessionKey && isSessionId(identity.sessionKey) ? identity.sessionKey : undefined;
     const scopes = new Set<ApiScope>([...apiScopes(key?.scopes), "work:read", "work:write"]);
     scopes.delete("terminals");
     return {

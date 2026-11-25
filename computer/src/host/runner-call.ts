@@ -7,14 +7,11 @@
 
 import { randomUUID } from 'node:crypto';
 import type net from 'node:net';
-import type { Delivery, RunnerApi, SessionSpec, TraceContext } from '../protocol.js';
+import type { RunnerApi, SessionSpec } from '../protocol.js';
 import { send } from '../ipc.js';
 
 export type RunnerCall =
-  | { t: 'deliver'; msg: Delivery; trace?: TraceContext }
-  | { t: 'action'; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
-  | { t: 'stop' }
-  | { t: 'claim'; session: SessionSpec & { forkPath: string }; api?: RunnerApi };
+  { t: 'claim'; session: SessionSpec & { forkPath: string }; api?: RunnerApi };
 
 export interface Callable {
   sock: net.Socket;

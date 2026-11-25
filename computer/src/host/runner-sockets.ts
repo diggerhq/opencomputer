@@ -149,9 +149,8 @@ export async function rediscover(run: RunRoot, adopt: (id: string, sock: net.Soc
  * or `kill` for a runner in a container (work 103: Stop with no grace; its pid file is the session's to write and is
  * never read). True when it went.
  */
-export async function retire(sock: net.Socket, socket: string, stop: () => void, o: { ms?: number; kill?: () => Promise<unknown> } = {}): Promise<boolean> {
+export async function retire(sock: net.Socket, socket: string, o: { ms?: number; kill?: () => Promise<unknown> } = {}): Promise<boolean> {
   const ms = o.ms ?? 10_000;
-  stop();
   send(sock, { t: 'exit', ms: Math.max(0, ms - 2_000) } satisfies HostToRunner);
   await Promise.race([closed(sock), new Promise((t) => setTimeout(t, ms).unref())]);
   if (sock.destroyed) return true;

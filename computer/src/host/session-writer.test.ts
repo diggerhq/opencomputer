@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ApiDelivery, JournalEvent } from '../protocol.js';
+import type { JournalEvent } from '../protocol.js';
 import { mintId } from '../session-ids.js';
 import { ensureSessionJournalDir, journalPath } from '../api/journal.js';
 import { dialApi } from '../api/socket.js';
@@ -23,7 +23,7 @@ async function host(o: { socket?: boolean; prepare?: (log: Awaited<ReturnType<ty
     o.prepare(log);
     await log.release();
   }
-  const wakes: { sessionId: string; delivery?: ApiDelivery }[] = [];
+  const wakes: { sessionId: string }[] = [];
   const socket = o.socket ? { path: path.join(t.dir, 'h.api.sock'), token: 'tok' } : undefined;
   const w = await HostSessionWriter.open({
     sessionId: t.sessionId,
@@ -31,7 +31,7 @@ async function host(o: { socket?: boolean; prepare?: (log: Awaited<ReturnType<ty
     epoch: 1,
     lastSeq: 0,
     seed: { sessionId: t.sessionId, owner },
-    wake: (sessionId, delivery) => wakes.push({ sessionId, delivery }),
+    wake: (sessionId) => void wakes.push({ sessionId }),
     socket,
   });
   cleanups.push(() => w.handOff());
@@ -51,7 +51,7 @@ describe('HostSessionWriter', () => {
     expect(types(events())).toEqual(['session.status_changed', 'message.received', 'turn.queued', 'session.status_changed', 'runtime.starting']);
     for (const e of events()) assertEvent(e);
     expect(r.seq).toBe(5);
-    expect(wakes).toEqual([{ sessionId: sid, delivery: { actor: ANN, member: 'usr_ann', ifBusy: 'queue', turnId: r.turn.id, idempotencyKey: 'k' } }]);
+    expect(wakes).toEqual([{ sessionId: sid }]);
     // A repeat is the same turn, and wakes nothing new.
     const again = await w.call('turns.send', { sessionId: sid, input: 'hello' }, { ...ANN_CTX, idempotencyKey: 'k' });
     expect(again.result).toMatchObject({ duplicate: true, turn: { id: r.turn.id } });
@@ -127,7 +127,7 @@ describe('HostSessionWriter', () => {
     expect(types(events()).slice(-3)).toEqual(['subagent.ended', 'runtime.suspended', 'session.status_changed']);
     await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
     expect(w.log.fold.status).toBe('starting');
-    expect(wakes).toEqual([{ sessionId: sid, delivery: undefined }]);
+    expect(wakes).toEqual([{ sessionId: sid }]);
     for (const e of events()) assertEvent(e);
   });
 

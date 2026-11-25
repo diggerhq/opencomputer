@@ -47,6 +47,7 @@ import type { ComputerDurableObject, ComputerOverview } from "./durable-object.j
 import { isHarness } from "./harnesses.js";
 import { bearerToken, hostAuthorized } from "./host-token.js";
 import { POOL_OBJECT, isPoolId } from "./names.js";
+import { liveOf } from "../actor/index.js";
 import { apiRefusal, type ComputerApiStub, routeComputerApi } from "./api-http.js";
 import { memberId } from "./session-ids.js";
 import {
@@ -154,6 +155,21 @@ function slackConfigured(env: ComputerEdgeEnv): boolean {
   );
 }
 
+/** `POST /v1/internal/live/revoke {org, credentialId}`: from the edge only, never an API key or the session API's mount. */
+async function liveRevoke(request: Request, env: ComputerEdgeEnv, identity: RequestIdentity): Promise<Response> {
+  if (request.method !== "POST") return problem(405, "method_not_allowed", "POST only");
+  // The edge asserts the organization with no user: `authenticateRequest` names that caller "opencomputer-edge".
+  if (identity.kind !== "user" || identity.userId !== "opencomputer-edge" || identity.principal || identity.projectId || identity.apiKey) return problem(403, "forbidden", "Revocations come from the edge");
+  const input = await agentBody(request);
+  if (input instanceof Response) return input;
+  if (input.org !== identity.accountId) return problem(403, "forbidden", "org is not the asserted organization");
+  if (typeof input.credentialId !== "string" || !input.credentialId || input.credentialId.length > 200) return problem(400, "invalid_request", "credentialId is required");
+  const live = liveOf(env, identity.accountId);
+  if (!live) return problem(503, "unavailable", "Live is not available");
+  await live.revoke(input.credentialId);
+  return new Response(null, { status: 204 });
+}
+
 /** Dashboard routes; null when the path is not one of them. */
 export async function routeComputerDashboard(
   request: Request,
@@ -163,6 +179,8 @@ export async function routeComputerDashboard(
   waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+  // A credential ended (spec 18.7): the edge, asserted as the organization, has its Live close the sockets it opened.
+  if (url.pathname === "/v1/internal/live/revoke") return liveRevoke(request, env, identity);
   if (url.pathname !== "/v1/computer" && !url.pathname.startsWith("/v1/computer/")) return null;
   const route = `${request.method} ${url.pathname}`;
   // Work 084: the session API (api-http.ts). The opencomputer edge sets the surface header on

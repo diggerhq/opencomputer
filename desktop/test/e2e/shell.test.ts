@@ -58,9 +58,9 @@ test('sign-in through the browser loads the app with the principal', async () =>
   await press('go')
   await page.waitForURL('oc://app/')
   expect(await page.locator('#org').textContent()).toBe('org_test')
-  expect(await page.locator('#subject').textContent()).toBe('usr_test')
+  expect(await page.locator('#subject').textContent()).toBe(edge.principal.subject)
   const opened = await app.evaluate(() => (globalThis as any).opened as string[])
-  expect(opened[0]).toMatch(/\/auth\/app\/authorize\?redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fcallback&code_challenge=/)
+  expect(opened[0]).toMatch(/\/auth\/app\/authorize\?response_type=code&redirect_uri=http%3A%2F%2F127\.0\.0\.1%3A\d+%2Fcallback&code_challenge=/)
   // The refresh token is on disk, sealed.
   expect(readdirSync(userData)).toContain('credential.bin')
 })
@@ -80,12 +80,12 @@ test('the API: proxied with the token, which no page sees', async () => {
   await press('feed')
   await expect.poll(log).toContain('feed 200')
   const h = edge.apiHeaders.at(-1)!
-  expect(h.authorization).toBe('Bearer access.0')
+  expect(h.authorization).toBe(`Bearer ${edge.token(0)}`)
   expect(h.cookie).toBeUndefined()
   expect(h['x-oc-app']).toBeUndefined()
   // Without the header a simple cross-origin request cannot set: refused before the token is attached.
   const before = edge.apiHeaders.length
-  expect(await page.evaluate(() => fetch('/api/managed-agents/computer/feed').then((r) => r.status))).toBe(403)
+  expect(await page.evaluate(() => fetch('/api/feed').then((r) => r.status))).toBe(403)
   expect(edge.apiHeaders.length).toBe(before)
   // The reply's cookie does not reach the page.
   expect(await page.evaluate(() => document.cookie)).toBe('')
@@ -95,7 +95,7 @@ test('an expired access token is refreshed and the request retried', async () =>
   edge.revokeAccess()
   await press('feed')
   await expect.poll(async () => ((await log()) ?? '').split('feed 200').length).toBe(3)
-  expect(edge.apiHeaders.at(-1)!.authorization).toBe('Bearer access.1')
+  expect(edge.apiHeaders.at(-1)!.authorization).toBe(`Bearer ${edge.token(1)}`)
 })
 
 test('the content security policy holds: no inline script, no foreign connection', async () => {

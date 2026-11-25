@@ -214,8 +214,6 @@ export interface WhereResult {
   token: string;
   writer: 'runner' | 'host';
   epoch: number;
-  /** The epoch's first seq (the journal's epoch line), for a relay that finds the epoch moved (`session.detached`). */
-  epochStartSeq?: number;
 }
 
 /** Sent by the host to the relay. */
@@ -225,7 +223,7 @@ export type HostToWire =
   | { t: 'access'; access: SessionAccess }
   | { t: 'admins'; admins: string[] }
   | { t: 'revoked'; keyId: string }
-  /** The session's writer changed (runner exited, started): ask `where` again and resubscribe after the last seq. */
+  /** The session's writer changed (runner exited, started): ask `where` again. */
   | { t: 'moved'; sessionId: string }
   | { t: 'terminal.exited'; terminalId: string; exitCode: number | null; signal: string | null }
   | { t: 'files.done'; id: string; result?: unknown; error?: ApiError }
@@ -234,7 +232,7 @@ export type HostToWire =
 // ---------------------------------------------------------------- client ⇄ writer (<id>.api.sock)
 
 /**
- * Sent to the session's writer by the relay (one socket per attachment) or the host's api-bridge. Several calls may be
+ * Sent to the session's writer by the relay (calls only) or the host's api-bridge. Several calls may be
  * in flight; the writer answers each with `result`, in the order it accepted them. At most one `subscribe` per socket.
  */
 export type ApiClientFrame =
@@ -243,11 +241,11 @@ export type ApiClientFrame =
   | { t: 'call'; id: string; method: string; params: unknown; actor: ApiActor; member: string;
       idempotencyKey?: string; requestId?: string }
   /**
-   * Replay then live: events with seq > `after` (or the last `tailTurns` turns), then every new one. `result` is the
-   * `sessions.attached` body less `sessionId`; events follow it. `deltas: false` drops deltas.
+   * Replay then live: events with seq > `after` (or the last `tailTurns` turns), then every new one. `result` is
+   * api/writer.ts `Attached`; events follow it. `deltas: false` drops deltas.
    */
   | { t: 'subscribe'; id: string; after?: number; tailTurns?: number; deltas: boolean; resume?: boolean; mirror?: boolean }
-  /** The client has everything up to `seq` (`sessions.ack`): the writer may drop it from this subscriber's queue. */
+  /** The subscriber has everything up to `seq`: the writer may drop it from this subscriber's queue. */
   | { t: 'ack'; seq: number };
 
 export type ApiWriterFrame =
@@ -255,7 +253,7 @@ export type ApiWriterFrame =
   | { t: 'event'; event: JournalEvent }
   | { t: 'delta'; delta: JournalDelta }
   /** The subscription ended: `too_far_behind` (its backlog), `moved` (the writer handed the journal on; ask `where`). */
-  | { t: 'detached'; reason: 'too_far_behind' | 'moved' | 'access_lost' | 'epoch_changed'; logEpoch?: number; epochStartSeq?: number };
+  | { t: 'detached'; reason: 'too_far_behind' | 'moved' | 'access_lost' };
 
 // ---------------------------------------------------------------- host ⇄ runner (v4)
 
@@ -274,20 +272,6 @@ export interface RunnerApi {
   /** Where to listen for ApiClientFrame (`<runner id>.api.sock`), and the token every connection must open with. */
   socket: string;
   token: string;
-}
-
-/** Delivery.api: a message that came through the API, not Slack; recorded already by the host's writer when `turnId` is set. */
-export interface ApiDelivery {
-  actor: ApiActor;
-  member: string;
-  ifBusy: 'queue' | 'steer' | 'interrupt';
-  /** The turn the host's writer recorded (`message.received`, `turn.queued`) while no runner ran. */
-  turnId?: string;
-  idempotencyKey?: string;
-  model?: string;
-  effort?: string;
-  speed?: string;
-  mode?: string;
 }
 
 // ---------------------------------------------------------------- Slack-bound narrowings

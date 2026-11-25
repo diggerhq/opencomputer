@@ -38,15 +38,13 @@ const upgrade = (port: number) =>
   });
 
 describe('relay telemetry', () => {
-  it('connect, attach and close: one event each, all valid for the host, no content', async () => {
-    const { session, port, named, sent } = await setup();
-    const c = connectClient(port, { query: `attach=${session}` });
-    await c.next((m) => m.method === 'sessions.attached');
+  it('connect and close: one event each, all valid for the host, no content', async () => {
+    const { port, named, sent } = await setup();
+    const c = connectClient(port);
+    await c.next((m) => m.method === 'ready');
     c.ws.close();
     await until(() => named('wire.close').length === 1);
     expect(named('wire.connect')).toHaveLength(1);
-    const [attach] = named('wire.attach');
-    expect(attach.fields).toMatchObject({ session_key: session, person_id: 'usr_owner', outcome: 'completed', via: 'url' });
     expect(named('wire.close')[0].fields).toMatchObject({ code: 1005 });
     for (const m of sent()) expect(checkWireEvent(m.name, m.fields), m.name).toBeDefined();
   });
@@ -87,7 +85,7 @@ describe('relay telemetry', () => {
     const { port, named } = await setup();
     const c = connectClient(port);
     await c.next((m) => m.method === 'ready');
-    for (let i = 0; i < 40; i++) c.ws.send(JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'sessions.attach', params: { sessionId: 'nope' } }));
+    for (let i = 0; i < 40; i++) c.ws.send(JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'sessions.get', params: { sessionId: 'nope' } }));
     await c.next((m) => m.id === 40);
     await new Promise((r) => setTimeout(r, 20));
     const n = named('wire.error').length;

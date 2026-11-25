@@ -60,8 +60,6 @@ import type { Telemetry } from '../telemetry/emitter.js';
 import type { SandboxPlace } from './sandbox/scripts.js';
 
 export interface StartOptions {
-  /** A message to deliver once it runs (a send recorded by the host's writer); absent: only start it. */
-  msg?: Delivery;
   credentials?: HostCredentials;
   secrets?: SessionSecret[];
   model?: ModelRoute;
@@ -265,13 +263,12 @@ export function apiHost(d: ApiHostDeps) {
       await adopting.get(sessionId);
       await pending.get(sessionId)?.done;
       const r = live.get(sessionId);
-      const epochStartSeq = () => readJournalFile(journalPath(d.dataDir, sessionId), Number.MAX_SAFE_INTEGER, 0).startSeq || undefined;
       if (r) await d.routed?.(r.runnerId);
-      if (r) return { socket: r.api.socket, token: r.api.token, writer: 'runner', epoch: r.api.epoch, epochStartSeq: epochStartSeq() };
+      if (r) return { socket: r.api.socket, token: r.api.token, writer: 'runner', epoch: r.api.epoch };
       const h = hostWriters.get(sessionId) ?? openHost(sessionId);
       if (!h) return undefined;
       return h.w.then(
-        () => ({ socket: h.socket, token: h.token, writer: 'host' as const, epoch: h.epoch, epochStartSeq: epochStartSeq() }),
+        () => ({ socket: h.socket, token: h.token, writer: 'host' as const, epoch: h.epoch }),
         () => undefined,
       );
     },
@@ -456,8 +453,8 @@ export function apiHost(d: ApiHostDeps) {
      * `epoch` frame's adoption commits (main awaits it, so the turn runs under it).
      */
     onGateway(m: GatewayToHost): boolean | Promise<boolean> {
-      const sid = m.t === 'api' ? m.sessionId : m.t === 'deliver' || m.t === 'start' ? m.session.sessionId : undefined;
-      if ((m.t === 'deliver' || m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
+      const sid = m.t === 'api' ? m.sessionId : m.t === 'start' ? m.session.sessionId : undefined;
+      if ((m.t === 'start' || m.t === 'api') && ahead(sid, m.epoch))
         return hold(sid, m.epoch!, m.t).then(() => this.onGateway(m));
       switch (m.t) {
         case 'welcome':
@@ -471,8 +468,6 @@ export function apiHost(d: ApiHostDeps) {
           return relay.people(m.people), false;
         case 'previews':
           return relay.previews(m.preview.key), false;
-        case 'deliver':
-          return seed(m.session, m.session.sessionId, m.epoch, m.lastSeq), false;
         case 'start':
           return void start(m), true;
         case 'api':
