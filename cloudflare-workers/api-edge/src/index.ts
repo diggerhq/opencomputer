@@ -99,6 +99,7 @@ import {
   SESSION_ID,
   type Principal,
 } from "./principal";
+import { appDeviceLive, appTokenPrincipal, handleAppAuth, verifyAppToken } from "./app_auth";
 import { createdKeyForSync, revokeComputerKey, revokeLiveCredential, syncComputerKey } from "./computer_keys";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
@@ -1569,7 +1570,17 @@ async function computerApiCall(
   }
   let caller: Caller | null = null;
   let viaKey = false;
-  if (credential.key) {
+  // A member: by cookie (the dashboard) or by the Mac app's access token.
+  let member: { orgID: string; userID: string; via: "dashboard" | "app"; credential: Principal["credential"] } | null = null;
+  if (credential.key && !credential.key.startsWith("osb_")) {
+    facts.via = "app";
+    const claims = await verifyAppToken(env.SESSION_JWT_SECRET, credential.key);
+    // A socket outlives the token, so the device is checked before Live
+    // takes it; a call is short and needs only the signature.
+    if (claims && (!live || (await appDeviceLive(env.OPENCOMPUTER_DB, claims.dev)))) {
+      member = { orgID: claims.org_id, userID: claims.user_id, via: "app", credential: { id: claims.dev, expiresAt: claims.exp * 1000 } };
+    }
+  } else if (credential.key) {
     viaKey = true;
     facts.via = "key";
     caller = await authenticateKey(credential.key, env, ctx);
@@ -1608,46 +1619,54 @@ async function computerApiCall(
           reason: "origin_not_allowed",
         });
       }
-      // The member's name and email ride along (work tracking 3.10: the Work
-      // API's `mine` and the author of a person's write need them).
-      const membership = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT m.role, u.name AS user_name, u.email AS user_email
-           FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
-          WHERE m.org_id = ?1 AND m.user_id = ?2`,
-      )
-        .bind(session.orgID, session.userID)
-        .first<{ role: string; user_name: string | null; user_email: string | null }>();
-      if (!membership) {
-        facts.auth = "not_member";
-        return computerApiError(req, 401, "unauthenticated", "Sign in again.");
-      }
-      const role =
-        membership.role === "owner" || membership.role === "admin"
-          ? "admin"
-          : membership.role;
-      caller = {
+      member = {
         orgID: session.orgID,
         userID: session.userID,
-        role,
-        userName: membership.user_name ?? null,
-        userEmail: membership.user_email ?? null,
-        ocPrincipal: await memberPrincipal({
-          org: session.orgID,
-          userId: session.userID,
-          admin: role === "admin",
-          via: "dashboard",
-          credential: {
-            id: await cookieCredentialId(
-              readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
-              session.orgID,
-              session.userID,
-              session.claims.exp,
-            ),
-            expiresAt: session.claims.exp * 1000,
-          },
-        }),
+        via: "dashboard",
+        credential: {
+          id: await cookieCredentialId(
+            readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
+            session.orgID,
+            session.userID,
+            session.claims.exp,
+          ),
+          expiresAt: session.claims.exp * 1000,
+        },
       };
     }
+  }
+  if (member) {
+    // The member's name and email ride along (work tracking 3.10: the Work
+    // API's `mine` and the author of a person's write need them).
+    const membership = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT m.role, u.name AS user_name, u.email AS user_email
+         FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = ?1 AND m.user_id = ?2`,
+    )
+      .bind(member.orgID, member.userID)
+      .first<{ role: string; user_name: string | null; user_email: string | null }>();
+    if (!membership) {
+      facts.auth = "not_member";
+      return computerApiError(req, 401, "unauthenticated", "Sign in again.");
+    }
+    const role =
+      membership.role === "owner" || membership.role === "admin"
+        ? "admin"
+        : membership.role;
+    caller = {
+      orgID: member.orgID,
+      userID: member.userID,
+      role,
+      userName: membership.user_name ?? null,
+      userEmail: membership.user_email ?? null,
+      ocPrincipal: await memberPrincipal({
+        org: member.orgID,
+        userId: member.userID,
+        admin: role === "admin",
+        via: member.via,
+        credential: member.credential,
+      }),
+    };
   }
   if (!caller) {
     facts.auth = credential.key ? "invalid" : "missing";
@@ -1830,7 +1849,7 @@ async function liveCredentials(req: Request, env: Env, ctx: ExecutionContext): P
 
 /** The principal of a token Live was handed: an API key, null otherwise. */
 async function principalOfToken(token: string, env: Env, ctx: ExecutionContext): Promise<Principal | null> {
-  if (!token.startsWith("osb_")) return null;
+  if (!token.startsWith("osb_")) return appTokenPrincipal(env, token);
   const caller = await authenticateKey(token, env, ctx);
   return caller ? principalOfKeyCaller(caller, null) : null;
 }
@@ -1848,6 +1867,7 @@ async function credentialLive(id: string, env: Env): Promise<boolean> {
       .first<{ ok: number }>();
     return member !== null;
   }
+  if (id.startsWith("dev_")) return appDeviceLive(env.OPENCOMPUTER_DB, id);
   const key = await env.OPENCOMPUTER_DB.prepare(
     `SELECT 1 AS ok FROM api_keys WHERE id = ?1 AND (expires_at IS NULL OR expires_at > ?2)`,
   )
@@ -2361,6 +2381,7 @@ export default {
     }
 
     // Browser auth flow.
+    if (path.startsWith("/auth/app/")) return handleAppAuth(req, env, ctx, path);
     if (path === "/auth/login")    { if (req.method === "GET")  return withFirstTouchCookie(req, await authLogin(req, env)); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
     if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env, ctx); }
