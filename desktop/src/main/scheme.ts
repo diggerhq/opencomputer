@@ -4,6 +4,7 @@
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { APP_HEADER, APP_ORIGIN } from '../shared/bridge'
+import { COMPUTER_API_PREFIX } from './config'
 
 export const CSP = [
   "default-src 'none'",
@@ -37,6 +38,7 @@ const TYPES: Record<string, string> = {
   '.wasm': 'application/wasm',
   '.txt': 'text/plain; charset=utf-8',
 }
+
 
 export type SchemeDeps = {
   edge: string
@@ -87,7 +89,8 @@ export function createHandler(deps: SchemeDeps): (request: Request) => Promise<R
       let res: Response
       try {
         // A long-poll or a streamed body passes through as a stream.
-        res = await deps.fetch(deps.edge + url.pathname + url.search, { method, headers, body, redirect: 'error', signal: request.signal })
+        // A page's `/api/<route>` is the edge's public route of that name (section 37).
+        res = await deps.fetch(deps.edge + COMPUTER_API_PREFIX + url.pathname.slice('/api'.length) + url.search, { method, headers, body, redirect: 'error', signal: request.signal })
       } catch (e) {
         if (request.signal.aborted) throw e
         return json(503, 'offline', 'The edge could not be reached')

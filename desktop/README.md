@@ -40,7 +40,7 @@ token.
 ## The surface's bundle
 
 `build.mjs` copies the surface's desktop build into `ui/` when it finds one
-(`OC_UI_DIR`, `../web/dist-desktop` or `../web/dist/desktop`), and the app
+(`OC_UI_DIR` or `../web/dist-desktop`, the output of `npm run build:desktop` in `web`), and the app
 serves that in place of the placeholder. What the bundle can rely on:
 
 - It is served at `oc://app/`; any path without a file extension answers
@@ -49,8 +49,9 @@ serves that in place of the placeholder. What the bundle can rely on:
 - Scripts and styles must be files (the content security policy allows no
   inline script and no foreign origin).
 - `createDesktopHost()` from `desktop/src/host` gives the `Host`. API calls
-  are relative `/api/…` paths through `host.api.fetch`, which adds the header
-  the proxy demands.
+  are `/api/<route>` paths (`/api/feed`, `/api/sessions/…`) through
+  `host.api.fetch`, which adds the header the proxy demands; the main process
+  sends them to the edge's public routes with the token.
 - A channel is the main process's socket: on `open`, send `hello` and the
   `sub` frames as section 38.3 says, and call `channel.subs(streams)` with
   what the window watches.

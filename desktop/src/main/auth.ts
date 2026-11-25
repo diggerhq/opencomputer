@@ -8,12 +8,27 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Principal } from '../shared/bridge'
 
+/** The edge's reply at `POST /auth/app/token` (api-edge `app_auth.ts`). The refresh token rotates on every use. */
 export type TokenReply = {
   access_token: string
   expires_in: number // seconds
-  refresh_token?: string
-  device_id?: string
-  principal: Principal
+  refresh_token: string
+  device_id: string
+}
+
+/**
+ * Who an access token is, read from its claims (not verified: it came from
+ * the edge over TLS, and the edge checks it on every use). The subject is the
+ * member id of the user, as api-edge's `memberId` maps it.
+ */
+export function principalOf(accessToken: string): Principal {
+  const claims = JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString()) as { org_id?: unknown; user_id?: unknown }
+  if (typeof claims.org_id !== 'string' || typeof claims.user_id !== 'string') throw new Error('the access token names nobody')
+  const workos = /^user_([0-9A-HJKMNP-TV-Z]{26})$/.exec(claims.user_id)
+  const subject = workos
+    ? `usr_${workos[1]!.toLowerCase()}`
+    : `usr_x${createHash('sha256').update(claims.user_id).digest().subarray(0, 13).toString('hex')}`
+  return { org: claims.org_id, subject }
 }
 
 type Stored = { refreshToken: string; deviceId: string | null; principal: Principal }
@@ -99,27 +114,29 @@ export class Auth {
     if (!res.ok) return null
     const reply = (await res.json()) as TokenReply
     if (this.stored !== stored) return null // signed out meanwhile
-    if (reply.principal.org !== stored.principal.org || reply.principal.subject !== stored.principal.subject) {
+    const principal = principalOf(reply.access_token)
+    if (principal.org !== stored.principal.org || principal.subject !== stored.principal.subject) {
       this.clear()
       return null
     }
-    this.accept(reply, stored)
+    this.accept(reply)
     return reply.access_token
   }
 
-  private accept(reply: TokenReply, prior: Stored | null): void {
+  private accept(reply: TokenReply): Principal {
+    const principal = principalOf(reply.access_token)
     this.access = { token: reply.access_token, expiresAt: this.now() + reply.expires_in * 1000 }
-    const refreshToken = reply.refresh_token ?? prior?.refreshToken
-    if (!refreshToken) throw new Error('the edge sent no refresh token')
-    this.stored = { refreshToken, deviceId: reply.device_id ?? prior?.deviceId ?? null, principal: reply.principal }
+    // Saved before anything else uses the token: the old refresh token is spent.
+    this.stored = { refreshToken: reply.refresh_token, deviceId: reply.device_id, principal }
     this.deps.save(this.deps.seal(JSON.stringify(this.stored)))
+    return principal
   }
 
-  private post(body: object): Promise<Response> {
+  private post(body: Record<string, string>): Promise<Response> {
     return this.deps.fetch(`${this.deps.edge}/auth/app/token`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(body).toString(),
       redirect: 'error',
     })
   }
@@ -177,6 +194,7 @@ export class Auth {
     try {
       const authorize = new URL(`${this.deps.edge}/auth/app/authorize`)
       authorize.search = new URLSearchParams({
+        response_type: 'code',
         redirect_uri: redirectUri,
         code_challenge: challenge,
         code_challenge_method: 'S256',
@@ -187,9 +205,9 @@ export class Auth {
       const res = await this.post({ grant_type: 'authorization_code', code: await code, code_verifier: verifier, redirect_uri: redirectUri })
       if (!res.ok) throw new Error(`Sign-in failed (${res.status})`)
       const reply = (await res.json()) as TokenReply
-      this.accept(reply, null)
-      for (const cb of this.listeners) cb(reply.principal)
-      return reply.principal
+      const principal = this.accept(reply)
+      for (const cb of this.listeners) cb(principal)
+      return principal
     } finally {
       if (this.signingIn?.server === server) this.signingIn = null
       server.close()
