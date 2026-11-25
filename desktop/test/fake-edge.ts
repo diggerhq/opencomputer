@@ -17,16 +17,21 @@ export type FakeEdge = {
   /** Access tokens are valid until this is bumped. */
   revokeAccess(): void
   revokeDevice(): void
+  /** The access token of a generation, shaped as the edge's: a JWT whose claims name the member. */
+  token(generation: number): string
   accessLifeSeconds: number
   close(): Promise<void>
 }
 
 export async function startFakeEdge(): Promise<FakeEdge> {
-  const principal = { org: 'org_test', subject: 'usr_test' }
+  // The subject is the member id of the token's `user_id`, as the edge maps it.
+  const principal = { org: 'org_test', subject: 'usr_01jtesttesttesttesttesttes' }
+  const claims = Buffer.from(JSON.stringify({ iss: 'opensandbox-app', org_id: 'org_test', user_id: 'user_01JTESTTESTTESTTESTTESTTES', dev: 'dev_1' })).toString('base64url')
+  const tokenOf = (g: number) => `eyJ0.${claims}.g${g}`
   const codes = new Map<string, { challenge: string; redirectUri: string }>()
   let refresh: string | null = null
   let generation = 0
-  const valid = (token: string | undefined) => token === `access.${generation}`
+  const valid = (token: string | undefined) => token === tokenOf(generation)
 
   const edge: FakeEdge = {
     url: '',
@@ -36,6 +41,7 @@ export async function startFakeEdge(): Promise<FakeEdge> {
     sockets: [],
     frames: [],
     accessLifeSeconds: 900,
+    token: tokenOf,
     revokeAccess: () => void generation++,
     revokeDevice: () => {
       refresh = null
@@ -47,7 +53,10 @@ export async function startFakeEdge(): Promise<FakeEdge> {
   const body = async (req: IncomingMessage) => {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
-    return JSON.parse(Buffer.concat(chunks).toString() || '{}') as Record<string, string>
+    const text = Buffer.concat(chunks).toString()
+    // The token route takes a form, as the edge does; the API takes JSON.
+    if (req.headers['content-type'] === 'application/x-www-form-urlencoded') return Object.fromEntries(new URLSearchParams(text))
+    return JSON.parse(text || '{}') as Record<string, string>
   }
 
   const server: Server = createServer(async (req, res) => {
@@ -59,7 +68,7 @@ export async function startFakeEdge(): Promise<FakeEdge> {
       // The real edge shows the sign-in here; the fake one is always signed in.
       const q = url.searchParams
       const redirectUri = q.get('redirect_uri') ?? ''
-      if (!/^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(redirectUri) || q.get('code_challenge_method') !== 'S256' || !q.get('code_challenge') || !q.get('state')) {
+      if (!/^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(redirectUri) || q.get('response_type') !== 'code' || q.get('code_challenge_method') !== 'S256' || !q.get('code_challenge') || !q.get('state')) {
         return json(400, { error: 'invalid_request' })
       }
       const code = randomUUID()
@@ -67,24 +76,26 @@ export async function startFakeEdge(): Promise<FakeEdge> {
       return res.writeHead(302, { location: `${redirectUri}?code=${code}&state=${encodeURIComponent(q.get('state')!)}` }).end()
     }
     if (url.pathname === '/auth/app/token' && req.method === 'POST') {
+      if (req.headers['content-type'] !== 'application/x-www-form-urlencoded') return json(400, { error: 'invalid_request' })
       const b = await body(req)
       if (b.grant_type === 'authorization_code') {
         const c = codes.get(b.code ?? '')
         codes.delete(b.code ?? '')
         const challenge = createHash('sha256').update(b.code_verifier ?? '').digest('base64url')
         if (!c || c.challenge !== challenge || c.redirectUri !== b.redirect_uri) return json(400, { error: 'invalid_grant' })
-        refresh = `refresh.${randomUUID()}`
       } else if (b.grant_type !== 'refresh_token' || !refresh || b.refresh_token !== refresh) {
-        return json(401, { error: 'invalid_grant' })
+        return json(400, { error: 'invalid_grant' })
       }
-      return json(200, { access_token: `access.${generation}`, expires_in: edge.accessLifeSeconds, refresh_token: refresh, device_id: 'dev_1', principal })
+      // The refresh token rotates on every use.
+      refresh = `ocr_${randomUUID()}`
+      return json(200, { access_token: tokenOf(generation), token_type: 'Bearer', expires_in: edge.accessLifeSeconds, refresh_token: refresh, device_id: 'dev_1' })
     }
     if (url.pathname.startsWith('/auth/app/devices/') && req.method === 'DELETE') {
       if (!valid(req.headers.authorization?.replace('Bearer ', ''))) return json(401, {})
       edge.revokeDevice()
       return res.writeHead(204).end()
     }
-    if (url.pathname.startsWith('/api/')) {
+    if (url.pathname.startsWith('/api/managed-agents/computer/')) {
       edge.apiHeaders.push(req.headers)
       if (!valid(req.headers.authorization?.replace('Bearer ', ''))) return json(401, { error: { code: 'unauthenticated' } })
       if (url.pathname.endsWith('/feed')) return json(200, { protocol: 1, rows: [], gone: [], to: 'f1.0', more: false, principal })
