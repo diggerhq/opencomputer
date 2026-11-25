@@ -11,7 +11,7 @@ Each session has an access setting that says who may see and drive it.
 | `people` | The owner and the people it is shared with |
 | `org` | Every member of the organization, the same way a Slack thread is shared within a channel |
 
-Sessions you start with `opc`, on the dashboard or over the API are `owner` unless your organization's admins chose `org` as the default. Sessions started in Slack follow the organization's Slack setting. Sessions created before access settings existed stay `org`.
+Sessions you start with `opc`, on the dashboard or over the API are `owner` unless your organization's admins chose `org` as the default (`apiAccessDefault`, `GET` and `PATCH /settings` in the API). Sessions created before access settings existed stay `org`. Sessions started in Slack show `owner` here, and who drives them is managed in their Slack thread: `opc access` cannot change them.
 
 Set it when you start a session, or change it later:
 
@@ -24,13 +24,15 @@ opc access 7f3a --add ada@acme.dev  # Ada too
 opc access 7f3a owner               # only you again
 ```
 
-`opc ls` shows each session's access. Members without access do not see the session in lists, and attaching, sending or opening a shell fails with `you don't have access to this session` (exit code `3`).
+You can share with people by user id or email. They must be members of your organization who have used OpenComputer there; anyone else is refused with exit code `2`.
+
+`opc ls` shows each session's access. To a member without access, the session does not exist: it is not in their lists, and anything else fails with `session_not_found` (exit code `2`), whose hint says it may not be shared with them.
 
 | Who | Can |
 | --- | --- |
 | Anyone with access | See it, attach, send messages, answer asks, change settings, read its history |
 | The owner and the people it is shared with | Also change who has access |
-| An organization admin | Change who has access. Not see or drive a session they do not have access to: they add themselves first. |
+| An organization admin | Change who has access. Not see or drive a session they do not have access to: they add themselves first, with `opc access <id> people <themselves> <the others>...`, since they cannot read the current list. |
 | An API key | What the member who created it can do |
 
 Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).

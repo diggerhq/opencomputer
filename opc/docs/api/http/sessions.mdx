@@ -25,7 +25,7 @@ curl -s "$API/sessions" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
 | `speed` | string, optional | `fast` or `standard`. Default: `fast`. |
 | `mode` | string, optional | A permission mode from `capabilities.modes`. Default: `bypassPermissions`, as for Slack sessions. |
 | `metadata` | object, optional | Your own labels: up to 20 keys of at most 40 characters, each a string of at most 500 characters. Filter lists by them. |
-| `access` | object, optional | `{ "mode": "owner" \| "org" \| "people", "people": [...] }`: who may see and drive the session, as in [`Session.access`](/api/reference/objects#session). `people`, only with `people`, lists user ids or the emails of members of your organization. Default: your organization's `apiAccessDefault` setting, `owner` unless an admin changed it. |
+| `access` | object, optional | `{ "mode": "owner" \| "org" \| "people", "people": [...] }`: who may see and drive the session, as in [`Session.access`](/api/reference/objects#session). `people`, only with `people`, lists up to 50 user ids or emails of members of your organization who have used OpenComputer there; anyone else is `400 invalid_request` with `field: "access.people"` and `reason: "unknown_member"`. Default: your organization's `apiAccessDefault` setting (`GET` and `PATCH /settings`), `owner` unless an admin changed it. |
 
 The response is `201`:
 
@@ -148,4 +148,4 @@ Fields you leave out are not changed. The response is `{ "session": …, "seq" }
 
 Changing `model` resets `effort` to the new model's default when the current effort is not one of its `efforts`. The response shows the result.
 
-Anyone with access to the session can update it. `access` may be changed only by the owner, the session's `people` and organization admins; anyone else gets `403 forbidden`. An admin who changes `access` does not get access by it: to see or drive an owner-only session, they add themselves to `people`. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.
+Anyone with access to the session can update it. `access` may be changed only by the owner, the session's `people` and organization admins; anyone else who may use the session gets `403 forbidden` with `reason: "not_member"`, and to anyone who may not, the session is `404 session_not_found`. A Slack session's access is managed in its thread: `403 forbidden` with `reason: "access_in_slack"`. An admin who changes `access` does not get access by it: to see or drive an owner-only session, they add themselves to `people`. An admin who may not use the session may send only `access`, and gets `{ "session": null, "access", "canManageAccess", "seq" }`. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.

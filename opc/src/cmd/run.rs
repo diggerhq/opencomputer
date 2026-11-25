@@ -130,7 +130,7 @@ pub async fn create(ctx: &Ctx, id: &str, new: &NewSession, input: Option<&str>) 
     let started = Instant::now();
     let with_input = if new.push.is_empty() { input } else { None };
     let body = create_body(id, new, with_input);
-    let got = ctx.http.post("/sessions", &body, Some(&derived_key(key, "create"))).await?;
+    let got = ctx.http.post("/sessions", &body, Some(&derived_key(key, "create"))).await.map_err(crate::error::access_change)?;
     crate::timing::get().mark_create(started.elapsed());
     let created: Created = serde_json::from_value(got).map_err(|e| Error::new("internal", format!("the API returned a session opc cannot read: {e}")))?;
     let sid = created.session.id.clone();

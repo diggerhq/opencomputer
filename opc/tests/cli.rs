@@ -532,8 +532,10 @@ fn access_shows_and_changes_who_may_use_a_session() {
     assert_eq!(fake.session(&sid)["access"]["mode"], "owner");
     assert!(!o.stderr.contains("secrets"), "{}", o.stderr);
 
-    let o = run(&fake, &["access", &sid, "people", "nobody@example.com"]);
+    let o = run(&fake, &["access", &sid, "people", "nobody@example.com", "--json"]);
     assert_eq!(o.code, 2, "{}", o.stderr);
+    assert_eq!(o.err_json()["error"]["reason"], "unknown_member");
+    assert!(o.err_json()["error"]["hint"].as_str().unwrap().contains("have used OpenComputer"), "{}", o.stderr);
 
     let o = run(&fake, &["ls"]);
     assert!(o.stdout.contains("ACCESS") && o.stdout.contains("owner only"), "{}", o.stdout);
@@ -558,10 +560,11 @@ fn access_refused_says_who_may_change_it() {
 fn a_session_you_cannot_use_says_so() {
     let fake = Fake::start();
     let sid = fake.seed_session(Seed::new("s"));
-    fake.fail_next("POST /sessions/*/turns", 1, Failure::new(403, "forbidden").with("reason", "not_member"));
+    // The server says a session that isn't shared with you does not exist.
+    fake.fail_next("POST /sessions/*/turns", 1, Failure::session_not_found());
     let o = run(&fake, &["send", "-s", &sid, "hi"]);
-    assert_eq!(o.code, 3, "{}", o.stderr);
-    assert!(o.stderr.contains("you don't have access to this session"), "{}", o.stderr);
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    assert!(o.stderr.contains("isn't shared with you"), "{}", o.stderr);
 }
 
 #[test]

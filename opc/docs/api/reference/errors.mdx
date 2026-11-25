@@ -24,7 +24,7 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 
 | Status | Code | Extra fields | Means |
 | --- | --- | --- | --- |
-| `400` | `invalid_request` | `field` | A parameter is missing, has the wrong type or is out of range, or the request has a field the route does not know |
+| `400` | `invalid_request` | `field`, `reason` | A parameter is missing, has the wrong type or is out of range, or the request has a field the route does not know. `reason: "unknown_member"` with `field: "access.people"` for someone who is not a member of the organization who has used OpenComputer |
 | `400` | `unsupported_model` | `field` | The model is not in the session's [capabilities](/api/reference/objects#capabilities) `models` |
 | `400` | `unsupported_effort` | `field` | The model does not accept that effort |
 | `400` | `unsupported_mode` | `field` | The permission mode is not in `capabilities.modes` |
@@ -36,10 +36,10 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 | `400` | `invalid_cursor` | | The cursor is unreadable, or was made with other filters |
 | `401` | `unauthenticated` | | No key, an unknown key, an expired key or a revoked one |
 | `402` | `insufficient_credits` | | Your organization is out of credits |
-| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a session attached read-only, or a connection opened with a read-only ticket; `terminal_owner_only` when someone other than the session's owner or an admin opens a [terminal](/api/websocket/terminals); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route; `not_member` when the caller is not among the people who may use the session (see [`Session.access`](/api/reference/objects#session)). |
+| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a session attached read-only, or a connection opened with a read-only ticket; `terminal_owner_only` when someone other than the session's owner or an admin opens a [terminal](/api/websocket/terminals); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route; `not_member` when the caller may use the session but not change its `access`; `access_in_slack` when changing the access of a Slack session, which is managed in its thread (see [`Session.access`](/api/reference/objects#session)). |
 | `403` | `admin_required` | | Only admins can do this |
 | `404` | `not_found` | | No such route |
-| `404` | `session_not_found` | | No such session, or you cannot see it |
+| `404` | `session_not_found` | | No such session, or its `access` does not include you. The two cases are not distinguished |
 | `404` | `turn_not_found`, `ask_not_found`, `subagent_not_found`, `path_not_found`, `secret_not_found` | | |
 | `409` | `id_conflict` | | The session `id` chosen on create is taken by another session |
 | `409` | `idempotency_conflict` | | The key was used for a different request |

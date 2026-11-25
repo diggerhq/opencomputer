@@ -146,18 +146,28 @@ impl Error {
     }
 }
 
-/// `forbidden` reasons about the credential rather than the session's access
-/// (`docs/api/reference/errors.mdx`).
-pub fn is_credential_reason(reason: Option<&str>) -> bool {
-    matches!(reason, Some("project_key" | "missing_scope" | "read_only" | "terminal_owner_only" | "computer_principal"))
+/// A session route's `session_not_found`: the server answers the same way when
+/// the session exists but is not shared with the caller.
+pub fn session_access(mut e: Error) -> Error {
+    if e.code == "session_not_found" {
+        e.hint.get_or_insert_with(|| "if it exists, it isn't shared with you: ask its owner to run opc access".into());
+    }
+    e
 }
 
-/// A `forbidden` from a session's route that is not about the credential: the
-/// caller is not among the people who may use the session.
-pub fn session_access(mut e: Error) -> Error {
-    if e.code == "forbidden" && !is_credential_reason(e.extra.get("reason").and_then(Value::as_str)) {
-        e.message = "you don't have access to this session".into();
-        e.hint.get_or_insert_with(|| "ask its owner to share it with you".into());
+/// A refused change of a session's access says why.
+pub fn access_change(mut e: Error) -> Error {
+    match (e.code.as_str(), e.extra.get("reason").and_then(Value::as_str)) {
+        ("forbidden", Some("not_member")) => {
+            e.message = "you can't change who may use this session: only its owner, the people it is shared with and organization admins can".into();
+        }
+        ("forbidden", Some("access_in_slack")) => {
+            e.message = "this session belongs to a Slack thread: change who drives it there".into();
+        }
+        ("invalid_request", Some("unknown_member")) => {
+            e.hint.get_or_insert_with(|| "share with people in your organization who have used OpenComputer, by user id or email".into());
+        }
+        _ => {}
     }
     e
 }
@@ -253,10 +263,16 @@ mod tests {
     }
 
     #[test]
-    fn session_forbidden_says_no_access() {
-        let e = session_access(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "not_member"}})));
-        assert_eq!((e.message.as_str(), e.exit_code()), ("you don't have access to this session", exit::AUTH));
-        let e = session_access(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "missing_scope"}})));
+    fn session_errors_say_what_access_allows() {
+        let e = session_access(Error::from_api(404, &json!({"error": {"code": "session_not_found", "message": "m"}})));
+        assert!(e.hint.as_deref().unwrap().contains("isn't shared with you"), "{e:?}");
+        let e = access_change(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "not_member"}})));
+        assert!(e.message.contains("only its owner"));
+        assert_eq!(e.exit_code(), exit::AUTH);
+        let e = access_change(Error::from_api(400, &json!({"error": {"code": "invalid_request", "message": "m", "field": "access.people", "reason": "unknown_member"}})));
+        assert_eq!((e.message.as_str(), e.exit_code()), ("m", 2));
+        assert!(e.hint.is_some());
+        let e = access_change(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "missing_scope"}})));
         assert_eq!(e.message, "m");
     }
 

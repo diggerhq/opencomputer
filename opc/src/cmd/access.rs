@@ -90,7 +90,16 @@ pub async fn run(ctx: &mut Ctx, a: AccessArgs) -> Result<i32> {
     if mode != "owner" {
         ctx.note(SHARED_WARNING);
     }
-    let got = ctx.http.patch(&session_path(&sid, ""), &body).await.map_err(manage_error)?;
+    let got = ctx.http.patch(&session_path(&sid, ""), &body).await.map_err(crate::error::access_change)?;
+    // An admin who may change the access but not use the session gets no
+    // session back, only its access.
+    if got.get("session").is_some_and(Value::is_null) {
+        let mut session = Session { id: sid, ..Default::default() };
+        session.access = serde_json::from_value(got.get("access").cloned().unwrap_or_default()).ok();
+        session.can_manage_access = got.get("canManageAccess").and_then(Value::as_bool);
+        print(ctx, &session, a.json);
+        return Ok(0);
+    }
     let session = read_session(&got)?;
     crate::cache::upsert_session(ctx.http.api_url(), &session);
     print(ctx, &session, a.json);
@@ -108,14 +117,6 @@ fn read_session(got: &Value) -> Result<Session> {
 
 fn unsupported() -> Error {
     Error::new("feature_unavailable", "this computer does not report who may use a session yet")
-}
-
-/// A refused change says who may make it.
-fn manage_error(e: Error) -> Error {
-    if e.code == "forbidden" && !crate::error::is_credential_reason(e.extra.get("reason").and_then(Value::as_str)) {
-        return Error { message: "you can't change who may use this session: only its owner, the people it is shared with and organization admins can".into(), ..e };
-    }
-    e
 }
 
 fn print(ctx: &Ctx, s: &Session, as_json: bool) {

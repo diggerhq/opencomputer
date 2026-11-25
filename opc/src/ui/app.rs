@@ -617,7 +617,7 @@ impl<'a> App<'a> {
             }
             let mut attempt = 0u32;
             let session = loop {
-                match ctx.http.post("/sessions", &body, Some(&format!("{}:create", c.key))).await {
+                match ctx.http.post("/sessions", &body, Some(&format!("{}:create", c.key))).await.map_err(crate::error::access_change) {
                     Ok(v) => break Ok(v),
                     Err(e) if e.retryable && attempt < 40 => {
                         attempt += 1;

@@ -559,7 +559,7 @@ fn access_of(v: Option<&Value>) -> ApiResult<Option<Value>> {
     let mut people = Vec::new();
     for p in given {
         let Some(m) = members.iter().find(|m| m["id"] == p || m["email"] == p) else {
-            return Err(ApiErr::bad("access.people", format!("{p} is not a member of this organization")));
+            return Err(ApiErr::bad("access.people", format!("{p} is not a member of this organization who has used OpenComputer")).with("reason", "unknown_member"));
         };
         people.push(m["id"].clone());
     }
