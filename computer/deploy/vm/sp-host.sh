@@ -240,6 +240,22 @@ run_dirs_as_is() {
   if [[ -f $MARK ]]; then run_dirs "$HOST_USER"; else run_dirs "$AGENT_USER"; fi
 }
 
+# A new computer (provision.sh, while there is no host.env: its host has never run, so no runner can be running):
+# migrated to sp-host and podman (work 103; the marker line is ONE-TIME), unless a marker already says otherwise.
+# If `apply` fails it starts unmigrated and systemd rather than not at all: podman needs the host as sp-host.
+new_apply() { bash "$0" apply; }
+new_computer() {
+  install -d -m 0755 "$ETC"; touch "$MARK"
+  [[ -n $(launch_marker) ]] || echo podman > "$LAUNCH_MARK"
+  new_apply && return 0
+  echo "sp-host: could not start this computer's host as $HOST_USER; it runs as $AGENT_USER, under systemd" >&2
+  rm -f "$MARK" "$DROPIN"
+  [[ $(launch_marker) != podman ]] || rm -f "$LAUNCH_MARK"
+  systemctl daemon-reload
+  run_dirs_as_is
+  chown -R "$AGENT_USER:$AGENT_USER" "$DATA/state" "$SP_RUN/traces" 2>/dev/null || true
+}
+
 host_user() { ps -o user= -p "$(systemctl show -p MainPID --value "$UNIT")" 2>/dev/null || true; }
 
 # Up as `want` and not restarted in the 10 s after (a crash restarts it within 2 s).
@@ -281,7 +297,9 @@ status() {
 
 # ---- ONE-TIME systemd->podman migration (work 103). Delete in step 11 (with the `launch` verb in opencomputer-deploy).
 # The marker says what the host's SP_LAUNCH is on this computer; `apply` writes it into the drop-in, so
-# provision.sh (which re-runs `apply`) keeps it. No marker: no SP_LAUNCH, the code's default (systemd).
+# provision.sh (which re-runs `apply`) keeps it. No marker: no SP_LAUNCH, the code's default (systemd). Only a new
+# computer gets one by itself (new_computer): a host without one may run systemd runners, which only a drain
+# (`launch podman`) leaves behind safely, so it stays systemd, with a note at every `apply`.
 launch_marker() {
   local v
   [[ -f $LAUNCH_MARK ]] || return 0
@@ -289,6 +307,10 @@ launch_marker() {
   case $v in podman|systemd) echo "$v" ;; *) echo "sp-host: ignoring $LAUNCH_MARK: '$v' is not podman or systemd" >&2 ;; esac
 }
 launch_env() { local v; v=$(launch_marker); [[ -z $v ]] || echo "Environment=SP_LAUNCH=$v"; }
+launch_note() {
+  [[ -z $(launch_marker 2>/dev/null) ]] || return 0
+  echo "sp-host: no $LAUNCH_MARK: this host stays systemd; \`sp-host.sh launch podman\` switches it, drained" >&2
+}
 
 # The process running src/host/main.ts in the unit, or nothing.
 launch_host_pid() {
@@ -332,6 +354,7 @@ launch_podman() { runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR="/run/user/$AG
 # Containers: thread (a record that is not `unclaimed`) or spare. Unmigrated threads: forks with no record (legacy-migration/migrate.ts migrates them on their next message).
 launch_status() {
   local pid running ids id rec spares=0 threads=0 forks=0 unmigrated=0 migrated f p
+  AGENT_UID=${AGENT_UID:-$(id -u "$AGENT_USER")}
   pid=$(launch_host_pid)
   running=$(launch_running)
   if [[ -z $pid ]]; then echo "launch running: none (the host is not running)"
@@ -447,7 +470,8 @@ case "${1:-}" in
       exit 1
     fi
     ;;
-  apply) if [[ -f $MARK ]]; then apply; fi ;;
+  apply) if [[ -f $MARK ]]; then apply; launch_note; fi ;;
+  new) new_computer ;;
   _apply) apply ;;
   revert) log "reverting the host agent to $AGENT_USER"; revert; status ;;
   status) status ;;
@@ -458,5 +482,5 @@ case "${1:-}" in
       status) launch_status ;;
       *) echo "usage: sp-host.sh launch podman|systemd|status" >&2; exit 2 ;;
     esac ;;
-  *) echo "usage: sp-host.sh migrate|revert|status|apply|run-dirs|launch" >&2; exit 2 ;;
+  *) echo "usage: sp-host.sh migrate|revert|status|apply|new|run-dirs|launch" >&2; exit 2 ;;
 esac

@@ -837,17 +837,11 @@ runuser -u "$AGENT_USER" -- env XDG_RUNTIME_DIR=/run/user/"$AGENT_UID" systemctl
 
 # A computer migrated to sp-host (work 077) stays migrated: its users, sudoers and drop-in, re-applied.
 # The host already runs as sp-host here, so nothing changes hands under it: the chowns in `apply` change nothing.
-# A new computer (no host.env yet: its host has never run) starts migrated; a reverted one stays reverted.
-# If that fails, the new computer starts unmigrated rather than not at all (the sp-host workflow migrates it later).
+# A new computer (no host.env yet: its host has never run) starts migrated and podman (sp-host.sh `new`); a
+# reverted one stays reverted, and one without an SP_LAUNCH marker stays systemd (its runners need a drain).
+# If that fails, the new computer starts unmigrated and systemd rather than not at all (the workflows move it later).
 if [[ ! -f $HOST_ENV ]]; then
-  install -d -m 0755 "$ETC"; touch "$ETC/host-user-sp-host"
-  if ! AGENT_USER="$AGENT_USER" SP_RUN="$SP_RUN" SP_DATA="$DATA" bash "$SP_CURRENT/deploy/vm/sp-host.sh" apply; then
-    warn "could not start this computer's host as sp-host; it runs as $AGENT_USER"
-    rm -f "$ETC/host-user-sp-host" /etc/systemd/system/slack-presence-host.service.d/20-sp-host.conf
-    systemctl daemon-reload
-    AGENT_USER="$AGENT_USER" SP_RUN="$SP_RUN" bash "$SP_CURRENT/deploy/vm/sp-host.sh" run-dirs
-    chown -R "$AGENT_USER:$AGENT_USER" "$DATA/state" "$SP_RUN/traces" 2>/dev/null || true
-  fi
+  AGENT_USER="$AGENT_USER" SP_RUN="$SP_RUN" SP_DATA="$DATA" bash "$SP_CURRENT/deploy/vm/sp-host.sh" new
 fi
 AGENT_USER="$AGENT_USER" SP_RUN="$SP_RUN" SP_DATA="$DATA" bash "$SP_CURRENT/deploy/vm/sp-host.sh" apply
 
