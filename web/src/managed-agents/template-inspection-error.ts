@@ -8,6 +8,12 @@ export function templateInspectionError(error: unknown) {
         'This repository does not contain oc-template.toml at its root.',
     }
   }
+  if (error instanceof ApiError && error.type === 'template_build_failed') {
+    return {
+      title: 'Template preparation failed',
+      description: error.message,
+    }
+  }
   return {
     title: 'This template could not be inspected',
     description:
