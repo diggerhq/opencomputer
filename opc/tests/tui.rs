@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use support::{Fake, Seed};
@@ -17,6 +18,8 @@ struct Pty {
     child: Child,
     master: std::fs::File,
     out: Arc<Mutex<Vec<u8>>>,
+    /// The reader has seen the end of opc's output.
+    eof: Arc<AtomicBool>,
 }
 
 impl Pty {
@@ -61,7 +64,8 @@ impl Pty {
         let child = c.spawn().expect("spawn opc");
         let master = std::fs::File::from(master);
         let out = Arc::new(Mutex::new(Vec::new()));
-        let (mut rd, mut wr, o2) = (master.try_clone().unwrap(), master.try_clone().unwrap(), out.clone());
+        let eof = Arc::new(AtomicBool::new(false));
+        let (mut rd, mut wr, o2, e2) = (master.try_clone().unwrap(), master.try_clone().unwrap(), out.clone(), eof.clone());
         std::thread::spawn(move || {
             let mut buf = [0u8; 65536];
             while let Ok(n) = rd.read(&mut buf) {
@@ -74,8 +78,9 @@ impl Pty {
                 }
                 o2.lock().unwrap().extend_from_slice(&buf[..n]);
             }
+            e2.store(true, Ordering::SeqCst);
         });
-        Pty { child, master, out }
+        Pty { child, master, out, eof }
     }
 
     /// Everything printed so far, escape sequences removed.
@@ -108,6 +113,13 @@ impl Pty {
         panic!("the reply {what:?} never appeared on the screen:\n{}", self.screen());
     }
 
+    /// Waits for the status line to say `status` (`idle`: connected, nothing
+    /// running). The prompt is drawn while still connecting, so what follows
+    /// it on the screen is not settled until then.
+    fn wait_status(&self, status: &str) {
+        self.wait_for(&format!("● {status}"));
+    }
+
     fn keys(&mut self, k: &[u8]) {
         self.master.write_all(k).unwrap();
         self.master.flush().unwrap();
@@ -123,6 +135,15 @@ impl Pty {
         }
         let _ = self.child.kill();
         panic!("opc did not exit:\n{}", self.screen());
+    }
+
+    /// Waits for the reader to have all of opc's output, after it exited.
+    fn wait_eof(&self) {
+        let end = Instant::now() + T;
+        while !self.eof.load(Ordering::SeqCst) {
+            assert!(Instant::now() < end, "opc's output never ended");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -215,8 +236,7 @@ fn new_session_replies_and_detaches() {
 fn typed_message_is_sent_as_a_turn() {
     let fake = Fake::start();
     let mut p = Pty::spawn(&fake, &[]);
-    p.wait_for("type a message");
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_status("idle");
     p.keys(b"reply typed and sent\r");
     let sid = only_session(&fake);
     p.wait_reply("typed and sent");
@@ -249,8 +269,9 @@ fn attach_shows_history_and_ctrl_c_twice_detaches() {
     let sid = fake.seed_session(Seed { turns: vec!["reply the earlier answer".into()], ..Seed::new("seeded") });
     let mut p = Pty::spawn(&fake, &["a", &sid]);
     p.wait_for("the earlier answer");
+    p.wait_status("idle");
     p.keys(b"\x03");
-    std::thread::sleep(Duration::from_millis(100));
+    p.wait_for("press Ctrl+C again to detach");
     p.keys(b"\x03");
     assert_eq!(p.wait_exit(), 0);
     p.wait_for("[detached from \"seeded\"");
@@ -282,7 +303,7 @@ fn esc_interrupts_the_running_turn() {
         let sid = sid.clone();
         move |w| w.sess(&sid).is_ok_and(|s| s.active().is_some())
     }));
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_status("running");
     p.keys(b"\x1b");
     assert!(fake.wait_idle(&sid, T), "Esc did not interrupt:\n{}", p.screen());
     let t = fake.turns(&sid).pop().unwrap();
@@ -296,11 +317,12 @@ fn sigterm_and_sighup_put_the_terminal_back() {
     for (sig, code) in [(libc::SIGTERM, 143), (libc::SIGHUP, 129)] {
         let fake = Fake::start();
         let mut p = Pty::spawn(&fake, &[]);
-        p.wait_for("type a message");
+        // Connected: opc is in its loop, so its signal handlers are in place.
+        p.wait_status("idle");
         // SAFETY: a plain kill(2) to our own child.
         assert_eq!(unsafe { libc::kill(p.child.id() as i32, sig) }, 0);
         assert_eq!(p.wait_exit(), code);
-        std::thread::sleep(Duration::from_millis(100));
+        p.wait_eof();
         let raw = String::from_utf8_lossy(&p.out.lock().unwrap()).to_string();
         let (on, off) = (raw.rfind("\x1b[?2004h").unwrap(), raw.rfind("\x1b[?2004l").expect("bracketed paste off"));
         assert!(off > on, "bracketed paste left on: {raw:?}");
@@ -312,23 +334,26 @@ fn sigterm_and_sighup_put_the_terminal_back() {
 fn a_narrower_window_erases_the_reflowed_live_area() {
     let fake = Fake::start();
     let mut p = Pty::spawn(&fake, &[]);
-    p.wait_for("type a message");
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_status("idle");
     let before = p.out.lock().unwrap().len();
     let ws = libc::winsize { ws_row: 40, ws_col: 60, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCSWINSZ on our pty master; the kernel sends SIGWINCH.
     assert_eq!(unsafe { libc::ioctl(p.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) }, 0);
+    // Each redraw is one synchronized frame (`?2026h` … `?2026l`). One still
+    // 120 columns wide may come before opc reads the new size: look for the
+    // first frame drawn at 60.
+    let rule = format!("J{}\r\n", "─".repeat(60));
     let end = Instant::now() + T;
-    let raw = loop {
+    let frame = loop {
         let raw = String::from_utf8_lossy(&p.out.lock().unwrap()[before..]).to_string();
-        if raw.contains("\x1b[?2026l") || Instant::now() > end {
-            break raw;
+        if let Some(f) = raw.split("\x1b[?2026h").find(|f| f.contains(&rule) && f.contains("\x1b[?2026l")) {
+            break f.to_string();
         }
+        assert!(Instant::now() < end, "no frame 60 columns wide: {raw:?}");
         std::thread::sleep(Duration::from_millis(20));
     };
-    assert!(raw.contains(&format!("J{}\r\n", "─".repeat(60))), "{raw:?}");
     // The 120-column rule above the prompt now takes two lines.
-    assert!(raw.starts_with("\x1b[?2026h\r\x1b[2A\x1b[J"), "{raw:?}");
+    assert!(frame.starts_with("\r\x1b[2A\x1b[J"), "{frame:?}");
     p.keys(b"\x04");
     assert_eq!(p.wait_exit(), 0);
 }
@@ -347,8 +372,7 @@ fn telemetry(fake: &Fake, name: &str) -> Vec<serde_json::Value> {
 fn telemetry_measures_enter_to_first_output_once_per_turn() {
     let fake = Fake::start();
     let mut p = Pty::spawn(&fake, &[]);
-    p.wait_for("type a message");
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_status("idle");
     p.keys(b"reply typed and sent\r");
     let sid = only_session(&fake);
     p.wait_reply("typed and sent");
@@ -396,7 +420,7 @@ fn telemetry_measures_an_answer_and_an_interrupt() {
         let sid = sid.clone();
         move |w| w.sess(&sid).is_ok_and(|s| s.active().is_some())
     }));
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_status("running");
     p.keys(b"\x1b");
     assert!(fake.wait_idle(&sid, T));
     p.wait_for("interrupted");
