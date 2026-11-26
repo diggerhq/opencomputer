@@ -5,7 +5,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from 'react'
-import { ArrowLeft, ArrowRight, Loader2, RotateCw, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCw, X } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { mintTerminalTicket, resumeSession } from '../computer-sessions-api'
@@ -17,6 +17,7 @@ import {
   type BrowserInput,
   type BrowserPageState,
 } from './browser-wire'
+import { AppStatus } from './AppStatus'
 import type { TerminalState } from './terminal-wire'
 import type { SidebarTabProps } from './sidebar-tabs'
 
@@ -242,7 +243,8 @@ export function SessionBrowser({ sessionId: id }: SidebarTabProps) {
           {open ? (
             <span role="alert">{pageError}</span>
           ) : (
-            <Status
+            <AppStatus
+              starting="Starting the browser…"
               state={state}
               waking={waking}
               onWake={() => void wake()}
@@ -322,67 +324,5 @@ function NavButton({
     >
       {children}
     </Button>
-  )
-}
-
-function Status({
-  state,
-  waking,
-  onWake,
-  onReconnect,
-}: {
-  state: TerminalState
-  waking: boolean
-  onWake: () => void
-  onReconnect: () => void
-}) {
-  if (waking) return <Line text="Waking the session…" />
-  switch (state.kind) {
-    case 'connecting':
-      return <Line text="Starting the browser…" />
-    case 'waking-computer':
-      return <Line text="Waking the computer…" />
-    case 'open':
-      return null
-    case 'not-running':
-      return (
-        <>
-          <span>The session is not running.</span>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-6 px-2 text-xs"
-            onClick={onWake}
-          >
-            Wake it
-          </Button>
-        </>
-      )
-    case 'ended':
-    case 'error':
-      return (
-        <>
-          <span role={state.kind === 'error' ? 'alert' : undefined}>
-            {state.message}
-          </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-6 px-2 text-xs"
-            onClick={onReconnect}
-          >
-            Reconnect
-          </Button>
-        </>
-      )
-  }
-}
-
-function Line({ text }: { text: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <Loader2 className="size-3 animate-spin" aria-hidden />
-      {text}
-    </span>
   )
 }

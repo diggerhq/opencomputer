@@ -21,6 +21,7 @@
     "@ai-sdk/react": "^4.0.50",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@fontsource-variable/inter": "^5.2.8",
+    "@novnc/novnc": "1.7.0",
     "@posthog/react": "^1.10.3",
     "@tanstack/react-query": "^5.101.1",
     "@xterm/addon-fit": "^0.11.0",

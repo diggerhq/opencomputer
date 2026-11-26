@@ -11,7 +11,7 @@
 import { Schema } from 'effect';
 import { Delta, Event } from './schema-events.js';
 import {
-  ApiError, ApprovalAnswer, Ask, AskId, Capabilities, Count, IfBusy, QuestionAnswer, Seq, Session, SessionId, Speed, Subagent, SubagentId, TerminalId, BrowserId, Turn, TurnId,
+  ApiError, ApprovalAnswer, Ask, AskId, Capabilities, Count, IfBusy, QuestionAnswer, Seq, Session, SessionId, Speed, Subagent, SubagentId, TerminalId, BrowserId, DesktopId, Turn, TurnId,
 } from './schema-objects.js';
 
 const Key = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255));
@@ -136,6 +136,9 @@ export const METHODS = {
   // The session's headless browser (host/browser-cdp.py), one per session, on one channel: JSON lines in, `type|u32 len|payload` records out.
   'browsers.open': { params: Schema.Struct({ ...sid }), result: Schema.Struct({ browser: Schema.Struct({ id: BrowserId, channel: Count }) }), http: '-' },
   'browsers.close': { params: Schema.Struct({ browserId: BrowserId }), result: Schema.Struct({}), http: '-' },
+  // The session's X desktop (host/desktop-x11.py), one per session, on one channel: VNC (RFB 3.8, no authentication: the wire did it) both ways.
+  'desktops.open': { params: Schema.Struct({ ...sid }), result: Schema.Struct({ desktop: Schema.Struct({ id: DesktopId, channel: Count }) }), http: '-' },
+  'desktops.close': { params: Schema.Struct({ desktopId: DesktopId }), result: Schema.Struct({}), http: '-' },
   ping: { params: Schema.Struct({}), result: Schema.Struct({ timing: Timing }), http: '-' },
 } as const;
 
@@ -146,7 +149,7 @@ export type ResultOf<M extends Method> = (typeof METHODS)[M]['result']['Type'];
 /** Methods that change a session: refused on a read-only connection, keyed for idempotency. */
 export const WRITES: ReadonlySet<Method> = new Set<Method>([
   'sessions.update', 'sessions.interrupt', 'sessions.compact', 'sessions.suspend', 'sessions.resume',
-  'turns.send', 'turns.cancel', 'asks.answer', 'asks.dismiss', 'subagents.stop', 'terminals.open', 'browsers.open',
+  'turns.send', 'turns.cancel', 'asks.answer', 'asks.dismiss', 'subagents.stop', 'terminals.open', 'browsers.open', 'desktops.open',
 ]);
 
 /** Methods a session's writer answers (the rest are the relay's own). */
@@ -213,6 +216,10 @@ export const NOTIFICATIONS = {
   'browser.exited': Schema.Struct({
     browserId: BrowserId,
     // As terminal.exited's: idle (no input past the timeout) or access_lost.
+    reason: Schema.optionalKey(Schema.Literals(['idle', 'access_lost'])),
+  }),
+  'desktop.exited': Schema.Struct({
+    desktopId: DesktopId,
     reason: Schema.optionalKey(Schema.Literals(['idle', 'access_lost'])),
   }),
 } as const;

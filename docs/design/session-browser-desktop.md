@@ -1,6 +1,6 @@
 # Browser and Virtual Desktop for sessions
 
-Status: Browser implemented behind flags (this PR); Desktop designed, not built.
+Status: Browser and Desktop implemented, each behind its own flags (Browser in #1162, Desktop in the PR stacked on it).
 Stacked on #1068 and #1101 (web terminal and the session sidebar).
 
 ## Goal
@@ -8,8 +8,8 @@ Stacked on #1068 and #1101 (web terminal and the session sidebar).
 Someone watching a session in the dashboard can see and drive what the agent
 builds: open the dev server the session runs on `localhost:3000`, click
 through it, log in somewhere, look at a page the agent is scraping. Today the
-sidebar has a Terminal; this adds a **Browser** tab, and lays out a
-**Desktop** tab (a full X display) as the next step.
+sidebar has a Terminal; this adds a **Browser** tab and a
+**Desktop** tab (a full X display).
 
 Non-goals for now: letting the agent and the person share one browser (the
 agent's own Playwright runs are separate), recording, multiple viewers of one
@@ -145,45 +145,70 @@ CPU is % of one core and includes page rendering. PSS is the sum over Chromium's
 - Web: `browser-wire.test.ts` (record reassembly across frames, the open/exit/refusal flow, key mapping) and `SessionSidebar.test.tsx` (the tab only with `features.browser`).
 - End to end, local: the dashboard (preview build, `VITE_PREVIEW_WIRE_URL`) → a stand-in for the wire Worker that signs edge headers → **the real relay** → a fake host link answering with **the real host `Terminals`** → **real `terminal-pty.py` → `browser-cdp.py` → headless Chromium** (local Playwright build) → a dev server on `localhost:3000`. Navigation, history, clicks, typing, Enter, wheel scroll and teardown were all checked. The measurements above ran the helper in the real session image. Not covered end to end: `podman exec` into a live session container on a hosted computer, and the managed-agents Worker.
 
-## Desktop (planned)
+## Desktop
 
 A full X desktop for apps that are not a browser page (Electron, a native GUI,
 a headed Playwright run the person wants to watch).
 
 ### Shape
 
-Inside the session's container, started lazily by the first `desktops.open`:
+The browser's pattern again: `desktops.open` is a terminal without a tty whose
+host-fixed command is `exec python3 -I host/desktop-x11.py`, so it gets the
+terminal's access checks, socket, backpressure, hang-up and idle exemption.
+Ids are `dk_…`; one desktop per session (`too_many_desktops`), apart from the
+8 terminals and the browser.
 
-- `Xvfb :N -screen 0 WxHx24 -nolisten tcp` (already in the image via Playwright's `--with-deps`);
-- `openbox` as the window manager;
-- `x11vnc -display :N -localhost -shared -forever -rfbport <p>`: VNC on the container's loopback only.
+`desktop-x11.py`, in the session's container:
 
-The bridge is the browser's pattern again: `desktops.open` is a terminal
-without a tty whose host-fixed command is a small helper
-(`host/desktop-vnc.py`). It starts or joins the display, then pipes the VNC
-TCP stream to its stdio, so RFB bytes ride one relay channel. The dashboard
-tab runs **noVNC**'s RFB client over an adapter that looks like a WebSocket
-but sends and receives channel frames. noVNC accepts any object with the
-WebSocket interface. No websockify and no new port.
+- Starts the display on the first open: `Xvfb :73 -screen 0 1280x800x24 -nolisten tcp`, then `openbox` when the image has it, both in their own session (`setsid`). The display **outlives the viewer**: apps on `DISPLAY=:73` keep running and the next open shows them. It ends with the container. A stale `/tmp/.X73-lock` is cleared; readiness is checked on the abstract socket, since a rootless container cannot create `/tmp/.X11-unix`.
+- Serves each viewer with `x11vnc -inetd -nopw` on one end of a socket pair and copies the other end to and from its stdio. x11vnc reads *and writes* fd 0, so plain pipes do not work. No TCP port anywhere; the wire authenticated the viewer.
+- x11vnc dies with the helper (`PR_SET_PDEATHSIG`); the helper ends on stdin's end, x11vnc's end, or the hang-up's SIGHUP/SIGTERM.
+- Without Xvfb or x11vnc in the image, it answers with an RFB 3.8 refusal (no security types, with a reason), which the tab shows: the current production image degrades to a message, not a hang.
 
-`DISPLAY=:N` is exported to the session (or written to a file the agent can
-read), so the agent can start GUI apps on the display the person watches.
+`OPC_DESKTOP_DISPLAY` and `OPC_DESKTOP_SIZE` override `:73` and `1280x800`.
+The agent can start GUI apps with `DISPLAY=:73`; telling it so (env or system
+prompt) is a follow-up.
+
+**Idle.** A VNC viewer sends FramebufferUpdateRequests continuously, so "any
+input" would keep a desktop alive forever. For desktops the relay
+(`wire/rfb-input.ts`) parses the client's RFB stream and counts only key,
+pointer, cut-text and QEMU input events as activity; the 15-minute idle close
+then works as for terminals.
+
+**Dashboard.** The Desktop tab (`SessionDesktop.tsx`, lazy, 58 KB gzipped) runs
+noVNC 1.7.0's `RFB` over `RfbChannel` (`desktop-wire.ts`), an object with the
+WebSocket interface noVNC accepts in place of a URL, whose bytes are channel
+frames. No websockify. The view is scaled to the tab; the session is not
+resized. Dialling, wake and refusals are shared with the Browser
+(`app-wire.ts`).
+
+**Switches.** Host `SP_SESSION_DESKTOP=1` (enforcement, default off;
+`desktop_unavailable` otherwise) and capability `features.desktop` (the tab's
+visibility). `desktops.*` reuse the `terminals` scope.
+
+**Image.** `deploy/image/Containerfile` adds `x11vnc openbox` (Xvfb is already
+there via Playwright's deps). CI builds it only as the test computers'
+`:branch-…` image; production images are unchanged until released.
 
 ### Measured
 
 - Image: **+75.6 MB** for `x11vnc openbox xterm` on top of the current image (3.78 → 3.86 GB).
 - Idle Xvfb 1280×800 + openbox + x11vnc: **17 + 17 + 12 ≈ 46 MiB PSS**, CPU ~0.
 - With an xterm running `top` and one raw-encoding viewer: ~3% CPU, ~1 MB/s. noVNC's Tight/ZRLE encodings cut that sharply.
+- Helper in that image: RFB ServerInit **0.29 s** after open (display started cold), first full 1280×800 frame **0.81 s**; clean exit on stdin's end, the display left running.
+- Dashboard end to end (below): tab click to a drawn 1280×800 desktop **1.3 s**.
 - A headed full Chromium on the display, about:blank: **511 MiB PSS**, against 182 MiB for the headless shell. That is the cost of the Desktop showing "the browser".
 
 ### Limits
 
-Same as the Browser: an opt-in flag on both sides (`SP_SESSION_DESKTOP`,
-`features.desktop`); one display per session, with a viewer cap (x11vnc's
-`-shared` lets several viewers watch one display, so the cap can be 2–3 with
-input from the driver only); the idle timeout by input; access-lost close. The
-display is torn down when the last viewer leaves and nothing the agent started
-holds it (or after a grace period).
+One viewer per desktop for now. x11vnc `-shared` would let 2–3 watch one
+display with input from the driver only; that is an open question below.
+
+### Tests
+
+- Computer: `host/terminal.test.ts` (gate off, `dk_` ids, one per session alongside a browser, output starts `RFB 003.008`, the caller's command never runs), `wire/rfb-input.test.ts` (which RFB messages count as input, split across frames), `wire/terminal.test.ts` (open/close, not interchangeable with browsers, pointer events keep a desktop alive while update requests alone let it idle out).
+- Web: `desktop-wire.test.ts` (the channel adapter, early bytes, close both ways) and the sidebar registry test.
+- End to end, local: the same rig as the Browser, with the relay and host `Terminals` running **inside the image built from this Containerfile** → **real `desktop-x11.py` → Xvfb, openbox, x11vnc** → noVNC in the preview dashboard. An xterm started on `:73` showed up, a click and typed text reached it, and switching tabs kept the view. Not covered: a hosted computer and the managed-agents Worker.
 
 ### Open question: one display or two?
 
@@ -191,13 +216,13 @@ The Browser could render into the Desktop's display (headed, `DISPLAY=:N`)
 instead of headless. Then the person sees the same window in both tabs, and
 the agent's own headed runs show up too. The cost is +330 MiB per open
 browser (headed against headless) and coupling the tabs' lifetimes. The
-proposal is to keep them separate first (the Browser stays headless and
-cheap) and decide once the Desktop exists.
+two are separate for now (the Browser stays headless and cheap); this is
+open.
 
 ## Open questions
 
 1. Default: off everywhere, on for internal organizations first?
 2. Image: the Browser needs nothing new. Should the Desktop's +76 MB go in the main session image or in a variant?
-3. Viewer cap: one browser per session now. Is a shared multi-viewer broker wanted?
+3. Viewer cap: one browser and one desktop viewer per session now. Is a shared multi-viewer broker (or x11vnc `-shared`) wanted?
 4. Should the Desktop share the Browser's display (above)?
-5. Scope: browsers reuse the `terminals` scope, so existing terminal tickets work. Is a separate `browsers` scope wanted?
+5. Scope: browsers and desktops reuse the `terminals` scope, so existing terminal tickets work. Are separate scopes wanted?

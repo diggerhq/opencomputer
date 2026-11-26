@@ -27,7 +27,7 @@ async function setup(o: { access: SessionAccess[]; admins?: string[]; idleMs?: n
       if (m.t === 'terminal.open') {
         opens.push(m);
         const browser = m.app === 'browser';
-        const terminalId = `${browser ? 'br' : 'tm'}_${String(++n).padStart(12, '0')}`;
+        const terminalId = `${browser ? 'br' : m.app === 'desktop' ? 'dk' : 'tm'}_${String(++n).padStart(12, '0')}`;
         const socket = path.join(dir, `${terminalId}.sock`);
         const server = net.createServer((s) => {
           pty.set(terminalId, s);
@@ -186,5 +186,46 @@ describe('wire browsers', () => {
     const readOnly = connectClient(relay.port, { scope: { readOnly: true } });
     expect((await readOnly.call('browsers.open', { sessionId: s })).error.data).toMatchObject({ reason: 'read_only' });
     for (const c of [stranger, reader, readOnly]) c.ws.close();
+  });
+});
+
+describe('wire desktops', () => {
+  const rfb = (...msgs: number[][]) => Buffer.from(msgs.flat());
+  const handshake = [...Buffer.from('RFB 003.008\n'), 1, 1];
+  const update = [3, 1, 0, 0, 0, 0, 5, 0, 3, 32];
+  const pointer = [5, 0, 0, 10, 0, 20];
+
+  it('opens the host’s desktop app; desktops and browsers are not interchangeable', async () => {
+    const s = sid();
+    const { relay, opens } = await setup({ access: [accessFor(s)] });
+    const c = connectClient(relay.port);
+    const ok = await c.call('desktops.open', { sessionId: s });
+    expect(ok.result.desktop).toEqual({ id: expect.stringMatching(/^dk_/), channel: expect.any(Number) });
+    expect(opens.at(-1)).toMatchObject({ app: 'desktop', tty: false });
+    expect(opens.at(-1)?.command).toBeUndefined();
+    expect((await c.call('browsers.close', { browserId: ok.result.desktop.id.replace('dk_', 'br_') })).error.data).toMatchObject({ code: 'browser_not_found' });
+    expect((await c.call('desktops.close', { desktopId: ok.result.desktop.id })).error).toBeUndefined();
+    const exited = await c.next((m) => m.method === 'desktop.exited', 3000);
+    expect(exited.params).toEqual({ desktopId: ok.result.desktop.id });
+    expect(c.frames.some((m) => m.method === 'terminal.exited' || m.method === 'browser.exited')).toBe(false);
+    c.ws.close();
+  });
+
+  it('counts a person’s pointer and keys toward the idle timeout, not the viewer’s update requests', async () => {
+    const s = sid();
+    const { relay } = await setup({ access: [accessFor(s)], idleMs: 300 });
+    const c = connectClient(relay.port);
+    const ok = await c.call('desktops.open', { sessionId: s });
+    const ch = ok.result.desktop.channel;
+    c.ws.send(Buffer.concat([frame(ch, ''), rfb(handshake)]));
+    const moving = setInterval(() => c.ws.send(Buffer.concat([frame(ch, ''), rfb(pointer, update)])), 50);
+    await new Promise((r) => setTimeout(r, 600));
+    clearInterval(moving);
+    expect(c.frames.some((m) => m.method === 'desktop.exited')).toBe(false);
+    const updating = setInterval(() => c.ws.readyState === 1 && c.ws.send(Buffer.concat([frame(ch, ''), rfb(update)])), 50);
+    const exited = await c.next((m) => m.method === 'desktop.exited', 3000);
+    clearInterval(updating);
+    expect(exited.params).toEqual({ desktopId: ok.result.desktop.id, reason: 'idle' });
+    c.ws.close();
   });
 });

@@ -24,6 +24,9 @@
 //   host fixes (host/browser-cdp.py): the client never names one. Its idle
 //   clock counts input only (a page animates on its own), its stderr is read
 //   and dropped, and its end is `browser.exited`, not `terminal.exited`.
+// - A desktop (`desktops.*`, host/desktop-x11.py) is the same, carrying VNC;
+//   its idle clock counts the viewer's key, pointer and clipboard events only
+//   (rfb-input.ts), and its end is `desktop.exited`.
 
 import net from 'node:net';
 import type { ApiError, HostToWire, SessionAccess } from '../protocol.js';
@@ -32,12 +35,21 @@ import { mayOpenTerminal } from './edge-auth.js';
 import type { HostLink } from './host-link.js';
 import { LIMITS, TokenBucket } from './limits.js';
 import type { Outbox } from './outbox.js';
+import { rfbActivity } from './rfb-input.js';
 import { encodeNotification, errors } from './rpc.js';
 import type { WireEmit } from './telemetry.js';
 
+/** What runs in place of a terminal's command, as the wire names it (`browsers.*`, `desktops.*`). */
+export type WireApp = 'browser' | 'desktop';
+
+const APPS = {
+  browser: { exited: 'browser.exited', idKey: 'browserId', notFound: () => errors.browserNotFound() },
+  desktop: { exited: 'desktop.exited', idKey: 'desktopId', notFound: () => errors.desktopNotFound() },
+} as const;
+
 interface Open {
   id: string;
-  app?: 'browser';
+  app?: WireApp;
   sessionId: string;
   channel: number;
   stderrChannel: number | null;
@@ -48,8 +60,10 @@ interface Open {
   done: boolean;
   /** Why the relay hung it up, if it did. */
   reason?: TerminalEndReason;
-  /** Last input or output (ms; input only for a browser), for the idle timeout; tty terminals and browsers only. */
+  /** Last input or output (ms; input only for an app), for the idle timeout; tty terminals and apps only. */
   activeAt: number;
+  /** A desktop's: whether a chunk of the viewer's bytes was a person's action, not an update request. */
+  activity?: (chunk: Uint8Array) => boolean;
   idleTimer?: NodeJS.Timeout;
   /** For `wire.terminal`. */
   openedAt: number;
@@ -83,7 +97,7 @@ export interface OpenParams {
   term?: string;
 }
 
-export interface BrowserParams {
+export interface AppParams {
   sessionId: string;
 }
 
@@ -111,18 +125,18 @@ export class WireTerminals {
     return { result: { terminal: { id: r.t.id, channel: r.t.channel, stderrChannel: r.t.stderrChannel } } };
   }
 
-  /** `browsers.open`: the session's headless browser, on one channel (both directions). */
-  async openBrowser(p: BrowserParams, access: SessionAccess | undefined): Promise<CallOutcome> {
-    const r = await this.start(p.sessionId, access, { cols: 80, rows: 24, tty: false, app: 'browser' });
+  /** `browsers.open`, `desktops.open`: the session's headless browser or X desktop, on one channel (both directions). */
+  async openApp(app: WireApp, p: AppParams, access: SessionAccess | undefined): Promise<CallOutcome> {
+    const r = await this.start(p.sessionId, access, { cols: 80, rows: 24, tty: false, app });
     if ('error' in r) return r;
     this.watchIdle(r.t);
-    return { result: { browser: { id: r.t.id, channel: r.t.channel } } };
+    return { result: { [app]: { id: r.t.id, channel: r.t.channel } } };
   }
 
   private async start(
     sessionId: string,
     access: SessionAccess | undefined,
-    o: { cols: number; rows: number; tty: boolean; command?: string; term?: string; app?: 'browser' },
+    o: { cols: number; rows: number; tty: boolean; command?: string; term?: string; app?: WireApp },
   ): Promise<{ t: Open } | { error: ApiError }> {
     const { host, member } = this.deps;
     if (!access) return { error: errors.sessionNotFound() };
@@ -141,6 +155,7 @@ export class WireTerminals {
       bucket: new TokenBucket(LIMITS.terminalInputBytesPerSecond, LIMITS.terminalInputBytesPerSecond),
       done: false,
       activeAt: Date.now(),
+      activity: o.app === 'desktop' ? rfbActivity() : undefined,
       openedAt: Date.now(),
       bytesIn: 0,
       bytesOut: 0,
@@ -171,7 +186,7 @@ export class WireTerminals {
       return;
     }
     t.bytesIn += data.length;
-    t.activeAt = Date.now();
+    if (!t.activity || t.activity(data)) t.activeAt = Date.now();
     t.sockets[0]?.write(data);
   }
 
@@ -205,9 +220,9 @@ export class WireTerminals {
     return t !== undefined && t.app === undefined;
   }
 
-  async closeBrowser(browserId: string): Promise<CallOutcome> {
-    if (this.byId.get(browserId)?.app !== 'browser') return { error: errors.browserNotFound() };
-    return this.forward(await this.deps.host.call({ t: 'terminal.close', terminalId: browserId }));
+  async closeApp(app: WireApp, id: string): Promise<CallOutcome> {
+    if (this.byId.get(id)?.app !== app) return { error: APPS[app].notFound() };
+    return this.forward(await this.deps.host.call({ t: 'terminal.close', terminalId: id }));
   }
 
   /** The host says the terminal's process ended. */
@@ -281,7 +296,7 @@ export class WireTerminals {
       head.writeUInt32BE(channel, 0);
       s.on('data', (chunk: Buffer) => {
         const { outbox } = this.deps;
-        if (t.app && channel !== t.channel) return; // a browser's stderr: Chromium's noise
+        if (t.app && channel !== t.channel) return; // an app's stderr: Chromium's or x11vnc's noise
         t.bytesOut += chunk.length;
         if (!t.app) t.activeAt = Date.now();
         const room = LIMITS.terminalFrameBytes - head.length; // a frame is at most 64 KiB with its header
@@ -310,8 +325,8 @@ export class WireTerminals {
     const m = t.exited;
     const reason = t.reason ? { reason: t.reason } : {};
     this.deps.outbox.urgent(
-      t.app === 'browser'
-        ? encodeNotification('browser.exited', { browserId: t.id, ...reason })
+      t.app
+        ? encodeNotification(APPS[t.app].exited, { [APPS[t.app].idKey]: t.id, ...reason })
         : encodeNotification('terminal.exited', { terminalId: t.id, exitCode: m?.exitCode ?? null, signal: m?.signal ?? null, ...reason }),
     );
     this.deps.onChange?.();

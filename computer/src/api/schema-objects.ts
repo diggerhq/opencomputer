@@ -24,6 +24,7 @@ export const TurnId = Id('tn', 12);
 export const AskId = Id('ak', 12);
 export const TerminalId = Id('tm', 12);
 export const BrowserId = Id('br', 12);
+export const DesktopId = Id('dk', 12);
 export const SubagentId = Id('sa', 12);
 export const EventId = Id('ev', 16);
 export const Time = Schema.String.annotate({ description: 'ISO 8601, UTC, milliseconds', format: 'date-time' } as never);
@@ -243,6 +244,8 @@ export const Capabilities = Schema.Struct({
     // The dashboard's Browser tab (`browsers.*`): absent means no. A release cannot know whether its host runs
     // browsers (SP_SESSION_BROWSER), so the writer leaves it out and the service that serves capabilities decides.
     browser: Schema.optionalKey(Schema.Boolean),
+    // The Desktop tab (`desktops.*`), the same way (SP_SESSION_DESKTOP).
+    desktop: Schema.optionalKey(Schema.Boolean),
   }),
 }).annotate({ identifier: 'Capabilities' });
 

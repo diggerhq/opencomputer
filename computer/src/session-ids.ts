@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 
 export const CROCKFORD = '0123456789abcdefghjkmnpqrstvwxyz';
 
-const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, br: 12, wc: 12, sa: 12 } as const;
+const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, br: 12, dk: 12, wc: 12, sa: 12 } as const;
 export type IdPrefix = keyof typeof LENGTHS;
 
 const PATTERNS = Object.fromEntries(
