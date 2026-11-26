@@ -20,11 +20,15 @@ async function makeHost(): Promise<Host> {
   return webHost({ principal: { org: me.orgId, subject: me.id }, name: me.email.split('@')[0], api: API, base: BASE })
 }
 
+// Made once for the page: StrictMode runs the effect twice, and a second fake
+// server would leave `window.__fake` pointing at one nothing uses.
+let made: Promise<Host> | undefined
+
 export default function WebSurface() {
   const [host, setHost] = useState<Host | null>(null)
   useEffect(() => {
     let live = true
-    void makeHost().then((h) => live && setHost(h))
+    void (made ??= makeHost()).then((h) => live && setHost(h))
     return () => {
       live = false
     }

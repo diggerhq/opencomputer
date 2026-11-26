@@ -145,6 +145,60 @@ function AskBlock({ ask }: { ask: Ask }) {
   )
 }
 
+// ---- a structural line and its Undo (A18) ----
+
+function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
+  const surface = useSurface()
+  // What the track started since, while the person is asked about it (T8u).
+  const [started, setStarted] = useState<string[] | null>(null)
+  const undo = (id: string) => {
+    const s = surface.get()
+    const op = s.rows.op.get(id)
+    const others =
+      op?.name === 'track.create' && op.trackId
+        ? [...s.rows.place.values()].filter((p) => p.trackId === op.trackId && p.id !== op.sessionId).map((p) => p.id)
+        : []
+    if (others.length) setStarted(others)
+    else surface.undo(id)
+  }
+  return (
+    <div className="note" style={item.tone === 'error' ? WARN : undefined}>
+      <span>
+        <Rich text={item.text} />
+        {item.undo && !started && (
+          <>
+            {' · '}
+            <button onClick={() => undo(item.undo!)}>Undo</button>
+          </>
+        )}
+        {item.undo && started && (
+          <>
+            {` · It started ${started.length} more: `}
+            <button onClick={() => surface.undo(item.undo!)}>keep {started.length === 1 ? 'it on its own' : 'them on their own'}</button>
+            {' · '}
+            <button
+              onClick={() => {
+                for (const sid of started) surface.deleteThread(sid)
+                surface.undo(item.undo!)
+              }}
+            >
+              stop and remove {started.length === 1 ? 'it' : 'them'}
+            </button>
+            {' · '}
+            <button onClick={() => setStarted(null)}>cancel</button>
+          </>
+        )}
+        {item.undone && (
+          <>
+            {' · '}
+            <s style={{ color: 'var(--faint)' }}>Undo</s>
+          </>
+        )}
+      </span>
+    </div>
+  )
+}
+
 // ---- one item ----
 
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
@@ -157,7 +211,6 @@ const sameItem = (a: { item: Item }, b: { item: Item }) => {
 }
 
 const ItemView = memo(function ItemView({ item }: { item: Item }) {
-  const surface = useSurface()
   switch (item.kind) {
     case 'user':
       return (
@@ -192,25 +245,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'ask':
       return <AskBlock ask={item.ask} />
     case 'line':
-      return (
-        <div className="note" style={item.tone === 'error' ? WARN : undefined}>
-          <span>
-            <Rich text={item.text} />
-            {item.undo && (
-              <>
-                {' · '}
-                <button onClick={() => surface.undo(item.undo!)}>Undo</button>
-              </>
-            )}
-            {item.undone && (
-              <>
-                {' · '}
-                <s style={{ color: 'var(--faint)' }}>Undo</s>
-              </>
-            )}
-          </span>
-        </div>
-      )
+      return <Line item={item} />
   }
 }, sameItem)
 
@@ -224,6 +259,14 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
   // Distance from the end to hold when earlier items are revealed above.
   const hold = useRef<number | null>(null)
   const lastKey = useRef<string | undefined>(undefined)
+  // Where this pane last put itself. Its scroll event arrives a frame later,
+  // when a pane that is changing width has grown again: it is not the reader's.
+  const own = useRef(-1)
+  const toEnd = (el: HTMLDivElement) => {
+    el.scrollTop = el.scrollHeight
+    own.current = el.scrollTop
+    places.set(sid, { top: el.scrollTop, end: true })
+  }
 
   const [more, setMore] = useState({ sid, n: PAGE })
   const n = more.sid === sid ? more.n : PAGE
@@ -236,7 +279,8 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
     const was = places.get(sid)
     pinned.current = was ? was.end : true
     if (was && !was.end) el.scrollTop = was.top
-    else el.scrollTop = el.scrollHeight
+    else toEnd(el)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid])
 
   // After every change: follow the end only if the reader is at it. Safari
@@ -251,7 +295,7 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
     if (hold.current !== null) {
       el.scrollTop = el.scrollHeight - hold.current
       hold.current = null
-    } else if (pinned.current) el.scrollTop = el.scrollHeight
+    } else if (pinned.current) toEnd(el)
   })
 
   // The pane changing size (a growing composer, a layout change) keeps the end in view.
@@ -259,15 +303,16 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
     const el = ref.current
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      if (pinned.current) el.scrollTop = el.scrollHeight
+      if (pinned.current) toEnd(el)
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid])
 
   const onScroll = () => {
     const el = ref.current
-    if (!el) return
+    if (!el || el.scrollTop === own.current) return
     const end = el.scrollHeight - el.scrollTop - el.clientHeight < 24
     pinned.current = end
     places.set(sid, { top: el.scrollTop, end })

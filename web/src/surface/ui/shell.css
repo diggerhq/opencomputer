@@ -11,3 +11,8 @@
   .msg ul,.notes ul,.blk ul{list-style:disc;padding-left:20px;margin:6px 0}
   .msg ol,.notes ol,.blk ol{list-style:decimal;padding-left:20px;margin:6px 0}
 }
+/* The Mac app has no title bar: the top bars drag the window (spec 24). */
+.surface[data-platform=desktop]{
+  .top,.hd{-webkit-app-region:drag}
+  .top button,.top a,.top input,.hd button,.hd a,.hd input,.hd .seg,.hd .url{-webkit-app-region:no-drag}
+}

@@ -115,7 +115,7 @@ kbd{font:11px -apple-system,BlinkMacSystemFont,Inter,sans-serif;color:var(--mute
 .site{flex:1;overflow:auto;display:flex;justify-content:center;padding:40px 24px;background:var(--pane)}.site .page{width:min(760px,100%);align-self:flex-start;background:var(--card);border-radius:14px;box-shadow:0 0 0 1px var(--line),0 8px 30px rgba(0,0,0,.06);padding:28px}.site .page svg{width:100%;height:auto;font-family:inherit}.site .page p{color:var(--faint);font-size:12px;margin:16px 0 0}
 .chip{height:25px;border-radius:7px;padding:0 9px;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;box-shadow:inset 0 0 0 1px var(--line);white-space:nowrap;transition:background .12s,box-shadow .12s}
 .chip:hover{background:var(--hover)}.chip small{color:var(--muted);font-size:12px}.chip svg{color:var(--muted)}
-.conv{flex:1;overflow-y:auto;padding:20px 22px 8px;display:flex;flex-direction:column;gap:14px;scrollbar-width:thin}
+.conv{flex:1;overflow-y:auto;padding:20px 22px 8px;display:flex;flex-direction:column;gap:14px;scrollbar-width:thin;overflow-anchor:none}
 .conv>*{max-width:var(--measure)}
 .conv:before{content:"";flex:1}
 .msg{line-height:1.55;animation:in .22s ease-out}
