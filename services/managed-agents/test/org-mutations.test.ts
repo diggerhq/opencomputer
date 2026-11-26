@@ -19,7 +19,12 @@ async function withOrg<T>(fn: (sql: Sql) => Promise<T> | T): Promise<T> {
     const sql = sqlOf(state.storage);
     migrate(sql, STEPS);
     sql.exec("UPDATE meta SET org = 'org_t'");
-    return fn(sql);
+    try {
+      return await fn(sql);
+    } finally {
+      // No alarm outlives the test: what a mutation owes would be sent to the real Computer after it.
+      await state.storage.deleteAlarm();
+    }
   });
 }
 
