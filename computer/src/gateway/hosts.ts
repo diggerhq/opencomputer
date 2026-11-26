@@ -5,7 +5,7 @@
 // serves a session. With no host connected, deliveries and clicks wait in the
 // outbox and go out when one says hello.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -29,6 +29,16 @@ import type { Linked } from '../links.js';
 import type { ModelRoutes } from '../protocol-model.js';
 import type { Store, Queued } from './db.js';
 import { errorText, log } from '../log.js';
+
+const digest = (t: string) => createHash('sha256').update(t).digest();
+
+/** True when `token` is one of `tokens`, in time that does not depend on where they differ: equal-length digests, every one compared. */
+export function staticTokenMatch(tokens: readonly Buffer[], token: string): boolean {
+  const d = digest(token);
+  let hit = false;
+  for (const t of tokens) hit = timingSafeEqual(t, d) || hit;
+  return hit;
+}
 
 export interface HubDeps {
   store: Store;
@@ -80,6 +90,7 @@ export class Hub {
   private pinger: NodeJS.Timeout;
 
   constructor(private deps: HubDeps) {
+    this.tokenDigests = deps.tokens.map(digest);
     const alive = new WeakSet<WebSocket>();
     this.wss.on('connection', (ws) => {
       alive.add(ws);
@@ -114,8 +125,11 @@ export class Hub {
     });
   }
 
+  /** SP_HOST_TOKENS as SHA-256 digests, for staticTokenMatch. */
+  private readonly tokenDigests: Buffer[];
+
   private authorized(token: string) {
-    if (this.deps.tokens.includes(token) || this.deps.store.hostForToken(token)) return true;
+    if (staticTokenMatch(this.tokenDigests, token) || this.deps.store.hostForToken(token)) return true;
     try {
       return !!this.deps.checkToken?.(token);
     } catch (e: any) {
