@@ -192,6 +192,17 @@ export const Origin = Schema.Struct({
   slack: Schema.NullOr(Schema.Struct({ teamId: NullString, channelId: Schema.String, channelName: NullString, threadTs: NullString, url: NullString })),
 }).annotate({ identifier: 'Origin' });
 
+/**
+ * Who may use a session started from the dashboard, opc or the API (CTO-37): `owner` only its owner, `org` every
+ * member of the organization, `people` the owner and the listed members (`usr_…`; the owner is never listed, and
+ * `people` is empty in the other modes). A Slack session's people are managed in its thread; the API shows `owner`.
+ * Whoever has access drives the session with the owner's secrets and subscription.
+ */
+export const SessionAccess = Schema.Struct({
+  mode: open(['owner', 'org', 'people']),
+  people: Schema.Array(Schema.String),
+}).annotate({ identifier: 'SessionAccess' });
+
 export const Session = Schema.Struct({
   id: SessionId,
   title: Schema.String,
@@ -202,6 +213,10 @@ export const Session = Schema.Struct({
    * its session row): it always sends it. Absent means false, as from a computer older than set-aside.
    */
   aside: Schema.optionalKey(Schema.Boolean),
+  /** Who may use it. The hosted API's: it always sends it; absent (a computer's own answer) says nothing. */
+  access: Schema.optionalKey(SessionAccess),
+  /** Whether the caller may change `access`: its owner, someone in `people`, or an organization admin. Sent with `access`. */
+  canManageAccess: Schema.optionalKey(Schema.Boolean),
   owner: Person,
   origin: Origin,
   settings: Settings,

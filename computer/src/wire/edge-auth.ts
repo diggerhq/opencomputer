@@ -15,6 +15,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { CLOCK_SKEW_MS, WIRE_HEADERS, WIRE_SIGNATURE_TTL_MS, type WireClaims, type WireScope, verifyWire } from '../signed-header.js';
 import type { Method } from '../api/schema.js';
+import type { SessionAccess } from '../protocol.js';
 
 /** Whether the request carries an X-Wire-Auth of the Worker's shape (`<13-digit exp>.<43 base64url>`) with exp in the window; no key needed. */
 export function signedShape(headers: IncomingHttpHeaders, now = Date.now()): boolean {
@@ -67,6 +68,7 @@ export const hasScope = (scope: WireScope, needed: string | undefined) => needed
 /** Whether the credential may name this session at all (a ticket's `sessionIds`). */
 export const inTicket = (scope: WireScope, sessionId: string) => !scope.sessionIds || scope.sessionIds.includes(sessionId);
 
+/** Who may attach and open terminals (shared with the host). */
 export { mayAttach, mayOpenTerminal } from '../api/session-access.js';
 
 /** The actor the relay stamps on a member's calls (API `Actor`): `via` from the client label. */

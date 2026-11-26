@@ -1,17 +1,18 @@
-// Who may do what in a session by its access list (protocol-api.ts
-// SessionAccess), shared by the relay (wire/edge-auth.ts) and the host
-// (host/wire-link.ts), which check terminals twice.
+// Who may use a session and open a terminal in it, from the access list the backend pushes (protocol.ts
+// `SessionAccess`). The relay checks both (wire/edge-auth.ts re-exports them); the host checks terminals again.
 //
-// Invariant: driving a session (writing, opening a terminal) needs what
-// attaching needs: the owner, a member the list names, or everyone when the
-// list is null. Being an organization admin adds nothing (Mohamed, web
-// terminal MVP): an admin may change who drives, not drive a session that
-// does not name them. The frame's `admins` is ignored.
+// CTO-37 Q4: being an admin lets no one into a session. An admin opens a terminal only in a session they may
+// attach to anyway, which for someone not named is a session open to the whole organization.
 
 import type { SessionAccess } from '../protocol.js';
 
-/** Whether `member` may see (and drive) the session, by its access list. */
+/** Whether `member` may attach to (read, drive) the session: its owner, everyone (`members` null), or a listed member. */
 export const mayAttach = (access: SessionAccess, member: string) => access.owner === member || access.members === null || access.members.includes(member);
 
-/** Whether `member` may open a terminal: whoever may drive the session. */
-export const mayOpenTerminal = (access: SessionAccess, member: string) => mayAttach(access, member);
+/**
+ * Whether `member` may open a terminal: only someone who may attach, and then the owner, a person the session is
+ * shared with by name, or an admin of the organization (the host's list or the access frame's).
+ */
+export const mayOpenTerminal = (access: SessionAccess, member: string, admins: ReadonlySet<string>) =>
+  mayAttach(access, member) &&
+  (access.owner === member || (access.members !== null && access.members.includes(member)) || admins.has(member) || !!access.admins?.includes(member));

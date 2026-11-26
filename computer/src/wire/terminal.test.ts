@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionAccess } from '../protocol.js';
+import type { HostLink } from './host-link.js';
+import { Outbox } from './outbox.js';
 import { startRelay } from './relay.js';
+import { WireTerminals } from './terminal.js';
 import { accessFor, connectClient, fakeHost, sid, until } from './test-fakes.js';
 
 let cleanup: (() => Promise<void> | void)[] = [];
@@ -109,7 +112,7 @@ describe('wire terminals', () => {
     d.ws.close();
   });
 
-  it('hangs up a member’s terminal when they may no longer drive the session', async () => {
+  it('hangs up a member’s terminal when they may no longer open one in the session', async () => {
     const s = sid();
     const { host, relay } = await setup({ access: [accessFor(s, 'usr_owner', ['usr_owner', 'usr_invited'])] });
     const c = connectClient(relay.port, { member: 'usr_invited' });
@@ -120,7 +123,7 @@ describe('wire terminals', () => {
     c.ws.close();
   });
 
-  it('refuses an admin in an "only me" session, and lets an org member into an org-wide one', async () => {
+  it('refuses an admin in an "only me" session; in an org-wide one, an admin but not an unnamed member (CTO-37)', async () => {
     const onlyMe = sid();
     const open = sid();
     const { relay } = await setup({
@@ -130,9 +133,81 @@ describe('wire terminals', () => {
     const admin = connectClient(relay.port, { member: 'usr_admin' });
     // Not named in the session: it does not exist for them.
     expect((await admin.call('terminals.open', { sessionId: onlyMe, cols: 80, rows: 24 })).error.data).toMatchObject({ code: 'session_not_found' });
+    expect((await admin.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error).toBeUndefined();
     const member = connectClient(relay.port, { member: 'usr_member' });
-    expect((await member.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error).toBeUndefined();
+    expect((await member.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error.data).toMatchObject({ reason: 'terminal_owner_only' });
     admin.ws.close();
     member.ws.close();
+  });
+});
+
+/** A host that opens each terminal as a unix socket server and remembers what it was asked to close. */
+function socketHost(admins: string[] = []) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'wire-term-'));
+  const servers: net.Server[] = [];
+  cleanup.push(() => {
+    for (const s of servers) s.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const closed: string[] = [];
+  let n = 0;
+  const host = {
+    key: 'k',
+    admins: new Set(admins),
+    connected: true,
+    access: () => undefined,
+    waitAccess: async () => undefined,
+    async call(frame: { t: string; terminalId?: string }) {
+      if (frame.t === 'terminal.close') {
+        closed.push(frame.terminalId!);
+        return { result: {} };
+      }
+      const socket = path.join(dir, `t${++n}.sock`);
+      const server = net.createServer((s) => s.on('error', () => {}));
+      servers.push(server);
+      await new Promise<void>((r) => server.listen(socket, r));
+      return { result: { terminalId: `tm_${n}`, socket } };
+    },
+    callFiles: () => ({ first: Promise.resolve({}), done: Promise.resolve({}) }),
+    telemetry: () => {},
+    close: () => {},
+  } as unknown as HostLink;
+  return { host, closed };
+}
+
+const sink = { send: (_d: unknown, done: () => void) => done(), onPause() {}, onResume() {}, onOverflow() {} };
+
+function terminals(member: string, host: HostLink) {
+  return new WireTerminals({ host, outbox: new Outbox(sink as never), member, route: () => {} });
+}
+
+const owner = (members: string[] | null): SessionAccess => ({ sessionId: 'cs_a', owner: 'usr_owner', members });
+
+describe('terminals when access changes (CTO-37)', () => {
+  it('hangs up a listed person’s terminal when they are taken off the list, and keeps the owner’s', async () => {
+    const { host, closed } = socketHost();
+    const pat = terminals('usr_pat', host);
+    const own = terminals('usr_owner', host);
+    expect(await pat.open({ sessionId: 'cs_a', tty: false }, owner(['usr_pat']))).toMatchObject({ result: { terminal: { id: 'tm_1' } } });
+    expect(await own.open({ sessionId: 'cs_a', tty: false }, owner(['usr_pat']))).toMatchObject({ result: { terminal: { id: 'tm_2' } } });
+    pat.recheck(() => owner(['usr_pat']));
+    expect(pat.size).toBe(1);
+    pat.recheck(() => owner([]));
+    own.recheck(() => owner([]));
+    expect(pat.size).toBe(0);
+    expect(own.size).toBe(1);
+    expect(closed).toEqual(['tm_1']);
+  });
+
+  it('an admin’s terminal in an organization-wide session goes when it becomes owner-only, or the session is gone', async () => {
+    const { host, closed } = socketHost(['usr_admin']);
+    const admin = terminals('usr_admin', host);
+    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ result: {} });
+    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner([]))).toMatchObject({ error: { reason: 'terminal_owner_only' } });
+    admin.recheck(() => owner(null));
+    expect(admin.size).toBe(1);
+    admin.recheck(() => undefined);
+    expect(admin.size).toBe(0);
+    expect(closed).toEqual(['tm_1']);
   });
 });

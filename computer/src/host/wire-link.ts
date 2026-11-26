@@ -12,7 +12,7 @@
 //   `welcome`, so a relay that restarts starts from the current state.
 // - A terminal belongs to the relay connection that opened it: when that
 //   connection drops, its terminals are hung up.
-// - The host checks again what the relay checked (who may drive, for a
+// - The host checks again what the relay checked (`mayOpenTerminal` for a
 //   terminal; the session is one this host runs), so a confused relay cannot
 //   open a shell in someone else's session.
 // - terminal.opened / terminal.closed / files.pushed are recorded through
@@ -24,8 +24,8 @@ import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ApiActor, ApiError, ApiSessionStatus, HostToWire, SessionAccess, WhereResult, WireToHost } from '../protocol.js';
-import { apiError } from '../api/writer.js';
 import { mayOpenTerminal } from '../api/session-access.js';
+import { apiError } from '../api/writer.js';
 import { lines, send } from '../ipc.js';
 import { log } from '../log.js';
 import { HOST_RUN } from '../protocol.js';
@@ -121,9 +121,8 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       case 'terminal.open': {
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: (await hooks.known?.(m.sessionId)) ? sessionNotRunning() : sessionNotFound() };
-        // Whoever may drive the session (owner, named members, everyone when org-wide); an admin is not enough.
         const a = access.get(m.sessionId);
-        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member))) return { error: apiError('forbidden', 'Only people who may drive this session can open a terminal in it.', 403, { reason: 'terminal_owner_only' }) };
+        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member, new Set(admins)))) return { error: apiError('forbidden', "Only the session's owner, someone it is shared with, or an admin of an organization-wide session can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(

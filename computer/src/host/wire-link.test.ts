@@ -109,7 +109,7 @@ describe('wire link', () => {
     r.sock.destroy();
   });
 
-  it('lets whoever may drive past the terminal gate, and never an admin the session does not name', async () => {
+  it('lets the owner, named members and (org-wide) admins past the terminal gate, never an admin the session does not name', async () => {
     link.setAdmins(['usr_admin']);
     link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: ['usr_owner', 'usr_invited'], admins: ['usr_admin'] });
     const r = await relay();
@@ -123,8 +123,11 @@ describe('wire link', () => {
     expect((await r.next((m) => m.id === 'b')).error).toMatchObject({ reason: 'session_not_running' });
     link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: null });
     await r.next((m) => m.t === 'access');
+    // Org-wide (CTO-37): an admin, not a member the session does not name.
     open('c', 'usr_anyone');
-    expect((await r.next((m) => m.id === 'c')).error).toMatchObject({ reason: 'session_not_running' });
+    expect((await r.next((m) => m.id === 'c')).error).toMatchObject({ reason: 'terminal_owner_only' });
+    open('d', 'usr_admin');
+    expect((await r.next((m) => m.id === 'd')).error).toMatchObject({ reason: 'session_not_running' });
     r.sock.destroy();
   });
 
@@ -148,6 +151,31 @@ describe('wire link', () => {
     while (!recorded.some(([, t]) => t === 'terminal.closed') && Date.now() < end) await new Promise((res) => setTimeout(res, 20));
     expect(recorded.find(([, t]) => t === 'terminal.closed')).toBeTruthy();
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
+  });
+
+  it('lets in a listed person, and an admin only where the access list lets them attach (CTO-37 Q4)', async () => {
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    link.setAdmins(['usr_admin']);
+    const open = async (id: string, member: string) => {
+      r.send({ t: 'terminal.open', id, sessionId: 'cs_a', member, cols: 80, rows: 24, tty: true, command: 'sleep 30' });
+      const m = await r.next((f) => f.id === id);
+      if (m.result) r.send({ t: 'terminal.close', id: `${id}c`, terminalId: m.result.terminalId });
+      return m.error?.reason ?? 'opened';
+    };
+    // No access list yet: only the owner.
+    expect(await open('n', 'usr_admin')).toBe('terminal_owner_only');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: [] });
+    expect(await open('o1', 'usr_admin')).toBe('terminal_owner_only');
+    expect(await open('o2', 'usr_owner')).toBe('opened');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: ['usr_pat'] });
+    expect(await open('p1', 'usr_pat')).toBe('opened');
+    expect(await open('p2', 'usr_admin')).toBe('terminal_owner_only');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: null });
+    expect(await open('g1', 'usr_admin')).toBe('opened');
+    expect(await open('g2', 'usr_pat')).toBe('terminal_owner_only');
+    r.sock.destroy();
   });
 
   it("refuses a terminal in a session whose container is stopped, and starts nothing (C13)", async () => {

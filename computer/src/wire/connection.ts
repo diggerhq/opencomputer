@@ -175,16 +175,18 @@ export class Connection {
 
   /** The host pushed a new access list: drop attachments and hang up terminals the member may no longer have. */
   accessChanged(access: SessionAccess) {
-    if (mayAttach(access, this.member)) return;
-    if (this.attached.has(access.sessionId)) this.detach(access.sessionId, 'access_lost');
-    this.terminals.closeSession(access.sessionId);
+    const a = this.attached.get(access.sessionId);
+    if (a && !mayAttach(access, this.member)) this.detach(access.sessionId, 'access_lost');
+    this.terminals.recheck((sid) => (sid === access.sessionId ? access : this.deps.host.access(sid)));
   }
 
   /** After a host `welcome`: every attached session and open terminal is checked against the new lists (absent: lost). */
   recheckAccess(get: (sessionId: string) => SessionAccess | undefined) {
-    const lost = (sid: string) => !mayAttach(get(sid) ?? { sessionId: sid, owner: '', members: [] }, this.member);
-    for (const sid of [...this.attached.keys()]) if (lost(sid)) this.detach(sid, 'access_lost');
-    for (const sid of this.terminals.sessions()) if (lost(sid)) this.terminals.closeSession(sid);
+    for (const sid of [...this.attached.keys()]) {
+      const access = get(sid);
+      if (!access || !mayAttach(access, this.member)) this.detach(sid, 'access_lost');
+    }
+    this.terminals.recheck(get);
   }
 
   revoked(keyId: string) {

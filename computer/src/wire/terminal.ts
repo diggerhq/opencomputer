@@ -4,9 +4,11 @@
 // `[channel u32 BE][data]` on the WebSocket.
 //
 // Invariants:
-// - Only someone who may drive the session opens one (checked here against the
-//   host's access list; an admin who is not named gets nothing extra; the host
-//   checks again, and the 8-per-session limit).
+// - Only someone who may attach opens one, and then the owner, a person the
+//   session is shared with by name, or an admin in an organization-wide
+//   session (edge-auth.ts `mayOpenTerminal`, against the host's access list and
+//   admins; the host checks again, and the 8-per-session limit). When access
+//   changes, terminals their opener may no longer open are hung up (`recheck`).
 // - Output goes out ahead of events (the outbox's urgent queue), in frames of
 //   at most 64 KiB, and the terminal's socket is paused while the connection
 //   is congested, so a flood of output cannot grow memory.
@@ -18,7 +20,7 @@
 //   connection hangs up every one of them.
 // - A tty terminal with no input and no output for `idleMs` (LIMITS.terminalIdleMs,
 //   SP_WIRE_TERMINAL_IDLE_MINUTES) is hung up, and its `terminal.exited` says
-//   `reason: "idle"`; one whose session the member may no longer drive is hung
+//   `reason: "idle"`; one its opener may no longer open (`recheck`) is hung
 //   up with `reason: "access_lost"`. A command without a tty is never idle.
 
 import net from 'node:net';
@@ -96,7 +98,7 @@ export class WireTerminals {
   async open(p: OpenParams, access: SessionAccess | undefined): Promise<CallOutcome> {
     const { host, member } = this.deps;
     if (!access) return { error: errors.sessionNotFound() };
-    if (!mayOpenTerminal(access, member)) return { error: errors.terminalOwnerOnly() };
+    if (!mayOpenTerminal(access, member, host.admins)) return { error: errors.terminalOwnerOnly() };
     const tty = p.tty ?? true;
     if (tty && (p.cols === undefined || p.rows === undefined)) return { error: errors.invalidParams(p.cols === undefined ? 'cols' : 'rows', 'cols and rows are required with tty') };
     const r = await host.call({
@@ -149,16 +151,6 @@ export class WireTerminals {
     t.sockets[0]?.write(data);
   }
 
-  /** The sessions this connection has terminals in. */
-  sessions(): Set<string> {
-    return new Set([...this.byId.values()].map((t) => t.sessionId));
-  }
-
-  /** The member may no longer drive `sessionId`: hang up every terminal they have in it. */
-  closeSession(sessionId: string) {
-    for (const t of this.byId.values()) if (t.sessionId === sessionId) this.hangUp(t, 'access_lost');
-  }
-
   async resize(terminalId: string, cols: number, rows: number): Promise<CallOutcome> {
     if (!this.byId.has(terminalId)) return { error: errors.terminalNotFound() };
     return this.forward(await this.deps.host.call({ t: 'terminal.resize', terminalId, cols, rows }));
@@ -198,6 +190,19 @@ export class WireTerminals {
     }
     this.byId.clear();
     this.byChannel.clear();
+  }
+
+  /** Access changed: hang up each terminal whose session this member may no longer open one in (absent: gone). */
+  recheck(get: (sessionId: string) => SessionAccess | undefined) {
+    const { host, member } = this.deps;
+    for (const t of this.byId.values()) {
+      const access = get(t.sessionId);
+      if (access && mayOpenTerminal(access, member, host.admins)) continue;
+      // Gone at once, not when the host says it exited: no more input reaches it.
+      this.hangUp(t, 'access_lost');
+      for (const s of t.sockets) s.destroy();
+      this.finish(t);
+    }
   }
 
   /** Checks at the earliest moment the terminal could have gone idle, and hangs it up once it has. */
@@ -269,6 +274,7 @@ export class WireTerminals {
     clearTimeout(t.idleTimer);
     this.byId.delete(t.id);
     this.byChannel.delete(t.channel);
+    if (t.stderrChannel !== null) this.byChannel.delete(t.stderrChannel);
     this.deps.route(t.id, undefined);
     const m = t.exited;
     this.deps.outbox.urgent(
