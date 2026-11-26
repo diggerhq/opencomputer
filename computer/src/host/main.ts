@@ -28,7 +28,7 @@
 //   [SP_SESSION_BROWSER=0]     1: a person who may drive a session may open its browser (headless Chromium in its
 //                              container, terminal.ts `app: browser`); default off
 //   [SP_SESSION_DESKTOP=0]     1: the same for its desktop (an X display over VNC, terminal.ts `app: desktop`; the
-//                              image needs Xvfb and x11vnc); default off
+//                              image needs TigerVNC's Xvnc); default off
 //   [SP_RUNNER_PATH=...]       the PATH runners and workspace commands get then (the host's own has no agent-owned directory)
 //   node --import tsx src/host/main.ts
 //

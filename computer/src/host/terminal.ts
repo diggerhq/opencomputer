@@ -34,7 +34,7 @@
 //   terminal without a tty whose command is browser-cdp.py, chosen here and
 //   never by the caller: only where the host allows it (SP_SESSION_BROWSER),
 //   at most one per session, besides the 8 terminals; its id is `br_…`. A
-//   desktop (`app: desktop`) is the same with desktop-x11.py, where the host
+//   desktop (`app: desktop`) is the same with desktop-vnc.py, where the host
 //   allows it (SP_SESSION_DESKTOP); its id is `dk_…`.
 
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
@@ -58,7 +58,7 @@ const PENDING_MAX = 1 << 20;
 const STOP_AFTER_MS = 6000;
 const HELPER = path.join(import.meta.dirname, 'terminal-pty.py');
 const BROWSER = path.join(import.meta.dirname, 'browser-cdp.py');
-const DESKTOP = path.join(import.meta.dirname, 'desktop-x11.py');
+const DESKTOP = path.join(import.meta.dirname, 'desktop-vnc.py');
 /** An app's command line in the terminal helper: -I, so no PYTHON* variable or user site changes what runs. */
 export const appCommand = (helper: string) => `exec python3 -I '${helper.replaceAll("'", "'\\''")}'`;
 export const browserCommand = (helper = BROWSER) => appCommand(helper);

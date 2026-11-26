@@ -177,7 +177,7 @@ describe('desktops', () => {
       const again = await d.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'desktop' }, onExit);
       expect('error' in again && again.error.code).toBe('too_many_desktops');
       expect('error' in (await d.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'browser' }, onExit))).toBe(false);
-      // Without Xvfb and x11vnc here, the helper refuses in RFB; either way it speaks RFB first.
+      // Without Xvnc here, the helper refuses in RFB; either way it speaks RFB first.
       const out = collect(await connect(r.socket));
       await until(() => out.text.startsWith('RFB 003.008'));
       await d.close(r.terminalId);

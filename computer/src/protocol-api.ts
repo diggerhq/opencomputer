@@ -176,7 +176,7 @@ export type WireToHost =
   /** `result: { terminalId, socket, channel? }`; bytes then flow on `socket` (a PTY, raw both ways). */
   | { t: 'terminal.open'; id: string; sessionId: string; member: string; cols: number; rows: number;
       command?: string; tty: boolean; term?: string;
-      /** `browser` or `desktop`: the session's browser (host/browser-cdp.py) or desktop (host/desktop-x11.py) instead of `command`, without a tty; the host picks what runs. */
+      /** `browser` or `desktop`: the session's browser (host/browser-cdp.py) or desktop (host/desktop-vnc.py) instead of `command`, without a tty; the host picks what runs. */
       app?: 'browser' | 'desktop' }
   | { t: 'terminal.resize'; id: string; terminalId: string; cols: number; rows: number }
   | { t: 'terminal.eof'; id: string; terminalId: string }

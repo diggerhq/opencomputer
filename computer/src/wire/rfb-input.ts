@@ -4,7 +4,7 @@
 // changes.
 //
 // Invariants:
-// - The server is desktop-x11.py's x11vnc: RFB 3.8 with security type None,
+// - The server is desktop-vnc.py's Xvnc: RFB 3.8 with security type None,
 //   so the viewer's handshake is 12 bytes of version, 1 of security type and
 //   1 of ClientInit.
 // - A stream it cannot follow (an unknown message type) makes every later
@@ -39,16 +39,20 @@ export function rfbActivity(): (chunk: Uint8Array) => boolean {
       else if (type === 3) len = 10; // FramebufferUpdateRequest
       else if (type === 4) len = 8; // KeyEvent
       else if (type === 5) len = 6; // PointerEvent
-      else if (type === 6) len = n < 8 ? -1 : 8 + view.getUint32(4); // ClientCutText
+      else if (type === 6) len = n < 8 ? -1 : 8 + Math.abs(view.getInt32(4)); // ClientCutText (< 0: extended clipboard)
       else if (type === 150) len = 10; // EnableContinuousUpdates
-      else if (type === 248) len = n < 4 ? -1 : 4 + view.getUint16(2); // QEMU extended (key events, audio)
+      else if (type === 248) len = n < 9 ? -1 : 9 + all[at + 8]; // ClientFence
+      else if (type === 250) len = 4; // xvp
       else if (type === 251) len = n < 8 ? -1 : 8 + 16 * all[at + 6]; // SetDesktopSize
+      else if (type === 255 && n >= 2 && all[at + 1] === 0) len = 12; // QEMU extended key event
+      else if (type === 255 && n >= 2 && all[at + 1] === 1) len = n < 4 ? -1 : view.getUint16(2) === 2 ? 10 : 4; // QEMU audio
+      else if (type === 255 && n < 2) len = -1;
       else {
         lost = true;
         return true;
       }
       if (len < 0 || n < len) break;
-      if (type === 4 || type === 5 || type === 6 || type === 248) active = true;
+      if (type === 4 || type === 5 || type === 6 || (type === 255 && all[at + 1] === 0)) active = true;
       at += len;
     }
     buf = all.slice(at);

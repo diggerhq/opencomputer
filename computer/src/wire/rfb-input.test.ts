@@ -26,6 +26,21 @@ describe('rfbActivity', () => {
     expect(results.indexOf(true)).toBe(handshake.length + encodings.length + update.length + 10);
   });
 
+  it('follows what noVNC sends a TigerVNC server: fences, continuous updates, resizes, extended clipboard, QEMU keys', () => {
+    const fence = [248, 0, 0, 0, 0x80, 0, 0, 3, 2, 7, 8];
+    const continuous = [150, 1, 0, 0, 0, 0, 5, 0, 3, 32];
+    const resize = [251, 0, 2, 0, 3, 32, 1, 0, ...new Array(16).fill(0)];
+    const clipboardCaps = [6, 0, 0, 0, 0xff, 0xff, 0xff, 0xfc, 1, 0, 0, 0];
+    const qemuKey = [255, 0, 0, 1, 0, 0, 0, 0x61, 0, 0, 0, 0x1e];
+    const seen = rfbActivity();
+    expect(seen(bytes(handshake, encodings, fence, continuous, resize, update))).toBe(false);
+    expect(seen(bytes(fence, update))).toBe(false);
+    expect(seen(bytes(clipboardCaps))).toBe(true);
+    expect(seen(bytes(update))).toBe(false);
+    expect(seen(bytes(qemuKey))).toBe(true);
+    expect(seen(bytes(update, fence))).toBe(false);
+  });
+
   it('counts everything once it loses the stream', () => {
     const seen = rfbActivity();
     expect(seen(bytes(handshake, [99]))).toBe(true);

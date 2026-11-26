@@ -24,7 +24,7 @@
 //   host fixes (host/browser-cdp.py): the client never names one. Its idle
 //   clock counts input only (a page animates on its own), its stderr is read
 //   and dropped, and its end is `browser.exited`, not `terminal.exited`.
-// - A desktop (`desktops.*`, host/desktop-x11.py) is the same, carrying VNC;
+// - A desktop (`desktops.*`, host/desktop-vnc.py) is the same, carrying VNC;
 //   its idle clock counts the viewer's key, pointer and clipboard events only
 //   (rfb-input.ts), and its end is `desktop.exited`.
 
@@ -296,7 +296,7 @@ export class WireTerminals {
       head.writeUInt32BE(channel, 0);
       s.on('data', (chunk: Buffer) => {
         const { outbox } = this.deps;
-        if (t.app && channel !== t.channel) return; // an app's stderr: Chromium's or x11vnc's noise
+        if (t.app && channel !== t.channel) return; // an app's stderr: Chromium's or Xvnc's noise
         t.bytesOut += chunk.length;
         if (!t.app) t.activeAt = Date.now();
         const room = LIMITS.terminalFrameBytes - head.length; // a frame is at most 64 KiB with its header

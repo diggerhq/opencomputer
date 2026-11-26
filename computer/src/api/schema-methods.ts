@@ -136,7 +136,7 @@ export const METHODS = {
   // The session's headless browser (host/browser-cdp.py), one per session, on one channel: JSON lines in, `type|u32 len|payload` records out.
   'browsers.open': { params: Schema.Struct({ ...sid }), result: Schema.Struct({ browser: Schema.Struct({ id: BrowserId, channel: Count }) }), http: '-' },
   'browsers.close': { params: Schema.Struct({ browserId: BrowserId }), result: Schema.Struct({}), http: '-' },
-  // The session's X desktop (host/desktop-x11.py), one per session, on one channel: VNC (RFB 3.8, no authentication: the wire did it) both ways.
+  // The session's X desktop (host/desktop-vnc.py), one per session, on one channel: VNC (RFB 3.8, no authentication: the wire did it) both ways.
   'desktops.open': { params: Schema.Struct({ ...sid }), result: Schema.Struct({ desktop: Schema.Struct({ id: DesktopId, channel: Count }) }), http: '-' },
   'desktops.close': { params: Schema.Struct({ desktopId: DesktopId }), result: Schema.Struct({}), http: '-' },
   ping: { params: Schema.Struct({}), result: Schema.Struct({ timing: Timing }), http: '-' },

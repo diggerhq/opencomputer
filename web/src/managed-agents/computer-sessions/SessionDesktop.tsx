@@ -21,8 +21,10 @@ function ticketError(e: unknown): Error {
 }
 
 // The sidebar's Desktop tab: the session's X display, over VNC on one channel
-// of the wire (desktop-wire.ts), drawn by noVNC and scaled to the tab. The
-// display outlives the tab: what runs on it is there when the tab reopens.
+// of the wire (desktop-wire.ts), drawn by noVNC. The display is resized to the
+// tab (noVNC asks the server on every resize of the pane), and scaled to it
+// where the server keeps its own size. The display outlives the tab: what
+// runs on it is there when the tab reopens.
 export function SessionDesktop({ sessionId: id }: SidebarTabProps) {
   const screen = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<TerminalState>({ kind: 'connecting' })
@@ -55,8 +57,8 @@ export function SessionDesktop({ sessionId: id }: SidebarTabProps) {
         onChannel: (channel) => {
           drop()
           const r = new RFB(el, channel)
+          r.resizeSession = true
           r.scaleViewport = true
-          r.resizeSession = false
           r.background = '#1a1917'
           r.addEventListener('securityfailure', (e) => {
             const d = (e as CustomEvent<{ reason?: string }>).detail
@@ -108,7 +110,6 @@ export function SessionDesktop({ sessionId: id }: SidebarTabProps) {
       ) : null}
       <div
         ref={screen}
-        aria-label="Desktop"
         className="relative min-h-0 flex-1 overflow-hidden bg-[#1a1917]"
       />
     </div>
