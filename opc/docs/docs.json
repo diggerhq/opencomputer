@@ -42,7 +42,7 @@
           },
           {
             "group": "Account",
-            "pages": ["cli/auth", "cli/ci"]
+            "pages": ["cli/auth", "cli/secrets", "cli/ci"]
           },
           {
             "group": "Reference",
