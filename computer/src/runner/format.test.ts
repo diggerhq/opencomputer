@@ -25,7 +25,7 @@ describe('toolTitle', () => {
 
   it('names the in-process tools by what they do, never showing the internal server name', () => {
     expect(toolTitle('mcp__calvin__send_file', { path: '/tmp/x/chart.png' }, cwd)).toBe('Send chart.png');
-    expect(toolTitle('mcp__calvin__spawn_thread', { task: 'Review the PR' }, cwd)).toBe('New thread: Review the PR');
+    expect(toolTitle('mcp__calvin__start_thread', { task: 'Review the PR' }, cwd)).toBe('New thread: Review the PR');
     expect(toolTitle('mcp__calvin__request_secret', { name: 'API_KEY', reason: 'x' }, cwd)).toBe('Ask for $API_KEY');
     expect(toolTitle('mcp__calvin__future_tool', { a: 1 }, cwd)).toBe('future_tool({"a":1})');
   });
