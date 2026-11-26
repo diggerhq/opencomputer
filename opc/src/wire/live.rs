@@ -49,22 +49,90 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 /// apart, before `session_not_found` is believed.
 const NOT_FOUND_TRIES: u32 = 20;
 
-pub enum Cmd {
+enum Cmd {
     Attach(Attach),
     Detach(String),
     Close,
 }
 
-/// Starts the task. It ends on [`Cmd::Close`] or when every sender is gone.
-pub fn spawn(http: Http, deltas: bool, give_up: Option<Duration>, attaches: Vec<Attach>, out: mpsc::UnboundedSender<WireEvent>) -> mpsc::UnboundedSender<Cmd> {
-    let (tx, rx) = mpsc::unbounded_channel();
-    for a in attaches {
-        let _ = tx.send(Cmd::Attach(a));
+/// Watches sessions. Cheap to clone; dropping every handle ends the task.
+#[derive(Clone)]
+pub struct Live {
+    tx: mpsc::UnboundedSender<Cmd>,
+}
+
+impl Live {
+    /// Starts watching in the background and returns at once; what happens
+    /// goes to `out`. `deltas`: ask for deltas on every session. `give_up`:
+    /// fail with `unreachable` after this long without the socket while a
+    /// session is watched (`None` keeps trying).
+    pub fn open(http: Http, deltas: bool, give_up: Option<Duration>, attaches: Vec<Attach>, out: mpsc::UnboundedSender<WireEvent>) -> Live {
+        let (tx, rx) = mpsc::unbounded_channel();
+        for a in attaches {
+            let _ = tx.send(Cmd::Attach(a));
+        }
+        let mut actor = Actor::new(Some(http), deltas, out);
+        actor.give_up = give_up;
+        tokio::spawn(actor.run(rx));
+        Live { tx }
     }
-    let mut actor = Actor::new(Some(http), deltas, out);
-    actor.give_up = give_up;
-    tokio::spawn(actor.run(rx));
-    tx
+
+    /// Watches a session: `Attached`, then its events.
+    pub fn attach(&self, attach: Attach) {
+        let _ = self.tx.send(Cmd::Attach(attach));
+    }
+
+    pub fn detach(&self, session_id: &str) {
+        let _ = self.tx.send(Cmd::Detach(session_id.to_string()));
+    }
+
+    pub fn close(&self) {
+        let _ = self.tx.send(Cmd::Close);
+    }
+}
+
+/// Opens one socket and closes it, for `opc doctor`: how long the dial and
+/// `ready` took, then `pings` round trips.
+pub async fn probe(http: &Http, pings: usize) -> Result<(Duration, Vec<Duration>)> {
+    let (frames_tx, mut frames) = mpsc::unbounded_channel();
+    let started = Instant::now();
+    let d = client::dial(&http.live_url(), http.key().unwrap_or_default(), PROTOCOL, 1, frames_tx).await?;
+    let send = |v: Value| {
+        let _ = d.tx.send(Message::Text(v.to_string().into()));
+    };
+    send(json!({"t": "hello", "protocol": VERSION}));
+    await_frame(&mut frames, "ready").await?;
+    let opened = started.elapsed();
+    let mut rtts = Vec::with_capacity(pings);
+    for _ in 0..pings {
+        let t = Instant::now();
+        send(json!({"t": "ping"}));
+        await_frame(&mut frames, "pong").await?;
+        rtts.push(t.elapsed());
+    }
+    let _ = d.tx.send(Message::Close(None));
+    Ok((opened, rtts))
+}
+
+async fn await_frame(frames: &mut mpsc::UnboundedReceiver<(u64, Frame)>, t: &str) -> Result<()> {
+    while let Some((_, frame)) = frames.recv().await {
+        match frame {
+            Frame::Json(v) if v.get("t").and_then(Value::as_str) == Some(t) => return Ok(()),
+            Frame::Closed { code, reason } => return Err(close_error(code, &reason)),
+            _ => {}
+        }
+    }
+    Err(Error::unreachable("the live socket closed"))
+}
+
+/// The error a close of the live socket stands for.
+fn close_error(code: u16, reason: &str) -> Error {
+    match code {
+        4400 => Error::usage(format!("the server refused the live socket: {}", if reason.is_empty() { "protocol error" } else { reason })),
+        4001 => Error::new("unauthenticated", format!("the live socket refused the credential ({reason})")).with("closeCode", 4001u64),
+        4003 => Error::new("forbidden", format!("the live socket refused this key access ({reason})")).with("reason", reason).with("closeCode", 4003u64),
+        _ => Error::unreachable(format!("the live socket closed ({code}{})", if reason.is_empty() { String::new() } else { format!(" {reason}") })),
+    }
 }
 
 /// One page of `GET /sessions/{id}/events`.
@@ -578,13 +646,8 @@ impl Actor {
             Frame::Closed { code, reason } => {
                 log::info(&format!("live: socket closed ({code}{})", if reason.is_empty() { String::new() } else { format!(" {reason}") }));
                 self.lost();
-                if code == 4400 {
-                    let mut e = Error::usage(format!("the server refused the live socket: {}", if reason.is_empty() { "protocol error" } else { &reason }));
-                    e.code = "usage".into();
-                    return self.fatal(e);
-                }
-                if code == 4003 {
-                    return self.fatal(Error::new("forbidden", format!("the live socket refused this key access ({reason})")).with("reason", reason.as_str()).with("closeCode", 4003u64));
+                if matches!(code, 4400 | 4003) {
+                    return self.fatal(close_error(code, &reason));
                 }
                 if !self.closed {
                     // Going away or restarting: come back soon, spread out.

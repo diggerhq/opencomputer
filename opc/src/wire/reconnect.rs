@@ -1,7 +1,6 @@
 //! The wire actor: one task owns the connection to the computer and the
 //! requests in flight, so there is a single writer for every piece of state
-//! and no locks. Watching sessions is `live.rs`; a [`WireHandle`] reaches
-//! both.
+//! and no locks. Watching sessions is not done here: that is `live.rs`.
 //!
 //! Requests not answered when a connection drops are sent again on the next
 //! one (writes carry an idempotency key, so a repeat is harmless), except
@@ -9,7 +8,7 @@
 
 use super::client::{self, Frame};
 use super::redial::{self, HINT_MAX, Redial, backoff, hinted};
-use super::{Attach, WireEvent, WireOptions, live};
+use super::{WireEvent, WireOptions};
 use crate::error::{Error, Result};
 use crate::http::Http;
 use crate::log;
@@ -39,7 +38,6 @@ pub struct Wire;
 #[derive(Clone)]
 pub struct WireHandle {
     tx: mpsc::UnboundedSender<Cmd>,
-    live: Option<mpsc::UnboundedSender<live::Cmd>>,
 }
 
 enum Cmd {
@@ -51,15 +49,13 @@ enum Cmd {
 }
 
 impl Wire {
-    /// Starts dialing in the background and returns at once. Sessions are
-    /// watched over the live socket and HTTP, so watching needs `http`.
-    pub fn open(opts: WireOptions, attaches: Vec<Attach>, http: Option<Http>) -> (WireHandle, mpsc::UnboundedReceiver<WireEvent>) {
+    /// Starts dialing in the background and returns at once; what happens
+    /// goes to `out`. `http` checks a refusal against `/me`.
+    pub fn open(opts: WireOptions, http: Option<Http>, out: mpsc::UnboundedSender<WireEvent>) -> WireHandle {
         let (tx, rx) = mpsc::unbounded_channel();
-        let (out, events) = mpsc::unbounded_channel();
-        let live = http.clone().map(|h| live::spawn(h, opts.deltas, opts.give_up, attaches, out.clone()));
         let actor = Actor::new(opts, http, out);
         tokio::spawn(actor.run(rx));
-        (WireHandle { tx, live }, events)
+        WireHandle { tx }
     }
 }
 
@@ -77,19 +73,6 @@ impl WireHandle {
         let _ = self.tx.send(Cmd::Notify { method: method.to_string(), params });
     }
 
-    /// Watches a session: `Attached`, then its events.
-    pub fn attach(&self, attach: Attach) {
-        if let Some(live) = &self.live {
-            let _ = live.send(live::Cmd::Attach(attach));
-        }
-    }
-
-    pub fn detach(&self, session_id: &str) {
-        if let Some(live) = &self.live {
-            let _ = live.send(live::Cmd::Detach(session_id.to_string()));
-        }
-    }
-
     pub fn send_binary(&self, channel: u32, data: Bytes) {
         let _ = self.tx.send(Cmd::Binary(channel, data));
     }
@@ -101,9 +84,6 @@ impl WireHandle {
 
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
-        if let Some(live) = &self.live {
-            let _ = live.send(live::Cmd::Close);
-        }
     }
 }
 
@@ -832,7 +812,7 @@ mod tests {
     /// loop would, and times are read off `redial.at` against `Instant::now`.
     fn actor(http: bool) -> (Actor, mpsc::UnboundedReceiver<WireEvent>) {
         let (out, events) = mpsc::unbounded_channel();
-        let opts = WireOptions { url: "ws://127.0.0.1:9/v1".into(), key: "k".into(), deltas: false, give_up: None };
+        let opts = WireOptions { url: "ws://127.0.0.1:9/v1".into(), key: "k".into(), give_up: None };
         let http = http.then(|| {
             let config = crate::config::Config {
                 path: std::path::PathBuf::from("/nonexistent/opc-test-config"),

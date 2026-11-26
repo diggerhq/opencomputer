@@ -6,7 +6,7 @@ use crate::cli::JsonOnly;
 use crate::config::KeySource;
 use crate::error::{Error, Result, exit};
 use crate::render::duration;
-use crate::wire::WireEvent;
+use crate::wire::{Wire, WireEvent, WireOptions};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -105,8 +105,9 @@ pub async fn run(ctx: &Ctx, a: JsonOnly) -> Result<i32> {
     let who = [g("/credential/name"), g("/person/name"), g("/organization/name")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     d.pass("credential", ms(t), if who.is_empty() { source(ctx) } else { who });
     d.pass("api", None, ctx.config.api_url.clone());
-    if let Some(u) = crate::wire::reconnect::wire_url_from_me(&me) {
-        crate::cache::set_wire_url(&ctx.config.api_url, &u);
+    let wire_from_me = crate::wire::reconnect::wire_url_from_me(&me);
+    if let Some(u) = &wire_from_me {
+        crate::cache::set_wire_url(&ctx.config.api_url, u);
     }
     match g("/computer/status").as_str() {
         "not_set_up" => {
@@ -116,58 +117,65 @@ pub async fn run(ctx: &Ctx, a: JsonOnly) -> Result<i32> {
         s => d.pass("computer", None, if s.is_empty() { "unknown".into() } else { s.to_string() }),
     }
 
-    // 5. The connection.
-    let url = match ctx.wire_url().await {
-        Ok(u) => u,
+    // 5–6. The live socket, which every command that watches uses.
+    let t = Instant::now();
+    let probed = tokio::time::timeout(TIMEOUT, crate::wire::live::probe(&ctx.http, 20)).await.unwrap_or_else(|_| Err(no_answer()));
+    let rtts = match probed {
+        Ok((opened, rtts)) => {
+            d.pass("live", Some(opened.as_millis() as u64), ctx.http.live_url());
+            rtts
+        }
         Err(e) => {
-            d.fail("connection", None, e);
+            d.fail("live", ms(t), e);
             return d.finish();
         }
     };
-    let t = Instant::now();
-    let (wire, mut rx) = ctx.open_wire(Vec::new(), false).await?;
-    let opened = tokio::time::timeout(Duration::from_secs(20), async {
-        while let Some(ev) = rx.recv().await {
-            match ev {
-                WireEvent::Connected { region, .. } => return Ok(region),
-                WireEvent::Fatal(e) => return Err(e),
-                WireEvent::Reconnecting { error, .. } => return Err(error),
-                _ => {}
-            }
-        }
-        Err(Error::unreachable("the connection closed"))
-    })
-    .await
-    .unwrap_or_else(|_| Err(Error::new("timeout", "no answer in 20 s")));
-    match opened {
-        Ok(region) => d.pass("connection", ms(t), match region {
-            Some(r) => format!("{url} · {r}"),
-            None => url,
-        }),
-        Err(e) => {
-            d.fail("connection", ms(t), e);
-            return d.finish();
-        }
-    }
-
-    // 6. A round trip through it.
-    let t = Instant::now();
-    let mut rtts = Vec::new();
-    for _ in 0..20 {
-        let p = Instant::now();
-        match wire.call("ping", json!({})).await {
-            Ok(_) => rtts.push(p.elapsed().as_millis() as u64),
-            Err(e) => {
-                d.fail("round trip", ms(t), e);
-                return d.finish();
-            }
-        }
-    }
+    let mut rtts: Vec<u64> = rtts.iter().map(|r| r.as_millis() as u64).collect();
     rtts.sort_unstable();
     let median = rtts[rtts.len() / 2];
     let p90 = rtts[(rtts.len() * 9 / 10).min(rtts.len() - 1)];
-    d.pass("round trip", ms(t), format!("{median} ms median, {p90} ms p90 ({} pings)", rtts.len()));
+    d.pass("round trip", None, format!("{median} ms median, {p90} ms p90 ({} pings)", rtts.len()));
+
+    // 7. The wire (terminals), only when this API has one: `/me` names it,
+    // or `OPC_WIRE_URL` does. Without either there is nothing to check.
+    let Some(url) = super::wire_url_from_env().or(wire_from_me) else {
+        d.pass("wire", None, "none for this API (opc shell needs one)".into());
+        return d.finish();
+    };
+    let t = Instant::now();
+    match tokio::time::timeout(TIMEOUT, wire(ctx, &url)).await.unwrap_or_else(|_| Err(no_answer())) {
+        Ok((region, ping)) => d.pass("wire", ms(t), format!("{url}{} · {ping} ms ping", region.map(|r| format!(" · {r}")).unwrap_or_default())),
+        Err(e) => d.fail("wire", ms(t), e),
+    }
     d.finish()
+}
+
+const TIMEOUT: Duration = Duration::from_secs(20);
+
+fn no_answer() -> Error {
+    Error::new("timeout", format!("no answer in {} s", TIMEOUT.as_secs()))
+}
+
+/// Opens the wire at `url` and pings once: its region and the round trip.
+async fn wire(ctx: &Ctx, url: &str) -> Result<(Option<String>, u64)> {
+    let opts = WireOptions { url: url.to_string(), key: ctx.require_key()?.to_string(), give_up: None };
+    let (out, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let wire = Wire::open(opts, Some(ctx.http.clone()), out);
+    let region = loop {
+        match rx.recv().await {
+            Some(WireEvent::Connected { region, .. }) => break region,
+            Some(WireEvent::Fatal(e) | WireEvent::Reconnecting { error: e, .. }) => {
+                wire.close();
+                return Err(e);
+            }
+            Some(_) => {}
+            None => return Err(Error::unreachable("the connection closed")),
+        }
+    };
+    let p = Instant::now();
+    let pinged = wire.call("ping", json!({})).await;
+    wire.close();
+    pinged.map(|_| (region, p.elapsed().as_millis() as u64))
 }
 
 fn source(ctx: &Ctx) -> String {

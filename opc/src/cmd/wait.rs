@@ -65,9 +65,9 @@ pub async fn run(ctx: &mut Ctx, args: WaitArgs) -> Result<i32> {
         }
     }
     let attaches = sessions.iter().map(|s| Attach { session_id: s.clone(), ..Default::default() }).collect();
-    let (wire, rx) = ctx.open_wire(attaches, false).await?;
+    let (live, rx) = ctx.open_live(attaches, false);
     let pairs: Vec<(String, bool)> = sessions.iter().map(|s| (s.clone(), false)).collect();
-    let mut f = Follower::new(ctx.http.clone(), wire, rx, &pairs);
+    let mut f = Follower::new(ctx.http.clone(), live, rx, &pairs);
     let mut trackers: Vec<Tracker> = targets.iter().map(|t| Tracker::new(&t.session_id, t.goal.clone(), args.on_ask.unwrap_or(OnAsk::Fail), args.wait_subagents)).collect();
 
     let mut codes: Vec<Option<i32>> = vec![None; trackers.len()];

@@ -190,10 +190,14 @@ pub struct Knobs {
     pub delays: Vec<(String, Duration)>,
     /// Sent as `x-opc-latest` on every response.
     pub latest: Option<String>,
-    /// `false`: `/me` has `wireUrl: null` and upgrades get 404.
-    pub ws_enabled: bool,
-    /// Accept the upgrade, then close at once with this code and reason.
+    /// `false`: there is no wire: `/me` has `wireUrl: null` and wire
+    /// upgrades get 404. The live socket is unaffected.
+    pub wire_enabled: bool,
+    /// Accept the upgrade (wire and live socket), then close at once with
+    /// this code and reason.
     pub ws_refuse: Option<(u16, String)>,
+    /// The same, for the wire only.
+    pub wire_refuse: Option<(u16, String)>,
     /// Drop the next connection (no close frame) after it has sent this many frames.
     pub ws_drop_after: Option<usize>,
     /// Drop the next live socket (no close frame) after it has sent this many frames.
@@ -217,8 +221,9 @@ impl Default for Knobs {
             failures: vec![],
             delays: vec![],
             latest: None,
-            ws_enabled: true,
+            wire_enabled: true,
             ws_refuse: None,
+            wire_refuse: None,
             ws_drop_after: None,
             live_drop_after: None,
             interrupt_spares_background: false,
@@ -625,8 +630,14 @@ impl Fake {
     pub fn set_latest_version(&self, v: Option<&str>) {
         self.knobs().latest = v.map(str::to_string);
     }
-    pub fn set_ws_enabled(&self, on: bool) {
-        self.knobs().ws_enabled = on;
+    /// `false`: no wire (`/me` names none); the live socket still works.
+    pub fn set_wire_enabled(&self, on: bool) {
+        self.knobs().wire_enabled = on;
+    }
+    /// Accept wire upgrades and close them at once with `code`; the live
+    /// socket still works.
+    pub fn refuse_wire(&self, close: Option<(u16, &str)>) {
+        self.knobs().wire_refuse = close.map(|(c, r)| (c, r.to_string()));
     }
     /// Accept upgrades and close them at once with `code` (`4503` takes a JSON reason).
     pub fn refuse_ws(&self, close: Option<(u16, &str)>) {
