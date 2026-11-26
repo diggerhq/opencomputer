@@ -2,28 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { TraceContext } from '../protocol.js';
 import { createTelemetry, type Batch } from '../telemetry/emitter.js';
 import fixture from '../telemetry/deliver-trace.fixture.json' with { type: 'json' };
-import { decidePath, exitReason, forwardTrace, traceFields } from './trace.js';
+import { exitReason, traceFields } from './trace.js';
 
 const trace = (fixture as { trace: TraceContext }).trace;
 
 describe('host trace', () => {
-  it('decides the path after ensureRunner', () => {
-    expect(decidePath(undefined)).toBe('warm');
-    expect(decidePath({ resumed: false })).toBe('new');
-    expect(decidePath({ resumed: true })).toBe('resume');
-    expect(decidePath({ resumed: false, prewarmed: true })).toBe('prewarmed');
-  });
-
-  it('adds only the path before forwarding; timings are events on the trace', () => {
-    expect(forwardTrace(trace)).toEqual({ ...trace, path: 'warm' });
-    expect(forwardTrace(trace, { resumed: true })).toEqual({ ...trace, path: 'resume' });
-    expect(forwardTrace(trace, { resumed: false, prewarmed: true })).toEqual({ ...trace, path: 'prewarmed' });
-  });
-
   it('gives envelope fields that pass the boundary', async () => {
     const sent: Batch[] = [];
     const t = createTelemetry({ service: 'host', version: 'v', region: 'r', send: (b) => void sent.push(b) });
-    t.emit('deliver.received', { ...traceFields('T1:C1:1.2', forwardTrace(trace)), dispatch_id: 'd1', duration_ms: 3 });
+    t.emit('deliver.received', { ...traceFields('T1:C1:1.2', { ...trace, path: 'warm' }), dispatch_id: 'd1', duration_ms: 3 });
     t.emit('deliver.received', traceFields('C1:1.2'));
     await t.flush();
     expect(t.dropped).toEqual({});

@@ -631,7 +631,7 @@ impl<'a> App<'a> {
                     Ok(v) => break Ok(v),
                     Err(e) if e.retryable && attempt < 40 => {
                         attempt += 1;
-                        tokio::time::sleep(crate::wire::reconnect::backoff(attempt).max(Duration::from_millis(500))).await;
+                        tokio::time::sleep(crate::wire::redial::backoff(attempt).max(Duration::from_millis(500))).await;
                     }
                     Err(e) => break Err(e),
                 }

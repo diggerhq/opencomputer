@@ -76,8 +76,8 @@ export async function waits(x: Rig, b: T, e: T) {
     const plantedAt = Date.now();
 
     const [sb, se] = [await x.known(b.spec), await x.known(e.spec)];
-    await Promise.all([b.deliver(), e.deliver()]);
-    keeping = setInterval(() => void b.deliver(), 8000);
+    await Promise.all([b.start(), e.start()]);
+    keeping = setInterval(() => void b.start(), 8000);
     const list = (s: string) => wire.call<{ entries: { path: string }[] }>({ t: 'files.list', sessionId: s, member, path: '', depth: 1, limit: 200 });
     const before = await list(sb);
     check(!!before.result, `over a new connection to the wire socket, /files of the running thread answers (${brief(before)})`);
@@ -94,7 +94,7 @@ export async function waits(x: Rig, b: T, e: T) {
         const r = await p;
         return { r, ms: Date.now() - at };
       };
-      const [start, term, files] = await Promise.all([timed(e.deliver()), timed(wire.terminal(sb, member, 'id -u')), timed(list(sb))]);
+      const [start, term, files] = await Promise.all([timed(e.start()), timed(wire.terminal(sb, member, 'id -u')), timed(list(sb))]);
       const within = (ms: number) => ms >= WAIT_MS - 1500 && ms <= WAIT_MS + 4000;
       check(!!start.r.reply?.ok && start.ms >= LOCK_S * 1000 - 2500 && e.id() === eid && (await status(e)) === 'running',
         `while provisioning holds the image lock (${LOCK_S} s) the start of a stopped thread waits for it: answered in ${start.ms} ms, in the same container (${start.r.reply?.error ?? ''})`);
@@ -105,7 +105,7 @@ export async function waits(x: Rig, b: T, e: T) {
       check('out' in term2 && term2.out.trim() === '1500' && !!files2.result, `once the lock is released both answer again (${brief(term2)}, ${brief(files2)})`);
     } else {
       say(`SKIP a start, a terminal and /files under the image lock: no readable ${IMAGE_LOCK} here (root: install -m 0640 -g <the host's group> /dev/null ${IMAGE_LOCK})`);
-      const r = await e.deliver();
+      const r = await e.start();
       check(!!r.reply?.ok && e.id() === eid, `the stopped thread resumes in ${r.ms} ms`);
     }
 
@@ -136,7 +136,7 @@ export async function waits(x: Rig, b: T, e: T) {
     const held = await wire.putHeld(se, member, 's11-held', small, small.length >> 1);
     check('finish' in held, `an upload to the stopped thread is under way, half sent (${brief(held)})`);
     clearInterval(keeping);
-    await b.deliver();
+    await b.start();
     const idleAt = Date.now();
     check(!!(await until(async () => ((await status(b)) === 'exited' ? true : undefined), 60_000)), 'the other thread went idle too');
     await sleep(Math.max(0, RETENTION_MS - (Date.now() - idleAt)));

@@ -47,7 +47,7 @@ export interface SpareThread {
   key: string;
   spec: SessionSpec;
   id(): string;
-  deliver(trace?: TraceContext, text?: string): Promise<{ reply?: { ok?: boolean; error?: string }; ms: number; trace: TraceContext }>;
+  start(trace?: TraceContext, text?: string): Promise<{ reply?: { ok?: boolean; error?: string }; ms: number; trace: TraceContext }>;
   inspect(format: string): Promise<string>;
   inside(script: string, as?: string): Promise<string>;
   logs(): Promise<string>;
@@ -181,7 +181,7 @@ export async function spareChecks(k: SpareKit) {
       if (pool) await full(pool);
       const t = newThread();
       ts.push(t);
-      const d = await t.deliver();
+      const d = await t.start();
       if (!d.reply?.ok) {
         check(false, `${what}: delivery ${i} failed: ${d.reply?.error}`);
         continue;
@@ -260,7 +260,7 @@ export async function spareChecks(k: SpareKit) {
 
   // ---- the claim
   const one = newThread();
-  const d1 = await one.deliver();
+  const d1 = await one.start();
   const c1 = await evLater(d1.trace, 'runner.claimed');
   check(!!d1.reply?.ok && !!c1 && first.includes(one.id()), `a new thread's first delivery → ok in ${d1.ms} ms, in the container of spare ${one.id()} (${d1.reply?.error ?? ''})`);
   check(c1?.data?.launch_mode === 'podman' && typeof c1.data['container.mount_ms'] === 'number' && typeof c1.data['container.add_ms'] === 'number' && !ev(d1.trace, 'runner.launched'),
@@ -278,7 +278,7 @@ export async function spareChecks(k: SpareKit) {
   check(tk.startsWith('ghs_fake') && k.tokenSessions.at(-1) === one.key, `its token socket now asks for this thread (${tk}, ${k.tokenSessions.at(-1)})`);
   const other = first.find((id) => id !== one.id()) as string;
   check((await inside(other, `${dataMounts}; true`)) === '0' && !k.records().get(other), `the other spare ${other} still has no mount and no record`);
-  const d1b = await one.deliver();
+  const d1b = await one.start();
   check(!!d1b.reply?.ok, `a second delivery to the claimed thread → ok in ${d1b.ms} ms`);
   const refilled = await full(POOL);
   check(refilled.length === POOL && refilled.includes(other) && !refilled.includes(one.id()), `the pool is ${POOL} again: ${refilled.join(', ')}`);
@@ -295,12 +295,12 @@ export async function spareChecks(k: SpareKit) {
   let took = 0;
   for (let i = 0; i < N; i++) {
     await full(POOL);
-    quiet.push((await one.deliver()).ms);
+    quiet.push((await one.start()).ms);
     const t = newThread();
     made.push(t);
-    const d = await t.deliver();
+    const d = await t.start();
     await until(async () => ((await spares()).length === POOL ? true : undefined), 15_000, 50); // the pool is being topped up now
-    beside.push((await one.deliver()).ms);
+    beside.push((await one.start()).ms);
     if (d.reply?.ok) reply.push(d.ms);
     if (await evLater(d.trace, 'runner.claimed')) took++;
   }
@@ -314,7 +314,7 @@ export async function spareChecks(k: SpareKit) {
   const burst = [newThread(), newThread(), newThread()];
   const out: string[] = [];
   const ds = [];
-  for (const t of burst) ds.push(await t.deliver());
+  for (const t of burst) ds.push(await t.start());
   for (const d of ds) out.push(`${d.ms} ms (${(await evLater(d.trace, 'runner.claimed')) ? 'spare' : 'no spare'}${d.reply?.ok ? '' : ` FAILED ${d.reply?.error}`})`);
   say(`TIMING three new threads back to back, 1 repository, pool of ${POOL}: ${out.join(', ')}`);
   await drop(burst);
@@ -325,7 +325,7 @@ export async function spareChecks(k: SpareKit) {
   // ---- a claim that fails: the spares are paused, so the one taken cannot be made the thread's
   for (const id of now) await podman(['pause', containerName(id)]);
   const f = newThread();
-  const df = await f.deliver();
+  const df = await f.start();
   for (const id of now) await podman(['unpause', containerName(id)]).catch(() => {}); // the one taken is gone
   const missed = await evLater(df.trace, 'pool.spare_missed');
   const cold = await evLater(df.trace, 'runner.launched');
@@ -334,7 +334,7 @@ export async function spareChecks(k: SpareKit) {
   check(now.includes(f.id()) && (await status(f.id())) === 'running' && (await f.inside(dataMounts)) !== '0', `under the id of the spare that was taken (${f.id()}), in a container made anew, with its workspace mounted`);
   const left = now.find((id) => id !== f.id()) as string;
   check((await status(left)) === 'running' && !k.records().get(left), `the spare that was not taken (${left}) is still a spare`);
-  const dfb = await f.deliver();
+  const dfb = await f.start();
   check(!!dfb.reply?.ok, `the thread goes on: next delivery ok in ${dfb.ms} ms`);
   await drop([one]);
 
@@ -372,7 +372,7 @@ export async function spareChecks(k: SpareKit) {
     check(next.length === 1 && !old.includes(next[0]) && env1.includes(`"version":"${NEXT_VERSION}"`) && (await podman(['inspect', '--format', '{{.Config.Image}}', containerName(next[0])])).trim() === NEXT_IMAGE,
       `SP_POOL_SIZE=1: one spare, from the new release and the new image (${next.join(', ')})`);
     const g = newThread();
-    const dg = await g.deliver();
+    const dg = await g.start();
     check(!!dg.reply?.ok && g.id() === next[0] && !!(await evLater(dg.trace, 'runner.claimed')), `a new thread takes it: ok in ${dg.ms} ms`);
     // ---- idle: the thread stops, the spare beside it stays
     const stay = await full(1);

@@ -8,6 +8,7 @@
 //! after `1009 message too big`.
 
 use super::client::{self, Frame};
+use super::redial::{self, HINT_MAX, Redial, backoff, hinted};
 use super::{Attach, WireEvent, WireOptions, live};
 use crate::error::{Error, Result};
 use crate::http::Http;
@@ -25,14 +26,6 @@ const QUIET: Duration = Duration::from_secs(15);
 /// Keepalive and wake detection.
 const KEEPALIVE: Duration = Duration::from_secs(20);
 const MIN_PROBE: Duration = Duration::from_millis(750);
-const BACKOFF_START: Duration = Duration::from_millis(250);
-const BACKOFF_MAX: Duration = Duration::from_secs(8);
-/// A connection up this long resets the backoff.
-const STABLE: Duration = Duration::from_secs(60);
-/// How long a dial may take before it counts as failed.
-const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
-/// A server's wait (`Retry-After`, `retryAfterMs`) is honoured up to this.
-const HINT_MAX: Duration = Duration::from_secs(30);
 /// A connection whose credential ends sooner than this is not replaced: the
 /// replacement would end with it.
 const EXPIRY_MIN: Duration = Duration::from_secs(60);
@@ -196,8 +189,7 @@ struct Actor {
     frames_rx: mpsc::UnboundedReceiver<(u64, Frame)>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
-    attempt: u32,
-    retry_at: Option<Instant>,
+    redial: Redial,
     down_since: Option<Instant>,
     ever_connected: bool,
     refreshed_url: bool,
@@ -237,8 +229,7 @@ impl Actor {
             frames_rx,
             internal_tx,
             internal_rx,
-            attempt: 0,
-            retry_at: Some(now),
+            redial: Redial { attempt: 0, at: Some(now) },
             down_since: Some(now),
             ever_connected: false,
             refreshed_url: false,
@@ -296,7 +287,7 @@ impl Actor {
                 d = t;
             }
         };
-        if let Some(t) = self.retry_at {
+        if let Some(t) = self.redial.at {
             min(t);
         }
         if let Some((_, t)) = self.probe {
@@ -410,8 +401,7 @@ impl Actor {
                 self.close();
                 return;
             }
-        if self.retry_at.is_some_and(|t| now >= t) {
-            self.retry_at = None;
+        if self.redial.due(now) {
             self.dial();
         }
         if let Some((id, t)) = self.probe
@@ -423,9 +413,7 @@ impl Actor {
                     let _ = c.tx.send(Message::Close(None));
                     // Dead without a close frame.
                     crate::telemetry::connection_ended(&c.counts, c.up_since.elapsed(), 1006, c.reconnect);
-                    if c.up_since.elapsed() >= STABLE {
-                        self.attempt = 0;
-                    }
+                    self.redial.ended(c.up_since.elapsed());
                 }
                 crate::telemetry::error(crate::telemetry::ErrorClass::Timeout, None);
                 self.down_since.get_or_insert(now);
@@ -484,16 +472,10 @@ impl Actor {
         let generation = self.generation;
         self.dialing = Some((generation, Instant::now()));
         let url = self.url.clone();
-        log::debug(&format!("wire: dialing {} (attempt {})", self.url, self.attempt));
-        let key = self.opts.key.clone();
-        let frames = self.frames_tx.clone();
+        log::debug(&format!("wire: dialing {} (attempt {})", self.url, self.redial.attempt));
         let internal = self.internal_tx.clone();
-        tokio::spawn(async move {
-            let r = match tokio::time::timeout(DIAL_TIMEOUT, client::dial(&url, &key, super::PROTOCOL, generation, frames)).await {
-                Ok(r) => r,
-                Err(_) => Err(Error::unreachable("timed out connecting to your computer")),
-            };
-            let _ = internal.send(Internal::Dialed(generation, r));
+        redial::dial(url, self.opts.key.clone(), super::PROTOCOL, generation, self.frames_tx.clone(), "timed out connecting to your computer", move |g, r| {
+            let _ = internal.send(Internal::Dialed(g, r));
         });
     }
 
@@ -593,13 +575,11 @@ impl Actor {
         if self.closed {
             return;
         }
-        let delay = hinted(backoff(self.attempt), error.as_ref().and_then(Error::retry_after_ms));
-        self.attempt = self.attempt.saturating_add(1);
-        self.retry_at = Some(Instant::now() + delay);
+        let delay = self.redial.back_off(error.as_ref().and_then(Error::retry_after_ms));
         // A failed replacement while the old connection serves is silent.
-        if !self.is_ready() && (self.ever_connected || self.attempt > 1) {
+        if !self.is_ready() && (self.ever_connected || self.redial.attempt > 1) {
             self.emit(WireEvent::Reconnecting {
-                attempt: self.attempt,
+                attempt: self.redial.attempt,
                 retry_in: delay,
                 error: error.unwrap_or_else(|| Error::unreachable("the connection to your computer dropped")),
             });
@@ -607,9 +587,8 @@ impl Actor {
     }
 
     fn retry_after(&mut self, delay: Duration, error: Error) {
-        self.attempt = self.attempt.saturating_add(1);
-        self.retry_at = Some(Instant::now() + delay);
-        self.emit(WireEvent::Reconnecting { attempt: self.attempt, retry_in: delay, error });
+        self.redial.after(delay);
+        self.emit(WireEvent::Reconnecting { attempt: self.redial.attempt, retry_in: delay, error });
     }
 
     // ---- frames ----
@@ -693,7 +672,7 @@ impl Actor {
             // Held while disconnected: send them on the new connection.
             self.telemetry_at = Some(Instant::now() + crate::telemetry::BATCH_WAIT);
         }
-        self.retry_at = None;
+        self.redial.at = None;
         self.keepalive_at = Instant::now() + KEEPALIVE;
         let connection_id = params.get("connectionId").and_then(Value::as_str).unwrap_or("").to_string();
         let region = params.pointer("/server/region").and_then(Value::as_str).map(str::to_string);
@@ -757,8 +736,7 @@ impl Actor {
 
     fn on_closed(&mut self, c: Conn, code: u16, reason: String) {
         log::info(&format!("wire: connection closed ({code}{})", if reason.is_empty() { String::new() } else { format!(" {reason}") }));
-        if c.up_since.elapsed() >= STABLE {
-            self.attempt = 0;
+        if self.redial.ended(c.up_since.elapsed()) {
             self.refused_since = None;
         }
         if c.ready && !self.closed {
@@ -804,7 +782,7 @@ impl Actor {
             }
             4029 => {
                 let e = Error::new("too_many_attached", "too many connections for this key");
-                let delay = hinted(backoff(self.attempt.max(3)), close_hint(&reason));
+                let delay = hinted(backoff(self.redial.attempt.max(3)), close_hint(&reason));
                 self.retry_after(delay, e);
             }
             1009 => {
@@ -816,17 +794,11 @@ impl Actor {
         }
     }
 
-    /// Dials again after a close that is no failure of ours (going away,
-    /// restarting, a dead socket): at once the first time, within 250 ms
-    /// when `spread` (a restarting server's clients must not all come back
-    /// in the same instant), then on the backoff, so a server that keeps
-    /// closing is not hammered.
+    /// Dials again after a close that is no failure of ours ([`Redial::soon`]).
     fn redial(&mut self, spread: bool) {
-        let delay = redial_delay(self.attempt, spread, unit_random());
-        self.attempt = self.attempt.saturating_add(1);
-        self.retry_at = Some(Instant::now() + delay);
+        let delay = self.redial.soon(spread);
         if self.ever_connected {
-            self.emit(WireEvent::Reconnecting { attempt: self.attempt, retry_in: delay, error: Error::unreachable("reconnecting") });
+            self.emit(WireEvent::Reconnecting { attempt: self.redial.attempt, retry_in: delay, error: Error::unreachable("reconnecting") });
         }
     }
 }
@@ -838,38 +810,6 @@ pub fn wire_url_from_me(me: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|u| u.starts_with("wss://") || u.starts_with("ws://"))
         .map(str::to_string)
-}
-
-/// Immediate, then 250 ms doubling to 8 s, with ±20 % jitter.
-pub fn backoff(attempt: u32) -> Duration {
-    backoff_with(attempt, unit_random())
-}
-
-/// [`backoff`] with its random draw `r` in `[0, 1]`.
-fn backoff_with(attempt: u32, r: f64) -> Duration {
-    if attempt == 0 {
-        return Duration::ZERO;
-    }
-    let base = BACKOFF_START.saturating_mul(1u32 << (attempt - 1).min(6)).min(BACKOFF_MAX);
-    base.mul_f64(0.8 + 0.4 * r)
-}
-
-fn unit_random() -> f64 {
-    u16::from_le_bytes(crate::ids::random_bytes::<2>()) as f64 / u16::MAX as f64
-}
-
-/// The wait before [`Actor::redial`]'s dial: none the first time, or up to
-/// 250 ms when `spread`; then the backoff. `r` is the random draw.
-fn redial_delay(attempt: u32, spread: bool, r: f64) -> Duration {
-    match attempt {
-        0 if spread => BACKOFF_START.mul_f64(r),
-        n => backoff_with(n, r),
-    }
-}
-
-/// `delay`, or the server's wait when that is longer (up to [`HINT_MAX`]).
-fn hinted(delay: Duration, hint_ms: Option<u64>) -> Duration {
-    hint_ms.map_or(delay, |ms| delay.max(Duration::from_millis(ms).min(HINT_MAX)))
 }
 
 /// `retryAfterMs` from a close reason that is JSON (`4503`).
@@ -888,19 +828,8 @@ fn replace_in(expires_in: Duration) -> Option<Duration> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn backoff_grows_and_caps() {
-        assert_eq!(backoff(0), Duration::ZERO);
-        let b1 = backoff(1);
-        assert!(b1 >= Duration::from_millis(200) && b1 <= Duration::from_millis(300), "{b1:?}");
-        for n in 6..20 {
-            let b = backoff(n);
-            assert!(b >= Duration::from_millis(6400) && b <= Duration::from_millis(9600), "{b:?}");
-        }
-    }
-
     /// An actor driven by hand: no dial runs, the handlers are called as the
-    /// loop would, and times are read off `retry_at` against `Instant::now`.
+    /// loop would, and times are read off `redial.at` against `Instant::now`.
     fn actor(http: bool) -> (Actor, mpsc::UnboundedReceiver<WireEvent>) {
         let (out, events) = mpsc::unbounded_channel();
         let opts = WireOptions { url: "ws://127.0.0.1:9/v1".into(), key: "k".into(), deltas: false, give_up: None };
@@ -916,7 +845,7 @@ mod tests {
             Http::new(&config).unwrap()
         });
         let mut a = Actor::new(opts, http, out);
-        a.retry_at = None;
+        a.redial.at = None;
         a.ever_connected = true;
         (a, events)
     }
@@ -939,7 +868,7 @@ mod tests {
     }
 
     fn retry_in(a: &Actor) -> Duration {
-        a.retry_at.expect("a retry is scheduled").saturating_duration_since(Instant::now())
+        a.redial.at.expect("a retry is scheduled").saturating_duration_since(Instant::now())
     }
 
     fn drain(rx: &mut mpsc::UnboundedReceiver<WireEvent>) -> Vec<WireEvent> {
@@ -947,16 +876,6 @@ mod tests {
     }
 
     const SLACK: Duration = Duration::from_millis(50);
-
-    #[test]
-    fn redials_spread_then_back_off() {
-        assert_eq!(redial_delay(0, false, 1.0), Duration::ZERO);
-        assert_eq!(redial_delay(0, true, 0.0), Duration::ZERO);
-        assert_eq!(redial_delay(0, true, 1.0), Duration::from_millis(250));
-        assert_eq!(redial_delay(1, true, 0.5), Duration::from_millis(250));
-        assert_eq!(redial_delay(3, false, 0.5), Duration::from_secs(1));
-        assert_eq!(redial_delay(30, true, 1.0), Duration::from_millis(9600));
-    }
 
     #[test]
     fn repeated_quick_closes_back_off() {
@@ -976,7 +895,7 @@ mod tests {
         for _ in 0..5 {
             a.on_closed(conn(Duration::from_secs(1)), 1012, String::new());
         }
-        a.on_closed(conn(STABLE), 1012, String::new());
+        a.on_closed(conn(redial::STABLE), 1012, String::new());
         assert!(retry_in(&a) <= Duration::from_millis(250));
     }
 
@@ -992,7 +911,7 @@ mod tests {
         a.on_dial_error(e);
         assert!(retry_in(&a) <= HINT_MAX && retry_in(&a) >= HINT_MAX - SLACK);
         // Shorter than the backoff: the backoff.
-        a.attempt = 6;
+        a.redial.attempt = 6;
         let mut e = Error::new("rate_limited", "slow down");
         e.extra.insert("retryAfterMs".into(), json!(10));
         a.on_dial_error(e);
@@ -1027,7 +946,7 @@ mod tests {
     fn a_refused_key_that_me_accepts_is_fatal_in_the_end() {
         let (mut a, mut rx) = actor(false);
         a.on_internal(Internal::MeChecked(Ok(None), Some((4001, String::new()))));
-        assert!(!a.closed && a.retry_at.is_some());
+        assert!(!a.closed && a.redial.at.is_some());
         assert!(!drain(&mut rx).iter().any(|e| matches!(e, WireEvent::Fatal(_))));
         a.on_internal(Internal::MeChecked(Ok(None), Some((4001, String::new()))));
         assert!(!a.closed);
@@ -1042,7 +961,7 @@ mod tests {
         // A connection that held clears it.
         let (mut a, _rx) = actor(false);
         a.refused_since = Some(Instant::now() - REFUSED_FOR);
-        a.on_closed(conn(STABLE), 1000, String::new());
+        a.on_closed(conn(redial::STABLE), 1000, String::new());
         assert!(a.refused_since.is_none());
     }
 

@@ -36,7 +36,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type {
-  ApiSessionStatus, Delivery, GatewayToHost, HostCredentials, HostToGateway, JournalReport, ModelRoute, Person,
+  ApiSessionStatus, GatewayToHost, HostCredentials, HostToGateway, JournalReport, ModelRoute, Person,
   RunnerApi, SessionAccess, SessionSecret, SessionSpec, SessionStatus,
 } from '../protocol.js';
 import { HOST_RUN } from '../protocol.js';
