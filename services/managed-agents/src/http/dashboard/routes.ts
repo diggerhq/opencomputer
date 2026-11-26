@@ -30,28 +30,17 @@
 // (002, forbidden vocabulary).
 
 import type { RequestIdentity } from "../../edge/auth.js";
-import { json, problem, readBoundedText } from "../../edge/http.js";
-import { AGENT_CHOICES, type AgentChoice, CODEX_AUTH_MAX_BYTES } from "../../actors/computer/held-for-org/model-access/model-access.js";
-import { CONNECT_CODE_INDEX_PREFIX, CONNECT_CODE_INVALID, connectCodeHash, connectCodeIndexName, logConnectCode, normalizeConnectCode } from "../../actors/connect-codes/codes.js";
+import { json, problem } from "../../edge/http.js";
+import { AGENT_CHOICES, type AgentChoice } from "../../actors/computer/held-for-org/model-access/model-access.js";
 import type { GitHubInstallation } from "../../protocol.js";
 import { type ComputerEdgeEnv } from "../../actors/computer/config.js";
-import type { ComputerDurableObject, ComputerOverview } from "../../actors/computer/durable-object.js";
-import { isHarness } from "../../actors/computer/held-for-org/model-access/harnesses.js";
-import { bearerToken, hostAuthorized } from "../../actors/computer/host-link/host-token.js";
-import { POOL_OBJECT, isPoolId } from "../../ids/computer-names.js";
+import type { ComputerOverview } from "../../actors/computer/durable-object.js";
+import { isPoolId } from "../../ids/computer-names.js";
 import { liveOf } from "../../actors/addresses.js";
 import { apiRefusal, type ComputerApiStub, routeComputerApi } from "../api/dispatch.js";
 import { memberId } from "../../ids/session-ids.js";
-
-type ComputerStub = DurableObjectStub<ComputerDurableObject>;
-
-function computers(env: ComputerEdgeEnv): DurableObjectNamespace<ComputerDurableObject> | null {
-  return (env.COMPUTERS as DurableObjectNamespace<ComputerDurableObject> | undefined) ?? null;
-}
-
-function computerOf(env: ComputerEdgeEnv, accountId: string): ComputerStub {
-  return computers(env)!.getByName(accountId);
-}
+import { agentBody, CODEX_BODY_MAX_BYTES } from "../agent-body.js";
+import { computerOf, computers, reservedName } from "../computer-objects.js";
 
 /**
  * The organization's managed model key was bound or deleted (work 058): its
@@ -66,11 +55,6 @@ export async function computerModelKeyChanged(env: ComputerEdgeEnv, accountId: s
   } catch (error) {
     console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_push_failed", accountId, message: error instanceof Error ? error.message : "unknown" }));
   }
-}
-
-/** Names of ComputerDurableObjects that are not an organization's: the pool's slot table, Slack team links and connect code routing. */
-function reservedName(name: string): boolean {
-  return name === POOL_OBJECT || name.startsWith("computer-slack-team:") || name.startsWith(CONNECT_CODE_INDEX_PREFIX);
 }
 
 /** The dashboard's `github`: the organization's managed installations (work 028). */
@@ -93,23 +77,6 @@ async function body(env: ComputerEdgeEnv, accountId: string, userId?: string, ov
     plan: view.plan,
     ...(view.agent ? { agent: view.agent } : {}),
   };
-}
-
-/** A setup token is at most ~430 bytes; the body has room for JSON around it and no more. */
-const AGENT_BODY_MAX_BYTES = 4096;
-/** An auth.json is capped at CODEX_AUTH_MAX_BYTES; sent as a JSON string its quotes are escaped, so twice that, and the envelope. */
-const CODEX_BODY_MAX_BYTES = 2 * CODEX_AUTH_MAX_BYTES + 1024;
-
-/** An agent route's JSON object body; 413 over the limit, `{}` when it is not a JSON object (each route then says what is missing). */
-async function agentBody(request: Request, maxBytes = AGENT_BODY_MAX_BYTES): Promise<Record<string, unknown> | Response> {
-  const text = await readBoundedText(request, maxBytes);
-  if (text === null) return problem(413, "payload_too_large", "Request body is too large");
-  try {
-    const value: unknown = JSON.parse(text || "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
 }
 
 /** The edge's `SyncedComputerKey`, checked. */
@@ -269,67 +236,4 @@ export async function routeComputerDashboard(
   if (route === "GET /v1/computer/sessions") return json({ sessions: await computer.sessions(accountId) });
 
   return null;
-}
-
-/** Provider and host routes, reachable without the edge assertion; null when the path is not one of them. */
-export async function routeComputerPublic(
-  request: Request,
-  env: ComputerEdgeEnv,
-  _context: ExecutionContext,
-): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (url.pathname === "/v1/computer/host" && request.method === "GET") return hostRoute(request, env, url);
-  if (url.pathname === "/v1/computer/agent/connect" && request.method === "POST") return connectWithCode(request, env);
-  return null;
-}
-
-/**
- * POST /v1/computer/agent/connect (work 082, CLI connect): the CLI's login,
- * with the connect code the dashboard minted, stored as the dashboard's PUT
- * /agent/claude or /agent/codex would for the code's person. Every bad code
- * is the same 401, and so is a harness this computer can't run (the
- * authenticated routes' 409 would say which codes are live); the connect's
- * other refusals pass through. The answer says nothing about the person.
- * Neither the code nor the login is logged.
- */
-async function connectWithCode(request: Request, env: ComputerEdgeEnv): Promise<Response> {
-  const input = await agentBody(request, CODEX_BODY_MAX_BYTES);
-  if (input instanceof Response) return input;
-  const provider = input.provider;
-  if (typeof input.code !== "string" || !isHarness(provider)) {
-    return problem(400, "invalid_request", "code and provider (claude or codex) are required");
-  }
-  if (!computers(env)) return problem(503, "computer_not_configured", "Computers are not available yet");
-  const invalid = () => problem(CONNECT_CODE_INVALID.status, CONNECT_CODE_INVALID.code, CONNECT_CODE_INVALID.message);
-  const code = normalizeConnectCode(input.code);
-  if (!code) {
-    logConnectCode({ action: "refused", reason: "malformed", provider });
-    return invalid();
-  }
-  const hash = await connectCodeHash(code);
-  const accountId = await computers(env)!.getByName(connectCodeIndexName(hash)).connectCodeAccount(hash);
-  if (!accountId || reservedName(accountId) || isPoolId(accountId)) {
-    logConnectCode({ action: "refused", reason: "unknown", provider });
-    return invalid();
-  }
-  const authJson = input.authJson && typeof input.authJson === "object" ? JSON.stringify(input.authJson) : input.authJson;
-  const result = await computerOf(env, accountId).agentConnectWithCode(accountId, code, {
-    provider,
-    ...(provider === "claude" ? { token: input.token } : { authJson }),
-  });
-  if (!result.ok) return problem(result.status, result.code, result.message);
-  return json({ provider: result.provider, connected: true });
-}
-
-async function hostRoute(request: Request, env: ComputerEdgeEnv, url: URL): Promise<Response> {
-  const organizationId = url.searchParams.get("organizationId");
-  // Pool computers (`pool-<random>`) connect here too, with their own derived token.
-  if (!computers(env) || (organizationId !== null && reservedName(organizationId)) || !(await hostAuthorized(bearerToken(request), organizationId, env.COMPUTER_HOST_TOKEN_KEY))) {
-    console.warn(JSON.stringify({ level: "warn", event: "computer.host_rejected", organizationId }));
-    return problem(401, "unauthorized", "Host authentication required");
-  }
-  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-    return problem(426, "upgrade_required", "WebSocket upgrade required");
-  }
-  return computerOf(env, organizationId!).fetch(request);
 }

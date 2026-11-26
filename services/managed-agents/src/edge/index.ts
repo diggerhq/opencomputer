@@ -327,7 +327,8 @@ import {
   requestRegion,
   upstreamTiming,
 } from "./latency.js";
-import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../http/dashboard/routes.js";
+import { computerModelKeyChanged, routeComputerDashboard } from "../http/dashboard/routes.js";
+import { routeComputerPublic } from "../http/public-routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
 import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
 import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../http/slack/webhooks.js";
