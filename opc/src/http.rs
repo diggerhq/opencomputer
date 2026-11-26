@@ -455,6 +455,14 @@ impl Http {
     pub async fn patch(&self, path: &str, body: &Value) -> Result<Value> {
         Ok(self.call(Method::PATCH, path, &[], Some(body), None).await?.body)
     }
+
+    pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        Ok(self.call(Method::PUT, path, &[], Some(body), None).await?.body)
+    }
+
+    pub async fn delete(&self, path: &str) -> Result<Value> {
+        Ok(self.call(Method::DELETE, path, &[], None, None).await?.body)
+    }
 }
 
 fn note_latest(headers: &HeaderMap) {

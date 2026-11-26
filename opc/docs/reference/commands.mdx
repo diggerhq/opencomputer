@@ -7,7 +7,7 @@ description: "Every opc command and option."
 
 - **Choosing a session.** Every command that acts on a session accepts `-s`, `--session <id>`. Commands whose first operand is a session also take it in that place: `opc send cs_7f3a9k2m4q8r1t6v "…"` and `opc send -s cs_7f3a9k2m4q8r1t6v "…"` are the same.
 - **Session arguments.** Wherever a command takes `<id>`, it accepts a full id (`cs_7f3a9k2m4q8r1t6v`), a unique prefix of four or more characters (`7f3a`), `-` for the last session on this machine, or a Slack thread link. A word that is a valid prefix of a session you can see is an id; any other word is a title search, where the command allows one. Prefixes are for people: scripts should pass full ids, which never become ambiguous.
-- **The last session** is the one most recently created or attached on this machine, including by `opc -p`. `push`, `pull`, `shell` and `subagents` use it when you name no session, but only when standard input is a terminal. In a script they fail with `usage` and `pass -s <id>`. `opc a` with no session opens the picker, which also needs a terminal. `send`, `wait`, `watch`, `interrupt`, `log` and `diff` always need a session.
+- **The last session** is the one most recently created or attached on this machine, including by `opc -p`. `push`, `pull`, `shell`, `subagents` and `secrets ls` use it when you name no session, but only when standard input is a terminal. In a script they fail with `usage` and `pass -s <id>`. `opc a` with no session opens the picker, which also needs a terminal. `send`, `wait`, `watch`, `interrupt`, `log` and `diff` always need a session.
 - **Output.** Every command that prints data accepts `--json`. Commands that print a session's activity also accept `--output-format text|json|stream-json`; `--json` is short for `--output-format json`. JSON goes to standard output, messages for people to standard error.
 - **Outcomes and errors.** The outcome of a turn (completed, failed, cancelled, waiting) is a [Result](/api/reference/objects#result) object on standard output. A command failure (usage, authentication, unreachable…) is `{"error": …}` on standard error. Errors are JSON whenever any JSON output format is selected. See [Exit codes](/reference/exit-codes).
 - **Idempotency keys.** `--idempotency-key <k>` on `opc -p`, `opc new`, `opc send` and `opc push` makes a retry safe: a repeat within 24 hours does nothing new. Commands that make several requests derive one key per request: `<k>:create`, `<k>:upload:<n>`, `<k>:send`. See [Scripting](/cli/scripting#retrying-safely).
@@ -237,6 +237,22 @@ Lists, stops and reads a session's [subagents](/terminal/session-screen#subagent
 | `ls` | The running subagents, with their status, name, type, activity, tool calls, tokens and time. `--all-statuses` lists ended ones too. `--json`: `{ "subagents": [Subagent…] }`. The default. |
 | `stop` | Stops a subagent. `--json` prints the [Subagent](/api/reference/objects#subagent) once it has ended. |
 | `result` | Prints its full result. `--json` prints the Subagent, with its whole `result`. |
+
+## opc secrets
+
+```
+opc secrets set <NAME> -s <id> [--file] [--json]
+opc secrets ls [id] [-s <id>] [--json]
+opc secrets rm <NAME> -s <id> [--json]
+```
+
+Sets, lists and deletes a session's own secrets. See [Secrets](/cli/secrets).
+
+| Subcommand | Does |
+| --- | --- |
+| `set` | Sets or replaces a secret. The value comes from standard input, or a prompt that does not echo when standard input is a terminal; never from an argument. Replacing needs to be the person who set it, or an organization admin. `--file`: the session gets a file, and `$NAME` is its path. |
+| `ls`, `list` | Names, who set each and when. Never values. `--json`: `{ "secrets": [Secret…] }`. |
+| `rm`, `delete` | Deletes a secret. Only the person who set it, or an organization admin. |
 
 ## opc rename
 
