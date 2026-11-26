@@ -105,12 +105,10 @@ describe("ApiTelemetry: one event per unit, ids only", () => {
     expect(e!.data).not.toHaveProperty("slack_queue_rows");
   });
 
-  it("computer.write, ticket.minted, keys.*, recovery and an outage are one event each", async () => {
+  it("ticket.minted, keys.*, recovery and an outage are one event each", async () => {
     const s = sink();
     let now = 1_000;
     const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "api", slackQueue: () => ({ rows: 0, oldestMs: null }), now: () => now });
-    t.write({ sessionId: SID, surface: "cli", method: "turns.send", hostMs: 40, doMs: 0.4, held: true, heldMs: 12, replayed: false, timedOut: false });
-    t.write({ sessionId: SID, surface: "api", method: "turns.send", hostMs: 15000, held: false, heldMs: 0, replayed: false, timedOut: true, errorCode: "computer_unavailable" });
     t.ticket({ surface: "api", ms: 3, result: "minted", sessions: 1, keyWritten: true });
     t.ticket({ surface: "api", ms: 1, result: "api_key_required" });
     t.keySynced({ keyId: "key_1", trigger: "ensure", ms: 2, ok: true, kvWrites: 2 });
@@ -125,12 +123,10 @@ describe("ApiTelemetry: one event per unit, ids only", () => {
     const out = await s.settle();
     expect(s.invalid()).toBe(0);
     expect(out.map((e) => e.event_name)).toEqual([
-      "computer.write", "computer.write", "ticket.minted", "ticket.minted", "keys.synced", "keys.revoked", "sessionlog.recovery", "computer.unavailable",
+      "ticket.minted", "ticket.minted", "keys.synced", "keys.revoked", "sessionlog.recovery", "computer.unavailable",
     ]);
-    expect(out[0]!.data).toEqual({ method: "turns.send", held: true, held_ms: 12, replayed: false, timed_out: false, do_ms: 0, slack_queue_rows: 0 });
-    expect(out[1]).toMatchObject({ outcome: "failed", error_type: "timeout", error_code: "computer_unavailable" });
-    expect(out[3]).toMatchObject({ outcome: "failed", error_code: "api_key_required", data: { result: "api_key_required" } });
-    expect(out[7]).toMatchObject({ duration_ms: 1000, data: { wait_ms: 1000 } });
+    expect(out[1]).toMatchObject({ outcome: "failed", error_code: "api_key_required", data: { result: "api_key_required" } });
+    expect(out[5]).toMatchObject({ duration_ms: 1000, data: { wait_ms: 1000 } });
   });
 
   it("the validator refuses forbidden shapes; nothing reaches the DO", async () => {
@@ -143,7 +139,6 @@ describe("ApiTelemetry: one event per unit, ids only", () => {
     expect(s.invalid()).toBe(2);
     const throwing = new ApiTelemetry({ emit: () => { throw new Error("emitter down"); }, surfaceOf: () => { throw new Error("sql"); } });
     expect(() => throwing.journaled({ sessionId: SID, epoch: 1, events: [], appendMs: 1, result: { ok: true, ack: 0, summary: summary(0) } })).not.toThrow();
-    expect(() => throwing.write({ sessionId: SID, surface: "api", method: "turns.send", hostMs: 1, held: false, heldMs: 0, replayed: false, timedOut: false })).not.toThrow();
   });
 
   it("surfaces: slack, opc is the CLI, the rest the API", () => {
@@ -181,12 +176,12 @@ describe("TelemetryBatch: the DO's events share one POST per window", () => {
     h.append(1);
     await vi.advanceTimersByTimeAsync(300);
     h.append(2);
-    h.api.write({ sessionId: SID, surface: "cli", method: "turns.send", hostMs: 4, held: false, heldMs: 0, replayed: false, timedOut: false });
+    h.api.ticket({ surface: "cli", ms: 4, result: "minted", sessions: 1, keyWritten: false });
     expect(h.posts).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(BATCH_MS);
     await h.settle();
     expect(h.posts).toHaveLength(1);
-    expect(h.posts[0]!.map((e) => e.event_name)).toEqual(["sessionlog.append", "sessionlog.append", "computer.write"]);
+    expect(h.posts[0]!.map((e) => e.event_name)).toEqual(["sessionlog.append", "sessionlog.append", "ticket.minted"]);
     // The window closed: the next event opens a new batch.
     h.append(3);
     await vi.advanceTimersByTimeAsync(BATCH_MS);

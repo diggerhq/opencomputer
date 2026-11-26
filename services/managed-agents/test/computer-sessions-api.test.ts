@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
+import type { DeliveredOutcome, InboxEntry, InboxKind } from "../src/actor/contracts.js";
 import type { ApiEvent, LogSummary } from "../src/computer/api-types.js";
 import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
 import { ComputerKeys } from "../src/computer/keys.js";
@@ -9,7 +10,6 @@ import {
   type ApiRequest,
   ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
-  HOST_CALL_TIMEOUT_MS,
   RECOVER_AFTER_MS,
 } from "../src/computer/sessions-api.js";
 import { ApiTelemetry } from "../src/computer/telemetry/api.js";
@@ -25,7 +25,6 @@ import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const ORG = "org_sessions";
 const OWNER = "usr_01jabcdefghjkmnpqrstvwxyz0";
-const MO = "usr_01jzyxwvtsrqpnmkjhgfedcba0";
 const SID = "cs_7f3a9k2m4q8r1t6v";
 
 const caller = (member = OWNER, { admin = false, ...extra }: Partial<ApiRequest> & { admin?: boolean } = {}): ApiRequest => ({
@@ -122,10 +121,26 @@ class FakeLog {
     return turn ? { ok: true as const, turn, lastSeq: this.ack } : { ok: false as const, error: "turn_not_found" as const };
   }
   async progress() {}
+  entries: InboxEntry[] = [];
+  outcomes: Array<{ id: string; outcome: DeliveredOutcome }> = [];
   async inbox() {
-    return { entries: [], epoch: this.epoch, lastSeq: this.ack };
+    return { entries: this.entries, epoch: this.epoch, lastSeq: this.ack };
+  }
+  async delivered(id: string, outcome: DeliveredOutcome) {
+    this.outcomes.push({ id, outcome });
+    this.entries = this.entries.filter((e) => e.id !== id);
   }
 }
+
+const entry = (id: string, kind: InboxKind, body: unknown = {}): InboxEntry => ({
+  id,
+  kind,
+  body,
+  by: `user:${OWNER}`,
+  actor: { subject: OWNER, kind: "key", via: "opc", admin: false },
+  trace: null,
+  at: 0,
+});
 
 const event = (seq: number, sessionId = SID): ApiEvent => ({
   id: `ev_${String(seq).padStart(16, "0")}`,
@@ -282,38 +297,58 @@ describe("journal: single writer, no gaps, no duplicates", () => {
   });
 });
 
-describe("writes", () => {
-  it("send: 202, the session overlaid with the row; the writer's error keeps its status", async () => {
+describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", () => {
+  it("compact, suspend, resume, turn cancel and subagent stop are each their host method, keyed by the entry", async () => {
     const f = fixture();
     await created(f);
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 4 } }));
-    expect(await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 202, body: { delivery: "queued" } });
-    expect(f.frames("api").at(-1)).toMatchObject({ member: MO, actor: { id: MO, via: "opc" }, params: { sessionId: SID, input: "x" } });
-    f.answers.set("turns.send", () => ({ error: { code: "queue_full", message: "full", status: 409, retryable: true, retryAfterMs: 1000 } }));
-    expect(await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } })).toEqual({
-      status: 409,
-      error: { code: "queue_full", message: "full", retryable: true, retryAfterMs: 1000 },
-    });
+    for (const method of ["sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop"]) {
+      f.answers.set(method, (frame) => ({ result: { method: frame.method } }));
+    }
+    f.logOf(SID).entries = [
+      entry("ie_0000000000000001", "compact", { instructions: "short" }),
+      entry("ie_0000000000000002", "suspend", { ifIdle: true }),
+      entry("ie_0000000000000003", "resume"),
+      entry("ie_0000000000000004", "cancel", { turnId: "tn_4m8q2x7c1v9b" }),
+      entry("ie_0000000000000005", "stop", { subagentId: "sa_000000000001" }),
+    ];
+    const result = await f.api.drain(SID, { wait: true });
+    expect(result.state).toBe("delivered");
+    expect(f.frames("api").map((frame) => [frame.method, frame.idempotencyKey, frame.params])).toEqual([
+      ["sessions.compact", "ie_0000000000000001", { instructions: "short", sessionId: SID }],
+      ["sessions.suspend", "ie_0000000000000002", { ifIdle: true, sessionId: SID }],
+      ["sessions.resume", "ie_0000000000000003", { sessionId: SID }],
+      ["turns.cancel", "ie_0000000000000004", { turnId: "tn_4m8q2x7c1v9b", sessionId: SID }],
+      ["subagents.stop", "ie_0000000000000005", { subagentId: "sa_000000000001", sessionId: SID }],
+    ]);
+    expect(f.logOf(SID).outcomes.map((o) => o.outcome)).toEqual([
+      { ok: true, result: { method: "sessions.compact" } },
+      { ok: true, result: { method: "sessions.suspend" } },
+      { ok: true, result: { method: "sessions.resume" } },
+      { ok: true, result: { method: "turns.cancel" } },
+      { ok: true, result: { method: "subagents.stop" } },
+    ]);
   });
 
-  it("stop and interrupt: 202 when they acted, 200 when there was nothing to do", async () => {
-    const f = fixture();
+  it("only what spends (a turn, compact, resume) needs credits", async () => {
+    const f = fixture({ admitted: false });
     await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    f.answers.set("subagents.stop", () => ({ result: { subagent: { id: "sa_000000000001" }, seq: 3 } }));
-    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "subagents.stop", params: { subagentId: "sa_000000000001" } })).status).toBe(202);
-    f.answers.set("subagents.stop", () => ({ result: { subagent: { id: "sa_000000000001" }, seq: 2 } }));
-    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "subagents.stop", params: { subagentId: "sa_000000000001" } })).status).toBe(200);
+    f.answers.set("turns.cancel", () => ({ result: {} }));
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "compact"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" }), entry("ie_0000000000000003", "resume")];
+    await f.api.drain(SID, { wait: true });
+    expect(f.frames("api").map((frame) => frame.method)).toEqual(["turns.cancel"]);
+    expect(f.logOf(SID).outcomes.map((o) => (o.outcome.ok ? "ok" : o.outcome.code))).toEqual(["insufficient_credits", "ok", "insufficient_credits"]);
   });
 
-  it("a host that disconnects fails the waiting call with 503 at once; a lost row is 404", async () => {
+  it("a host that disconnects mid-drain leaves the entry waiting and the session waking", async () => {
     const f = fixture();
     await created(f);
-    const pending = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } });
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend")];
+    const pending = f.api.drain(SID, { wait: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     f.api.onHostClosed();
-    expect(await pending).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
-    expect(await f.api.handle(caller(), { op: "call", sessionId: "cs_0000000000000000", method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    expect(await pending).toEqual({ state: "waking" });
+    expect(f.logOf(SID).entries).toHaveLength(1);
+    expect(f.logOf(SID).outcomes).toEqual([]);
   });
 });
 
@@ -348,7 +383,7 @@ describe("recovery: a lost writer", () => {
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 4 } }));
     await Promise.all([
       f.api.recoverTick(),
-      f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "go on" } }),
+      ((f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "go on" })]), f.api.drain(SID, { wait: true })),
     ]);
     const firstAtTwo = f.sent.findIndex((x) => "epoch" in x && (x as { epoch: number }).epoch === 2);
     expect(f.sent[firstAtTwo]!.t).toBe("epoch");
@@ -374,33 +409,6 @@ describe("recovery: a lost writer", () => {
     expect(f.frames("epoch")).toHaveLength(2);
   });
 
-  it("a write held through an adoption is awaited past 15 s (review r3 P2-2)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const f = fixture();
-      await created(f);
-      await f.api.journal(SID, 1, [event(1)]);
-      // Steady state: 15 s, then 503.
-      const plain = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hi" } });
-      await vi.advanceTimersByTimeAsync(HOST_CALL_TIMEOUT_MS);
-      expect((await plain).status).toBe(503);
-      // The epoch just moved: the host holds the write until it adopts (~20 s); the answer is still awaited.
-      Object.assign(f.logOf(SID), { epoch: 2, ack: 1, epochStartSeq: 2 });
-      f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-      await f.api.journal(SID, 1, []);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toHaveLength(1);
-      const held = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "held" } });
-      await vi.advanceTimersByTimeAsync(20_000);
-      const heldFrame = f.frames("api").at(-1)!;
-      await f.api.onHostFrame({ t: "api-result", id: heldFrame.id, result: { turnId: "tn_4m8q2x7c1v9b", duplicate: false } } as never);
-      expect((await held).status).toBe(202);
-      f.api.onHostClosed();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("hello: a journal at the log's epoch but short of its stored events (or torn, epoch 0) hears epoch (calvin r2 P1-2)", async () => {
     const f = fixture();
     await created(f);
@@ -423,7 +431,7 @@ describe("recovery: a lost writer", () => {
     ]);
   });
 
-  it("an api call waits for an in-flight epoch send and carries the new epoch after it", async () => {
+  it("a drain waits for an in-flight epoch send and carries the new epoch after it", async () => {
     const f = fixture();
     await created(f);
     f.logOf(SID).epoch = 2;
@@ -432,7 +440,8 @@ describe("recovery: a lost writer", () => {
     f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
     f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     f.sent.length = 0;
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hi" } });
+    f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "hi" })];
+    await f.api.drain(SID, { wait: true });
     expect(f.sent.map((x) => x.t).filter((t) => t === "epoch" || t === "api")).toEqual(["epoch", "api"]);
     expect(f.frames("api")[0]).toMatchObject({ epoch: 2 });
   });
@@ -521,19 +530,12 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     expect(r.events[2]).toMatchObject({ outcome: "failed", error_code: "gap" });
   });
 
-  it("an API write is one computer.write; a ticket one ticket.minted", async () => {
+  it("a ticket is one ticket.minted", async () => {
     const r = recorded();
     const f = fixture({ telemetry: r.telemetry, ticketKey: true });
     await created(f);
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 4 } }));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hello there" } });
     await f.api.handle(caller(), { op: "ticket", body: {} });
     await tick();
-    const writes = r.events.filter((e) => e.event_name === "computer.write");
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({ session_key: SID, outcome: "completed", data: { method: "turns.send", held: false, replayed: false } });
-    expect(writes[0]!.data).toHaveProperty("do_ms");
     expect(r.events.filter((e) => e.event_name === "ticket.minted").map((e) => e.data.result)).toEqual(["api_key_required"]);
-    expect(JSON.stringify(r.events)).not.toContain("hello there");
   });
 });

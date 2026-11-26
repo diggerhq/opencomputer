@@ -208,7 +208,8 @@ export interface OrgRpc {
 
 // ------------------------------------------------------------------ SessionLog (36.2)
 
-export type InboxKind = "turn" | "answer" | "dismiss" | "interrupt" | "settings";
+/** What an inbox entry asks of the session's writer; every write reaches a host this way (spec 36.3). */
+export type InboxKind = "turn" | "answer" | "dismiss" | "interrupt" | "settings" | "compact" | "suspend" | "resume" | "cancel" | "stop";
 export interface InboxEntry {
   id: string;
   kind: InboxKind;

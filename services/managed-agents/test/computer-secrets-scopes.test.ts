@@ -22,11 +22,14 @@ describe("apiScopes", () => {
 });
 
 describe("secrets routes", () => {
+  const SID = "cs_7f3a9k2m4q8r1t6v";
+  /** Org, which judges who may see a session: it has SID only. */
+  const env = { ORGS: { getByName: () => ({ getSession: async (_p: unknown, id: string) => (id === SID ? { ok: true, session: { id } } : { ok: false, error: "not_found" }) }) } } as never;
   const person = memberIdentity("org_1", "user_1");
-  const put = () => new Request("https://blue.test/v1/computer/sessions/cs_1/secrets/API_KEY", { method: "PUT", body: "{}" });
+  const put = () => new Request(`https://blue.test/v1/computer/sessions/${SID}/secrets/API_KEY`, { method: "PUT", body: "{}" });
   const route = (identity: RequestIdentity, request = put()) => {
     const stub: ComputerApiStub = { computerApi: vi.fn(async () => ({ status: 204 })) };
-    return routeComputerApi(request, {} as never, identity, "org_1", stub, new URL(request.url).pathname.slice("/v1/computer".length));
+    return routeComputerApi(request, env, identity, "org_1", stub, new URL(request.url).pathname.slice("/v1/computer".length));
   };
   const code = async (res: Response) => ((await res.json()) as { error: { reason?: string; code: string } }).error;
 
@@ -50,10 +53,12 @@ describe("secrets routes", () => {
   it("routes session writes with the session id and validates names", async () => {
     const seen: unknown[] = [];
     const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
-    const go = (name: string) => routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/cs_test/secrets/${name}`, { method: "PUT", body: '{"value":"private"}' }), {} as never, person, "org_1", stub, `/sessions/cs_test/secrets/${name}`);
+    const go = (name: string, sessionId = SID) => routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/${sessionId}/secrets/${name}`, { method: "PUT", body: '{"value":"private"}' }), env, person, "org_1", stub, `/sessions/${sessionId}/secrets/${name}`);
     expect((await go("TOKEN")).status).toBe(204);
-    expect(seen).toEqual([{ op: "secrets.session.put", sessionId: "cs_test", name: "TOKEN", body: { value: "private" } }]);
+    expect(seen).toEqual([{ op: "secrets.session.put", sessionId: SID, name: "TOKEN", body: { value: "private" } }]);
     expect((await go("9BAD")).status).toBe(400);
+    // A session Org does not show this principal.
+    expect((await go("TOKEN", "cs_0000000000000000")).status).toBe(404);
     expect(seen).toHaveLength(1);
   });
 

@@ -2,15 +2,16 @@ import { Validator, type Schema } from "@cfworker/json-schema";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { Actor, ApiEvent } from "../src/computer/api-types.js";
+import { cursor } from "../src/actor/index.js";
+import type { Actor } from "../src/computer/api-types.js";
 import type { SessionLogDurableObject } from "../src/computer/session-log.js";
-import type { SessionLogRpc } from "../src/computer/session-log-contract.js";
 import schema from "./fixtures/calvin/computer-api.v1.json" with { type: "json" };
+import { member, openLog } from "./session-log-kit.js";
 
 /**
  * Work 084: the SessionLog Durable Object through its RPC surface: epoch fencing (stale, gap,
- * duplicates, a new epoch replacing the old one's tail), recovery, read-your-writes with `minSeq`,
- * the events filters and long-polls, R2 offload, and Turn/Ask/Event bodies against the schema.
+ * duplicates, a new epoch replacing the old one's tail), recovery, `minSeq`, the events filters,
+ * R2 offload, and Turn/Ask/Event bodies against the schema.
  */
 
 type Namespace = DurableObjectNamespace<SessionLogDurableObject>;
@@ -23,28 +24,9 @@ const T2 = "tn_9x2c7v1b4m8q";
 const T3 = "tn_1b4m8q9x2c7v";
 const ASK = "ak_7c1v9b4m8q2x";
 
-let sessions = 0;
-/** A fresh log: a new `cs_` id (and so a new object) per call. */
-function open() {
-  const sessionId = `cs_${String(++sessions).padStart(16, "0")}`;
-  // Typed by the contract: RPC's mapped stub types defeat narrowing on `ok`.
-  const object = testEnv.SESSION_LOG.getByName(sessionId);
-  const stub = object as unknown as SessionLogRpc;
-  const identity = { sessionId, organizationId: ORG };
-  let ms = Date.parse("2026-10-26T09:00:00.000Z");
-  let ids = 0;
-  const ev = (seq: number, type: string, turnId: string | null, data: unknown, actor: Actor | null = null): ApiEvent => ({
-    id: `ev_${String(++ids).padStart(16, "0")}`,
-    seq,
-    createdAt: new Date((ms += 10)).toISOString(),
-    sessionId,
-    turnId,
-    type,
-    actor,
-    data,
-  });
-  return { sessionId, stub, object, identity, ev };
-}
+/** A fresh log: a new `cs_` id (and so a new object) per call, with fakes for the actors it calls. */
+const open = () => openLog();
+const after = (epoch: number, seq: number) => cursor.encode("e", [epoch, seq]);
 
 function validator(def: string) {
   const v = new Validator({ $ref: `${schema.$id}#/$defs/${def}` } as Schema, "2020-12", false);
@@ -77,7 +59,7 @@ const approval = (sessionId: string, turnId = T1) => ({
 });
 
 /** session.created, running, T1 started with an open tool call and an open ask, T2 queued: seqs 1..8. */
-function busyLog(log: ReturnType<typeof open>) {
+function busyLog(log: Awaited<ReturnType<typeof open>>) {
   const { ev, sessionId } = log;
   return [
     ev(1, "session.created", null, { title: "t", origin: { type: "opc", client: null, slack: null }, settings: started }, OWNER),
@@ -93,7 +75,7 @@ function busyLog(log: ReturnType<typeof open>) {
 
 describe("SessionLog append", () => {
   it("stores a batch, acks it, and serves it back with the summary", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     const result = await log.stub.append(log.identity, 1, events);
     expect(result).toMatchObject({ ok: true, ack: 8 });
@@ -110,38 +92,38 @@ describe("SessionLog append", () => {
     expect(result.summary.asks.map((a) => a.id)).toEqual([ASK]);
     expect(result.summary.syncedAt).not.toBeNull();
 
-    const page = await log.stub.events({});
+    const page = await log.stub.events({}, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events).toEqual(events);
     expect(page).toMatchObject({ lastSeq: 8, hasMore: false });
     expect(page.syncedAt).toBe(result.summary.syncedAt);
     for (const event of page.events) validEvent(event);
 
-    const turns = await log.stub.turns({});
+    const turns = await log.stub.turns({}, member());
     if (!turns.ok) throw new Error("refused");
     expect(turns.turns.map((t) => [t.id, t.status])).toEqual([
       [T2, "queued"],
       [T1, "running"],
     ]);
     for (const turn of turns.turns) validTurn(turn);
-    const asks = await log.stub.asks({});
+    const asks = await log.stub.asks({}, member());
     if (!asks.ok) throw new Error("refused");
     expect(asks.asks.map((a) => a.id)).toEqual([ASK]);
     for (const ask of asks.asks) validAsk(ask);
-    expect(await log.stub.ask(ASK)).toMatchObject({ ok: true, ask: { id: ASK, status: "open" } });
-    expect(await log.stub.ask("ak_000000000000")).toEqual({ ok: false, error: "ask_not_found" });
-    expect(await log.stub.turn("tn_000000000000", {})).toEqual({ ok: false, error: "turn_not_found" });
+    expect(await log.stub.ask(ASK, undefined, member())).toMatchObject({ ok: true, ask: { id: ASK, status: "open" } });
+    expect(await log.stub.ask("ak_000000000000", undefined, member())).toEqual({ ok: false, error: "ask_not_found" });
+    expect(await log.stub.turn("tn_000000000000", {}, member())).toEqual({ ok: false, error: "turn_not_found" });
   });
 
   it("skips duplicates, and a duplicate seq with another id is skipped too", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     await log.stub.append(log.identity, 1, events.slice(0, 5));
-    const before = await log.stub.summary();
+    const before = await log.stub.summary(undefined, member());
     const liar = { ...events[2]!, id: "ev_zzzzzzzzzzzzzzzz" };
     const result = await log.stub.append(log.identity, 1, [events[1]!, liar, ...events.slice(3)]);
     expect(result).toMatchObject({ ok: true, ack: 8 });
-    const page = await log.stub.events({});
+    const page = await log.stub.events({}, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(page.events[2]!.id).toBe(events[2]!.id);
@@ -154,20 +136,20 @@ describe("SessionLog append", () => {
   });
 
   it("refuses a gap, a non-contiguous batch and a stale epoch, storing nothing", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     await log.stub.append(log.identity, 2, events.slice(0, 3));
     expect(await log.stub.append(log.identity, 2, events.slice(4))).toEqual({ ok: false, reason: "gap", logEpoch: 2, ack: 3 });
     expect(await log.stub.append(log.identity, 2, [events[3]!, events[5]!])).toEqual({ ok: false, reason: "gap", logEpoch: 2, ack: 3 });
     expect(await log.stub.append(log.identity, 3, events.slice(4))).toEqual({ ok: false, reason: "gap", logEpoch: 2, ack: 3 });
     expect(await log.stub.append(log.identity, 1, events.slice(3))).toEqual({ ok: false, reason: "stale_epoch", logEpoch: 2, ack: 3 });
-    const page = await log.stub.events({});
+    const page = await log.stub.events({}, member());
     if (!page.ok) throw new Error("refused");
     expect(page.lastSeq).toBe(3);
   });
 
   it("refuses another organization", async () => {
-    const log = open();
+    const log = await open();
     await log.stub.append(log.identity, 1, busyLog(log).slice(0, 1));
     const error = await log.stub.append({ ...log.identity, organizationId: "org_other" }, 1, []).then(
       () => null,
@@ -177,7 +159,7 @@ describe("SessionLog append", () => {
   });
 
   it("a new epoch replaces the old one's tail from its first seq and refolds", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     await log.stub.append(log.identity, 1, events);
     // Epoch 2 rewrites from seq 5: T1 completes; the tool call, the ask and T2 never happened.
@@ -192,7 +174,7 @@ describe("SessionLog append", () => {
     expect(result.summary).toMatchObject({ logEpoch: 2, epochStartSeq: 5, lastSeq: 7, status: "idle", activeTurnId: null, queued: [], asks: [], lastText: "Done." });
     expect(result.summary.lastTurn).toMatchObject({ id: T1, status: "completed" });
 
-    const page = await log.stub.events({});
+    const page = await log.stub.events({}, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events.map((e) => e.type)).toEqual([
       "session.created",
@@ -203,10 +185,10 @@ describe("SessionLog append", () => {
       "turn.completed",
       "session.status_changed",
     ]);
-    const turns = await log.stub.turns({});
+    const turns = await log.stub.turns({}, member());
     if (!turns.ok) throw new Error("refused");
     expect(turns.turns.map((t) => t.id)).toEqual([T1]);
-    expect(await log.stub.asks({ status: "all" })).toMatchObject({ ok: true, asks: [] });
+    expect(await log.stub.asks({ status: "all" }, member())).toMatchObject({ ok: true, asks: [] });
     // No open call left for a later recovery to settle.
     expect(await runInDurableObject(log.object, (_i, state) => state.storage.sql.exec("SELECT count(*) AS n FROM tools").one().n)).toBe(0);
 
@@ -217,7 +199,7 @@ describe("SessionLog append", () => {
 
 describe("SessionLog recover", () => {
   it("settles the open call, the open ask and the running turn under the next epoch", async () => {
-    const log = open();
+    const log = await open();
     await log.stub.append(log.identity, 1, busyLog(log));
     const at = "2026-10-26T10:00:00.000Z";
     expect(await log.stub.recover({ ...log.identity, epoch: 1, at })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 1 });
@@ -229,7 +211,7 @@ describe("SessionLog recover", () => {
     expect(result.summary.queued.map((t) => t.id)).toEqual([T2]);
     expect(result.summary.lastTurn).toMatchObject({ id: T1, status: "failed", error: { code: "runtime_lost" } });
 
-    const page = await log.stub.events({ after: 8 });
+    const page = await log.stub.events({ after: after(2, 8) }, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events.map((e) => [e.seq, e.type, e.turnId])).toEqual([
       [9, "tool.failed", T1],
@@ -250,11 +232,11 @@ describe("SessionLog recover", () => {
     expect(page.events[3]!.data).toEqual({ reason: "lost" });
     expect(page.events[4]!.data).toEqual({ from: "running", to: "suspended" });
 
-    const ask = await log.stub.ask(ASK);
+    const ask = await log.stub.ask(ASK, undefined, member());
     if (!ask.ok) throw new Error("refused");
     expect(ask.ask).toMatchObject({ status: "interrupted", closedAt: at, closedBy: null });
     validAsk(ask.ask);
-    const turn = await log.stub.turn(T1, {});
+    const turn = await log.stub.turn(T1, {}, member());
     if (!turn.ok) throw new Error("refused");
     expect(turn.turn).toMatchObject({ status: "failed", endedAt: at, error: { code: "runtime_lost" } });
     validTurn(turn.turn);
@@ -262,7 +244,7 @@ describe("SessionLog recover", () => {
     // Nothing open, already suspended: only the suspension, in the next epoch.
     const again = await log.stub.recover({ ...log.identity, epoch: 3, at });
     expect(again).toMatchObject({ ok: true, ack: 14 });
-    const tail = await log.stub.events({ after: 13 });
+    const tail = await log.stub.events({ after: after(3, 13) }, member());
     if (!tail.ok) throw new Error("refused");
     expect(tail.events.map((e) => e.type)).toEqual(["runtime.suspended"]);
 
@@ -272,7 +254,7 @@ describe("SessionLog recover", () => {
 
   it("recovers a log the host never wrote, at the log's next epoch only", async () => {
     // Only the log's epoch + 1 (spec 36.2): a log the host never wrote is at 0, so the recover comes at 1; a guess is refused.
-    const log = open();
+    const log = await open();
     expect(await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "stale_epoch", logEpoch: 0 });
     const result = await log.stub.recover({ ...log.identity, epoch: 1, at: "2026-10-26T10:00:00.000Z" });
     expect(result).toMatchObject({ ok: true, summary: { logEpoch: 1, status: "suspended" } });
@@ -283,11 +265,11 @@ describe("SessionLog recover", () => {
   });
 
   it("with nothing open records the suspension only", async () => {
-    const log = open();
+    const log = await open();
     await log.stub.append(log.identity, 1, busyLog(log).slice(0, 2));
     const result = await log.stub.recover({ ...log.identity, epoch: 2, at: "2026-10-26T10:00:00.000Z" });
     expect(result).toMatchObject({ ok: true, ack: 4, summary: { epochStartSeq: 3, status: "suspended" } });
-    const page = await log.stub.events({ after: 2 });
+    const page = await log.stub.events({ after: after(2, 2) }, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events.map((e) => e.type)).toEqual(["runtime.suspended", "session.status_changed"]);
     // The host's `epoch` frame: the recovery's events verbatim, from the epoch's first seq.
@@ -305,56 +287,38 @@ describe("SessionLog recover", () => {
 });
 
 describe("SessionLog reads", () => {
-  it("minSeq waits for the append that reaches it", async () => {
-    const log = open();
-    const events = busyLog(log);
-    await log.stub.append(log.identity, 1, events.slice(0, 2));
-    const read = log.stub.events({ minSeq: 4 });
-    const turn = log.stub.turns({ minSeq: 4 });
-    await new Promise((r) => setTimeout(r, 50));
-    await log.stub.append(log.identity, 1, events.slice(2, 4));
-    const page = await read;
-    if (!page.ok) throw new Error("refused");
-    expect(page.lastSeq).toBe(4);
-    expect(page.events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
-    expect(await turn).toMatchObject({ ok: true, turns: [{ id: T1, status: "running" }] });
-  });
-
-  it("minSeq not reached in time is unavailable", async () => {
-    const log = open();
+  it("minSeq not reached is unavailable, at once", async () => {
+    const log = await open();
     await log.stub.append(log.identity, 1, busyLog(log).slice(0, 2));
-    await runInDurableObject(log.object, (instance) => {
-      (instance as SessionLogDurableObject).minSeqWaitMs = 50;
-    });
-    expect(await log.stub.events({ minSeq: 100 })).toEqual({ ok: false, error: "unavailable", lastSeq: 2, retryAfterMs: 500 });
-    expect(await log.stub.summary(100)).toEqual({ ok: false, error: "unavailable", lastSeq: 2, retryAfterMs: 500 });
+    expect(await log.stub.events({ minSeq: 100 }, member())).toEqual({ ok: false, error: "unavailable", lastSeq: 2, retryAfterMs: 500 });
+    expect(await log.stub.summary(100, member())).toEqual({ ok: false, error: "unavailable", lastSeq: 2, retryAfterMs: 500 });
   });
 
   it("filters by type prefix and turn, pages with hasMore, and refuses a cursor ahead", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     await log.stub.append(log.identity, 1, events);
 
-    const tools = await log.stub.events({ types: ["tool.*", "turn.queued"] });
+    const tools = await log.stub.events({ types: ["tool.*", "turn.queued"] }, member());
     if (!tools.ok) throw new Error("refused");
     expect(tools.events.map((e) => e.type)).toEqual(["tool.started", "turn.queued"]);
 
-    const t2 = await log.stub.events({ turnId: T2 });
+    const t2 = await log.stub.events({ turnId: T2 }, member());
     if (!t2.ok) throw new Error("refused");
     expect(t2.events.map((e) => e.seq)).toEqual([7, 8]);
 
-    const first = await log.stub.events({ limit: 3 });
+    const first = await log.stub.events({ limit: 3 }, member());
     expect(first).toMatchObject({ ok: true, hasMore: true, lastSeq: 8 });
-    const rest = await log.stub.events({ after: 3, limit: 500 });
+    const rest = await log.stub.events({ after: after(1, 3), limit: 500 }, member());
     if (!rest.ok) throw new Error("refused");
     expect(rest.events.map((e) => e.seq)).toEqual([4, 5, 6, 7, 8]);
     expect(rest.hasMore).toBe(false);
 
-    expect(await log.stub.events({ after: 9 })).toMatchObject({ ok: false, error: "reset", seq: 8 });
+    expect(await log.stub.events({ after: after(1, 9) }, member())).toMatchObject({ ok: false, error: "reset", seq: 8 });
   });
 
   it("tailTurns returns the last turns' events and the earlier turns, newest first", async () => {
-    const log = open();
+    const log = await open();
     const { ev } = log;
     const turnEvents = (seq: number, turnId: string, text: string) => [
       ev(seq, "message.received", turnId, received(text), OWNER),
@@ -369,69 +333,31 @@ describe("SessionLog reads", () => {
     ];
     await log.stub.append(log.identity, 1, events);
 
-    const tail = await log.stub.events({ tailTurns: 1 });
+    const tail = await log.stub.events({ tailTurns: 1 }, member());
     if (!tail.ok) throw new Error("refused");
     expect(tail.events.map((e) => e.seq)).toEqual([8, 9, 10]);
     expect(tail.earlierTurns!.map((t) => t.id)).toEqual([T2, T1]);
     for (const turn of tail.earlierTurns!) validTurn(turn);
 
-    const all = await log.stub.events({ tailTurns: 5 });
+    const all = await log.stub.events({ tailTurns: 5 }, member());
     if (!all.ok) throw new Error("refused");
     expect(all.events.map((e) => e.seq)).toEqual(events.map((e) => e.seq));
     expect(all.earlierTurns).toEqual([]);
 
     // Turns page newest first with an opaque cursor.
-    const page1 = await log.stub.turns({ limit: 2 });
+    const page1 = await log.stub.turns({ limit: 2 }, member());
     if (!page1.ok) throw new Error("refused");
     expect(page1.turns.map((t) => t.id)).toEqual([T3, T2]);
-    const page2 = await log.stub.turns({ limit: 2, cursor: page1.nextCursor! });
+    const page2 = await log.stub.turns({ limit: 2, cursor: page1.nextCursor! }, member());
     if (!page2.ok) throw new Error("refused");
     expect(page2.turns.map((t) => t.id)).toEqual([T1]);
     expect(page2.nextCursor).toBeNull();
-    expect(await log.stub.turns({ cursor: "nope" })).toEqual({ ok: false, error: "invalid_cursor" });
-    expect(await log.stub.turns({ status: ["running"] })).toMatchObject({ ok: true, turns: [] });
-  });
-
-  it("waitMs long-polls until an event lands past `after`, or answers empty at the timeout", async () => {
-    const log = open();
-    const events = busyLog(log);
-    await log.stub.append(log.identity, 1, events.slice(0, 2));
-
-    const empty = await log.stub.events({ after: 2, waitMs: 50 });
-    expect(empty).toMatchObject({ ok: true, events: [], lastSeq: 2 });
-
-    const poll = log.stub.events({ after: 2, waitMs: 10_000 });
-    const filtered = log.stub.events({ after: 2, waitMs: 10_000, types: ["turn.started"] });
-    await new Promise((r) => setTimeout(r, 50));
-    await log.stub.append(log.identity, 1, events.slice(2, 3));
-    const page = await poll;
-    if (!page.ok) throw new Error("refused");
-    expect(page.events.map((e) => e.seq)).toEqual([3]);
-    const turnPoll = log.stub.turn(T1, { waitMs: 10_000 });
-
-    await log.stub.append(log.identity, 1, events.slice(3, 4));
-    const started1 = await filtered;
-    if (!started1.ok) throw new Error("refused");
-    expect(started1.events.map((e) => e.seq)).toEqual([4]);
-
-    // The turn poll waits for the end, past `running`.
-    await log.stub.append(log.identity, 1, [log.ev(5, "turn.completed", T1, { text: "ok", durationMs: 3 })]);
-    expect(await turnPoll).toMatchObject({ ok: true, turn: { id: T1, status: "completed", text: "ok" } });
-  });
-
-  it("turn long-poll with a status returns once the status differs", async () => {
-    const log = open();
-    const events = busyLog(log);
-    await log.stub.append(log.identity, 1, events.slice(0, 3));
-    const poll = log.stub.turn(T1, { waitMs: 10_000, status: "queued" });
-    await new Promise((r) => setTimeout(r, 50));
-    await log.stub.append(log.identity, 1, events.slice(3, 4));
-    expect(await poll).toMatchObject({ ok: true, turn: { status: "running" }, lastSeq: 4 });
-    expect(await log.stub.turn(T1, { waitMs: 50 })).toMatchObject({ ok: true, turn: { status: "running" } });
+    expect(await log.stub.turns({ cursor: "nope" }, member())).toEqual({ ok: false, error: "invalid_cursor" });
+    expect(await log.stub.turns({ status: ["running"] }, member())).toMatchObject({ ok: true, turns: [] });
   });
 
   it("puts data over 8 KiB in R2 and inlines it on read", async () => {
-    const log = open();
+    const log = await open();
     const events = busyLog(log);
     const big = "x".repeat(20 * 1024);
     const completed = log.ev(9, "tool.completed", T1, {
@@ -455,7 +381,7 @@ describe("SessionLog reads", () => {
     expect(row).toEqual({ data: null, blob: key });
     expect(JSON.parse(await (await testEnv.SESSION_LOG_BLOBS.get(key))!.text())).toEqual(completed.data);
 
-    const page = await log.stub.events({ after: 7 });
+    const page = await log.stub.events({ after: after(1, 7) }, member());
     if (!page.ok) throw new Error("refused");
     expect(page.events.at(-1)).toEqual(completed);
     // The fold saw the inline data: the call is closed.
@@ -465,7 +391,7 @@ describe("SessionLog reads", () => {
 
 describe("SessionLog telemetry (work 084): the batch is the unit", () => {
   it("append answers its stats; a batch's R2 spills are one sessionlog.spill, never one per row or event; batches share a POST", async () => {
-    const log = open();
+    const log = await open();
     const posted: Array<Record<string, any>> = [];
     let posts = 0;
     // The test env has no Tinybird settings: switch them on for this object only, posts to a fake.
@@ -531,7 +457,7 @@ describe("SessionLog subagents", () => {
       stoppedBy: null,
     },
   });
-  function withSubagents(log: ReturnType<typeof open>) {
+  function withSubagents(log: Awaited<ReturnType<typeof open>>) {
     const { ev, sessionId } = log;
     return [
       ev(1, "session.created", null, { title: "t", origin: { type: "opc", client: null, slack: null }, settings: started }, OWNER),
@@ -544,7 +470,7 @@ describe("SessionLog subagents", () => {
   }
 
   it("folds started/ended, keeps running ones in the summary, cuts long results and serves them whole", async () => {
-    const log = open();
+    const log = await open();
     const result = await log.stub.append(log.identity, 1, withSubagents(log));
     if (!result.ok) throw new Error("refused");
     expect(result.summary.subagents.map((s) => [s.id, s.status])).toEqual([
@@ -562,7 +488,7 @@ describe("SessionLog subagents", () => {
     if (!ended.ok) throw new Error("refused");
     expect(ended.summary.subagents.map((s) => s.id)).toEqual([SA2]);
 
-    const page = await log.stub.subagents({ status: "all" });
+    const page = await log.stub.subagents({ status: "all" }, member());
     if (!page.ok) throw new Error("refused");
     expect(page.subagents.map((s) => [s.id, s.status])).toEqual([
       [SA2, "running"],
@@ -573,24 +499,24 @@ describe("SessionLog subagents", () => {
     expect(listed.result!.length).toBeLessThan(long.length);
     for (const s of page.subagents) validSubagent(s);
 
-    const running = await log.stub.subagents({ status: "running" });
+    const running = await log.stub.subagents({ status: "running" }, member());
     if (!running.ok) throw new Error("refused");
     expect(running.subagents.map((s) => s.id)).toEqual([SA2]);
 
     // Newest first by start, ended or not (calvin's order); a cursor is bound to its status filter.
-    const first = await log.stub.subagents({ status: "all", limit: 1 });
+    const first = await log.stub.subagents({ status: "all", limit: 1 }, member());
     if (!first.ok || !first.nextCursor) throw new Error("refused");
     expect(first.subagents.map((s) => s.id)).toEqual([SA2]);
-    const second = await log.stub.subagents({ status: "all", limit: 1, cursor: first.nextCursor });
+    const second = await log.stub.subagents({ status: "all", limit: 1, cursor: first.nextCursor }, member());
     if (!second.ok) throw new Error("refused");
     expect([second.subagents.map((s) => s.id), second.nextCursor]).toEqual([[SA1], null]);
-    expect(await log.stub.subagents({ status: "running", cursor: first.nextCursor })).toEqual({ ok: false, error: "invalid_cursor" });
+    expect(await log.stub.subagents({ status: "running", cursor: first.nextCursor }, member())).toEqual({ ok: false, error: "invalid_cursor" });
 
-    const one = await log.stub.subagent(SA1);
+    const one = await log.stub.subagent(SA1, undefined, member());
     if (!one.ok) throw new Error("refused");
     expect(one.subagent).toMatchObject({ status: "completed", result: long, resultTruncated: false, toolCalls: 4, tokens: 900 });
     validSubagent(one.subagent);
-    expect(await log.stub.subagent("sa_000000000000")).toEqual({ ok: false, error: "subagent_not_found" });
+    expect(await log.stub.subagent("sa_000000000000", undefined, member())).toEqual({ ok: false, error: "subagent_not_found" });
 
     // A resent start never reopens an ended subagent.
     const resent = await log.stub.append(log.identity, 1, [log.ev(8, "subagent.started", T1, spawn(log.sessionId, SA1, "explore"))]);
@@ -599,37 +525,37 @@ describe("SessionLog subagents", () => {
   });
 
   it("merges progress into reads for a running subagent of the current epoch only", async () => {
-    const log = open();
+    const log = await open();
     await log.stub.append(log.identity, 1, withSubagents(log));
     await log.stub.progress(log.identity, 1, [
       { subagentId: SA2, activity: "Running npm test", toolCalls: 3, tokens: 1200 },
       { subagentId: "sa_000000000000", activity: "ghost", toolCalls: 1, tokens: 1 },
     ]);
     await log.stub.progress(log.identity, 0, [{ subagentId: SA1, activity: "stale", toolCalls: 9, tokens: 9 }]);
-    const summary = await log.stub.summary();
+    const summary = await log.stub.summary(undefined, member());
     if (!summary.ok) throw new Error("refused");
     expect(summary.summary.subagents.map((s) => [s.id, s.activity, s.toolCalls, s.tokens])).toEqual([
       [SA1, null, 0, 0],
       [SA2, "Running npm test", 3, 1200],
     ]);
-    const one = await log.stub.subagent(SA2);
+    const one = await log.stub.subagent(SA2, undefined, member());
     if (!one.ok) throw new Error("refused");
     expect(one.subagent).toMatchObject({ activity: "Running npm test", toolCalls: 3 });
   });
 
   it("recover ends running subagents as failed runtime_lost", async () => {
-    const log = open();
+    const log = await open();
     await log.stub.append(log.identity, 1, withSubagents(log));
     const at = "2026-10-26T10:00:00.000Z";
     const result = await log.stub.recover({ ...log.identity, epoch: 2, at });
     if (!result.ok) throw new Error("refused");
     expect(result.summary.subagents).toEqual([]);
-    const page = await log.stub.events({ after: 6 });
+    const page = await log.stub.events({ after: after(2, 6) }, member());
     if (!page.ok) throw new Error("refused");
     const ends = page.events.filter((e) => e.type === "subagent.ended");
     expect(ends.length).toBe(2);
     for (const e of page.events) validEvent(e);
-    const all = await log.stub.subagents({ status: "all" });
+    const all = await log.stub.subagents({ status: "all" }, member());
     if (!all.ok) throw new Error("refused");
     for (const s of all.subagents) {
       expect(s).toMatchObject({ status: "failed", endedAt: at, error: { code: "runtime_lost" } });

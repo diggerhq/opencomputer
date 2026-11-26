@@ -64,8 +64,8 @@ export const EPOCH_TAIL_MAX = 1_000;
 export type RecoverResult = { ok: true; ack: number; summary: LogSummary; tail: EpochTail; stats?: AppendStats } | Extract<AppendResult, { ok: false }>;
 
 /**
- * A read refused (besides `reset`, a numeric `after` > lastSeq included): `unavailable` (`minSeq` not reached: in
- * 2 s without a principal, at once with one), or `not_found` (the principal may not read the session).
+ * A read refused (besides `reset`): `unavailable` (`minSeq` not reached; answered at once), or `not_found` (the
+ * principal may not read the session).
  */
 export type LogReadRefusal =
   | { ok: false; error: "not_found" }
@@ -73,14 +73,13 @@ export type LogReadRefusal =
   | { ok: false; error: "turn_not_found" | "ask_not_found" | "subagent_not_found" | "invalid_cursor" };
 
 export interface EventsQuery {
-  /** An events cursor (spec 37.1). A seq only on the internal path that gives no principal. */
-  after?: number | string;
+  /** An events cursor (spec 37.1). */
+  after?: string;
   limit?: number;
   turnId?: string;
   /** Exact types, or a prefix with a trailing `*` (`tool.*`). */
   types?: string[];
   minSeq?: number;
-  waitMs?: number;
   tailTurns?: number;
 }
 
@@ -100,9 +99,6 @@ export interface TurnsQuery {
 export type TurnsPage = { ok: true; turns: Turn[]; nextCursor: string | null; lastSeq: number } | LogReadRefusal;
 
 export interface TurnQuery {
-  waitMs?: number;
-  /** With `waitMs`: return once the turn's status differs from this. Default: once it ended. */
-  status?: TurnStatus;
   minSeq?: number;
 }
 
@@ -156,21 +152,21 @@ export interface SessionLogRpc {
   /** The current epoch's tail (the `epoch` frame's body); null for another organization's or session's log. */
   epochTail(identity: SessionLogIdentity): Promise<EpochTail | null>;
   /**
-   * Every read takes the principal last. With one, it answers only a principal that may read the
-   * session (else `not_found`) and never waits; without one (the internal path) `minSeq` waits up to 2 s.
+   * Every read takes the reader's principal last: it answers only one that may read the session (else
+   * `not_found`), and never waits (`minSeq` not reached is `unavailable` at once; the edge waits through Live).
    */
-  summary(minSeq?: number, p?: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
-  events(query: EventsQuery, p?: Principal): Promise<EventsPage>;
-  turns(query: TurnsQuery, p?: Principal): Promise<TurnsPage>;
-  turn(turnId: string, query: TurnQuery, p?: Principal): Promise<TurnResult>;
-  asks(query: AsksQuery, p?: Principal): Promise<AsksPage>;
-  ask(askId: string, minSeq?: number, p?: Principal): Promise<AskResult>;
+  summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
+  events(query: EventsQuery, p: Principal): Promise<EventsPage>;
+  turns(query: TurnsQuery, p: Principal): Promise<TurnsPage>;
+  turn(turnId: string, query: TurnQuery, p: Principal): Promise<TurnResult>;
+  asks(query: AsksQuery, p: Principal): Promise<AsksPage>;
+  ask(askId: string, minSeq: number | undefined, p: Principal): Promise<AskResult>;
   /**
    * Subagents (subagents.md): folded from `subagent.started`/`subagent.ended`, with the latest
    * progress (below) merged in for a running one. Running first by createdAt, then ended newest first.
    */
-  subagents(query: SubagentsQuery, p?: Principal): Promise<SubagentsPage>;
-  subagent(subagentId: string, minSeq?: number, p?: Principal): Promise<SubagentResult>;
+  subagents(query: SubagentsQuery, p: Principal): Promise<SubagentsPage>;
+  subagent(subagentId: string, minSeq: number | undefined, p: Principal): Promise<SubagentResult>;
   /**
    * The latest `subagent.progress` values (never journaled): kept per running subagent, not
    * persisted past an eviction (a read then shows the started/ended values), ignored for an epoch

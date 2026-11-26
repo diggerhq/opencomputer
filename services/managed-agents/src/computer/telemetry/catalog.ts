@@ -263,12 +263,6 @@ export const CATALOG = {
   // recover_alarm (the recover alarm acted; reason host_gone|runner_stopped) | session_recovered | epoch_sent (reason
   // recover|stale|hello) | tail_retry (an epochTail read failed). duration_ms and outcome where the step has them.
   'sessionlog.recovery': gateway('kind', 'reason', 'sessions', 'deferred', 'events', 'epoch', 'attempt', 'final'),
-  // One per API write the Computer DO sends to the host (Q6 held writes, Q8 the gateway's share): duration_ms = sent →
-  // answered; held/held_ms: waited on an epoch adoption first; replayed: a keyed retry took the original's answer;
-  // do_ms: in the DO before the frame left, beyond the hold; slack_queue_*: as on sessionlog.append.
-  'computer.write': gateway(
-    'method', 'held', 'held_ms', 'replayed', 'timed_out', 'do_ms', 'slack_queue_rows', 'slack_queue_oldest_ms',
-  ),
   // One per outage seen by the API: the first 503 computer_unavailable → the host's hello (Q4).
   'computer.unavailable': gateway('wait_ms'),
   // One per POST /v1/computer/tickets (Q5): result minted | api_key_required | project_key | not_configured | invalid |

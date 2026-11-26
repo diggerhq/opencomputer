@@ -36,8 +36,6 @@ describe("a principal's reads", () => {
     expect(await errors(member(MATE_ID))).toEqual(refused);
     expect(await errors(agent("cs_stranger"))).toEqual(refused);
     expect(await errors(member(OWNER_ID, { org: "org_other" }))).toEqual(refused);
-    // The same read with no principal is the internal path, as before.
-    expect(await log.stub.summary()).toMatchObject({ ok: true, summary: { lastSeq: 3 } });
   });
 
   it("answer not_found for a session Org does not have", async () => {
@@ -53,7 +51,7 @@ describe("a principal's reads", () => {
     expect(await log.stub.summary(undefined, member())).toMatchObject({ ok: true, summary: { lastSeq: 2, revision: 2, lastAgentSeq: 0, agentTitle: null, inbox: [{ id: "tn_a", text: "hello" }] } });
     const began = Date.now();
     expect(await log.stub.summary(9, member())).toMatchObject({ ok: false, error: "unavailable", lastSeq: 2 });
-    expect(await log.stub.events({ after: at(1, 2), waitMs: 5_000 }, member())).toMatchObject({ ok: true, events: [], cursor: at(1, 2) });
+    expect(await log.stub.events({ after: at(1, 2) }, member())).toMatchObject({ ok: true, events: [], cursor: at(1, 2) });
     expect(Date.now() - began).toBeLessThan(1_000);
   });
 });
@@ -70,17 +68,12 @@ describe("the events read", () => {
     if (!rest.ok) throw new Error("refused");
     expect(rest.events.map((e) => e.seq)).toEqual([3, 4, 5]);
     expect(await log.stub.events({ after: rest.cursor }, member())).toMatchObject({ ok: true, events: [], cursor: at(1, 5) });
-    // The internal path's seq still works, and its answer carries the cursor too.
-    expect(await log.stub.events({ after: 3 })).toMatchObject({ ok: true, cursor: at(1, 5) });
-    expect(await log.stub.events({ after: 9 })).toMatchObject({ ok: false, error: "reset", seq: 5 });
   });
 
   it("answers reset for what is no cursor, and for one past the log's end", async () => {
     const log = await openLog();
     await log.stub.append(log.identity, 1, fill(log, 1, 5));
     for (const after of ["3", "nonsense", "f1.3", at(2, 1)]) expect(await log.stub.events({ after }, member())).toEqual({ ok: false, error: "reset", cursor: null });
-    expect(await log.stub.events({ after: 3 }, member())).toEqual({ ok: false, error: "reset", cursor: null });
-    expect(await log.stub.events({ after: "3" })).toEqual({ ok: false, error: "reset", cursor: null });
     expect(await log.stub.events({ after: at(1, 6) }, member())).toEqual({ ok: false, error: "reset", cursor: at(1, 5), seq: 5 });
   });
 
@@ -162,7 +155,7 @@ describe("destroy", () => {
     await log.stub.destroy();
     expect([...store.keys()]).toEqual(["sessions/org_test/cs_other/events/1-1.json"]);
     expect(await log.stub.inbox()).toEqual({ entries: [], epoch: 0, lastSeq: 0 });
-    expect(await log.stub.events({})).toMatchObject({ ok: true, events: [], lastSeq: 0 });
+    expect(await log.stub.events({}, member())).toMatchObject({ ok: true, events: [], lastSeq: 0 });
     expect(await log.inside((_, state) => state.storage.sql.exec("SELECT 1 FROM _owed").toArray().length)).toBe(0);
   });
 });

@@ -8,7 +8,6 @@
 //   sessionlog.append    per journal batch appended to a SessionLog (Q2, Q3 commit lag)
 //   sessionlog.recovery  per 4010 gap close, stale-epoch resend, recover-alarm decision,
 //                        recovery, epoch send and tail-read retry (Q6)
-//   computer.write       per API write sent to the host: held, idempotent replay, time to answer (Q6, Q8)
 //   computer.unavailable per outage: the first 503 computer_unavailable → the host's hello (Q4)
 //   ticket.minted        per ticket request: minted or why not, and the time (Q5)
 //   keys.synced, keys.revoked  per key write to KV and per revoke (Q9)
@@ -162,38 +161,6 @@ export class ApiTelemetry {
       ...(fields.ms !== undefined ? { duration_ms: Math.round(fields.ms) } : {}),
       ...(fields.ok !== undefined ? { outcome: fields.ok ? "completed" : "failed" } : {}),
       data: { kind, ...(fields.reason ? { reason: fields.reason } : {}), ...fields.data },
-    });
-  }
-
-  /** One API write sent (or not) to the host (Q6 held writes, Q8 the gateway's share). */
-  write(fields: {
-    sessionId: string;
-    surface: ApiSurface;
-    method: string;
-    hostMs: number;
-    /** In the DO before the frame went to the host, beyond any hold. */
-    doMs?: number;
-    held: boolean;
-    heldMs: number;
-    replayed: boolean;
-    timedOut: boolean;
-    errorCode?: string;
-  }): void {
-    this.one("computer.write", {
-      surface: fields.surface,
-      session_key: fields.sessionId,
-      duration_ms: Math.round(fields.hostMs),
-      outcome: fields.errorCode ? "failed" : "completed",
-      ...(fields.errorCode ? { error_type: fields.timedOut ? "timeout" : "unknown", error_code: errorCode(fields.errorCode) } : {}),
-      data: {
-        method: fields.method,
-        held: fields.held,
-        held_ms: Math.round(fields.heldMs),
-        replayed: fields.replayed,
-        timed_out: fields.timedOut,
-        ...ms("do_ms", fields.doMs),
-        ...this.queue(),
-      },
     });
   }
 
