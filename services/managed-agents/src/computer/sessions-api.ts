@@ -91,7 +91,7 @@ export interface ApiCaller {
   member: string;
   /** The dashboard (WorkOS) user id. */
   userId: string;
-  /** The caller's organization role is owner or admin: they may open terminals in any session they can see. */
+  /** The caller's organization role is owner or admin. Grants nothing inside a session (owner first): no terminal, no use. */
   admin?: boolean;
   name: string | null;
   email: string | null;
@@ -336,7 +336,7 @@ export class ComputerSessionsApi {
 
   /**
    * The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns.
-   * `caller` decides `canManageAccess` (false without one).
+   * `caller` decides `canManageAccess` and `canOpenTerminal` (false without one).
    */
   compose(row: ApiRow, fresh?: Partial<Session>, caller?: ApiCaller): Session {
     const summary = row.summary ? (JSON.parse(row.summary) as LogSummary) : null;
@@ -384,6 +384,7 @@ export class ComputerSessionsApi {
       urls: { dashboard: null },
       access: accessOf(row),
       canManageAccess: caller ? mayManage(row, caller) : false,
+      canOpenTerminal: caller ? mayOpenTerminal(row, caller) : false,
     };
     if (!fresh) return base;
     // The writer's own view is newer than the row; the row owns who, where, archive, aside and labels.
@@ -391,7 +392,7 @@ export class ComputerSessionsApi {
     const aside = row.asideRef !== null && row.asideRef === attentionRef(asks);
     return {
       ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls,
-      access: base.access, canManageAccess: base.canManageAccess,
+      access: base.access, canManageAccess: base.canManageAccess, canOpenTerminal: base.canOpenTerminal,
     };
   }
 
@@ -736,7 +737,7 @@ export class ComputerSessionsApi {
     const row = this.row(sessionId)!;
     if (reply) {
       const out = reply.body as { session: Session; seq: number };
-      return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller) } } };
+      return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller), canOpenTerminal: mayOpenTerminal(row, caller) } } };
     }
     if (mayUse(row, caller)) return { status: 200, body: { session: this.compose(row, undefined, caller), seq: row.lastSeq } };
     return { status: 200, body: { session: null, access: accessOf(row), canManageAccess: mayManage(row, caller), seq: row.lastSeq } };
@@ -880,7 +881,7 @@ export class ComputerSessionsApi {
       const row = this.visible(caller, request.value.sessionIds![0]!);
       if (!row) return notFound();
       if (!mayOpenTerminal(row, caller)) {
-        return { status: 403, error: { code: "forbidden", message: "Only the session's owner, someone it is shared with, or an admin of an organization-wide session can open a terminal.", reason: "terminal_owner_only" } };
+        return { status: 403, error: { code: "forbidden", message: "Only the session's owner and the people it is shared with by name can open a terminal.", reason: "terminal_owner_only" } };
       }
     }
     const now = this.now();
@@ -1352,15 +1353,12 @@ export class ComputerSessionsApi {
     if (admins.includes(member) === admin) return;
     this.adminsCache = admin ? [...admins, member].sort() : admins.filter((m) => m !== member);
     this.deps.put("apiAdmins", JSON.stringify(this.adminsCache));
-    if (this.v4Host()) this.sendAllAccess();
   }
 
-  /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
+  /** API sessions: by their access mode. Slack sessions: only their linked owner. Admins are never sent: being one opens no terminal. */
   private sendAccess(row: { sessionId: string } & AccessRow): void {
-    const admins = this.admins();
-    const extra = admins.length ? { admins } : {};
     if (row.originType === "slack" && !row.ownerUserId) return;
-    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row), ...extra } });
+    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row) } });
   }
 
   /**

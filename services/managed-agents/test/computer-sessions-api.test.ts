@@ -857,39 +857,22 @@ describe("hello and tickets", () => {
     expect(f.frames("access").map((a) => a.access.sessionId)).toEqual([SID]);
   });
 
-  it("admins: a caller's admin role reaches every access list, and a demotion takes it back", async () => {
+  it("admins: a caller's admin role is remembered but never reaches an access list (owner first)", async () => {
     const f = fixture();
     await created(f);
-    f.slackRow("T1:C1:1.2");
-    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
-    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    f.sent.length = 0;
-    // A member's call says nothing new: no frames.
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // An admin's first call: every session's access list again, with admins.
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
-      [
-        { sessionId: SID, owner: OWNER, members: [], admins: [MO] },
-        { sessionId: slackId, owner: OWNER, members: [OWNER], admins: [MO] },
-      ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
-    );
     f.sent.length = 0;
     await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // New sessions and the next hello carry them too, from storage.
-    await created(f, "cs_2222222222222222");
-    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [], admins: [MO] });
     expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
-    // Demoted: the lists go out without them.
+    // Being an admin opens no terminal: nothing to resend.
+    expect(f.frames("access")).toHaveLength(0);
+    await created(f, "cs_2222222222222222");
+    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [] });
     f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(3);
+    f.api.onHello();
     expect(f.frames("access").every((a) => a.access.admins === undefined)).toBe(true);
   });
 
-  it("tickets: a dashboard terminal ticket for one session: its owner, or an admin in an org session (CTO-37)", async () => {
+  it("tickets: a dashboard terminal ticket for one session: its owner or a listed person, never an admin or org-wide member", async () => {
     const f = fixture({ ticketKey: true });
     await created(f, SID, OWNER, { mode: "org" });
     f.slackRow("T1:C1:1.2");
@@ -902,9 +885,12 @@ describe("hello and tickets", () => {
     expect(own).toMatchObject({ status: 200 });
     const token = (own.body as { ticket: { token: string } }).ticket.token;
     expect(JSON.parse(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/")))).toMatchObject({ login: true, scope: { sessionIds: [slackId], terminal: true } });
-    // An org session: an admin, not a member it does not name.
+    // An org session: neither a member it does not name nor an admin.
     expect(await mint(MO, [SID])).toMatchObject({ status: 403, error: { reason: "terminal_owner_only" } });
-    expect(await mint(MO, [SID], { admin: true })).toMatchObject({ status: 200 });
+    expect(await mint(MO, [SID], { admin: true })).toMatchObject({ status: 403, error: { reason: "terminal_owner_only" } });
+    // A people session that names them.
+    await created(f, "cs_3333333333333333", OWNER, { mode: "people", people: [MO] });
+    expect(await mint(MO, ["cs_3333333333333333"])).toMatchObject({ status: 200 });
     // An admin is not named in the "only me" session: it does not exist for them.
     expect(await mint(MO, [slackId], { admin: true })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
     expect(await mint(OWNER, ["cs_9999999999999999"])).toMatchObject({ status: 404 });

@@ -148,7 +148,7 @@ describe("create and patch bodies", () => {
     // The next hello sends the stored list.
     f.sent.length = 0;
     f.api.onHello();
-    expect(f.frames("access").map((a) => a.access)).toEqual([{ sessionId: SID, owner: OWNER, members: [MO], admins: [ADMIN] }]);
+    expect(f.frames("access").map((a) => a.access)).toEqual([{ sessionId: SID, owner: OWNER, members: [MO] }]);
   });
 
   it("access and other fields in one patch: both applied, the reply shows the new access", async () => {
@@ -217,13 +217,15 @@ describe("organization default (Q5) and old sessions (Q3)", () => {
 describe("session-access.ts", () => {
   const row = (accessMode: string | null, people: string[] = [], originType = "opc") => ({ originType, ownerUserId: OWNER, accessMode, accessPeople: people.length ? JSON.stringify(people) : null });
 
-  it("a terminal: the owner, a listed person, or an admin in an org session; matches computer's mayOpenTerminal", () => {
+  it("a terminal: the owner or a listed person only, never an admin or an org-wide member; matches computer's mayOpenTerminal", () => {
     expect(mayOpenTerminal(row("owner"), { member: OWNER })).toBe(true);
     expect(mayOpenTerminal(row("owner"), { member: MO, admin: true })).toBe(false);
     expect(mayOpenTerminal(row("people", [MO]), { member: MO })).toBe(true);
     expect(mayOpenTerminal(row("people", [MO]), { member: "usr_pat", admin: true })).toBe(false);
     expect(mayOpenTerminal(row("org"), { member: MO })).toBe(false);
-    expect(mayOpenTerminal(row("org"), { member: MO, admin: true })).toBe(true);
+    expect(mayOpenTerminal(row("org"), { member: MO, admin: true })).toBe(false);
+    expect(mayOpenTerminal(row("org"), { member: OWNER })).toBe(true);
+    expect(mayOpenTerminal(row("people", [MO]), { member: MO, admin: true })).toBe(true);
     expect(mayOpenTerminal(row(null, [], "slack"), { member: OWNER })).toBe(true);
     expect(mayOpenTerminal(row(null, [], "slack"), { member: MO, admin: true })).toBe(false);
   });

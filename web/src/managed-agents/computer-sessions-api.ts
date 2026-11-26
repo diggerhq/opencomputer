@@ -82,6 +82,8 @@ export const SessionSchema = z.looseObject({
   lastSeq: z.number(),
   createdAt: z.string(),
   lastActiveAt: z.string().nullable(),
+  // Whether you may open a terminal: its owner or someone it lists by name, never by being an admin.
+  canOpenTerminal: z.boolean().optional(),
 })
 export type Session = z.infer<typeof SessionSchema>
 
@@ -263,7 +265,7 @@ const TicketSchema = z.looseObject({
   ticket: z.looseObject({ token: z.string(), url: z.string() }),
 })
 
-/** A ticket for one terminal connection to session `id`; refused unless the caller may open one in it (owner, someone it is shared with, or an admin of an org session). */
+/** A ticket for one terminal connection to session `id`; refused unless the caller may open one in it: its owner or someone it is shared with by name. */
 export async function mintTerminalTicket(id: string) {
   const { ticket } = await apiFetch(
     `${PREFIX}/tickets`,

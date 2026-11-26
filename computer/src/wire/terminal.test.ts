@@ -123,7 +123,7 @@ describe('wire terminals', () => {
     c.ws.close();
   });
 
-  it('refuses an admin in an "only me" session; in an org-wide one, an admin but not an unnamed member (CTO-37)', async () => {
+  it('refuses an admin in an "only me" session, and both an admin and an unnamed member in an org-wide one (owner first)', async () => {
     const onlyMe = sid();
     const open = sid();
     const { relay } = await setup({
@@ -133,7 +133,7 @@ describe('wire terminals', () => {
     const admin = connectClient(relay.port, { member: 'usr_admin' });
     // Not named in the session: it does not exist for them.
     expect((await admin.call('terminals.open', { sessionId: onlyMe, cols: 80, rows: 24 })).error.data).toMatchObject({ code: 'session_not_found' });
-    expect((await admin.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error).toBeUndefined();
+    expect((await admin.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error.data).toMatchObject({ reason: 'terminal_owner_only' });
     const member = connectClient(relay.port, { member: 'usr_member' });
     expect((await member.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error.data).toMatchObject({ reason: 'terminal_owner_only' });
     admin.ws.close();
@@ -199,15 +199,19 @@ describe('terminals when access changes (CTO-37)', () => {
     expect(closed).toEqual(['tm_1']);
   });
 
-  it('an admin’s terminal in an organization-wide session goes when it becomes owner-only, or the session is gone', async () => {
+  it('an admin opens none by role; a listed person’s goes when the session turns org-wide, or is gone', async () => {
     const { host, closed } = socketHost(['usr_admin']);
     const admin = terminals('usr_admin', host);
-    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ result: {} });
-    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner([]))).toMatchObject({ error: { reason: 'terminal_owner_only' } });
-    admin.recheck(() => owner(null));
-    expect(admin.size).toBe(1);
-    admin.recheck(() => undefined);
-    expect(admin.size).toBe(0);
-    expect(closed).toEqual(['tm_1']);
+    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ error: { reason: 'terminal_owner_only' } });
+    expect(await admin.open({ sessionId: 'cs_a', tty: false }, { ...owner([]), admins: ['usr_admin'] })).toMatchObject({ error: { reason: 'terminal_owner_only' } });
+    const pat = terminals('usr_pat', host);
+    expect(await pat.open({ sessionId: 'cs_a', tty: false }, owner(['usr_pat']))).toMatchObject({ result: {} });
+    // Org-wide lets them drive, not keep a shell.
+    pat.recheck(() => owner(null));
+    expect(pat.size).toBe(0);
+    expect(await pat.open({ sessionId: 'cs_a', tty: false }, owner(['usr_pat']))).toMatchObject({ result: {} });
+    pat.recheck(() => undefined);
+    expect(pat.size).toBe(0);
+    expect(closed).toEqual(['tm_1', 'tm_2']);
   });
 });

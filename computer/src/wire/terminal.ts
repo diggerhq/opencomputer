@@ -4,10 +4,10 @@
 // `[channel u32 BE][data]` on the WebSocket.
 //
 // Invariants:
-// - Only someone who may attach opens one, and then the owner, a person the
-//   session is shared with by name, or an admin in an organization-wide
-//   session (edge-auth.ts `mayOpenTerminal`, against the host's access list and
-//   admins; the host checks again, and the 8-per-session limit). When access
+// - Only the session's owner or a person it is shared with by name opens one;
+//   never every member of an organization-wide session, never an admin by role
+//   (edge-auth.ts `mayOpenTerminal`, against the host's access list; the host
+//   checks again, and the 8-per-session limit). When access
 //   changes, terminals their opener may no longer open are hung up (`recheck`).
 // - Output goes out ahead of events (the outbox's urgent queue), in frames of
 //   at most 64 KiB, and the terminal's socket is paused while the connection
@@ -98,7 +98,7 @@ export class WireTerminals {
   async open(p: OpenParams, access: SessionAccess | undefined): Promise<CallOutcome> {
     const { host, member } = this.deps;
     if (!access) return { error: errors.sessionNotFound() };
-    if (!mayOpenTerminal(access, member, host.admins)) return { error: errors.terminalOwnerOnly() };
+    if (!mayOpenTerminal(access, member)) return { error: errors.terminalOwnerOnly() };
     const tty = p.tty ?? true;
     if (tty && (p.cols === undefined || p.rows === undefined)) return { error: errors.invalidParams(p.cols === undefined ? 'cols' : 'rows', 'cols and rows are required with tty') };
     const r = await host.call({
@@ -197,7 +197,7 @@ export class WireTerminals {
     const { host, member } = this.deps;
     for (const t of this.byId.values()) {
       const access = get(t.sessionId);
-      if (access && mayOpenTerminal(access, member, host.admins)) continue;
+      if (access && mayOpenTerminal(access, member)) continue;
       // Gone at once, not when the host says it exited: no more input reaches it.
       this.hangUp(t, 'access_lost');
       for (const s of t.sockets) s.destroy();

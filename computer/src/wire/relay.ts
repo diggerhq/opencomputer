@@ -84,7 +84,7 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
     access: (a) => {
       for (const c of conns) c.accessChanged(a);
     },
-    // A demotion can take away terminals (an admin's in an organization-wide session).
+    // Being an admin opens no terminal; rechecking on an admin change is harmless and keeps older hosts' frames answered.
     admins: () => {
       for (const c of conns) c.recheckAccess((sid) => hostLink.access(sid));
     },

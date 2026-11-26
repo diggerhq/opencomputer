@@ -122,7 +122,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: (await hooks.known?.(m.sessionId)) ? sessionNotRunning() : sessionNotFound() };
         const a = access.get(m.sessionId);
-        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member, new Set(admins)))) return { error: apiError('forbidden', "Only the session's owner, someone it is shared with, or an admin of an organization-wide session can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
+        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member))) return { error: apiError('forbidden', "Only the session's owner and the people it is shared with by name can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(

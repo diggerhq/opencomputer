@@ -193,6 +193,8 @@ export interface Session {
   access?: SessionAccessView;
   /** Whether the caller may change `access`: the owner, a listed person, or an org admin. */
   canManageAccess?: boolean;
+  /** Whether the caller may open a terminal in it: the owner or a person listed in `people`, never by being an admin. */
+  canOpenTerminal?: boolean;
 }
 
 /**

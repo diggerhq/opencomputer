@@ -2723,6 +2723,9 @@
         "canManageAccess": {
           "type": "boolean"
         },
+        "canOpenTerminal": {
+          "type": "boolean"
+        },
         "owner": {
           "$ref": "#/$defs/Person"
         },

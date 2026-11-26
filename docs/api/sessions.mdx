@@ -102,7 +102,7 @@ Set it when you create the session, or change it with `PATCH /sessions/{id}`:
 | `people` | Up to 50 entries: `usr_` member ids, WorkOS `user_` ids or emails. Each must be someone in the organization who has used OpenComputer here. Otherwise the response is `400 invalid_request` with `field: "access.people"` and `reason: "unknown_member"` |
 | Slack sessions | `access` shows `owner` and cannot be changed over the API: `403 forbidden` with `reason: "access_in_slack"`. Manage who drives a Slack session in its thread |
 | Sessions from before access modes | `org` until someone changes them |
-| Terminals | Owner, the members in `people`, or an admin in an `org` session ([Terminals](/api/terminals)) |
+| Terminals | The owner and the members in `people` only. Not the members of an `org` session, and not an admin by role. `canOpenTerminal` on the session says whether you may ([Terminals](/api/terminals)) |
 | After a change | Attached connections and open terminals that lose access are closed. HTTP reads may keep working for up to 30 seconds |
 
 Access is HTTP only. `sessions.update` over the WebSocket does not take it.

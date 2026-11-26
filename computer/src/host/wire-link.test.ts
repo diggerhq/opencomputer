@@ -109,7 +109,7 @@ describe('wire link', () => {
     r.sock.destroy();
   });
 
-  it('lets the owner, named members and (org-wide) admins past the terminal gate, never an admin the session does not name', async () => {
+  it('lets the owner and named members past the terminal gate; never an admin by role, nor an org-wide member', async () => {
     link.setAdmins(['usr_admin']);
     link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: ['usr_owner', 'usr_invited'], admins: ['usr_admin'] });
     const r = await relay();
@@ -123,11 +123,13 @@ describe('wire link', () => {
     expect((await r.next((m) => m.id === 'b')).error).toMatchObject({ reason: 'session_not_running' });
     link.setAccess({ sessionId: 'cs_stopped', owner: 'usr_owner', members: null });
     await r.next((m) => m.t === 'access');
-    // Org-wide (CTO-37): an admin, not a member the session does not name.
+    // Org-wide: members drive it but get no shell, and an admin is one of them (owner first).
     open('c', 'usr_anyone');
     expect((await r.next((m) => m.id === 'c')).error).toMatchObject({ reason: 'terminal_owner_only' });
     open('d', 'usr_admin');
-    expect((await r.next((m) => m.id === 'd')).error).toMatchObject({ reason: 'session_not_running' });
+    expect((await r.next((m) => m.id === 'd')).error).toMatchObject({ reason: 'terminal_owner_only' });
+    open('e', 'usr_owner');
+    expect((await r.next((m) => m.id === 'e')).error).toMatchObject({ reason: 'session_not_running' });
     r.sock.destroy();
   });
 
@@ -153,7 +155,7 @@ describe('wire link', () => {
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
   });
 
-  it('lets in a listed person, and an admin only where the access list lets them attach (CTO-37 Q4)', async () => {
+  it('lets in the owner and a listed person; never an admin by role, nor an org-wide member (owner first)', async () => {
     const r = await relay();
     r.send({ t: 'hello', version: 'test' });
     await r.next((m) => m.t === 'welcome');
@@ -173,8 +175,11 @@ describe('wire link', () => {
     expect(await open('p1', 'usr_pat')).toBe('opened');
     expect(await open('p2', 'usr_admin')).toBe('terminal_owner_only');
     link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: null });
-    expect(await open('g1', 'usr_admin')).toBe('opened');
+    expect(await open('g1', 'usr_admin')).toBe('terminal_owner_only');
     expect(await open('g2', 'usr_pat')).toBe('terminal_owner_only');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: null, admins: ['usr_admin'] });
+    expect(await open('g3', 'usr_admin')).toBe('terminal_owner_only');
+    expect(await open('g4', 'usr_owner')).toBe('opened');
     r.sock.destroy();
   });
 

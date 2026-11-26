@@ -217,6 +217,8 @@ export const Session = Schema.Struct({
   access: Schema.optionalKey(SessionAccess),
   /** Whether the caller may change `access`: its owner, someone in `people`, or an organization admin. Sent with `access`. */
   canManageAccess: Schema.optionalKey(Schema.Boolean),
+  /** Whether the caller may open a terminal in it: its owner or someone listed in `people`; being an admin is not enough. Sent with `access`. */
+  canOpenTerminal: Schema.optionalKey(Schema.Boolean),
   owner: Person,
   origin: Origin,
   settings: Settings,

@@ -130,6 +130,8 @@ function SessionPage({ id }: { id: string }) {
   const userId = useContext(AuthContext)?.user?.id ?? 'anonymous'
   const [sidebar, setSidebar] = useSidebarPrefs(userId)
   const s = session.data
+  // Only the owner and the people it lists by name get a terminal (owner first).
+  const terminal = s?.canOpenTerminal === true
   const emails = useMemberEmails()
 
   // Reading the session marks it read up to what was shown.
@@ -163,8 +165,10 @@ function SessionPage({ id }: { id: string }) {
     <div className="flex h-full flex-col">
       <Header
         id={id}
-        sidebar={sidebar.open}
-        onSidebar={() => setSidebar({ open: !sidebar.open })}
+        sidebar={terminal && sidebar.open}
+        onSidebar={
+          terminal ? () => setSidebar({ open: !sidebar.open }) : undefined
+        }
       />
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
@@ -212,7 +216,13 @@ function SessionPage({ id }: { id: string }) {
           </div>
           <Composer id={id} />
         </div>
-        <SessionSidebar sessionId={id} prefs={sidebar} onChange={setSidebar} />
+        {terminal ? (
+          <SessionSidebar
+            sessionId={id}
+            prefs={sidebar}
+            onChange={setSidebar}
+          />
+        ) : null}
       </div>
     </div>
   )
@@ -225,7 +235,8 @@ function Header({
 }: {
   id: string
   sidebar: boolean
-  onSidebar: () => void
+  /** Absent when you may not open a terminal here: no sidebar toggle. */
+  onSidebar?: () => void
 }) {
   const qc = useQueryClient()
   const { data: s } = useQuery({
@@ -265,16 +276,18 @@ function Header({
           </a>
         </Button>
       ) : null}
-      <Button
-        size="icon-sm"
-        variant={sidebar ? 'secondary' : 'ghost'}
-        aria-pressed={sidebar}
-        aria-label={sidebar ? 'Hide the sidebar' : 'Show the sidebar'}
-        title="The terminal of this session's computer"
-        onClick={onSidebar}
-      >
-        <PanelRight />
-      </Button>
+      {onSidebar ? (
+        <Button
+          size="icon-sm"
+          variant={sidebar ? 'secondary' : 'ghost'}
+          aria-pressed={sidebar}
+          aria-label={sidebar ? 'Hide the sidebar' : 'Show the sidebar'}
+          title="The terminal of this session's computer"
+          onClick={onSidebar}
+        >
+          <PanelRight />
+        </Button>
+      ) : null}
       {s ? (
         <Button
           size="icon-sm"
