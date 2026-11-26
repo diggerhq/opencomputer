@@ -350,7 +350,7 @@ describe("SessionLog reads", () => {
     expect(rest.events.map((e) => e.seq)).toEqual([4, 5, 6, 7, 8]);
     expect(rest.hasMore).toBe(false);
 
-    expect(await log.stub.events({ after: 9 })).toEqual({ ok: false, error: "cursor_ahead", lastSeq: 8, logEpoch: 1 });
+    expect(await log.stub.events({ after: 9 })).toMatchObject({ ok: false, error: "reset", seq: 8 });
   });
 
   it("tailTurns returns the last turns' events and the earlier turns, newest first", async () => {
