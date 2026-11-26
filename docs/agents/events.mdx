@@ -125,7 +125,7 @@ only when one happened.
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question); the asking turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text |
+| `question.asked` | The agent called [`ask`](/agents/tools#ask-a-question); the asking turn completes with `outcome: "question"` | `questionId`, `text`, `options`: `{ label, value }` choices, empty for free text; `context` when the agent gave one |
 | `question.answered` | A turn answering the question was admitted | `questionId`, `answer`: `{ questionId, text, value? }` |
 | `question.closed` | The question closed without an answer | `questionId`, `reason`: `stopped`, `dismissed`, `ended` or `undeliverable` |
 | `message.held` | An input sent without `answers` was held behind the open question | `heldId`, `questionId`, `input`, `payload?`, `receivedAt` |
