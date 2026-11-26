@@ -276,7 +276,7 @@ export interface RunnerApi {
 
 // ---------------------------------------------------------------- Slack-bound narrowings
 
-/** A person with a Slack identity: everyone the Slack gateway (src/gateway/) knows. */
+/** A person with a Slack identity: everyone the gateway knows from Slack. */
 export type SlackPerson = Person & { slackUserId: string };
 
 /** A session bound to a Slack thread or channel: every session the Slack gateway creates. */
