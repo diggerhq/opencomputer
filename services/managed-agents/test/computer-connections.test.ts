@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CONNECTION_VIEW, ComputerConnections, connectionButtonId, decodeConnectionButtonId, type GrantScope } from "../src/computer/connections.js";
-import type { SlackResult } from "../src/computer/slack.js";
+import type { SlackResult } from "../src/slack/slack-api.js";
 
 const SESSION = { key: "T1:C1:100.1", ownerId: "U_OWNER", channelId: "C1", threadTs: "100.1" };
 const OWNED: Record<string, Array<{ id: string; label: string; displayName?: string }>> = {
