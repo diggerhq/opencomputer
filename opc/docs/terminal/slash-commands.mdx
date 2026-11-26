@@ -1,0 +1,97 @@
+---
+title: "Slash commands"
+description: "Commands you type in the prompt line, handled by opc."
+---
+
+A line that starts with `/` is a command to `opc`, not a message to the agent. `Tab` completes command names and arguments.
+
+| Command | Does |
+| --- | --- |
+| `/help` | Lists these commands |
+| `/model [name]` | Shows or sets the model |
+| `/effort [level]` | Shows or sets the effort level |
+| `/speed [fast\|standard]` | Shows or sets the speed |
+| `/mode [name]` | Shows or sets the permission mode |
+| `/title <words>` | Renames the session. `/rename` is an alias. |
+| `/queue <message>` | Sends a message as its own turn, after the running one |
+| `/interrupt` | Same as `Esc`. `/stop` is an alias. |
+| `/compact [instructions]` | Summarizes the conversation to free context, after the running turn if there is one |
+| `/allowed` | Lists the rules allowed for this session with `[a]`, and revokes them |
+| `/push <dir> [--to <name>]` | Copies a local directory into the workspace |
+| `/pull <path> [dir]` | Copies a directory from the workspace to your machine |
+| `/diff [--stat]` | Shows the git diff of every repository in the workspace, through `$PAGER` |
+| `/shell` | Opens a shell in the workspace; `exit` returns here |
+| `/sessions` | Lists your sessions in the live area, to pick one to attach |
+| `/new` | Detaches and starts a new session |
+| `/detach` | Detaches. Same as `Ctrl+D`. |
+| `/suspend` | Suspends the session now, instead of after two idle hours |
+| `/archive` | Archives the session and detaches. Any new message un-archives it. |
+| `/web` | Opens the session on the dashboard |
+| `/copy [code]` | Copies the agent's last message, as markdown, to your clipboard. `/copy code` copies its last code block. Works over SSH and in tmux. |
+| `/details` | Pipes the session's details through `$PAGER`. Same as `Ctrl+O`. |
+| `/subagents [n]` | Lists [subagents](/terminal/session-screen#subagents) in the live area: running ones and those that ended this session, their results, and stopping one |
+| `/timing` | Prints the timings of this launch and the last turn |
+| `/id` | Prints the session's full id and its dashboard and Slack links |
+
+## Settings
+
+`/model`, `/effort`, `/speed` and `/mode` without an argument open a chooser with the values the session allows, the current one marked. With an argument they set it directly:
+
+```
+> /model sonnet 5.5
+  model: opus 5.5 → sonnet 5.5, from the next turn
+```
+
+Names match case-insensitively and by prefix, so `/model son` works when it is unambiguous. A value your organization does not allow is refused with the list of what is allowed. Every client sees the change, including Slack.
+
+## /push
+
+```
+> /push ~/src/billing
+  ↑ billing → workspace/billing · 412 files · 3.1 MB · 0.9 s
+```
+
+Same rules as [`opc push`](/cli/files#push). `Tab` completes local paths.
+
+## /pull
+
+```
+> /pull reports/q3 ./q3-report
+  ↓ workspace/reports/q3 → ./q3-report · 12 files · 280 KB · 0.3 s
+```
+
+Same rules as [`opc pull`](/cli/files#pull). Relative local paths are relative to the directory you started `opc` in.
+
+## /allowed
+
+Pressing `a` on an approval allows a rule for the rest of the session, such as `Bash(terraform plan *)`. `/allowed` lists the session's rules, and `Enter` revokes the one selected:
+
+```
+> /allowed
+  allowed for this session
+  ❯ Bash(terraform plan *)
+    Bash(npm test *)
+    enter revoke · esc close
+  ✓ revoked: Bash(terraform plan *)
+```
+
+The rules belong to the session, so every client sees the same list. A revoked rule asks again from the next call.
+
+## /compact
+
+Compacting replaces the conversation so far with a summary, so a long session has room to keep working. Instructions focus the summary: `/compact keep the failing test names`. If a turn is running, compaction runs after it ends. The transcript on your screen is not changed; a line marks where the summary begins.
+
+## Text that starts with a slash
+
+To send a message that starts with `/`, double it: `//etc/hosts is wrong` sends `/etc/hosts is wrong`. An unknown command is not sent:
+
+```
+> /deploy
+  unknown command /deploy. To send it to the agent, type //deploy
+```
+
+<Note>
+A message the agent receives that starts with `/` may be read as one of the agent's own commands, such as a custom command defined in a repository. `opc` passes it through unchanged.
+</Note>
+
+Text that starts with `!` is sent unchanged. The `!` commands of the Slack app are Slack's; their equivalents here are the slash commands above.

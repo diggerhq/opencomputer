@@ -1,0 +1,120 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "opc",
+  "description": "Your organization's Computer, from a terminal, and the streaming API behind it",
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "cursor", "vscode"],
+    "display": "header"
+  },
+  "colors": {
+    "primary": "#131311",
+    "light": "#dfdfdf",
+    "dark": "#131311"
+  },
+  "favicon": "/images/favicon.svg",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "opc",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": ["index", "quickstart", "install", "concepts"]
+          },
+          {
+            "group": "Working in a session",
+            "pages": [
+              "terminal/session-screen",
+              "terminal/keys",
+              "terminal/slash-commands",
+              "terminal/asks",
+              "terminal/status-line"
+            ]
+          },
+          {
+            "group": "Sessions",
+            "pages": ["cli/sessions", "cli/sharing", "cli/scripting", "cli/agents"]
+          },
+          {
+            "group": "Files and shells",
+            "pages": ["cli/files", "cli/shell"]
+          },
+          {
+            "group": "Account",
+            "pages": ["cli/auth", "cli/ci"]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/commands",
+              "reference/exit-codes",
+              "reference/environment",
+              "reference/timing",
+              "reference/telemetry",
+              "troubleshooting",
+              "changelog"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["api/overview", "api/quickstart", "api/authentication", "api/model"]
+          },
+          {
+            "group": "HTTP",
+            "pages": [
+              "api/http/sessions",
+              "api/http/turns",
+              "api/http/asks",
+              "api/http/subagents",
+              "api/http/control",
+              "api/http/events",
+              "api/http/workspace",
+              "api/http/secrets",
+              "api/http/tickets"
+            ]
+          },
+          {
+            "group": "WebSocket",
+            "pages": ["api/websocket/connect", "api/websocket/methods", "api/websocket/terminals", "api/websocket/flow-control"]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "api/reference/objects",
+              "api/reference/events",
+              "api/reference/errors",
+              "api/reference/idempotency",
+              "api/reference/limits",
+              "api/reference/versioning"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/images/logo-light.svg",
+    "dark": "/images/logo-dark.svg",
+    "href": "https://opencomputer.dev"
+  },
+  "appearance": { "default": "light" },
+  "background": { "color": { "light": "#f8f6f1", "dark": "#0f0f0f" } },
+  "navbar": {
+    "links": [
+      { "label": "OpenComputer docs", "href": "https://docs.opencomputer.dev" },
+      { "label": "GitHub", "href": "https://github.com/diggerhq/opencomputer/tree/main/opc" }
+    ],
+    "primary": { "type": "button", "label": "Install opc", "href": "/install" }
+  },
+  "footer": { "socials": { "github": "https://github.com/diggerhq/opencomputer/tree/main/opc" } },
+  "fonts": {
+    "heading": { "family": "Newsreader", "weight": 600 },
+    "body": { "family": "Inter", "weight": 400 }
+  }
+}

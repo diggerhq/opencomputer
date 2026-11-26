@@ -98,6 +98,15 @@ export interface PostedReply {
   url: string;
 }
 
+/** A reply as posted: the session's answer, plus where it went, for waking a session there. */
+export interface Posted extends PostedReply {
+  channel: string;
+  /** The thread's root, as Slack has it. */
+  threadTs: string;
+  /** The text as posted, without the attribution line. */
+  body: string;
+}
+
 type Slack = (method: string, body: Record<string, unknown>) => Promise<SlackResult>;
 
 export const MAX_LINKS = 3;
@@ -238,7 +247,7 @@ export class ThreadAccess {
    * posted for and a link back to the session's thread on its own line.
    * Throws the refusal or Slack's error.
    */
-  async post(ref: ThreadRef, audience: ThreadAudience, input: { text: string; sessionUrl: string | null }): Promise<PostedReply> {
+  async post(ref: ThreadRef, audience: ThreadAudience, input: { text: string; sessionUrl: string | null }): Promise<Posted> {
     const body = stripAttribution(input.text).trim();
     if (!body) throw new Error("the text is empty");
     if (body.length > MAX_POST_CHARS) throw new Error(`the text is longer than ${MAX_POST_CHARS} characters`);
@@ -264,7 +273,8 @@ export class ThreadAccess {
     });
     if (!posted.ok || !posted.ts) throw new Error(`Slack post failed: ${posted.error ?? "unknown_error"}`);
     const { host } = await this.workspace();
-    return { ts: posted.ts, url: `https://${host}/archives/${ref.channel}/p${posted.ts.replace(".", "")}?thread_ts=${root}&cid=${ref.channel}` };
+    const url = `https://${host}/archives/${ref.channel}/p${posted.ts.replace(".", "")}?thread_ts=${root}&cid=${ref.channel}`;
+    return { ts: posted.ts, url, channel: ref.channel, threadTs: root, body: neutralizeBroadcasts(body) };
   }
 
   /** A person's display name from the cached lookup, or their id when Slack does not say (work 112: held context). */

@@ -5,7 +5,7 @@ import type {
   PlaceRow,
   SessionRow,
 } from '@opencomputer/sdk/computer'
-import { Draft, type Rows } from './rows'
+import { Draft, readRow, type Rows } from './rows'
 
 // What each of the person's unconfirmed writes does to the rows, applied
 // locally until the feed confirms it (spec 42.2). One function per mutation of
@@ -136,10 +136,9 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
     d.delete('doc', a.tid)
   },
   'read.set': (d, a, c) => {
-    const id = `${c.me}:${a.sid}`
-    const have = d.get('read', id)
+    const have = readRow((id) => d.get('read', id), c.me, a.sid)
     if (have && have.readSeq >= a.seq) return
-    d.set({ kind: 'read', id, version: have?.version ?? 0, member: c.me, sessionId: a.sid, readSeq: a.seq })
+    d.set({ kind: 'read', id: have?.id ?? a.sid, version: have?.version ?? 0, member: c.me, sessionId: a.sid, readSeq: a.seq })
   },
   'pref.set': (d, a, c) =>
     d.set({ kind: 'pref', id: `${c.me}:${a.key}`, version: 0, member: c.me, key: a.key, value: a.value }),

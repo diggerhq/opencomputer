@@ -32,10 +32,9 @@ export function trackTools(w: Work): CalvinTool[] {
   };
   let doc: Doc | undefined;
   const readDoc = async (tid: string): Promise<Doc> => {
-    // No route reads one Doc: it is a row of the feed, so a snapshot of that kind is read.
-    const r = await w.api.call('GET', '/feed', { query: { kinds: 'doc' } });
-    const row = (Array.isArray(r?.rows) ? r.rows : []).find((x: any) => x?.kind === 'doc' && (x.id === tid || x.trackId === tid));
-    if (!row) throw new Error('this track has no Doc yet');
+    // The track's `doc` row; an agent's feed is empty (its audiences are none), so it has its own read.
+    const row = (await w.api.call('GET', `/work/tracks/${tid}/doc`))?.doc;
+    if (!row) throw new Error('the API answered no Doc for this track');
     doc = { rev: Number(row.rev), text: String(row.text ?? ''), spans: Array.isArray(row.spans) ? row.spans : [] };
     return doc;
   };

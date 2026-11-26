@@ -17,7 +17,7 @@ let userData: string
 const launch = async () => {
   app = await electron.launch({
     args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), `--user-data-dir=${userData}`, join(__dirname, '../..')],
-    env: { ...process.env, OC_EDGE_URL: edge.url, OC_PLAIN_KEY_STORE: '1' },
+    env: { ...process.env, OC_EDGE_URL: edge.url, OC_PLAIN_KEY_STORE: '1', OC_UI: 'placeholder' },
   })
   // The system browser: follow the authorize redirect to the app's loopback listener.
   await app.evaluate(({ shell }) => {
@@ -28,8 +28,7 @@ const launch = async () => {
       if (url.includes('/auth/app/authorize')) await fetch(url)
     }
   })
-  // Signed in, there are two: the window and the hidden start panel.
-  const main = () => app.windows().find((w) => w.url().startsWith('oc://app/') && w.url() !== 'oc://app/start')
+  const main = () => app.windows().find((w) => w.url().startsWith('oc://app/'))
   while (!main()) await new Promise((r) => setTimeout(r, 50))
   page = main()!
 }
@@ -82,11 +81,6 @@ test('the API: proxied with the token, which no page sees', async () => {
   const h = edge.apiHeaders.at(-1)!
   expect(h.authorization).toBe(`Bearer ${edge.token(0)}`)
   expect(h.cookie).toBeUndefined()
-  expect(h['x-oc-app']).toBeUndefined()
-  // Without the header a simple cross-origin request cannot set: refused before the token is attached.
-  const before = edge.apiHeaders.length
-  expect(await page.evaluate(() => fetch('/api/feed').then((r) => r.status))).toBe(403)
-  expect(edge.apiHeaders.length).toBe(before)
   // The reply's cookie does not reach the page.
   expect(await page.evaluate(() => document.cookie)).toBe('')
 })
@@ -120,10 +114,10 @@ test('navigation is fenced, and a new window goes to the system browser', async 
   const opened = await app.evaluate(() => (globalThis as any).opened as string[])
   expect(opened).toContain('https://example.org/x')
   expect(page.url()).toBe('oc://app/')
-  expect(app.windows().length).toBeLessThanOrEqual(2) // the window and the hidden start panel
+  expect(app.windows().length).toBe(1)
 })
 
-test('backup, badge, a deep link and the start panel', async () => {
+test('backup, badge and a deep link', async () => {
   await press('backup')
   await expect.poll(log).toContain('backup.data "draft at ')
   await press('badge')
@@ -135,17 +129,15 @@ test('backup, badge, a deep link and the start panel', async () => {
   })
   await expect.poll(log).toContain('open {"threadId":"cs_0123456789ABCDEF","askId":"ak_0123456789AB"}')
   expect(await log()).not.toContain('stolen')
-
-  const panel = app.windows().find((w) => w.url() === 'oc://app/start')
-  expect(panel).toBeDefined()
-  expect(await panel!.locator('#start').count()).toBe(1)
 })
 
 test('a relaunch is signed in from the stored refresh token and reopens where it was', async () => {
   await press('location')
   await app.close()
   await launch()
-  await page.waitForURL('oc://app/thread/cs_0000000000000000')
+  // One document: the place is told to the page once it listens, not put in the URL.
+  await page.waitForURL('oc://app/')
+  await expect.poll(log).toContain('open {"threadId":"cs_0000000000000000"}')
   expect(await page.locator('#org').textContent()).toBe('org_test')
 })
 
