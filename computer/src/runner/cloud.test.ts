@@ -10,7 +10,7 @@ function rig(replies: Array<{ status: number; body?: unknown }>, expiresIn = 3_6
     fetch: (async (url: URL, init: any) => {
       asked.push({ url: String(url), init });
       const r = replies.shift()!;
-      return new Response(r.body === undefined ? null : JSON.stringify(r.body), { status: r.status });
+      return new Response(r.body === undefined ? null : typeof r.body === 'string' ? r.body : JSON.stringify(r.body), { status: r.status });
     }) as never,
   });
   return { api, asked, keys: () => keys };
@@ -20,7 +20,7 @@ describe('cloudApi', () => {
   it("calls the public API with the session's key, the query, the body and the Idempotency-Key", async () => {
     const t = rig([{ status: 200, body: { ok: 1 } }, { status: 200, body: {} }]);
     expect(await t.api.call('POST', '/sessions', { body: { input: 'x' }, query: { a: 1, b: undefined }, key: 'toolu_1' })).toEqual({ ok: 1 });
-    expect(t.asked[0].url).toBe('https://api.test/v1/computer/sessions?a=1');
+    expect(t.asked[0].url).toBe('https://api.test/api/managed-agents/computer/sessions?a=1');
     expect(t.asked[0].init).toMatchObject({ method: 'POST', body: '{"input":"x"}', headers: { authorization: 'Bearer k1', 'content-type': 'application/json', 'idempotency-key': 'toolu_1' } });
     await t.api.call('GET', '/work/overview');
     expect(t.keys()).toBe(1); // the key is held until it nears its end
@@ -41,5 +41,12 @@ describe('cloudApi', () => {
     const e = await t.api.call('PUT', '/work/threads/cs_1/title', { body: {} }).catch((x) => x);
     expect(e).toBeInstanceOf(CloudError);
     expect(e).toMatchObject({ status: 409, code: 'refused', reason: 'user_set' });
+  });
+
+  it('a reply that is not JSON is an error, never an empty answer', async () => {
+    // An app origin's page fallback answers a GET with HTML and a PUT with a bare 405.
+    const t = rig([{ status: 200, body: '<!doctype html><html></html>' }, { status: 405, body: 'Method Not Allowed' }]);
+    await expect(t.api.call('GET', '/feed')).rejects.toMatchObject({ status: 200, code: 'http_200' });
+    await expect(t.api.call('PUT', '/work/tracks/trk_1/stand', { body: { stand: 'x' } })).rejects.toMatchObject({ status: 405, code: 'http_405' });
   });
 });

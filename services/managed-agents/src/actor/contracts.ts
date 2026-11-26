@@ -127,7 +127,15 @@ export type FeedPush = {
   mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[];
 };
 export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string };
-export type MutateRequest = { name: string; args: unknown; client?: { id: string; n: number }; idem?: string; trace?: string };
+export type MutateRequest = {
+  name: string;
+  args: unknown;
+  client?: { id: string; n: number };
+  idem?: string;
+  trace?: string;
+  /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
+  person?: { name: string | null; email: string | null };
+};
 export type MutateReply =
   | { protocol: 1; lastMutation?: number; value?: unknown }
   | { error: { code: "refused" | "not_found" | "taken" | "conflict" | "out_of_order" | "principal_mismatch" | "idempotency_conflict" | "invalid_request" | "forbidden"; message?: string; reason?: string; lastMutation?: number; [field: string]: unknown } };
@@ -166,6 +174,8 @@ export interface OrgRpc {
   overview(p: Principal): Promise<Overview>;
   /** tell_track: the agent session of the caller's track. */
   trackAgent(p: Principal): Promise<string | null>;
+  /** A track's `doc` row (doc_read): its agent cannot read it from the feed. */
+  doc(p: Principal, trackId: string): Promise<Row | null>;
   docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]>;
   review(p: Principal, resultId: string): Promise<ReviewRow | null>;
   mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void>;

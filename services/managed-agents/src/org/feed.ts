@@ -217,7 +217,9 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
 type MutateError = Extract<MutateReply, { error: unknown }>["error"];
 
 function apply(tx: Tx, p: Principal, m: MutateRequest): { reply: MutateReply; refused: { code: string; reason: string } | null } {
-  const out = runMutation(tx, p, m.name, m.args);
+  // `person` is the edge's, never the body's: a body's is replaced.
+  const args = typeof m.args === "object" && m.args !== null && !Array.isArray(m.args) ? { ...(m.args as Record<string, unknown>), person: m.person } : m.args;
+  const out = runMutation(tx, p, m.name, args);
   if (out.ok) return { reply: { protocol: 1, ...(out.value !== undefined ? { value: out.value } : {}) }, refused: null };
   const { ok: _ok, ...error } = out;
   return { reply: { error: error as MutateError }, refused: { code: out.code, reason: out.reason } };
