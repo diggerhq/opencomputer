@@ -185,7 +185,7 @@ With a session, blocks until it has nothing left to do: no turn running or queue
 
 With several ids, `--all` returns when every one is done and `--any` when the first is. `--json` prints the [Result](/api/reference/objects#result) of the last turn, and with several ids one Result per line, as each is done. Without `--json`, the last turn's final message, and with several ids each one under a `── <session id>` line.
 
-With several ids, a session that is lost, because attaching to it was refused or the server stopped sending it, is reported on its own and the others go on: with `--json`, as a Result line with `subtype` `error` and its `sessionId`; without, as `opc: <id>: <message>` on standard error. With one id, a lost session fails the command, with an [error object](/reference/exit-codes#error-objects). Exit codes:
+With several ids, a session that is lost, because the server refused it or stopped sending it, is reported on its own and the others go on: with `--json`, as a Result line with `subtype` `error` and its `sessionId`; without, as `opc: <id>: <message>` on standard error. With one id, a lost session fails the command, with an [error object](/reference/exit-codes#error-objects). Exit codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -196,7 +196,7 @@ With several ids, a session that is lost, because attaching to it was refused or
 
 With `--all`, `0` when every one completed, else `5` when any is waiting, else `1`, which includes a lost session. With `--any`, the code of the one that returned; a lost session does not count as returning. A session that is already idle returns at once with the status of its last turn.
 
-`opc wait` follows the session over your computer's connection, so it returns the moment the turn ends. A program without `opc` [attaches over a WebSocket](/api/websocket/methods#attach), or [gets the turn](/api/http/turns#get-a-turn) every few seconds until it has ended.
+`opc wait` follows the session on [Live](https://docs.opencomputer.dev/api/live) and reads its events over HTTP, so it returns the moment the turn ends. A program without `opc` does the same, or [gets the turn](/api/http/turns#get-a-turn) every few seconds until it has ended.
 
 ### Background subagents
 
@@ -258,7 +258,7 @@ opc ls --metadata job=nightly --metadata run=1842 --json
 
 ## Running many
 
-Each `opc` process uses one HTTP/2 connection to OpenComputer's API. `opc -p`, `opc wait`, `opc watch` and `opc a` also open one WebSocket connection to your computer; the other commands do not. `opc wait --any`, `opc wait --all` and `opc watch` with several ids follow up to 20 sessions over one connection. Your computer accepts up to 50 connections per member, so to follow more sessions than that, wait for them in groups.
+Each `opc` process uses one HTTP/2 connection to OpenComputer's API. `opc -p`, `opc wait`, `opc watch` and `opc a` also open one [Live](https://docs.opencomputer.dev/api/live) socket to watch sessions, which follows up to 32 sessions; to follow more than that, wait for them in groups. Only `opc shell` and the interactive screen open a WebSocket to your computer, which accepts up to 50 connections per member.
 
 Any number of `opc` processes can run at once on one machine. They share `opc`'s cache files safely, with file locks.
 

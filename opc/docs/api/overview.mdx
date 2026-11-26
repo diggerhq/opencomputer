@@ -1,27 +1,27 @@
 ---
 title: "API overview"
-description: "The HTTP and WebSocket API behind opc, Slack and the dashboard."
+description: "The HTTP, Live and WebSocket API behind opc, Slack and the dashboard."
 ---
 
 The Computer API is what `opc` is built on. Everything `opc` does, a program can do: start sessions, send messages, stream the agent's work as it happens, answer approvals and questions, move files and open a terminal. There is no private API behind `opc`.
 
-It has two parts that share one data model:
+It has three parts that share one data model:
 
-| | HTTP | WebSocket |
-| --- | --- | --- |
-| Base | `https://app.opencomputer.dev/api/managed-agents/computer` | `wss://wire.opencomputer.dev/v1` |
-| Use it for | Creating and listing sessions, single actions, reading history, files | Watching sessions live: text as it is written, a few milliseconds after the model produces it |
-| Shape | JSON requests and responses | JSON-RPC 2.0 messages |
-| Auth | An API key on every request | The API key on the upgrade request, or a short-lived [ticket](/api/http/tickets) from a browser |
+| | HTTP | Live | WebSocket |
+| --- | --- | --- | --- |
+| Base | `https://app.opencomputer.dev/api/managed-agents/computer` | `wss://app.opencomputer.dev/api/managed-agents/computer/live` | `wss://wire.opencomputer.dev/v1` |
+| Use it for | Every write, creating and listing sessions, reading history, files | Watching sessions: new events and text as it is written | Terminals |
+| Shape | JSON requests and responses | JSON frames (`oc.live.v1`) | JSON-RPC 2.0 messages |
+| Auth | An API key on every request | The API key on the upgrade request | The API key on the upgrade request, or a short-lived [ticket](/api/http/tickets) from a browser |
 
-Every action is available over HTTP. The WebSocket adds live events, text deltas and terminals. A program that only needs to start work and collect the result never has to open a WebSocket: see [Quickstart](/api/quickstart).
+Every action is available over HTTP, and every write is HTTP only. [Live](https://docs.opencomputer.dev/api/live) adds what changed, as it changes; the WebSocket adds terminals and a few reads. A program that only needs to start work and collect the result never has to open a socket: see [Quickstart](/api/quickstart).
 
 ## Where it fits
 
 ```
  opc · your programs · the dashboard              Slack
         │                                           │
-        │ HTTP, API key       app.opencomputer.dev  │
+        │ HTTP and Live, key  app.opencomputer.dev  │
         │ WebSocket, key      wire.opencomputer.dev │
         │   (or ticket)                             │
         ▼                                           ▼
@@ -52,9 +52,9 @@ Slack, `opc`, the dashboard and your programs are clients of the same sessions. 
 - **Errors** are `{ "error": { "code", "message", "retryable", "requestId" } }` with a stable `code` to branch on and `retryable` to decide whether to try again. See [Errors](/api/reference/errors).
 - **Every response** carries an `x-request-id` header. Quote it to support.
 - **Writes are idempotent** with an `Idempotency-Key` header. See [Idempotency](/api/reference/idempotency).
-- **Every write to a session returns `seq`**: the `seq` of the last event it caused. Pass it as `minSeq` on a later read, over either transport, to read your own write. See [Consistency](/api/model#consistency).
+- **Every write to a session returns `seq`**: the `seq` of the last event it caused. Pass it as `minSeq` on a later read to read your own write. See [Consistency](/api/model#consistency).
 - **Lists** are paginated with `limit` and `cursor`, and return `nextCursor`, `null` on the last page. `limit` is 1 to 100, default 20.
-- **Events page by `seq`**, not by cursor: `after` is the last `seq` you have, and a page is `{ events, lastSeq, hasMore }`. `limit` is 1 to 500, default 100. See [Events](/api/http/events).
+- **Events page by cursor**: `after` is the `cursor` of the previous page, omitted to start, and a page is `{ events, cursor, lastSeq, hasMore }`. `limit` is 1 to 500, default 100. See [Events](/api/http/events).
 
 ## Routes
 
@@ -88,7 +88,7 @@ Slack, `opc`, the dashboard and your programs are clients of the same sessions. 
 | `PUT` | [`/sessions/{id}/workspace/archive`](/api/http/workspace#upload) | Uploads a directory as tar |
 | `POST` | [`/tickets`](/api/http/tickets) | Gets a ticket for a browser to open a WebSocket |
 
-The WebSocket's methods are on [Methods](/api/websocket/methods).
+`GET /live` is on [Live](https://docs.opencomputer.dev/api/live). The WebSocket's methods are on [Methods](/api/websocket/methods).
 
 ## Next to the serverless agents API
 

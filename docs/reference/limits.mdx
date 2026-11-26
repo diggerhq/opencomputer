@@ -12,7 +12,6 @@ title: "Limits and defaults"
 |---|---|---|---|---|
 | Runners | Idle time before a runner exits | 2 hours | `src/host/main.ts` | `SP_IDLE_MS` |
 | Runners | Spare runners kept for new sessions | 2 | `src/host/main.ts` | `SP_POOL_SIZE` |
-| Runners | Gateway's wait for the host to start a runner | 30 s | `src/gateway/hosts.ts` | No |
 | Memory | One runner, `MemoryHigh` / `MemoryMax` | 60% / 75% of RAM, at most 12G / 16G | `src/host/runner-limits.ts` | `SP_RUNNER_MEMORY_MAX` (the 16G cap; 12G follows at 75% of it), `SP_SYSTEMD_RUN` |
 | Memory | All runners together, `MemoryMax` | 93% of (RAM minus a reserve of 10% of RAM, at least 1024 MiB) | `deploy/vm/limits.sh` | No |
 | Memory | All runners together, `MemoryHigh` | 93% of its `MemoryMax` | `deploy/vm/limits.sh` | No |
@@ -26,9 +25,7 @@ title: "Limits and defaults"
 | Processes | All runners together, `TasksMax` | 16384 | `deploy/vm/limits.sh` | No |
 | Processes | Everything the agent user runs, `TasksMax` | 20000 | `deploy/vm/limits.sh` | No |
 | Processes | API relay, `TasksMax` | 256 | `deploy/vm/provision.sh` | No |
-| Gateway | Messages kept for an offline host | 24 hours | `src/gateway/db.ts` | No |
 | Gateway | Host reconnect backoff | 1 s, doubling to 30 s, with jitter | `src/host/gateway-link.ts` | No |
-| Gateway | `/setup` sign-in cookie lifetime | 12 hours | `src/setup/index.ts` | No |
 | Git | Housekeeping period (clone, fetch, fast-forward, prune) | 5 min | `src/workspaces/index.ts` | `SP_FETCH_INTERVAL` |
 | Git | Housekeeping fetch timeout | 2 min | `src/workspaces/index.ts` | `SP_FETCH_TIMEOUT` |
 | Git | Housekeeping fetches at once | 4 | `src/workspaces/index.ts` | No |
@@ -49,18 +46,18 @@ title: "Limits and defaults"
 | Slack input | Images passed to the model inline | PNG, JPEG, GIF or WebP up to 5 MiB | `src/runner/attachments.ts` | No |
 | Slack input | Linked Slack threads read from one message | 3 | `src/links.ts` | No |
 | Slack input | Content read from one linked thread | first message plus the latest 40 replies, 16,000 characters, 4,000 per message | `src/links.ts` | No |
-| Slack input | Wait for linked threads before the message is delivered without them | 10 s | `src/gateway/routing.ts` | No |
-| Agent tools | Threads started with `spawn_thread` | 8 per runner | `src/runner/spawn.ts` | No |
-| Agent tools | Posts to other threads with `post_thread` | 20 per runner, 4,000 characters each | `src/runner/threads.ts` | No |
+| Slack input | Wait for linked threads before the message is delivered without them | 10 s | `services/managed-agents/src/slack-api/threads.ts` | No |
+| Agent tools | Threads started with `start_thread` | 8 per runner | `src/runner/spawn.ts` | No |
+| Agent tools | Open threads started by one session | 10 | `services/managed-agents/src/actors/org/limits.ts` | No |
+| Agent tools | Text posted with `post_thread` | 4,000 characters | `src/runner/threads.ts` | No |
 | Agent tools | Secrets asked for with `request_secret` | 10 per runner | `src/runner/session-secrets.ts` | No |
-| Agent tools | Threads read with `read_thread` | 40 per runner | `src/runner/threads.ts` | No |
+| Agent tools | Text returned by `read_thread` | the last 20 turns, 60,000 characters | `src/runner/threads.ts` | No |
 | Agent tools | Files posted with `send_file` | 50 per runner, 100 MiB each, not empty | `src/runner/send-file.ts` | No |
 | Agent tools | Cards posted with `post_card` | 50 per runner | `src/runner/post-card.ts` | No |
-| Agent tools | Gateway time for one thread read or post | 25 s | `src/gateway/threads.ts` | No |
-| Secrets | Secret or variable value | 64 KiB | `src/gateway/vault.ts` | No |
-| Secrets | Value typed into the Slack form | 3,000 characters (Slack's input limit) | `src/gateway/secrets-ui.ts` | No |
-| Secrets | Value set with `!var` | 3,000 characters | `src/variables.ts` | No |
-| Secrets | Inactive session's session-scoped secrets deleted after | 30 days | `src/gateway/vault.ts` | No |
+| Secrets | Secret or variable value | 64 KiB | `services/managed-agents/src/actors/computer/held-for-org/secrets/secrets-store.ts` | No |
+| Secrets | Value typed into the Slack form | 3,000 characters (Slack's input limit) | `services/managed-agents/src/actors/computer/held-for-org/secrets/secrets.ts` | No |
+| Secrets | Value set with `!var` | 3,000 characters | `services/managed-agents/src/actors/computer/held-for-org/secrets/variables.ts` | No |
+| Secrets | Inactive session's session-scoped secrets deleted after | 30 days | `services/managed-agents/src/actors/computer/held-for-org/secrets/secrets.ts` | No |
 | Telemetry | Spool on disk | 100 MB | `src/host/telemetry-spool.ts` | No |
 | Releases | Superseded release removed by `provision.sh` after | 2 days, when no process uses it | `deploy/vm/provision.sh` | No |
 | Data volume | Filesystem growth check | 1 min after boot, then every 10 min | `deploy/vm/grow-data.sh` | No |
@@ -72,6 +69,5 @@ Connection, terminal, file and queue limits: [API schema](/reference/api-schema#
 | Limit | Value | Set in |
 |---|---|---|
 | Forced cancel after an interrupt the harness does not act on | 10 s | `src/runner/api/api.ts` |
-| Wait for a suspended session's runner to start | 60 s | `src/host/api-wake.ts` |
 
-{/* Sources: computer/src/host/main.ts; computer/src/host/pool.ts; computer/src/host/adoption.ts; computer/src/host/runner-limits.ts; computer/src/host/gateway-link.ts; computer/src/host/telemetry-spool.ts; computer/src/host/telemetry-ship.ts; computer/src/host/terminal.ts; computer/src/host/tar-check.ts; computer/src/host/workspace-files.ts; computer/src/host/api-wake.ts; computer/src/gateway/hosts.ts; computer/src/gateway/db.ts; computer/src/gateway/vault.ts; computer/src/gateway/secrets-ui.ts; computer/src/gateway/threads.ts; computer/src/gateway/routing.ts; computer/src/setup/index.ts; computer/src/github/app.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/harness/claude/shadow.ts; computer/src/runner/context-window.ts; computer/src/runner/cache-ttl.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/agents.ts; computer/src/runner/commands.ts; computer/src/runner/attachments.ts; computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/api/api.ts; computer/src/runner/session-secrets.ts; computer/src/links.ts; computer/src/variables.ts; computer/src/wire/limits.ts; computer/deploy/vm/limits.sh; computer/deploy/vm/provision.sh; computer/deploy/vm/grow-data.sh */}
+{/* Sources: computer/src/host/main.ts; computer/src/host/pool.ts; computer/src/host/adoption.ts; computer/src/host/runner-limits.ts; computer/src/host/gateway-link.ts; computer/src/host/telemetry-spool.ts; computer/src/host/telemetry-ship.ts; computer/src/host/terminal.ts; computer/src/host/tar-check.ts; computer/src/host/workspace-files.ts; services/managed-agents/src/actors/computer/held-for-org/secrets/secrets-store.ts; services/managed-agents/src/actors/computer/held-for-org/secrets/secrets.ts; services/managed-agents/src/actors/computer/held-for-org/secrets/variables.ts; services/managed-agents/src/slack-api/threads.ts; services/managed-agents/src/actors/org/limits.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/harness/claude/shadow.ts; computer/src/runner/context-window.ts; computer/src/runner/cache-ttl.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/agents.ts; computer/src/runner/commands.ts; computer/src/runner/attachments.ts; computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/api/api.ts; computer/src/runner/session-secrets.ts; computer/src/links.ts; computer/src/wire/limits.ts; computer/deploy/vm/limits.sh; computer/deploy/vm/provision.sh; computer/deploy/vm/grow-data.sh */}

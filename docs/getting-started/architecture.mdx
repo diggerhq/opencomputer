@@ -11,7 +11,7 @@ description: "How Slack, the gateway, hosts and runners fit together"
 
 ## Gateway
 
-The front door. Messages from Slack, the web dashboard, the API and the CLI arrive here, and the gateway passes them on to the right session. It also handles setup and connects to GitHub. It doesn't run any agents itself, so you can restart it at any time without losing work.
+The front door, run by the OpenComputer backend. Messages from Slack, the web dashboard, the API and the CLI arrive here, and the gateway passes them on to the right session. It also connects to GitHub. It doesn't run any agents itself.
 
 ## Host agent
 
@@ -29,7 +29,7 @@ A session's state is written to the VM's durable disk first, then persisted to a
 
 Portability is what lets you scale horizontally: another VM can pick up the same session when needed. If two copies of a session conflict, git resolves it.
 
-The gateway keeps its own small SQLite database: which session runs on which VM, the people and VMs it knows, and messages waiting for a VM that's offline.
+The gateway keeps its own records in the backend's Durable Objects: the organization's sessions and who may use them, its computers, and its secrets.
 
 ## Sandboxes only when you need them
 

@@ -61,7 +61,7 @@ A turn with `trigger: "subagent"` was started by the harness, not by a message; 
 
 | Transport | How |
 | --- | --- |
-| WebSocket | Attach to the session and read [events](/api/events) until `turn.completed`, `turn.failed` or `turn.cancelled` for the turn id |
+| [Live](/api/live) | Subscribe to the session's events and apply them until `turn.completed`, `turn.failed` or `turn.cancelled` for the turn id |
 | HTTP | Read `turns.get` (`GET /sessions/{id}/turns/{turnId}`) every few seconds until the turn has ended |
 
 ```

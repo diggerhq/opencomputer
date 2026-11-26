@@ -1,6 +1,6 @@
 # @opencomputer/sdk
 
-The official TypeScript client for the [OpenComputer](https://github.com/diggerhq/opencomputer) **Serverless Agents** management API. It has one entry point, `@opencomputer/sdk/agents`.
+The official TypeScript client for the [OpenComputer](https://github.com/diggerhq/opencomputer) **Serverless Agents** management API. It has two entry points: `@opencomputer/sdk/agents`, the management client, and `@opencomputer/sdk/computer`, the client of Computer's tracks and threads ([below](#computer-tracks-and-threads)).
 
 > **3.0.0 removed the sandbox client.** `Sandbox`, `Browser`, `SandboxAgent`, `Templates`, `Image`, `Snapshots`, sandbox `Webhooks`, `verifyWebhook`, `SecretStore`, `Usage`/`Tags` and everything else that was exported from the package root (`@opencomputer/sdk`) and `@opencomputer/sdk/node` are gone, because the OpenComputer sandbox platform is shut down. Importing the package root now fails to resolve. Code that still needs the sandbox client pins `@opencomputer/sdk@2`; `@opencomputer/sdk/agents` is unchanged from 2.3.1. Versions before 2.0.0 also carried a client for the retired Durable Agent Sessions API. See the [CHANGELOG](./CHANGELOG.md).
 
@@ -58,6 +58,21 @@ const { document, session } = await oc.sessions.startOnDocument({
 ```
 
 `startSessionOnDocument({ apiKey, ...params })` from the same subpath is the standalone form of the call.
+
+## Computer: tracks and threads
+
+`@opencomputer/sdk/computer` is the client of Computer's tracks and threads, added in 3.1.3. `createClient` takes the caller's principal (`org`, `subject`), a `fetch` for paths under the API's root (the caller adds the prefix and the credential), a `connect` that opens the `/live` socket, and a `storage`; `memoryStorage()` keeps everything in memory. The client streams the feed and a session's events, applies writes at once and queues them in storage until the server takes them; a refused write comes back on `failures`.
+
+```ts
+import { createClient, memoryStorage } from "@opencomputer/sdk/computer";
+
+const client = createClient({ principal, fetch: apiFetch, connect: openLive, storage: memoryStorage() });
+await client.ready;
+const { id } = client.createSession({ input: "Fix the failing test" });
+client.send(id, "Then open a pull request");
+```
+
+It also exports the row, body and frame types, the mutation names and arguments, and the review summary schema (zod). Unlike `@opencomputer/sdk/agents`, it depends on `zod`.
 
 ## Configuration
 

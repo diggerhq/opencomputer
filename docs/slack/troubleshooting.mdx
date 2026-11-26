@@ -7,20 +7,16 @@ Gateway and host logs: Logs and recovery.
 
 ## No reply
 
-<Frame>
-  <img src="/images/slack/not-enabled.png" alt="In #eng, Lee mentions @computer and gets a message marked Only visible to you: Computer is not enabled for you yet. Ask the instance owner to add you." />
-</Frame>
-
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Only you see: `<bot> is not enabled for you yet. Ask the instance owner to add you.` | You are not in the people list. | Ask the installer to add you. |
+| Only you see: `Only full members of this workspace can drive sessions.` | You are a guest of the Slack workspace. | Ask to be made a full member. |
 | Nothing, in a channel | Only a mention starts a session. | Mention `@computer`. |
-| Nothing, in a session's thread, without a mention | You are not in the people list. Only a mention or a new DM gets the notice above. | Ask the installer to add you. |
+| Only you see: `<owner> decides who can drive this session and has been asked. Your message runs if they allow it.` | The session's owner limited who drives it. | Wait for the owner, or ask them to use `!access`; see [Shared threads](/slack/shared-threads#who-can-steer). |
+| Nothing, in a session's thread, without a mention | You cannot drive this session. The message is kept and reaches the session as context with the next message from someone who can. | Mention `@computer` to ask the owner. |
 | Nothing, in a thread shared with other people | The session judged the message was for someone else; see [Shared threads](/slack/shared-threads). | Mention `@computer` in the message. |
-| Only you see: `The agent host is offline; your message will be delivered when it reconnects.` | The host is not connected to the gateway. The message is queued for 24 hours. | None if the host reconnects in time; see Logs and recovery. |
+| `Your computer is offline, so this message is waiting. It runs as soon as the computer's VM is started and connects again.` | The computer's VM is stopped. | Start the VM; see Logs and recovery. |
 | "is thinking" or :eyes:, then nothing | The host did not answer the gateway within 30 seconds, for example because the runner was still starting. The gateway posts no error. | Wait; `!status` answers once the runner is up. |
 | The turn does not end | It is waiting on an [approval or question](/slack/approvals-questions-plans) posted earlier in the thread. These do not time out. | Answer it. |
-| "is thinking" or :eyes:, then nothing, self-hosted | The model provider account is out of credits. The self-hosted gateway posts nothing. | Check the account's balance; see Model credentials. |
 
 ## Errors in the thread
 
@@ -35,12 +31,9 @@ Gateway and host logs: Logs and recovery.
 | `:warning: !<command> failed: <reason>` | A `!` command threw an error. | |
 | `unknown command !x, try !help` | The session has no such command. | `!help` lists them. |
 | `can't switch to <model>: <reason>; still on <current>` | The harness refused the model. | See [Models and harnesses](/slack/models-and-harnesses). |
-| `Secrets are not available: the gateway has no SP_STORE_KEY.` | The gateway has no key to encrypt secrets with. | See [Secrets and variables](/slack/secrets-and-variables). |
 | `[attached <name>: could not be downloaded (<reason>)]` | The runner could not fetch a Slack attachment. A reason mentioning an HTML page: the bot lacks `files:read`. | See Connect Slack. |
 | A file upload fails with `missing_scope` | The bot lacks `files:write`. | Add the scope and reinstall the Slack app; see Connect Slack. |
-| `preview URLs need an OpenComputer computer; this gateway does not offer them` | The self-hosted gateway refuses every `preview` call. | See [Preview URLs](/slack/preview-urls). |
 | `git push` or `gh` fails with `gateway not connected` | The host is not connected to the gateway, so it cannot get a GitHub token. | Retry when the host has reconnected; see Logs and recovery. |
-| `git push` or `gh` fails with `GitHub App not set up: <name> missing (run /setup)` | The GitHub App is not set up. | See Connect GitHub. |
 | `!diff` answers `no changes` after edits | The session directory is not a git repository; see [Branches and pull requests](/slack/branches-and-pull-requests). | Ask the session for the diff of a repository. |
 | `!status` ends with `running <commit> · restart to load <commit>` | The process runs from a source checkout that has moved past the commit it started from. | Restart the process. |
 
@@ -61,4 +54,4 @@ Gateway and host logs: Logs and recovery.
 | The session directory and its local branches are gone | A directory idle for 14 days is deleted if everything was committed and pushed; see [Branches and pull requests](/slack/branches-and-pull-requests#when-a-session-directory-is-deleted). The next message gets a new directory from the default branch. |
 | A secret set for "This session only" is gone | Session-scope secrets are deleted 30 days after the session was last active. |
 
-{/* Sources: computer/src/gateway/routing.ts; computer/src/gateway/hosts.ts; computer/src/gateway/db.ts (OUTBOX_TTL_MS); computer/src/runner/session.ts (silent turns, limit, agent process ended); computer/src/runner/main.ts (out-of-credits, restart); computer/src/host/main.ts (out-of-credits forwarded, SP_IDLE_MS); computer/src/runner/commands.ts; computer/src/runner/model-switch.ts; computer/src/runner/attachments.ts; computer/src/runner/send-file.ts; computer/src/gateway/secrets-ui.ts; computer/src/host/tokens.ts; computer/src/github/app.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/workspace.ts (gitDiff); computer/src/build.ts (staleNote); computer/src/runner/prompts.ts */}
+{/* Sources: services/managed-agents/src/actors/slack/durable-object.ts; computer/src/runner/session.ts (silent turns, limit, agent process ended); computer/src/runner/main.ts (out-of-credits, restart); computer/src/host/main.ts (out-of-credits forwarded, SP_IDLE_MS); computer/src/runner/commands.ts; computer/src/runner/model-switch.ts; computer/src/runner/attachments.ts; computer/src/runner/send-file.ts; services/managed-agents/src/actors/computer/held-for-org/secrets/secrets.ts; computer/src/host/tokens.ts; services/managed-agents/src/actors/computer/held-for-org/github.ts; computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/workspace.ts (gitDiff); computer/src/build.ts (staleNote); computer/src/runner/prompts.ts */}

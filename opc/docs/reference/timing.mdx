@@ -30,7 +30,7 @@ connection
 | --- | --- | --- |
 | process start → prompt | `opc` starting | The prompt line on screen, ready for typing. Nothing on the network is waited for. |
 | session create | The request leaving | Its response |
-| connection open + attach | Starting the TLS handshake | The connection open and attached to the session. The attach is part of opening the connection, not a request of its own. |
+| connection open + attach | Starting the TLS handshake | The WebSocket to your computer open. Only the interactive screen and `opc shell` open one. |
 | launch → ready | `opc` starting | The session attached and live. You could type long before this. |
 | agent start | The computer starting the agent | The agent ready. `warm` means a pre-started agent was ready. `cold` adds about 0.8 s; `resumed` adds several seconds. |
 | enter → accepted | `Enter` | The computer's acknowledgement that it recorded the message. Never less than one round trip. |

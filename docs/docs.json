@@ -67,6 +67,7 @@
           "api/sessions",
           "api/turns",
           "api/events",
+          "api/live",
           "api/asks",
           "api/subagents",
           "api/terminals",
