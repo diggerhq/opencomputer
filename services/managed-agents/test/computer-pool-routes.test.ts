@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { randomToken } from "../src/computer/crypto.js";
 import { hostToken } from "../src/computer/host-token.js";
-import { encodeInstallState } from "../src/computer/slack.js";
+import { encodeInstallState } from "../src/slack/slack-api.js";
 
 /**
  * The warm pool through the edge Worker (work 052) with COMPUTER_POOL_SIZE=2:

@@ -3,9 +3,9 @@
 //   const out = transact(sql, Date.now(), (tx) => { …reads and writes through tx… });
 //
 // `transact` runs `fn` in one `sql.transaction` and, at its end, writes the owed calls that follow
-// from it: `Live.publish` (keyed `live:feed`) when a version was allocated, and `Delivery.poke`
-// (keyed `poke:<kind>`) for each Delivery kind an occurrence concerns. The caller then runs
-// `owed.run` (the Durable Object does, after every method).
+// from it: `Live.publish` (keyed `live:feed`) when a version was allocated, and a wake for each
+// session an occurrence wakes (spec 40.6). The caller then runs `owed.run` (the Durable Object does,
+// after every method).
 //
 // Rules of use:
 // - Every changed feed row is stamped: `tx.stamp(table, ...key)` after the write, or write
@@ -33,13 +33,16 @@ export const RETAIN_MS = 30 * DAY_MS;
 export const IDEM_TTL_MS = DAY_MS;
 export const AGENT_THREADS_MAX = 10;
 
-/** Which Delivery actors react to an occurrence kind (spec 40.6). */
+/** The occurrence kinds that wake a track's agent or a parent session, and those the Slack echo posts (spec 40.6). */
 const WAKE_KINDS = new Set(["turn.completed", "turn.failed", "ask.opened", "result.changed", "thread.done", "thread.placed", "track.quiet"]);
-const SLACK_KINDS = new Set(["turn.refused", "machine.changed"]);
-export const deliveryKindsOf = (kind: string): ("wake" | "slack")[] => [
-  ...(WAKE_KINDS.has(kind) ? (["wake"] as const) : []),
-  ...(SLACK_KINDS.has(kind) ? (["slack"] as const) : []),
-];
+const ECHO_KINDS = new Set(["turn.refused", "machine.changed"]);
+/** A wake waits this long for more of the same target's occurrences, then goes as one turn. */
+export const WAKE_DEBOUNCE_MS = 20_000;
+/**
+ * A wake's or a Slack echo's waits between tries; past the last it goes to the dead list. Short, so
+ * one that keeps failing holds its group minutes, not hours.
+ */
+export const NOTICE_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000];
 
 // ------------------------------------------------------------------ the tables' rows, as stored
 
@@ -462,7 +465,7 @@ export type PublishOwed = { from: number; to: number; mutations: { clientId: str
 
 export class Tx {
   private v: number | null = null;
-  private pokes = new Set<string>();
+  private woke: number[] = [];
   private mutations: PublishOwed["mutations"] = [];
 
   constructor(
@@ -521,7 +524,8 @@ export class Tx {
       o.at ?? this.now,
       o.audience,
     );
-    for (const kind of deliveryKindsOf(o.kind)) this.pokes.add(kind);
+    if (WAKE_KINDS.has(o.kind)) this.woke.push(n);
+    if (ECHO_KINDS.has(o.kind)) owed.add(this.sql, { group: `slack:${o.sessionId ?? "machine"}`, call: "Slack.notify", body: { n }, schedule: NOTICE_RETRY_MS });
     return true;
   }
 
@@ -659,7 +663,7 @@ export class Tx {
    * refused mutation changes no row (spec 37.3 step 4), whatever it wrote before it refused.
    */
   attempt<T extends { ok: boolean }>(fn: () => T): T {
-    const before = { v: this.v, pokes: new Set(this.pokes) };
+    const before = { v: this.v, woke: this.woke.length };
     let out: T | undefined;
     try {
       this.sql.transaction(() => {
@@ -668,26 +672,50 @@ export class Tx {
       });
     } catch (error) {
       this.v = before.v;
-      this.pokes = before.pokes;
+      this.woke.length = before.woke;
       if (error !== ROLLBACK) throw error;
     }
     return out as T;
   }
 
-  /** The transaction's end: the owed publish and pokes. `transact` calls it. */
+  /**
+   * The transaction's end: the owed publish and wakes. `transact` calls it. A target's wakes within
+   * WAKE_DEBOUNCE_MS of its first go as one turn, its digest built from the rows when it is sent.
+   */
   end(): void {
     if (this.v !== null || this.mutations.length > 0) {
       const head = this.v ?? this.sql.exec<{ version: number }>("SELECT version FROM meta WHERE k = 1")[0]!.version;
       const body: PublishOwed = { from: this.v === null ? head : head - 1, to: head, mutations: this.mutations };
       owed.add(this.sql, { group: "live", key: "live:feed", call: "Live.publish", body });
     }
-    for (const kind of this.pokes) owed.add(this.sql, { group: `poke:${kind}`, key: `poke:${kind}`, call: "Delivery.poke", body: { kind } });
+    for (const n of this.woke) {
+      for (const target of wakeTargets(this.sql, n)) {
+        owed.debounce(
+          this.sql,
+          { group: `wake:${target}`, call: "SessionLog.wake", body: { sessionId: target, id: mint("tn").slice(0, 15), fromN: n, toN: n }, at: this.now + WAKE_DEBOUNCE_MS, schedule: NOTICE_RETRY_MS },
+          (pending) => ({ ...(pending as object), toN: n }),
+        );
+      }
+    }
   }
 }
 
 const ROLLBACK = Symbol("rollback");
 
-/** One Org transaction: `fn` over a `Tx`, then the owed publish and pokes, all or nothing. */
+/**
+ * The sessions occurrence `n` wakes: its thread's track's agent and its parent (a track's own
+ * occurrence: its agent). Never the session it is of, and never an agent by its own act.
+ */
+function wakeTargets(sql: Sql, n: number): string[] {
+  const o = sql.exec<{ session_id: string | null; track_id: string | null; by: string | null }>("SELECT session_id, track_id, by FROM occurrence WHERE n = ?", n)[0];
+  if (!o) return [];
+  const place = o.session_id ? readPlace(sql, o.session_id) : null;
+  const trackId = place?.track_id ?? o.track_id;
+  const targets = [trackId ? (readTrack(sql, trackId)?.agent_session ?? null) : null, place?.parent_session ?? null];
+  return [...new Set(targets.filter((t): t is string => t !== null && t !== o.session_id && o.by !== `agent:${t}`))];
+}
+
+/** One Org transaction: `fn` over a `Tx`, then the owed publish and wakes, all or nothing. */
 export function transact<T>(sql: Sql, now: number, fn: (tx: Tx) => T): T {
   return sql.transaction(() => {
     const tx = new Tx(sql, now);

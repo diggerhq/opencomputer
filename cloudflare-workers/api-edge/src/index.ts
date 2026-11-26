@@ -92,6 +92,7 @@ import {
 } from "./computer_telemetry";
 import { computerEnabledFor } from "./computer";
 import {
+  COMPUTER_PRINCIPAL,
   cookieCredentialId,
   keyPrincipal,
   memberPrincipal,
@@ -190,7 +191,7 @@ interface Caller {
   role?: string;
   // Set only for the organization's computer (work 080): its one-hour keys are
   // created_by COMPUTER_PRINCIPAL, a reserved id no person has. sessionKey is
-  // the Slack thread the key was minted for, when the gateway named one.
+  // the `cs_…` session the key was minted for.
   principal?: "computer";
   sessionKey?: string;
   // The key itself, for the computer API's assertion (work 084): blue records
@@ -202,10 +203,6 @@ interface Caller {
   ocPrincipal?: Principal;
 }
 
-const COMPUTER_PRINCIPAL = "computer";
-// The shape of blue's sessionKey(team, channel, thread); blue checks the
-// session is live before it asks for a key.
-const SESSION_KEY_RE = /^[A-Za-z0-9._-]{1,40}:[A-Za-z0-9._-]{1,40}:[A-Za-z0-9._-]{1,40}$/;
 
 // One mapping from a key row to a Caller, for every reader (auth, refresh,
 // warm-org), so the cached shapes cannot drift apart.
@@ -239,8 +236,8 @@ function callerFromRow(row: AuthRow): Caller {
   };
 }
 
-/** The principal of a caller that authenticated with an API key (spec 34.3). */
-function principalOfKeyCaller(caller: Caller, req: Request | null): Promise<Principal> {
+/** The principal of a caller that authenticated with an API key (spec 34.3); null: the key has none and is refused. */
+function principalOfKeyCaller(caller: Caller, req: Request | null): Promise<Principal | null> {
   const expiresAt = caller.key?.expiresAt ? Date.parse(caller.key.expiresAt) : null;
   return keyPrincipal({
     org: caller.orgID,
@@ -1671,8 +1668,12 @@ async function computerApiCall(
     facts.auth = credential.key ? "invalid" : "missing";
     return computerApiError(req, 401, "unauthenticated", "Missing or invalid API key.");
   }
-  if (!caller.ocPrincipal) caller = { ...caller, ocPrincipal: await principalOfKeyCaller(caller, req) };
-  const principal = caller.ocPrincipal!;
+  const principal = caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req));
+  if (!principal) {
+    facts.auth = "invalid";
+    return computerApiError(req, 401, "unauthenticated", "Missing or invalid API key.");
+  }
+  caller = { ...caller, ocPrincipal: principal };
   if (!principalHeaderMatches(req, principal)) {
     facts.auth = "principal_mismatch";
     return computerApiError(
@@ -2341,8 +2342,9 @@ export default {
     // (work 067): managed agents mints one when a session runs `opencomputer`,
     // instead of a long-lived key living on the VM. HMAC-auth'd with the scoped
     // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${body}`. Body: { org_id,
-    // session_key? }: the Slack thread the key is for (work 080), recorded on
-    // the key and forwarded as the assertion's session_key claim.
+    // session_key }: the `cs_…` session the key is for, recorded on the key,
+    // which makes it that session's agent (spec 34.3). There is no key
+    // without a session: it would reach the whole organization.
     if (path === "/internal/computer-keys" && req.method === "POST") {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
@@ -2355,13 +2357,8 @@ export default {
       const parsed = JSON.parse(body) as { org_id?: string; session_key?: unknown };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);
       const sessionKey = parsed.session_key;
-      // A `cs_…` session id makes the key that session's agent principal
-      // (tracks and threads spec 34.3); a Slack thread key is today's shape.
-      if (
-        sessionKey !== undefined &&
-        (typeof sessionKey !== "string" || !(SESSION_KEY_RE.test(sessionKey) || SESSION_ID.test(sessionKey)))
-      ) {
-        return json({ error: "session_key must be a cs_ session id or team:channel:thread" }, 400);
+      if (typeof sessionKey !== "string" || !SESSION_ID.test(sessionKey)) {
+        return json({ error: "session_key must be a cs_ session id" }, 400);
       }
       const org = await env.OPENCOMPUTER_DB.prepare(`SELECT id FROM orgs WHERE id = ?1`).bind(parsed.org_id).first();
       if (!org) return json({ error: "org not found" }, 404);
@@ -2371,7 +2368,7 @@ export default {
         name: "Computer session",
         scopes: COMPUTER_SESSION_KEY_SCOPES,
         expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        ...(sessionKey ? { sessionKey } : {}),
+        sessionKey,
       });
       return json({ key: created.key, expiresAt: created.expiresAt });
     }
@@ -2520,12 +2517,9 @@ export default {
         );
         if (creditError) return creditError;
       }
-      return proxyManagedAgents(
-        req,
-        env,
-        { ...caller, ocPrincipal: caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req)) },
-        "/api/managed-agents",
-      );
+      const ocPrincipal = caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req));
+      if (!ocPrincipal) return json({ error: "missing or invalid API key" }, 401);
+      return proxyManagedAgents(req, env, { ...caller, ocPrincipal }, "/api/managed-agents");
     }
 
     // /api/whoami — return the authenticated caller's org (+ user). Lets a

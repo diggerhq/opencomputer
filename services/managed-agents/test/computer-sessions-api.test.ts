@@ -474,6 +474,19 @@ describe("hello and tickets", () => {
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
   });
 
+  it("an agent's key mints no ticket and never reaches the wire", async () => {
+    const key = { id: "key_agent", hash: "b".repeat(64), name: "Computer session", kind: "user" as const, scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null };
+    const f = fixture({ ticketKey: true });
+    const agent = (): ApiRequest => {
+      const c = caller(SID, { apiKey: key });
+      return { ...c, principal: { ...c.principal, kind: "agent", via: "agent", audiences: [], session: SID } };
+    };
+    expect(await f.api.handle(agent(), { op: "ticket", body: {} })).toMatchObject({ status: 403, error: { reason: "agent_key" } });
+    await f.api.handle(agent(), { op: "me" });
+    // The wire authorizes by a key's record; an agent's key has none, so it cannot be used there directly either.
+    expect([...f.sql.exec("SELECT key_id FROM wire_keys")]).toEqual([]);
+  });
+
   it("/me names the wire and the credential", async () => {
     const f = fixture();
     const me = await f.api.handle(caller(), { op: "me" });
@@ -522,7 +535,6 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
         void t.flush();
       },
       surfaceOf: () => "cli",
-      slackQueue: () => ({ rows: 1, oldestMs: 250 }),
     });
     return { telemetry, events, names: () => events.filter((e) => e.event_name !== "telemetry.dropped").map((e) => e.event_name as string) };
   }
@@ -537,7 +549,7 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     await tick();
     // The gap's 4010 is reported as it closes the socket, before its batch's append event.
     expect(r.names()).toEqual(["sessionlog.append", "sessionlog.recovery", "sessionlog.append"]);
-    expect(r.events[0]!.data).toMatchObject({ events: 40, slack_queue_rows: 1, slack_queue_oldest_ms: 250 });
+    expect(r.events[0]!.data).toMatchObject({ events: 40 });
     expect(r.events[0]!.data).toHaveProperty("do_ack_ms");
     expect(r.events[0]!.data).toHaveProperty("do_pre_ms");
     expect(r.events[1]!.data).toMatchObject({ kind: "gap_4010", epoch: 1 });

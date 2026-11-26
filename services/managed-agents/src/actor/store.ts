@@ -1,6 +1,7 @@
 // The mechanics every actor shares (spec 36.7, D21): ordered migrations, many timers on the one
 // alarm, calls owed after a transaction, idempotency. All of it over `Sql`.
 
+import type { Emitter } from "./emit.js";
 import { errorText } from "./helpers.js";
 import type { Sql } from "./sql.js";
 
@@ -96,9 +97,13 @@ export const alarms = {
 
 // ---------------------------------------------------------------- owed calls
 
-/** Seconds 1, 2, 5, 15, then every 60, without limit. */
+/**
+ * A call with no schedule of its own: seconds 1, 2, 5, 15, then every 60 for a day. Past it the
+ * call goes to the dead list like any other, so one that cannot succeed stops holding its group.
+ */
 const BACKOFF_MS = [1_000, 2_000, 5_000, 15_000];
 const BACKOFF_REST_MS = 60_000;
+const BACKOFF_TRIES = BACKOFF_MS.length + (24 * 60 * 60 * 1_000) / BACKOFF_REST_MS;
 const DEAD_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 /** The alarm purpose owed calls retry on. An actor's `alarm()` maps it to `owed.run`. */
 export const OWED_PURPOSE = "owed";
@@ -112,8 +117,17 @@ export interface Owed {
   body?: unknown;
   /** Not before this time (ms). Default: now. */
   at?: number;
-  /** The caller's own waits between tries, ms. Past its last step the call goes to the dead list. */
+  /** The caller's own waits between tries, ms; default about a day (BACKOFF_MS). Past its last step the call goes to the dead list. */
   schedule?: number[];
+}
+
+/** A call that ran out of tries (spec 18.6): set aside, its group moved on. */
+export interface Dead {
+  group: string;
+  call: string;
+  tries: number;
+  lastError: string;
+  at: number;
 }
 
 interface OwedRow {
@@ -144,6 +158,18 @@ export const owed = {
     );
     alarms.set(tx, OWED_PURPOSE, at);
   },
+  /**
+   * A debounced call, in the caller's transaction: while its group's newest call is not yet due and
+   * not yet tried, that call takes `merge(its body)` and keeps its time; else this one is added, due at `o.at`.
+   */
+  debounce(tx: Sql, o: Owed & { at: number }, merge: (pending: unknown) => unknown): void {
+    const row = tx.exec<{ n: number; body: string | null; at: number; tries: number }>("SELECT n, body, at, tries FROM _owed WHERE grp = ? ORDER BY n DESC LIMIT 1", o.group)[0];
+    if (row && row.tries === 0 && row.at > Date.now()) {
+      tx.exec("UPDATE _owed SET body = ? WHERE n = ?", JSON.stringify(merge(row.body === null ? undefined : JSON.parse(row.body))), row.n);
+      return;
+    }
+    owed.add(tx, o);
+  },
   /** Drop the rows of a group (its subject is gone) or the row of a key. */
   drop(tx: Sql, which: { group: string } | { key: string }): void {
     if ("group" in which) tx.exec("DELETE FROM _owed WHERE grp = ?", which.group);
@@ -157,8 +183,9 @@ export const owed = {
    * Send what is due: each group's calls in order, stopping a group at its first failure. A call
    * is removed when `send` resolves; a row replaced (by key) while its call was in flight is a new
    * row and is sent again. One run at a time per actor: a call during a run makes it go round once more.
+   * A call that goes to the dead list is reported on `emit` as `owed.dead`, at error level, to alert on.
    */
-  run(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number): Promise<void> {
+  run(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
     const current = running.get(sql);
     if (current) {
       current.again = true;
@@ -170,7 +197,7 @@ export const owed = {
         let at = now;
         do {
           state.again = false;
-          await pass(sql, send, at);
+          await pass(sql, send, at, emit);
           at = Date.now();
         } while (state.again);
       } finally {
@@ -182,14 +209,15 @@ export const owed = {
     running.set(sql, state);
     return state.done;
   },
-  dead(sql: Sql): { group: string; call: string; tries: number; lastError: string; at: number }[] {
+  /** The dead list, oldest first, kept 30 days. */
+  dead(sql: Sql): Dead[] {
     return sql
       .exec<{ grp: string; call: string; tries: number; last_error: string; at: number }>("SELECT grp, call, tries, last_error, at FROM _dead ORDER BY n")
       .map((row) => ({ group: row.grp, call: row.call, tries: row.tries, lastError: row.last_error, at: row.at }));
   },
 };
 
-async function pass(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number): Promise<void> {
+async function pass(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
   sql.exec("DELETE FROM _dead WHERE at < ?", now - DEAD_TTL_MS);
   const groups = sql.exec<{ grp: string }>("SELECT DISTINCT grp FROM _owed").map((row) => row.grp);
   await Promise.all(
@@ -203,13 +231,15 @@ async function pass(sql: Sql, send: (call: string, body: unknown) => Promise<voi
         } catch (error) {
           const tries = row.tries + 1;
           const schedule = row.schedule ? (JSON.parse(row.schedule) as number[]) : null;
-          const wait = schedule ? schedule[tries - 1] : (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS);
+          const wait = schedule ? schedule[tries - 1] : tries < BACKOFF_TRIES ? (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS) : undefined;
           if (wait === undefined) {
-            sql.transaction(() => {
+            const died = sql.transaction(() => {
               // Only if the row is still this one: a replaced slot is a new call.
-              if (sql.exec("DELETE FROM _owed WHERE n = ? RETURNING n", row.n).length === 0) return;
+              if (sql.exec("DELETE FROM _owed WHERE n = ? RETURNING n", row.n).length === 0) return false;
               sql.exec("INSERT INTO _dead (grp, call, body, tries, last_error, at) VALUES (?, ?, ?, ?, ?, ?)", row.grp, row.call, row.body, tries, errorText(error), Date.now());
+              return true;
             });
+            if (died) emit("owed.dead", { group: row.grp, call: row.call, tries, error: errorText(error) }, "error");
             continue;
           }
           sql.exec("UPDATE _owed SET tries = ?, at = ?, last_error = ? WHERE n = ?", tries, Date.now() + wait, errorText(error), row.n);

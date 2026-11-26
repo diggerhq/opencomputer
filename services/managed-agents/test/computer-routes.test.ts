@@ -5,7 +5,7 @@ import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { randomToken } from "../src/computer/crypto.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { CALVIN_PROTOCOL_VERSION } from "../src/computer/protocol.js";
-import { encodeInstallState } from "../src/computer/slack.js";
+import { encodeInstallState } from "../src/slack/slack-api.js";
 import { SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
 import { linkSlack } from "./fixtures/computer-link.js";
 

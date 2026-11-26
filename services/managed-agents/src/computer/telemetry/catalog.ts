@@ -247,13 +247,12 @@ export const CATALOG = {
   // spills_due: rows the log spills to R2 after the commit (their own sessionlog.spill); storage_bytes: the log's
   // SQLite size now (a gauge). Computer DO time: do_chain_wait_ms frame received → its turn behind the session's
   // earlier batches; do_pre_ms received → append RPC sent; do_post_ms append answered → row updated and ack sent;
-  // do_ack_ms received → ack sent (acked batches). slack_queue_rows / slack_queue_oldest_ms: the DO's Slack queue
-  // (pending + running rows, oldest pending wait) at that moment. Workers clocks stand still during synchronous
+  // do_ack_ms received → ack sent (acked batches). Workers clocks stand still during synchronous
   // work, so the do_* spans count awaits (I/O, the chain), not CPU: DO CPU comes from Cloudflare GraphQL
-  // (durableObjectsInvocationsAdaptiveGroups sum.cpuTime). The queue gauge is index-only (slack-queue-gauge.ts).
+  // (durableObjectsInvocationsAdaptiveGroups sum.cpuTime).
   'sessionlog.append': gateway(
     'epoch', 'events', 'turns', 'ended', 'append_ms', 'commit_lag_ms_max', 'commit_lag_ms_min', 'refused',
-    'do_chain_wait_ms', 'do_pre_ms', 'do_post_ms', 'do_ack_ms', 'slack_queue_rows', 'slack_queue_oldest_ms',
+    'do_chain_wait_ms', 'do_pre_ms', 'do_post_ms', 'do_ack_ms',
     'store_ms', 'rows', 'dupes', 'mismatches', 'bytes', 'spills_sync', 'spill_sync_bytes', 'spill_sync_ms', 'spills_due',
     'refolded', 'refold_ms', 'storage_bytes',
   ),

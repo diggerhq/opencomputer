@@ -63,14 +63,20 @@ export class FakeOrg extends Recorder {
 export class FakeSessionLog extends Recorder {
   private answer: AcceptResult | null = null;
   private delayMs = 0;
+  private failures = 0;
 
-  async set(next: { answer?: AcceptResult | null; delayMs?: number }): Promise<void> {
+  async set(next: { answer?: AcceptResult | null; delayMs?: number; failures?: number }): Promise<void> {
     if (next.answer !== undefined) this.answer = next.answer;
     if (next.delayMs !== undefined) this.delayMs = next.delayMs;
+    if (next.failures !== undefined) this.failures = next.failures;
   }
 
   async accept(p: Principal, entry: { id: string; kind: string; body: unknown }): Promise<AcceptResult> {
     this.record("accept", p, entry);
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("the log could not be reached");
+    }
     // The first call is slow: a later message that overtook it would be recorded first.
     if (this.delayMs && this.seen.length === 1) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     return this.answer ?? { ok: true, id: entry.id, duplicate: false, machine: "org_a" };

@@ -35,7 +35,7 @@ import {
   setBlocks,
 } from "./secrets.js";
 import { driversCommandText } from "./access.js";
-import { LOOKUP_FAILED_TEXT } from "./threads.js";
+import { LOOKUP_FAILED_TEXT } from "../slack/threads.js";
 import { type VariableCommand, VARIABLE_HELP, credentialHint, parseVariableCommand, showValue } from "./variables.js";
 import type { Principal } from "../actor/principal.js";
 import type { ApiReply, ApiRequest } from "./sessions-api.js";

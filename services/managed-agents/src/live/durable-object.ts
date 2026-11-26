@@ -309,26 +309,25 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     }
 
     const { bit, sessionId } = watched;
-    const held = a.w[sessionId] ?? 0;
-    const fits = held !== 0 || Object.keys(a.w).length < MAX_WATCHED_SESSIONS;
-    // Subscribe, then read (section 18.2): registered before the lease is asked for, so nothing
-    // published meanwhile falls between them.
-    if (!fits || !this.save(socket, { ...a, w: { ...a.w, [sessionId]: (held | bit) as 1 | 2 | 3 } })) {
-      return this.send(socket, { t: "error", code: "too_many_subscriptions", message: `A connection watches at most ${MAX_WATCHED_SESSIONS} sessions.` });
-    }
+    const tooMany = (): void =>
+      this.send(socket, { t: "error", code: "too_many_subscriptions", message: `A connection watches at most ${MAX_WATCHED_SESSIONS} sessions.` });
+    const fits = (now: LiveAttachment): boolean => now.w[sessionId] !== undefined || Object.keys(now.w).length < MAX_WATCHED_SESSIONS;
+    if (!fits(a)) return tooMany();
     const until = Date.now() + LEASE_MS;
     const before = this.heads.get(`events:${sessionId}`);
     let lease: { head: string; machine?: string } | null;
     try {
       lease = await this.env.SESSION_LOG.getByName(sessionId).watch(principalOf(a), until);
     } catch {
-      this.drop(socket, sessionId, bit);
       return this.send(socket, { t: "detached", stream, reason: "unavailable" });
     }
-    if (!lease) {
-      this.drop(socket, sessionId, bit);
-      return this.send(socket, { t: "detached", stream, reason: "forbidden" });
-    }
+    if (!lease) return this.send(socket, { t: "detached", stream, reason: "forbidden" });
+    // Indexed only once the lease grants it, so a socket is never sent a session it may not read.
+    // Subscribe, then read (section 18.2) still holds: what was published meanwhile moved the
+    // head, `subd` carries that head, and the client reads up to it over HTTP after `subd`.
+    const now = this.attachment(socket);
+    if (!now) return;
+    if (!fits(now) || !this.save(socket, { ...now, w: { ...now.w, [sessionId]: ((now.w[sessionId] ?? 0) | bit) as 1 | 2 | 3 } })) return tooMany();
     if (lease.machine) this.machines.set(sessionId, lease.machine);
     if (this.heads.get(`events:${sessionId}`) === before) this.heads.set(`events:${sessionId}`, lease.head);
     if (bit === DELTAS) this.ctx.waitUntil(this.computer(a.p.org, sessionId).watch(sessionId, until).catch(() => undefined));

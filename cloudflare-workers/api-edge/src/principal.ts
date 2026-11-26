@@ -93,10 +93,15 @@ export async function memberPrincipal(input: {
   };
 }
 
+/** `created_by` of the one-hour keys a computer session mints (work 080): a reserved id no person has. */
+export const COMPUTER_PRINCIPAL = "computer";
+
 /**
  * An API key. A key whose record names a session (`session_key`, migration
- * 0010) is that session's agent: `work:read` and `work:write` are added and
- * `terminals` taken away; its reach is checked by SessionLog and Org, not here.
+ * 0010, always a `cs_…` id) is that session's agent: `work:read` and
+ * `work:write` are added and `terminals` taken away; its reach is checked by
+ * SessionLog and Org, not here. A computer's key without one has no
+ * principal (null): it is refused, never read as an organization-wide key.
  * Any other key is its creator's, `opc` or `api` by the caller's user agent
  * (as the edge's telemetry tells them apart).
  */
@@ -110,9 +115,10 @@ export async function keyPrincipal(input: {
   expiresAt: number | null;
   sessionKey?: string | null;
   userAgent?: string | null;
-}): Promise<Principal> {
+}): Promise<Principal | null> {
   const credential = { id: input.keyId, expiresAt: input.expiresAt };
-  if (input.sessionKey) {
+  if (input.sessionKey || input.createdBy === COMPUTER_PRINCIPAL) {
+    if (!input.sessionKey || !SESSION_ID.test(input.sessionKey)) return null;
     const scopes = new Set<ApiScope>(apiScopes(input.scopes));
     scopes.add("work:read");
     scopes.add("work:write");

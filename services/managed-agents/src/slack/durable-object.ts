@@ -1,6 +1,6 @@
-// Slack: one per organization, the link to its Slack workspace (tracks and threads, spec 36.6 and
-// 40.11). It deduplicates and queues what Slack sends, then works the queue: threads in parallel,
-// one thread's messages in order. A message becomes a session (Org.createSession) and a turn in
+// Slack: one per organization, the link to its Slack workspace and the only holder of its bot token
+// (tracks and threads, spec 36.6 and 40.11). It deduplicates what Slack sends and owes each item a
+// `process` call: threads in parallel, one thread's items in order. A message becomes a session (Org.createSession) and a turn in
 // its SessionLog's inbox; a command becomes a call. It never delivers to a machine.
 
 import { DurableObject } from "cloudflare:workers";
@@ -9,6 +9,7 @@ import {
   type AcceptResult,
   type ActorEnv,
   alarms,
+  emitter,
   errorText,
   idem,
   logOf,
@@ -76,7 +77,7 @@ import {
   WAKING_NOTICE,
 } from "./slack-api.js";
 import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "./threads.js";
-import { entryIdFor, links, sessionIdFor, settings, STEPS, threads, turnIdFor } from "./store.js";
+import { entryIdFor, links, oweProcess, sessionIdFor, settings, STEPS, threads, turnIdFor } from "./store.js";
 
 export interface SlackEnv extends ActorEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
@@ -84,23 +85,14 @@ export interface SlackEnv extends ActorEnv {
   OPENCOMPUTER_APP_URL?: string;
 }
 
-/** The queue's purpose on the shared alarm. */
-const QUEUE = "queue";
-const PARALLEL_THREADS = 8;
-const DRAIN_MAX_JOBS = 50;
-const MAX_ATTEMPTS = 5;
-/** A row `running` this long that no drain of this instance holds was stranded by an eviction. */
-const STRANDED_GRACE_MS = 5_000;
-/** The alarm armed on accept: the queue's durability, should the drain right after it not finish. */
-const FALLBACK_MS = 30_000;
 /** Slack retries an event for an hour at most; ids and message keys are kept a day. */
 const DEDUP_TTL_MS = 24 * 60 * 60_000;
 
 const INSTALL_NONCE_TTL_MS = 10 * 60_000;
 const JOIN_REQUEST_INTERVAL_MS = 24 * 3600_000;
 const IMPORT_PAGE = 200;
-/** Computer's tables the import copies (spec 43.1); the queue's rows come over as they are. */
-const IMPORTED_TABLES = new Set(["people", "slack_messages", "slack_queue", "install_nonces", "join_requests", "notices", "billing_warnings", "session_context", "access_requests"]);
+/** Computer's tables the import copies (spec 43.1); its queue's waiting rows become owed `process` calls. */
+const IMPORTED_TABLES = new Set(["people", "slack_messages", "install_nonces", "join_requests", "notices", "billing_warnings", "session_context", "access_requests"]);
 
 const MEMBER_SCOPES: Principal["scopes"] = ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"];
 const ONLY_MEMBERS_TEXT = "Only full members of this workspace can drive sessions.";
@@ -110,9 +102,9 @@ const UNREACHABLE_TEXT = "The computer could not be reached, so this message did
 const REFUSED_TEXT = "This message did not run.";
 const FAILED_NOTICE = "Your computer could not start; messages wait until it does.";
 
-/** A message queued, as Computer queued it; `start`: this message created the thread's session (a retry creates it again, idempotently). */
-type MessageJob = SlackMessageJob & { start?: boolean; harness?: string };
-/** Anything else the queue holds; tagged so a Computer row (a bare message) still reads. */
+/** A message to process; `harness` from its `+claude` or `+codex` prefix. */
+type MessageJob = SlackMessageJob & { harness?: string };
+/** Any other item; tagged so a bare message (as Computer queued it) still reads. */
 type OtherJob = { item: "stop"; eventId: string; teamId: string; channelId: string; threadTs?: string; userId?: string } | { item: "interaction"; id: string; body: unknown };
 type Job = MessageJob | OtherJob;
 
@@ -120,9 +112,7 @@ const isOther = (job: Job): job is OtherJob => "item" in job;
 
 export class SlackDurableObject extends DurableObject<SlackEnv> implements SlackRpc {
   protected readonly sql: Sql;
-  private draining: Promise<void> | undefined;
-  private wakeDrain: (() => void) | undefined;
-  private readonly inFlight = new Set<number>();
+  private readonly emit = emitter("slack", () => ({ team: this.ctx.id.name }));
   private access?: { teamId: string; threads: ThreadAccess };
   private token?: { sealed: string; plain: string };
   private importing: Promise<void> | undefined;
@@ -140,11 +130,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   override async alarm(): Promise<void> {
     await this.ready();
     await alarms.run(this.sql, Date.now(), {
-      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now()),
-      [QUEUE]: async () => {
-        this.recoverStranded();
-        await this.drain();
-      },
+      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit),
     });
   }
 
@@ -217,15 +203,13 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
         const fresh = this.sql.exec("INSERT OR IGNORE INTO slack_messages (message_key, received_at) VALUES (?, ?) RETURNING message_key", `${job.channelId}:${job.messageTs}`, now);
         if (!fresh.length) return;
       }
-      this.sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(job), now, threadKey);
-      alarms.set(this.sql, QUEUE, now + FALLBACK_MS);
+      oweProcess(this.sql, threadKey!, job);
     });
-    if (left) {
-      this.access?.threads.forget(left);
-      this.ctx.waitUntil(this.sendOwedNow());
-    }
-    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.drain_failed", message: errorText(error) }))));
+    if (left) this.access?.threads.forget(left);
+    this.ctx.waitUntil(this.sendOwedNow());
   }
+
+
 
   /**
    * An interaction while Slack waits (a button's trigger lasts three seconds; a modal's errors keep it
@@ -267,131 +251,9 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     await fetch(interaction.response_url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ replace_original: true, text }) });
   }
 
-  // ------------------------------------------------------------------ the queue (40.11 step 2)
-
-  /** Work the queue, or have the drain in flight look again. */
-  protected drain(): Promise<void> {
-    if (this.draining) {
-      this.wakeDrain?.();
-      return this.draining;
-    }
-    this.draining = (async () => {
-      try {
-        await this.drainThreads();
-      } finally {
-        this.draining = undefined;
-      }
-      this.sql.exec("DELETE FROM slack_queue WHERE state = 'failed' AND sequence < (SELECT MAX(sequence) - 1000 FROM slack_queue)");
-      this.reschedule();
-    })();
-    return this.draining;
-  }
-
-  private async drainThreads(): Promise<void> {
-    const chains = new Map<string, Promise<void>>();
-    const budget = { left: DRAIN_MAX_JOBS };
-    for (;;) {
-      if (budget.left > 0) {
-        for (const thread of this.readyThreads()) {
-          if (chains.size >= PARALLEL_THREADS) break;
-          if (chains.has(thread)) continue;
-          const chain: Promise<void> = Promise.resolve()
-            .then(() => this.runThread(thread, budget))
-            .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "slack.chain_failed", message: errorText(error) })))
-            .finally(() => chains.delete(thread));
-          chains.set(thread, chain);
-        }
-      }
-      if (!chains.size) return;
-      const woken = new Promise<void>((resolve) => (this.wakeDrain = resolve));
-      await Promise.race([...chains.values(), woken]);
-      this.wakeDrain = undefined;
-    }
-  }
-
-  /**
-   * Threads whose head (their first row pending or running) is pending and due. A thread whose head is
-   * running elsewhere (stranded by an eviction, recovered after the grace) or waiting out a retry is not
-   * ready: naming it would have the drain loop spin on a chain that returns at once.
-   */
-  private readyThreads(): string[] {
-    return this.sql
-      .exec<{ thread: string }>(
-        `SELECT h.thread AS thread FROM (
-           SELECT COALESCE(thread_key, 'seq:' || sequence) AS thread, MIN(sequence) AS first FROM slack_queue
-           WHERE state IN ('pending', 'running') GROUP BY thread
-         ) h JOIN slack_queue q ON q.sequence = h.first
-         WHERE q.state = 'pending' AND q.available_at <= ? ORDER BY h.first LIMIT ?`,
-        Date.now(),
-        PARALLEL_THREADS * 4,
-      )
-      .map((row) => row.thread);
-  }
-
-  /** One thread's rows in order, each claimed before its first await; a thread waits behind its own failure. */
-  private async runThread(thread: string, budget: { left: number }): Promise<void> {
-    while (budget.left > 0) {
-      const head = this.sql.exec<{ sequence: number; payload: string; attempts: number; state: string; available_at: number }>(
-        `SELECT sequence, payload, attempts, state, available_at FROM slack_queue
-         WHERE state IN ('pending', 'running') AND COALESCE(thread_key, 'seq:' || sequence) = ? ORDER BY sequence LIMIT 1`,
-        thread,
-      )[0];
-      if (!head || head.state !== "pending" || head.available_at > Date.now()) return;
-      const claimed = this.sql.exec("UPDATE slack_queue SET state = 'running', attempts = attempts + 1, started_at = ? WHERE sequence = ? AND state = 'pending' RETURNING sequence", Date.now(), head.sequence);
-      if (!claimed.length) continue;
-      budget.left -= 1;
-      this.inFlight.add(head.sequence);
-      try {
-        await this.runJob(head);
-      } finally {
-        this.inFlight.delete(head.sequence);
-      }
-    }
-  }
-
-  private async runJob(row: { sequence: number; payload: string; attempts: number }): Promise<void> {
-    const attempts = row.attempts + 1;
-    try {
-      await this.process(JSON.parse(row.payload) as Job, row.sequence);
-      this.sql.exec("DELETE FROM slack_queue WHERE sequence = ?", row.sequence);
-    } catch (error) {
-      console.warn(JSON.stringify({ level: "warn", event: "slack.job_failed", attempts, message: errorText(error) }));
-      if (attempts >= MAX_ATTEMPTS) {
-        this.sql.exec("UPDATE slack_queue SET state = 'failed', last_error = ? WHERE sequence = ?", errorText(error), row.sequence);
-      } else {
-        this.sql.exec(
-          "UPDATE slack_queue SET state = 'pending', available_at = ?, last_error = ? WHERE sequence = ?",
-          Date.now() + Math.min(60_000, 1000 * 2 ** attempts),
-          errorText(error),
-          row.sequence,
-        );
-      }
-    }
-  }
-
-  /** Rows left `running` by an evicted drain go back to `pending`, attempts kept. */
-  private recoverStranded(): void {
-    const cutoff = Date.now() - STRANDED_GRACE_MS;
-    for (const row of this.sql.exec<{ sequence: number }>("SELECT sequence FROM slack_queue WHERE state = 'running' AND COALESCE(started_at, 0) <= ?", cutoff)) {
-      if (!this.inFlight.has(row.sequence)) this.sql.exec("UPDATE slack_queue SET state = 'pending', available_at = ? WHERE sequence = ? AND state = 'running'", Date.now(), row.sequence);
-    }
-  }
-
-  /** The queue's alarm for what is left: the next row ready, or a stranded one; none when the queue is empty. */
-  private reschedule(): void {
-    const pending = this.sql.exec<{ at: number | null }>("SELECT MIN(available_at) AS at FROM slack_queue WHERE state = 'pending'")[0]?.at ?? null;
-    const running = this.sql
-      .exec<{ sequence: number; at: number }>("SELECT sequence, COALESCE(started_at, 0) AS at FROM slack_queue WHERE state = 'running'")
-      .filter((row) => !this.inFlight.has(row.sequence))
-      .reduce<number | null>((min, row) => (min === null || row.at < min ? row.at : min), null);
-    const candidates = [pending, running === null ? null : running + STRANDED_GRACE_MS + 1].filter((at): at is number => at !== null);
-    alarms.clear(this.sql, QUEUE);
-    if (candidates.length) alarms.set(this.sql, QUEUE, Math.max(Math.min(...candidates), Date.now() + 25));
-  }
-
   // ------------------------------------------------------------------ one message (40.11 steps 2 to 7)
 
-  protected async process(job: Job, sequence: number): Promise<void> {
+  protected async process(job: Job): Promise<void> {
     if (isOther(job)) return this.processOther(job);
     const teamId = settings.get(this.sql, "slackTeamId");
     if (!teamId || teamId !== job.teamId) return;
@@ -411,20 +273,12 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     const command = slackCommand(commandWord(text));
     if (command) return this.command(command, text, job, key, known, p);
 
-    // A message that starts a thread: the thread recorded with its session id, then the session.
+    // A message that starts a thread: the session (idempotent on its id, so a retry creates it again), then the thread recorded.
     let sid = known;
-    if (!sid || job.start) {
-      if (!sid) {
-        const prefix = /^\s*\+(claude|codex)(?=\s|$)\s*/i.exec(job.text);
-        if (prefix) job = { ...job, text: job.text.slice(prefix[0].length), harness: prefix[1]!.toLowerCase() };
-        sid = await sessionIdFor(key);
-        const started: MessageJob = { ...job, start: true };
-        this.sql.transaction(() => {
-          threads.put(this.sql, key, sid!);
-          this.sql.exec("UPDATE slack_queue SET payload = ? WHERE sequence = ?", JSON.stringify(started), sequence);
-        });
-        job = started;
-      }
+    if (!sid) {
+      const prefix = /^\s*\+(claude|codex)(?=\s|$)\s*/i.exec(job.text);
+      if (prefix) job = { ...job, text: job.text.slice(prefix[0].length), harness: prefix[1]!.toLowerCase() };
+      sid = await sessionIdFor(key);
       const created = await orgOf(this.env, this.org()).createSession(p, {
         id: sid,
         writers: "members",
@@ -436,6 +290,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
         console.warn(JSON.stringify({ level: "warn", event: "slack.session_refused", code: created.code }));
         return;
       }
+      threads.put(this.sql, key, sid);
     }
 
     // The turn.
@@ -673,7 +528,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (verb === "allow") {
       // The held message runs, in its thread's order.
       const held = JSON.parse(request.held) as MessageJob;
-      this.sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(held), Date.now(), `${held.channelId}:${held.threadTs}`);
+      oweProcess(this.sql, `${held.channelId}:${held.threadTs}`, held);
+      this.ctx.waitUntil(this.sendOwedNow());
     }
     if (request.messageTs) await this.slack("chat.update", { channel: where.channelId, ts: request.messageTs, ...answeredPost(verb === "allow" ? grantedText(userId, requester) : declinedText(requester)) });
   }
@@ -690,6 +546,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   // ------------------------------------------------------------------ owed calls
 
   protected async sendOwed(call: string, body: unknown): Promise<void> {
+    if (call === "process") return this.process(body as Job);
     if (call === "linkPerson") {
       const { from, to } = body as { from: string; to: string };
       return orgOf(this.env, this.org()).linkPerson(from, to);
@@ -700,13 +557,24 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   private sendOwedNow(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now()).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
+    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
   }
 
   // ------------------------------------------------------------------ the person (34.3)
 
+  async api(method: string, body: Record<string, unknown>): Promise<SlackResult> {
+    await this.ready();
+    return this.slack(method, body);
+  }
+
+  async userName(slackUser: string): Promise<string> {
+    await this.ready();
+    return this.threadAccess().name(slackUser);
+  }
+
   /** The person's principal, or null when Slack does not report them as a member of the workspace. Throws when Slack could not be asked. */
-  protected async principal(slackUser: string): Promise<Principal | null> {
+  async principal(slackUser: string): Promise<Principal | null> {
+    await this.ready();
     const teamId = settings.get(this.sql, "slackTeamId") ?? "";
     if (!(await this.threadAccess().member(slackUser))) return null;
     const member = links.memberOf(this.sql, slackUser);
@@ -944,12 +812,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       channelType: "channel",
       receivedAt: Date.now(),
     };
-    const now = Date.now();
-    this.sql.transaction(() => {
-      this.sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(job), now, `${where.channelId}:${where.threadTs}`);
-      alarms.set(this.sql, QUEUE, now + FALLBACK_MS);
-    });
-    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.drain_failed", message: errorText(error) }))));
+    oweProcess(this.sql, `${where.channelId}:${where.threadTs}`, job);
+    this.ctx.waitUntil(this.sendOwedNow());
   }
 
   // ------------------------------------------------------------------ the install (moved from Computer)
@@ -1115,8 +979,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
         }
         this.token = undefined;
         this.access = undefined;
-        // Rows Computer had queued are worked here now.
-        this.reschedule();
+        // Items Computer had queued are owed here now.
+        this.ctx.waitUntil(this.sendOwedNow());
         // The workspace's route moves to this namespace's router.
         const teamId = settings.get(this.sql, "slackTeamId");
         if (teamId) {
@@ -1135,6 +999,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (row.type === "link") return links.put(this.sql, row.slackUser, row.member);
     if (row.type === "thread") return threads.put(this.sql, row.key, row.sessionId);
     if (row.type !== "row") return;
+    if (row.table === "slack_queue") return this.importQueued(row.row);
     if (!IMPORTED_TABLES.has(row.table)) return console.warn(JSON.stringify({ level: "warn", event: "slack.import_table_unknown", table: row.table }));
     const columns = Object.keys(row.row).filter((c) => /^[a-z_]+$/.test(c));
     if (!columns.length) return;
@@ -1145,6 +1010,13 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
         return v === null || typeof v === "number" || typeof v === "string" ? v : JSON.stringify(v);
       }),
     );
+  }
+
+  /** A row Computer's queue still held, owed here as a `process` call; a failed one stays behind. */
+  private importQueued(row: Record<string, unknown>): void {
+    if (row.state === "failed" || typeof row.payload !== "string") return;
+    const job = JSON.parse(row.payload) as Job;
+    oweProcess(this.sql, typeof row.thread_key === "string" ? row.thread_key : `seq:${String(row.sequence)}`, job);
   }
 
   /** An exported dispatch's author: a person's `user:` by as their principal, anything else the platform. */

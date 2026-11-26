@@ -5,8 +5,10 @@
 import type { ApiErrorBody, ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSettings } from "../computer/api-types.js";
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
+import type { SlackResult } from "../slack/slack-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "./principal.js";
+import type { Dead } from "./store.js";
 
 export type { Access, Principal };
 
@@ -201,10 +203,6 @@ export interface OrgRpc {
 
   // the occurrence stream
   occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }>;
-  /** Delivery(wake) only. */
-  digest(target: string, fromN: number, toN: number): Promise<string>;
-  /** Delivery(slack) only: what occurrence n means in Slack. */
-  echo(n: number): Promise<SlackEcho | null>;
 
   // arrows in
   acceptSummary(pub: SummaryPub): Promise<{ accepted: boolean; revision: number }>;
@@ -222,6 +220,8 @@ export interface OrgRpc {
   linkPerson(from: string, to: string): Promise<void>;
   /** Computer only, once: spec 43.1. */
   adopt(): Promise<void>;
+  /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
+  dead(): Promise<Dead[]>;
 }
 
 // ------------------------------------------------------------------ SessionLog (36.2)
@@ -352,14 +352,6 @@ export interface LiveRpc {
   revoke(credentialId: string): Promise<void>;
 }
 
-// ------------------------------------------------------------------ Delivery (36.5), lane 2's
-
-export interface DeliveryRpc {
-  /** "The occurrence stream's head moved." */
-  poke(head: number): Promise<void>;
-  status(): Promise<{ cursor: number; behind: number; dead: number }>;
-}
-
 // ------------------------------------------------------------------ Slack (36.6)
 
 export interface SlackGrant {
@@ -377,7 +369,13 @@ export interface SlackRpc {
   interact(id: string, interaction: unknown): Promise<SlackModalReply>;
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
-  /** Computer only. */
+  // Computer only: it reaches Slack through these and holds no token of its own.
+  /** A Web API call made with the bot token; `{ ok: false, error: "not_linked" }` when there is none. */
+  api(method: string, body: Record<string, unknown>): Promise<SlackResult>;
+  /** A Slack person's principal, or null when Slack does not report them a member of the workspace. Throws when Slack could not be asked. */
+  principal(slackUser: string): Promise<Principal | null>;
+  /** A Slack person's display name, or their id when Slack does not say. */
+  userName(slackUser: string): Promise<string>;
   /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
   forHost(): Promise<{
     people: CalvinPerson[];
@@ -385,7 +383,7 @@ export interface SlackRpc {
   }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
-  /** Delivery(slack) only. */
+  /** Org only, the echo of an occurrence (spec 40.6). */
   notify(e: SlackEcho): Promise<void>;
   /** post_thread. */
   post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;

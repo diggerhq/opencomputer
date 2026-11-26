@@ -7,7 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   alarms,
   computerOf,
-  deliveryOf,
+  emitter,
   hashOf,
   liveOf,
   logOf,
@@ -21,8 +21,7 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type CreateSession,
-  type DeliveryKind,
-  type DeliveryRpc,
+  type Dead,
   type DocRev,
   type FeedFrame,
   type ListQuery,
@@ -31,6 +30,7 @@ import {
   type MutateReply,
   type MutateRequest,
   type Occurrence,
+  type OrgRpc,
   type OrgSettings,
   type OutsideAccess,
   type Overview,
@@ -45,13 +45,11 @@ import {
   type SessionPage,
   type SessionPatch,
   type SessionRow,
-  type SlackEcho,
   type SlackRpc,
   type Sql,
   type StartSpec,
   type SummaryPub,
 } from "../actor/index.js";
-import type { OrgForDelivery } from "../delivery/contract.js";
 import { computerSessionId } from "../computer/protocol.js";
 import { memberId } from "../computer/session-ids.js";
 import * as feeds from "./feed.js";
@@ -81,8 +79,7 @@ async function memberIds(access: unknown): Promise<CreateSession["access"]> {
 export interface OrgOut {
   computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "exportSessions">;
   log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
-  slack(): Pick<SlackRpc, "announce">;
-  delivery(kind: DeliveryKind): Pick<DeliveryRpc, "poke">;
+  slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
@@ -95,9 +92,10 @@ export interface OrgOut {
 
 const AGE_EVERY_MS = 60 * 60 * 1_000;
 
-export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDelivery {
+export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   private store: Sql | null = null;
   private adopting: Promise<void> | null = null;
+  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }));
 
   /** The organization's id: the object's name, else what the first principal said. */
   get org(): string {
@@ -110,7 +108,6 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
     computer: (machine) => computerOf(this.env, machine),
     log: (sessionId) => logOf(this.env, sessionId),
     slack: () => slackOf(this.env, this.org),
-    delivery: (kind) => deliveryOf(this.env, this.org, kind),
     live: () => liveOf(this.env, this.org),
     created: async (sessionId, createdAt) => {
       await this.env.SERVERLESS_AGENTS_DB?.prepare("INSERT INTO session_creations (session_id, account_id, source, created_at) VALUES (?, ?, 'computer', ?) ON CONFLICT(session_id) DO NOTHING")
@@ -189,8 +186,16 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
         sessions.setSlackThread(sql, sessionId, threadKey);
         return;
       }
-      case "Delivery.poke":
-        return this.out.delivery(body.kind as DeliveryKind).poke(feeds.metaOf(sql).occ);
+      case "SessionLog.wake": {
+        // A turn for a track's agent or a parent session: what changed since the wake was owed (spec 40.6).
+        const input = work.digest(sql, sessionId, body.fromN as number, body.toN as number);
+        return this.send("SessionLog.accept", { sessionId, id: body.id, kind: "turn", body: { input, ifBusy: "queue" } });
+      }
+      case "Slack.notify": {
+        const echo = work.echo(sql, body.n as number);
+        if (!echo) return;
+        return this.out.slack().notify(echo);
+      }
       case "Live.publish": {
         await this.out.live().publish("feed", feeds.publishFrame(sql, body as unknown as PublishOwed, true));
         return;
@@ -204,7 +209,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
 
   /** Send what is owed. Awaited by tests; a method leaves it to `waitUntil`. */
   drain(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now());
+    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now(), this.emit);
   }
 
   private flush(): void {
@@ -388,7 +393,8 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   }
 
   async mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void> {
-    console.warn(JSON.stringify({ event: "org.feed_mismatch", org: p.org, subject: p.subject, ...body }));
+    // Spec 27, 28: the rules missed something; counted and alerted on.
+    this.emit("org.feed_mismatch", { subject: p.subject, ...body }, "error");
   }
 
   // ------------------------------------------------------------------ the occurrence stream
@@ -396,22 +402,6 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   async occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }> {
     await this.ready(p.kind === "platform" ? undefined : p);
     return feeds.occurrences(this.sql, p, q);
-  }
-
-  async digest(target: string, fromN: number, toN: number): Promise<string> {
-    await this.ready();
-    return work.digest(this.sql, target, fromN, toN);
-  }
-
-  /** Delivery(wake) only (`src/delivery/contract.ts`). */
-  async wakeTargets(n: number): Promise<string[]> {
-    await this.ready();
-    return work.wakeTargets(this.sql, n);
-  }
-
-  async echo(n: number): Promise<SlackEcho | null> {
-    await this.ready();
-    return work.echo(this.sql, n);
   }
 
   // ------------------------------------------------------------------ arrows in
@@ -442,6 +432,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   async access(sessionId: string): Promise<Access | null> {
     await this.ready();
     return sessions.access(this.sql, sessionId);
+  }
+
+  async dead(): Promise<Dead[]> {
+    return owed.dead(this.sql);
   }
 
   async forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }> {

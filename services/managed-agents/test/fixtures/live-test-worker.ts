@@ -12,15 +12,26 @@ export class FakeSessionLog extends DurableObject {
   private allowed = true;
   private machine: string | undefined;
   private watches: { subject: string; until: number }[] = [];
+  /** Set by `set({ hold: true })`: watches wait for `release()` before they answer. */
+  private held: Promise<void> | null = null;
+  private release_: (() => void) | null = null;
 
-  async set(next: { head?: string; allowed?: boolean; machine?: string }): Promise<void> {
+  async set(next: { head?: string; allowed?: boolean; machine?: string; hold?: boolean }): Promise<void> {
     if (next.head !== undefined) this.head = next.head;
     if (next.allowed !== undefined) this.allowed = next.allowed;
     if (next.machine !== undefined) this.machine = next.machine;
+    if (next.hold) this.held = new Promise((resolve) => (this.release_ = resolve));
+  }
+
+  async release(): Promise<void> {
+    this.release_?.();
+    this.held = null;
+    this.release_ = null;
   }
 
   async watch(p: Principal, until: number): Promise<{ head: string; machine?: string } | null> {
     this.watches.push({ subject: p.subject, until });
+    if (this.held) await this.held;
     if (!this.allowed) return null;
     return { head: this.head, ...(this.machine ? { machine: this.machine } : {}) };
   }
