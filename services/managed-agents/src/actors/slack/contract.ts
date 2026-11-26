@@ -18,6 +18,19 @@ export interface SlackGrant {
   installerUserId: string;
 }
 
+/**
+ * What Computer owes Slack about billing (Slack.billing): a refused session's paywall, by plan and
+ * halt reason; the warning before the stop (`since`: when its run of warnings began; `sessionId`:
+ * the thread to tell when the installer cannot be); the organization admitted again.
+ */
+export type BillingNotice =
+  | { kind: "paywall"; sessionId: string; onPro: boolean; haltReason: string | null }
+  | { kind: "warning"; reason: string; since: number | null; sessionId?: string }
+  | { kind: "admitted" };
+
+/** `shown`: posted now; `known`: already told, or nobody to tell; `missed`: Slack did not take it, so it may be owed again. */
+export type BillingNoticeResult = "shown" | "known" | "missed";
+
 export interface SlackRpc {
   /** Deduplicated, queued; the edge acknowledges Slack after it. */
   accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void>;
@@ -37,6 +50,8 @@ export interface SlackRpc {
     people: CalvinPerson[];
     slack: { botToken: string; botUserId: string; teamId: string; teamName?: string; installer?: { slackUser: string; member: string | null } } | null;
   }>;
+  /** Computer only, owed: a billing notice, told once (billing-notices.ts). */
+  billing(n: BillingNotice): Promise<BillingNoticeResult>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
   /** Org only, the echo of an occurrence (spec 40.6). */
