@@ -26,7 +26,7 @@ const SCOPES: Record<string, SecretScope> = { session: "session", me: "user", us
 
 export const VARIABLE_HELP = [
   "*Variables* (not secret: shown in Slack, never redacted)",
-  "`!var NAME value [session|me|org]`: set `$NAME` (default: this session; wrap a value in backticks to keep it exact)",
+  "`!var NAME value [session|me|org]`: set `$NAME` (default: this session, its owner only; wrap a value in backticks to keep it exact)",
   "`!vars`: names and values this session gets, by scope",
   "`!var rm NAME [session|me|org]`: remove one",
   "For API keys and passwords use `!secret NAME` instead. A secret and a variable cannot share a name in one scope.",
