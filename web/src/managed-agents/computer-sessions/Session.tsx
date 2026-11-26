@@ -6,8 +6,10 @@ import {
   ArchiveRestore,
   ArrowUp,
   Loader2,
+  Building2,
   Lock,
   Square,
+  Users,
 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
@@ -23,14 +25,13 @@ import {
   sessionKeys,
   updateSession,
   updateSessionAccess,
-  AccessSchema,
   type AccessInput,
   type IfBusy,
   type Session,
   type SessionEvent,
   type SessionSettings,
 } from '../computer-sessions-api'
-import { explainAccessError, withPerson } from './access'
+import { accessLabel, explainAccessError } from './access'
 import { AccessPicker } from './AccessPicker'
 import { Item } from './conversation'
 import { useMemberEmails, useMyMemberId, useOrgPeople } from './members'
@@ -110,18 +111,10 @@ function useSessionEvents(id: string, onSessionEvent: () => void) {
 
 export default function ComputerSession() {
   const { id = '' } = useParams()
-  // Getting into a session starts its page over, events and all.
-  const [entered, setEntered] = useState(0)
-  return (
-    <SessionPage
-      key={`${id}:${entered}`}
-      id={id}
-      onEntered={() => setEntered((n) => n + 1)}
-    />
-  )
+  return <SessionPage key={id} id={id} />
 }
 
-function SessionPage({ id, onEntered }: { id: string; onEntered: () => void }) {
+function SessionPage({ id }: { id: string }) {
   const qc = useQueryClient()
   const session = useQuery({
     queryKey: sessionKeys.one(id),
@@ -151,8 +144,17 @@ function SessionPage({ id, onEntered }: { id: string; onEntered: () => void }) {
   }, [items.length, events.length, s?.asks.length])
 
   // Gone, or not shared with the caller: the API doesn't say which (CTO-37).
+  // Being an admin changes nothing here: only the owner shares a session.
   if (session.error instanceof ApiError && session.error.status === 404) {
-    return <NotFound id={id} error={session.error} onEntered={onEntered} />
+    return (
+      <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
+        <p>This session does not exist or is not shared with you.</p>
+        <p>To get in, ask its owner to share it with you.</p>
+        <Link to="/computer/sessions" className="text-primary hover:underline">
+          Start a new session
+        </Link>
+      </div>
+    )
   }
 
   const openAsks = s?.asks.filter((a) => a.status === 'open') ?? []
@@ -224,91 +226,50 @@ function useUpdateAccess(id: string) {
   })
 }
 
-// Who can see and drive the session. The owner, the people it is shared with
-// and org admins change it (`canManageAccess`); anyone else only sees it.
+// Who can see and drive the session. Only its owner changes it (owner first:
+// not the people it is shared with, not an admin); anyone else sees who has
+// access but gets no control.
 function SessionAccess({ session: s }: { session: Session }) {
   const me = useMyMemberId()
   const update = useUpdateAccess(s.id)
+  const people = useOrgPeople()
   if (!s.access) return null
   const isOwner = !!me && s.owner?.id === me
-  return (
-    <AccessPicker
-      value={s.access}
-      isOwner={isOwner}
-      ownerIds={s.owner?.id ? [s.owner.id] : []}
-      onSave={(next) => update.mutateAsync(next)}
-      pending={update.isPending}
-      disabled={!s.canManageAccess}
-      className="shrink-0 disabled:opacity-100"
-    />
-  )
-}
-
-// A session that isn't there for the caller. The API answers the same for one
-// that doesn't exist and one not shared with them, so nothing leaks. An org
-// admin still sees and changes who has access, without seeing the session
-// (Q4); including themselves lets them in.
-function NotFound({
-  id,
-  error,
-  onEntered,
-}: {
-  id: string
-  error: ApiError
-  onEntered: () => void
-}) {
-  const me = useMyMemberId()
-  const update = useUpdateAccess(id)
-  const [known, setKnown] = useState<AccessInput | undefined>(
-    () => AccessSchema.safeParse(error.details?.access).data,
-  )
-  const admin = !!known && error.details?.canManageAccess === true
-  const change = async (next: AccessInput) => {
-    const r = await update.mutateAsync(next)
-    if (r.session) onEntered()
-    else if (r.access) setKnown(r.access)
+  if (isOwner && s.canManageAccess)
+    return (
+      <AccessPicker
+        value={s.access}
+        isOwner
+        ownerIds={s.owner?.id ? [s.owner.id] : []}
+        onSave={(next) => update.mutateAsync(next)}
+        pending={update.isPending}
+        className="shrink-0"
+      />
+    )
+  const nameOf = (pid: string) => {
+    const p = people?.find((x) => x.ids.includes(pid))
+    return p ? p.name || p.email : 'someone'
   }
+  const Icon =
+    s.access.mode === 'org'
+      ? Building2
+      : s.access.mode === 'people'
+        ? Users
+        : Lock
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm">
-      {admin && known ? (
-        <Lock className="text-muted-foreground size-5" aria-hidden />
-      ) : null}
-      <p className={admin ? 'font-medium' : 'text-muted-foreground'}>
-        This session does not exist or is not shared with you.
-      </p>
-      {admin && known ? (
-        <>
-          <p className="text-muted-foreground max-w-sm">
-            As an admin you can see and change who has access to it, but not the
-            session itself. To open it, include yourself: you would drive it
-            with its owner's secrets and subscription.
-          </p>
-          <div className="flex items-center gap-2">
-            <AccessPicker
-              value={known}
-              isOwner={false}
-              onSave={change}
-              pending={update.isPending}
-            />
-            {known && me && known.mode !== 'org' ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={update.isPending}
-                onClick={() =>
-                  void change(withPerson(known, me)).catch(() => {})
-                }
-              >
-                Add me
-              </Button>
-            ) : null}
-          </div>
-        </>
-      ) : null}
-      <Link to="/computer/sessions" className="text-primary hover:underline">
-        Start a new session
-      </Link>
-    </div>
+    <span
+      className="text-muted-foreground flex shrink-0 items-center gap-1.5 px-2 text-xs"
+      title={
+        s.origin.type === 'slack'
+          ? 'This session runs in Slack: change who has access in its thread, with !access.'
+          : isOwner
+            ? 'Who can access this session'
+            : 'Only the owner can change who has access.'
+      }
+    >
+      <Icon className="size-3.5" aria-hidden />
+      {accessLabel(s.access, { isOwner, nameOf })}
+    </span>
   )
 }
 
@@ -323,6 +284,9 @@ function Header({ id }: { id: string }) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: sessionKeys.all }),
     onError: (e) => notifyError('Could not update the session', e),
   })
+  const me = useMyMemberId()
+  // Archiving is the owner's, as is renaming (owner first).
+  const isOwner = !!s && !!me && s.owner?.id === me
   const slackUrl = s?.origin.slack?.url
   return (
     <header className="border-border flex h-12 shrink-0 items-center gap-3 border-b px-4">
@@ -352,7 +316,7 @@ function Header({ id }: { id: string }) {
           </a>
         </Button>
       ) : null}
-      {s ? (
+      {s && isOwner ? (
         <Button
           size="icon-sm"
           variant="ghost"

@@ -96,19 +96,21 @@ async function render() {
 
 const notFound = () =>
   new ApiError('No such session.', 404, 'session_not_found')
-const click = async (el: Element | null | undefined) => {
-  if (!el) throw new Error('missing element')
-  await act(async () => {
-    ;(el as HTMLElement).click()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
+// Lets the session query settle.
+async function settle() {
+  for (let i = 0; i < 5; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+  }
 }
 const byText = (selector: string, text: string) =>
   [...document.querySelectorAll(selector)].find((el) =>
     el.textContent?.includes(text),
   )
 
-it('shows an admin the access of a session they cannot open, and lets them in', async () => {
+it('gives an admin no way into a session not shared with them (owner first)', async () => {
+  // Even when the server still says the admin may manage it.
   api.getSession.mockRejectedValue(
     new ApiError('No such session.', 404, 'session_not_found', {
       access: { mode: 'people', people: ['usr_a'] },
@@ -119,31 +121,15 @@ it('shows an admin the access of a session they cannot open, and lets them in', 
   expect(container.textContent).toContain(
     'This session does not exist or is not shared with you.',
   )
-  expect(container.textContent).toContain('As an admin you can see and change')
+  expect(container.textContent).toContain('ask its owner to share it')
+  expect(container.textContent).not.toContain('As an admin')
+  expect(container.textContent).not.toContain('Shared with')
+  expect(byText('button', 'Add me')).toBeUndefined()
+  expect(
+    container.querySelector('[aria-label="Who can access this session"]'),
+  ).toBeNull()
   expect(container.textContent).not.toContain('secret transcript text')
-  expect(container.querySelector('textarea')).toBeNull()
-  // The current access, before any change.
-  expect(container.textContent).toContain('Shared with')
-
-  api.updateSessionAccess.mockResolvedValueOnce({
-    session: {
-      ...session,
-      access: { mode: 'people', people: ['usr_a', 'usr_admin'] },
-    },
-  })
-  api.getSession.mockResolvedValue({
-    ...session,
-    access: { mode: 'people', people: ['usr_a', 'usr_admin'] },
-    canManageAccess: true,
-  })
-  // A long-poll that waits.
-  api.getEvents.mockReturnValue(new Promise(() => {}))
-  await click(byText('button', 'Add me'))
-  expect(api.updateSessionAccess).toHaveBeenCalledWith('cs_1', {
-    mode: 'people',
-    people: ['usr_a', 'usr_admin'],
-  })
-  expect(container.textContent).not.toContain('does not exist')
+  expect(api.updateSessionAccess).not.toHaveBeenCalled()
 })
 
 it('shows anyone else only that it is not there', async () => {
@@ -152,6 +138,37 @@ it('shows anyone else only that it is not there', async () => {
   expect(container.textContent).toContain(
     'This session does not exist or is not shared with you.',
   )
-  expect(container.textContent).not.toContain('As an admin')
   expect(container.textContent).not.toContain('Add me')
+})
+
+it('gives someone it is shared with no access controls and no archive, even if the server allows them', async () => {
+  api.getSession.mockResolvedValue({
+    ...session,
+    access: { mode: 'people', people: ['usr_admin'] },
+    canManageAccess: true,
+  })
+  api.getEvents.mockReturnValue(new Promise(() => {}))
+  await render()
+  await settle()
+  expect(container.textContent).toContain('Shared with Ada')
+  expect(
+    container.querySelector('[aria-label="Who can access this session"]'),
+  ).toBeNull()
+  expect(container.querySelector('[aria-label="Archive"]')).toBeNull()
+})
+
+it('gives the owner the access picker and archive', async () => {
+  api.getSession.mockResolvedValue({
+    ...session,
+    owner: { id: 'usr_admin', name: 'Ada' },
+    access: { mode: 'owner', people: [] },
+    canManageAccess: true,
+  })
+  api.getEvents.mockReturnValue(new Promise(() => {}))
+  await render()
+  await settle()
+  expect(
+    container.querySelector('[aria-label="Who can access this session"]'),
+  ).not.toBeNull()
+  expect(container.querySelector('[aria-label="Archive"]')).not.toBeNull()
 })

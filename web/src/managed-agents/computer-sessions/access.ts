@@ -64,12 +64,6 @@ export function widens(prev: AccessInput | undefined, next: AccessInput) {
   return (n.people ?? []).some((id) => !(p.people ?? []).includes(id))
 }
 
-/** `a` with `id` let in: how an admin adds themselves to get in (Q4). */
-export function withPerson(a: AccessInput, id: string): AccessInput {
-  if (a.mode === 'org') return { mode: 'org' }
-  return normalizeAccess({ mode: 'people', people: [...(a.people ?? []), id] })
-}
-
 /** The Q6 warning, for a change that lets more people in. */
 export function shareWarning(isOwner: boolean) {
   return isOwner
@@ -97,7 +91,7 @@ export function explainAccessError(
   }
   if (reason === 'not_member')
     return new Error(
-      'Only its owner, the people it is shared with and admins can change who has access.',
+      'Only its owner can change who has access. Ask them to share it.',
     )
   if (reason === 'access_in_slack')
     return new Error(

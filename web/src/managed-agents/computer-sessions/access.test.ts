@@ -7,7 +7,6 @@ import {
   normalizeAccess,
   sameAccess,
   widens,
-  withPerson,
 } from './access'
 import { orgPeople } from './members'
 
@@ -90,19 +89,6 @@ describe('widens (confirm before sharing, Q6)', () => {
   })
 })
 
-describe('withPerson', () => {
-  it('lets one more person in', () => {
-    expect(withPerson({ mode: 'owner' }, 'usr_me')).toEqual({
-      mode: 'people',
-      people: ['usr_me'],
-    })
-    expect(withPerson({ mode: 'people', people: ['usr_a'] }, 'usr_me')).toEqual(
-      { mode: 'people', people: ['usr_a', 'usr_me'] },
-    )
-    expect(withPerson({ mode: 'org' }, 'usr_me')).toEqual({ mode: 'org' })
-  })
-})
-
 describe('orgPeople', () => {
   it('sends the WorkOS-derived id and knows the hashed one', async () => {
     const [p] = await orgPeople([
@@ -179,7 +165,9 @@ describe('explainAccessError', () => {
 
   it('explains a refusal to change access', () => {
     const e = new ApiError('x', 403, 'forbidden', { reason: 'not_member' })
-    expect((explainAccessError(e) as Error).message).toMatch(/Only its owner/)
+    expect((explainAccessError(e) as Error).message).toMatch(
+      /^Only its owner can change who has access/,
+    )
   })
 
   it('passes anything else through', () => {
