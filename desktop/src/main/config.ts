@@ -19,4 +19,4 @@ export const UI_BUNDLE_KEY: string = __OC_UI_KEY__
 export const UPDATE_URL: string = __OC_UPDATE_URL__
 
 /** S11's system-wide hotkey. */
-export const START_HOTKEY = 'CommandOrControl+Shift+Space'
+export const START_HOTKEY = 'Alt+Space'

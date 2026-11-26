@@ -14,8 +14,8 @@ function served(decide: (name: string, input: Wire, ask: GateAsk) => GateDecisio
     item: (id: string) => host.items.get(id),
     gate: async (name: string, input: Wire, ask: GateAsk) => (asks.push({ name, input, ask }), decide(name, input, ask)),
   };
-  const read = async () => ({ ok: true, messages: [{ name: 'a', ts: '1', text: 'hello' }] }) as Wire;
-  const s = new Served({ cwd: () => '/w', hooks: { threads: { read, post: read, attach: async () => [] } }, sendFile: (async () => ({})) as Wire, postCard: (async () => ({})) as Wire }, host);
+  const call = async () => ({ sessions: [{ id: 'cs_0000000000000002' }], events: [{ type: 'message.completed', data: { text: 'hello' } }] }) as Wire;
+  const s = new Served({ cwd: () => '/w', hooks: { work: { api: { call }, session: () => ({ id: 'cs_0000000000000001' }) } }, sendFile: (async () => ({})) as Wire, postCard: (async () => ({})) as Wire }, host);
   return { s, host, asks };
 }
 const allow: GateDecision = { behavior: 'allow', updatedInput: {} };
@@ -25,7 +25,7 @@ describe('Served', () => {
     const specs = served(() => allow).s.specs();
     const read = specs.find((t) => t.name === 'read_thread')!;
     expect(read.type).toBe('function');
-    expect(read.inputSchema).toMatchObject({ type: 'object', properties: { url: { type: 'string' } } });
+    expect(read.inputSchema).toMatchObject({ type: 'object', properties: { thread: { type: 'string' } } });
     expect(read.inputSchema).not.toHaveProperty('$schema');
   });
 
@@ -91,7 +91,7 @@ describe('Served', () => {
 
   it('a Calvin tool call is gated in default mode except read_thread, remembered when allowed for the session, and schema-checked', async () => {
     const { s, asks } = served(() => ({ ...allow, remember: true }));
-    const ok = await s.request('item/tool/call', { callId: 'c1', tool: 'read_thread', arguments: { url: 'https://x.slack.com/archives/C1/p1' } }, 3);
+    const ok = await s.request('item/tool/call', { callId: 'c1', tool: 'read_thread', arguments: { thread: 'https://x.slack.com/archives/C1/p1' } }, 3);
     expect(ok).toMatchObject({ contentItems: [{ type: 'inputText' }] });
     expect(asks).toHaveLength(0);
     const bad = (await s.request('item/tool/call', { callId: 'c2', tool: 'post_thread', arguments: { text: 5 } }, 4)) as Wire;

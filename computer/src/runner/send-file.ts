@@ -1,6 +1,6 @@
 // send_file: the agent posts a file into its thread (a screenshot, a chart, a
 // generated report), the way a person would drag one into the conversation.
-// The runner offers it as an in-process MCP tool next to spawn_thread; the
+// The runner offers it as an in-process MCP tool next to start_thread; the
 // upload goes straight to Slack with the bot token (`files:write`).
 //
 // Only files under the session's workspace or the temp directory can be sent,

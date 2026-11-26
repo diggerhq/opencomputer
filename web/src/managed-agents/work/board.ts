@@ -2,9 +2,6 @@ import type { Repository } from './api'
 
 // Words for the knowledge repository the Work API reads.
 
-// The open-items poll runs this often (tech design 3.11).
-export const OPEN_POLL_MS = 15_000
-
 export function repositoryName(r: Repository) {
   return `${r.owner}/${r.name}`
 }

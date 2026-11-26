@@ -7,10 +7,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/errors'
 import { AuthContext, type AuthContextValue } from '@/hooks/useAuth'
-import { makeItem, minutesAgo } from './fixtures'
 
 const workApi = vi.hoisted(() => ({
-  getOpenItems: vi.fn(),
   getRepository: vi.fn(),
   putRepository: vi.fn(),
   getRepositories: vi.fn(),
@@ -29,18 +27,6 @@ const repository = {
   branch: 'main',
   problem: null,
 }
-const openPage = (items: ReturnType<typeof makeItem>[], over = {}) => ({
-  etag: '"h1"',
-  page: {
-    repository,
-    head: 'abc',
-    asOf: new Date().toISOString(),
-    building: false,
-    items,
-    ...over,
-  },
-})
-
 const auth: AuthContextValue = {
   user: {
     id: 'usr_1',
@@ -125,7 +111,6 @@ function click(el: Element | null | undefined) {
   })
 }
 
-
 const granted = (
   name: string,
   pushedAt: string | null,
@@ -139,6 +124,8 @@ const granted = (
   pushedAt,
   ...over,
 })
+const minutesAgo = (min: number) =>
+  new Date(Date.now() - min * 60_000).toISOString()
 const acme = {
   id: '1',
   accountLogin: 'acme',
@@ -331,7 +318,6 @@ describe('repository picker', () => {
 
   it('confirms before switching from a set repository', async () => {
     workApi.getRepository.mockResolvedValue(repository)
-    workApi.getOpenItems.mockResolvedValue(openPage([]))
     workApi.putRepository.mockResolvedValue({ ...repository, name: 'app' })
     await render('/computer')
     await openPicker()
@@ -367,11 +353,7 @@ function button(text: string) {
 describe('knowledge repository section', () => {
   beforeEach(() => {
     workApi.getRepositories.mockResolvedValue([acme])
-    workApi.getOpenItems.mockResolvedValue(
-      openPage(items(), { head: '9f2c1a7e4b3d', asOf: minutesAgo(2) }),
-    )
   })
-  const items = () => [makeItem({ number: 1, title: 'One' })]
   const withProblem = (problem: string, problemMessage: string | null = null) =>
     workApi.getRepository.mockResolvedValue({
       ...repository,
@@ -379,7 +361,7 @@ describe('knowledge repository section', () => {
       problemMessage,
     })
 
-  it('shows the repository, its branch and how fresh the reading is', async () => {
+  it('shows the repository and its branch, and no state while it reads fine', async () => {
     workApi.getRepository.mockResolvedValue(repository)
     await render('/computer')
     expect(container.querySelector('section#work-repository')).not.toBeNull()
@@ -390,22 +372,9 @@ describe('knowledge repository section', () => {
         ?.getAttribute('aria-label'),
     ).toBe('Open acme/knowledge on GitHub')
     expect(container.textContent).toContain('main')
-    expect(container.textContent).toContain(
-      'Up to date · read 2 min ago at 9f2c1a7',
-    )
+    expect(container.textContent).not.toContain('State')
     // The installations are read only when choosing.
     expect(workApi.getRepositories).not.toHaveBeenCalled()
-  })
-
-  it('says when the first read is still going', async () => {
-    workApi.getRepository.mockResolvedValue(repository)
-    workApi.getOpenItems.mockResolvedValue(
-      openPage([], { building: true, asOf: null }),
-    )
-    await render('/computer')
-    expect(container.textContent).toContain(
-      'Reading the working docs for the first time',
-    )
   })
 
   it('offers Reconnect GitHub when the installation is gone', async () => {
