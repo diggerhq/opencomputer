@@ -1003,8 +1003,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.put("slackSeen", "1");
     if (slack) {
       // What the dashboard's overview shows of the link.
-      this.put("slackLinkedBot", slack.botUserId);
-      this.put("slackLinkedName", slack.teamName ?? "");
+      this.put("slackBotSeen", slack.botUserId);
+      this.put("slackNameSeen", slack.teamName ?? "");
       const installer = slack.installer;
       if (before !== slack.teamId) {
         this.put("slackLinked", slack.teamId);
@@ -1015,7 +1015,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       if (start) await this.ensureComputerOnInstall(this.accountId());
     } else if (before) {
       await this.access.agents.unrekey(this.setting("slackLinkedInstaller"));
-      this.remove("slackLinked", "slackLinkedInstaller", "slackLinkedBot", "slackLinkedName");
+      this.remove("slackLinked", "slackLinkedInstaller", "slackBotSeen", "slackNameSeen");
     }
   }
 
@@ -1502,8 +1502,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     // The link is the Slack actor's: what it last told this object, or this object's own until it has.
     const seen = this.setting("slackSeen");
     const teamId = seen ? this.setting("slackLinked") : this.setting("slackBotToken") ? this.setting("slackTeamId") : undefined;
-    const teamName = seen ? this.setting("slackLinkedName") : this.setting("slackTeamName");
-    const botUserId = seen ? this.setting("slackLinkedBot") : this.setting("slackBotUserId");
+    const teamName = seen ? this.setting("slackNameSeen") : this.setting("slackTeamName");
+    const botUserId = seen ? this.setting("slackBotSeen") : this.setting("slackBotUserId");
     return {
       computer: this.lifecycle.view(),
       slack:
