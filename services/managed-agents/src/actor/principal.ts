@@ -26,7 +26,7 @@ export interface Access {
   writers: "members" | string[];
   /** `by` of agents that may write whatever `writers` says (spec 40.7 step 4): they are also in `writers` when it is a list. */
   agents?: string[];
-  /** `by` of agents that may read, beyond the audience. */
+  /** `by` of agents and people that may read, beyond the audience: a person who may drive it may read it. */
   readers: string[];
   machine: string;
   revision: number;
@@ -47,5 +47,5 @@ export function platformPrincipal(org: string): Principal {
 export function mayRead(p: Principal, access: Access, sessionId: string): boolean {
   if (p.kind === "platform") return true;
   if (p.kind === "agent") return p.session === sessionId || access.readers.includes(byOf(p));
-  return p.audiences.includes(access.audience);
+  return p.audiences.includes(access.audience) || access.readers.includes(byOf(p));
 }

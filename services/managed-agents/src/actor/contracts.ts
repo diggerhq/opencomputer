@@ -2,7 +2,7 @@
 // class's RPC methods and the values they pass. No actor reads another's storage, and none calls a
 // method not listed here. `p` is the caller's principal. Types only; nothing here runs.
 
-import type { ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
+import type { ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSettings } from "../computer/api-types.js";
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
@@ -60,6 +60,13 @@ export interface CreateSessionBody {
   harness?: string;
   /** The Slack actor only: the thread's origin, as the API shows it. */
   origin?: Origin;
+  /** Who may use it (spec 36.2); absent: the organization's default. Not for a Slack or role session. */
+  access?: AccessInput;
+}
+/** `access` of a create or patch: `people` as member ids (`usr_…`), WorkOS user ids or emails. */
+export interface AccessInput {
+  mode: SessionAccess["mode"];
+  people?: string[];
 }
 export type CreateSession = CreateSessionBody & {
   trackId?: string;
@@ -77,6 +84,14 @@ export interface SessionPatch {
   metadata?: Record<string, string | null>;
   /** `PUT`/`DELETE …/aside`: the ask the session is set aside for, or null. */
   aside?: string | null;
+  /** `PATCH` with `access`: Org checks it (org/sessions.ts `parseAccess`). */
+  access?: AccessInput;
+}
+/** What one who manages a session's access but may not use it reads of it (an admin outside it). */
+export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };
+/** The organization's settings for the session API (spec 36.1). */
+export interface OrgSettings {
+  apiAccessDefault: "owner" | "org";
 }
 /** `GET /sessions`'s query, as today, plus `slackThread`. */
 export interface ListQuery {
@@ -162,13 +177,21 @@ export interface OrgRpc {
   // the directory
   createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>>;
   getSession(p: Principal, id: string): Promise<Reply<{ session: SessionRow }>>;
-  patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>>;
+  /** `session` is null when `p` manages its access but may not use it (an admin outside it): only `access` changed. */
+  patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow } | OutsideAccess>>;
   listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>>;
+  /** A session's access for one who manages it but may not use it (an admin outside it); anyone else `session_not_found`. */
+  sessionAccess(p: Principal, id: string): Promise<Reply<OutsideAccess>>;
+  settings(p: Principal): Promise<OrgSettings>;
+  /** Admins only (`admin_required`). */
+  setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>>;
 
   // the feed and the work part
   feed(p: Principal, q: { after?: string; kinds?: string[] }): Promise<FeedFrame | { reset: true; cursor: null }>;
   mutate(p: Principal, m: MutateRequest): Promise<MutateReply>;
   threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }>;
+  /** One thread's `session`, `place` and `result` rows, as `threads` holds them; null when `p` may not see it. */
+  thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
   result(p: Principal, id: string): Promise<ResultRow | null>;
   overview(p: Principal): Promise<Overview>;
@@ -306,7 +329,6 @@ export type DeltaPush = { epoch: number; deltas: { type: string; turnId: string;
 export interface LiveRpc {
   /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. The reply is the head Live now holds. */
   publish(stream: string, frame: FeedPush | EventPush | DeltaPush | { head: string }): Promise<{ head: string }>;
-  wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }>;
   revoke(credentialId: string): Promise<void>;
 }
 

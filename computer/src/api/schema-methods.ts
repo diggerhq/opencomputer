@@ -69,7 +69,7 @@ export const METHODS = {
   'sessions.resume': { params: Schema.Struct({ ...sid, ...idem }), result: SessionResult, http: 'POST /sessions/{id}/resume' },
   'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy), turnId: Schema.optionalKey(TurnId), slack: Schema.optionalKey(SlackTurn) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
   'turns.get': {
-    params: Schema.Struct({ ...sid, turnId: TurnId, waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))), status: Schema.optionalKey(Schema.String), minSeq: Schema.optionalKey(Seq) }),
+    params: Schema.Struct({ ...sid, turnId: TurnId, minSeq: Schema.optionalKey(Seq) }),
     result: Schema.Struct({ turn: Turn }), http: 'GET /sessions/{id}/turns/{turnId}',
   },
   'turns.cancel': { params: Schema.Struct({ ...sid, ...idem, turnId: TurnId }), result: Schema.Struct({ turn: Turn, seq: Seq }), http: 'POST /sessions/{id}/turns/{turnId}/cancel' },
@@ -102,7 +102,6 @@ export const METHODS = {
       ...sid,
       after: Schema.optionalKey(Seq),
       limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
-      waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))),
       tailTurns: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
       turnId: Schema.optionalKey(TurnId),
       types: Schema.optionalKey(Schema.String),
@@ -201,6 +200,12 @@ export const CLIENT_NOTIFICATIONS = {
   }),
 } as const;
 
+/** `access` in a create or update body: up to 50 `people`, only with mode `people`. */
+const AccessBody = Schema.Struct({
+  mode: Schema.Literals(['owner', 'org', 'people']),
+  people: Schema.optionalKey(Schema.Array(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(320))).check(Schema.isMaxLength(50))),
+}).annotate({ identifier: 'AccessBody' });
+
 /** The body of `POST /sessions` (HTTP only; blue answers it, the host gets `start`). */
 export const CreateSessionBody = Schema.Struct({
   id: Schema.optionalKey(SessionId),
@@ -211,4 +216,26 @@ export const CreateSessionBody = Schema.Struct({
   speed: Schema.optionalKey(Speed),
   mode: Schema.optionalKey(Schema.String),
   metadata: Schema.optionalKey(Metadata),
+  /** Who may use it; omitted: the organization's `apiAccessDefault`. `people` as member ids, WorkOS user ids or emails. */
+  access: Schema.optionalKey(AccessBody),
 }).annotate({ identifier: 'CreateSessionBody' });
+
+/**
+ * The body of `PATCH /sessions/{id}` over HTTP: `sessions.update`'s fields and `access`, which only the hosted API
+ * changes (its owner, someone in `people`, or an organization admin; an admin outside the session changes nothing else).
+ */
+export const UpdateSessionBody = Schema.Struct({
+  title: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
+  model: Schema.optionalKey(Schema.String),
+  effort: Schema.optionalKey(Schema.String),
+  speed: Schema.optionalKey(Speed),
+  mode: Schema.optionalKey(Schema.String),
+  archived: Schema.optionalKey(Schema.Boolean),
+  metadata: Schema.optionalKey(Schema.Record(Schema.String.check(Schema.isMaxLength(40)), Schema.NullOr(Schema.String.check(Schema.isMaxLength(500))))),
+  access: Schema.optionalKey(AccessBody),
+}).annotate({ identifier: 'UpdateSessionBody' });
+
+/** `GET` and `PATCH /settings`: the organization's API settings. `apiAccessDefault` is the access of sessions created without one. */
+export const OrganizationSettings = Schema.Struct({
+  apiAccessDefault: Schema.Literals(['owner', 'org']),
+}).annotate({ identifier: 'OrganizationSettings' });

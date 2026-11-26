@@ -3,10 +3,14 @@
 use super::resolve::{operand, resolve};
 use super::{Ctx, print_json, println_out};
 use crate::api::types::{Session, Turn};
-use crate::cli::{DiffArgs, InterruptArgs, OpenArgs, RenameArgs, SessionOnly, ShellArgs};
+use super::follow::{Follower, Goal, Step, Tracker, run_until_next};
+use super::run::race;
+use crate::cli::{DiffArgs, InterruptArgs, OnAsk, OpenArgs, RenameArgs, SessionOnly, ShellArgs};
 use crate::error::{Error, Result};
-use crate::http::{q, session_path};
+use crate::http::session_path;
+use crate::wire::Attach;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 fn need(positional: Option<&str>, flag: Option<&str>, usage: &str) -> Result<String> {
     operand(positional, flag)?.ok_or_else(|| Error::usage(format!("which session? {usage}")))
@@ -25,12 +29,10 @@ pub async fn interrupt(ctx: &Ctx, a: InterruptArgs) -> Result<i32> {
         cancelled.push(serde_json::to_value(t)?);
     }
     if let Some(active) = &session.active_turn_id {
-        let path = session_path(&sid, &format!("/turns/{active}"));
-        let turn = if a.no_wait {
-            ctx.http.get(&path, &[]).await?
-        } else {
-            ctx.http.get(&path, &q(&[("status", "cancelling"), ("waitMs", "60000")])).await?
-        };
+        if !a.no_wait {
+            stopped(ctx, &sid, active).await;
+        }
+        let turn = ctx.http.get(&session_path(&sid, &format!("/turns/{active}")), &[]).await?;
         cancelled.insert(0, turn.get("turn").cloned().unwrap_or(turn));
     }
     if a.json {
@@ -52,6 +54,18 @@ pub async fn interrupt(ctx: &Ctx, a: InterruptArgs) -> Result<i32> {
         ctx.progress("the turn's subagents were stopped with it");
     }
     Ok(0)
+}
+
+/// Follows the session (the one live path) until the interrupted turn ends,
+/// for at most a minute. The interrupt is already recorded: if the session
+/// cannot be followed, or the minute passes, the turn reads as it stands
+/// (still stopping).
+async fn stopped(ctx: &Ctx, sid: &str, turn: &str) {
+    let Ok((wire, rx)) = ctx.open_wire(vec![Attach { session_id: sid.to_string(), ..Default::default() }], false).await else { return };
+    let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.to_string(), false)]);
+    let mut trackers = [Tracker::new(sid, Goal::Turn(turn.to_string()), OnAsk::Wait, false)];
+    let mut sink = |_: &Follower, _: &Step| {};
+    let _ = race(Some(Duration::from_secs(60)), run_until_next(&mut f, &mut trackers, &mut sink)).await;
 }
 
 pub async fn rename(ctx: &Ctx, a: RenameArgs) -> Result<i32> {

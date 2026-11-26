@@ -84,6 +84,8 @@ export interface State extends Kept {
   palette: boolean
   keysSheet: boolean
   earlierNext: Record<string, string | null | undefined>
+  // Threads a link named that the server does not have (spec 26.2): shown as not found.
+  missing: Record<string, true>
 }
 
 const KEPT: (keyof Kept)[] = [
@@ -149,6 +151,7 @@ export function createSurface(o: SurfaceOptions) {
     palette: false,
     keysSheet: false,
     earlierNext: {},
+    missing: {},
     layout: {},
     trackTab: {},
     listHidden: false,
@@ -210,7 +213,10 @@ export function createSurface(o: SurfaceOptions) {
     for (const row of rows) d.set(row)
     under = d.done()
     recompose({ counts: counted(get().base) })
+    for (const sid of watching.keys()) begin(sid)
   }
+  // The server holds this session: in the feed, or read by query.
+  const onServer = (sid: string) => get().base.session.has(sid) || under.session.has(sid)
 
   const stops: (() => void)[] = []
   const onFrame = (frame: FeedFrame) => {
@@ -246,17 +252,21 @@ export function createSurface(o: SurfaceOptions) {
     if (sid && visible() && !s.loc.result) {
       const row = s.rows.session.get(sid)
       const read = readRow((id) => s.rows.read.get(id), me, sid)?.readSeq ?? 0
-      if (row && row.lastSeq > read && s.base.session.has(sid)) mutate('read.set', { sid, seq: row.lastSeq })
+      if (row && row.lastSeq > read && onServer(sid)) mutate('read.set', { sid, seq: row.lastSeq })
     }
     // An agent wrapped the open thread in a new track (J3): its row stays in sight.
     const around = sid ? s.rows.place.get(sid)?.trackId : null
     if (around && s.openTracks[around] === undefined) set({ openTracks: { ...s.openTracks, [around]: true } })
+    if (sid && s.rows.session.has(sid)) shown.add(sid)
     // The thread that was open is gone: a start-box thread that became a track
-    // lands on the track (J5), anything else on the start box.
+    // lands on the track (J5), anything else on the start box. One a link named
+    // and the feed does not hold is read by itself; one the server does not
+    // have is shown as not found.
     if (sid && s.synced && !s.rows.session.has(sid)) {
       let track: string | null = null
       for (const t of s.rows.track.values()) if (t.createdBy === `agent:${sid}`) track = t.id
-      go({ ...NOWHERE, track, start: !track }, { replace: true })
+      if (track || shown.has(sid)) go({ ...NOWHERE, track, start: !track }, { replace: true })
+      else lookUp(sid)
     } else if (!sid && s.loc.track && s.synced && !s.rows.track.has(s.loc.track)) {
       go({ ...NOWHERE, start: true }, { replace: true })
     }
@@ -293,6 +303,22 @@ export function createSurface(o: SurfaceOptions) {
           })
     if (!blockedBefore || blockedBefore.size !== now.size) host.badge(now.size)
     blockedBefore = new Set(now.keys())
+  }
+
+  // Threads that were on screen, and threads read by themselves (once each).
+  const shown = new Set<string>()
+  const looked = new Set<string>()
+  function lookUp(sid: string) {
+    if (looked.has(sid)) return
+    looked.add(sid)
+    client.read<{ rows: Row[] }>(`/work/threads/${encodeURIComponent(sid)}`).then(
+      (reply) => addUnder(reply.rows),
+      (e: unknown) => {
+        if (e instanceof Refused && e.code === 'session_not_found') set({ missing: { ...get().missing, [sid]: true } })
+        // Offline or failing: read again when it is next named.
+        else looked.delete(sid)
+      },
+    )
   }
 
   // ---- where the person is ----
@@ -433,7 +459,7 @@ export function createSurface(o: SurfaceOptions) {
   // when its row arrives.
   const begin = (sid: string) => {
     const w = watching.get(sid)
-    if (!w || w.started || !get().base.session.has(sid)) return
+    if (!w || w.started || !onServer(sid)) return
     const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
     const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
     w.started = true

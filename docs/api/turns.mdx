@@ -62,16 +62,14 @@ A turn with `trigger: "subagent"` was started by the harness, not by a message; 
 | Transport | How |
 | --- | --- |
 | WebSocket | Attach to the session and read [events](/api/events) until `turn.completed`, `turn.failed` or `turn.cancelled` for the turn id |
-| HTTP | Long-poll `turns.get` (`GET /sessions/{id}/turns/{turnId}`) |
+| HTTP | Read `turns.get` (`GET /sessions/{id}/turns/{turnId}`) every few seconds until the turn has ended |
 
 ```
-GET /sessions/cs_0123456789abcdef/turns/tn_0123456789ab?waitMs=60000
+GET /sessions/cs_0123456789abcdef/turns/tn_0123456789ab
 ```
 
 | Param | Effect |
 | --- | --- |
-| `waitMs` (up to 60,000) | Returns when the turn has ended or the wait is over. Check `status` and call again if it has not ended |
-| `status` | Returns when the turn has left this status instead |
 | `minSeq` | Waits for the journal: [Session journal](/api/overview#session-journal) |
 
 The ended turn carries `text`, `error`, `usage` (tokens and `costUsd`), `startedAt` and `endedAt`. A turn that stopped for a person has an open [ask](/api/asks) on the session.
@@ -96,4 +94,4 @@ The ended turn carries `text`, `error`, `usage` (tokens and `costUsd`), `started
 | `turnId` given | Does nothing unless that turn is the running one or is queued |
 | Suspended session whose journal shows a started turn (its runner died) | That turn ends as cancelled with `forced: true` |
 
-{/* Sources: computer/schema/computer-api.v1.json (Turn, SendResult, turns.*, sessions.interrupt, turn events); computer/src/runner/api/api.ts (send, steer, interruptWith, cancelQueued, FORCE_CANCEL_MS, QUEUE_MAX); computer/src/runner/api/asks.ts (steer declines asks); computer/src/host/session-writer.ts (queued send, cancelOrphan); computer/src/api/read-methods.ts (turns.get waitMs, status, minSeq); opc/src/cmd/follow.rs (turns.get use) */}
+{/* Sources: computer/schema/computer-api.v1.json (Turn, SendResult, turns.*, sessions.interrupt, turn events); computer/src/runner/api/api.ts (send, steer, interruptWith, cancelQueued, FORCE_CANCEL_MS, QUEUE_MAX); computer/src/runner/api/asks.ts (steer declines asks); computer/src/host/session-writer.ts (queued send, cancelOrphan); computer/src/api/read-methods.ts (turns.get minSeq); opc/src/cmd/follow.rs (turns.get use) */}

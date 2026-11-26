@@ -1,16 +1,16 @@
 // The host's writer for a session no runner is serving (work 084, "One
 // writer, one log"): it holds the session's journal lock, answers reads from
-// the log, and records the writes that need no agent (a send is queued and the
-// runner woken; update, suspend, resume, interrupt and cancel of queued turns,
-// closing asks, stopping subagents), so the API works while the session
-// sleeps. `scanJournals` is the boot scan: it settles every turn, ask and
+// the log, and records the writes that need no agent (update, suspend,
+// interrupt and cancel of queued turns, closing asks, stopping subagents), so
+// the API works while the session sleeps. A write that needs the agent (a send,
+// resume, compact) never reaches it: the gateway's `api` frame starts the
+// runner first (api-host.ts), the one way a runner starts. `scanJournals` is the boot scan: it settles every turn, ask and
 // subagent a dead runner left open.
 //
 // Invariants:
 // - It writes only while it holds the journal's flock; `handOff` detaches
 //   subscribers (`moved`), closes its socket and drops the lock, after which
-//   the runner opens the journal. It never runs a turn: every turn it records
-//   is `queued`, and the runner it wakes starts them.
+//   the runner opens the journal. It never runs or queues a turn.
 // - Events it records match EVENT_DATA exactly (every field, null when it
 //   does not apply); writes go through read-methods' dispatch, so decoding,
 //   errors and idempotency are the runner's.
@@ -22,7 +22,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ApiActor, ApiError } from '../protocol.js';
 import { log as logger } from '../log.js';
-import { isSessionId, mintId } from '../session-ids.js';
 import type { SessionCreated } from '../api/created.js';
 import { type SessionSeed, SYSTEM_ACTOR } from '../api/fold.js';
 import { listJournals } from '../api/journal-dir.js';
@@ -33,9 +32,6 @@ import { type ApiServer, serveApi } from '../api/socket.js';
 import type { Subagent } from '../api/schema-objects.js';
 import { apiError, type CallContext, type CallOutcome, type SubscribeOptions, type Subscription, type Writer } from '../api/writer.js';
 
-/** Queued turns a session takes before `queue_full`. */
-export const QUEUE_MAX = 20;
-
 export interface HostWriterOptions {
   sessionId: string;
   /** The journal file (journalPath(HOST_DATA, sessionId)). */
@@ -45,8 +41,6 @@ export interface HostWriterOptions {
   seed: SessionSeed;
   /** Recorded first when the journal is empty (created.ts). */
   created?: SessionCreated;
-  /** Start the session's runner: it takes the turns queued here from the journal. */
-  wake(sessionId: string): void;
   /** Serve the API on this socket too (the relay's `where`). */
   socket?: { path: string; token: string };
   /** Wait for the journal's lock (a runner handing it back); default 0. */
@@ -114,23 +108,6 @@ export class HostSessionWriter implements Writer {
     if (from !== to) this.log.append('session.status_changed', { from, to }, { actor });
   }
 
-  /** Record that the runner is coming (unless it already is) and wake it. */
-  private starting(actor: ApiActor): void {
-    const s = this.log.fold.status;
-    if (s === 'suspended' || s === 'idle') {
-      this.status('starting', actor);
-      this.log.append('runtime.starting', { phase: 'agent' }, { actor: SYSTEM_ACTOR });
-    }
-    this.o.wake(this.sessionId);
-  }
-
-  /** The runner a send woke never came: the queued turns fail, so a client stops waiting on them. */
-  failQueued(message: string): void {
-    const queued = this.log.fold.liveTurns().filter((t) => t.status === 'queued');
-    for (const t of queued) this.log.append('turn.failed', { error: { code: 'runtime_failed', message } }, { turnId: t.id, actor: SYSTEM_ACTOR });
-    if (queued.length && this.log.fold.status === 'starting') this.status('suspended', SYSTEM_ACTOR);
-  }
-
   private sessionResult(seq0: number): CallOutcome {
     return { result: { session: this.log.fold.session(), seq: Math.max(seq0, this.log.lastSeq) } };
   }
@@ -176,16 +153,6 @@ export class HostSessionWriter implements Writer {
     const log = this.log;
     const fold = log.fold;
     return {
-      'turns.send': (p, ctx) => {
-        const queued = fold.liveTurns().filter((t) => t.status === 'queued');
-        if (queued.length >= QUEUE_MAX) return fail('queue_full', `at most ${QUEUE_MAX} turns may wait`, 409, { retryable: true, retryAfterMs: 5000 });
-        const ifBusy = p.ifBusy ?? 'queue';
-        const turnId = p.turnId ?? mintId('tn');
-        log.append('message.received', { input: p.input, ifBusy, delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ctx.actor });
-        const e = log.append('turn.queued', { position: queued.length + 1, trigger: 'message', subagentId: null }, { turnId, actor: ctx.actor });
-        this.starting(ctx.actor);
-        return { result: { turn: fold.turn(turnId), delivery: 'queued', duplicate: false, seq: Math.max(e.seq, log.lastSeq) } };
-      },
       'sessions.update': (p, ctx) => {
         const s = fold.session();
         const changes: Record<string, { from: unknown; to: unknown }> = {};
@@ -214,13 +181,6 @@ export class HostSessionWriter implements Writer {
         this.status('suspended', ctx.actor);
         return this.sessionResult(seq0);
       },
-      'sessions.resume': (_p, ctx) => {
-        const seq0 = log.lastSeq;
-        // This writer serves only while no runner does: `idle` here is a runner that exited for idleness (host/main.ts)
-        // without recording it, so it is woken as a suspended one is.
-        if (fold.status === 'suspended' || fold.status === 'idle') this.starting(ctx.actor);
-        return this.sessionResult(seq0);
-      },
       'sessions.interrupt': (p, ctx) => {
         const seq0 = log.lastSeq;
         const live = fold.liveTurns();
@@ -234,11 +194,6 @@ export class HostSessionWriter implements Writer {
           this.status('suspended', SYSTEM_ACTOR);
         }
         return this.sessionResult(seq0);
-      },
-      'sessions.compact': (_p, ctx) => {
-        // Compaction needs the agent: wake it; the caller retries (same key) once it serves.
-        this.starting(ctx.actor);
-        return fail('unavailable', 'the session is starting; retry', 503, { retryable: true, retryAfterMs: 2000 });
       },
       'turns.cancel': (p, ctx) => {
         const t = fold.turn(p.turnId);

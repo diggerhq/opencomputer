@@ -153,7 +153,7 @@ export interface SessionLogRpc {
   epochTail(identity: SessionLogIdentity): Promise<EpochTail | null>;
   /**
    * Every read takes the reader's principal last: it answers only one that may read the session (else
-   * `not_found`), and never waits (`minSeq` not reached is `unavailable` at once; the edge waits through Live).
+   * `not_found`), and never waits (`minSeq` not reached is `unavailable` at once, with `retryAfterMs`).
    */
   summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
   events(query: EventsQuery, p: Principal): Promise<EventsPage>;

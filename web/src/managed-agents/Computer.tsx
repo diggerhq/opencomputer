@@ -64,7 +64,6 @@ import {
   trackFirstSessionStartClicked,
   trackSetupSlackClicked,
 } from './computer-analytics'
-import { createSession } from './computer-sessions-api'
 import { ChatTextarea } from '@/components/chat-textarea'
 import {
   AgentCard,
@@ -76,6 +75,7 @@ import {
   computerQueryKey,
   computerSessionsQueryKey,
   createComputer,
+  createSession,
   getComputer,
   getComputerSessions,
   type ComputerSession,
@@ -1059,11 +1059,11 @@ function FirstTaskComposer() {
   const [input, setInput] = useState('')
   const [booting, setBooting] = useState(false)
   const start = useMutation({
-    mutationFn: () => createSession(input.trim(), {}, () => setBooting(true)),
+    mutationFn: () => createSession(input.trim(), () => setBooting(true)),
     onSettled: () => setBooting(false),
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: computerQueryKey })
-      void navigate(`/computer/sessions/${session.id}`)
+      void navigate(`/computer/work/t/${encodeURIComponent(session.id)}`)
     },
     onError: (error) => notifyError('Could not start the session', error),
   })
@@ -1116,10 +1116,7 @@ function WebFirstStart() {
       </p>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
         <Button size="lg" asChild>
-          <Link
-            to="/computer/sessions/new"
-            onClick={trackFirstSessionStartClicked}
-          >
+          <Link to="/computer/work/new" onClick={trackFirstSessionStartClicked}>
             Start your first session
             <ArrowRight className="size-4" aria-hidden />
           </Link>

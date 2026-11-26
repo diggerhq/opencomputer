@@ -18,7 +18,6 @@ const counts: [string, number][] = [];
 
 const hooks: WireLinkHooks = {
   where: (sid) => (sid === 'cs_a' ? { socket: '/x/api.sock', token: 't', writer: 'host', epoch: 1 } : undefined),
-  resume: async () => ({ status: 'starting' }),
   workspace: (sid) =>
     sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
     : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }

@@ -1,7 +1,7 @@
 // LiveDurableObject (tracks and threads, spec sections 18.8, 36.4 and 38): the fan-out actor, one
 // per organization (`liveOf`). It owns nothing: who is connected and what they watch is in each
 // socket's attachment, so a Live woken from hibernation keeps pushing, and losing one loses no
-// fact. Publishers call `publish`; the edge passes socket upgrades, `wait` and `revoke`.
+// fact. Publishers call `publish`; the edge passes socket upgrades and `revoke`.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -21,7 +21,6 @@ import {
   type LiveCredentials,
   MAX_ATTACHMENT_BYTES,
   MAX_FRAME_BYTES,
-  MAX_WAIT_MS,
   MAX_WATCHED_SESSIONS,
   type Push,
   REVALIDATE_MS,
@@ -83,7 +82,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
   private readonly subscribers = new Map<string, Set<WebSocket>>();
   private readonly heads = new Map<string, string>();
   private readonly machines = new Map<string, string>();
-  private readonly waiters = new Map<string, Set<() => void>>();
 
   constructor(ctx: DurableObjectState, env: LiveEnv) {
     super(ctx, env);
@@ -133,34 +131,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     return new Response(null, { status: 101, webSocket: client, headers: { "sec-websocket-protocol": LIVE_SUBPROTOCOL } });
   }
 
-  async wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }> {
-    const timeout = Math.max(0, Math.min(timeoutMs, MAX_WAIT_MS));
-    const watched = sessionStream(stream);
-    if (watched?.bit === EVENTS) {
-      // The same lease a subscription takes, or SessionLog would not be publishing (section 37.1).
-      const before = this.heads.get(stream);
-      const lease = await this.env.SESSION_LOG.getByName(watched.sessionId).watch(p, Date.now() + Math.max(LEASE_MS, timeout + 5_000));
-      if (!lease) return { moved: false, head: null };
-      if (this.heads.get(stream) === before) this.heads.set(stream, lease.head);
-    }
-    const head = this.heads.get(stream) ?? null;
-    if (head !== null && head !== after) return { moved: true, head };
-    if (timeout === 0) return { moved: false, head };
-    return new Promise((resolve) => {
-      const waiters = this.waiters.get(stream) ?? new Set();
-      this.waiters.set(stream, waiters);
-      const moved = (): void => {
-        clearTimeout(timer);
-        resolve({ moved: true, head: this.heads.get(stream) ?? null });
-      };
-      const timer = setTimeout(() => {
-        waiters.delete(moved);
-        resolve({ moved: false, head: this.heads.get(stream) ?? null });
-      }, timeout);
-      waiters.add(moved);
-    });
-  }
-
   async revoke(credentialId: string): Promise<void> {
     for (const [socket, a] of [...this.sockets]) {
       if (a.p.cred === credentialId) this.close(socket, CLOSE_UNAUTHENTICATED, "The credential was revoked.");
@@ -171,7 +141,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
 
   async publish(stream: string, frame: Push): Promise<{ head: string }> {
     if ("head" in frame) {
-      this.moved(stream, frame.head);
+      this.heads.set(stream, frame.head);
       this.fanOut(stream, () => ({ t: "behind", stream, head: frame.head }));
       return { head: frame.head };
     }
@@ -193,7 +163,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
       return { head: "" };
     }
     const push = frame as EventPush;
-    this.moved(stream, push.to);
+    this.heads.set(stream, push.to);
     const text = JSON.stringify({ t: "events", session: watched.sessionId, from: push.from, to: push.to, events: push.events } satisfies ServerFrame);
     // Too large for a frame: the readers are told the head and read over HTTP.
     const sent = encoder.encode(text).length <= MAX_FRAME_BYTES ? text : JSON.stringify({ t: "behind", stream, head: push.to } satisfies ServerFrame);
@@ -202,7 +172,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
   }
 
   private publishFeed(push: FeedPush): { head: string } {
-    this.moved(feedStream, push.to);
+    this.heads.set(feedStream, push.to);
     for (const socket of this.subscribers.get(feedStream) ?? []) {
       const a = this.sockets.get(socket);
       if (!a) continue;
@@ -222,15 +192,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
       this.sendText(socket, encoder.encode(text).length <= MAX_FRAME_BYTES ? text : JSON.stringify({ t: "behind", stream: feedStream, head: push.to } satisfies ServerFrame));
     }
     return { head: push.to };
-  }
-
-  /** Records a stream's head and releases the long-polls waiting on it. */
-  private moved(stream: string, head: string): void {
-    this.heads.set(stream, head);
-    const waiters = this.waiters.get(stream);
-    if (!waiters) return;
-    this.waiters.delete(stream);
-    for (const wake of waiters) wake();
   }
 
   // ---------------------------------------------------------------- sockets

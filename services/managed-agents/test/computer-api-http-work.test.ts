@@ -157,6 +157,18 @@ describe("the work reads (spec 37.1)", () => {
     expect((await call("GET", "/work/overview", { identity: key(["sessions:read"]) })).status).toBe(403);
   });
 
+  it("one thread by id: its rows, or session_not_found", async () => {
+    const org = { thread: vi.fn(async (_p: unknown, sid: string) => (sid === SID ? { rows: [{ kind: "session", id: SID }] } : null)) };
+    const call = setup(org);
+    expect(await call("GET", `/work/threads/${SID}`)).toEqual({ status: 200, body: { protocol: 1, rows: [{ kind: "session", id: SID }] } });
+    expect(org.thread).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), SID);
+    const missing = await call("GET", "/work/threads/cs_0123456789abcdee");
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe("session_not_found");
+    expect((await call("GET", "/work/threads/nope")).status).toBe(404);
+    expect((await call("GET", `/work/threads/${SID}`, { identity: key(["sessions:read"]) })).status).toBe(403);
+  });
+
   it("the repository setting is Org's; a session may read it but not change it", async () => {
     const repo = { owner: "o", name: "r" };
     const org = { repository: vi.fn(async () => repo), setRepository: vi.fn(async () => ({ ok: true, repository: repo })) };

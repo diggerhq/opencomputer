@@ -86,6 +86,9 @@ const V2 = [`DELETE FROM _owed WHERE grp = 'poke:webhook'`];
 /** A mutation's `Idempotency-Key` names it, for members too: the per-client numbering is gone. */
 const V3 = [`DROP TABLE client`];
 
+/** `meta.api_access_default`: the organization's default access for sessions not from Slack (spec 36.2); NULL is `owner`. */
+const V4 = [`ALTER TABLE meta ADD COLUMN api_access_default TEXT`];
+
 const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
 export const STEPS: ((sql: Sql) => void)[] = [
   run(V0),
@@ -97,4 +100,5 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "age", 0);
     alarms.set(sql, "board", 0);
   },
+  run(V4),
 ];

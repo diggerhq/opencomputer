@@ -20,7 +20,7 @@
 // - `subagents` is folded the same way; `subagent.progress` (never journaled) lives in memory only,
 //   per running subagent, merged into reads (not into the summary `append` returns).
 // - Every read takes the reader's principal, and `minSeq` answers `unavailable` at once when `ack` has
-//   not reached it. Nothing waits here: the edge waits through Live (spec 37.1).
+//   not reached it. Nothing waits: a client follows over Live (spec 37.1).
 
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { gatewayTelemetry, type TelemetryEnv } from "./telemetry/gateway.js";
@@ -233,15 +233,22 @@ const MIGRATIONS: ((sql: Sql) => void)[] = [
 
 const isPerson = (p: Principal) => p.kind === "member" || p.kind === "key";
 
+/**
+ * Whether a person knows of the session: they read it, or they speak in its Slack thread (the Slack
+ * actor admitted them). Anyone else is answered `not_found`, as the session API answers (spec 36.2).
+ */
+const knows = (p: Principal, access: Access, sessionId: string) => p.via === "slack" || mayRead(p, access, sessionId);
+
 /** Who may put an entry of this kind in the inbox (spec 36.2). */
-function mayWrite(p: Principal, kind: InboxKind, access: Access): boolean {
+function mayWrite(p: Principal, kind: InboxKind, access: Access, sessionId: string): boolean {
   const by = byOf(p);
   // `agents` (the session that started it, its track's agent) write whatever `writers` says (spec 40.7).
   const listed = (access.writers !== "members" && access.writers.includes(by)) || (p.kind === "agent" && !!access.agents?.includes(by));
-  const members = access.writers === "members" && isPerson(p);
-  if (kind === "settings") return members || (isPerson(p) && (access.owner === p.subject || access.owner === by));
-  // Stopping work (an interrupt, a turn's cancel, a subagent's stop, a suspend): any member.
-  if (kind === "interrupt" || kind === "cancel" || kind === "stop" || kind === "suspend") return p.kind === "platform" || isPerson(p) || listed;
+  const members = access.writers === "members" && isPerson(p) && knows(p, access, sessionId);
+  // The model and its settings: a person who may write, or its owner.
+  if (kind === "settings") return isPerson(p) && (members || listed || access.owner === p.subject);
+  // Stopping work (an interrupt, a turn's cancel, a subagent's stop, a suspend): any person who may read it.
+  if (kind === "interrupt" || kind === "cancel" || kind === "stop" || kind === "suspend") return p.kind === "platform" || members || listed || (isPerson(p) && mayRead(p, access, sessionId));
   return p.kind === "platform" || members || listed;
 }
 
@@ -688,7 +695,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   async accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts: { wait?: boolean } = {}): Promise<AcceptResult> {
     const access = await this.accessFor(p);
     if (!access) return { ok: false, code: "not_found" };
-    if (!mayWrite(p, entry.kind, access)) return { ok: false, code: "forbidden" };
+    const sessionId = this.sessionId()!;
+    if (!mayWrite(p, entry.kind, access, sessionId)) return { ok: false, code: isPerson(p) && !knows(p, access, sessionId) ? "not_found" : "forbidden" };
     const body = entry.body ?? null;
     const hash = await hashOf({ kind: entry.kind, body });
     const now = Date.now();
@@ -1516,7 +1524,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return { ok: false, error: "reset", cursor: cursor.encode("e", [m.logEpoch, first - 1]), seq: first - 1 };
   }
 
-  /** A read's gate: `not_found` to a principal that may not read, then `minSeq`, at once (the edge retries, or waits through Live). */
+  /** A read's gate: `not_found` to a principal that may not read, then `minSeq`, at once (the client retries). */
   private async admit(minSeq: number | undefined, p: Principal): Promise<LogReadRefusal | null> {
     const access = await this.accessFor(p);
     if (!access || !mayRead(p, access, this.sessionId()!)) return { ok: false, error: "not_found" };

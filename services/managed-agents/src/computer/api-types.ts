@@ -186,6 +186,19 @@ export interface Session {
   lastActiveAt: string;
   syncedAt: string | null;
   urls: { dashboard: string | null };
+  /** Who may use it (spec 36.2). Optional in the published schema; this service always sends it. */
+  access?: SessionAccess;
+  /** Whether the caller may change `access`: the owner, a listed person, or an org admin. Absent from the feed's row. */
+  canManageAccess?: boolean;
+}
+
+/**
+ * Who may use a session from the dashboard, opc or the API: `owner` only its owner, `org` every
+ * member, `people` the owner and the listed members (`usr_…`). A Slack session reads `owner`.
+ */
+export interface SessionAccess {
+  mode: "owner" | "org" | "people";
+  people: string[];
 }
 
 /**

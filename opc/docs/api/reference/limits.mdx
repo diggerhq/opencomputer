@@ -60,7 +60,6 @@ See [Flow control](/api/websocket/flow-control).
 | A ticket, to open a connection | 10 minutes |
 | A WebSocket connection opened with a ticket | 1 hour, then closed with `4001` |
 | A WebSocket connection opened with a key | Until the key expires or is revoked, then closed with `4001`. A revocation takes effect within 60 seconds. |
-| A long-poll's `waitMs` | 60,000 at most |
 | A read with `minSeq`, waiting for the log to reach it | 2 seconds, then `503 unavailable` |
 | An idle session, before it suspends | 2 hours. Never while an ask is open or a subagent runs. |
 | Build output and dependencies in an idle workspace | Pruned after 24 hours idle |

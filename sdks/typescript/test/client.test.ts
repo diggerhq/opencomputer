@@ -417,8 +417,8 @@ describe("a session", () => {
     expect(events.held.find((e) => e.type === "ask.closed")!.data).toMatchObject({ ask: { id: askId, status: "answered" } });
     const failures: Failure[] = [];
     w.client.failures.subscribe((f) => failures.push(f));
-    await expect(w.client.send(makeId("cs"), "Anyone?").settled).rejects.toMatchObject({ code: "not_found" });
-    expect(failures).toMatchObject([{ code: "not_found", entry: { kind: "turn" } }]);
+    await expect(w.client.send(makeId("cs"), "Anyone?").settled).rejects.toMatchObject({ code: "session_not_found" });
+    expect(failures).toMatchObject([{ code: "session_not_found", entry: { kind: "turn" } }]);
     expect(w.client.pending().get()).toEqual([]);
   });
 
