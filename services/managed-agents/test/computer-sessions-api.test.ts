@@ -474,6 +474,19 @@ describe("hello and tickets", () => {
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
   });
 
+  it("an agent's key mints no ticket and never reaches the wire", async () => {
+    const key = { id: "key_agent", hash: "b".repeat(64), name: "Computer session", kind: "user" as const, scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null };
+    const f = fixture({ ticketKey: true });
+    const agent = (): ApiRequest => {
+      const c = caller(SID, { apiKey: key });
+      return { ...c, principal: { ...c.principal, kind: "agent", via: "agent", audiences: [], session: SID } };
+    };
+    expect(await f.api.handle(agent(), { op: "ticket", body: {} })).toMatchObject({ status: 403, error: { reason: "agent_key" } });
+    await f.api.handle(agent(), { op: "me" });
+    // The wire authorizes by a key's record; an agent's key has none, so it cannot be used there directly either.
+    expect([...f.sql.exec("SELECT key_id FROM wire_keys")]).toEqual([]);
+  });
+
   it("/me names the wire and the credential", async () => {
     const f = fixture();
     const me = await f.api.handle(caller(), { op: "me" });

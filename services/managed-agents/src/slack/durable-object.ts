@@ -9,6 +9,7 @@ import {
   type AcceptResult,
   type ActorEnv,
   alarms,
+  emitter,
   errorText,
   idem,
   logOf,
@@ -111,6 +112,7 @@ const isOther = (job: Job): job is OtherJob => "item" in job;
 
 export class SlackDurableObject extends DurableObject<SlackEnv> implements SlackRpc {
   protected readonly sql: Sql;
+  private readonly emit = emitter("slack", () => ({ team: this.ctx.id.name }));
   private access?: { teamId: string; threads: ThreadAccess };
   private token?: { sealed: string; plain: string };
   private importing: Promise<void> | undefined;
@@ -128,7 +130,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   override async alarm(): Promise<void> {
     await this.ready();
     await alarms.run(this.sql, Date.now(), {
-      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now()),
+      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit),
     });
   }
 
@@ -556,7 +558,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   private sendOwedNow(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now()).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
+    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
   }
 
   // ------------------------------------------------------------------ the person (34.3)

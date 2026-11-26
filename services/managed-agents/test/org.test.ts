@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { migrate, owed, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
 import { runMutation } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";
@@ -150,6 +150,30 @@ describe("Org.createSession", () => {
       const list = await org.listSessions(a, {});
       expect(list).toMatchObject({ ok: true, sessions: [{ id: body.id }], nextCursor: null });
       expect(await org.access(body.id)).toMatchObject({ owner: "usr_a", audience: "org", writers: "members", machine: "create" });
+    });
+  });
+});
+
+describe("Org.mismatch", () => {
+  it("reports a client's checksum mismatch at error level, to alert on (spec 27, 28)", async () => {
+    await withActor("mismatch", async (org) => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        await org.mismatch(member("usr_a", "mismatch"), { clientId: "cl_1", cursor: "v9", server: "aa", client: "bb" });
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(error.mock.calls[0]![0] as string)).toMatchObject({
+          level: "error",
+          actor: "org",
+          event: "org.feed_mismatch",
+          org: "mismatch",
+          subject: "usr_a",
+          clientId: "cl_1",
+          server: "aa",
+          client: "bb",
+        });
+      } finally {
+        error.mockRestore();
+      }
     });
   });
 });

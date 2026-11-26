@@ -15,6 +15,10 @@
 //   current state) and `duplicate: true` where the result has that field; a
 //   different body is `409 idempotency_conflict`; a concurrent repeat waits for
 //   the first. Errors are not recorded: a retry of a failed write runs again.
+// - A `turns.send` naming a turn already in the log answers that turn,
+//   `duplicate: true`, with or without a key: the log, not the idempotency
+//   record, says a turn was taken, so a redelivery after a crash (or onto a
+//   disk rebuilt from SessionLog) is not a second message.
 
 import { createHash } from 'node:crypto';
 import type { JournalEvent } from '../protocol.js';
@@ -55,13 +59,23 @@ export function dispatch(
       if (!WRITES.has(method)) return await readCall(log, method, v);
       const handler = writes[method] as WriteHandler | undefined;
       if (!handler) return fail('feature_unavailable', `${method} is not available on this writer`, 409, { feature: method });
-      const run = async () => handler(v, ctx);
+      const run = async () => repeat(log, method, v) ?? handler(v, ctx);
       const key = ctx.idempotencyKey ?? v.idempotencyKey;
       return key ? await idempotent(log, method, v, { ...ctx, idempotencyKey: key }, run) : await run();
     } catch (e) {
       return fail('internal', (e as Error).message ?? String(e), 500);
     }
   };
+}
+
+/**
+ * A `turns.send` naming a turn the log already has (the cloud redelivering an inbox entry after a crash lost the
+ * idempotency record, or a rebuilt disk never had it): that turn, as a duplicate, not a second message.
+ */
+function repeat(log: SessionLog, method: Method, v: ParamsOf<Method>): CallOutcome | undefined {
+  const id = method === 'turns.send' ? (v as ParamsOf<'turns.send'>).turnId : undefined;
+  const turn = id ? log.fold.turn(id) : undefined;
+  return turn && ok({ turn, delivery: turn.status === 'queued' ? 'queued' : 'started', duplicate: true, seq: log.lastSeq });
 }
 
 /** `host.record`: append one of RECORDABLE with its data decoded strictly, as `ctx.actor`; answers `{seq}`. */
