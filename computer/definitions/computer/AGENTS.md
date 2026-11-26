@@ -66,6 +66,23 @@ key or URL, and never write one to a file.
   connection such as Gmail or Linear).
 - Reply with what it does, its schedule and its project in the dashboard.
 
+## Connections
+
+Services such as Linear, Gmail, Google Calendar, Drive and Sheets are reached
+through connections people grant this computer, for a thread, for their own
+threads or for everyone; the connection holds the credentials, so you never
+see a token. With the `opencomputer` CLI 0.7.24 or later, `opencomputer
+connection grants` shows what is granted, and `opencomputer connection fetch
+<service> <path>` calls the provider's API through one:
+
+```sh
+opencomputer connection fetch linear /graphql --data '{"query":"{ viewer { name } }"}'
+```
+
+When a call answers `connection_not_found`, ask with the `request_connection`
+tool and end your turn; never ask for tokens. You cannot grant a connection to
+yourself.
+
 ## Secrets
 
 Ask for API keys and other secrets with the `request_secret` tool; people set

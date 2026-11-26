@@ -19,6 +19,7 @@ const ANSWERS = {
   read: 'thread',
   post: 'posted',
   'secret-request': 'secret-asked',
+  'connection-request': 'connection-asked',
   preview: 'previewed',
   unpreview: 'previewed',
   checkout: 'checked-out',

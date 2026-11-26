@@ -232,9 +232,10 @@ async function onRunner(r: Runner, m: RunnerToHost) {
     case 'spawn':
     case 'read':
     case 'post':
-    case 'secret-request': {
+    case 'secret-request':
+    case 'connection-request': {
       // The ids are UUIDs, so the runner's id carries through to the gateway and back.
-      const answer = ({ spawn: 'spawned', read: 'thread', post: 'posted', 'secret-request': 'secret-asked' } as const)[m.t];
+      const answer = ({ spawn: 'spawned', read: 'thread', post: 'posted', 'secret-request': 'secret-asked', 'connection-request': 'connection-asked' } as const)[m.t];
       if (!link.connected) return send(r.sock, { t: answer, id: m.id, error: 'gateway not connected' } satisfies HostToRunner);
       spawning.set(m.id, r);
       setTimeout(() => spawning.delete(m.id), 60_000).unref();
@@ -375,7 +376,8 @@ async function onGateway(m: GatewayToHost) {
     case 'spawned':
     case 'thread':
     case 'posted':
-    case 'secret-asked': {
+    case 'secret-asked':
+    case 'connection-asked': {
       const r = spawning.get(m.id);
       spawning.delete(m.id);
       if (r) send(r.sock, m satisfies HostToRunner);

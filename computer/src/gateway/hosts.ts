@@ -204,6 +204,9 @@ export class Hub {
           log.warn(`secret request from ${m.from} failed:`, errorText(e));
           return this.send(conn, { t: 'secret-asked', id: m.id, error: errorText(e) });
         }
+      case 'connection-request':
+        // Connections granted to the computer (work 080) live on OpenComputer; this gateway has none.
+        return this.send(conn, { t: 'connection-asked', id: m.id, error: 'connections need an OpenComputer computer; this gateway does not offer them' });
       case 'reply': {
         const done = conn.pending.get(m.id);
         conn.pending.delete(m.id);
