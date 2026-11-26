@@ -60,7 +60,14 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
       else surface.done(t.id, s.loc.result ? { stay: true } : undefined)
       if (s.loc.result) surface.closeResult()
     }),
-    z: plain(() => void surface.undoLast()),
+    // Done lands in the start box: Z in an empty box still takes "Undo Z" while it is offered.
+    z: (e) => {
+      const box = e.target as HTMLTextAreaElement
+      if (typing(e) && !e.metaKey && !e.ctrlKey && !e.altKey && box.value === '' && surface.get().toasts.some((t) => t.undo)) {
+        e.preventDefault()
+        void surface.undoLast()
+      } else plain(() => void surface.undoLast())(e)
+    },
     t: plain(() => {
       const t = openThread()
       if (t && !t.trackId && !t.done) surface.trackIt(t.id)
@@ -86,5 +93,6 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
       if (typing(e)) return (e.target as HTMLElement).blur()
       if (s.loc.result) return surface.closeResult()
     },
-  })
+    // Each handler decides about fields itself: ⌘K and Escape work while typing.
+  }, { ignore: (e) => e.repeat || e.isComposing })
 }

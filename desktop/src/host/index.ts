@@ -2,7 +2,7 @@
 // Runs in the page: the surface's desktop entry imports `createDesktopHost`
 // and hands the result to the surface. No dependency on Electron, Node or
 // React, so the web build can bundle it as is.
-import { APP_HEADER, type BackupKind, type Frame, type MainToPage, type Notice, type OcBridge, type OpenTarget, type Principal } from '../shared/bridge'
+import { type BackupKind, type Frame, type MainToPage, type Notice, type OcBridge, type OpenTarget, type Principal } from '../shared/bridge'
 
 export type { Frame, Notice, OpenTarget, Principal } from '../shared/bridge'
 
@@ -31,10 +31,6 @@ export interface DesktopHost {
   onSignedOut(cb: () => void): void
   /** The location the surface shows, mirrored so the window reopens there. */
   location(path: string): void
-  /** From the start panel: open a target in the main window, hide the panel, be told when shown. */
-  openInMain(target: OpenTarget): void
-  hidePanel(): void
-  onPanelShown(cb: () => void): void
   signOut(): void
 }
 
@@ -81,9 +77,7 @@ export function createDesktopHost(oc: OcBridge | undefined = window.oc): Desktop
     api: {
       fetch(path, init) {
         if (!path.startsWith('/api/')) return Promise.reject(new TypeError(`not an API path: ${path}`))
-        const headers = new Headers(init?.headers)
-        headers.set(APP_HEADER, '1')
-        return fetch(path, { ...init, headers })
+        return fetch(path, init)
       },
     },
     connect() {
@@ -118,9 +112,6 @@ export function createDesktopHost(oc: OcBridge | undefined = window.oc): Desktop
     onAnswer: (cb) => void on('answer', (m) => cb({ threadId: m.threadId, askId: m.askId, choice: m.choice })),
     onSignedOut: (cb) => void on('signed-out', () => cb()),
     location: (path) => bridge.send({ t: 'location', path }),
-    openInMain: (target) => bridge.send({ t: 'open', target }),
-    hidePanel: () => bridge.send({ t: 'panel.hide' }),
-    onPanelShown: (cb) => void on('panel.shown', () => cb()),
     signOut: () => bridge.send({ t: 'signout' }),
   }
 }

@@ -1,0 +1,141 @@
+---
+title: "Turns"
+description: "Send messages, and read, wait for and cancel the turns they started."
+---
+
+## Send a message
+
+```http
+POST /sessions/{id}/turns
+```
+
+```bash
+curl -s "$API/sessions/cs_7f3a9k2m4q8r1t6v/turns" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" -H "idempotency-key: 0b8e4d1a-…" \
+  -d '{ "input": "also add a regression test", "ifBusy": "steer" }'
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `input` | string | The message. Required, not empty, up to 100,000 characters. Sent exactly as given: whitespace counts. |
+| `ifBusy` | string, optional | What to do if a turn is running: `queue` (default), `steer` or `interrupt`. See [If a turn is running](#if-a-turn-is-running). |
+
+The response is `202`, or `200` for a repeated `Idempotency-Key`:
+
+```json
+{
+  "turn": { "id": "tn_9x2c7v1b4m8q", "status": "queued", "ifBusy": "queue", "input": "also add a regression test", "…": "…" },
+  "delivery": "queued",
+  "duplicate": false,
+  "seq": 1191
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `turn` | The [Turn](/api/reference/objects#turn) that carries the message, as it is now. For `steered`, the running turn the message joined, with the message in its `steering`, not a new one. |
+| `delivery` | What happened to the message: `started`, `queued` or `steered` |
+| `duplicate` | `true` when the key was already used for this request. Nothing new was sent, and `turn` is that turn as it is now. |
+| `seq` | The `seq` of the last event the send recorded. Pass it as `minSeq` to read your own write elsewhere. |
+
+Every route that sends a message returns this shape: here, [creating a session](/api/http/sessions#create-a-session) with `input`, and [compacting](/api/http/control#compact). Over the WebSocket the same operation is `turns.send`. It is named for sending rather than creating because a message may join a running turn instead of starting one.
+
+| `delivery` | Means | Recorded as |
+| --- | --- | --- |
+| `started` | Nothing was running. A new turn starts. | `message.received`, then `turn.started` |
+| `queued` | A new turn waits behind the running one | `message.received`, `turn.queued` |
+| `steered` | Delivered into the running turn. The agent reads it at its next step. If an ask was open, it declined it. | `message.received`, `ask.closed` for each declined ask, then `turn.steered` when the agent reads it |
+
+A steered message belongs to the running turn only once the agent reads it. If that turn ends first, the message starts a new turn at once, with a new id, recorded as `turn.queued` or `turn.started`. Follow the session's events, not only the turn in the response, to see where it ran. See [Steered messages](/api/model#steered-messages).
+
+The response returns once the message is in the log. It does not wait for the agent. Follow the turn in the [events](/api/reference/events), or [wait for it](#get-a-turn).
+
+### If a turn is running
+
+| `ifBusy` | Nothing running | A turn running | An ask open |
+| --- | --- | --- | --- |
+| `queue` | `started` | `queued` | `queued` |
+| `steer` | `started` | `steered` | `steered`: the open asks close as `declined`, and the agent reads the message as its instructions |
+| `interrupt` | `started` | Stops the running turn and every queued one, then `started` | Same: the ask closes as `interrupted` |
+
+The API defaults to `queue`, so that two programs sending at once never change each other's turns. `opc`'s interactive screen, Slack and the dashboard send with `steer`, because a person typing while the agent works means to redirect it.
+
+A message sent with `interrupt` records `message.received` with `interruptedTurnIds`: the running and queued turns it stopped. Their `turn.cancelled` events follow, with reason `interrupted`.
+
+<Note>
+`steer` falls back to `queued` when the agent cannot take a message mid-turn, which happens while it compacts the conversation. `capabilities.features.steer` is `false` for sessions that never can. The response's `delivery` is always what actually happened.
+</Note>
+
+### Sending to a suspended session
+
+Send as usual. The message is recorded at once, the session resumes, which takes a few seconds, and the message runs. The response does not wait for the resume: it returns `delivery: "started"` with the turn still `queued`, at once.
+
+This needs your computer to be up. When it is down or starting, the send records nothing and fails with `503 computer_unavailable` and `retryAfterMs`. Retry with the same `Idempotency-Key`; `opc` does.
+
+### Idempotency
+
+Send an `Idempotency-Key` to make retries safe. Keys are per member and per operation, and this route and the WebSocket's `turns.send` are one operation: a send retried over the other transport with the same key is a repeat, not a second message. See [Idempotency](/api/reference/idempotency).
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_request` | `input` is missing, empty or too long, or `ifBusy` is unknown |
+| `402` | `insufficient_credits` | Your organization is out of credits |
+| `404` | `session_not_found` | |
+| `409` | `idempotency_conflict` | The key was used with a different `input` or `ifBusy` |
+| `409` | `queue_full` | 20 turns are already queued. Wait for one to start, or send with `interrupt`. Retryable, with `retryAfterMs`. |
+| `503` | `computer_unavailable` | Your computer is down or starting. Nothing was recorded. Retryable, with `retryAfterMs`. |
+
+## List turns
+
+```http
+GET /sessions/{id}/turns
+```
+
+| Query | Meaning |
+| --- | --- |
+| `status` | One status, or several separated by commas. An unknown status matches nothing. |
+| `limit` | 1 to 100. Default 20. |
+| `cursor` | The `nextCursor` from the previous page |
+| `minSeq` | Wait up to 2 seconds until the list includes this `seq`. See [Consistency](/api/model#consistency). |
+
+Returns `{ "turns": [Turn…], "nextCursor" }`, newest first. Each is a [Turn](/api/reference/objects#turn).
+
+## Get a turn
+
+```http
+GET /sessions/{id}/turns/{turnId}
+```
+
+| Query | Meaning |
+| --- | --- |
+| `waitMs` | Hold the request open until the turn changes, for up to this many milliseconds, 0 to 60,000. Default `0`: answer at once. |
+| `status` | With `waitMs`: return as soon as the turn's status is not this one. Default: return when the turn ends, as `completed`, `failed` or `cancelled`. |
+| `minSeq` | Wait up to 2 seconds until the turn includes this `seq`. See [Consistency](/api/model#consistency). |
+
+Returns `{ "turn": Turn }`. `404 turn_not_found` when the turn is not in this session.
+
+To wait for a turn without a WebSocket, call this route with `waitMs=60000` in a loop until `status` is `completed`, `failed` or `cancelled`. Each call returns the moment the turn ends, or after the wait with the turn as it is, so a loop makes one request a minute while the agent works:
+
+```bash
+until curl -s "$API/sessions/$id/turns/$turn?waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do :; done
+```
+
+To see a queued turn start, pass `status=queued`. To wait for an interrupt to finish, pass `status=cancelling`.
+
+## Cancel a queued turn
+
+```http
+POST /sessions/{id}/turns/{turnId}/cancel
+```
+
+Cancels a turn that has not started, and leaves the running turn and the rest of the queue alone. `opc` uses it to take a queued message back into the prompt.
+
+Returns `200 { "turn": Turn, "seq" }`, with the turn `cancelled` and reason `withdrawn`. A `turn.cancelled` event records it, with the turn's `input` so a client can offer it again. Send an `Idempotency-Key` to make retries safe.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `404` | `turn_not_found` | |
+| `409` | `turn_not_cancellable` | The turn is not `queued`: it started or already ended. To stop a running turn, [interrupt](/api/http/control#interrupt) it. |

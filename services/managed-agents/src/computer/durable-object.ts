@@ -3740,7 +3740,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       sessionUrl: slackThreadUrl(session.teamId, session.channelId, session.threadTs),
     });
     console.log(JSON.stringify({ level: "info", event: "computer.thread_posted" }));
-    return posted;
+    return { ts: posted.ts, url: posted.url };
   }
 
   /**

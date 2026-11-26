@@ -237,6 +237,7 @@ function Summary({
   review,
   parts,
   title,
+  heading,
   resultId,
   open,
   toggle,
@@ -245,6 +246,7 @@ function Summary({
   review: Written | null
   parts: Part[]
   title: string
+  heading: string
   resultId: string
   open: ReadonlySet<number>
   toggle: (i: number) => void
@@ -306,7 +308,7 @@ function Summary({
         <article>
           {review ? (
             <h2>
-              <Rich text={review.head} />
+              <Rich text={heading} />
             </h2>
           ) : (
             <p className="none">The agent has not written a summary of this change. These are the files it touches.</p>
@@ -561,6 +563,7 @@ function Changes({ result }: { result: ResultRow }) {
             review={h.review}
             parts={parts}
             title={title}
+            heading={typeof result.meta?.title === 'string' ? result.meta.title : title}
             resultId={result.id}
             open={open}
             toggle={(i) => {
@@ -603,7 +606,7 @@ function Site({ result }: { result: ResultRow }) {
           </button>
         )}
       </Head>
-      {ok && <iframe className="site-frame" src={result.ref} title={resultTitle(result)} />}
+      {ok && surface.host.platform === 'web' && <iframe className="site-frame" src={result.ref} title={resultTitle(result)} />}
     </>
   )
 }

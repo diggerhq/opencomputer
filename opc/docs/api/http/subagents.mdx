@@ -1,0 +1,75 @@
+---
+title: "Subagents"
+description: "List subagents, read their results, and stop them."
+---
+
+A subagent is an agent the session's agent starts to do part of the work. Read [Subagents in the model](/api/model#subagents) for foreground and background subagents, and [Subagent](/api/reference/objects#subagent) for their fields.
+
+Subagents arrive as `subagent.started` events and end as `subagent.ended`, each with the [Subagent](/api/reference/objects#subagent). The session's `subagents` lists those that are running. A program that only reads over HTTP can check it on the session.
+
+```json
+{
+  "id": "sa_3q8r1t6v7f3a",
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "callId": "toolu_01XyZ",
+  "name": "auth flow",
+  "agentType": "Explore",
+  "background": true,
+  "status": "completed",
+  "activity": null,
+  "toolCalls": 41,
+  "tokens": 112400,
+  "createdAt": "2026-10-26T09:05:11.002Z",
+  "endedAt": "2026-10-26T09:09:13.540Z",
+  "durationMs": 242538,
+  "result": "Sessions are created in src/auth/session.ts…",
+  "resultTruncated": false,
+  "error": null,
+  "stoppedBy": null
+}
+```
+
+## List subagents
+
+```http
+GET /sessions/{id}/subagents
+```
+
+| Query | Meaning |
+| --- | --- |
+| `status` | `running` (default), or `all` |
+| `limit`, `cursor` | As for every list. Default 20, at most 100. |
+
+Returns `{ "subagents": [Subagent…], "nextCursor" }`, newest first. Each `result` is cut at 8 KiB, with `resultTruncated`.
+
+## Get a subagent
+
+```http
+GET /sessions/{id}/subagents/{subagentId}
+```
+
+Returns `{ "subagent": Subagent }`, running or ended, with its whole `result`. `404 subagent_not_found` when the subagent is not in this session.
+
+## Stop a subagent
+
+```http
+POST /sessions/{id}/subagents/{subagentId}/stop
+```
+
+Stops one subagent, foreground or background. The turn that started it goes on. The body is empty.
+
+Returns `202 { "subagent": Subagent, "seq" }`, the subagent as it is now. `subagent.ended` with `status: "stopped"` follows, with `stoppedBy` set and the stop's author as its `actor`.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `404` | `subagent_not_found` | |
+| `409` | `subagent_ended` | It had already ended. `error.subagent` is the subagent as it ended. |
+
+Stopping is idempotent for the same person: stopping a subagent you already stopped returns `200` with the subagent.
+
+## Interrupts and suspension
+
+A background subagent keeps running after its turn completes; to stop one, use this route. With Claude Code, an [interrupt](/api/http/control#interrupt) stops the turn and all of its subagents, background ones included. An explicit [suspend](/api/http/control#suspend) stops every subagent. Each is recorded as `subagent.ended` with `status: "stopped"` and `stoppedBy: null`. A session is not suspended for being idle while a subagent runs.
+
+When a background subagent ends, Claude Code starts a turn on its own to read the result: a [Turn](/api/reference/objects#turn) with `trigger: "subagent"`, `input: null` and the `subagentId`.
