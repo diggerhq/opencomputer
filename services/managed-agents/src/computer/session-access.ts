@@ -1,15 +1,15 @@
 // Who may use a session started from the dashboard, opc or the API (CTO-37), and who may change that.
 // Slack sessions keep their own roles (access.ts, `!access`); here they are only their linked owner's.
 //
-//   owner   only the owner
-//   org     every member of the organization (a row from before this, `access_mode` NULL, is org)
+//   owner   only the owner (also a row with no stored mode: from before this, or unknown)
+//   org     every member of the organization
 //   people  the owner and the listed members (`usr_…`)
 //
-// Using a session is everything that reads or drives it: get, list, history, writes, attach, terminals,
-// workspace files. Managing it is changing the mode or the list: the owner, a listed person, or an org
-// admin. An admin manages any session but uses only those its access lets them into (Q4): to get into an
-// owner-only session they add themselves. The owner's secrets and subscription stay with the session
-// whoever drives it (Q6).
+// Owner first: the owner controls the session. Using it is reading or driving it: get, list, history, writes,
+// attach and workspace files (terminals have their own rule, computer's `mayOpenTerminal`). Only the owner
+// manages it: changes its access, renames, archives or changes its settings. Being an org admin gives nothing
+// here: an admin uses a session only when its access names them or is `org`, and asks the owner to share it.
+// The owner's secrets and subscription stay with the session whoever drives it (Q6).
 //
 // Pure: no I/O, no SQL. sessions-api.ts stores the mode and list in `sessions.access_mode` and
 // `sessions.access_people` and pushes `membersOf` to the host as `SessionAccess.members`.
@@ -46,7 +46,6 @@ export interface AccessRow {
 
 export interface AccessCaller {
   member: string;
-  admin?: boolean;
 }
 
 /** An unknown or missing value is `owner`: a new organization's sessions are private. */
@@ -64,28 +63,38 @@ function people(raw: string | null): string[] {
   }
 }
 
-/** The session's access as the API shows it. A Slack session is its owner's here (its drivers live in Slack). */
+/**
+ * The session's access as the API shows it. A Slack session is its owner's here (its drivers live in Slack). Only
+ * a stored `org` or `people` shares it: no mode (a row from before access modes) or an unknown one is `owner`.
+ */
 export function accessOf(row: AccessRow): SessionAccessView {
-  if (row.originType === "slack" || row.accessMode === "owner") return { mode: "owner", people: [] };
+  if (row.originType === "slack") return { mode: "owner", people: [] };
+  if (row.accessMode === "org") return { mode: "org", people: [] };
   if (row.accessMode === "people") return { mode: "people", people: people(row.accessPeople) };
-  return { mode: "org", people: [] };
+  return { mode: "owner", people: [] };
+}
+
+/** Whether the caller is the session's owner. */
+export function isOwner(row: Pick<AccessRow, "ownerUserId">, who: AccessCaller): boolean {
+  return row.ownerUserId !== null && row.ownerUserId === who.member;
 }
 
 /** Whether the caller may read or drive the session at all. */
 export function mayUse(row: AccessRow, who: AccessCaller): boolean {
-  if (row.ownerUserId !== null && row.ownerUserId === who.member) return true;
+  if (isOwner(row, who)) return true;
   const a = accessOf(row);
   if (row.originType === "slack") return false;
   return a.mode === "org" || (a.mode === "people" && a.people.includes(who.member));
 }
 
-/** Whether the caller may change the session's access: its owner, a listed person (Q7), or an org admin (Q4). */
+/** Whether the caller may change the session's access (`canManageAccess`): its owner only; an admin is no exception. */
 export function mayManage(row: AccessRow, who: AccessCaller): boolean {
-  if (row.originType === "slack") return false;
-  if (row.ownerUserId !== null && row.ownerUserId === who.member) return true;
-  if (who.admin) return true;
-  const a = accessOf(row);
-  return a.mode === "people" && a.people.includes(who.member);
+  return row.originType !== "slack" && isOwner(row, who);
+}
+
+/** Whether the caller may rename, archive, unarchive, relabel or change the settings of the session: its owner only. */
+export function mayChangeSession(row: AccessRow, who: AccessCaller): boolean {
+  return isOwner(row, who);
 }
 
 /** `SessionAccess.members` for the host: null is every member; the owner is implicit. Slack sessions stay `[owner]`. */

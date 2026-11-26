@@ -60,9 +60,9 @@ In a Codex session `!effort` also accepts `ultra`, and `!speed fast` selects Cod
 | --- | --- |
 | `!secret`, `!secret list`, `!secret ls` | Lists secret names by scope, never values. |
 | `!secret help` | Shows the usage. |
-| `!secret NAME`, `!secret set NAME`, `!secret add NAME` | Shows a button that opens a private form for the value, its scope, and whether it is a file. On OpenComputer, replacing an existing session secret needs the person who set it or an organization admin. |
+| `!secret NAME`, `!secret set NAME`, `!secret add NAME` | Shows a button that opens a private form for the value, its scope, and whether it is a file. On OpenComputer, only the session's owner sets, replaces or removes its session secrets. |
 | `!secret NAME file`, `!secret set NAME file` | The same, with the file option already chosen. |
-| `!secret rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the secret from the scope. No scope: the narrowest scope that has it. On OpenComputer, a session secret can be removed only by the person who set it or an organization admin. |
+| `!secret rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the secret from the scope. No scope: the narrowest scope that has it. On OpenComputer, a session secret can be removed only by the session's owner. |
 
 | Scope | Covers |
 | --- | --- |

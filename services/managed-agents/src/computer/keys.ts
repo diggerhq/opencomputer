@@ -49,6 +49,8 @@ export interface KeyRow {
   expiresAt: number | null;
   /** The tunnel the KV record names; null: not written (no tunnel yet). */
   tunnelId: string | null;
+  /** JSON list of the only session ids the key reaches (a session's own key); null: no limit. */
+  sessionIds: string | null;
 }
 
 export interface ComputerKeysDeps {
@@ -76,9 +78,25 @@ export interface SyncedKey {
   /** ISO, ms epoch or null. */
   expiresAt: string | number | null;
   member: string;
+  /** A session's own key: the only session ids it reaches on the wire. Absent: unchanged (none for a new key). */
+  sessionIds?: string[];
 }
 
 const HASH = /^[0-9a-f]{64}$/;
+
+/** A stored `session_ids`; anything unreadable is no session at all, never every session. */
+function sessionList(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Whether the row already carries this limit (undefined asks for none new). */
+const sameLimit = (row: KeyRow, sessionIds: string[] | undefined) =>
+  sessionIds === undefined || (row.sessionIds !== null && row.sessionIds === JSON.stringify(sessionIds));
 
 export class ComputerKeys {
   private readonly now: () => number;
@@ -96,12 +114,14 @@ export class ComputerKeys {
         tunnel_id TEXT
       );
     `);
+    const have = new Set([...deps.sql.exec<{ name: string }>("PRAGMA table_info(wire_keys)")].map((c) => c.name));
+    if (!have.has("session_ids")) deps.sql.exec("ALTER TABLE wire_keys ADD COLUMN session_ids TEXT");
   }
 
   private row(keyId: string): KeyRow | undefined {
     return [
       ...this.deps.sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT key_id AS keyId, hash, member, scopes, kind, expires_at AS expiresAt, tunnel_id AS tunnelId FROM wire_keys WHERE key_id = ?",
+        "SELECT key_id AS keyId, hash, member, scopes, kind, expires_at AS expiresAt, tunnel_id AS tunnelId, session_ids AS sessionIds FROM wire_keys WHERE key_id = ?",
         keyId,
       ),
     ][0] as unknown as KeyRow | undefined;
@@ -120,6 +140,7 @@ export class ComputerKeys {
       scopes: row.scopes ? row.scopes.split(",") : [],
       expiresAt: row.expiresAt,
       kind: row.kind,
+      ...(row.sessionIds !== null ? { sessionIds: sessionList(row.sessionIds) } : {}),
     };
   }
 
@@ -146,16 +167,18 @@ export class ComputerKeys {
     if (expiresAt !== null && !Number.isFinite(expiresAt)) throw new Error("invalid expiresAt");
     const previous = this.row(key.id);
     const scopes = apiScopes(key.scopes).join(",");
+    // A limit once set stays: a sync that names none (the edge's) never widens a session's own key.
     this.deps.sql.exec(
-      `INSERT INTO wire_keys (key_id, hash, member, scopes, kind, expires_at, tunnel_id) VALUES (?, ?, ?, ?, ?, ?, NULL)
+      `INSERT INTO wire_keys (key_id, hash, member, scopes, kind, expires_at, tunnel_id, session_ids) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
        ON CONFLICT(key_id) DO UPDATE SET hash = excluded.hash, member = excluded.member, scopes = excluded.scopes,
-         kind = excluded.kind, expires_at = excluded.expires_at`,
+         kind = excluded.kind, expires_at = excluded.expires_at, session_ids = COALESCE(excluded.session_ids, wire_keys.session_ids)`,
       key.id,
       key.hash,
       key.member,
       scopes,
       key.kind,
       expiresAt,
+      key.sessionIds ? JSON.stringify(key.sessionIds) : null,
     );
     // A changed hash (never expected: keys are not rotated in place) must not leave the old one live.
     let writes = 0;
@@ -169,13 +192,14 @@ export class ComputerKeys {
   /**
    * Fills a key the caller authenticated with but this computer has not recorded (keys made
    * before 084, or a sync that failed), in the background. One indexed read on the hot path.
+   * `sessionIds`: a session's own key, which reaches only those sessions on the wire.
    */
-  observe(key: AssertedApiKey, member: string): void {
+  observe(key: AssertedApiKey, member: string, sessionIds?: string[]): void {
     const row = this.row(key.id);
     const tunnelId = this.deps.tunnelId();
-    if (row && row.hash === key.hash && (row.tunnelId === tunnelId || !tunnelId)) return;
+    if (row && row.hash === key.hash && (row.tunnelId === tunnelId || !tunnelId) && sameLimit(row, sessionIds)) return;
     this.deps.waitUntil(
-      this.sync({ id: key.id, hash: key.hash, kind: key.kind, scopes: key.scopes, expiresAt: key.expiresAt, member }, "observe").catch(
+      this.sync({ id: key.id, hash: key.hash, kind: key.kind, scopes: key.scopes, expiresAt: key.expiresAt, member, ...(sessionIds ? { sessionIds } : {}) }, "observe").catch(
         (error) => console.warn(JSON.stringify({ level: "warn", event: "computer.wire_key_fill_failed", keyId: key.id, message: String(error) })),
       ),
     );
@@ -185,11 +209,11 @@ export class ComputerKeys {
    * Like `observe`, but awaited: a ticket names the key by id and the wire looks it up in KV at
    * once, so the record must be there before the ticket leaves.
    */
-  async ensure(key: AssertedApiKey, member: string): Promise<boolean> {
+  async ensure(key: AssertedApiKey, member: string, sessionIds?: string[]): Promise<boolean> {
     const row = this.row(key.id);
     const tunnelId = this.deps.tunnelId();
-    if (row && row.hash === key.hash && row.tunnelId === tunnelId) return false;
-    await this.sync({ id: key.id, hash: key.hash, kind: key.kind, scopes: key.scopes, expiresAt: key.expiresAt, member }, "ensure");
+    if (row && row.hash === key.hash && row.tunnelId === tunnelId && sameLimit(row, sessionIds)) return false;
+    await this.sync({ id: key.id, hash: key.hash, kind: key.kind, scopes: key.scopes, expiresAt: key.expiresAt, member, ...(sessionIds ? { sessionIds } : {}) }, "ensure");
     return true;
   }
 
@@ -220,7 +244,7 @@ export class ComputerKeys {
     if (!tunnelId || !this.deps.kv) return 0;
     const stale = [
       ...this.deps.sql.exec<Record<string, SqlStorageValue>>(
-        "SELECT key_id AS keyId, hash, member, scopes, kind, expires_at AS expiresAt, tunnel_id AS tunnelId FROM wire_keys WHERE tunnel_id IS NULL OR tunnel_id != ?",
+        "SELECT key_id AS keyId, hash, member, scopes, kind, expires_at AS expiresAt, tunnel_id AS tunnelId, session_ids AS sessionIds FROM wire_keys WHERE tunnel_id IS NULL OR tunnel_id != ?",
         tunnelId,
       ),
     ] as unknown as KeyRow[];

@@ -70,8 +70,8 @@ export interface SessionAccess {
   /** Others who may attach (read and write); null: every member of the organization. */
   members: string[] | null;
   /**
-   * The organization's admins (`usr_…`), who may also open terminals in this session (attaching still follows
-   * `members`). Absent: only the host's own list (the welcome's `people[].admin`) counts.
+   * The organization's admins (`usr_…`). Unused for access: owner first, an admin attaches by `members` like anyone
+   * and opens no terminal by role (`mayOpenTerminal`). Blue no longer sends it.
    */
   admins?: string[];
 }

@@ -303,6 +303,8 @@ export class Connection {
     if ('error' in access) return access;
     const a = this.attached.get(sessionId);
     if (WRITES.has(method) && (this.claims.scope.readOnly || a?.readOnly)) return { error: errors.readOnly() };
+    // Owner first: someone the session is shared with drives it, but only its owner renames, archives or changes its settings.
+    if (method === 'sessions.update' && access.access.owner !== this.member) return { error: errors.ownerOnly() };
 
     switch (method) {
       case 'sessions.attach':

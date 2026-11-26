@@ -245,9 +245,9 @@ Sets, lists and deletes a session's own secrets. See [Secrets](/cli/secrets).
 
 | Subcommand | Does |
 | --- | --- |
-| `set` | Sets or replaces a secret. The value comes from standard input, or a prompt that does not echo when standard input is a terminal; never from an argument. Replacing needs to be the person who set it, or an organization admin. `--file`: the session gets a file, and `$NAME` is its path. |
+| `set` | Sets or replaces a secret. The value comes from standard input, or a prompt that does not echo when standard input is a terminal; never from an argument. Only the session's owner can set or replace one. `--file`: the session gets a file, and `$NAME` is its path. |
 | `ls`, `list` | Names, who set each and when. Never values. `--json`: `{ "secrets": [Secret…] }`. |
-| `rm`, `delete` | Deletes a secret. Only the person who set it, or an organization admin. |
+| `rm`, `delete` | Deletes a secret. Only the session's owner. |
 
 ## opc rename
 

@@ -95,7 +95,7 @@ Each session is the [Session](/api/reference/objects#session) object, identical 
 
 **Freshness.** A session in a list can be a few seconds behind its log. Read it by id for its state as of its `lastSeq`.
 
-**Visibility.** You see every session in your organization except those started in Slack, which only their owner sees here.
+**Visibility.** You see the sessions you own and those shared with you: shared with the whole organization, or with you by name (see the session's `access`). A session started in Slack is seen here only by its owner. Being an organization admin shows you no more. A session's own short-lived key sees only that session.
 
 ## Get a session
 
@@ -146,4 +146,4 @@ Fields you leave out are not changed. The response is `{ "session": …, "seq" }
 
 Changing `model` resets `effort` to the new model's default when the current effort is not one of its `efforts`. The response shows the result.
 
-Any member who can see the session can update it. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.
+Only the session's owner can update it. Someone it is shared with gets `403 forbidden` with `reason: "owner_only"`; they can still read it, send messages, answer asks and stop or interrupt it. Errors are otherwise those of [create](#create-a-session), and `400 invalid_request` for an empty body.

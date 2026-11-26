@@ -856,36 +856,29 @@ describe("hello and tickets", () => {
     expect(f.frames("access").map((a) => a.access.sessionId)).toEqual([SID]);
   });
 
-  it("admins: a caller's admin role reaches every access list, and a demotion takes it back", async () => {
+  it("admins: a caller's admin role is remembered, but no access list carries it (owner first)", async () => {
     const f = fixture();
     await created(f);
     f.slackRow("T1:C1:1.2");
     f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
     const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
     f.sent.length = 0;
-    // A member's call says nothing new: no frames.
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // An admin's first call: every session's access list again, with admins.
     await f.api.handle(caller(MO, { admin: true }), { op: "me" });
+    expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
+    expect(f.api.isAdmin(MO)).toBe(true);
+    expect(f.frames("access")).toHaveLength(0);
+    await created(f, "cs_2222222222222222");
+    f.sent.length = 0;
+    f.api.onHello();
     expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
       [
-        { sessionId: SID, owner: OWNER, members: [], admins: [MO] },
-        { sessionId: slackId, owner: OWNER, members: [OWNER], admins: [MO] },
+        { sessionId: SID, owner: OWNER, members: [] },
+        { sessionId: slackId, owner: OWNER, members: [OWNER] },
+        { sessionId: "cs_2222222222222222", owner: OWNER, members: [] },
       ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
     );
-    f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // New sessions and the next hello carry them too, from storage.
-    await created(f, "cs_2222222222222222");
-    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [], admins: [MO] });
-    expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
-    // Demoted: the lists go out without them.
-    f.sent.length = 0;
     await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(3);
-    expect(f.frames("access").every((a) => a.access.admins === undefined)).toBe(true);
+    expect(f.api.isAdmin(MO)).toBe(false);
   });
 
   it("tickets: API keys only, project keys refused, 60 a minute", async () => {
