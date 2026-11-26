@@ -1,14 +1,26 @@
 // Work 080 step 3: granting a connection to the computer from a Slack thread.
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { CONNECTION_VIEW, ComputerConnections, connectionButtonId, decodeConnectionButtonId, type GrantScope } from "../src/computer/connections.js";
+import {
+  CONNECTION_VIEW,
+  ComputerConnections,
+  connectionButtonId,
+  decodeConnectionButtonId,
+  driversOnlyText,
+  type GrantScope,
+} from "../src/computer/connections.js";
 import type { SlackResult } from "../src/computer/slack.js";
+import { LOOKUP_FAILED_TEXT } from "../src/computer/threads.js";
 
 const SESSION = { key: "T1:C1:100.1", ownerId: "U_OWNER", channelId: "C1", threadTs: "100.1" };
 const OWNED: Record<string, Array<{ id: string; label: string; displayName?: string }>> = {
   dash_owner: [{ id: "conn_owner", label: "work", displayName: "Owner Co" }],
   dash_other: [],
+  dash_driver: [{ id: "conn_driver", label: "driver's" }],
+  dash_stranger: [{ id: "conn_stranger", label: "stranger's" }],
 };
+// Who can drive SESSION: its owner and the people it was shared with (U_STRANGER is only in the thread).
+let drivers: Set<string> | "lookup-fails";
 
 let calls: Array<{ method: string; body: Record<string, unknown> }>;
 let grants: Array<{ connectionId: string; ownerUserId: string; scope: GrantScope; subject: string; grantedBy: string }>;
@@ -19,13 +31,19 @@ beforeEach(() => {
   calls = [];
   grants = [];
   woken = [];
+  drivers = new Set(["U_OWNER", "U_OTHER", "U_UNLINKED", "U_DRIVER"]);
   c = new ComputerConnections({
     slack: async (method, body): Promise<SlackResult> => {
       calls.push({ method, body });
       return { ok: true, ts: "200.1" };
     },
     session: (key) => (key === SESSION.key ? SESSION : undefined),
-    linkOfSlack: (slackUserId) => ({ U_OWNER: "dash_owner", U_OTHER: "dash_other" })[slackUserId],
+    instructs: async (key, userId) => {
+      if (drivers === "lookup-fails") throw new Error("users.info failed");
+      return key === SESSION.key && drivers.has(userId);
+    },
+    linkOfSlack: (slackUserId) =>
+      ({ U_OWNER: "dash_owner", U_OTHER: "dash_other", U_DRIVER: "dash_driver", U_STRANGER: "dash_stranger" })[slackUserId],
     grantable: async (user, service) => (service === "linear" ? (OWNED[user] ?? []) : []),
     grant: async (input) => void grants.push(input),
     wake: async (_session, userId, text) => void woken.push({ userId, text }),
@@ -93,6 +111,45 @@ describe("granting a connection from Slack (work 080)", () => {
     expect((await c.submit(submission("conn_owner", "session"), "U_UNLINKED")).errors).toHaveProperty("conn");
     expect((await c.submit(submission("conn_owner", "session", { ...meta, k: "T1:C1:9.9" }), "U_OWNER")).errors).toHaveProperty("conn");
     expect((await c.submit(submission("conn_owner", "everyone"), "U_OWNER")).errors).toHaveProperty("scope");
+    expect(grants).toEqual([]);
+  });
+
+  it("refuses, privately, a clicker who cannot drive the session, before showing any connection", async () => {
+    await c.open(button, "trig", { userId: "U_STRANGER", channelId: "C1", threadTs: "100.1", messageTs: "300.1" });
+    expect(last("views.open")).toBeUndefined();
+    expect(last("chat.postEphemeral")).toEqual({ channel: "C1", user: "U_STRANGER", thread_ts: "100.1", text: driversOnlyText("Linear") });
+  });
+
+  it("refuses the submission of a clicker who cannot drive the session, even with their own connection", async () => {
+    for (const scope of ["session", "user"]) {
+      const r = await c.submit(submission("conn_stranger", scope), "U_STRANGER");
+      expect(r.errors).toEqual({ conn: driversOnlyText("Linear") });
+      expect(r.after).toBeUndefined();
+    }
+    expect(grants).toEqual([]);
+    expect(woken).toEqual([]);
+  });
+
+  it("refuses a clicker who could drive when the button was posted but no longer can", async () => {
+    await c.open(button, "trig", { userId: "U_DRIVER", channelId: "C1", messageTs: "300.1" });
+    expect(last("views.open").view.callback_id).toBe(CONNECTION_VIEW);
+    drivers = new Set(["U_OWNER"]);
+    expect((await c.submit(submission("conn_driver", "session"), "U_DRIVER")).errors).toEqual({ conn: driversOnlyText("Linear") });
+    expect(grants).toEqual([]);
+  });
+
+  it("lets a driver who is not the owner grant their own connection to the thread", async () => {
+    const r = await c.submit(submission("conn_driver", "session"), "U_DRIVER");
+    expect(r.errors).toBeUndefined();
+    expect(grants).toEqual([{ connectionId: "conn_driver", ownerUserId: "dash_driver", scope: "session", subject: SESSION.key, grantedBy: "U_DRIVER" }]);
+  });
+
+  it("refuses when who can drive cannot be looked up", async () => {
+    drivers = "lookup-fails";
+    await c.open(button, "trig", { userId: "U_OWNER", channelId: "C1" });
+    expect(last("views.open")).toBeUndefined();
+    expect(last("chat.postEphemeral").text).toBe(LOOKUP_FAILED_TEXT);
+    expect((await c.submit(submission("conn_owner", "session"), "U_OWNER")).errors).toEqual({ conn: LOOKUP_FAILED_TEXT });
     expect(grants).toEqual([]);
   });
 });
