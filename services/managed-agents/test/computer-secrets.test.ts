@@ -55,6 +55,7 @@ beforeEach(() => {
     push: async (which) => void pushes.push(which),
     linkOfSlack: (userId) => links[userId],
     isAdmin: async (member) => admins.has(member),
+    name: async (slackUserId) => `Name of ${slackUserId}`,
     wake: async (session, userId, text) => void woken.push({ key: session.key, userId, text }),
   });
 });
@@ -360,7 +361,8 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect(replace).toEqual({ status: 403, error: { code: "forbidden", reason: "not_secret_owner", message: "Only the person who set TOKEN (Owner) or an organization admin can replace or delete it." } });
     expect((await s.api(OTHER, op({ op: "secrets.session.delete" as const, name: "TOKEN" }), SESSION.key)).error?.reason).toBe("not_secret_owner");
     // A secret set in Slack is its linked member's.
-    expect((await s.api(MEMBER, op({ op: "secrets.session.delete" as const, name: "FROM_SLACK" }), SESSION.key)).status).toBe(403);
+    // Its refusal names the Slack creator, asked of Slack when no name was recorded.
+    expect((await s.api(MEMBER, op({ op: "secrets.session.delete" as const, name: "FROM_SLACK" }), SESSION.key)).error).toMatchObject({ reason: "not_secret_owner", message: "Only the person who set FROM_SLACK (Name of U_OWNER) or an organization admin can replace or delete it." });
     links.U_OWNER = MEMBER.principal.subject;
     expect((await s.api(MEMBER, op({ op: "secrets.session.delete" as const, name: "FROM_SLACK" }), SESSION.key)).status).toBe(204);
     // The creator replaces, and stays the creator; an admin deletes anyone's.

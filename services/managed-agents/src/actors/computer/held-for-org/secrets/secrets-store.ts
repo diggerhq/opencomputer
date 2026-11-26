@@ -115,6 +115,8 @@ export interface SecretsStoreDeps {
   linkOfSlack(slackUserId: string): string | undefined;
   /** Whether an organization member (`usr_…`) is an admin, as Org holds it. Throws when Org could not be asked. */
   isAdmin(member: string): Promise<boolean>;
+  /** A Slack user's display name, or their id when Slack does not say: who set a secret, in a refusal. */
+  name?(slackUserId: string): Promise<string>;
   /** Tell a session that asked for a secret that it is set; starts its next turn. */
   wake(session: { key: string; ownerId: string; channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void>;
 }
@@ -318,7 +320,7 @@ export class SecretsStore {
     const [scope, owner] = present[0]!;
     if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return `\`${name}\` is an organization secret; only full members of this Slack workspace can remove it.`;
     if (scope === "session") {
-      const refused = this.sessionSecretRefusal(owner, name, await this.slackWriter(ctx.userId));
+      const refused = await this.sessionSecretRefusal(owner, name, await this.slackWriter(ctx.userId));
       if (refused) return refused;
     }
     this.remove(scope, owner, name, { id: ctx.userId, surface: "slack" });
@@ -462,7 +464,7 @@ export class SecretsStore {
     if (s.scope === "session") {
       let refused: string | null;
       try {
-        refused = this.sessionSecretRefusal(owner, s.name, await this.slackWriter(userId));
+        refused = await this.sessionSecretRefusal(owner, s.name, await this.slackWriter(userId));
       } catch {
         return { errors: { scope: LOOKUP_FAILED_TEXT } };
       }
@@ -540,7 +542,7 @@ export class SecretsStore {
       return { status: 204 };
     }
     if (op.op === "secrets.session.put" || op.op === "secrets.session.delete") {
-      const refused = this.sessionSecretRefusal(sessionKey!, op.name, { member: caller.principal.subject, admin: caller.principal.admin });
+      const refused = await this.sessionSecretRefusal(sessionKey!, op.name, { member: caller.principal.subject, admin: caller.principal.admin });
       if (refused) return apiError(403, "forbidden", refused, { reason: "not_secret_owner" });
     }
     if (op.op === "secrets.session.delete") {
@@ -626,7 +628,7 @@ export class SecretsStore {
    * recorded as a Slack user is the member they linked; in Slack, that Slack user is its creator too, linked or not.
    * Returns the refusal, or null. Personal and organization secrets do not come here.
    */
-  private sessionSecretRefusal(sessionKey: string, name: string, writer: { member?: string; slackUserId?: string; admin: boolean }): string | null {
+  private async sessionSecretRefusal(sessionKey: string, name: string, writer: { member?: string; slackUserId?: string; admin: boolean }): Promise<string | null> {
     const row = this.deps.sql.exec<{ createdBy: string | null; createdByName: string | null }>(
       "SELECT created_by AS createdBy, created_by_name AS createdByName FROM secrets WHERE scope = 'session' AND owner = ? AND name = ?",
       sessionKey,
@@ -637,7 +639,8 @@ export class SecretsStore {
     if (writer.slackUserId && by === writer.slackUserId) return null;
     const creator = by && !by.startsWith("usr_") ? this.deps.linkOfSlack(by) : by;
     if (writer.member && creator === writer.member) return null;
-    return `Only the person who set ${name}${row.createdByName ? ` (${row.createdByName})` : ""} or an organization admin can replace or delete it.`;
+    const who = row.createdByName ?? (by && !by.startsWith("usr_") && this.deps.name ? await this.deps.name(by).catch(() => null) : null);
+    return `Only the person who set ${name}${who ? ` (${who})` : ""} or an organization admin can replace or delete it.`;
   }
 
   /** A Slack user as a writer of session secrets: the member they linked, an admin only through it. Throws when Org could not be asked. */

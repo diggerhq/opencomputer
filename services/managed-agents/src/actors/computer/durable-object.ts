@@ -495,6 +495,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       // Lazy: `this.access` is built below.
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
       isAdmin: (member) => this.actors.org().isAdmin(member),
+      name: (slackUserId) => this.actors.slack().userName(slackUserId),
       wake: (session, userId, text, ts) => this.wakeSession(session, userId, text, ts),
     });
     this.access = createModelAccess({
@@ -1769,7 +1770,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       // The edge checked the session's access with Org; this is its runner's row.
       const row = this.api.row(op.sessionId);
       if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
-      return this.secrets.api(caller, op, row.key);
+      return this.secrets.api(caller, op as SecretsApiOp, row.key);
     }
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
     return this.api.handle(caller, op as ApiOp);

@@ -36,7 +36,7 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 | `400` | `invalid_cursor` | | The cursor is unreadable, or was made with other filters |
 | `401` | `unauthenticated` | | No key, an unknown key, an expired key or a revoked one |
 | `402` | `insufficient_credits` | | Your organization is out of credits |
-| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a session attached read-only, or a connection opened with a read-only ticket; `terminal_owner_only` when someone other than the session's owner or an admin opens a [terminal](/api/websocket/terminals); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route. |
+| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a session attached read-only, or a connection opened with a read-only ticket; `terminal_owner_only` when someone other than the session's owner or an admin opens a [terminal](/api/websocket/terminals); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route; `not_secret_owner` when someone other than the person who set a [session secret](/api/http/secrets#a-sessions-own-secrets) or an organization admin replaces or deletes it. |
 | `403` | `admin_required` | | Only admins can do this |
 | `404` | `not_found` | | No such route |
 | `404` | `session_not_found` | | No such session, or you cannot see it |

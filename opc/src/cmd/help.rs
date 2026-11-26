@@ -40,6 +40,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("auth", include_str!("../../docs/cli/auth.mdx")),
     ("ci", include_str!("../../docs/cli/ci.mdx")),
     ("files", include_str!("../../docs/cli/files.mdx")),
+    ("secrets", include_str!("../../docs/cli/secrets.mdx")),
     ("sessions", include_str!("../../docs/cli/sessions.mdx")),
     ("sharing", include_str!("../../docs/cli/sharing.mdx")),
     ("shell", include_str!("../../docs/cli/shell.mdx")),

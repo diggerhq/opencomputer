@@ -409,7 +409,10 @@ describe("Live's credential check", () => {
     const cookie = `ck:${ORG}:${USER}:${future}:0011223344556677`;
     const stale = `ck:${ORG}:${USER}:1000:0011223344556677`;
     const stranger = `ck:${ORG}:user_someone:${future}:0011223344556677`;
-    expect(await check(env, { check: [kept.id, expired.id, "key-deleted", cookie, stale, stranger] })).toEqual({ revoked: [expired.id, "key-deleted", stale, stranger] });
+    // A person's key verifies only while they are a member (main #1215); the computer's keys are the org's.
+    const orphan = await addKey(db, { createdBy: "user_someone" });
+    const computer = await addKey(db, { createdBy: "computer", sessionKey: SESSION });
+    expect(await check(env, { check: [kept.id, expired.id, "key-deleted", cookie, stale, stranger, orphan.id, computer.id] })).toEqual({ revoked: [expired.id, "key-deleted", stale, stranger, orphan.id] });
   });
 
   it("tells managed agents when a key is deleted or a cookie signs out", async () => {

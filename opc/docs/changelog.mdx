@@ -6,11 +6,12 @@ description: "Changes to opc and to the session API."
 <Update label="Unreleased" description="opc 0.1.0 · protocol opc.v1">
   First release.
 
-  - `opc`, `opc -p`, `new`, `a`, `ls`, `log`, `send`, `wait`, `watch`, `interrupt`, `ask`, `subagents`, `rename`, `archive`, `unarchive`, `open`, `diff`, `push`, `pull`, `shell`, `login`, `logout`, `whoami`, `doctor`, `completion`, `config`.
+  - `opc`, `opc -p`, `new`, `a`, `ls`, `log`, `send`, `wait`, `watch`, `interrupt`, `ask`, `subagents`, `rename`, `archive`, `unarchive`, `open`, `diff`, `push`, `pull`, `shell`, `login`, `logout`, `whoami`, `doctor`, `completion`, `config`, `secrets`.
   - The session API over HTTP and the `opc.v1` WebSocket protocol.
   - A session's speed: `fast` (the default) or `standard`. `--speed` on `opc`, `opc -p` and `opc new`, `/speed` on the session screen, `speed` on create and `PATCH`.
   - opc moved into [diggerhq/opencomputer](https://github.com/diggerhq/opencomputer/tree/main/opc), next to the server. Releases are tagged `opc-v*` there, and the [install](/install) URL is `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh`.
   - Event cursors are opaque strings. `opc log --json` returns `cursor`, `opc watch --output-format stream-json` prints `cursor` lines, and `--after` takes a cursor, not a `seq`. opc watches sessions over the live socket (`GET /live`) and the events read; `sessions.attach`, `session.detached`, `cursor_ahead`, `logEpoch` and `epochStartSeq` are gone. When the server answers `reset`, opc drops the events after the `seq` it names and reads on from the cursor it gives.
+  - `opc secrets set|ls|rm`: a session's own secrets, with the value read from standard input or a prompt that does not echo. The API gains `GET /sessions/{id}/secrets` and `DELETE /sessions/{id}/secrets/{name}`; `PUT` on it no longer answers `409`. Only the person who set a session secret, or an organization admin, can replace or delete it (`403 forbidden`, `"reason": "not_secret_owner"`), here and in Slack.
   - [Telemetry](/reference/telemetry): timings and error classes, never content, sent on the session's connection. Off with `OPC_TELEMETRY=0` or `opc config telemetry off`.
   - `opc shell` and `/shell` wake a suspended or idle session first, printing `opc: waking session…`, then open the shell. A shell runs in the session's own container, as user `agent`.
 </Update>
