@@ -138,7 +138,7 @@ export class Served {
       if (d.behavior === 'deny') return fail(d.message);
       if (d.remember) this.remembered.add(name);
     }
-    const r = await invoke(t, args);
+    const r = await invoke(t, args, typeof p.callId === 'string' ? { id: p.callId } : undefined);
     return { contentItems: r.content.map((c) => ({ type: 'inputText', text: c.text })), success: !r.isError };
   }
 }

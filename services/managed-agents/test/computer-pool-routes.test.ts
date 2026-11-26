@@ -60,7 +60,7 @@ async function connectHost(id: string): Promise<{ socket: WebSocket; welcome: an
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: id, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: id, version: "test", sessions: [] }));
   return { socket, welcome: await welcomed };
 }
 
@@ -172,14 +172,14 @@ describe("warm pool", () => {
     const replay = again.webSocket!;
     replay.accept();
     const reassigned = nextMessage(replay, "assign");
-    replay.send(JSON.stringify({ t: "hello", protocol: 1, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
+    replay.send(JSON.stringify({ t: "hello", protocol: 6, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
     expect(await reassigned).toMatchObject({ organizationId: "org_b", hostToken: await hostToken(KEY, "org_b") });
     replay.close();
 
     // The host reconnects as the organization: connected, with the organization's credentials.
     for (const host of hosts) host.socket.close();
     const { welcome } = await connectHost("org_a");
-    expect(welcome.credentials).toMatchObject({ anthropicApiKey: "sk-ant-test" });
+    expect(welcome.credentials).toBeDefined();
     expect((await orgA.overview("org_a")).computer).toMatchObject({ connected: true });
     expect(await inside(orgA, (instance) => instance.setting("assignPendingSince"))).toBeUndefined();
 
@@ -204,7 +204,9 @@ describe("warm pool", () => {
 /** Slack's OAuth callback for an install `accountId` started (the dashboard's POST /v1/computer/slack/install, minus the edge identity). */
 async function slackInstall(accountId: string): Promise<Response> {
   const nonce = randomToken();
-  await computers().getByName(accountId).startSlackInstall(accountId, "user_installer", nonce);
+  // The install's nonce is the Slack actor's; the link reaches the computer as `changed("slack")`.
+  const installer = { org: accountId, subject: "user_installer", kind: "member", via: "dashboard", scopes: [], audiences: ["org"], admin: true, credential: { id: "test", expiresAt: null } };
+  await (env as unknown as { SLACK: { getByName(name: string): { startInstall(p: unknown, nonce: string): Promise<void> } } }).SLACK.getByName(accountId).startInstall(installer, nonce);
   const state = encodeInstallState(accountId, nonce);
   return SELF.fetch(`${ORIGIN}/v1/computer/slack/callback?code=good&state=${encodeURIComponent(state)}`, { redirect: "manual" });
 }

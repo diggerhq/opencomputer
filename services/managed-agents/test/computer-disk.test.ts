@@ -49,7 +49,7 @@ async function connectHost(org: string): Promise<WebSocket> {
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = new Promise((resolve) => socket.addEventListener("message", (e) => JSON.parse(String(e.data)).t === "welcome" && resolve(null)));
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions: [] }));
   await welcomed;
   return socket;
 }

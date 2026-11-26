@@ -170,11 +170,12 @@ export class Live {
       }
       case "sub": {
         if (f.stream === "feed") {
-          s.feed = { kinds: f.kinds ? new Set(f.kinds) : null };
-          if (f.after != null) {
-            const v = parseFeedCursor(f.after);
-            if (v == null || v < org.floor || v > org.version) this.push(s, { t: "reset", stream: "feed", cursor: null });
+          // As Live (38.4): an `after` it cannot read is answered `reset`, and nothing is subscribed.
+          if (f.after !== undefined) {
+            const v = typeof f.after === "string" ? parseFeedCursor(f.after) : null;
+            if (v == null || v < org.floor || v > org.version) return this.push(s, { t: "reset", stream: "feed", cursor: null });
           }
+          s.feed = { kinds: f.kinds ? new Set(f.kinds) : null };
           return this.push(s, { t: "subd", stream: "feed", head: feedCursor(org.version) });
         }
         const [kind, sid] = [f.stream.slice(0, 6), f.stream.slice(7)];
@@ -186,16 +187,17 @@ export class Live {
           s.deltas.add(sid);
           return this.push(s, { t: "subd", stream: f.stream, head: null });
         }
-        s.events.add(sid);
-        if (f.after != null) {
+        if (f.after !== undefined) {
+          if (typeof f.after !== "string") return this.push(s, { t: "reset", stream: f.stream, cursor: null });
           try {
             log.read(sid, { after: f.after, tailTurns: null, limit: 0 });
           } catch (e) {
             if (!(e instanceof Refusal)) throw e;
             const d = e.detail as { cursor: string | null; seq?: number };
-            this.push(s, { t: "reset", stream: f.stream, cursor: d.cursor, ...(d.seq == null ? {} : { seq: d.seq }) });
+            return this.push(s, { t: "reset", stream: f.stream, cursor: d.cursor, ...(d.seq == null ? {} : { seq: d.seq }) });
           }
         }
+        s.events.add(sid);
         return this.push(s, { t: "subd", stream: f.stream, head: log.head(sid) });
       }
     }

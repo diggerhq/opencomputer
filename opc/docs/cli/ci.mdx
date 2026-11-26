@@ -1,0 +1,68 @@
+---
+title: "CI and agents"
+description: "Run opc where nobody can log in: CI jobs, cron, other agents."
+---
+
+Where there is no person to confirm a login, give `opc` an API key. For the commands a program uses, and recipes, see [For agents and scripts](/cli/agents).
+
+<Steps>
+  <Step title="Create a key">
+    On the dashboard, open **Settings → API keys** and create a key with a name that says where it runs, such as `ci-nightly`. Copy it: it is shown once.
+
+    The key acts as you. Sessions it creates are yours, and it can do what you can, within its scopes. Create keys as a dedicated member of the organization when the work is not yours.
+
+    Narrow a key with **scopes** and an **expiry**. A key has every scope unless you choose some:
+
+    | Scope | Allows |
+    | --- | --- |
+    | `sessions:read` | Listing and reading sessions, turns, asks and events; `opc ls`, `log`, `wait`, `watch` |
+    | `sessions:write` | Creating sessions, sending, interrupting, renaming, archiving, pushing files |
+    | `asks:answer` | Answering and dismissing asks; `opc ask` |
+    | `terminals` | Opening terminals; `opc shell`, `opc diff` |
+
+    A CI job that runs `opc -p` needs `sessions:read` and `sessions:write`. A command that needs a scope the key lacks fails with `forbidden`, `reason: "missing_scope"` and the `scope`, exit code `3`. A key with `expiresAt` stops working at that time, as if revoked.
+  </Step>
+  <Step title="Give it to opc">
+    Set `OPENCOMPUTER_API_KEY` in the job's secrets:
+
+    ```yaml
+    # .github/workflows/nightly.yml
+    - name: Ask Computer about the failures
+      env:
+        OPENCOMPUTER_API_KEY: ${{ secrets.OPENCOMPUTER_API_KEY }}
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
+        ~/.local/bin/opc -p --mode auto --on-ask dismiss --timeout 20m \
+          --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-fix-tests" \
+          --metadata repo="$GITHUB_REPOSITORY" --metadata run="$GITHUB_RUN_ID" \
+          "the nightly run $GITHUB_RUN_ID failed; find the cause and open a PR with a fix"
+    ```
+
+    `OPENCOMPUTER_API_KEY` takes precedence over the configuration file. The idempotency key makes the command safe to run again within the same attempt: a retry re-attaches to the same turn instead of starting a second one. Re-running the workflow is a new attempt, and starts fresh. The metadata finds the session again: `opc ls --metadata run=<id>`. To pin the version of `opc`, set `OPC_VERSION`, to a release tag, for the install script.
+  </Step>
+</Steps>
+
+## Behaviour without a terminal
+
+When standard input is not a terminal, `opc` never prompts, never opens a browser and never waits for a key. It never picks a session for you either: commands that act on a session need `-s <id>`. When it cannot go on, it says in one line what would fix it, and exits with a [code](/reference/exit-codes) a script can test:
+
+```
+opc: not logged in. Set OPENCOMPUTER_API_KEY, or run opc login on a machine with a browser.
+```
+
+With any JSON output format, errors are printed to standard error as `{"error": {"code": "not_logged_in", "message": "…", "retryable": false}}`.
+
+## Asks in unattended runs
+
+Nobody is there to answer an [ask](/terminal/asks), so by default `opc -p` exits with code `5` when one opens, and prints the `opc ask` commands that would answer it. Choose a permission mode that does not ask for approval: `--mode auto` runs without asking and blocks risky actions, `--mode dontAsk` skips what would need approval. `--mode acceptEdits` still asks before running commands, so a job that runs tests would stop. Questions and secret requests can open in every mode: `--on-ask dismiss` carries on without them, and `--on-ask wait` waits for someone to answer elsewhere, up to `--timeout`. See [When the agent needs a person](/cli/scripting#when-the-agent-needs-a-person).
+
+## Connections
+
+`opc` opens its connection to your computer with the key itself, sent in the upgrade request's headers; it needs no ticket. A connection stays open as long as its credential is valid: when the key expires or is revoked, the connection is closed with code `4001`, and `opc` exits with code `3`.
+
+## Keeping keys safe
+
+- Pass the key in the environment only. `opc` has no flag for it, so it never appears in a process list or shell history.
+- `opc` never prints a key, including in `--timing` and debug logs.
+- Give each job its own key, with only the scopes it needs and an expiry.
+- Revoke a key on the dashboard the moment it may have leaked. New requests fail at once, new connections within a minute, and a connection already open is closed with code `4001`.

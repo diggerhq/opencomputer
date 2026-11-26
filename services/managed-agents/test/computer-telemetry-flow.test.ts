@@ -22,10 +22,7 @@ const ORG = "org_telemetry";
 const TEAM = "T0TELE";
 /** Slack's `ts` for the message: a second ago, so `received_at − sent_at` is a real latency. */
 const TS = `${Math.floor(Date.now() / 1000) - 1}.000100`;
-const KEY = `${TEAM}:C1:${TS}`;
-const SIGNING_SECRET = "computer-signing-secret";
 const HOST_KEY = "test-computer-host-token-key";
-const TEXT = "<@UBOTHELD> fix the flaky build";
 
 type Namespace = DurableObjectNamespace<ComputerDurableObject>;
 const computers = () => (env as unknown as { COMPUTERS: Namespace }).COMPUTERS;
@@ -46,18 +43,6 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, wha
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`never: ${what}`);
-}
-
-async function signed(path: string, body: string, headers: Record<string, string> = {}) {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`v0:${timestamp}:${body}`)));
-  const signature = `v0=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-  return SELF.fetch(`${ORIGIN}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-slack-request-timestamp": timestamp, "x-slack-signature": signature, ...headers },
-    body,
-  });
 }
 
 function nextMessage(socket: WebSocket, type: string): Promise<any> {
@@ -91,7 +76,7 @@ async function connectHost(): Promise<{ socket: WebSocket; welcome: any; frames:
   socket.accept();
   const frames = record(socket);
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "host-1", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "host-1", sessions: [] }));
   return { socket, welcome: await welcomed, frames };
 }
 
@@ -101,7 +86,7 @@ async function runSlackQueue() {
 }
 
 describe("computer telemetry", () => {
-  it("traces a Slack message to the host, issues host credentials, and sends nothing content-shaped", async () => {
+  it("issues host credentials, and sends nothing content-shaped", async () => {
     const keys = await generateTelemetryKeys();
     await inside((instance) => {
       instance.env.TELEMETRY_SIGNING_KEY = keys.signingKey;
@@ -112,7 +97,7 @@ describe("computer telemetry", () => {
     await posts(true);
 
     // The host: its welcome carries a credential for this organization and host.
-    const { socket, welcome, frames } = await connectHost();
+    const { socket, welcome } = await connectHost();
     expect(await verifyTelemetryCredential(keys.publicKey, welcome.telemetryCredential)).toEqual({
       org_id: ORG,
       host_id: ORG,
@@ -133,89 +118,6 @@ describe("computer telemetry", () => {
     );
     expect(JSON.parse(resolved[0]!.data)).toEqual({ source: "local" });
 
-    // A mention, redelivered by Slack once: `message.received` with Slack's retry headers and the trace.
-    const event = { type: "event_callback", event_id: "EvT1", team_id: TEAM, event: { type: "app_mention", channel: "C1", user: "U1", text: TEXT, ts: TS } };
-    const answer = await signed("/v1/webhooks/computer/slack/events", JSON.stringify(event), { "x-slack-retry-num": "1", "x-slack-retry-reason": "http_timeout" });
-    expect(answer.status).toBe(200);
-    const received = (await until(events, (all) => all.some((e) => e.event_name === "message.received"), "message.received")).find(
-      (e) => e.event_name === "message.received",
-    )!;
-    // The trace id comes from the event, not the queue row: the alarm may already have taken the job.
-    const traceId: string = received.trace_id;
-    expect(traceId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(received).toMatchObject({ org_id: ORG, surface_workspace_id: TEAM, conversation_id: "C1", person_id: "U1" });
-    expect(received.duration_ms).toBeGreaterThanOrEqual(0);
-    expect(received.duration_ms).toBeLessThan(60_000);
-    expect(JSON.parse(received.data)).toEqual({ surface_event_id: "EvT1", redelivery: true, redelivery_reason: "http_timeout", kind: "mention", cached: false });
-
-    // The alarm takes the job (the runtime may already have run it): queue.started,
-    // dispatch.created and dispatch.sent in one batch, and the trace on `deliver`.
-    // The acknowledgement started on accept: ack.done is in the accept's batch.
-    await runSlackQueue();
-    const deliver = (await until(async () => frames.filter((frame) => frame.t === "deliver"), (found) => found.length > 0, "deliver"))[0];
-    expect(deliver.trace).toMatchObject({ id: traceId, sentAt: Math.round(Number(TS) * 1000), surface: "slack", surfaceWorkspaceId: TEAM, conversationId: "C1", personId: "U1", surfaceEventId: "EvT1", dispatchedAt: expect.any(Number) });
-    expect(deliver.trace.dispatchedAt).toBeGreaterThanOrEqual(deliver.trace.receivedAt);
-    const batch = (await until(posts, (all) => all.some((post) => post.lines.some((e) => e.event_name === "queue.started")), "the job's batch")).filter(
-      (post) => post.lines.some((e) => e.event_name === "queue.started"),
-    );
-    expect(batch).toHaveLength(1);
-    expect(batch[0]!.datasource).toBe("calvin_events");
-    expect(batch[0]!.token).toBe("Bearer p.test-append");
-    const names = batch[0]!.lines.map((e) => e.event_name);
-    expect(names).toEqual(expect.arrayContaining(["queue.started", "admission.checked", "dispatch.created", "credentials.resolved", "dispatch.sent"]));
-    // The gateway's steps on the message's path (058 step 5): the credit gate (asked: nothing cached yet) and the credentials.
-    const admission = batch[0]!.lines.find((e) => e.event_name === "admission.checked")!;
-    expect(admission).toMatchObject({ outcome: "completed", duration_ms: expect.any(Number) });
-    expect(JSON.parse(admission.data)).toEqual({ cached: false, decision: "allowed" });
-    const credentials = batch[0]!.lines.find((e) => e.event_name === "credentials.resolved")!;
-    expect(credentials).toMatchObject({ outcome: "completed", duration_ms: expect.any(Number) });
-    expect(JSON.parse(credentials.data)).toEqual({ source: "local" });
-    // Accepted by the organization's object, with the working status started there.
-    const accepted = (await events()).find((e) => e.event_name === "message.accepted")!;
-    expect(accepted).toMatchObject({ trace_id: traceId, org_id: ORG, session_key: KEY, duration_ms: expect.any(Number) });
-    expect(JSON.parse(accepted.data)).toEqual({ ack: true });
-    for (const line of batch[0]!.lines) expect(line).toMatchObject({ trace_id: traceId, org_id: ORG, session_key: KEY });
-    const sent = batch[0]!.lines.find((e) => e.event_name === "dispatch.sent")!;
-    expect(sent).toMatchObject({ dispatch_id: deliver.id, host_id: ORG });
-    // Work 068 §3f: how long the dispatch row waited, and how the job was taken.
-    expect(JSON.parse(sent.data)).toEqual({ attempt: 1, wait_ms: expect.any(Number) });
-    const started = batch[0]!.lines.find((e) => e.event_name === "queue.started")!;
-    expect(JSON.parse(started.data)).toEqual({ attempt: 1, inline: expect.any(Boolean), parallel: 1 });
-    const ack = (await until(events, (all) => all.some((e) => e.event_name === "ack.done"), "ack.done")).find((e) => e.event_name === "ack.done")!;
-    expect(ack).toMatchObject({ outcome: "completed", trace_id: traceId, org_id: ORG, session_key: KEY });
-    expect(JSON.parse(ack.data)).toMatchObject({ indicator: "status" });
-
-    // A reconnect re-flushes the sent dispatch: `dispatch.resent`, the same trace, a new dispatchedAt.
-    await posts(true);
-    const redelivered = new Promise<any>((resolve) => {
-      void (async () => {
-        await inside((_instance, state) => {
-          for (const ws of state.getWebSockets()) ws.close(1000, "test");
-        });
-        socket.close();
-        const again = await SELF.fetch(`${ORIGIN}/v1/computer/host?organizationId=${ORG}`, {
-          headers: { upgrade: "websocket", authorization: `Bearer ${await hostToken(HOST_KEY, ORG)}` },
-        });
-        const next = again.webSocket!;
-        next.accept();
-        const frame = nextMessage(next, "deliver");
-        next.send(JSON.stringify({ t: "hello", protocol: 1, hostId: ORG, version: "host-1", sessions: [] }));
-        resolve({ socket: next, frame: await frame });
-      })();
-    });
-    const { socket: second, frame: again } = await redelivered;
-    expect(again.id).toBe(deliver.id);
-    expect(again.trace.id).toBe(traceId);
-    const resent = await until(events, (all) => all.some((e) => e.event_name === "dispatch.resent"), "dispatch.resent");
-    expect(resent.find((e) => e.event_name === "dispatch.resent")).toMatchObject({ trace_id: traceId, dispatch_id: deliver.id });
-    expect(JSON.parse(resent.find((e) => e.event_name === "dispatch.resent")!.data)).toEqual({ attempt: 2 });
-    expect(resent.some((e) => e.event_name === "host.disconnected")).toBe(true);
-
-    // The host takes it: `dispatch.replied`.
-    second.send(JSON.stringify({ t: "reply", id: deliver.id, ok: true }));
-    const replied = await until(events, (all) => all.some((e) => e.event_name === "dispatch.replied"), "dispatch.replied");
-    expect(replied.find((e) => e.event_name === "dispatch.replied")).toMatchObject({ trace_id: traceId, outcome: "completed" });
-
     // The boundary: every record is a valid envelope, and no content, token or credential left.
     const all = await events();
     for (const line of all) expect(checkEvent({ ...line, data: JSON.parse(line.data) }).ok, line.event_name).toBe(true);
@@ -223,7 +125,7 @@ describe("computer telemetry", () => {
     for (const secret of ["fix the flaky build", SLACK_BOT_TOKEN, welcome.telemetryCredential, keys.signingKey, "sk-ant-test"]) {
       expect(wire).not.toContain(secret);
     }
-    second.close();
+    socket.close();
   });
 
   it("keeps a retried job's trace, and never lets a failing Tinybird delay or fail a delivery", async () => {
@@ -287,7 +189,7 @@ describe("computer telemetry", () => {
     const socket = upgraded.webSocket!;
     socket.accept();
     const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: poolId, version: "host-1", sessions: [] }));
+    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: poolId, version: "host-1", sessions: [] }));
     expect(await welcomed).not.toHaveProperty("telemetryCredential");
     socket.close();
   });

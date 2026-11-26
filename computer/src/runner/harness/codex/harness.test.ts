@@ -77,7 +77,7 @@ function start(name: string, spec: Partial<StartSpec> = {}, env: Record<string, 
     gate: gate ?? (async (): Promise<GateDecision> => ({ behavior: 'deny', message: 'no' })),
     tools: {
       cwd: () => dir,
-      hooks: { threads: { read: async () => Promise.reject(new Error('offline')), post: async () => Promise.reject(new Error('offline')), attach: async () => [] } },
+      hooks: { work: { api: { call: async () => Promise.reject(new Error('offline')) }, session: () => ({ id: 'cs_0000000000000001' }) } },
       sendFile: (async () => ({ ok: true })) as Wire,
       postCard: (async () => ({ ok: true })) as Wire,
     },
@@ -186,7 +186,7 @@ describe('CodexHarness', () => {
       t: 'tool',
       id: 'call_1',
       name: 'mcp__calvin__read_thread',
-      input: { url: 'https://x.slack.com/archives/C1/p1' },
+      input: { thread: 'https://x.slack.com/archives/C1/p1' },
     });
     const reply = s.received().find((m) => m.id === 0 && !m.method);
     expect(reply.result.success).toBe(false);

@@ -26,8 +26,9 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
-import type { ThreadHooks } from './threads.js';
+import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
+import type { Work } from './work.js';
+import { prefaced } from './role-notes.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
 import { cardSender } from './post-card.js';
@@ -79,10 +80,8 @@ export interface SessionHooks {
   busy?(busy: boolean): void;
   /** Model output for the current turn arrived (first stream event or assistant message). */
   output?(): void;
-  /** Start a new thread through the gateway (work 047); offers the spawn_thread tool when set. */
-  spawn?(req: SpawnRequest): Promise<SpawnResult>;
-  /** Read and post Slack threads through the gateway (work 049 L3); offers read_thread and post_thread when set. */
-  threads?: ThreadHooks;
+  /** The public API as this session's agent (work 118, section 41); offers the tools that reach the cloud when set. */
+  work?: Work;
   previews?: PreviewHooks; // public URLs for the session's servers (work 074); offers preview and unpreview
   /** The session's secrets (work 046): usable by commands, redacted from everything posted. */
   secrets?: SessionSecrets;
@@ -223,11 +222,12 @@ export class Session {
     if (stopping) await (this.hooks.turns?.interrupting('interrupted'), this.stopTurn());
     else if (this.busy) this.rotate();
     const h = this.ensureHarness();
+    const body = this.used ? text : prefaced(this.hooks.work, text);
     this.used = true;
     if (this.busy) this.pending = true;
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
     // Mid-turn messages land at the next tool boundary, like Claude Code's queue.
-    Effect.runSync(h.send({ text, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
+    Effect.runSync(h.send({ text: body, attachments: atts }, this.busy && !urgent ? 'steer' : 'queue'));
     this.hooks.turns?.pushed(this.busy && !urgent), this.busy && !urgent && this.heldSteer.arm();
     if (!this.busy) this.addressed = mentioned === undefined || mentioned === true;
     // An addressed turn's message opens now, before the model answers (work 068); a steer's output follows its turn's.

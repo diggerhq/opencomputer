@@ -111,7 +111,7 @@ export function createEvents(ctx: Ctx, onEvents: (sessionId: string, events: Api
   }
 
   const start = (log: Log) => {
-    ctx.send({ t: "sub", stream: `events:${log.id}`, after: log.cursor });
+    ctx.send({ t: "sub", stream: `events:${log.id}`, after: log.cursor ?? undefined });
     catchUp(log);
   };
 
@@ -149,8 +149,9 @@ export function createEvents(ctx: Ctx, onEvents: (sessionId: string, events: Api
       } else if (f.t === "subd" || f.t === "behind") {
         if (f.head !== log.cursor) catchUp(log);
       } else if (f.t === "reset") {
+        // Live refused the `sub` this answers (38.4), so subscribe again from what is left.
         reset(log, f.cursor, f.seq);
-        catchUp(log);
+        start(log);
       }
     },
   };

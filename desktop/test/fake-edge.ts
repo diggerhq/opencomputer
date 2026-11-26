@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { createFakeServer, type FakeServer } from '../../sdks/typescript/src/computer/fake/index'
 
 export type FakeEdge = {
   url: string
@@ -20,10 +21,12 @@ export type FakeEdge = {
   /** The access token of a generation, shaped as the edge's: a JWT whose claims name the member. */
   token(generation: number): string
   accessLifeSeconds: number
+  /** With `surface`: the SDK's fake server (sections 37 and 38) behind the API and the socket. */
+  server: FakeServer | null
   close(): Promise<void>
 }
 
-export async function startFakeEdge(): Promise<FakeEdge> {
+export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<FakeEdge> {
   // The subject is the member id of the token's `user_id`, as the edge maps it.
   const principal = { org: 'org_test', subject: 'usr_01jtesttesttesttesttesttes' }
   const claims = Buffer.from(JSON.stringify({ iss: 'opensandbox-app', org_id: 'org_test', user_id: 'user_01JTESTTESTTESTTESTTESTTES', dev: 'dev_1' })).toString('base64url')
@@ -41,6 +44,7 @@ export async function startFakeEdge(): Promise<FakeEdge> {
     sockets: [],
     frames: [],
     accessLifeSeconds: 900,
+    server: null,
     token: tokenOf,
     revokeAccess: () => void generation++,
     revokeDevice: () => {
@@ -98,6 +102,12 @@ export async function startFakeEdge(): Promise<FakeEdge> {
     if (url.pathname.startsWith('/api/managed-agents/computer/')) {
       edge.apiHeaders.push(req.headers)
       if (!valid(req.headers.authorization?.replace('Bearer ', ''))) return json(401, { error: { code: 'unauthenticated' } })
+      if (edge.server) {
+        const init: RequestInit = { method: req.method, headers: req.headers as Record<string, string> }
+        if (req.method !== 'GET' && req.method !== 'HEAD') init.body = JSON.stringify(await body(req))
+        const r = await edge.server.fetch(url.pathname.slice('/api/managed-agents/computer'.length) + url.search, init)
+        return res.writeHead(r.status, { 'content-type': r.headers.get('content-type') ?? 'application/json' }).end(Buffer.from(await r.arrayBuffer()))
+      }
       if (url.pathname.endsWith('/feed')) return json(200, { protocol: 1, rows: [], gone: [], to: 'f1.0', more: false, principal })
       if (url.pathname.endsWith('/echo')) return json(200, { got: await body(req) })
       return json(404, { error: { code: 'not_found' } })
@@ -117,6 +127,13 @@ export async function startFakeEdge(): Promise<FakeEdge> {
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (url.pathname !== '/api/managed-agents/computer/live' || !valid(token)) return ws.close(4001, 'unauthenticated')
       edge.sockets.push(ws)
+      if (edge.server) {
+        const channel = edge.server.connect()
+        channel.onFrame((f) => ws.send(JSON.stringify(f)))
+        ws.on('message', (data) => channel.send(JSON.parse(String(data))))
+        ws.on('close', () => channel.close())
+        return
+      }
       ws.on('message', (data) => {
         const f = JSON.parse(String(data)) as Record<string, unknown>
         edge.frames.push(f)
@@ -127,6 +144,7 @@ export async function startFakeEdge(): Promise<FakeEdge> {
     })
   })
 
+  if (o.surface) edge.server = createFakeServer({ principal, seed: 'demo' })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
   edge.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   return edge
