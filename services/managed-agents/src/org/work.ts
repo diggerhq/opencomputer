@@ -22,6 +22,7 @@ import {
   seesSession,
   seesTrack,
   sessionRow,
+  statusOf,
   summaryOf,
   transact,
   mint,
@@ -165,7 +166,7 @@ export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
       const s = readSession(sql, sid);
       const place = readPlace(sql, sid);
       if (!s || !place || place.done_at !== null) continue;
-      const status = summaryOf(s).status ?? "starting";
+      const status = statusOf(summaryOf(s));
       if (status === "running" || status === "starting") continue;
       const unmerged = sql.exec<{ c: number }>("SELECT COUNT(*) AS c FROM result WHERE session_id = ? AND kind = 'pr' AND COALESCE(state, '') != 'merged'", sid)[0]!.c;
       if (unmerged === 0) runMutation(tx, platformPrincipal(orgOf(sql)), "thread.done", { sid, outcome: "done", by: "rule:pr-merged" });
@@ -372,7 +373,7 @@ export function overview(sql: Sql, p: Principal): Overview {
         trackId: place.track_id,
         parentSession: place.parent_session,
         mark: markOf(s, place),
-        status: summaryOf(s).status ?? "starting",
+        status: statusOf(summaryOf(s)),
         blocked: s.blocked === 1,
         readyWhat: place.ready_what,
         attention: place.attention,
