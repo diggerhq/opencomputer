@@ -294,11 +294,6 @@ export async function routeComputerApi(
   try {
     response = await routeApi(request, env, identity, accountId, computer, suffix, out);
     return response;
-  } catch (error) {
-    // Org could not read a page of the sessions it adopts (spec 43.1): retryable, and Org retries by itself.
-    if (!(error instanceof Error) || !/\badopting\b/.test(error.message)) throw error;
-    response = out.error(503, "adopting", "The organization's sessions are being moved. Try again shortly.", { retryAfterMs: 5_000 });
-    return response;
   } finally {
     requestFact(env, identity, request.method, out, response?.status ?? 500, waitUntil);
   }
