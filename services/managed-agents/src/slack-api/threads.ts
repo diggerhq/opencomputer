@@ -13,8 +13,8 @@
 // or a reply to the host. Calvin's runner frames it (src/links.ts
 // `linkedBlock`) in a delimited block marked as other people's data.
 
-import type { SlackResult } from "./slack-api.js";
-import { decodeSlack } from "./slack-api.js";
+import type { SlackResult } from "./web-api.js";
+import { decodeSlack } from "./web-api.js";
 
 export interface LinkedMessage {
   /** Author's display name (or bot name). */

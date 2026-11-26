@@ -61,8 +61,8 @@ import {
   slackTokenDead,
   STARTING_NOTICE,
   WAKING_NOTICE,
-} from "./slack-api.js";
-import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "./threads.js";
+} from "../slack-api/web-api.js";
+import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "../slack-api/threads.js";
 import { entryIdFor, links, oweProcess, sessionIdFor, settings, STEPS, threads, turnIdFor } from "./store.js";
 
 export interface SlackEnv extends ActorEnv {

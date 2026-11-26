@@ -9,7 +9,7 @@ import { publicOrigin, slackRedirectUri } from "../computer/config.js";
 import { randomToken, sha256Hex } from "../crypto/seal.js";
 import type { Principal } from "../auth/principal.js";
 import { slackOf, type ActorEnv } from "../actors/addresses.js";
-import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl, slackTeamLinkName } from "./slack-api.js";
+import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl, slackTeamLinkName } from "../slack-api/web-api.js";
 
 export type SlackRouteEnv = ComputerEdgeEnv & ActorEnv;
 

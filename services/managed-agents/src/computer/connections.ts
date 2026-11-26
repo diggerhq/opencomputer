@@ -8,7 +8,7 @@
 // Grants for everyone are an admin's, from the dashboard or the CLI.
 
 import { base64url } from "../encoding/base64url.js";
-import type { SlackResult } from "../slack/slack-api.js";
+import type { SlackResult } from "../slack-api/web-api.js";
 
 export const CONNECTION_VIEW = "computer_connection";
 // GitHub is not here: the computer uses the organization's GitHub App.

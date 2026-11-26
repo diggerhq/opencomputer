@@ -101,7 +101,7 @@ import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, helloProfiles, profileHarnesses } from "./harnesses.js";
 import { type SealPurpose, seal, unseal } from "../crypto/seal.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
-import { LOOKUP_FAILED_TEXT } from "../slack/threads.js";
+import { LOOKUP_FAILED_TEXT } from "../slack-api/threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
@@ -172,7 +172,7 @@ import { ApiTelemetry, surfaceOfOrigin } from "./telemetry/api.js";
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { ComputerTelemetry, type HostAttachment } from "./telemetry/computer.js";
 import type { GatewayTelemetry } from "../telemetry/gateway.js";
-import { type SlackInteraction, type SlackMessageJob, type SlackResult, slackThreadUrl } from "../slack/slack-api.js";
+import { type SlackInteraction, type SlackMessageJob, type SlackResult, slackThreadUrl } from "../slack-api/web-api.js";
 
 /** What the edge's AccountDurableObject offers the computer. */
 interface AccountStub {
