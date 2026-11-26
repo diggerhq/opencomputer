@@ -574,6 +574,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       const existing = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", entry.id).toArray()[0];
       if (existing) {
         if (existing.hash !== hash) return { ok: false, code: "idempotency_conflict" };
+        // Still waiting: the drain is asked again, as its last run may have been before the machine had the session.
+        if (existing.state === "waiting") owed.add(this.db, { group: "drain", key: "drain", call: "drain" });
         return { ok: true, duplicate: true };
       }
       const insert = (state: "waiting" | "delivered") =>
@@ -613,7 +615,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       return { ok: true, duplicate: false };
     });
     if (!taken.ok) return taken;
-    if (!taken.duplicate) this.kick();
+    this.kick();
     if (opts.wait && this.outcome(entry.id).state === "waiting") await this.drained(ACCEPT_WAIT_MS);
     return { ok: true, id: entry.id, duplicate: taken.duplicate, outcome: this.outcome(entry.id) };
   }
