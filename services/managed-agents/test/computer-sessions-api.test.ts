@@ -427,7 +427,6 @@ describe("recovery: a lost writer", () => {
   it("an empty journal batch under an older epoch asks for epoch (rate-limited); at the row's epoch it is nothing (calvin 424bd40)", async () => {
     const f = fixture();
     await created(f);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     Object.assign(f.logOf(SID), { epoch: 2, ack: 0, epochStartSeq: 1 });
     f.sent.length = 0;
     await f.api.journal(SID, 2, []);
@@ -450,7 +449,6 @@ describe("recovery: a lost writer", () => {
     await created(f, "cs_2222222222222222");
     await created(f, "cs_3333333333333333");
     for (const sid of [SID, "cs_2222222222222222", "cs_3333333333333333"]) {
-      f.sql.exec("UPDATE sessions SET log_epoch = 2, last_seq = 6 WHERE session_id = ?", sid);
       Object.assign(f.logOf(sid), { epoch: 2, ack: 6, epochStartSeq: 4 });
     }
     f.sent.length = 0;
@@ -473,7 +471,6 @@ describe("recovery: a lost writer", () => {
     f.logOf(SID).delay = 5;
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 1 } }));
     f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     f.sent.length = 0;
     f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "hi" })];
     await f.api.drain(SID);

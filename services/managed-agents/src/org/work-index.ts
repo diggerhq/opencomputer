@@ -1,10 +1,10 @@
 // The retired Work board's Durable Object (binding `WORK_INDEX`), kept only because the class
 // exists in production: a deploy may not drop it without a `deleted_classes` migration, and no
 // deploy carries a DO migration. It indexes nothing and arms no alarm. Its one call is the
-// knowledge repository setting it stored, which Org reads across once while it adopts (spec 43.1).
+// knowledge repository setting it stored, which Org's one-shot `board` alarm copies (spec 43.1).
 //
-// Removed in the removal deploy (spec 43.1, "Removal"), once every organization has `adopted = 1`:
-// this file, the `WORK_INDEX` bindings and a `deleted_classes: ["WorkIndexDurableObject"]` migration.
+// Removed in a later by-hand deploy, once Org has run that alarm everywhere: this file, the
+// `WORK_INDEX` bindings and a `deleted_classes: ["WorkIndexDurableObject"]` migration.
 
 import { DurableObject } from "cloudflare:workers";
 

@@ -53,8 +53,6 @@ export const STEPS: ((sql: Sql) => void)[] = [
   },
   // The message whose status or 👀 a thread shows, so `notify` can take it off.
   (sql) => sql.exec("CREATE TABLE IF NOT EXISTS acks (thread_key TEXT PRIMARY KEY, user_id TEXT NOT NULL, ts TEXT NOT NULL)"),
-  // The import's cursor: the next page of Computer's export.
-  (sql) => sql.exec("ALTER TABLE meta ADD COLUMN import_after TEXT"),
   // The queue's waiting rows become owed `process` calls, in their order; the queue goes.
   (sql) => {
     for (const row of sql.exec<{ sequence: number; payload: string; thread: string | null }>("SELECT sequence, payload, thread_key AS thread FROM slack_queue WHERE state != 'failed' ORDER BY sequence")) {

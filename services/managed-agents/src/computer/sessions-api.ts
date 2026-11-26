@@ -15,16 +15,15 @@
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
-import type { Access, DeliveredOutcome, DeltaPush, ExportedSession, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
+import type { Access, DeliveredOutcome, DeltaPush, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
-import { decodeDrivers } from "./access.js";
 import type { RoutedApiSession } from "./api-model-route.js";
 import type { Principal } from "../actor/principal.js";
 import { emitter } from "../actor/emit.js";
 import type { Sql } from "../actor/sql.js";
 import { owed } from "../actor/store.js";
 import type { AssertedApiKey } from "../edge/auth.js";
-import type { Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
+import type { Ask, LogSummary } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import type { ComputerKeys } from "./keys.js";
@@ -44,8 +43,7 @@ import {
   sessionKey,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isId, isMemberId, mintId } from "./session-ids.js";
-import { slackThreadUrl } from "../slack/slack-api.js";
+import { isId, isMemberId } from "./session-ids.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
 /** A `start` frame's answer from the host: 15 s, then it is let go. */
@@ -136,21 +134,10 @@ export interface ApiRow {
   status: string | null;
   originType: string;
   originClient: string | null;
-  lastSeq: number;
-  logEpoch: number;
-  epochStartSeq: number;
-  summary: string | null;
-  apiStatus: string | null;
-  archived: number;
   metadata: string | null;
   createdAt: number;
   updatedAt: number;
-  lastActiveAt: number | null;
-  syncedAt: number | null;
-  subagents: number;
-  createHash: string | null;
   activeTurnId: string | null;
-  asideRef: string | null;
   /** The session's role (`RoleSpec` as JSON), from `start`. */
   role: string | null;
 }
@@ -158,12 +145,14 @@ export interface ApiRow {
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
   thread_ts AS threadTs, owner_id AS ownerId, owner_user_id AS ownerUserId, owner_name AS ownerName,
   owner_email AS ownerEmail, title, mode, model, effort, speed, status, origin_type AS originType,
-  origin_client AS originClient, last_seq AS lastSeq, log_epoch AS logEpoch, epoch_start_seq AS epochStartSeq,
-  summary, api_status AS apiStatus, archived, metadata, created_at AS createdAt, updated_at AS updatedAt,
-  last_active_at AS lastActiveAt, synced_at AS syncedAt, subagents, create_hash AS createHash,
-  active_turn_id AS activeTurnId, aside_ref AS asideRef, role FROM sessions`;
+  origin_client AS originClient, metadata, created_at AS createdAt, updated_at AS updatedAt,
+  active_turn_id AS activeTurnId, role FROM sessions`;
 
-/** Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). */
+/**
+ * Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). Objects from before
+ * tracks and threads also hold `last_seq`, `log_epoch`, `epoch_start_seq`, `summary`, `api_status`, `archived`,
+ * `last_active_at`, `synced_at`, `create_hash`, `aside_ref` and `drivers`, read by nothing (spec 35.4).
+ */
 const COLUMNS: Array<[string, string]> = [
   ["session_id", "TEXT"],
   ["origin_type", "TEXT NOT NULL DEFAULT 'slack'"],
@@ -173,19 +162,9 @@ const COLUMNS: Array<[string, string]> = [
   ["owner_email", "TEXT"],
   ["effort", "TEXT"],
   ["speed", "TEXT"],
-  ["last_seq", "INTEGER NOT NULL DEFAULT 0"],
-  ["log_epoch", "INTEGER NOT NULL DEFAULT 1"],
-  ["epoch_start_seq", "INTEGER NOT NULL DEFAULT 1"],
-  ["summary", "TEXT"],
-  ["api_status", "TEXT"],
-  ["archived", "INTEGER NOT NULL DEFAULT 0"],
   ["metadata", "TEXT"],
-  ["last_active_at", "INTEGER"],
-  ["synced_at", "INTEGER"],
   ["subagents", "INTEGER NOT NULL DEFAULT 0"],
-  ["create_hash", "TEXT"],
   ["active_turn_id", "TEXT"],
-  ["aside_ref", "TEXT"],
   ["role", "TEXT"],
 ];
 
@@ -263,7 +242,6 @@ export class ComputerSessionsApi {
     for (const [name, type] of COLUMNS) if (!have.has(name)) sql.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
     sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS sessions_session_id ON sessions (session_id);
-      CREATE INDEX IF NOT EXISTS sessions_last_active ON sessions (last_active_at);
     `);
   }
 
@@ -286,60 +264,6 @@ export class ComputerSessionsApi {
     const ns = this.deps.env.SESSION_LOG;
     if (!ns) throw new Error("SESSION_LOG is not bound");
     return ns.getByName(sessionId) as unknown as SessionLogRpc & SessionLogRpcAdded;
-  }
-
-  /**
-   * The Session object from the row as it was last written. Left for the Work API's context (work/briefs.ts)
-   * and the export; the session API reads Org. `fresh` (a writer's result) wins for what the log owns.
-   */
-  compose(row: ApiRow, fresh?: Partial<Session>): Session {
-    const summary = row.summary ? (JSON.parse(row.summary) as LogSummary) : null;
-    const owner: Person = { id: row.ownerUserId ?? "", name: row.ownerName ?? "", email: row.ownerEmail };
-    const origin: Origin =
-      row.originType === "slack"
-        ? {
-            type: "slack",
-            client: null,
-            slack: {
-              teamId: row.teamId || null,
-              channelId: row.channelId,
-              channelName: null,
-              threadTs: row.threadTs || null,
-              url: slackThreadUrl(row.teamId || null, row.channelId, row.threadTs),
-            },
-          }
-        : { type: row.originType, client: row.originClient, slack: null };
-    const status = (row.apiStatus as SessionStatus | null) ?? statusOfRunner(row.status);
-    const base: Session = {
-      id: row.sessionId,
-      title: row.title,
-      status,
-      archived: row.archived === 1,
-      aside: row.asideRef !== null && row.asideRef === attentionRef(summary?.asks ?? []),
-      owner,
-      origin,
-      settings: summary?.settings
-        ? { ...summary.settings, speed: summary.settings.speed ?? row.speed }
-        : { model: row.model ?? MODELS[0]!.id, effort: row.effort, mode: row.mode ?? DEFAULT_MODE, speed: row.speed },
-      metadata: parseMetadata(row.metadata),
-      activeTurnId: summary?.activeTurnId ?? null,
-      queued: summary?.queued ?? [],
-      asks: summary?.asks ?? [],
-      subagents: summary?.subagents ?? [],
-      lastTurn: summary?.lastTurn ?? null,
-      lastText: summary?.lastText ?? null,
-      context: summary?.context ?? { usedTokens: null, windowTokens: null },
-      lastSeq: row.lastSeq,
-      createdAt: new Date(row.createdAt).toISOString(),
-      lastActiveAt: new Date(row.lastActiveAt ?? row.updatedAt).toISOString(),
-      syncedAt: row.syncedAt ? new Date(row.syncedAt).toISOString() : null,
-      urls: { dashboard: null },
-    };
-    if (!fresh) return base;
-    // The writer's own view is newer than the row; the row owns who, where, archive, aside and labels.
-    const asks = fresh.asks ?? base.asks;
-    const aside = row.asideRef !== null && row.asideRef === attentionRef(asks);
-    return { ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls };
   }
 
   /** The runner's spec for a session: an API one (`kind: "api"`) or a Slack thread. */
@@ -697,59 +621,6 @@ export class ComputerSessionsApi {
     if (!this.v4Host()) return;
     const members = access.audience === "org" ? null : [access.audience.replace(/^member:/, "")];
     this.deps.send({ t: "access", access: { sessionId, owner: access.owner, members, ...(admins.length ? { admins } : {}) } });
-  }
-
-  /**
-   * Spec 43.1: the session rows Org adopts, oldest first, a page at a time. A row with no `cs_` id (a Slack
-   * thread from before the API) gets one in the export's transaction.
-   */
-  exportSessions(after: string | null, limit: number): { rows: ExportedSession[]; next: string | null; newestCreatedAt: number } {
-    const n = Math.max(1, Math.min(Number.isInteger(limit) ? limit : 200, 500));
-    let at = 0;
-    let key = "";
-    if (after) {
-      const cut = after.indexOf(":");
-      at = Number(after.slice(0, cut)) || 0;
-      key = after.slice(cut + 1);
-    }
-    const run = (): ApiRow[] => {
-      const where = "WHERE created_at > ? OR (created_at = ? AND runner_key > ?) ORDER BY created_at, runner_key LIMIT ?";
-      const bare = [...this.deps.sql.exec<{ key: string }>(`SELECT runner_key AS key FROM (SELECT runner_key, session_id FROM sessions ${where}) WHERE session_id IS NULL`, at, at, key, n + 1)];
-      for (const row of bare) this.deps.sql.exec("UPDATE sessions SET session_id = ? WHERE runner_key = ? AND session_id IS NULL", mintId("cs"), row.key);
-      return [...this.deps.sql.exec(`${ROW_SELECT} ${where}`, at, at, key, n + 1)] as unknown as ApiRow[];
-    };
-    const rows = this.deps.transaction ? this.deps.transaction(run) : run();
-    const page = rows.slice(0, n);
-    const last = page[page.length - 1];
-    const drivers = new Map(
-      [...this.deps.sql.exec<{ key: string; drivers: string | null }>("SELECT runner_key AS key, drivers FROM sessions WHERE created_at >= ? AND created_at <= ?", page[0]?.createdAt ?? 0, last?.createdAt ?? 0)].map((r) => [r.key, r.drivers]),
-    );
-    const dayAgo = this.now() - 86_400_000;
-    const newest = [...this.deps.sql.exec<{ at: number | null }>("SELECT MAX(created_at) AS at FROM sessions")][0]?.at ?? 0;
-    return {
-      rows: page.map((row) => {
-        const slack = row.originType === "slack";
-        const writers = decodeDrivers(drivers.get(row.key));
-        return {
-          id: row.sessionId,
-          owner: row.ownerUserId ?? (row.ownerId ? `slack:${row.teamId}:${row.ownerId}` : ""),
-          origin: this.compose(row).origin,
-          title: row.title,
-          archived: Boolean(row.archived),
-          metadata: parseMetadata(row.metadata),
-          asideRef: row.asideRef,
-          writers: writers === "*" ? "members" : [...writers],
-          slackThreadKey: slack ? row.key : null,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-          lastActiveAt: row.lastActiveAt,
-          summary: row.summary ? (JSON.parse(row.summary) as LogSummary) : null,
-          createHash: row.createHash && row.createdAt > dayAgo ? row.createHash : null,
-        };
-      }),
-      next: rows.length > n && last ? `${last.createdAt}:${last.key}` : null,
-      newestCreatedAt: newest,
-    };
   }
 
   // ---------------------------------------------------------------- the host
@@ -1160,13 +1031,6 @@ export class ComputerSessionsApi {
 
 /** Why an `epoch` frame is sent (sessionlog.recovery `reason`). */
 type EpochCause = "recover" | "stale" | "hello";
-
-export function statusOfRunner(status: string | null): SessionStatus {
-  if (status === "busy") return "running";
-  if (status === "idle") return "idle";
-  if (status === "starting") return "starting";
-  return "suspended";
-}
 
 function parseMetadata(raw: string | null): Record<string, string> {
   if (!raw) return {};
