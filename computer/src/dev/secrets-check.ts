@@ -356,11 +356,11 @@ check(
 const meta = view.private_metadata;
 await ui.open(aid!, { user: { id: ada.slackUserId }, trigger_id: 't2', channel: { id: 'C1' }, container: {} }, client);
 check(
-  'modal: no workspace scope for a non-admin',
+  "modal: no workspace scope for a non-admin, no session scope in someone else's session",
   called('views.open')[1]
     ?.args.view.blocks.find((b: Payload) => b.block_id === 'scope')
     .element.options.map((o: Payload) => o.value)
-    .join() === 'session,user',
+    .join() === 'user',
 );
 
 const e1 = ui.submit({ private_metadata: meta, state: { values: state('BAD-NAME', 'v', 'session') } }, owner.slackUserId);

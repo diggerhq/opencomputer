@@ -81,7 +81,7 @@ The narrowest scope that has the name wins.
 | `!var`, `!var list`, `!var ls` | Lists names and values, by scope. |
 | `!var help` | Shows the usage. |
 | `!var NAME value [scope]`, `!var NAME=value [scope]`, `!var set NAME value [scope]` (also `add`) | Sets a variable. The value may be wrapped in backticks or a code block. At most 3,000 characters. |
-| `!var rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the variable from the scope. |
+| `!var rm NAME [scope]` (also `remove`, `delete`, `unset`) | Removes the variable from the scope. In a session, the `session` scope (the default there) is its owner's only, for setting and removing. |
 
 Scopes: `session` (the default in a session's thread), `me` or `user` (the default elsewhere), `workspace` or `org` (admins only). A name or value that looks like a credential asks for confirmation. A secret and a variable cannot share a name in one scope.
 

@@ -15,7 +15,7 @@ import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
 import type { Vault } from './vault.js';
 import type { Msg } from './routing.js';
-import type { ClickBody } from './secrets-ui.js';
+import { type ClickBody, ownerOnlyText, ownsSession } from './secrets-ui.js';
 import { log } from '../log.js';
 
 const label = (scope: SecretScope, owner: string, viewer: string) =>
@@ -96,6 +96,7 @@ export function createVariablesUi({ store, vault, hub }: { store: Store; vault: 
     }
     const scope: SecretScope = cmd.scope ?? (spec ? 'session' : 'user');
     if (scope === 'session' && !spec) return 'Not in a session: add `me` or `workspace`.';
+    if (scope === 'session' && !ownsSession(spec!, me)) return ownerOnlyText(spec!);
     if (scope === 'workspace' && !person.admin) return 'Only admins can set or remove workspace variables.';
     const owner = scope === 'session' ? spec!.key : scope === 'user' ? me : '';
     const where = label(scope, owner, me);

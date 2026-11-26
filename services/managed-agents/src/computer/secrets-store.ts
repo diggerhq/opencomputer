@@ -76,6 +76,14 @@ export type SecretsApiOp =
 const iso = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString() : null);
 const actorOf = (id: string | null, name: string | null) =>
   !id ? null : id.startsWith("usr_") ? { member: id, name } : id === "system" ? { system: true } : { slackUserId: id };
+/**
+ * A session's own secrets and variables are its owner's alone (2026-11-26, owner-first): only they set, replace or
+ * remove them, on every surface. Drivers, people it is shared with and organization admins do not; they ask the owner.
+ */
+const API_OWNER_ONLY = "Only the session's owner can set, replace or delete its secrets and variables.";
+/** In Slack the owner is the session's Slack owner, linked to the dashboard or not. */
+const slackOwnerOnly = (owner: string | undefined) =>
+  `Only ${owner ? `<@${owner}>, the session's owner,` : "the session's owner"} can set, replace or remove its secrets and variables. Ask them, or use \`me\` for your own.`;
 const apiError = (status: number, code: string, message: string, extra: Record<string, unknown> = {}): ApiReply => ({ status, error: { code, message, ...extra } });
 
 export interface SlackResult {
@@ -110,12 +118,6 @@ export interface SecretsStoreDeps {
   session(runnerKey: string): { key: string; ownerId: string; channelId: string; threadTs: string } | undefined;
   /** Send changed secrets to running sessions: one session, one person's sessions, or all. */
   push(which: { key?: string; owner?: string }): Promise<void>;
-  /** The organization member (`usr_…`) a Slack user linked, if any: a secret set in Slack is theirs on the API too. */
-  linkOfSlack?(slackUserId: string): string | undefined;
-  /** Whether an organization member (`usr_…`) is an admin, as the session roles see it (work 112). */
-  isAdmin?(member: string): boolean;
-  /** A Slack user's display name, or their id when Slack does not say: who set a secret, in a refusal. */
-  name?(slackUserId: string): Promise<string>;
   /** Tell a session that asked for a secret that it is set; starts its next turn. */
   wake(session: { key: string; ownerId: string; channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void>;
 }
@@ -318,10 +320,7 @@ export class SecretsStore {
     }
     const [scope, owner] = present[0]!;
     if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return `\`${name}\` is an organization secret; only full members of this Slack workspace can remove it.`;
-    if (scope === "session") {
-      const refused = await this.sessionSecretRefusal(owner, name, this.slackWriter(ctx.userId));
-      if (refused) return refused;
-    }
+    if (scope === "session" && ctx.session?.ownerId !== ctx.userId) return slackOwnerOnly(ctx.session?.ownerId);
     this.remove(scope, owner, name, { id: ctx.userId, surface: "slack" });
     console.log("secret_removed", { scope, name, by: ctx.userId });
     await this.deps.push(scope === "session" ? { key: owner } : scope === "user" ? { owner } : {});
@@ -386,6 +385,7 @@ export class SecretsStore {
     }
     const scope: SecretScope = cmd.scope ?? (ctx.session ? "session" : "user");
     if (scope === "session" && !ctx.session) return "Not in a session: add `me` or `org`.";
+    if (scope === "session" && ctx.session!.ownerId !== ctx.userId) return slackOwnerOnly(ctx.session!.ownerId);
     if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return "Only full members of this Slack workspace can set or remove organization variables.";
     const owner = scope === "session" ? ctx.session!.key : scope === "user" ? ctx.userId : "*";
     const where = scopeLabel(scope, owner, ctx.userId);
@@ -434,7 +434,8 @@ export class SecretsStore {
       ...(d.r && ctx.messageTs ? { rq: ctx.messageTs } : {}),
     };
     const view = secretModal(d, meta, {
-      session: !!session,
+      // Only the owner may write the session's own layer; anyone else sees their own scopes.
+      session: !!session && session.ownerId === ctx.userId,
       ...(session && session.ownerId !== ctx.userId ? { otherOwner: session.ownerId } : {}),
       member,
     });
@@ -460,10 +461,7 @@ export class SecretsStore {
       return { errors: { scope: LOOKUP_FAILED_TEXT } };
     }
     const owner = s.scope === "session" ? session!.key : s.scope === "user" ? userId : "*";
-    if (s.scope === "session") {
-      const refused = await this.sessionSecretRefusal(owner, s.name, this.slackWriter(userId));
-      if (refused) return { errors: { scope: refused } };
-    }
+    if (s.scope === "session" && session!.ownerId !== userId) return { errors: { scope: slackOwnerOnly(session!.ownerId) } };
     try {
       await this.put(s.scope, owner, s.name, s.value, s.file, { id: userId, surface: "slack" });
     } catch (error) {
@@ -512,13 +510,17 @@ export class SecretsStore {
   /**
    * The Computer API: organization secrets and writes to a session authorized by the caller.
    * Any member may list, set, replace and delete organization secrets
-   * (2026-11-01); a session secret is replaced or deleted only by its creator or an admin (sessionSecretRefusal). api-http.ts has already refused session keys and checked scopes.
-   * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
+   * (2026-11-01); a session's own secrets and variables are written only by its owner (`sessionOwner`, the
+   * session row's `ownerUserId`; 2026-11-26, owner-first: no admin override). api-http.ts has already refused
+   * session keys and checked scopes. Values go in, never out; variables are listed with theirs, as `!vars`
+   * shows them: the organization's to any member, a session's to its owner.
    */
-  async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
+  async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string, sessionOwner?: string | null): Promise<ApiReply> {
     if (op.op.startsWith("secrets.session.") && !sessionKey) return apiError(404, "session_not_found", "No such session.");
+    const owns = !!sessionOwner && sessionOwner === caller.member;
     if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows() } };
-    if (op.op === "secrets.session.list") return { status: 200, body: { secrets: this.sessionRows(sessionKey!, op.sessionId) } };
+    if (op.op === "secrets.session.list") return { status: 200, body: { secrets: await this.sessionRows(sessionKey!, op.sessionId, owns) } };
+    if ((op.op === "secrets.session.put" || op.op === "secrets.session.delete") && !owns) return apiError(403, "forbidden", API_OWNER_ONLY, { reason: "not_session_owner" });
     if (op.op === "secrets.events") return { status: 200, body: { events: this.orgEvents(op.name) } };
     const actor: SecretActor = { id: caller.member, name: caller.name ?? caller.email, surface: caller.via };
     const recent = this.deps.sql.exec<{ n: number }>(
@@ -533,10 +535,6 @@ export class SecretsStore {
       console.log("secret_removed", { scope: "workspace", name: op.name, by: actor.id, via: actor.surface });
       await this.pushAll();
       return { status: 204 };
-    }
-    if (op.op === "secrets.session.put" || op.op === "secrets.session.delete") {
-      const refused = await this.sessionSecretRefusal(sessionKey!, op.name, { member: caller.member, admin: !!caller.admin });
-      if (refused) return apiError(403, "forbidden", refused, { reason: "not_secret_owner" });
     }
     if (op.op === "secrets.session.delete") {
       if (!this.remove("session", sessionKey!, op.name, actor)) return apiError(404, "secret_not_found", "No such secret on this session.");
@@ -615,53 +613,31 @@ export class SecretsStore {
   }
 
   /**
-   * A session's own layer as `Secret` objects (opc/docs/api/reference/objects.mdx): names and metadata, never a value,
-   * variables included. The session layer is the narrowest, so each is the one the session gets (`effective`).
+   * A session's own layer as `Secret` objects (opc/docs/api/reference/objects.mdx): names and metadata, never a
+   * secret's value; a variable's value only to the session's owner (`owns`), who alone may set it. The session
+   * layer is the narrowest, so each is the one the session gets (`effective`).
    */
-  /**
-   * A session secret that exists is replaced or deleted only by the person who created it or an organization
-   * admin (2026-11-26), from the API, opc, the dashboard and Slack alike; a new name is anyone's who may write to
-   * the session, and they become its creator. Replacing keeps the creator. Who is who is an organization member
-   * (`usr_…`): a creator recorded as a Slack user is the member they linked, and a Slack user who linked none may
-   * only add new names. Returns the refusal, or null. Personal and organization secrets do not come here.
-   */
-  private async sessionSecretRefusal(sessionKey: string, name: string, writer: { member?: string; admin: boolean }): Promise<string | null> {
-    const row = this.deps.sql.exec<{ createdBy: string | null; createdByName: string | null }>(
-      "SELECT created_by AS createdBy, created_by_name AS createdByName FROM secrets WHERE scope = 'session' AND owner = ? AND name = ?",
-      sessionKey,
-      name,
-    ).toArray()[0];
-    if (!row || writer.admin) return null;
-    const by = row.createdBy;
-    const creator = by && !by.startsWith("usr_") ? this.deps.linkOfSlack?.(by) : by;
-    if (writer.member && creator === writer.member) return null;
-    const who = row.createdByName ?? (by && !by.startsWith("usr_") && this.deps.name ? await this.deps.name(by) : null);
-    return `Only the person who set ${name}${who ? ` (${who})` : ""} or an organization admin can replace or delete it.`;
-  }
-
-  /** A Slack user as a writer of session secrets: the member they linked, an admin only through it. */
-  private slackWriter(slackUserId: string): { member?: string; admin: boolean } {
-    const member = this.deps.linkOfSlack?.(slackUserId);
-    return { ...(member ? { member } : {}), admin: !!member && !!this.deps.isAdmin?.(member) };
-  }
-
-  private sessionRows(sessionKey: string, sessionId: string) {
-    return [...this.deps.sql.exec<{ name: string; file: number; variable: number; setBy: string; setByName: string | null; updatedAt: number; via: string | null }>(
-      `SELECT s.name, s.file, s.variable, s.set_by AS setBy, s.set_by_name AS setByName, s.updated_at AS updatedAt,
+  private async sessionRows(sessionKey: string, sessionId: string, owns: boolean) {
+    const rows = [...this.deps.sql.exec<{ name: string; file: number; variable: number; sealed: string; setBy: string; setByName: string | null; updatedAt: number; via: string | null }>(
+      `SELECT s.name, s.file, s.variable, s.sealed, s.set_by AS setBy, s.set_by_name AS setByName, s.updated_at AS updatedAt,
               (SELECT e.surface FROM secret_events e WHERE e.scope = 'session' AND e.owner = s.owner AND e.name = s.name
                AND e.action IN ('set', 'replace') ORDER BY e.ts DESC LIMIT 1) AS via
        FROM secrets s WHERE s.scope = 'session' AND s.owner = ? ORDER BY s.name`,
       sessionKey,
-    )].map((r) => ({
-      name: r.name,
-      scope: "session" as const,
-      sessionId,
-      kind: r.variable ? ("variable" as const) : ("secret" as const),
-      file: !!r.file,
-      effective: true,
-      setBy: { id: r.setBy, name: r.setByName ?? r.setBy, via: r.via && r.via !== "system" ? r.via : r.setBy.startsWith("usr_") ? "dashboard" : "slack", client: null },
-      updatedAt: iso(r.updatedAt),
-    }));
+    )];
+    return Promise.all(
+      rows.map(async (r) => ({
+        name: r.name,
+        scope: "session" as const,
+        sessionId,
+        kind: r.variable ? ("variable" as const) : ("secret" as const),
+        file: !!r.file,
+        ...(r.variable && owns ? { value: await openSecret(r.sealed, this.deps.encryptionKey(), "session", sessionKey, r.name).catch(() => null) } : {}),
+        effective: true,
+        setBy: { id: r.setBy, name: r.setByName ?? r.setBy, via: r.via && r.via !== "system" ? r.via : r.setBy.startsWith("usr_") ? "dashboard" : "slack", client: null },
+        updatedAt: iso(r.updatedAt),
+      })),
+    );
   }
 
   /** The organization layer's history for one name, newest first. */

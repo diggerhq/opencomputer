@@ -9,7 +9,7 @@
 //   request_secret (a session)    the same button, posted in the thread; once set,
 //                                 the session gets a message so it continues
 //
-// Scopes: this session (anyone enabled), just me (all sessions the person
+// Scopes: this session (its owner only), just me (all sessions the person
 // owns), workspace (every session; admins only). Handled here, not by the runner:
 // the gateway holds the values and Slack modals need its interactivity.
 //
@@ -39,7 +39,7 @@ const HELP = [
   '`!secret NAME`: set or replace `$NAME` through a private form (`!secret NAME file` for a file; `$NAME` is its path)',
   '`!secret`: names this session gets, by scope',
   '`!secret rm NAME [session|me|workspace]`: remove one',
-  'Scopes: *this session*; *just me* (all your sessions); *workspace* (every session in this Slack workspace; admins only). The narrowest wins.',
+  'Scopes: *this session* (its owner only); *just me* (all your sessions); *workspace* (every session in this Slack workspace; admins only). The narrowest wins.',
   'Values that are not secret (an org name, a hostname): `!var help`.',
 ].join('\n');
 
@@ -98,6 +98,14 @@ export interface SecretsUiDeps {
   /** A message to a session as if its sender typed it (routing.ts `deliver`: the role gate, then the host). */
   deliver(spec: SlackSessionSpec, h: HeldMessage, client: WebClient): Promise<void>;
 }
+
+/**
+ * A session's own secrets and variables are its owner's alone (owner-first): only the session's Slack owner sets,
+ * replaces or removes them. Drivers and admins do not; they ask the owner, or use their own scope.
+ */
+export const ownerOnlyText = (spec: SlackSessionSpec) =>
+  `Only ${spec.owner.slackUserId ? `<@${spec.owner.slackUserId}>, the session's owner,` : "the session's owner"} can set, replace or remove its secrets and variables. Ask them, or use \`me\` for your own.`;
+export const ownsSession = (spec: SlackSessionSpec, slackUserId: string) => !!spec.owner.slackUserId && spec.owner.slackUserId === slackUserId;
 
 export function createSecretsUi({ store, vault, hub, deliver }: SecretsUiDeps) {
   const thread = (spec?: SlackSessionSpec) => (spec?.kind === 'thread' ? spec.threadTs : undefined);
@@ -165,6 +173,7 @@ export function createSecretsUi({ store, vault, hub, deliver }: SecretsUiDeps) {
       const owner = scope === 'session' ? spec!.key : scope === 'user' ? person.slackUserId : '';
       if (!vault.list([{ scope, owner }]).some((r) => r.name === name && !r.variable)) continue;
       if (scope === 'workspace' && !person.admin) return `\`${name}\` is a workspace secret; only an admin can remove it.`;
+      if (scope === 'session' && !ownsSession(spec!, person.slackUserId)) return ownerOnlyText(spec!);
       vault.delete(scope, owner, name);
       pushFor(scope, owner);
       log.info(`secret ${scope}/${name} removed by ${person.dir}`);
@@ -198,7 +207,7 @@ export function createSecretsUi({ store, vault, hub, deliver }: SecretsUiDeps) {
   function modal(d: ButtonData, meta: ModalData, person: SlackPerson, spec?: SlackSessionSpec): View {
     const own = !spec || spec.owner.slackUserId === person.slackUserId;
     const options = [
-      ...(spec ? [{ value: 'session', text: 'This session only', description: 'This thread; deleted 30 days after it was last active' }] : []),
+      ...(spec && own ? [{ value: 'session', text: 'This session only', description: 'This thread; deleted 30 days after it was last active' }] : []),
       {
         value: 'user',
         text: 'Just me',
@@ -254,6 +263,7 @@ export function createSecretsUi({ store, vault, hub, deliver }: SecretsUiDeps) {
     const spec = meta.k ? store.session(meta.k)?.spec : undefined;
     if (spec && !can(accessOf(store, spec), actor(store, userId), 'instruct')) return { errors: { name: driversCommandText('secret') } };
     if (scope === 'session' && !spec) return { errors: { scope: 'This session no longer exists; pick another scope.' } };
+    if (scope === 'session' && !ownsSession(spec!, userId)) return { errors: { scope: ownerOnlyText(spec!) } };
     if (scope === 'workspace' && !person.admin) return { errors: { scope: 'Only admins can set workspace secrets.' } };
     if (!scope) return { errors: { scope: 'Pick where it applies.' } };
     const owner = scope === 'session' ? spec!.key : scope === 'user' ? userId : '';

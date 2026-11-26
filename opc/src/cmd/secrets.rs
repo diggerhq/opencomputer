@@ -156,7 +156,8 @@ fn prompt_hidden(prompt: &str) -> Result<String> {
     outcome.map(|()| value)
 }
 
-/// One row of `opc secrets ls`: the name and who set it, never a value.
+/// One row of `opc secrets ls`: the name and who set it, never a secret's value; a variable's value when the API
+/// sends it (to the session's owner only).
 fn line(s: &Value) -> String {
     let str_of = |k: &str| s.get(k).and_then(Value::as_str).unwrap_or("");
     let mut kind = str_of("kind").to_string();
@@ -174,6 +175,9 @@ fn line(s: &Value) -> String {
         }
     });
     let mut out = format!("{:<32}  {:<14}", str_of("name"), kind);
+    if let Some(v) = s.get("value").and_then(Value::as_str).filter(|_| kind == "variable") {
+        out.push_str(&format!("  = {v}"));
+    }
     if let Some(by) = by {
         out.push_str(&format!("  set by {by}"));
     }
@@ -190,7 +194,9 @@ fn map_error(e: Error, sid: &str, name: &str) -> Error {
         ("session_not_found", _) => format!("no session {sid} that you can see"),
         ("secret_not_found", _) => format!("{name} is not set on {sid} (only the session's own secrets can be deleted here)"),
         ("forbidden", "missing_scope") => "this API key cannot change secrets: it needs the secrets:write scope, which * and sandbox:* keys do not include (opc login gets one)".into(),
-        // The API names who set it: only they or an organization admin may replace or delete it.
+        // Only the session's owner sets, replaces or deletes its secrets (owner-first).
+        ("forbidden", "not_session_owner") => format!("only the owner of {sid} can change its secrets and variables: ask them to set {name}"),
+        // Servers before the owner-only rule: only the person who set it or an admin.
         ("forbidden", "not_secret_owner") => format!("{name} on {sid} was set by someone else: {}", e.message),
         ("forbidden", "computer_principal") => "a session's own key cannot read or set secrets: run this from your own machine".into(),
         ("forbidden", _) => format!("you may not change the secrets of {sid}"),
@@ -227,6 +233,16 @@ mod tests {
     }
 
     #[test]
+    fn a_variable_shows_its_value_when_the_api_sends_it() {
+        let row = json!({"name": "REGION", "scope": "session", "kind": "variable", "file": false, "value": "eu-west-1",
+            "setBy": {"id": "usr_1", "name": "Test User", "via": "opc", "client": null}, "updatedAt": "2026-11-26T00:00:00.000Z"});
+        assert!(line(&row).contains("variable") && line(&row).contains("= eu-west-1"));
+        let mut hidden = row.clone();
+        hidden.as_object_mut().unwrap().remove("value");
+        assert!(!line(&hidden).contains("="));
+    }
+
+    #[test]
     fn refusals_read_as_this_command() {
         let e = map_error(Error::from_api(403, &json!({"code": "forbidden", "message": "m", "reason": "missing_scope", "scope": "secrets:write"})), "cs_1", "X");
         assert!(e.message.contains("secrets:write"));
@@ -238,6 +254,10 @@ mod tests {
         let m = "Only the person who set X (Test User) or an organization admin can replace or delete it.";
         let e = map_error(Error::from_api(403, &json!({"code": "forbidden", "message": m, "reason": "not_secret_owner"})), "cs_1", "X");
         assert_eq!(e.message, format!("X on cs_1 was set by someone else: {m}"));
+        assert_eq!(e.exit_code(), crate::error::exit::AUTH);
+        let m = "Only the session's owner can set, replace or delete its secrets and variables.";
+        let e = map_error(Error::from_api(403, &json!({"code": "forbidden", "message": m, "reason": "not_session_owner"})), "cs_1", "X");
+        assert_eq!(e.message, "only the owner of cs_1 can change its secrets and variables: ask them to set X");
         assert_eq!(e.exit_code(), crate::error::exit::AUTH);
     }
 }
