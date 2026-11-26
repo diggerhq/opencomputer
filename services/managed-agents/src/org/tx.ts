@@ -178,6 +178,9 @@ export const summaryOf = (s: Pick<SessionRec, "summary">): Summary => parse<Summ
 /** A session is working: a turn is active or it has not answered its first yet. */
 export const working = (summary: LogSummary): boolean => summary.status === "running" || summary.status === "starting" || summary.activeTurnId !== null;
 
+/** A session's status; one whose log has not reported yet is starting only while a turn waits. */
+export const statusOf = (summary: Summary): SessionStatus => (summary.status as SessionStatus | null) ?? (summary.activeTurnId !== null || (summary.queued?.length ?? 0) > 0 ? "starting" : "idle");
+
 // ------------------------------------------------------------------ reads
 
 export const readSession = (sql: Sql, id: string): SessionRec | null => sql.exec<SessionRec>("SELECT * FROM session WHERE id = ?", id)[0] ?? null;
@@ -234,7 +237,7 @@ export function sessionRow(sql: Sql, s: SessionRec): SessionRow & Row & { audien
     audience: s.audience,
     id: s.id,
     title: s.title ?? summary.agentTitle ?? summary.title ?? "Untitled",
-    status: (summary.status as SessionStatus | null) ?? "starting",
+    status: statusOf(summary),
     archived: place !== undefined && place.done_at !== null,
     aside: s.aside !== null && s.aside === attentionRef(summary.asks),
     owner,

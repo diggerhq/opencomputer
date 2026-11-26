@@ -237,7 +237,7 @@ export function listSessions(sql: Sql, p: Principal, q: ListQuery): Reply<Sessio
   const statuses = q.status ?? [];
   if (statuses.some((s) => !STATUSES.includes(s))) return invalid("status", `status must be among ${STATUSES.join(", ")}.`);
   if (statuses.length) {
-    where.push(`COALESCE(json_extract(summary, '$.status'), 'starting') IN (${statuses.map(() => "?").join(",")})`);
+    where.push(`COALESCE(json_extract(summary, '$.status'), CASE WHEN json_extract(summary, '$.activeTurnId') IS NOT NULL OR json_array_length(COALESCE(json_extract(summary, '$.queued'), '[]')) > 0 THEN 'starting' ELSE 'idle' END) IN (${statuses.map(() => "?").join(",")})`);
     args.push(...statuses);
   }
   const origins = q.origin ?? [];

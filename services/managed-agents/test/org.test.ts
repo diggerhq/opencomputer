@@ -48,7 +48,7 @@ describe("Org's transaction", () => {
       const changed = changesAt(sql, 2);
       expect(changed.rows.map((r) => r.kind).sort()).toEqual(["op", "session"]);
       const row = sessionRow(sql, readSession(sql, "cs_0000000000000001")!);
-      expect(row).toMatchObject({ kind: "session", title: "Fix the login redirect", titleBy: "user:usr_a", agentTitle: "First words", status: "starting", version: 2, audience: "org" });
+      expect(row).toMatchObject({ kind: "session", title: "Fix the login redirect", titleBy: "user:usr_a", agentTitle: "First words", status: "idle", version: 2, audience: "org" });
       expect(changed.rows.find((r) => r.kind === "op")).toMatchObject({ name: "thread.rename", sessionId: "cs_0000000000000001", inverse: { title: null, titleBy: null } });
     });
   });
@@ -132,7 +132,7 @@ describe("Org.createSession", () => {
       const a = member("usr_a", "create");
       const body = { id: "cs_0000000000000010", input: "Fix the login redirect", person: { name: "Ann", email: "ann@example.com" } };
       const first = await org.createSession(a, body);
-      expect(first).toMatchObject({ ok: true, duplicate: false, session: { id: body.id, title: "Fix the login redirect", status: "starting", archived: false, machine: "create" }, place: { trackId: null } });
+      expect(first).toMatchObject({ ok: true, duplicate: false, session: { id: body.id, title: "Fix the login redirect", status: "idle", archived: false, machine: "create" }, place: { trackId: null } });
       await org.drain();
       const names = fakes.calls.map((c) => c[0]);
       expect(names).toEqual(expect.arrayContaining(["Computer.start", "Computer.setAccess", "SessionLog.setAccess", "usage.created", "Live.publish"]));
