@@ -109,7 +109,8 @@
       // Work tracking 3.6: one per organization, the projection of its knowledge repository.
       { "name": "WORK_INDEX", "class_name": "WorkIndexDurableObject" },
       // Tracks and threads: the organization's directory of work, its Slack link, and the readers of
-      // its occurrence stream (`<org>:<kind>`).
+      // its occurrence stream (`<org>:<kind>`). Delivery(webhook) hands occurrences to Svix with the
+      // SVIX_API_TOKEN secret; Svix signs, retries and delivers them.
       { "name": "ORGS", "class_name": "OrgDurableObject" },
       { "name": "SLACK", "class_name": "SlackDurableObject" },
       { "name": "DELIVERY", "class_name": "DeliveryDurableObject" },
