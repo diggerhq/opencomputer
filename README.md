@@ -34,6 +34,21 @@ It is open source from the compute layer up, so you can run all of it in your ow
 
 We built it to feel as fast as Claude Code on your laptop: in our benchmark it opens PRs 3.3x faster than Devin.
 
+## Quickstart
+
+On OpenComputer Cloud, from sign-up to a first answer in Slack:
+
+1. Sign in at [app.opencomputer.dev/computer](https://app.opencomputer.dev/computer) and choose your coding agent: Claude Code or Codex on your own subscription, or OpenComputer credits.
+2. Click **Add to Slack** and approve the app.
+3. Connect GitHub and pick the repositories the agent can work in.
+4. Mention it in any channel:
+
+```text
+@Computer why is the checkout test flaky?
+```
+
+The reply streams into the thread; reply there to steer it, and code changes land as pull requests. To run it in your own cloud instead, see [Self-hosting](https://docs.opencomputer.dev/self-hosting/overview).
+
 ## See it work
 
 <p align="center">
@@ -44,18 +59,6 @@ We built it to feel as fast as Claude Code on your laptop: in our benchmark it o
 
 <p align="center">
   <img src="docs/images/readme-vs-local.gif" alt="Side-by-side race on the same task: Claude Code on a laptop against @Computer in the cloud; @Computer finishes in 32.0s, local in 36.2s" width="70%">
-</p>
-
-## How it works
-
-OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
-
-The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
-
-The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
-
-<p align="center">
-  <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
 </p>
 
 ## Try it in Cloud
@@ -70,6 +73,18 @@ The fastest way to experience `@Computer` is to install the Slack app from the c
 - **2.6x faster than the average of the 4 most popular cloud agents**: first push in 24s vs a 62s average ([benchmark](https://opencomputer.dev/blog/cloud-agents-as-fast-as-local/))
 - **3-day free trial** with 600 work minutes
 - **Bring your own ChatGPT / Codex subscription**
+
+## How it works
+
+OpenComputer is built to be simple to self-host without giving up scale or security. The whole stack runs on a single VM, which we recommend locking down to outbound-only network access.
+
+The VM runs the gateway, Calvin: a thin bridge that listens for Slack events and starts a session with Claude Code, Codex or OpenCode, depending on your configuration. Each session is isolated with rootless Podman. Its state is written first to the VM's local disk, then persisted to a git-backed store.
+
+The rest of the stack runs on Cloudflare Workers and Durable Objects. Support for Fly and other platforms is coming soon.
+
+<p align="center">
+  <img src="docs/images/readme-architecture.png" alt="Slack sends events to Cloudflare Workers and Durable Objects. Your VM, outbound only, dials out to them over a websocket. On the VM, the Calvin gateway starts a Claude Code, Codex or OpenCode session per thread, each in rootless Podman. State is written to the VM's local disk first, then persisted to a git-backed store." width="100%">
+</p>
 
 ## License
 
