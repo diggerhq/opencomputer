@@ -16,6 +16,7 @@ pub mod pull;
 pub mod push;
 pub mod resolve;
 pub mod run;
+pub mod secrets;
 pub mod send;
 pub mod shell;
 pub mod subagents;
@@ -263,6 +264,7 @@ pub async fn dispatch(cli: Cli, ctx: &mut Ctx) -> Result<i32> {
         Command::Interrupt(a) => manage::interrupt(ctx, a).await,
         Command::Ask(a) => ask::run(ctx, a).await,
         Command::Subagents(a) => subagents::run(ctx, a).await,
+        Command::Secrets(a) => secrets::run(ctx, a).await,
         Command::Rename(a) => manage::rename(ctx, a).await,
         Command::Archive(a) => manage::archive(ctx, a, true).await,
         Command::Unarchive(a) => manage::archive(ctx, a, false).await,

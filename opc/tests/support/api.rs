@@ -34,6 +34,8 @@ const WRITES: &[&str] = &[
     "asks.answer",
     "asks.dismiss",
     "subagents.stop",
+    "secrets.session.put",
+    "secrets.session.delete",
 ];
 
 pub fn canonical(v: &Value) -> String {
@@ -468,8 +470,54 @@ async fn run(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
             validate("method:subagents.stop", &r.1);
             Ok(r)
         }
+        "secrets.session.list" => {
+            let v = sh.read(|w| -> ApiResult<Value> { Ok(json!({"secrets": w.sess(c.sid())?.secrets.iter().map(|(row, _)| row.clone()).collect::<Vec<_>>()})) })?;
+            for row in v["secrets"].as_array().unwrap() {
+                validate("Secret", row);
+            }
+            Ok((200, v))
+        }
+        "secrets.session.put" => {
+            c.allow(&["value", "file"])?;
+            let name = c.sub().to_string();
+            if !secret_name_ok(&name) {
+                return Err(ApiErr::new(400, "invalid_name", "Can't use this name: use letters, digits and _"));
+            }
+            let value = c.bs("value")?.filter(|v| !v.trim().is_empty()).ok_or_else(|| ApiErr::bad("value", "value is required"))?;
+            if value.len() > 64 * 1024 {
+                return Err(ApiErr::new(413, "too_large", "The value is too large."));
+            }
+            let file = c.b("file").and_then(Value::as_bool).unwrap_or(false);
+            let row = json!({"name": name, "scope": "session", "sessionId": c.sid(), "file": file, "effective": true,
+                "setBy": {"id": actor["id"], "name": actor["name"], "via": "opc", "client": null}, "updatedAt": now()});
+            validate("Secret", &row);
+            sh.with(|w| -> ApiResult<()> {
+                let s = w.sess_mut(c.sid())?;
+                s.secrets.retain(|(r, _)| r["name"] != name.as_str());
+                s.secrets.push((row, value));
+                Ok(())
+            })?;
+            Ok((204, Value::Null))
+        }
+        "secrets.session.delete" => {
+            sh.with(|w| -> ApiResult<()> {
+                let s = w.sess_mut(c.sid())?;
+                let before = s.secrets.len();
+                s.secrets.retain(|(r, _)| r["name"] != c.sub());
+                if s.secrets.len() == before {
+                    return Err(ApiErr::new(404, "secret_not_found", "No such secret on this session."));
+                }
+                Ok(())
+            })?;
+            Ok((204, Value::Null))
+        }
         other => Err(ApiErr::new(404, "not_found", format!("no operation {other}"))),
     }
+}
+
+fn secret_name_ok(name: &str) -> bool {
+    let mut cs = name.chars();
+    name.len() <= 64 && cs.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn ask_404() -> ApiErr {

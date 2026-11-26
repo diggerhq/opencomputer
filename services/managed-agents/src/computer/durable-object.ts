@@ -564,6 +564,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
       push: (which) => this.pushSecrets(which),
+      // Lazy: `this.access` is built below.
+      linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.api.isAdmin(member),
+      name: (slackUserId) => this.threads().name(slackUserId),
       wake: (session, userId, text, ts) => this.wakeSession(session, userId, text, ts),
     });
     this.access = createModelAccess({
@@ -1637,10 +1641,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
-    if (op.op === "secrets.session.put") {
-      const row = this.api.visible(caller, op.sessionId);
+    // A session's own layer: whoever may see the session (`visible`, as for turns.send), else 404.
+    if (op.op === "secrets.session.put" || op.op === "secrets.session.list" || op.op === "secrets.session.delete") {
+      const row = this.api.visible(caller, (op as Extract<SecretsApiOp, { sessionId: string }>).sessionId);
       if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
-      return this.secrets.api(caller, op, row.key);
+      return this.secrets.api(caller, op as SecretsApiOp, row.key);
     }
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
     // The Work API's sessions and people (work tracking 3.10), likewise.
