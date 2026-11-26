@@ -13,7 +13,7 @@ curl "$API/me" -H "x-api-key: $OPENCOMPUTER_API_KEY"
 
 `Authorization: Bearer <key>` works too. When both headers are present they must hold the same key, or the request fails with `401 unauthenticated`.
 
-Create keys on the dashboard under **Settings → API keys**. `opc login` creates one as well, named after your machine. A key lasts until it is revoked, or until its `expiresAt` if it was created with one. Revoke one on the same page, or with `opc logout` for the key `opc` created. A revoked key stops working everywhere within a minute.
+Create keys on the dashboard under **Settings → API keys**. `opc login` creates one as well, named after your machine. A key lasts until it is revoked, or until its `expiresAt` if it was created with one. Revoke one on the same page, or with `opc logout` for the key `opc` created. Members see and manage only their own keys; organization owners and admins see and can revoke every key in the organization. A revoked key stops working everywhere within a minute.
 
 A key belongs to the member who created it and acts as that member. It can do what they can, in sessions and in the API, up to its scopes, and everything it does is attributed to them, with `via: "api"` or `via: "opc"`. When the member leaves the organization, their keys stop working.
 
