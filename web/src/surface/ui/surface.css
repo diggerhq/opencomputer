@@ -17,7 +17,7 @@
   --amber:#d98200;--amber-bg:#fff8e9;--amber-line:#ecd297;--blue:#3b6fd4;--bubble:#f0efec;
   --btn:#1c1c1a;--btn-text:#fff;--add:#e6f6ea;--del:#fdecec;--addt:#1a7f37;--delt:#c2362f;
   --card:#fff;--scrim:rgba(20,20,18,.28);--shadow:0 0 0 .5px rgba(0,0,0,.14),0 18px 50px rgba(0,0,0,.22);
-  --ring:rgba(59,111,212,.35);--kbd:rgba(0,0,0,.06);--line3:rgba(0,0,0,.22);--amber-t:#a15e00;color-scheme:light;
+  --ring:rgba(59,111,212,.35);--kbd:rgba(0,0,0,.06);--line3:rgba(0,0,0,.22);--amber-t:#a15e00;--focus:rgba(0,0,0,.5);color-scheme:light;
 }
 &[data-theme=dark]{
   --bg:#1c1c1b;--side:#141413;--pane:#181817;--line:rgba(255,255,255,.09);--line2:rgba(255,255,255,.06);
@@ -25,7 +25,7 @@
   --amber:#f0a020;--amber-bg:#2a2312;--amber-line:#5e4b1c;--blue:#6f9cf0;--bubble:#2b2b29;
   --btn:#ecebe7;--btn-text:#1c1c1b;--add:#15301d;--del:#3a1b1a;--addt:#6fd08a;--delt:#f08a82;
   --card:#232322;--scrim:rgba(0,0,0,.5);--shadow:0 0 0 .5px rgba(255,255,255,.14),0 18px 50px rgba(0,0,0,.6);
-  --ring:rgba(111,156,240,.4);--kbd:rgba(255,255,255,.09);--line3:rgba(255,255,255,.22);--amber-t:#f0a020;color-scheme:dark;
+  --ring:rgba(111,156,240,.4);--kbd:rgba(255,255,255,.09);--line3:rgba(255,255,255,.22);--amber-t:#f0a020;--focus:rgba(255,255,255,.5);color-scheme:dark;
 }
 *{box-sizing:border-box}
 
@@ -45,7 +45,7 @@ svg{display:block;flex:none}
 .ib:hover{background:var(--hover);color:var(--text)}.ib:active{background:var(--sel)}
 .newb{margin:2px 10px 6px;height:32px;border-radius:8px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--card);box-shadow:0 0 0 1px var(--line),0 1px 2px rgba(0,0,0,.04);color:var(--muted);transition:box-shadow .12s,color .12s}
 .newb:hover{color:var(--text);box-shadow:0 0 0 1px var(--line3),0 1px 2px rgba(0,0,0,.05)}
-.newb.on{box-shadow:0 0 0 1px var(--blue),0 0 0 4px var(--ring);color:var(--text)}
+.newb.on{box-shadow:0 0 0 1px var(--line3),0 1px 2px rgba(0,0,0,.05);color:var(--text)}
 kbd{font:11px -apple-system,BlinkMacSystemFont,Inter,sans-serif;color:var(--muted);background:var(--kbd);border-radius:4px;padding:1px 5px;margin-left:auto}
 .list{flex:1;overflow-y:auto;padding:4px 8px 10px;scrollbar-width:thin}
 .sec{font-size:11px;font-weight:600;color:var(--faint);padding:12px 9px 4px;letter-spacing:.01em}
@@ -135,7 +135,7 @@ kbd{font:11px -apple-system,BlinkMacSystemFont,Inter,sans-serif;color:var(--mute
 .btn kbd{margin-left:2px;background:rgba(127,127,127,.25);color:inherit;opacity:.8}
 .hint{color:var(--faint);font-size:12px;margin-left:4px}
 .comp{margin:6px 18px 16px;border-radius:12px;background:var(--card);box-shadow:0 0 0 1px var(--line),0 2px 6px rgba(0,0,0,.04);display:flex;align-items:flex-end;padding:4px 4px 4px 13px;flex:none;transition:box-shadow .15s}
-.comp:focus-within{box-shadow:0 0 0 1px var(--blue),0 0 0 4px var(--ring)}
+.comp:focus-within{box-shadow:0 0 0 1px var(--line3),0 2px 6px rgba(0,0,0,.04)}
 .comp textarea{flex:1;border:0;outline:0;resize:none;background:none;color:inherit;font:inherit;line-height:1.45;padding:7px 0;max-height:160px;height:34px}
 .comp textarea::placeholder{color:var(--faint)}
 .send{width:28px;height:28px;border-radius:8px;background:var(--btn);color:var(--btn-text);display:flex;align-items:center;justify-content:center;margin:1px;opacity:.25;transition:opacity .15s,transform .08s}
@@ -339,8 +339,6 @@ pre.cb{font:12px/1.65 ui-monospace,"SF Mono",Menlo,monospace;background:var(--pa
   .pf span:nth-child(n+2){display:none}
   .help dl{grid-template-columns:1fr}
 }
-:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
-textarea:focus-visible{outline:0}
 /* patterns: one look for one job */
 .ri{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .chip:hover{background:none;box-shadow:inset 0 0 0 1px var(--line3)}
@@ -377,7 +375,6 @@ textarea:focus-visible{outline:0}
 .ib.on{background:var(--sel);color:var(--text)}
 .rl,.lk,.more,.fold.top,.menu button,.toast button{transition:background .12s,color .12s}
 [data-tip]:focus-visible:after{opacity:1}[data-tip]:active:after{opacity:0;transition-delay:0s}
-.card:focus-visible,.seg button:focus-visible,.menu button:focus-visible{outline-offset:-2px}
 @media (prefers-reduced-motion:reduce){
   *,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
   .mk.working{animation-duration:1.6s!important;animation-iteration-count:infinite!important}
@@ -416,5 +413,19 @@ kbd,.chev,.card .c3 .go,.seg button,.seg .thumb,.seg2 button{border-radius:var(-
 .pal textarea{padding:16px 16px 8px}.jump{padding:4px 8px}.jump .sec{padding-left:8px}.pf{padding:8px 16px;gap:16px}
 .banner{padding:12px 16px 12px 12px;gap:12px}.toast{padding:8px 8px 8px 16px}
 #start p{margin:16px 0 0}.site .page{padding:24px}
+
+/* round 5: quiet focus. No glow and no blue: a mouse click shows nothing extra, the
+   keyboard gets a 1px neutral outline (>=3:1 on bg in both themes), and a field
+   being typed in only firms its border from --line to --line3. */
+:focus{outline:0}
+:focus-visible{outline:1px solid var(--focus);outline-offset:2px}
+.card:focus-visible,.seg button:focus-visible,.seg2 button:focus-visible,.menu button:focus-visible,.row:focus-visible,.rl:focus-visible,.prl:focus-visible,.erow:focus-visible{outline-offset:-1px}
+textarea:focus-visible,input:focus-visible{outline:0}
+/* radii back on the scale (7px and 8px were strays) */
+.row,.fold{border-radius:var(--r2)}
+/* an empty composer's send is a quiet tint, not a faded black square */
+.send:not(.rdy){opacity:1;background:var(--kbd);color:var(--faint)}
+/* cards keep the same measure as the activity under them, so a wide track pane has one column */
+.cards>.card{max-width:var(--measure)}
 
 }
