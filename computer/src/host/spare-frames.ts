@@ -25,6 +25,13 @@ const ANSWERS = {
   checkout: 'checked-out',
 } as const;
 
+/**
+ * A runner's request as the gateway gets it (work 080): from the session the host serves on that runner's socket. A
+ * `from` the runner wrote itself is overwritten, so a thread asks for connections, secrets or threads only for itself.
+ */
+export const relayed = <M extends Extract<RunnerToHost, { t: 'spawn' | 'read' | 'post' | 'secret-request' | 'connection-request' }>>(m: M, key: string) =>
+  ({ ...m, from: key });
+
 /** True for what a runner with no thread is heard on. A `report` is not among them: start-runner.ts stops the runner that sends one. */
 export const spareMay = (m: RunnerToHost) => m.t === 'spare' || m.t === 'telemetry' || m.t === 'reply';
 

@@ -92,6 +92,7 @@ import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
 import { gatewayUpdates } from './gateway-updates.js';
 import { callRunner as call } from './runner-call.js';
+import { relayed } from './spare-frames.js';
 import { apiHost, type StartOptions } from './api-host.js';
 import { wireFor } from './api-wire.js';
 import { sandboxHost, sandboxWorkspace } from './sandbox/host.js';
@@ -239,7 +240,7 @@ async function onRunner(r: Runner, m: RunnerToHost) {
       if (!link.connected) return send(r.sock, { t: answer, id: m.id, error: 'gateway not connected' } satisfies HostToRunner);
       spawning.set(m.id, r);
       setTimeout(() => spawning.delete(m.id), 60_000).unref();
-      return toGateway({ ...m, from: r.key });
+      return toGateway(relayed(m, r.key));
     }
     case 'preview': // the host probes the port between the gateway's answer and the runner's (previews.ts)
     case 'unpreview': return previews.request(r.key, m, r.sandbox?.record.id).then((a) => send(r.sock, a satisfies HostToRunner));
