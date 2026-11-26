@@ -160,6 +160,13 @@ describe("vault secrets for API sessions", () => {
     const starts = await until(async () => (await frames(stub)).filter((f) => f.t === "start"), (s) => s.length === 1, "form session start");
     expect(named(starts[0]?.secrets)).toEqual(named(pushed[0]?.secrets));
     expect(await write("cs_00000000000000ff")).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    const op = (o: Record<string, unknown>) => inside(stub, (instance) => instance.computerApi(org, caller, o as never));
+    const listed = await op({ op: "secrets.session.list", sessionId: A });
+    expect((listed.body as { secrets: Array<{ name: string }> }).secrets.map((x) => x.name)).toEqual(["FORM_TOKEN", "SESSION_KEY"]);
+    expect(JSON.stringify(listed)).not.toContain("form-fixture");
+    expect(await op({ op: "secrets.session.delete", sessionId: A, name: "FORM_TOKEN" })).toEqual({ status: 204 });
+    expect(await op({ op: "secrets.session.list", sessionId: "cs_00000000000000ff" })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    expect(await op({ op: "secrets.session.delete", sessionId: "cs_00000000000000ff", name: "FORM_TOKEN" })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
   });
 
   it("pushSecrets reaches API sessions with no Slack owner, by linked owner too; Slack sessions as before", async () => {

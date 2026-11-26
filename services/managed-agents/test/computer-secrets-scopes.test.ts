@@ -57,6 +57,27 @@ describe("secrets routes", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("routes a session's list (sessions:read) and delete (secrets:write); a session's key gets neither", async () => {
+    const seen: unknown[] = [];
+    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
+    const go = (identity: RequestIdentity, method: string, path: string) =>
+      routeComputerApi(new Request(`https://blue.test/v1/computer${path}`, { method }), {} as never, identity, "org_1", stub, path);
+    const wildcard = { ...person, apiKey: { ...key, scopes: ["sandbox:*"] } } as RequestIdentity;
+    expect((await go(wildcard, "GET", "/sessions/cs_test/secrets")).status).toBe(204);
+    expect((await go(wildcard, "DELETE", "/sessions/cs_test/secrets/TOKEN")).status).toBe(403);
+    expect((await go(person, "DELETE", "/sessions/cs_test/secrets/TOKEN")).status).toBe(204);
+    const bad = await go(person, "DELETE", "/sessions/cs_test/secrets/9BAD");
+    expect(bad.status).toBe(404);
+    expect(await code(bad)).toMatchObject({ code: "secret_not_found" });
+    const session = { ...person, principal: "computer", apiKey: { ...key, scopes: ["secrets:write", "sessions:read"] } } as RequestIdentity;
+    expect(await code(await go(session, "GET", "/sessions/cs_test/secrets"))).toMatchObject({ reason: "computer_principal" });
+    expect(await code(await go(session, "DELETE", "/sessions/cs_test/secrets/TOKEN"))).toMatchObject({ reason: "computer_principal" });
+    expect(seen).toEqual([
+      { op: "secrets.session.list", sessionId: "cs_test" },
+      { op: "secrets.session.delete", sessionId: "cs_test", name: "TOKEN" },
+    ]);
+  });
+
   it("routes organization secrets to the Computer, needing secrets:write to change one", async () => {
     const seen: unknown[] = [];
     const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
