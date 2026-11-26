@@ -40,7 +40,7 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
     let deltas = format == Format::StreamJson && args.include_partial_messages;
     let (wire, rx) = ctx.open_wire(attaches, deltas).await?;
     let pairs: Vec<(String, bool)> = sessions.iter().map(|s| (s.clone(), from == From::Start)).collect();
-    let mut f = Follower::new(wire, rx, &pairs);
+    let mut f = Follower::new(ctx.http.clone(), wire, rx, &pairs);
     let mut trackers: Vec<Tracker> = sessions.iter().map(|s| Tracker::new(s, Goal::Settled, if args.follow { OnAsk::Wait } else { OnAsk::Fail }, false)).collect();
     let style = Style { color: ctx.color };
     let several = sessions.len() > 1;

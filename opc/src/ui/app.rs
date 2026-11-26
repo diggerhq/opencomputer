@@ -417,7 +417,7 @@ impl<'a> App<'a> {
                     if first {
                         // Attaching to work on a suspended session wakes it.
                         if info.session.status == "suspended" && !self.m.read_only {
-                            self.call("sessions.resume", json!({}), None);
+                            self.write("/resume", json!({}), None, None);
                         }
                         if let Some(t) = info.earlier_turns.as_ref().filter(|_| self.show_earlier) {
                             self.m.earlier(t);
@@ -593,14 +593,11 @@ impl<'a> App<'a> {
 
     fn send_now(&mut self, out: u64, queue: bool) {
         let Some(o) = self.m.outgoing.iter().find(|o| o.id == out) else { return };
-        let Some(w) = self.wire.clone() else { return };
-        let params = json!({
-            "sessionId": self.m.session_id,
-            "input": o.text,
-            "ifBusy": if queue { "queue" } else { "steer" },
-            "idempotencyKey": self.idem(&format!("send:{out}")),
-        });
-        self.futs.push(Box::pin(async move { Bg::Sent { out, result: w.call("turns.send", params).await } }));
+        let body = json!({"input": o.text, "ifBusy": if queue { "queue" } else { "steer" }});
+        let key = self.idem(&format!("send:{out}"));
+        let path = crate::http::session_path(&self.m.session_id, "/turns");
+        let http = self.ctx.http.clone();
+        self.futs.push(Box::pin(async move { Bg::Sent { out, result: http.post(&path, &body, Some(&key)).await } }));
     }
 
     fn flush_unsent(&mut self) {
@@ -714,7 +711,6 @@ impl<'a> App<'a> {
         for p in self.m.take_pending() {
             self.ed.restore(&p.text);
         }
-        let Some(w) = self.wire.clone() else { return };
         if self.m.read_only {
             self.m.error("read-only: cannot interrupt from this terminal");
             return;
@@ -724,27 +720,32 @@ impl<'a> App<'a> {
             return;
         }
         self.m.interrupting(now);
-        let mut params = json!({"sessionId": self.m.session_id, "idempotencyKey": self.idem(&format!("interrupt:{now}"))});
+        let mut body = json!({});
         if self.m.queued.is_empty()
             && let Some(t) = self.m.active_turn_id()
         {
-            params["turnId"] = json!(t);
+            body["turnId"] = json!(t);
         }
+        let idem = self.idem(&format!("interrupt:{now}"));
+        let path = crate::http::session_path(&self.m.session_id, "/interrupt");
+        let http = self.ctx.http.clone();
         self.m.set_fact("interrupting…", now);
         let key = self.tel.control(Control::Interrupt, None, Instant::now());
         self.futs.push(Box::pin(async move {
-            match w.call("sessions.interrupt", params).await {
+            match http.post(&path, &body, Some(&idem)).await {
                 Ok(_) => Bg::Interrupted { key, fail: None },
                 Err(e) => Bg::Interrupted { key, fail: Some(format!("interrupt failed: {}", e.message)) },
             }
         }));
     }
 
-    fn call(&mut self, method: &'static str, mut params: Value, ok: Option<String>) {
-        let Some(w) = self.wire.clone() else { return };
-        params["sessionId"] = json!(self.m.session_id);
+    /// A session write: `POST /sessions/{id}<rest>` over HTTP, through the
+    /// session's inbox, as every write is; never the wire.
+    fn write(&mut self, rest: &str, body: Value, key: Option<String>, ok: Option<String>) {
+        let path = crate::http::session_path(&self.m.session_id, rest);
+        let http = self.ctx.http.clone();
         self.futs.push(Box::pin(async move {
-            match w.call(method, params).await {
+            match http.post(&path, &body, key.as_deref()).await {
                 Ok(_) => ok.map(Bg::Note).unwrap_or(Bg::Quiet),
                 Err(e) => Bg::Fail(e.message),
             }
@@ -1040,21 +1041,20 @@ impl<'a> App<'a> {
             }
             AskOut::Answer(body) => {
                 let always = if body.get("decision").and_then(Value::as_str) == Some("always") { a.ask.approval.as_ref().and_then(|x| x.always_allows.clone()) } else { None };
-                // The schema's `asks.answer` takes the answer whole, as `answer`.
-                let params = json!({"sessionId": self.m.session_id, "askId": ask_id, "answer": body});
+                let path = crate::http::session_path(&self.m.session_id, &format!("/asks/{}/answer", crate::net::encode(&ask_id)));
+                let http = self.ctx.http.clone();
                 self.answered.insert(ask_id.clone());
                 self.ask_focus = false;
-                let Some(w) = self.wire.clone() else { return };
                 let key = self.tel.control(Control::Answer, None, Instant::now());
-                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always, key, result: w.call("asks.answer", params).await } }));
+                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always, key, result: http.post(&path, &body, None).await } }));
             }
             AskOut::Dismiss => {
                 self.answered.insert(ask_id.clone());
                 self.ask_focus = false;
-                let params = json!({"sessionId": self.m.session_id, "askId": ask_id});
-                let Some(w) = self.wire.clone() else { return };
+                let path = crate::http::session_path(&self.m.session_id, &format!("/asks/{}/dismiss", crate::net::encode(&ask_id)));
+                let http = self.ctx.http.clone();
                 let key = self.tel.control(Control::Answer, None, Instant::now());
-                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always: None, key, result: w.call("asks.dismiss", params).await } }));
+                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always: None, key, result: http.post(&path, &json!({}), None).await } }));
             }
             AskOut::Web => {
                 let url = self.ctx.url_for(None, &self.m.session_id);
@@ -1133,7 +1133,7 @@ impl<'a> App<'a> {
                     return;
                 }
                 let name = self.m.subs.iter().find(|s| s.sa.id == key).map(|s| s.sa.name.clone()).unwrap_or_default();
-                self.call("subagents.stop", json!({"subagentId": key}), Some(format!("stopping \"{name}\"")));
+                self.write(&format!("/subagents/{}/stop", crate::net::encode(&key)), json!({}), None, Some(format!("stopping \"{name}\"")));
             }
             _ => {}
         }
@@ -1185,7 +1185,14 @@ impl<'a> App<'a> {
         }
         let mut p = Map::new();
         p.insert(field.to_string(), value);
-        self.call("sessions.update", Value::Object(p), None);
+        let path = crate::http::session_path(&self.m.session_id, "");
+        let http = self.ctx.http.clone();
+        self.futs.push(Box::pin(async move {
+            match http.patch(&path, &Value::Object(p)).await {
+                Ok(_) => Bg::Quiet,
+                Err(e) => Bg::Fail(e.message),
+            }
+        }));
     }
 
     fn setting_values(&self, kind: ListKind) -> Vec<(String, String)> {
@@ -1292,13 +1299,14 @@ impl<'a> App<'a> {
                     self.m.error("read-only: cannot compact from this terminal");
                     return;
                 }
-                let mut p = json!({"idempotencyKey": self.idem(&format!("compact:{now}"))});
+                let mut p = json!({});
                 if let Some(i) = instr {
                     p["instructions"] = json!(i);
                 }
                 let when = if self.m.turn_running() { "compacting after the running turn" } else { "compacting" };
                 self.m.note(when);
-                self.call("sessions.compact", p, None);
+                let key = self.idem(&format!("compact:{now}"));
+                self.write("/compact", p, Some(key), None);
             }
             Cmd::Allowed => self.m.note("/allowed is not available yet: the API has no route for a session's allowed rules"),
             Cmd::Diff { stat } => {
@@ -1355,16 +1363,17 @@ impl<'a> App<'a> {
                     self.m.error("read-only: cannot suspend from this terminal");
                     return;
                 }
-                self.call("sessions.suspend", json!({"idempotencyKey": self.idem(&format!("suspend:{now}"))}), Some("suspended".into()));
+                let key = self.idem(&format!("suspend:{now}"));
+                self.write("/suspend", json!({}), Some(key), Some("suspended".into()));
             }
             Cmd::Archive => {
                 if self.m.read_only {
                     self.m.error("read-only: cannot archive from this terminal");
                     return;
                 }
-                let Some(w) = self.wire.clone() else { return };
-                let p = json!({"sessionId": id, "archived": true});
-                self.futs.push(Box::pin(async move { Bg::Archived(w.call("sessions.update", p).await) }));
+                let path = crate::http::session_path(&id, "");
+                let http = self.ctx.http.clone();
+                self.futs.push(Box::pin(async move { Bg::Archived(http.patch(&path, &json!({"archived": true})).await) }));
             }
             Cmd::Web => {
                 let url = self.ctx.url_for(None, &id);
