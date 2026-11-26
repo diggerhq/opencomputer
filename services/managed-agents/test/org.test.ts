@@ -162,6 +162,9 @@ describe("Org: session access (spec 36.2)", () => {
       expect(await org.settings(a)).toEqual({ apiAccessDefault: "owner" });
       expect(await org.setSettings(a, { apiAccessDefault: "org" })).toMatchObject({ ok: false, code: "admin_required", status: 403 });
       expect(await org.setSettings(admin, { apiAccessDefault: "everyone" as never })).toMatchObject({ ok: false, code: "invalid_request", field: "apiAccessDefault" });
+      // Decoded inside the transaction with the same Schema the HTTP API declares (synchronous, no Effect runtime).
+      expect(await org.setSettings(admin, { colour: "red" })).toMatchObject({ ok: false, code: "invalid_request", field: "colour", message: "Unknown field colour." });
+      expect(await org.setSettings(admin, {})).toMatchObject({ ok: false, code: "invalid_request", message: "The body names nothing to change." });
       expect(await org.setSettings(admin, { apiAccessDefault: "org" })).toEqual({ ok: true, settings: { apiAccessDefault: "org" } });
       expect(await org.createSession(a, { id: SID })).toMatchObject({ ok: true, session: { access: { mode: "org", people: [] } } });
       expect(await org.getSession(member("usr_b", "access-default"), SID)).toMatchObject({ ok: true, session: { canManageAccess: false } });

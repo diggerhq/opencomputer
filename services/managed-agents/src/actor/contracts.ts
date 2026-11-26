@@ -89,10 +89,9 @@ export interface SessionPatch {
 }
 /** What one who manages a session's access but may not use it reads of it (an admin outside it). */
 export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };
-/** The organization's settings for the session API (spec 36.1). */
-export interface OrgSettings {
-  apiAccessDefault: "owner" | "org";
-}
+/** The organization's settings for the session API (spec 36.1): declared once, in contract/settings.ts. */
+export type { OrgSettings } from "../contract/settings.js";
+import type { OrgSettings } from "../contract/settings.js";
 /** `GET /sessions`'s query, as today, plus `slackThread`. */
 export interface ListQuery {
   owner?: string;
@@ -185,7 +184,7 @@ export interface OrgRpc {
   sessionAccess(p: Principal, id: string): Promise<Reply<OutsideAccess>>;
   settings(p: Principal): Promise<OrgSettings>;
   /** Admins only (`admin_required`). */
-  setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>>;
+  setSettings(p: Principal, patch: unknown): Promise<Reply<{ settings: OrgSettings }>>;
 
   // the feed and the work part
   feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;

@@ -57,6 +57,7 @@ import * as repositories from "./repository.js";
 import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";
 import { STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
+import * as orgSettings from "./settings.js";
 import { accessOf, readSession, trackOfAgent, type PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
@@ -275,12 +276,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   async settings(p: Principal): Promise<OrgSettings> {
     this.seen(p);
-    return sessions.settings(this.sql);
+    return orgSettings.settings(this.sql);
   }
 
-  async setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>> {
+  async setSettings(p: Principal, patch: unknown): Promise<Reply<{ settings: OrgSettings }>> {
     this.seen(p);
-    return sessions.setSettings(this.sql, p, patch);
+    return orgSettings.setSettings(this.sql, p, patch);
   }
 
   // ------------------------------------------------------------------ the feed and the work part

@@ -3,13 +3,14 @@
 
 import type { Origin, SessionAccess } from "../computer/api-types.js";
 import { isSessionId, mintId } from "../computer/session-ids.js";
-import type { Access, CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, Reply, Refusal, SessionPage, SessionPatch, SessionRow } from "../actor/contracts.js";
+import type { Access, CreateSession, ListQuery, OutsideAccess, PlaceRow, Reply, Refusal, SessionPage, SessionPatch, SessionRow } from "../actor/contracts.js";
 import { cursor } from "../actor/cursor.js";
 import { byOf, type Principal } from "../actor/principal.js";
 import type { Sql } from "../actor/sql.js";
 import { runMutation } from "./mutations/index.js";
 import { fullName, storedRepository } from "./repository.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
+import { settings } from "./settings.js";
 import {
   AGENT_THREADS_MAX,
   accessOf,
@@ -126,24 +127,6 @@ export function sessionAccess(sql: Sql, p: Principal, id: string): Reply<Outside
   const s = readSession(sql, id);
   if (!s || seesSession(sql, p, s) || !managesAccess(p, s)) return notFound();
   return { ok: true, ...outside(p, s) };
-}
-
-const DEFAULTS: OrgSettings = { apiAccessDefault: "owner" };
-
-/** The organization's settings for the session API; any member reads them. */
-export function settings(sql: Sql): OrgSettings {
-  const row = sql.exec<{ api_access_default: string | null }>("SELECT api_access_default FROM meta WHERE k = 1")[0]!;
-  return { apiAccessDefault: row.api_access_default === "org" ? "org" : DEFAULTS.apiAccessDefault };
-}
-
-export function setSettings(sql: Sql, p: Principal, patch: Partial<OrgSettings>): Reply<{ settings: OrgSettings }> {
-  if (!(isMember(p) && p.admin)) return refusal("admin_required", 403, "Only an organization admin can change these settings.");
-  const fields = patch && typeof patch === "object" && !Array.isArray(patch) ? Object.keys(patch) : null;
-  if (!fields?.length) return refusal("invalid_request", 400, "The body names nothing to change.", { field: "" });
-  for (const field of fields) if (field !== "apiAccessDefault") return refusal("invalid_request", 400, `Unknown field ${field}.`, { field });
-  if (patch.apiAccessDefault !== "owner" && patch.apiAccessDefault !== "org") return refusal("invalid_request", 400, "apiAccessDefault is owner or org.", { field: "apiAccessDefault" });
-  sql.exec("UPDATE meta SET api_access_default = ? WHERE k = 1", patch.apiAccessDefault);
-  return { ok: true, settings: settings(sql) };
 }
 
 // ------------------------------------------------------------------ create (spec 40.1)

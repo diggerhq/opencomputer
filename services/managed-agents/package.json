@@ -38,6 +38,7 @@
     "@tursodatabase/api": "^2.0.5",
     "@xmldom/xmldom": "^0.9.12",
     "croner": "^9.1.0",
+    "effect": "4.1.6",
     "jose": "^6.2.4",
     "opencode-ai": "1.18.4",
     "ws": "^8.21.1"

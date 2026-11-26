@@ -17,7 +17,7 @@
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
-import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
+import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
@@ -29,6 +29,7 @@ import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
+import { serveDeclared } from "../http/api/serve.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
@@ -177,7 +178,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
 
 /** The scope a route needs. */
 function scopeOf(op: string): ApiScope | null {
-  if (op === "me" || op === "ticket" || op === "settings.get") return null;
+  if (op === "me" || op === "ticket") return null;
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
@@ -227,6 +228,20 @@ class Reply {
     const response = this.send(status, { error: { ...extra, code, message, requestId: this.requestId, retryable } });
     if (typeof extra.retryAfterMs === "number") response.headers.set("retry-after", String(Math.max(1, Math.ceil(extra.retryAfterMs / 1000))));
     return response;
+  }
+
+  /** A response of the declared API (http/api): this request's headers on it, its error code in the facts. */
+  async declared(response: Response): Promise<Response> {
+    if (response.status >= 400) {
+      const code = ((await response.clone().json().catch(() => null)) as { error?: { code?: string } } | null)?.error?.code;
+      if (code) this.facts.errorCode = code;
+    }
+    const headers = new Headers(response.headers);
+    headers.set("content-type", "application/json; charset=utf-8");
+    headers.set("cache-control", "no-store");
+    headers.set("x-request-id", this.requestId);
+    headers.set("server-timing", `blue;dur=${(performance.now() - this.started).toFixed(1)}`);
+    return new Response(response.body, { status: response.status, headers });
   }
 
   of(reply: ApiReply): Response {
@@ -419,6 +434,11 @@ async function routeApi(
   if (claimed !== null && claimed !== `${p.org}/${p.subject}`) {
     return out.error(403, "principal_mismatch", "x-oc-principal is not this credential's principal.");
   }
+  if (DECLARED_OPS.has(route.op)) {
+    // Declared with Effect HttpApi (http/api/routes.ts): its own schemas, scope check and errors.
+    const response = await serveDeclared(request, suffix, { principal: p, requestId: out.requestId, org: orgOf(env, p.org), timed: (call) => timedDo(out.facts, call) });
+    return out.declared(response);
+  }
   if (ACTOR_OPS.has(route.op)) {
     // `Session.owner`'s name and email: the credential's, for a person or their key.
     const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
@@ -553,8 +573,11 @@ const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
+  "live", "work.tell", "work.diff", "slack.post",
 ]);
+
+/** The routes declared with Effect HttpApi (http/api/routes.ts); the rest join group by group. */
+const DECLARED_OPS = new Set(["settings.get", "settings.patch"]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
@@ -835,14 +858,6 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       return resultDiff(request, env, p, route.sub!, org, out);
     case "slack.post":
       return slackPost(request, env, p, route.sub!, out);
-    case "settings.get":
-      return out.send(200, { settings: await timedDo(out.facts, org().settings(p)) });
-    case "settings.patch": {
-      const parsed = await bodyOf(request);
-      if ("error" in parsed) return out.error(...parsed.error);
-      const r = await timedDo(out.facts, org().setSettings(p, parsed.value as Partial<OrgSettings>));
-      return r.ok ? out.send(200, { settings: r.settings }) : refusalOf(out, r);
-    }
   }
   if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
