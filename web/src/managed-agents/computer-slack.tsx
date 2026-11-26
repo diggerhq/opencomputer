@@ -11,6 +11,14 @@ import {
 
 // The organization's Slack app, shared by the computer page and Connections.
 
+function useSlackInstall() {
+  return useMutation({
+    mutationFn: startComputerSlackInstall,
+    onSuccess: (url) => window.location.assign(url),
+    onError: (error) => notifyError("Couldn't start the Slack install.", error),
+  })
+}
+
 export function SlackInstallButton({
   variant = 'default',
   size = 'default',
@@ -20,11 +28,7 @@ export function SlackInstallButton({
   size?: 'default' | 'sm' | 'lg'
   label?: string
 }) {
-  const install = useMutation({
-    mutationFn: startComputerSlackInstall,
-    onSuccess: (url) => window.location.assign(url),
-    onError: (error) => notifyError("Couldn't start the Slack install.", error),
-  })
+  const install = useSlackInstall()
   return (
     <Button
       variant={variant}
@@ -40,6 +44,33 @@ export function SlackInstallButton({
       )}
       {label}
     </Button>
+  )
+}
+
+/** The same install, as a quiet text link beside a bigger call to action. */
+export function SlackInstallLink({
+  label,
+  onClick,
+}: {
+  label: string
+  onClick?: () => void
+}) {
+  const install = useSlackInstall()
+  const pending = install.isPending || install.isSuccess
+  return (
+    <button
+      type="button"
+      // Stays pending through the navigation to Slack.
+      disabled={pending}
+      onClick={() => {
+        onClick?.()
+        install.mutate()
+      }}
+      className="hover:text-foreground decoration-muted-foreground/40 inline-flex items-center gap-1.5 underline underline-offset-4 transition-colors disabled:opacity-60"
+    >
+      {pending ? <Loader2 className="size-3 animate-spin" aria-hidden /> : null}
+      {label}
+    </button>
   )
 }
 
