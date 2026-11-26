@@ -5,7 +5,7 @@
 
 import type { ComputerEdgeEnv } from "../config.js";
 import type { CalvinTraceContext } from "../protocol.js";
-import type { SlackMessageJob } from "../slack.js";
+import type { SlackMessageJob } from "../../slack/slack-api.js";
 import { uuidv7 } from "./envelope.js";
 import { type GatewayTelemetry, SURFACE, gatewayTelemetry, mintTrace, traceFields } from "./gateway.js";
 

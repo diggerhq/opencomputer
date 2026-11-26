@@ -77,7 +77,7 @@ describe("Org's transaction", () => {
       });
       expect(sql.exec("SELECT title, version FROM session")).toEqual([{ title: null, version: 1 }]);
       expect(sql.exec("SELECT version, occ FROM meta")).toEqual([{ version: 1, occ: 0 }]);
-      expect(owed.has(sql, "poke:wake")).toBe(false);
+      expect(sql.exec("SELECT call FROM _owed WHERE call IN ('SessionLog.wake', 'Slack.notify')")).toEqual([]);
     });
   });
 });
@@ -105,8 +105,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
     const out: OrgOut = {
       computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), exportSessions: (after) => fakes.exportSessions(after) }),
       log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, machine: name }) }),
-      slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }) }),
-      delivery: (kind) => ({ poke: async (head) => void fakes.calls.push(["Delivery.poke", kind, head]) }),
+      slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),
       boardRepository: async () => fakes.boardRepository ?? null,
@@ -400,9 +399,12 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       await org.acceptSummary(pub(thread, 2, { status: "running", lastSeq: 5 }, [{ epoch: 1, seq: 5, kind: "message.received", by: "user:usr_a", at: Date.now() }]));
       expect(sql.exec("SELECT done_at FROM place WHERE session_id = ?", thread)).toEqual([{ done_at: null }]);
 
-      const changed = sql.exec<{ n: number }>("SELECT n FROM occurrence WHERE kind = 'result.changed' ORDER BY n DESC LIMIT 1")[0]!.n;
-      expect(await org.wakeTargets(changed)).toEqual([agentSession]);
-      expect(await org.digest(agentSession, 1, changed)).toContain("Fix the login redirect");
+      // The result's change and the reply wake the track's agent, as one turn when it is due.
+      expect(sql.exec("SELECT grp, call FROM _owed WHERE call = 'SessionLog.wake'")).toEqual([{ grp: `wake:${agentSession}`, call: "SessionLog.wake" }]);
+      sql.exec("UPDATE _owed SET at = 0 WHERE call = 'SessionLog.wake'");
+      await org.drain();
+      const wakes = fakes.calls.filter((c) => c[0] === "SessionLog.accept" && (c[1] as { kind: string; body: { input?: string } }).body.input?.startsWith(`Thread ${thread}`));
+      expect(wakes).toHaveLength(1);
 
       const page = await org.threads(a, {});
       expect([...new Set(page.rows.map((r) => r.kind))].sort()).toEqual(["place", "result", "session"]);
@@ -422,7 +424,10 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       expect(await org.acceptMachine({ ...machine, revision: 2, previews: [] })).toEqual({ accepted: false });
       const machineOcc = sql.exec<{ n: number }>("SELECT n FROM occurrence WHERE kind = 'machine.changed'");
       expect(machineOcc).toHaveLength(1);
-      expect(await org.echo(machineOcc[0]!.n)).toBeNull();
+      // No Slack thread waits on the machine: the echo is owed and sends nothing.
+      await org.drain();
+      expect(sql.exec("SELECT 1 FROM _owed WHERE call = 'Slack.notify'")).toEqual([]);
+      expect(fakes.calls.filter((c) => c[0] === "Slack.notify")).toEqual([]);
 
       // Ageing: quiet and read for 7 days goes to Earlier; not while working.
       age(sql, Date.now() + 8 * 24 * 60 * 60 * 1_000);
@@ -433,6 +438,76 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       expect((await org.threads(a, { earlier: true })).rows.filter((r) => r.kind === "session")).toHaveLength(1);
 
       await org.linkPerson("slack:T1:U1", "usr_a");
+    });
+  });
+});
+
+describe("Org: wakes and the Slack echo (spec 40.6)", () => {
+  it("gathers a track agent's wakes into one turn, not woken by its own act, retried while its inbox is full", async () => {
+    await withActor("wake", async (org, fakes, sql) => {
+      const a = member("usr_a", "wake");
+      const thread = "cs_0000000000000060";
+      const agentSession = "cs_0000000000000061";
+      await org.createSession(a, { id: thread, input: "Fix the login redirect" });
+      await org.mutate(a, { name: "track.create", args: { tid: "trk_0002", agentSessionId: agentSession, name: "Login", sid: thread } });
+      await org.drain();
+      const wakeRows = () => sql.exec<{ body: string; at: number; tries: number }>("SELECT body, at, tries FROM _owed WHERE call = 'SessionLog.wake'").map((r) => ({ ...JSON.parse(r.body), at: r.at, tries: r.tries }));
+      const occ = (seq: number, kind: string, by: string) => [{ epoch: 1, seq, kind, by, at: Date.now() }];
+      const turns = () => fakes.calls.filter((c) => c[0] === "SessionLog.accept" && (c[1] as { kind: string }).kind === "turn").map((c) => c[1] as { id: string; body: { input: string; ifBusy: string } });
+      expect(wakeRows()).toEqual([]);
+      fakes.calls.length = 0;
+
+      await org.acceptSummary(pub(thread, 1, { status: "idle", lastSeq: 1, lastText: "Opened it." }, occ(1, "turn.completed", `agent:${thread}`)));
+      const [first] = wakeRows();
+      expect(first).toMatchObject({ sessionId: agentSession, fromN: expect.any(Number), tries: 0 });
+      expect(first!.id).toMatch(/^tn_[0-9a-z]{12}$/);
+      expect(first!.at).toBeGreaterThan(Date.now() + 15_000);
+      await org.acceptSummary(pub(thread, 2, { status: "idle", lastSeq: 2 }, occ(2, "ask.opened", `agent:${thread}`)));
+      // The track's agent's own act wakes nobody.
+      await org.acceptSummary(pub(thread, 3, { status: "idle", lastSeq: 3 }, occ(3, "turn.completed", `agent:${agentSession}`)));
+      const [merged, ...more] = wakeRows();
+      expect(more).toEqual([]);
+      expect(merged).toMatchObject({ id: first!.id, fromN: first!.fromN, toN: first!.fromN + 1, at: first!.at });
+
+      // Debounced: nothing goes before it is due.
+      await org.drain();
+      expect(turns()).toEqual([]);
+
+      // Due, and the inbox full: it stays owed with the same id, and goes on the retry.
+      const accept = org.out.log;
+      let full = true;
+      org.out = {
+        ...org.out,
+        log: (sessionId) => ({
+          ...accept(sessionId),
+          accept: async (p, entry) => (full ? ((full = false), { ok: false, code: "inbox_full" }) : accept(sessionId).accept(p, entry)),
+        }),
+      };
+      sql.exec("UPDATE _owed SET at = 0 WHERE call = 'SessionLog.wake'");
+      await org.drain();
+      expect(turns()).toEqual([]);
+      expect(wakeRows()).toMatchObject([{ id: first!.id, tries: 1 }]);
+      sql.exec("UPDATE _owed SET at = 0 WHERE call = 'SessionLog.wake'");
+      await org.drain();
+      expect(turns()).toMatchObject([{ id: first!.id, body: { ifBusy: "queue", input: expect.stringContaining(`Thread ${thread} "Fix the login redirect"`) } }]);
+      expect(wakeRows()).toEqual([]);
+
+      // What comes after it is a new wake.
+      await org.acceptSummary(pub(thread, 4, { status: "idle", lastSeq: 4 }, occ(4, "turn.completed", `agent:${thread}`)));
+      expect(wakeRows()).toMatchObject([{ fromN: first!.fromN + 3, toN: first!.fromN + 3 }]);
+    });
+  });
+
+  it("echoes a machine's change to the Slack threads waiting on it", async () => {
+    await withActor("echo", async (org, fakes, sql) => {
+      const a = member("usr_a", "echo");
+      const thread = "cs_0000000000000070";
+      await org.createSession(a, { id: thread, input: "Fix the login redirect" });
+      await org.acceptSummary(pub(thread, 1, { status: "running" }));
+      sql.exec("UPDATE session SET slack_thread_key = 'T1:C1:1.2' WHERE id = ?", thread);
+      await org.acceptMachine({ machine: "echo", state: "ready", revision: 1, previews: [], newestCreatedAt: 0 });
+      await org.drain();
+      expect(fakes.calls.filter((c) => c[0] === "Slack.notify")).toEqual([["Slack.notify", { kind: "machine", state: "ready", threadKeys: ["T1:C1:1.2"] }]]);
     });
   });
 });

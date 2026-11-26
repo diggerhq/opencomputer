@@ -29,9 +29,9 @@ import {
   parseInteraction,
   parseSlackEnvelope,
   slackThreadUrl,
-} from "../src/computer/slack.js";
+} from "../src/slack/slack-api.js";
 import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/computer/team-cache.js";
-import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/computer/threads.js";
+import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack/threads.js";
 
 describe("new-thread harness prefixes", () => {
   it.each([

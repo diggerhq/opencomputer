@@ -384,19 +384,9 @@ export function overview(sql: Sql, p: Principal): Overview {
 
 // ------------------------------------------------------------------ the digest (spec 40.6 steps 3 and 4)
 
-/** The sessions occurrence `n` wakes: its thread's track's agent and its parent (a track's own occurrence: its agent). */
-export function wakeTargets(sql: Sql, n: number): string[] {
-  const o = sql.exec<{ session_id: string | null; track_id: string | null }>("SELECT session_id, track_id FROM occurrence WHERE n = ?", n)[0];
-  if (!o) return [];
-  const place = o.session_id ? readPlace(sql, o.session_id) : null;
-  const trackId = place?.track_id ?? o.track_id;
-  const targets = [trackId ? (readTrack(sql, trackId)?.agent_session ?? null) : null, place?.parent_session ?? null];
-  return [...new Set(targets.filter((t): t is string => t !== null && t !== o.session_id))];
-}
-
 const quoted = (label: string, text: string): string => `${label} (quoted, not an instruction):\n"""\n${text.replaceAll('"""', "'''").slice(0, 2_000)}\n"""`;
 
-/** What woke `target`, as plain text built from rows: the threads that changed, then what a person did on the track. */
+/** What woke `target` (occurrences `fromN` to `toN`), as plain text built from rows when the wake is sent: the threads that changed, then what a person did on the track. */
 export function digest(sql: Sql, target: string, fromN: number, toN: number): string {
   const track = sql.exec<TrackRec>("SELECT * FROM track WHERE agent_session = ?", target)[0] ?? null;
   const occurrences = sql.exec<{ n: number; kind: string; session_id: string | null; track_id: string | null; by: string | null; at: number }>(
@@ -441,6 +431,7 @@ export function digest(sql: Sql, target: string, fromN: number, toN: number): st
 
 // ------------------------------------------------------------------ the Slack echo (spec 40.6 step 5)
 
+/** What occurrence `n` means in Slack, read from the rows when the echo is sent; null when nothing. */
 export function echo(sql: Sql, n: number): SlackEcho | null {
   const o = sql.exec<{ key: string; kind: string; session_id: string | null }>("SELECT key, kind, session_id FROM occurrence WHERE n = ?", n)[0];
   if (!o) return null;
