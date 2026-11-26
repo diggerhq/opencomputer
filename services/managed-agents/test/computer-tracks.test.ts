@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { DeliveredOutcome, ExportedSession, InboxEntry } from "../src/actor/contracts.js";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
+import { linkSlack } from "./fixtures/computer-link.js";
 
 /**
  * Tracks and threads, the Computer actor (spec 36.3, 40.2, 40.5): `start` and `drain` against a fake
@@ -39,7 +40,7 @@ interface Fakes {
 /** An organization's Computer with fake actors around it; no host yet. */
 async function computer(org: string): Promise<{ stub: Stub; fakes: Fakes }> {
   const stub = computers().getByName(org);
-  await stub.linkSlack(org, { teamId: `T${org}`, teamName: "Tracks", botUserId: "UBOT", botToken: "xoxb-tracks-token" });
+  await linkSlack(stub, org, { teamId: `T${org}`, teamName: "Tracks", botUserId: "UBOT", botToken: "xoxb-tracks-token" });
   const fakes: Fakes = { entries: [], delivered: [], published: [], admitted: true, refused: false };
   await inside(stub, (instance) => {
     const log = {

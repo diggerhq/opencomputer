@@ -129,7 +129,7 @@ function ManagedProjectContext({
   )
 }
 
-function OrgSwitcher() {
+export function OrgSwitcher() {
   const { user, switchOrg } = useAuth()
   const [switching, setSwitching] = useState(false)
   const orgs = user?.orgs ?? []

@@ -180,11 +180,13 @@ async fn signal() {
 pub async fn stopped(f: &Follower, session_id: &str, turn_id: Option<&str>, stop: Stop, interrupt: bool) -> Error {
     let mut interrupted = false;
     if interrupt {
-        let mut p = json!({"sessionId": session_id, "idempotencyKey": ids::idempotency_key()});
-        if let Some(t) = turn_id {
-            p["turnId"] = json!(t);
-        }
-        let call = f.wire.call("sessions.interrupt", p);
+        let body = match turn_id {
+            Some(t) => json!({"turnId": t}),
+            None => json!({}),
+        };
+        let key = ids::idempotency_key();
+        let path = session_path(session_id, "/interrupt");
+        let call = f.http.post(&path, &body, Some(&key));
         interrupted = matches!(tokio::time::timeout(Duration::from_secs(5), call).await, Ok(Ok(_)));
     }
     let tail = if interrupted { "interrupted the turn".to_string() } else { format!("still running: opc a {session_id}") };
@@ -319,7 +321,7 @@ async fn print(ctx: &mut Ctx, args: RunArgs, message: String) -> Result<i32> {
             let (wire, rx) = wire?;
             let sent = sent?;
             let steered = matches!(sent.delivery.as_str(), "steered" | "held").then(|| message.clone());
-            let f = Follower::new(wire, rx, &[(sid.clone(), false)]);
+            let f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.clone(), false)]);
             (sid, sent.turn, sent.seq, steered, (f, resolved.session.map(|s| s.settings)))
         }
         None => {
@@ -328,7 +330,7 @@ async fn print(ctx: &mut Ctx, args: RunArgs, message: String) -> Result<i32> {
             let (wire, created) = tokio::join!(wire, create(ctx, &minted, &args.new, Some(&message)));
             let (wire, rx) = wire?;
             let (created, sent) = created?;
-            let mut f = Follower::new(wire, rx, &[(minted.clone(), true)]);
+            let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(minted.clone(), true)]);
             let sid = created.session.id.clone();
             if sid != minted {
                 // A repeat of an earlier create: follow the original session.

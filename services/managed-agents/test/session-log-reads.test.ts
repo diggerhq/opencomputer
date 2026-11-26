@@ -113,7 +113,7 @@ describe("watch and the publish to Live", () => {
     await log.flush();
     expect(log.fakes.published).toEqual([]);
     expect(await log.stub.watch(member(MATE_ID, { audiences: [] }), Date.now() + 60_000)).toBeNull();
-    expect(await log.stub.watch(member(), Date.now() + 60_000)).toEqual({ head: at(1, 2) });
+    expect(await log.stub.watch(member(), Date.now() + 60_000)).toEqual({ head: at(1, 2), machine: "mc_0000000000000001" });
     const events = fill(log, 3, 4);
     await log.stub.append(log.identity, 1, events);
     await log.flush();

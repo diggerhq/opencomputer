@@ -3,7 +3,7 @@
 // credential check and the Mac app's sign-in, against the real D1 schema.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import worker, { type Env } from "./index";
+import worker, { type Env, LiveCredentials } from "./index";
 import { hashAPIKey } from "./api_keys";
 import { isComputerApiRoute } from "./computer_api";
 import { memberId } from "./principal";
@@ -373,30 +373,20 @@ describe("GET /live", () => {
 });
 
 describe("Live's credential check", () => {
-  const LIVE_KEY = "live-key";
-  const check = (env: Env, body: unknown, key = LIVE_KEY) =>
-    worker.fetch(
-      new Request(`${ORIGIN}/internal/live/credentials`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      { ...env, LIVE_KEY } as Env,
-      ctx(),
-    );
+  const credentials = (env: Env) => new LiveCredentials(ctx(), env);
+  const check = async (env: Env, body: { check?: string[]; token?: string }) =>
+    body.token !== undefined ? { principal: await credentials(env).principal(body.token) } : { revoked: await credentials(env).revoked(body.check!) };
 
-  it("answers only Live", async () => {
+  it("takes at most 500 ids", async () => {
     const { env } = seeded();
-    expect((await check(env, { check: [] }, "wrong")).status).toBe(401);
+    await expect(credentials(env).revoked(Array.from({ length: 501 }, (_, i) => `key_${i}`))).rejects.toThrow();
   });
 
   it("answers a token's principal, null when it does not verify", async () => {
     const { db, env } = seeded();
     const { key, id } = await addKey(db, { createdBy: "computer", sessionKey: SESSION });
-    const res = await check(env, { token: key });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ principal: { org: ORG, subject: SESSION, kind: "agent", credential: { id } } });
-    expect(await (await check(env, { token: "osb_nope" })).json()).toEqual({ principal: null });
+    expect(await check(env, { token: key })).toMatchObject({ principal: { org: ORG, subject: SESSION, kind: "agent", credential: { id } } });
+    expect(await check(env, { token: "osb_nope" })).toEqual({ principal: null });
   });
 
   it("names the credentials that no longer verify", async () => {
@@ -407,8 +397,7 @@ describe("Live's credential check", () => {
     const cookie = `ck:${ORG}:${USER}:${future}:0011223344556677`;
     const stale = `ck:${ORG}:${USER}:1000:0011223344556677`;
     const stranger = `ck:${ORG}:user_someone:${future}:0011223344556677`;
-    const res = await check(env, { check: [kept.id, expired.id, "key-deleted", cookie, stale, stranger] });
-    expect(await res.json()).toEqual({ revoked: [expired.id, "key-deleted", stale, stranger] });
+    expect(await check(env, { check: [kept.id, expired.id, "key-deleted", cookie, stale, stranger] })).toEqual({ revoked: [expired.id, "key-deleted", stale, stranger] });
   });
 
   it("tells managed agents when a key is deleted or a cookie signs out", async () => {
@@ -440,7 +429,6 @@ describe("Live's credential check", () => {
 
 describe("the Mac app's sign-in: PKCE, refresh, devices", () => {
   const REDIRECT = "http://127.0.0.1:53682/callback";
-  const LIVE_KEY = "live-key";
 
   async function pkce(): Promise<{ verifier: string; challenge: string }> {
     const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -492,8 +480,7 @@ describe("the Mac app's sign-in: PKCE, refresh, devices", () => {
   });
 
   it("runs code, token, refresh and revoke end to end", async () => {
-    const { db, env: base } = seeded();
-    const env = { ...base, LIVE_KEY } as Env;
+    const { db, env } = seeded();
     const fetchMock = vi.fn().mockImplementation(async (url: string | URL) =>
       String(url).endsWith("/computer/live") ? upgraded() : Response.json({ protocol: 1 }),
     );
@@ -545,14 +532,12 @@ describe("the Mac app's sign-in: PKCE, refresh, devices", () => {
     expect((await worker.fetch(tokenRequest({ grant_type: "refresh_token", refresh_token: tokens.refresh_token }), env, ctx())).status).toBe(400);
 
     // Live's check knows the device and its token.
-    const liveCheck = (body: unknown) =>
-      worker.fetch(
-        new Request(`${ORIGIN}/internal/live/credentials`, { method: "POST", headers: { authorization: `Bearer ${LIVE_KEY}` }, body: JSON.stringify(body) }),
-        env,
-        ctx(),
-      );
-    expect(await (await liveCheck({ token: next.access_token })).json()).toMatchObject({ principal: { via: "app", credential: { id: tokens.device_id } } });
-    expect(await (await liveCheck({ check: [tokens.device_id] })).json()).toEqual({ revoked: [] });
+    const liveCheck = async (body: { check?: string[]; token?: string }) => {
+      const credentials = new LiveCredentials(ctx(), env);
+      return body.token !== undefined ? { principal: await credentials.principal(body.token) } : { revoked: await credentials.revoked(body.check!) };
+    };
+    expect(await liveCheck({ token: next.access_token })).toMatchObject({ principal: { via: "app", credential: { id: tokens.device_id } } });
+    expect(await liveCheck({ check: [tokens.device_id] })).toEqual({ revoked: [] });
 
     // The devices, and the revoke.
     const cookie = await sessionCookie();
@@ -567,8 +552,8 @@ describe("the Mac app's sign-in: PKCE, refresh, devices", () => {
     expect(JSON.parse(String(revoke![1].body))).toEqual({ org: ORG, credentialId: tokens.device_id });
 
     expect((await worker.fetch(tokenRequest({ grant_type: "refresh_token", refresh_token: next.refresh_token }), env, ctx())).status).toBe(400);
-    expect(await (await liveCheck({ check: [tokens.device_id] })).json()).toEqual({ revoked: [tokens.device_id] });
-    expect(await (await liveCheck({ token: next.access_token })).json()).toEqual({ principal: null });
+    expect(await liveCheck({ check: [tokens.device_id] })).toEqual({ revoked: [tokens.device_id] });
+    expect(await liveCheck({ token: next.access_token })).toEqual({ principal: null });
     expect((await worker.fetch(liveRequest({ "sec-websocket-protocol": `oc.live.v1, oc.bearer.${next.access_token}` }), env, ctx())).status).toBe(401);
     expect(db.prepare("SELECT COUNT(*) AS n FROM app_devices").get()).toEqual({ n: 0 });
   });

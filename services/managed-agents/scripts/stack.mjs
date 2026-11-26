@@ -171,7 +171,6 @@ async function up() {
     BLUE_CHANNEL_ENCRYPTION_KEY: secrets.BLUE_CHANNEL_ENCRYPTION_KEY,
     BLUE_SESSION_INDEX_ADMIN_SECRET: secrets.BLUE_SESSION_INDEX_ADMIN_SECRET,
     COMPUTER_HOST_TOKEN_KEY: secrets.COMPUTER_HOST_TOKEN_KEY,
-    LIVE_KEY: secrets.LIVE_KEY,
     ...optionalSecrets({
       SLACK_COMPUTER_CLIENT_SECRET: "OC_STACK_SLACK_COMPUTER_CLIENT_SECRET",
       SLACK_COMPUTER_SIGNING_SECRET: "OC_STACK_SLACK_COMPUTER_SIGNING_SECRET",
@@ -207,7 +206,7 @@ async function up() {
   );
 
   step("live");
-  deploy(files.live, { LIVE_KEY: secrets.LIVE_KEY });
+  deploy(files.live, {});
 
   step("d1 migrations");
   wrangler([
@@ -522,7 +521,7 @@ function writeConfigs(stack, { bootstrap }) {
       ],
     },
     // The credential check goes to the same stack's api-edge, once it is up.
-    ...(stack.apiEdgeUrl ? { services: [{ binding: "EDGE", service: names.apiEdge }] } : {}),
+    ...(stack.apiEdgeUrl ? { services: [{ binding: "EDGE", service: names.apiEdge, entrypoint: "LiveCredentials" }] } : {}),
     migrations: [{ tag: "v1", new_sqlite_classes: ["LiveDurableObject"] }],
     observability,
   };
@@ -574,7 +573,6 @@ function writeConfigs(stack, { bootstrap }) {
       // Warm computers cost like a free organization's each: opt in per stack.
       COMPUTER_POOL_SIZE: process.env.OC_STACK_COMPUTER_POOL_SIZE || "0",
       // The computer API's rollout gate (api-gate.ts): open, as in production.
-      COMPUTER_API_ORGS: "*",
       SLACK_COMPUTER_SCOPES:
         "app_mentions:read,assistant:write,channels:history,channels:read,channels:manage,groups:history,groups:read,groups:write,im:history,im:read,im:write,chat:write,files:read,files:write,reactions:write,users:read,users:read.email",
       ...optionalSecrets({
@@ -774,8 +772,6 @@ function loadSecrets() {
     "BLUE_CHANNEL_ENCRYPTION_KEY",
     "BLUE_SESSION_INDEX_ADMIN_SECRET",
     "COMPUTER_HOST_TOKEN_KEY",
-    // Signs the principal on a Live socket upgrade; the same value on edge, Live and api-edge.
-    "LIVE_KEY",
   ]) {
     secrets[key] ??=
       key === "BLUE_CHANNEL_ENCRYPTION_KEY"
