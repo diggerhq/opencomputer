@@ -241,6 +241,9 @@ pub enum Command {
     Ask(AskCommand),
     /// List, stop and read a session's subagents
     Subagents(SubagentsArgs),
+    /// Set, list and delete a session's own secrets
+    #[command(subcommand)]
+    Secrets(SecretsCommand),
     /// Set a session's title
     Rename(RenameArgs),
     /// Archive a session
@@ -289,6 +292,7 @@ impl Command {
             Command::Interrupt(_) => "interrupt",
             Command::Ask(_) => "ask",
             Command::Subagents(_) => "subagents",
+            Command::Secrets(_) => "secrets",
             Command::Rename(_) => "rename",
             Command::Archive(_) => "archive",
             Command::Unarchive(_) => "unarchive",
@@ -321,6 +325,7 @@ impl Command {
             Command::Interrupt(a) => a.json,
             Command::Ask(a) => a.json(),
             Command::Subagents(a) => a.json(),
+            Command::Secrets(a) => a.json(),
             Command::Push(a) => a.json,
             Command::Pull(a) => a.json,
             Command::Whoami(a) | Command::Doctor(a) => a.json,
@@ -640,6 +645,62 @@ pub struct SubagentArgs {
     /// The subagent (sa_…)
     #[arg(value_name = "SUBAGENT")]
     pub subagent: String,
+    #[command(flatten)]
+    pub session: SessionOpt,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecretsCommand {
+    /// Set or replace a secret for one session; the value comes from standard input or a hidden prompt
+    Set(SecretSetArgs),
+    /// The names of a session's own secrets, never their values
+    #[command(visible_alias = "list")]
+    Ls(SecretsLsArgs),
+    /// Delete one of a session's own secrets
+    #[command(visible_alias = "delete")]
+    Rm(SecretNameArgs),
+}
+
+impl SecretsCommand {
+    pub fn json(&self) -> bool {
+        match self {
+            SecretsCommand::Set(a) => a.json,
+            SecretsCommand::Ls(a) => a.json,
+            SecretsCommand::Rm(a) => a.json,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct SecretSetArgs {
+    /// The environment variable's name, such as AWS_SECRET_ACCESS_KEY
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    #[command(flatten)]
+    pub session: SessionOpt,
+    /// The session gets a file holding the value, and $NAME is its path
+    #[arg(long)]
+    pub file: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsLsArgs {
+    #[arg(value_name = "ID")]
+    pub id: Option<String>,
+    #[command(flatten)]
+    pub session: SessionOpt,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretNameArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
     #[command(flatten)]
     pub session: SessionOpt,
     #[arg(long)]
