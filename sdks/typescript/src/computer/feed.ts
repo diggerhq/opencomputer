@@ -144,7 +144,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
 
   function start(): void {
     active = true;
-    ctx.send({ t: "sub", stream: "feed", after: cursor, kinds });
+    ctx.send({ t: "sub", stream: "feed", after: cursor ?? undefined, kinds });
     catchUp(true);
     const tick = () => {
       catchUp(true);
@@ -181,7 +181,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     },
     connected() {
       if (!active) return;
-      ctx.send({ t: "sub", stream: "feed", after: cursor, kinds });
+      ctx.send({ t: "sub", stream: "feed", after: cursor ?? undefined, kinds });
       catchUp(true);
     },
     onSocket(f) {
@@ -193,7 +193,9 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
       } else if (f.t === "subd" || f.t === "behind") {
         if (f.head !== cursor) catchUp();
       } else if (f.t === "reset") {
+        // Live refused the `sub` this answers (38.4), so subscribe again from what is left.
         drop(f.cursor);
+        ctx.send({ t: "sub", stream: "feed", after: cursor ?? undefined, kinds });
         catchUp();
       }
     },

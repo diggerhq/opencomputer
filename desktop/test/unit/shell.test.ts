@@ -63,15 +63,13 @@ describe('the router: one socket for every window', () => {
 
 describe('the API proxy gate (section 24.2)', () => {
   const req = (h: Record<string, string>) => new Request('https://x/api/y', { headers: h })
-  test('needs the header a simple cross-origin request cannot set', () => {
-    expect(mayProxy(req({ 'x-oc-app': '1' }))).toBe(true)
-    expect(mayProxy(req({}))).toBe(false)
-  })
-  test('refuses another origin, referer or site even with the header', () => {
-    expect(mayProxy(req({ 'x-oc-app': '1', origin: 'oc://app' }))).toBe(true)
-    expect(mayProxy(req({ 'x-oc-app': '1', origin: 'https://evil.example' }))).toBe(false)
-    expect(mayProxy(req({ 'x-oc-app': '1', referer: 'https://evil.example/' }))).toBe(false)
-    expect(mayProxy(req({ 'x-oc-app': '1', 'sec-fetch-site': 'cross-site' }))).toBe(false)
+  test('a fetch from the app itself, and nothing else', () => {
+    expect(mayProxy(req({ origin: 'oc://app', 'sec-fetch-site': 'same-origin', 'sec-fetch-dest': 'empty' }))).toBe(true)
+    expect(mayProxy(req({ origin: 'https://evil.example' }))).toBe(false)
+    expect(mayProxy(req({ referer: 'https://evil.example/' }))).toBe(false)
+    expect(mayProxy(req({ 'sec-fetch-site': 'cross-site' }))).toBe(false)
+    expect(mayProxy(req({ 'sec-fetch-site': 'same-origin', 'sec-fetch-dest': 'image' }))).toBe(false)
+    expect(mayProxy(req({ 'sec-fetch-site': 'same-origin', 'sec-fetch-dest': 'document' }))).toBe(false)
   })
 })
 

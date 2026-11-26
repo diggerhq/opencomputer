@@ -24,11 +24,15 @@ import type { Linked } from "./threads.js";
 // only protocol 5's shapes, a host below it exactly what it got before: this gateway speaks both
 // until no host says 4, then everything marked protocol 4 here goes and
 // CALVIN_PROTOCOL_VERSION becomes 5.
-export const CALVIN_PROTOCOL_VERSION = 4;
-/** The first host protocol that has the session API (work 084). */
-export const CALVIN_API_PROTOCOL = 4;
-/** The first host protocol whose model routes are profiles (work 097); a `welcome` says it only to such a host. */
-export const CALVIN_MODEL_PROTOCOL = 5;
+// 6 (tracks and threads, spec 36.3): the one number both sides speak. `watch` and `block` go to the
+// host, `delta` comes from it, `start` carries `role`, and an `api` frame carries what its runner
+// needs (`secrets`, `model`). A host that says less in `hello` is closed with 4426.
+export const CALVIN_PROTOCOL_VERSION = 6;
+/** Until the protocol 4 and 5 branches are deleted, both read as "every host". */
+export const CALVIN_API_PROTOCOL = CALVIN_PROTOCOL_VERSION;
+export const CALVIN_MODEL_PROTOCOL = CALVIN_PROTOCOL_VERSION;
+/** The close code of a host below CALVIN_PROTOCOL_VERSION: it runs its self-update at once. */
+export const UPGRADE_REQUIRED = 4426;
 
 export type SecretScope = "session" | "user" | "workspace";
 
@@ -97,7 +101,11 @@ export interface CalvinSessionSpec {
    * carries it.
    */
   harness?: CalvinHarness;
+  /** Protocol 6: a track's own session, or the one a person's start box opened. */
+  role?: CalvinRoleSpec | null;
 }
+
+export type CalvinRoleSpec = { name: "track"; trackId: string } | { name: "start" };
 
 /** Work 082: the agent a session runs. */
 export type CalvinHarness = "claude" | "codex";
@@ -559,6 +567,7 @@ export type CalvinGatewayToHostV4 =
       t: "start";
       id: string;
       session: CalvinSessionSpec;
+      role?: CalvinRoleSpec | null;
       epoch: number;
       lastSeq: number;
       credentials?: CalvinHostCredentials;
@@ -579,7 +588,14 @@ export type CalvinGatewayToHostV4 =
       session?: CalvinSessionSpec;
       epoch?: number;
       lastSeq?: number;
+      credentials?: CalvinHostCredentials;
+      secrets?: SessionSecret[];
+      model?: ModelRoute;
     }
+  /** Protocol 6: someone watches the session until `until` (ms): its deltas come up as `delta` frames until then. */
+  | { t: "watch"; sessionId: string; until: number }
+  /** Protocol 6: "send this block so far". */
+  | { t: "block"; sessionId: string; blockId: string }
   /** The SessionLog stored every event of `epoch` up to `seq`. */
   | { t: "journal-ack"; sessionId: string; epoch: number; seq: number }
   /**
@@ -608,7 +624,19 @@ export type CalvinHostToGatewayV4 =
    * A send the host's writer queued for a session the host has no spec of (none came since it booted):
    * answered with `start`, as for a session created without a message. Ignored for an unknown session.
    */
-  | { t: "wake"; sessionId: string };
+  | { t: "wake"; sessionId: string }
+  /** Protocol 6: a watched session's deltas, in order. Never acknowledged, never stored. */
+  | { t: "delta"; sessionId: string; epoch: number; deltas: CalvinDelta[] };
+
+/** A delta as the host sends it (`C/protocol-api.ts`'s `HostDelta`). */
+export interface CalvinDelta {
+  type: string;
+  sessionId?: string;
+  turnId: string | null;
+  data: unknown;
+  offset: number;
+  whole?: boolean;
+}
 
 // ---------------------------------------------------------------- v5 (work 097)
 // Mirrors calvin src/protocol.ts at 5 (design C2). The gateway knows a profile by its name and

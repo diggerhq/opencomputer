@@ -1,0 +1,140 @@
+---
+title: "The model"
+description: "Sessions, turns, asks and events, and the rules that keep every client in agreement."
+---
+
+Read [Concepts](/concepts) first for what sessions, turns and asks are to a person. This page is the same model for a program: the states, the order of events and the guarantees.
+
+## A session is its event log
+
+Everything that happens in a session is appended to its **event log**, and each event gets the next `seq`: 1, 2, 3, with no gaps. The [session object](/api/reference/objects#session) is a snapshot of that log, and its `lastSeq` says how far the snapshot goes.
+
+So a client can always build an exact view in two steps:
+
+1. Read the session. It is correct as of `lastSeq`.
+2. Apply events with `seq` greater than `lastSeq`, from [`GET /events?after=`](/api/http/events) or a WebSocket [attach](/api/websocket/methods#attach).
+
+Events are never changed or removed. An event with a `seq` at or below one you applied is a repeat: skip it. That makes reconnecting safe: attach again with `after` set to the last `seq` you applied, and you get exactly what you missed.
+
+### One writer
+
+Each session's log is written in one place, on the computer, also while the session is suspended or starting. So a message sent to a suspended or starting session is recorded at once, as `message.received` and `turn.queued`, and the agent takes it when it is up. An event is recorded before any client sees it.
+
+### If a computer is lost
+
+A session's log is numbered in epochs by its `logEpoch`. It changes only when the computer running a session is lost in the middle of a turn. Then the turn's open tool calls end as `tool.failed`, the turn as `turn.failed` with `runtime_lost`, and the session as `runtime.suspended`, all recorded in the new epoch, starting at the session's `epochStartSeq`.
+
+If `logEpoch` differs from the one you stored, discard what you applied at or after `epochStartSeq` and read again from `epochStartSeq - 1`. This only happens if a computer is lost mid-turn.
+
+### Deltas are not in the log
+
+While the agent writes, its text also streams as **deltas**: `message.delta`, `reasoning.delta` and `tool.delta`, with `tool.preparing` while a call's input is being written, `session.compacting` when a compaction starts, and a subagent's progress as `subagent.progress`, sent only over a WebSocket that asked for them, as `delta` notifications rather than `event`. Deltas have no `seq` and are not stored. They are a preview of a block whose complete text arrives in the matching `message.completed`, `reasoning.completed` or `tool.completed` event, which replaces whatever deltas you drew.
+
+- Text and reasoning deltas are tied to their block by `blockId`, tool output by `callId`. Both are unique in the session, not only in the turn.
+- A delta never arrives after its block's completed event. Ignore any delta for a `blockId` or `callId` you have already seen complete.
+
+`tool.preparing` is followed by the call's `tool.started`, and `session.compacting` by `session.compacted`. `subagent.progress` has no completed event: its latest values are folded into the [Subagent](/api/reference/objects#subagent) on every read.
+
+A client that misses deltas, because it connected late, reconnected or was too slow, loses nothing but the preview. See [Flow control](/api/websocket/flow-control).
+
+## Sessions
+
+| From | To | When |
+| --- | --- | --- |
+| | `starting` | The session is created |
+| `starting` | `idle` or `running` | The agent is up. `running` if a message is waiting. |
+| `idle` | `running` | A message arrives, or the agent starts a turn because a background subagent ended |
+| `running` | `waiting` | The agent raises an ask |
+| `waiting` | `running` | Every open ask closed |
+| `running` | `idle` | The last turn ended and nothing is queued |
+| `idle` | `suspended` | Two hours without activity and no subagent running, or a [suspend](/api/http/control#suspend) |
+| `suspended` | `starting` | A message, an answer, or a [resume](/api/http/control#resume) |
+
+| Status | The agent process | A message sent now |
+| --- | --- | --- |
+| `starting` | Starting, or resuming from `suspended` | Is recorded at once, then runs |
+| `running` | Working on a turn | Queues, steers or interrupts, by [`ifBusy`](/api/http/turns#if-a-turn-is-running) |
+| `waiting` | Blocked on an open ask. Kept running while the ask is open, however long that is. | With `steer`, [declines the ask](#messages-while-an-ask-is-open) and reaches the agent as its instructions. With `queue`, waits behind the turn. With `interrupt`, interrupts it. |
+| `idle` | Ready | Runs at once |
+| `suspended` | Stopped. Its memory is freed, its workspace and conversation are kept. | Is recorded at once, resumes the session, then runs |
+
+A session never ends. There is no `ended` status and no route to end one: an idle session costs nothing but disk once it is suspended. A session can be `archived`, which hides it from lists and changes nothing else; a new message brings it back.
+
+## Turns
+
+A **turn** is the agent's work on one message, or on the result of a background [subagent](#subagents). Its status moves forward only:
+
+```
+queued ──▶ running ──▶ completed
+   │          ├──────▶ failed
+   │          └──▶ cancelling ──▶ cancelled
+   └────────────────────────────▶ cancelled
+```
+
+- Turns run one at a time, in the order they were queued.
+- A turn that is `cancelled` has a `reason`. `interrupted`: it was running or queued when an [interrupt](/api/http/control#interrupt) came. `withdrawn`: it was queued, and someone [cancelled it](/api/http/turns#cancel-a-queued-turn) before it ran. A running turn is `cancelling` from the interrupt until the agent has stopped, usually under a second.
+- A turn that `failed` has an [error](/api/reference/errors#turn-failures). The session stays usable: send another message.
+- A message sent with `interrupt` records `message.received` with `interruptedTurnIds`, the turns it stopped, before their `turn.cancelled` events.
+
+### Steered messages
+
+A message sent with `steer` while a turn runs does not get a turn of its own. It joins the running turn, and the agent reads it at its next step. The send response's `turn` is that running turn, and `delivery` says what happened. `turn.steered` is recorded when the agent takes the message in, not when it is accepted, so a client can mark it read.
+
+A message joins a turn only if the turn reads it. If the turn ends before the agent took the message in, the message starts a new turn at once, recorded as `turn.queued` or `turn.started` with a new turn id.
+
+## Asks
+
+An **ask** blocks the turn that raised it until it closes. It closes once, as one of:
+
+| Status | Because |
+| --- | --- |
+| `answered` | Someone answered it. |
+| `dismissed` | Someone closed it without an answer. The agent is told and decides how to go on. |
+| `declined` | Someone sent a message with `steer` while it was open. The agent reads the message as its instructions instead of an answer. |
+| `interrupted` | Its turn was interrupted, or the session was [suspended](/api/http/control#suspend) |
+
+An ask never expires, and never cancels its turn on its own. It stays open until one of these closes it.
+
+The first close wins. Answering again with the same answer, as the same person, returns `200` with the ask. Any later *different* answer, or one from someone else, and any dismissal after it closed, gets `409 ask_closed`, with the ask as it closed so the client can show who answered. An ask's close is recorded as `ask.closed`, with the ask as it closed.
+
+### Asks and suspension
+
+A session with an open ask is not suspended for being idle. It keeps its agent process for as long as the ask is open, so the turn carries on the moment someone answers. An explicit [suspend](/api/http/control#suspend) closes open asks as `interrupted` and cancels the turn. An ask is never open on a suspended session.
+
+### Messages while an ask is open
+
+A message sent with `steer` while an ask is open declines every open ask and reaches the agent as its instructions: a person who types "no, do X instead" while an approval waits means exactly that. The asks close as `declined`, with the message in their `answer`, and the message joins the running turn: `delivery` is `steered`, `message.received` lists the asks in `declinedAskIds`, and `turn.steered` follows when the agent takes it in. For an approval, the agent is told the call was denied, with the message as the reason.
+
+A message sent with `queue` waits behind the turn, and the ask stays open. A message sent with `interrupt` interrupts the turn, which closes the ask as `interrupted`, and runs.
+
+## Subagents
+
+A **subagent** is an agent the session's agent starts to do part of a turn's work. Each is a [Subagent](/api/reference/objects#subagent), with an `sa_` id, recorded as `subagent.started` and `subagent.ended`. The running ones are in the session's `subagents`.
+
+- A **foreground** subagent runs inside its turn. The turn waits for it, and it ends before the turn does.
+- A **background** subagent runs apart from its turn. The turn can complete while it runs, and its events keep arriving under that turn's `turnId` until it ends. The session's `status` describes turns only: an `idle` session with a non-empty `subagents` has background work going on.
+- When a background subagent ends, Claude Code starts a turn on its own to read its result. That turn has `trigger: "subagent"`, `input: null` and the subagent's `subagentId`, and runs like any other: it queues behind a running turn, and can be interrupted.
+
+| What happens | Foreground subagents | Background subagents |
+| --- | --- | --- |
+| Its turn completes | | Keep running |
+| An [interrupt](/api/http/control#interrupt) of its turn | Stopped, with the turn | Stopped, with the turn |
+| A [stop](/api/http/subagents#stop-a-subagent) | Stopped | Stopped |
+| An explicit [suspend](/api/http/control#suspend) | Stopped | Stopped |
+| Two hours without activity | | The session is not suspended while one runs |
+
+A subagent stopped by an interrupt or a suspend ends as `stopped` with `stoppedBy: null`.
+
+A subagent ends once, as `completed`, `failed` or `stopped`. Read them with [Subagents](/api/http/subagents).
+
+## Who did what
+
+Every event caused by a person carries an `actor`: who, and through which client. Events the agent or the computer caused have `actor: null`. The actor comes from the credential, never from the request body. See [Actor](/api/reference/objects#actor).
+
+## Consistency
+
+- **One writer.** Each session's log is written in one place, [on the computer](#one-writer), so every client sees the same events in the same order.
+- **Read your writes.** A successful response means the change is in the log. On the same transport, a later read includes it. Across transports, such as a send over the WebSocket followed by an HTTP read, pass the write's `seq` as `minSeq` on the read: it waits up to 2 seconds for the change, or fails with `503 unavailable` and `retryAfterMs`. `opc` does this for you.
+- **Live is not slower than the log.** Over the WebSocket, an event reaches attached clients when it is appended, not after a poll.
+- **Lists may lag.** A session in a list can be a few seconds behind its log.
+- **A read by id is current as of its `lastSeq`.** The session's `syncedAt` says when its copy last heard from the computer. When the computer is not reachable, it shows how old the snapshot is.

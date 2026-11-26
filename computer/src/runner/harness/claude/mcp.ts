@@ -9,7 +9,13 @@ export function calvinServer({ cwd, hooks, sendFile, postCard }: CalvinTools) {
   return createSdkMcpServer({
     name: 'calvin',
     tools: calvinTools(cwd, hooks, sendFile, postCard).map((t) =>
-      tool(t.name, t.description, t.inputSchema, async (args) => ({ ...(await t.handler(args)) }), t.alwaysLoad ? { alwaysLoad: true } : undefined),
+      tool(t.name, t.description, t.inputSchema, async (args, extra) => ({ ...(await t.handler(args, toolCall(extra))) }), t.alwaysLoad ? { alwaysLoad: true } : undefined),
     ),
   });
+}
+
+/** The tool call's id, which Claude Code sends in the request's `_meta`. */
+function toolCall(extra: unknown) {
+  const id = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta?.['claudecode/toolUseId'];
+  return typeof id === 'string' ? { id } : undefined;
 }

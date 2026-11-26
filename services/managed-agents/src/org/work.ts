@@ -309,6 +309,14 @@ export function review(sql: Sql, p: Principal, resultId: string): ReviewRow | nu
   return row ? { resultId, head: row.head, parts: parse<unknown>(row.parts, null) } : null;
 }
 
+/** doc_read (spec 41): a track's `doc` row, for whoever may see the track, its agent included (whose feed is empty). */
+export function doc(sql: Sql, p: Principal, trackId: string): Row | null {
+  const track = readTrack(sql, trackId);
+  if (!track || !seesTrack(sql, p, track)) return null;
+  const raw = sql.exec<Raw>("SELECT * FROM doc WHERE track_id = ?", trackId)[0];
+  return raw ? forClient(feedRow("doc", raw)) : null;
+}
+
 export function docRevisions(sql: Sql, p: Principal, trackId: string, rev?: number): DocRev[] {
   const track = readTrack(sql, trackId);
   if (!track || !seesTrack(sql, p, track)) return [];

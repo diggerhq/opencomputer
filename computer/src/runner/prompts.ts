@@ -21,7 +21,7 @@ import type { Task } from './segment.js';
 import { SEND_FILE_TOOL } from './send-file.js';
 import { REQUEST_SECRET_TOOL } from './session-secrets.js';
 import type { SessionInfo } from './session.js';
-import { SPAWN_TOOL } from './spawn.js';
+import { START_THREAD_TOOL } from './spawn.js';
 import { POST_THREAD_TOOL } from './threads.js';
 import type { Surface } from './api/surface.js';
 import type { Reply } from './prompt-replies.js';
@@ -107,7 +107,7 @@ export async function permissionPrompt(host: PromptHost, name: string, input: Re
   if (!isPlan) host.patchTask(ask.id, { details: 'waiting for approval ↓', waiting: true });
   const title = isPlan
     ? 'Plan ready for review'
-    : name === SPAWN_TOOL
+    : name === START_THREAD_TOOL
       ? 'Claude wants to start a new thread'
       : name === SEND_FILE_TOOL
         ? 'Claude wants to post a file to this thread'
@@ -405,10 +405,10 @@ export function previewFor(name: string, input: any, cwd: string): string | unde
       return `\`${path.relative(cwd, input.file_path ?? '')}\`\n` + fence(String(input.content ?? ''), 1500);
     case 'ExitPlanMode':
       return String(input.plan ?? '').slice(0, 11000);
-    case SPAWN_TOOL:
-      return `↳ ${input.task ?? ''}\nBrief: \`${input.brief ?? ''}\``;
+    case START_THREAD_TOOL:
+      return `↳ ${input.task ?? ''}${input.brief ? `\nBrief: \`${input.brief}\`` : ''}`;
     case POST_THREAD_TOOL:
-      return `${input.url ?? `${input.channel ?? ''} ${input.ts ?? ''}`}\n` + fence(String(input.text ?? ''), 1500);
+      return `${input.thread ?? ''}\n` + fence(String(input.text ?? ''), 1500);
     case SEND_FILE_TOOL:
       return `\`${path.relative(cwd, path.resolve(cwd, input.path ?? ''))}\`` + (input.comment ? `\n> ${String(input.comment).slice(0, 500)}` : '');
     default:
