@@ -1,0 +1,59 @@
+---
+title: "Flow control"
+description: "What the server does when a client reads slower than the agent writes."
+---
+
+The agent can write faster than a slow connection can carry. The server keeps each connection fast by ordering what it sends, treating deltas and recorded events differently, and dealing with a session that falls behind on its own.
+
+## Order
+
+Each attached session has one ordered queue on the connection: its recorded events and deltas, in the order they happened. Across the sessions of one connection, the server takes from the queues in turn, so one busy session does not hold up the others, and sends in this priority:
+
+1. Responses to your requests, and terminal data
+2. Recorded events
+3. Deltas
+
+Replay, the recorded events before live ones on attach, is read from the session's log as the socket drains. It is never queued in bulk, so attaching far back does not crowd out live events of other sessions.
+
+## Deltas give way
+
+Deltas are a preview, so they are the first to go:
+
+1. Deltas waiting in the queue for the same block are merged in place into one, so you get fewer, larger fragments with no text lost.
+2. When a block's completed event is queued, its deltas still waiting are removed. A delta never arrives after its block's `message.completed`, `reasoning.completed`, `tool.completed` or `tool.failed`.
+
+A client never has to detect this. Draw deltas as they come, replace a block's text when its completed event arrives, and ignore any delta for a `blockId` or `callId` that is already complete.
+
+## Recorded events never give way
+
+Recorded events are never dropped or merged. If the live events of one session wait more than 8 MiB or 10,000 events behind, the server stops sending that session alone: it sends `session.detached` with `reason: "too_far_behind"`, and the connection and its other sessions carry on. Attach again with your last applied `seq` as `after`: you catch up without a gap, at your pace.
+
+How far behind you are is measured from what was sent and what you [acked](/api/websocket/methods#ack), when you send `sessions.ack`. Without acks, the server estimates from its socket buffer, which proxies between you and it can hide.
+
+## After `4008`
+
+A client that stops reading entirely, so that more than 16 MiB waits on the whole connection, is closed with `4008`. To catch up:
+
+1. For each session, if you were more than 10,000 events behind, page [`GET /sessions/{id}/events?after=`](/api/http/events) until you are within 10,000 of its `lastSeq`.
+2. Reconnect and attach with your last applied `seq` as `after`.
+
+`opc` does this.
+
+## Being a fast client
+
+- **Read the socket on its own.** Parse frames as they arrive and render on a timer, at most once per screen frame. `opc` draws at most 60 times a second, however fast deltas arrive.
+- **Send acks** on a connection that carries a lot: every 64 events or 250 ms.
+- **Attach with `deltas` only where text is shown.** A program that watches for `turn.completed` does not need them.
+- **Detach from sessions you stop showing.**
+- **Keep `after` small.** Store the last `seq` you applied, and attach from it, rather than replaying a session from the start. For a long session you have not seen, attach with `tailTurns`.
+- **Turn off Nagle's algorithm** (`TCP_NODELAY`) if your library lets you. `opc` and the server do.
+
+## Your sending
+
+| | Limit | Over it |
+| --- | --- | --- |
+| Requests | 100 a second per connection, with bursts of 100 | `-32000` with `data.code: "rate_limited"` and `data.retryAfterMs` |
+| Message size | 1 MiB | The connection closes with `1009` |
+| Terminal input | 1 MiB a second per terminal | As requests |
+
+Compression (`permessage-deflate`) is not offered.

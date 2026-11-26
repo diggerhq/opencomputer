@@ -29,11 +29,8 @@ export type PageToMain =
   | { t: 'location'; path: string }
   | { t: 'badge'; count: number }
   | { t: 'notify'; n: Notice }
-  // Not in the spec's table (build log, lane 5): the start panel hands a
-  // target to the main window, the panel asks to be hidden, and the sign-in
-  // page and the surface start and end a sign-in.
-  | { t: 'open'; target: OpenTarget }
-  | { t: 'panel.hide' }
+  // Not in the spec's table (build log, lane 5): the sign-in page and the
+  // surface start and end a sign-in.
   | { t: 'signin' }
   | { t: 'signout' }
 
@@ -45,9 +42,7 @@ export type MainToPage =
   | { t: 'answer'; threadId: string; askId: string; choice: string }
   | { t: 'principal'; principal: Principal }
   | { t: 'signed-out' }
-  // Not in the spec's table: the start panel was shown (focus the box), and a
-  // sign-in failed (the sign-in page shows why).
-  | { t: 'panel.shown' }
+  // Not in the spec's table: a sign-in failed (the sign-in page shows why).
   | { t: 'signin.error'; message: string }
 
 /** What the preload exposes as `window.oc`. */
@@ -62,6 +57,5 @@ export const IPC_TO_MAIN = 'oc:to-main'
 export const IPC_TO_PAGE = 'oc:to-page'
 export const IPC_PRINCIPAL = 'oc:principal'
 
-/** The origin every app page lives on, and the header the API proxy demands (section 24.2). */
+/** The origin every app page lives on. */
 export const APP_ORIGIN = 'oc://app'
-export const APP_HEADER = 'x-oc-app'

@@ -1,0 +1,74 @@
+---
+title: "Limits"
+description: "Sizes, rates, timeouts and how long things are kept."
+---
+
+## Sizes
+
+| | Limit |
+| --- | --- |
+| A message's `input` | 100,000 characters |
+| A session's title | 200 characters |
+| A session's `metadata` | 20 keys; keys up to 40 characters, values up to 500 |
+| A dismissal or denial `message` | 2,000 characters |
+| Turns queued in a session | 20, then `409 queue_full` |
+| A tool's `input` or `output` in an event | 64 KiB, then cut with `inputTruncated` or `outputTruncated` set to `true` |
+| An upload or download | 1 GiB and 100,000 files, unpacked |
+| One file read with `workspace/file` | 100 MiB |
+| A WebSocket message | 1 MiB, either way. A larger one from you closes the connection with `1009`. |
+| A terminal data frame | 64 KiB, header included |
+
+## Pages
+
+| | Default | Most |
+| --- | --- | --- |
+| Sessions, turns, asks, workspace files | 20 | 100 |
+| Events | 100 | 500 |
+| `earlierTurns` in a [tail attach](/api/websocket/methods#attach) | | 50 |
+
+Events page by `seq`, with `after`. Every other list pages by `cursor` and `nextCursor`.
+
+## Rates
+
+| | Limit |
+| --- | --- |
+| HTTP requests per key | 600 a minute. Requests from the dashboard are not limited. |
+| Tickets per key | 60 a minute |
+| WebSocket requests per connection | 100 a second, with bursts of 100 |
+| WebSocket connections per member | 50, then new ones are closed with `4029` |
+| Sessions attached per connection | 20 |
+| Terminals per session, across all connections | 8 |
+| Terminal input | 1 MiB a second per terminal |
+
+Over a rate limit, the request fails with `429 rate_limited` and `retryAfterMs`. Over the HTTP limit per key, the wait is always a minute: `Retry-After: 60` and `retryAfterMs: 60000`.
+
+## Connections
+
+| | |
+| --- | --- |
+| Server pings | Every 30 seconds. Two missed close the connection with `1001`. |
+| Recorded events not yet sent to one attached session | 8 MiB or 10,000 events, then that session is detached with `too_far_behind` |
+| Everything not yet sent on one connection | 16 MiB, then the connection is closed with `4008` |
+| Replay on attach | `after` at most 10,000 events back |
+
+See [Flow control](/api/websocket/flow-control).
+
+## Times
+
+| | |
+| --- | --- |
+| A ticket, to open a connection | 10 minutes |
+| A WebSocket connection opened with a ticket | 1 hour, then closed with `4001` |
+| A WebSocket connection opened with a key | Until the key expires or is revoked, then closed with `4001`. A revocation takes effect within 60 seconds. |
+| A long-poll's `waitMs` | 60,000 at most |
+| A read with `minSeq`, waiting for the log to reach it | 2 seconds, then `503 unavailable` |
+| An idle session, before it suspends | 2 hours. Never while an ask is open or a subagent runs. |
+| Build output and dependencies in an idle workspace | Pruned after 24 hours idle |
+| An idempotency key | 24 hours |
+| An interrupt, before the agent process is restarted and the turn cancelled by force | 10 seconds |
+| A terminal, after its connection closes or it is closed | `SIGHUP`, then `SIGKILL` after 5 seconds |
+| A turn | No limit. A turn runs until it ends or is interrupted. |
+
+## Retention
+
+Sessions, their events and their workspaces' source files are kept for as long as your organization exists. There is no route to delete a session in this version.

@@ -335,6 +335,11 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
     return work.trackAgent(this.sql, p);
   }
 
+  async doc(p: Principal, trackId: string): Promise<Row | null> {
+    await this.ready(p);
+    return work.doc(this.sql, p, trackId);
+  }
+
   async docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]> {
     await this.ready(p);
     return work.docRevisions(this.sql, p, trackId, rev);

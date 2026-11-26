@@ -1,0 +1,80 @@
+---
+title: "Tickets"
+description: "Short-lived credentials for opening WebSocket connections from a browser."
+---
+
+Native clients do not need tickets; pass the key on the upgrade. A ticket is for a browser, which cannot set headers on a WebSocket and should never hold a key. See [WebSocket connections](/api/authentication#websocket-connections).
+
+```http
+POST /tickets
+```
+
+```bash
+curl -s -X POST "$API/tickets" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" -d '{ "client": "my-dashboard/1.4.0", "sessionIds": ["cs_7f3a9k2m4q8r1t6v"], "readOnly": true }'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `client` | Optional. Your client's name and version, up to 64 characters. It appears in `actor.client` on what the connection does. Default: the request's `User-Agent`. |
+| `sessionIds` | Optional. The only sessions the ticket's connections may attach to. Default: every session you can see. |
+| `readOnly` | Optional. `true`: the ticket's connections can watch but not act. Every write fails with `403 forbidden`, `"reason": "read_only"`. Default `false`. |
+
+```json
+{
+  "ticket": {
+    "token": "tk_Jm4vQ8x2Lr7…",
+    "url": "wss://wire.opencomputer.dev/v1",
+    "expiresAt": "2026-10-26T09:11:02.311Z",
+    "expiresInMs": 600000
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `token` | The ticket. Letters, digits, `_` and `-`, at most 1,024 characters. |
+| `url` | Where to connect. Use it as given. |
+| `expiresAt`, `expiresInMs` | 10 minutes from now. Connections must open before then. `expiresInMs` does not depend on the browser's clock being right. |
+
+Open the connection with the ticket in the subprotocol list:
+
+```ts
+const { ticket } = await (await fetch("/computer-ticket", { method: "POST" })).json();
+const ws = new WebSocket(ticket.url, ["opc.v1", `opc.ticket.${ticket.token}`]);
+```
+
+See [Connecting](/api/websocket/connect) for the rest.
+
+## Rules
+
+- **A ticket acts as you.** It can do over the WebSocket what your key can do, within the key's scopes and the ticket's `sessionIds` and `readOnly`. It cannot get more tickets or transfer files, which are HTTP only. A client on a ticket can call only the [WebSocket methods](/api/websocket/methods).
+- **Reusable until it expires.** One ticket can open several connections, so a page that reconnects does not need a new one each time.
+- **Connections outlive tickets, by at most an hour.** A connection lasts until it closes or until one hour after it opened, when the server closes it with code `4001`. Get a new ticket before then and reconnect. See [Connecting](/api/websocket/connect#reconnecting).
+- **Revocation.** Revoking the key that got a ticket stops the ticket within a minute: new connections with it are refused, and connections already open close with `4001`.
+- **Not in URLs.** A ticket goes in the subprotocol header, never in the URL, so it does not appear in proxy or server logs.
+
+## Giving tickets to a browser
+
+A browser should never hold an API key. Have your server get tickets with its key, and hand them to your page:
+
+```ts
+// your server
+app.post("/computer-ticket", requireLogin, async (req, res) => {
+  const r = await fetch(`${API}/tickets`, {
+    method: "POST",
+    headers: { "x-api-key": process.env.OPENCOMPUTER_API_KEY!, "content-type": "application/json" },
+    body: JSON.stringify({ client: "acme-portal/2.0", sessionIds: [req.body.sessionId], readOnly: true }),
+  });
+  res.json(await r.json());
+});
+```
+
+The ticket acts as the member who owns the key, whoever holds it. Only hand it to people who may act as that member, and restrict it with `sessionIds` and `readOnly` to what the page needs.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_request` | A field is unknown, `readOnly` is not a boolean, `client` is over 64 characters or not ASCII, `sessionIds` has more than 20 entries, or an entry is not a session id. `error.field` names it. |
+| `401` | `unauthenticated` | No key, or a revoked one |
+| `403` | `forbidden` | A project-scoped key |
+| `429` | `rate_limited` | More than 60 tickets a minute for one key |

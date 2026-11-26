@@ -15,7 +15,9 @@
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
+import type { Access, DeliveredOutcome, DeltaPush, DrainResult, ExportedSession, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
+import { decodeDrivers } from "./access.js";
 import type { RoutedApiSession } from "./api-model-route.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
@@ -27,18 +29,21 @@ import {
   type CalvinApiActor,
   type CalvinApiError,
   type CalvinGatewayToHost,
+  type CalvinHarness,
   type CalvinHostToGatewayV4,
   type CalvinJournalReport,
   type CalvinMode,
   type CalvinPerson,
+  type CalvinRoleSpec,
   type CalvinSessionReport,
   type CalvinSessionSpec,
   CALVIN_API_PROTOCOL,
   type SessionSecret,
   personForMember,
+  sessionKey,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isSessionId, memberId, mintId } from "./session-ids.js";
+import { isMemberId, isSessionId, memberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
@@ -60,6 +65,16 @@ export const MIN_SEQ_WAIT_MS = 2_000;
 export const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 /** A writer silent this long with a turn open, its runner gone, is lost. */
 export const RECOVER_AFTER_MS = 60_000;
+/** A recovery reads the log's epoch and tries at most this many times. */
+const RECOVER_READS = 3;
+/** An inbox entry's kind as the host's method (spec 36.3). */
+const DRAIN_METHODS: Record<InboxKind, string> = {
+  turn: "turns.send",
+  answer: "asks.answer",
+  dismiss: "asks.dismiss",
+  interrupt: "sessions.interrupt",
+  settings: "sessions.update",
+};
 /** A `stale_epoch` batch re-sends the session's `epoch` frame at most this often. */
 export const STALE_EPOCH_RESEND_MS = 5_000;
 /** Sessions whose last applied summary is kept in memory (applySummary's change check). */
@@ -167,6 +182,8 @@ export interface ApiRow {
   createHash: string | null;
   activeTurnId: string | null;
   asideRef: string | null;
+  /** The session's role (`RoleSpec` as JSON), from `start`. */
+  role: string | null;
 }
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
@@ -175,7 +192,7 @@ const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id A
   origin_client AS originClient, last_seq AS lastSeq, log_epoch AS logEpoch, epoch_start_seq AS epochStartSeq,
   summary, api_status AS apiStatus, archived, metadata, created_at AS createdAt, updated_at AS updatedAt,
   last_active_at AS lastActiveAt, synced_at AS syncedAt, subagents, create_hash AS createHash,
-  active_turn_id AS activeTurnId, aside_ref AS asideRef FROM sessions`;
+  active_turn_id AS activeTurnId, aside_ref AS asideRef, role FROM sessions`;
 
 /** Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). */
 const COLUMNS: Array<[string, string]> = [
@@ -200,6 +217,7 @@ const COLUMNS: Array<[string, string]> = [
   ["create_hash", "TEXT"],
   ["active_turn_id", "TEXT"],
   ["aside_ref", "TEXT"],
+  ["role", "TEXT"],
 ];
 
 export interface SessionsApiDeps {
@@ -232,6 +250,16 @@ export interface SessionsApiDeps {
   put: (key: string, value: string) => void;
   remove: (key: string) => void;
   now?: () => number;
+  /** A session's SessionLog (stubs.ts `logOf`). Absent: the `SESSION_LOG` binding. */
+  log?: (sessionId: string) => SessionLogRpc & SessionLogRpcAdded;
+  /** The organization's Live (stubs.ts `liveOf`); null where it is not bound. */
+  live?: () => LiveRpc | null;
+  /** `start`: the session's harness, the spec's or its owner's (model access's `harnessFor`). */
+  chooseHarness?: (row: Pick<ApiRow, "key" | "ownerId" | "ownerUserId">, harness?: CalvinHarness) => void;
+  /** The Slack user a member linked, for a Slack thread started by one. */
+  slackOfMember?: (member: string) => string | undefined;
+  /** Runs `fn` in one storage transaction. Absent: as is. */
+  transaction?: <T>(fn: () => T) => T;
   /** Work 084 instrumentation: rollups and rare events (telemetry/api.ts). Absent: nothing is measured. */
   telemetry?: ApiTelemetry;
 }
@@ -300,10 +328,11 @@ export class ComputerSessionsApi {
     return (this.deps.host()?.protocol ?? 0) >= CALVIN_API_PROTOCOL;
   }
 
-  private log(sessionId: string): SessionLogRpc {
+  private log(sessionId: string): SessionLogRpc & SessionLogRpcAdded {
+    if (this.deps.log) return this.deps.log(sessionId);
     const ns = this.deps.env.SESSION_LOG;
     if (!ns) throw new Error("SESSION_LOG is not bound");
-    return ns.getByName(sessionId) as unknown as SessionLogRpc;
+    return ns.getByName(sessionId) as unknown as SessionLogRpc & SessionLogRpcAdded;
   }
 
   /** The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns. */
@@ -367,6 +396,7 @@ export class ComputerSessionsApi {
       ...(row.effort ? { effort: row.effort } : {}),
       ...(isSpeed(row.speed) ? { speed: row.speed } : {}),
       metadata: parseMetadata(row.metadata),
+      ...(row.role ? { role: JSON.parse(row.role) as CalvinRoleSpec } : {}),
     };
     if (row.originType !== "slack") {
       return {
@@ -851,6 +881,324 @@ export class ComputerSessionsApi {
     return { status: 200, body: { sessions: page.map((row) => this.compose(row)), nextCursor } };
   }
 
+  // ---------------------------------------------------------------- tracks and threads (spec 36.3)
+
+  /** One drain per session at a time; `again` is the one follow-up queued behind it. */
+  private readonly drains = new Map<string, { run: Promise<DrainResult>; again: Promise<DrainResult> | null }>();
+  /** Watch leases (spec 40.5), in memory only: session → until (ms). */
+  private readonly watches = new Map<string, number>();
+
+  /**
+   * Writes only the runner's row (spec 35.4) and answers; the `start` frame goes at once if the host is up,
+   * else at `hello`; then the session is drained.
+   */
+  async start(spec: StartSpec): Promise<void> {
+    const s = spec.session;
+    const slack = s.origin.slack;
+    const key = slack?.teamId && slack.threadTs ? sessionKey(slack.teamId, slack.channelId, slack.threadTs) : s.id;
+    const member = isMemberId(s.owner.id) ? s.owner.id : null;
+    const slackUser = s.owner.id.startsWith("slack:") ? s.owner.id.slice(s.owner.id.lastIndexOf(":") + 1) : member && slack ? (this.deps.slackOfMember?.(member) ?? null) : null;
+    const now = this.now();
+    const role = spec.role ? JSON.stringify(spec.role) : null;
+    const metadata = Object.keys(s.metadata ?? {}).length ? JSON.stringify(s.metadata) : null;
+    const set = [s.title, spec.settings.mode, spec.settings.model, spec.settings.effort, spec.settings.speed, metadata, role];
+    if (this.row(s.id)) {
+      this.deps.sql.exec("UPDATE sessions SET title = ?, mode = ?, model = ?, effort = ?, speed = ?, metadata = ?, role = ? WHERE session_id = ?", ...set, s.id);
+    } else if (this.rowByKey(key)) {
+      // A Slack thread this Computer already ran: the same row, now named by its session.
+      this.deps.sql.exec(
+        "UPDATE sessions SET title = ?, mode = ?, model = ?, effort = ?, speed = ?, metadata = ?, role = ?, session_id = ?, owner_user_id = COALESCE(?, owner_user_id) WHERE runner_key = ?",
+        ...set, s.id, member, key,
+      );
+    } else {
+      this.deps.sql.exec(
+        `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, mode, model, effort, speed, metadata, role,
+           created_at, updated_at, session_id, origin_type, origin_client, owner_user_id, owner_name, owner_email, api_status, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?)`,
+        key, slack?.teamId ?? "", slack?.channelId ?? "", slack?.threadTs ?? "", slackUser,
+        ...set, now, now, s.id, s.origin.type, s.origin.client, member, s.owner.name || null, s.owner.email, now,
+      );
+    }
+    const row = this.row(s.id)!;
+    this.deps.chooseHarness?.(row, spec.harness === "claude" || spec.harness === "codex" ? spec.harness : undefined);
+    this.owe("startOwed", s.id);
+    this.deps.waitUntil(this.started(s.id).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.start_failed", sessionId: s.id, message: String(error) }))));
+  }
+
+  /** After the row: the drain (its `api` frame carries the spec and starts the runner), or the `start` frame when nothing waits. */
+  private async started(sessionId: string): Promise<void> {
+    const drained = await this.drainQueued(sessionId);
+    if (!this.v4Host()) return;
+    const row = this.row(sessionId);
+    if (!row) return this.unowe("startOwed", sessionId);
+    if (drained.state === "waking") return;
+    if (drained.results.length === 0) {
+      const inbox = await this.log(sessionId).inbox();
+      const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
+      const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
+      const id = crypto.randomUUID();
+      const sent = !routed?.error && this.deps.send({
+        t: "start", id, session: routed?.session ?? this.spec(row), epoch: inbox.epoch, lastSeq: inbox.lastSeq,
+        ...(secrets ? { secrets } : {}), role: row.role ? (JSON.parse(row.role) as CalvinRoleSpec) : null,
+      });
+      // A refused route starts nothing: the first turn reports it. A lost host: at the next `hello`.
+      if (!sent && !routed?.error) return;
+      if (sent) this.pending.set(id, { resolve: () => undefined, timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS) });
+    }
+    this.unowe("startOwed", sessionId);
+  }
+
+  /** The runner is suspended (the host's `sessions.suspend`); the row stays. Nothing when the host is down: no runner runs. */
+  async stop(sessionId: string): Promise<void> {
+    const row = this.row(sessionId);
+    this.unowe("startOwed", sessionId);
+    this.watches.delete(sessionId);
+    if (!row || !this.v4Host()) return;
+    await this.ask({
+      t: "api", id: crypto.randomUUID(), sessionId, method: "sessions.suspend", params: { sessionId },
+      actor: { id: "platform", name: null, via: "system", client: null },
+      member: "platform",
+    });
+  }
+
+  /**
+   * Spec 36.3: the session's waiting inbox entries, in order, each as one `api` frame, each then reported to
+   * its SessionLog. `wait: false` answers at once and drains behind the answer.
+   */
+  drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult> {
+    const run = this.drainQueued(sessionId);
+    if (opts.wait) return run;
+    this.deps.waitUntil(run.catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.drain_failed", sessionId, message: String(error) }))));
+    return Promise.resolve(this.v4Host() || !this.row(sessionId) ? { state: "delivered", results: [] } : { state: "waking" });
+  }
+
+  private drainQueued(sessionId: string): Promise<DrainResult> {
+    const current = this.drains.get(sessionId);
+    if (current) {
+      // Entries accepted while it runs are read by one more drain behind it.
+      current.again ??= current.run.then(() => undefined, () => undefined).then(() => this.drainQueued(sessionId));
+      return current.again;
+    }
+    const run: Promise<DrainResult> = this.drainNow(sessionId).finally(() => {
+      if (this.drains.get(sessionId)?.run === run) this.drains.delete(sessionId);
+    });
+    this.drains.set(sessionId, { run, again: null });
+    return run;
+  }
+
+  private async drainNow(sessionId: string): Promise<DrainResult> {
+    // No runner row, no drain.
+    if (!this.row(sessionId)) return { state: "delivered", results: [] };
+    const log = this.log(sessionId);
+    let inbox = await log.inbox();
+    if (inbox.entries.length === 0) {
+      this.unowe("drainOwed", sessionId);
+      return { state: "delivered", results: [] };
+    }
+    if (!this.v4Host()) return this.waking(sessionId);
+    const moving = this.epochSends.get(sessionId);
+    if (moving) {
+      // The host hears the new epoch first; the frames then carry the log as it is after.
+      await moving;
+      inbox = await log.inbox();
+    }
+    const results: Extract<DrainResult, { state: "delivered" }>["results"] = [];
+    for (const entry of inbox.entries) {
+      const row = this.row(sessionId);
+      if (!row) break;
+      const outcome = await this.deliver(row, entry, inbox);
+      // No answer: the entry waits; the host's idempotency (the entry's id) covers a frame that did land.
+      if (outcome === "lost") return this.waking(sessionId);
+      await log.delivered(entry.id, outcome);
+      results.push(
+        outcome.ok
+          ? { id: entry.id, result: outcome.result }
+          : { id: entry.id, error: { code: outcome.code, message: outcome.message, requestId: entry.trace ?? "", retryable: false } },
+      );
+    }
+    this.unowe("drainOwed", sessionId);
+    this.unowe("startOwed", sessionId);
+    return { state: "delivered", results };
+  }
+
+  /** One entry to the host: admission and the model route first (a turn's), then the `api` frame. */
+  private async deliver(row: ApiRow, entry: InboxEntry, inbox: Inbox): Promise<DeliveredOutcome | "lost"> {
+    let session = this.spec(row);
+    let model: RoutedApiSession["model"];
+    if (entry.kind === "turn") {
+      // Billing unavailable throws: the entry waits and the caller's owed drain retries.
+      if (!(await this.deps.admitted())) return { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." };
+      if (this.deps.routeSession) {
+        const routed = await this.deps.routeSession(session, entry.actor.subject);
+        if (routed.refused) return { ok: false, code: "model_refused", message: routed.error?.message ?? "The model is not available." };
+        if (routed.error?.code === "computer_unavailable") return "lost";
+        if (routed.error) return { ok: false, code: routed.error.code, message: routed.error.message };
+        session = routed.session;
+        model = routed.model;
+      }
+    }
+    const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
+    const body = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
+    const outcome = await this.ask({
+      t: "api",
+      id: crypto.randomUUID(),
+      sessionId: row.sessionId,
+      method: DRAIN_METHODS[entry.kind],
+      params: { ...body, sessionId: row.sessionId },
+      actor: { id: entry.actor.subject, name: null, via: entry.actor.via, client: null },
+      member: entry.actor.subject,
+      idempotencyKey: entry.id,
+      ...(entry.trace ? { requestId: entry.trace } : {}),
+      session,
+      epoch: inbox.epoch,
+      lastSeq: inbox.lastSeq,
+      ...(secrets ? { secrets } : {}),
+      ...(model ? { model } : {}),
+    });
+    if (!outcome.error) return { ok: true, result: outcome.result };
+    if (outcome.error.code === "computer_unavailable") return "lost";
+    return { ok: false, code: outcome.error.code, message: outcome.error.message };
+  }
+
+  /** A frame the host answers by `id`; `computer_unavailable` when it is gone or silent. */
+  private ask(frame: Extract<CalvinGatewayToHost, { t: "api" }>): Promise<HostOutcome> {
+    if (!this.deps.send(frame)) return Promise.resolve({ error: hostLost() });
+    return new Promise<HostOutcome>((resolve) =>
+      this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost() }), HOST_CALL_HELD_TIMEOUT_MS) }),
+    );
+  }
+
+  /** The machine is not up: the wake starts, the session is drained at `hello`. */
+  private waking(sessionId: string): DrainResult {
+    this.owe("drainOwed", sessionId);
+    this.deps.waitUntil(this.deps.wake().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.api_wake_failed", message: String(error) }))));
+    return { state: "waking" };
+  }
+
+  /** Whether a session waits for the machine: a wake that fails then owes `wakeFailed`. */
+  owes(): boolean {
+    return this.owed("drainOwed").length > 0;
+  }
+
+  /** A wake that failed for good: each waiting entry of each waiting session is reported `computer_unavailable`. */
+  async wakeFailed(): Promise<void> {
+    for (const sessionId of this.owed("drainOwed")) {
+      const log = this.log(sessionId);
+      for (const entry of (await log.inbox()).entries) {
+        await log.delivered(entry.id, { ok: false, code: "computer_unavailable", message: "The computer could not start." });
+      }
+      this.unowe("drainOwed", sessionId);
+    }
+  }
+
+  /** At `hello`: the starts and drains that waited for the host, and the watch leases still live. */
+  private helloOwed(): void {
+    const quiet = (what: string, sessionId: string) => (error: unknown) =>
+      console.warn(JSON.stringify({ level: "warn", event: `computer.${what}_failed`, sessionId, message: String(error) }));
+    const starts = new Set(this.owed("startOwed"));
+    for (const sessionId of starts) this.deps.waitUntil(this.started(sessionId).catch(quiet("start", sessionId)));
+    for (const sessionId of this.owed("drainOwed")) if (!starts.has(sessionId)) this.deps.waitUntil(this.drainQueued(sessionId).catch(quiet("drain", sessionId)));
+    const now = this.now();
+    for (const [sessionId, until] of this.watches) {
+      if (until <= now) this.watches.delete(sessionId);
+      else this.deps.send({ t: "watch", sessionId, until });
+    }
+  }
+
+  /** Spec 40.5: relayed while the lease is later than now; never wakes a machine, never counted by parking. */
+  watch(sessionId: string, until: number): void {
+    if (!this.hasRow(sessionId)) return;
+    if (until <= this.now()) return void this.watches.delete(sessionId);
+    this.watches.set(sessionId, until);
+    if (this.v4Host()) this.deps.send({ t: "watch", sessionId, until });
+  }
+
+  /** "Send this block so far." */
+  block(sessionId: string, blockId: string): void {
+    if (this.hasRow(sessionId) && this.v4Host()) this.deps.send({ t: "block", sessionId, blockId });
+  }
+
+  /** Org's access for a session, as the host's `access` frame (kept by the host in memory; read again from Org at `hello`). */
+  setAccess(sessionId: string, access: Access, admins: string[]): void {
+    if (!this.v4Host()) return;
+    const members = access.audience === "org" ? null : [access.audience.replace(/^member:/, "")];
+    this.deps.send({ t: "access", access: { sessionId, owner: access.owner, members, ...(admins.length ? { admins } : {}) } });
+  }
+
+  private owed(key: "startOwed" | "drainOwed"): string[] {
+    try {
+      const parsed: unknown = JSON.parse(this.deps.setting(key) ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private owe(key: "startOwed" | "drainOwed", sessionId: string): void {
+    const ids = this.owed(key);
+    if (!ids.includes(sessionId)) this.deps.put(key, JSON.stringify([...ids, sessionId]));
+  }
+
+  private unowe(key: "startOwed" | "drainOwed", sessionId: string): void {
+    const ids = this.owed(key);
+    if (!ids.includes(sessionId)) return;
+    if (ids.length === 1) this.deps.remove(key);
+    else this.deps.put(key, JSON.stringify(ids.filter((id) => id !== sessionId)));
+  }
+
+  /**
+   * Spec 43.1: the session rows Org adopts, oldest first, a page at a time. A row with no `cs_` id (a Slack
+   * thread from before the API) gets one in the export's transaction.
+   */
+  exportSessions(after: string | null, limit: number): { rows: ExportedSession[]; next: string | null; newestCreatedAt: number } {
+    const n = Math.max(1, Math.min(Number.isInteger(limit) ? limit : 200, 500));
+    let at = 0;
+    let key = "";
+    if (after) {
+      const cut = after.indexOf(":");
+      at = Number(after.slice(0, cut)) || 0;
+      key = after.slice(cut + 1);
+    }
+    const run = (): ApiRow[] => {
+      const where = "WHERE created_at > ? OR (created_at = ? AND runner_key > ?) ORDER BY created_at, runner_key LIMIT ?";
+      const bare = [...this.deps.sql.exec<{ key: string }>(`SELECT runner_key AS key FROM (SELECT runner_key, session_id FROM sessions ${where}) WHERE session_id IS NULL`, at, at, key, n + 1)];
+      for (const row of bare) this.deps.sql.exec("UPDATE sessions SET session_id = ? WHERE runner_key = ? AND session_id IS NULL", mintId("cs"), row.key);
+      return [...this.deps.sql.exec(`${ROW_SELECT} ${where}`, at, at, key, n + 1)] as unknown as ApiRow[];
+    };
+    const rows = this.deps.transaction ? this.deps.transaction(run) : run();
+    const page = rows.slice(0, n);
+    const last = page[page.length - 1];
+    const drivers = new Map(
+      [...this.deps.sql.exec<{ key: string; drivers: string | null }>("SELECT runner_key AS key, drivers FROM sessions WHERE created_at >= ? AND created_at <= ?", page[0]?.createdAt ?? 0, last?.createdAt ?? 0)].map((r) => [r.key, r.drivers]),
+    );
+    const dayAgo = this.now() - 86_400_000;
+    const newest = [...this.deps.sql.exec<{ at: number | null }>("SELECT MAX(created_at) AS at FROM sessions")][0]?.at ?? 0;
+    return {
+      rows: page.map((row) => {
+        const slack = row.originType === "slack";
+        const writers = decodeDrivers(drivers.get(row.key));
+        return {
+          id: row.sessionId,
+          owner: row.ownerUserId ?? (row.ownerId ? `slack:${row.teamId}:${row.ownerId}` : ""),
+          origin: this.compose(row).origin,
+          title: row.title,
+          archived: Boolean(row.archived),
+          metadata: parseMetadata(row.metadata),
+          asideRef: row.asideRef,
+          writers: writers === "*" ? "members" : [...writers],
+          slackThreadKey: slack ? row.key : null,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          lastActiveAt: row.lastActiveAt,
+          summary: row.summary ? (JSON.parse(row.summary) as LogSummary) : null,
+          createHash: row.createHash && row.createdAt > dayAgo ? row.createHash : null,
+        };
+      }),
+      next: rows.length > n && last ? `${last.createdAt}:${last.key}` : null,
+      newestCreatedAt: newest,
+    };
+  }
+
   // ---------------------------------------------------------------- the host
 
   private async admission(): Promise<ApiReply | null> {
@@ -981,6 +1329,15 @@ export class ComputerSessionsApi {
       case "wake":
         void this.wake(frame.sessionId);
         return true;
+      case "delta": {
+        // Never acknowledged, never stored; dropped for a session with no runner row here (spec 36.3).
+        const live = Array.isArray(frame.deltas) && this.hasRow(frame.sessionId) ? this.deps.live?.() : null;
+        if (live) {
+          const push = { epoch: frame.epoch, deltas: frame.deltas } as unknown as DeltaPush;
+          this.deps.waitUntil(live.publish(`deltas:${frame.sessionId}`, push).then(() => undefined, () => undefined));
+        }
+        return true;
+      }
       case "subagent-progress": {
         const row = this.row(frame.sessionId);
         if (row && frame.epoch === row.logEpoch && Array.isArray(frame.progress)) {
@@ -1002,18 +1359,20 @@ export class ComputerSessionsApi {
     const received = performance.now();
     const run = async () => {
       const ran = performance.now();
-      const rowEpoch = this.epochOf(sessionId);
-      if (rowEpoch === null) {
+      // A frame naming a session with no runner row here is dropped (spec 36.3).
+      if (!this.hasRow(sessionId)) {
         console.warn(JSON.stringify({ level: "warn", event: "computer.journal_unknown_session", sessionId }));
         return;
       }
       if (!Number.isInteger(epoch) || !Array.isArray(events)) return;
       // An empty batch is the host asking for the epoch it is missing (a held frame past its deadline,
-      // review r3 P1-1): answered as a stale batch is, rate-limited. At the row's epoch it is nothing.
-      if (events.length === 0) return epoch < rowEpoch ? this.staleEpoch(sessionId) : undefined;
-      // Fenced: a writer of an older epoch than the row's (a lost runner, a host that missed the
-      // recovery). Dropped unacked; the host is told the epoch (rate-limited) so it adopts it.
-      if (epoch < rowEpoch) return this.staleEpoch(sessionId);
+      // review r3 P1-1): answered as a stale batch is, rate-limited. At the log's epoch it is nothing.
+      // The epoch is the SessionLog's (spec 40.10): read there, never kept here.
+      if (events.length === 0) {
+        const at = await this.log(sessionId).epochTail(this.identity(sessionId));
+        return at && epoch < at.epoch ? this.staleEpoch(sessionId) : undefined;
+      }
+      // A writer of an older epoch is fenced by the log itself (`stale_epoch`, in `appended`).
       const began = performance.now();
       const result = await this.log(sessionId).append({ sessionId, organizationId: this.deps.organizationId() }, epoch, events);
       const answered = performance.now();
@@ -1050,8 +1409,6 @@ export class ComputerSessionsApi {
     if (result.reason === "stale_epoch") {
       // The log moved on (a recovery the host has not adopted): the row follows, and the host is told
       // the epoch with its tail (at most once per session per STALE_EPOCH_RESEND_MS).
-      this.applied.delete(sessionId);
-      this.deps.sql.exec("UPDATE sessions SET log_epoch = ? WHERE session_id = ? AND log_epoch < ?", result.logEpoch, sessionId, result.logEpoch);
       this.staleEpoch(sessionId);
       return;
     }
@@ -1072,10 +1429,13 @@ export class ComputerSessionsApi {
    */
   private readonly applied = new Map<string, { epoch: number; epochStartSeq: number; body: string }>();
 
-  /** The row's log epoch, or null for an unknown session: a one-column read by the unique index. */
-  private epochOf(sessionId: string): number | null {
-    const hit = [...this.deps.sql.exec<{ e: number }>("SELECT log_epoch AS e FROM sessions WHERE session_id = ?", sessionId)][0];
-    return hit ? hit.e : null;
+  /** Whether this Computer holds the session's runner row: a read by the unique index. */
+  private hasRow(sessionId: string): boolean {
+    return typeof sessionId === "string" && [...this.deps.sql.exec("SELECT 1 FROM sessions WHERE session_id = ?", sessionId)].length > 0;
+  }
+
+  private identity(sessionId: string): { sessionId: string; organizationId: string } {
+    return { sessionId, organizationId: this.deps.organizationId() };
   }
 
   /** The row follows the log, never backwards in (epoch, seq). */
@@ -1246,16 +1606,36 @@ export class ComputerSessionsApi {
       if (!j || typeof j.sessionId !== "string" || !Number.isInteger(j.epoch)) continue;
       // A recovery in flight sends `epoch` itself once it commits (the host is connected by then).
       if (this.epochSends.has(j.sessionId)) continue;
-      const at = [...this.deps.sql.exec<{ e: number; s: number }>("SELECT log_epoch AS e, last_seq AS s FROM sessions WHERE session_id = ?", j.sessionId)][0];
-      if (!at) continue;
-      // Behind the log's epoch (0: a file torn before its epoch line), or at it but missing stored events
-      // (`lastSeq < epochStartSeq - 1 + tail.length`, i.e. below the log's ack; calvin r2 P1-2): epoch again,
-      // the host appends only what it lacks.
-      const lastSeq = Number.isInteger(j.lastSeq) ? j.lastSeq : 0;
-      if (at.e > j.epoch || (at.e === j.epoch && lastSeq < at.s)) void this.pushEpoch(j.sessionId, "hello");
+      if (!this.hasRow(j.sessionId)) continue;
+      this.helloEpoch(j.sessionId, j.epoch, Number.isInteger(j.lastSeq) ? j.lastSeq : 0);
     }
     this.sendAllAccess();
+    this.helloOwed();
     if (this.activeCount() > 0) this.deps.waitUntil(this.deps.scheduleRecover(this.now() + RECOVER_AFTER_MS));
+  }
+
+  /**
+   * One journal of a `hello` against the log's epoch and tail (spec 40.10): `epoch` when the log is ahead
+   * (0: a file torn before its epoch line), or at the same epoch with stored events the host lacks; the host
+   * appends only what it lacks. Frames for the session wait on it.
+   */
+  private helloEpoch(sessionId: string, epoch: number, lastSeq: number): void {
+    const run: Promise<void> = (async (): Promise<void> => {
+      await null;
+      try {
+        const t = await this.log(sessionId).epochTail(this.identity(sessionId));
+        if (t && this.v4Host() && (t.epoch > epoch || (t.epoch === epoch && lastSeq < t.lastSeq))) {
+          this.sendEpoch(sessionId, t);
+          this.deps.telemetry?.recovery("epoch_sent", { sessionId, reason: "hello", ok: true, data: { epoch: t.epoch, events: t.tail.length, attempt: 0 } });
+        }
+      } catch (error) {
+        console.error(JSON.stringify({ level: "error", event: "computer.epoch_send_failed", sessionId, final: true, message: String(error) }));
+      }
+    })().finally(() => {
+      if (this.epochSends.get(sessionId) === run) this.epochSends.delete(sessionId);
+    });
+    this.epochSends.set(sessionId, run);
+    this.deps.waitUntil(run);
   }
 
   /** A runner's report: subagents keep the computer busy; a runner that stopped mid-turn is looked at later. */
@@ -1350,35 +1730,33 @@ export class ComputerSessionsApi {
     return run;
   }
 
+  /** Spec 40.10: the log's epoch is read (`epochTail`), then `recover` under epoch + 1; read again when refused. */
   private async recoverNow(row: ApiRow): Promise<void> {
-    const epoch = row.logEpoch + 1;
-    const identity = { sessionId: row.sessionId, organizationId: this.deps.organizationId() };
-    const began = performance.now();
-    const result = await this.log(row.sessionId).recover({ ...identity, epoch, at: new Date(this.now()).toISOString() });
-    console.log(JSON.stringify({ level: "info", event: "computer.session_recovered", sessionId: row.sessionId, epoch, ok: result.ok }));
-    this.deps.telemetry?.recovery("session_recovered", {
-      sessionId: row.sessionId,
-      ms: performance.now() - began,
-      ok: result.ok,
-      ...(result.ok ? {} : { reason: result.reason }),
-      data: { epoch: result.ok ? epoch : result.logEpoch, ...(result.ok ? { events: result.stats?.rows ?? 0 } : {}) },
-    });
-    if (!result.ok) {
-      this.applied.delete(row.sessionId);
-      this.deps.sql.exec("UPDATE sessions SET log_epoch = ? WHERE session_id = ? AND log_epoch < ?", result.logEpoch, row.sessionId, result.logEpoch);
-      // The log is past what this row (so the host) was told: an earlier recover committed and its result was
-      // lost (an instance reset mid-RPC). Nothing else would send `epoch` while the link stays up (review r3 P1-1).
-      if (result.logEpoch > row.logEpoch) await this.sendTail(row.sessionId, "recover");
+    const identity = this.identity(row.sessionId);
+    const log = this.log(row.sessionId);
+    for (let attempt = 0; attempt < RECOVER_READS; attempt++) {
+      const epoch = ((await log.epochTail(identity))?.epoch ?? 0) + 1;
+      const began = performance.now();
+      const result = await log.recover({ ...identity, epoch, at: new Date(this.now()).toISOString() });
+      console.log(JSON.stringify({ level: "info", event: "computer.session_recovered", sessionId: row.sessionId, epoch, ok: result.ok }));
+      this.deps.telemetry?.recovery("session_recovered", {
+        sessionId: row.sessionId,
+        ms: performance.now() - began,
+        ok: result.ok,
+        ...(result.ok ? {} : { reason: result.reason }),
+        data: { epoch: result.ok ? epoch : result.logEpoch, ...(result.ok ? { events: result.stats?.rows ?? 0 } : {}) },
+      });
+      if (!result.ok) continue;
+      // The `epoch` frame in the same turn as the answer: no frame carrying the new epoch can go before it.
+      this.applySummary(row.sessionId, result.summary);
+      if (this.v4Host()) {
+        this.sendEpoch(row.sessionId, result.tail);
+        this.deps.telemetry?.recovery("epoch_sent", { sessionId: row.sessionId, reason: "recover", ok: true, data: { epoch: result.tail.epoch, events: result.tail.tail.length, attempt: 0 } });
+      }
       return;
     }
-    // The row and the `epoch` frame in one turn: no frame carrying the new epoch can go before it. Whether to
-    // send is decided now, from the committed epoch: a host that said hello during the recover RPC saw the
-    // old epoch in the row (and `onHello` deferred to this), so it is told here.
-    this.applySummary(row.sessionId, result.summary);
-    if (this.v4Host()) {
-      this.sendEpoch(row.sessionId, result.tail);
-      this.deps.telemetry?.recovery("epoch_sent", { sessionId: row.sessionId, reason: "recover", ok: true, data: { epoch: result.tail.epoch, events: result.tail.tail.length, attempt: 0 } });
-    }
+    // Refused each time: another recovery is moving the log. The host is told where it is.
+    await this.sendTail(row.sessionId, "recover");
   }
 
   // ---------------------------------------------------------------- epochs (recovery-fix.md)
@@ -1434,9 +1812,6 @@ export class ComputerSessionsApi {
       try {
         const tail = await this.log(sessionId).epochTail({ sessionId, organizationId: this.deps.organizationId() });
         if (!tail || !this.v4Host()) return;
-        // The row follows the log's epoch (a host batch may never have told it).
-        this.deps.sql.exec("UPDATE sessions SET log_epoch = ? WHERE session_id = ? AND log_epoch < ?", tail.epoch, sessionId, tail.epoch);
-        this.applied.delete(sessionId);
         this.sendEpoch(sessionId, tail);
         this.deps.telemetry?.recovery("epoch_sent", {
           sessionId,

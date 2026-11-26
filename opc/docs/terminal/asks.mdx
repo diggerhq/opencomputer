@@ -1,0 +1,120 @@
+---
+title: "Asks"
+description: "Approvals, questions and secrets: when the agent needs a person."
+---
+
+When the agent needs a person, it raises an ask. `opc` draws it inline. The session's status is `waiting` until the ask is answered, from here or from any other client.
+
+An ask never takes keys you meant for the prompt. It takes the keyboard only when the prompt line is empty and you have pressed no key for 500 ms, and it ignores keys for its first 300 ms. Otherwise it waits above the prompt, and the status line says `waiting for you`:
+
+```
+  ◆ ask open · Tab to answer
+```
+
+`Tab` moves to the ask and back. `Esc` on an ask returns to the prompt line; it neither interrupts the turn nor dismisses the ask. See [Keys](/terminal/keys#when-an-ask-is-open).
+
+A message you send from the prompt line while an ask is open declines the ask, and the agent reads the message as its instructions instead:
+
+```
+  ✗ declined · use the staging bucket, not prod
+```
+
+To leave the ask open and send the message after the turn, use [`/queue`](/terminal/slash-commands).
+
+## Approvals
+
+The agent wants to do something your permission mode does not allow on its own.
+
+```
+  ? Bash  terraform plan -out=staging.tfplan
+    in infra/staging · wants approval
+    [y] allow   [n] deny   [e] deny and say why
+    [a] allow "terraform plan *" this session
+```
+
+| Key | Does |
+| --- | --- |
+| `y` | Allows this call |
+| `n` | Denies it. The agent is told it was denied and carries on. |
+| `a` | Allows this call and every later call that matches the rule shown, for the rest of the session. For `Bash`, the rule is the command and its first subcommand, such as `terraform plan *` or `npm test *`. |
+| `e` | Denies it and opens a line for a reason, which the agent reads |
+| `Ctrl+O` | Shows the full input, such as the whole command or diff |
+
+Allowing with `a` confirms the rule in full:
+
+```
+  ✓ allowed for this session: Bash(terraform plan *)
+```
+
+[`/allowed`](/terminal/slash-commands#allowed) lists the session's rules and revokes them.
+
+## Plans
+
+An approval in `plan` mode is the plan itself. The full plan is shown, and allowing it switches the session out of `plan` mode so the agent can start.
+
+```
+  ? Plan ready · 4 steps
+    [y] approve   [A] approve, accept edits   [n] keep planning   [e] say what to change
+```
+
+| Key | Does |
+| --- | --- |
+| `y` | Approves the plan. The session switches to `default` mode, so each edit still asks. |
+| `A` | Approves the plan and switches the session to `acceptEdits` mode, so edits go ahead without asking |
+| `n` | Keeps the session in `plan` mode. The agent goes on planning. |
+| `e` | Keeps planning and opens a line for what to change, which the agent reads |
+| `Ctrl+O` | Shows the whole plan |
+
+## Questions
+
+The agent asks one or more questions, each with choices.
+
+```
+  ? Which fix do you want?
+    ❯ Make the test wait for the debounce   (recommended)
+      Make flush() await pending timers
+      Something else…
+    ↑↓ move · enter choose · tab to the prompt line
+```
+
+| Key | Does |
+| --- | --- |
+| `↑` `↓` | Move between choices |
+| `Enter` | Chooses, or moves to the next question when there are several |
+| `Space` | Toggles a choice, when the question allows several |
+| `1`–`9` | Chooses by number |
+| Typing on **Something else…** | Answers in your own words |
+| `Ctrl+D` | Dismisses the question. The agent is told nobody answered and decides how to go on. |
+
+When there are several questions, the answers are sent together after the last one.
+
+## Secrets
+
+The agent may ask for a credential, such as an API key, that the session does not have. `opc` shows the request:
+
+```
+  ? Secret STRIPE_API_KEY needed
+    "To run the billing integration tests against Stripe's test mode."
+```
+
+A secret request is answered in Slack, not from `opc` or the API. Press `x` to skip it: the agent is told nobody answered and decides how to go on.
+
+## Answered somewhere else
+
+The first answer wins. If someone answers in Slack, on the dashboard or in another terminal first, `opc` replaces the ask with what happened:
+
+```
+  ✓ allowed by Mo in Slack · terraform plan -out=staging.tfplan
+```
+
+If you answer at the same moment and lose, your answer is discarded and `opc` shows the one that won. Nothing is applied twice.
+
+## When the turn stops
+
+Interrupting the turn with `Esc` from the prompt line closes its open asks, marked `interrupted`. So does `/suspend`, which also cancels the turn.
+
+An ask never expires. A session with an open ask is not suspended for being idle, so the ask waits for an answer as long as it takes.
+
+## In scripts
+
+`opc -p` and `opc wait` do not answer asks. By default they exit with code `5` and print the ask, with the commands that answer it: `opc a <id>` for a person, or `opc ask allow`, `opc ask answer` and `opc ask dismiss` for a program. `opc -p --on-ask dismiss` dismisses each ask and carries on, and `--on-ask wait` waits for someone to answer elsewhere. See [Scripting](/cli/scripting#when-the-agent-needs-a-person).

@@ -14,21 +14,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, text = '', attrs: Rec
   return e
 }
 
-if (location.pathname === '/start') startPanel()
-else page()
-
-function startPanel(): void {
-  document.body.classList.add('panel')
-  const input = el('input', '', { id: 'start', placeholder: 'Start a thread (placeholder: Enter opens the main window)' })
-  root.append(input)
-  host.onPanelShown(() => {
-    input.value = ''
-    input.focus()
-  })
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') host.openInMain({})
-  })
-}
+page()
 
 function page(): void {
   const log = el('pre', '', { id: 'log' })
@@ -83,7 +69,7 @@ function page(): void {
       },
     ],
     ['external', 'Open opencomputer.dev', () => host.openExternal('https://opencomputer.dev')],
-    ['location', 'Mirror location', () => host.location('/thread/cs_0000000000000000')],
+    ['location', 'Mirror location', () => host.location('/t/cs_0000000000000000')],
     ['signout', 'Sign out', () => host.signOut()],
   ]
   const row = el('div', '', { class: 'row' })

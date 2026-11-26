@@ -6,7 +6,7 @@ import type {
   SessionRow,
   TrackRow,
 } from '@opencomputer/sdk/computer'
-import type { Rows } from './rows'
+import { readRow, type Rows } from './rows'
 
 // What the screen reads, derived from the rows: the marks of spec section 3
 // and a track's mark (R10). Everything here is a pure function of the rows,
@@ -90,8 +90,8 @@ export const askLine = (ask: Ask): string => {
     return String(a.title ?? a.command ?? a.toolName ?? 'Needs your OK')
   }
   if (ask.kind === 'question') {
-    const qs = (ask.question?.questions ?? []) as { question?: string }[]
-    return qs[0]?.question ?? 'Has a question'
+    const qs = (ask.question?.questions ?? []) as { text?: string }[]
+    return qs[0]?.text ?? 'Has a question'
   }
   return 'Needs a secret'
 }
@@ -129,7 +129,7 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
   const place = rows.place.get(sid)
   if (!session || !place) return undefined
   const ix = index(rows)
-  const read = rows.read.get(`${me}:${sid}`)
+  const read = readRow((id) => rows.read.get(id), me, sid)
   const results = ix.results.get(sid) ?? NONE
   const proposals = ix.proposals.get(sid) ?? NONE
   const key = [place, read, rows.result, rows.proposal]

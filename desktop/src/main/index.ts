@@ -17,7 +17,6 @@ import {
   powerMonitor,
   protocol,
   safeStorage,
-  screen,
   session,
   shell,
   type IpcMainEvent,
@@ -28,7 +27,7 @@ import { APP_ORIGIN, IPC_PRINCIPAL, IPC_TO_MAIN, IPC_TO_PAGE, type Frame, type M
 import { Auth } from './auth'
 import { builtinVersion, chooseBundle, fetchBundle } from './bundle'
 import { edgeUrl, LIVE_PATH, START_HOTKEY, UI_BUNDLE_KEY } from './config'
-import { parseDeepLink, targetPath } from './deeplink'
+import { locationTarget, parseDeepLink } from './deeplink'
 import { Router } from './router'
 import { createHandler } from './scheme'
 import { LiveSocket } from './socket'
@@ -94,7 +93,9 @@ async function main(): Promise<void> {
   // ---- The UI bundle and the oc://app/ handler ----
 
   const packagedUi = join(app.getAppPath(), 'ui')
-  const builtin = existsSync(join(packagedUi, 'index.html')) ? packagedUi : join(app.getAppPath(), 'dist', 'placeholder')
+  const placeholder = join(app.getAppPath(), 'dist', 'placeholder')
+  // The shell's own tests exercise the bridge through the placeholder page.
+  const builtin = (app.isPackaged || process.env.OC_UI !== 'placeholder') && existsSync(join(packagedUi, 'index.html')) ? packagedUi : placeholder
   const uiRoot = join(userData, 'ui')
   mkdirSync(uiRoot, { recursive: true })
   const bundle = chooseBundle(uiRoot, builtin, builtinVersion(builtin), UI_BUNDLE_KEY)
@@ -172,19 +173,18 @@ async function main(): Promise<void> {
   app.on('before-quit', () => (quitting = true))
 
   let mainWindow: BrowserWindow | null = null
-  let panel: BrowserWindow | null = null
-  const windows = () => [mainWindow, panel].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
+  // The page has said hello on its channel: its listeners are in place, so
+  // an `open` sent now is heard. Before that, the target waits.
+  let listening = false
+  const windows = () => [mainWindow].filter((w): w is BrowserWindow => !!w && !w.isDestroyed())
 
   function send(wc: WebContents | undefined, msg: MainToPage): void {
     if (wc && !wc.isDestroyed()) wc.send(IPC_TO_PAGE, msg)
   }
   const onApp = (wc: WebContents) => wc.getURL().startsWith(APP) && !wc.getURL().startsWith(`${APP}__shell/`)
 
-  function homeUrl(): string {
-    if (!auth.principal) return SIGN_IN
-    const path = windowState.path?.startsWith('/') && !windowState.path.startsWith('/__shell') ? windowState.path : '/'
-    return APP_ORIGIN + path
-  }
+  // The surface is one document: what is open is told to it, not put in the URL.
+  const homeUrl = () => (auth.principal ? APP : SIGN_IN)
 
   /** A document that loads into a window starts with no subscriptions and is told the socket's state. */
   function attach(wc: WebContents): void {
@@ -223,13 +223,8 @@ async function main(): Promise<void> {
       forget(wc)
       mainWindow = null
     })
-    win.webContents.on('did-finish-load', () => {
-      if (pendingOpen && onApp(win.webContents)) {
-        send(win.webContents, { t: 'open', target: pendingOpen })
-        pendingOpen = null
-      }
-    })
-    void win.loadURL(pendingOpen && auth.principal ? APP_ORIGIN + targetPath(pendingOpen) : homeUrl())
+    wc.on('did-navigate', () => (listening = false))
+    void win.loadURL(homeUrl())
     return win
   }
 
@@ -244,63 +239,8 @@ async function main(): Promise<void> {
   deliverOpen = (target) => {
     const win = showMain()
     if (!auth.principal) return
-    if (win.webContents.isLoading() || !onApp(win.webContents)) pendingOpen = target
+    if (!listening) pendingOpen = target
     else send(win.webContents, { t: 'open', target })
-  }
-
-  // The start panel (S11): made once, kept rendered and hidden, so the
-  // hotkey shows it within a frame.
-  function createPanel(): void {
-    if (panel && !panel.isDestroyed()) return
-    const win = new BrowserWindow({
-      width: 680,
-      height: 380,
-      show: false,
-      frame: false,
-      transparent: true,
-      resizable: false,
-      movable: false,
-      minimizable: false,
-      maximizable: false,
-      fullscreenable: false,
-      skipTaskbar: true,
-      alwaysOnTop: true,
-      ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
-      webPreferences,
-    })
-    panel = win
-    const wc = win.webContents
-    attach(wc)
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-    win.on('blur', () => win.hide())
-    win.on('close', (event) => {
-      if (!quitting) {
-        event.preventDefault()
-        win.hide()
-      }
-    })
-    win.on('closed', () => {
-      forget(wc)
-      panel = null
-    })
-    win.webContents.on('before-input-event', (_event, input) => {
-      if (input.type === 'keyDown' && input.key === 'Escape') win.hide()
-    })
-    void win.loadURL(`${APP}start`)
-  }
-
-  function togglePanel(): void {
-    if (!auth.principal) return void showMain()
-    if (!panel || panel.isDestroyed()) createPanel()
-    const win = panel!
-    if (win.isVisible()) return win.hide()
-    const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea
-    const [w = 680, h = 380] = win.getSize()
-    win.setPosition(Math.round(area.x + (area.width - w) / 2), Math.round(area.y + area.height * 0.22))
-    win.show()
-    win.focus()
-    send(win.webContents, { t: 'panel.shown' })
-    void h
   }
 
   // ---- The socket ----
@@ -337,7 +277,7 @@ async function main(): Promise<void> {
       actions: choices.map((c) => ({ type: 'button' as const, text: c.label })),
     })
     shown.add(notification)
-    const page = () => (!from.isDestroyed() && onApp(from) && from !== panel?.webContents ? from : mainWindow?.webContents)
+    const page = () => (!from.isDestroyed() && onApp(from) ? from : mainWindow?.webContents)
     notification.on('click', () => {
       shown.delete(notification)
       deliverOpen({ threadId: n.threadId, ...(n.askId ? { askId: n.askId } : {}) })
@@ -415,6 +355,13 @@ async function main(): Promise<void> {
       case 'chan.send': {
         const frame = msg.frame as Frame
         if (!frame || typeof frame !== 'object' || typeof frame.t !== 'string' || frame.t === 'auth') return
+        if (frame.t === 'hello' && wc === mainWindow?.webContents && !listening) {
+          listening = true
+          // A waiting target, or else where the window was when it last closed.
+          const target = pendingOpen ?? locationTarget(windowState.path ?? '/')
+          pendingOpen = null
+          if (target) send(wc, { t: 'open', target })
+        }
         const { forward, reply } = router.outgoing(wc, frame)
         if (forward) socket.send(frame)
         if (reply) send(wc, { t: 'chan.frame', frame: reply })
@@ -452,20 +399,6 @@ async function main(): Promise<void> {
         notify(wc, n)
         return
       }
-      case 'open': {
-        const t = msg.target
-        if (!t || typeof t !== 'object') return
-        const target: OpenTarget = {}
-        if (isString(t.threadId, 64)) target.threadId = t.threadId
-        if (isString(t.trackId, 64)) target.trackId = t.trackId
-        if (isString(t.askId, 64)) target.askId = t.askId
-        if (wc === panel?.webContents) panel.hide()
-        deliverOpen(target)
-        return
-      }
-      case 'panel.hide':
-        if (wc === panel?.webContents) panel.hide()
-        return
       case 'signout':
         void auth.signOut()
         return
@@ -476,8 +409,8 @@ async function main(): Promise<void> {
 
   function signedIn(): void {
     socket.start()
-    createPanel()
-    if (!globalShortcut.isRegistered(START_HOTKEY)) globalShortcut.register(START_HOTKEY, togglePanel)
+    // S11: the hotkey brings the window forward at the start box.
+    if (!globalShortcut.isRegistered(START_HOTKEY)) globalShortcut.register(START_HOTKEY, () => deliverOpen({ new: true }))
   }
 
   auth.onChange((principal) => {
@@ -492,7 +425,6 @@ async function main(): Promise<void> {
     socket.stop()
     globalShortcut.unregister(START_HOTKEY)
     for (const win of windows()) send(win.webContents, { t: 'signed-out' })
-    if (panel && !panel.isDestroyed()) panel.destroy()
     app.setBadgeCount(0)
     windowState = { bounds: windowState.bounds }
     saveWindowState()
