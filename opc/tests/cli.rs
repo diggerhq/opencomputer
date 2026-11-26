@@ -1005,3 +1005,43 @@ fn secrets_set_by_someone_else_are_refused_with_exit_3() {
     assert!(e["error"]["message"].as_str().unwrap().starts_with(&format!("KEEP on {sid} was set by someone else")));
     assert_eq!(fake.secrets(&sid).len(), 1);
 }
+
+fn ws_calls(fake: &Fake, method: &str) -> usize {
+    fake.ws_frames().iter().filter(|f| f.dir == support::Dir::In && f.method().as_deref() == Some(method)).count()
+}
+
+#[test]
+fn shell_wakes_a_suspended_session_then_opens() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(o.stderr.contains("waking session…"), "{}", o.stderr);
+    assert_eq!(ws_calls(&fake, "sessions.resume"), 1);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn shell_on_a_running_session_does_not_wake_it() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("awake"));
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(!o.stderr.contains("waking"), "{}", o.stderr);
+    assert_eq!(ws_calls(&fake, "sessions.resume"), 0);
+}
+
+#[test]
+fn shell_says_why_a_session_cannot_wake() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    fake.fail_next("ws sessions.resume", 1, Failure::insufficient_credits());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 6, "{}", o.stderr);
+    assert!(o.stderr.contains("not running, and could not be woken"), "{}", o.stderr);
+    assert!(o.stderr.contains("opc send"), "{}", o.stderr);
+    assert!(!o.stderr.contains("No such session"), "{}", o.stderr);
+    assert_eq!(o.stdout, "");
+}

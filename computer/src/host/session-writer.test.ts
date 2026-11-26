@@ -131,6 +131,18 @@ describe('HostSessionWriter', () => {
     for (const e of events()) assertEvent(e);
   });
 
+  it('sessions.resume wakes an `idle` session: its runner exited for idleness without recording it', async () => {
+    const { w, sid, wakes, events } = await host({ prepare: (log) => log.append('session.status_changed', { from: null, to: 'idle' }, { actor: null }) });
+    const r = await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
+    expect(r.result).toMatchObject({ session: { status: 'starting' } });
+    expect(types(events()).slice(-2)).toEqual(['session.status_changed', 'runtime.starting']);
+    expect(wakes).toEqual([{ sessionId: sid, delivery: undefined }]);
+    // Already starting: no second wake.
+    await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
+    expect(wakes).toHaveLength(1);
+    for (const e of events()) assertEvent(e);
+  });
+
   it('subagents.stop, asks.answer/dismiss and compact', async () => {
     const t0 = mintId('tn');
     let sa = '';
