@@ -50,8 +50,9 @@
 // Billing (work 052, "same as agent runtime which serverless agents perform"):
 //   - a session's working time is billed as `agent_runtime`, like a
 //     serverless agent session's (billing.ts);
-//   - a Slack message passes the autonomous sessions' credit admission
-//     before it is delivered (admission.ts);
+//   - a session's turn passes the autonomous sessions' credit admission
+//     before the computer is woken or the turn delivered (admission.ts); a
+//     refusal, and the warning before it, are owed to Slack (`billing`);
 //   - Claude Code spends the organization's managed model key, metered as
 //     `model_spend` (model-key.ts).
 //
@@ -62,9 +63,9 @@
 
 import { isSessionId } from "../../ids/session-ids.js";
 import type { ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
-import type { SlackRpc } from "../slack/contract.js";
+import type { BillingNotice, SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
-import { type Dead, OWED_PURPOSE } from "../../durable/outbox.js";
+import { type Dead, OWED_PURPOSE, owed } from "../../durable/outbox.js";
 import { alarms } from "../../durable/alarms.js";
 import { migrate } from "../../durable/migrations.js";
 import { type Sql, sqlOf } from "../../durable/sql.js";
@@ -74,14 +75,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { GitHubInstallation, GitHubTokenMint } from "../../protocol.js";
 import { listGitHubInstallationRepositories } from "../../edge/github.js";
-import {
-  type BillingWarning,
-  type DeliveryAdmission,
-  type SlackNotice,
-  admitDelivery,
-  refusal,
-  refuseForCredits,
-} from "./admission.js";
+import { type BillingWarning, type DeliveryAdmission, admitDelivery, refusal } from "./admission.js";
 import { ComputerRuntimeBilling } from "./machine/billing.js";
 import { PlatformComputerCloud } from "./machine/cloud.js";
 import {
@@ -116,7 +110,7 @@ import { POOL_OBJECT, isPoolId } from "../../ids/computer-names.js";
 import { ComputerPool, type PoolClaim, type PoolProbeResult, type PoolSlot, type PoolSlotStatus, SLOT_PROBE_TIMEOUT_MS, poolSize } from "../computer-pool/pool.js";
 import { ComputerPreviews } from "./previews.js";
 import { ComputerKeys, type SyncedKey } from "./held-for-org/keys/keys.js";
-import { type ApiOp, type ApiRequest, type ApiReply, ComputerSessionsApi } from "./session-drain.js";
+import { type ApiOp, type ApiRequest, type ApiReply, type ApiRow, ComputerSessionsApi } from "./session-drain.js";
 import type { PreviewComputerState } from "../../previews/worker.js";
 import {
   CALVIN_PROTOCOL_VERSION,
@@ -293,13 +287,15 @@ const PLAN_TTL_MS = 10 * 60_000;
  */
 export const ADMISSION_FRESH_MS = 60_000;
 export const ADMISSION_MAX_AGE_MS = 10 * 60_000;
+/** The owed group of the billing notices to Slack: one, so a paywall, its `admitted` and the next go in order. */
+const BILLING_NOTICES = "slack-billing";
 
 /** The stored admission (settings `admission`): the check's generation, billing's answer, and when the check started. */
 interface StoredAdmission {
   generation: number;
   allowed: boolean;
   checkedAt: number;
-  /** The warning billing gave with it (086), told on the messages it admits. */
+  /** The warning billing gave with it (086), owed to Slack once per reason when it admits a turn. */
   warning?: BillingWarning;
 }
 /**
@@ -586,7 +582,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       waitUntil: (promise) => ctx.waitUntil(promise),
       telemetry: this.apiTelemetry,
     });
-    // The shared actor module's tables (spec 36.7): the drains owed here. Its alarm is this object's purpose `owed`.
+    // The shared actor module's tables (spec 36.7): the drains owed here, and the billing notices owed to Slack. Its alarm is this object's purpose `owed`.
     this.store = {
       ...sqlOf(ctx.storage),
       arm: (at) => {
@@ -606,7 +602,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       closeHost: (code, reason) => this.socket()?.close(code, reason),
       wake: () => this.wakeForApi(),
       computerStatus: () => this.apiComputerStatus(),
-      admitted: () => this.admitForApi(),
+      admitted: (row) => this.admitSpend(row),
+      sendOwed: (call, body) => this.sendOwed(call, body),
       slackPerson: (slackUserId) => this.person(slackUserId),
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
       secretsFor: (row) => this.secrets.forSession(row.key, this.secretsOwner(row)),
@@ -1041,7 +1038,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     }
     // Periodic, idempotent and unordered against the queue: after it, off the alarm's path.
     if (due.includes("billing")) this.ctx.waitUntil(this.billingTick().catch(failed("billing")));
-    // The owed drains: one session's held delivery holds no other purpose.
+    // The owed drains and billing notices: one session's held delivery holds no other purpose.
     if (due.includes(OWED_PURPOSE)) this.ctx.waitUntil(alarms.run(this.store, now, { [OWED_PURPOSE]: () => this.api.runOwed() }, (_purpose, error) => failed(OWED_PURPOSE)(error)));
     if (due.includes("size")) this.ctx.waitUntil(this.reconcileSize().catch(failed("size")));
     // Tracks and threads: Org hears a changed state or preview list.
@@ -1785,16 +1782,70 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.noteActivity();
   }
 
-  /** Slack's admission (cached, revalidated off the path) without its Slack notice. Throws when billing is unavailable. */
-  private async admitForApi(): Promise<boolean> {
+  /** Billing's admission (cached, revalidated off the path; ADMISSION_FRESH_MS), with nothing told. Throws when billing is unavailable. */
+  private async admission(): Promise<DeliveryAdmission> {
     const accountId = this.accountId();
     const stored = this.storedAdmission();
     const age = stored ? Date.now() - stored.checkedAt : Infinity;
     if (stored?.allowed === true && age < ADMISSION_MAX_AGE_MS) {
       if (age >= ADMISSION_FRESH_MS) this.recheckAdmission(accountId);
+      return { deliver: true, ...(stored.warning ? { warning: stored.warning } : {}) };
+    }
+    return this.checkAdmission(accountId);
+  }
+
+  /**
+   * A session's turn asks to spend, before the computer is woken (the drain's credit gate). Refused: a
+   * Slack thread is owed the paywall. Admitted: a paywall told before is forgotten, and a standing
+   * warning is owed once per reason. Throws when billing is unavailable.
+   */
+  private async admitSpend(row: Pick<ApiRow, "sessionId" | "originType">): Promise<boolean> {
+    const admission = await this.admission();
+    if (admission.deliver) {
+      if (this.setting("billingPaywalled")) {
+        this.remove("billingPaywalled");
+        this.oweSlack("billing:admitted", { kind: "admitted" });
+      }
+      if (admission.warning) this.oweWarning(admission.warning, row.sessionId);
       return true;
     }
-    return (await this.checkAdmission(accountId)).deliver;
+    console.log(JSON.stringify({ level: "info", event: "computer.delivery_refused_credits", accountId: this.accountId() }));
+    if (row.originType === "slack") this.owePaywall(row.sessionId, { onPro: admission.onPro === true, haltReason: admission.haltReason ?? null });
+    return false;
+  }
+
+  /** The paywall, owed to the session's Slack thread; `billingPaywalled` until a turn is admitted again. */
+  private owePaywall(sessionId: string, why: { onPro: boolean; haltReason: string | null }): void {
+    this.put("billingPaywalled", "1");
+    this.oweSlack(`billing:paywall:${sessionId}`, { kind: "paywall", sessionId, ...why });
+  }
+
+  /** The warning before the stop, owed once per reason and run (`billingWarned`); a Slack that could not tell anyone clears it. */
+  private oweWarning(warning: BillingWarning, sessionId: string): void {
+    const mark = `${warning.reason}:${warning.since ?? 0}`;
+    if (this.setting("billingWarned") === mark) return;
+    this.put("billingWarned", mark);
+    this.oweSlack("billing:warning", { kind: "warning", reason: warning.reason, since: warning.since, sessionId });
+  }
+
+  /** A billing notice owed to Slack, in order with the others (one group), and sent now. */
+  private oweSlack(key: string, n: BillingNotice): void {
+    owed.add(this.store, { group: BILLING_NOTICES, key, call: "billing", body: n });
+    this.ctx.waitUntil(this.api.runOwed(BILLING_NOTICES).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.billing_notice_failed", message: errorText(error) }))));
+  }
+
+  /** The calls owed here that are not drains: billing notices to Slack, measured when shown (086 funnel). */
+  private async sendOwed(call: string, body: unknown): Promise<void> {
+    if (call !== "billing") {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.owed_unknown", call }));
+      return;
+    }
+    const n = body as BillingNotice;
+    const told = await this.actors.slack().billing(n);
+    if (n.kind === "warning" && told === "missed" && this.setting("billingWarned") === `${n.reason}:${n.since ?? 0}`) this.remove("billingWarned");
+    if (told !== "shown") return;
+    if (n.kind === "paywall") await this.telemetry.within(undefined, async (t) => paywallShown(t, n.haltReason));
+    else if (n.kind === "warning") await this.telemetry.within(undefined, async (t) => t.emit("billing.warning_shown", { data: { reason: n.reason, surface: "slack" } }));
   }
 
   /** The recovery tick at `at`, or earlier if one is already due sooner. */
@@ -1906,7 +1957,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const state = this.lifecycle.row()?.state;
     if (state === "provisioning" || state === "waking" || state === "resizing" || state === "ready") return "waking";
     if (state !== "parked" && state !== "parking") return "gone";
-    if (!(await this.admitForApi().catch(() => false))) return "asleep";
+    if (!(await this.admission().then((a) => a.deliver, () => false))) return "asleep";
     console.log(JSON.stringify({ level: "info", event: "computer.wire_wake", accountId: this.setting("accountId") }));
     // lifecycle.wake answers false when a wake is already in flight: still on its way up.
     await this.wakeComputer();
@@ -1944,10 +1995,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   }
 
   /** A DM from the bot: conversations.open, then chat.postMessage. Whether it was posted. */
-  private async directMessage(userId: string, message: string | SlackNotice): Promise<boolean> {
+  private async directMessage(userId: string, text: string): Promise<boolean> {
     const opened = await this.slack("conversations.open", { users: userId });
     const channel = opened.ok ? opened.channel?.id : undefined;
-    const posted = channel ? await this.slack("chat.postMessage", { channel, ...(typeof message === "string" ? { text: message } : message) }) : opened;
+    const posted = channel ? await this.slack("chat.postMessage", { channel, text }) : opened;
     if (!posted.ok) {
       console.warn(JSON.stringify({ level: "warn", event: "computer.slack_dm_failed", step: channel ? "chat.postMessage" : "conversations.open", error: posted.error ?? "unknown" }));
       return false;
@@ -2634,22 +2685,13 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * The model provider refused a turn for credits (Calvin's `out-of-credits`).
    * OpenRouter refuses a call its key's remaining limit can't cover, so this
    * can come while billing still shows credits left and admits messages: the
-   * thread hears the paywall once, as a refused message would.
+   * thread is owed the paywall, as a refused message is.
    */
   private async outOfCredits(key: string): Promise<void> {
-    const session = this.runnerSession(key);
-    if (!session) return;
+    const sessionId = this.sessionIdOf(key);
+    if (!sessionId || !this.runnerSession(key)) return;
     console.log(JSON.stringify({ level: "info", event: "computer.turn_refused_credits", accountId: this.accountId() }));
-    const why = await refusal(this.env, this.accountId());
-    const shown = await refuseForCredits({
-      sql: this.ctx.storage.sql,
-      slack: (method, body) => this.slack(method, body),
-      channelId: session.channelId,
-      threadTs: session.threadTs,
-      origin: publicOrigin(this.env),
-      ...why,
-    });
-    if (shown) await this.telemetry.within(undefined, async (t) => paywallShown(t, why.haltReason));
+    this.owePaywall(sessionId, await refusal(this.env, this.accountId()));
   }
 
   /**

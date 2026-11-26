@@ -178,7 +178,7 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
   const recovers: number[] = [];
   const pendingWork: Promise<unknown>[] = [];
   let clock = 1_800_000_000_000;
-  const state = { protocol: options.protocol === undefined ? 6 : options.protocol, wakes: 0, links: new Map<string, string>() };
+  const state = { protocol: options.protocol === undefined ? 6 : options.protocol, wakes: 0, admissions: [] as string[], otherOwed: [] as Array<[string, unknown]>, links: new Map<string, string>() };
   const settings = new Map<string, string>();
   const env = {
     SESSION_LOG: { getByName: (id: string) => logOf(id) },
@@ -216,10 +216,12 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
       state.wakes++;
     },
     computerStatus: () => options.status ?? "ready",
-    admitted: async () => {
+    admitted: async (row) => {
+      state.admissions.push(row.sessionId);
       if (options.admitted === "throws") throw new Error("billing down");
       return options.admitted ?? true;
     },
+    sendOwed: async (call, body) => void state.otherOwed.push([call, body]),
     slackPerson: (slackUserId): CalvinPerson => ({ slackUserId, name: "Owner", gitName: "Owner via Computer", gitEmail: "owner@example.com" }) as CalvinPerson,
     linkOfSlack: (slackUserId) => state.links.get(slackUserId),
     slackTeamId: () => "T1",
@@ -364,7 +366,64 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     f.logOf(SID).entries = [entry("ie_0000000000000001", "compact"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" }), entry("ie_0000000000000003", "resume")];
     await f.api.drain(SID);
     expect(f.frames("api").map((frame) => frame.method)).toEqual(["turns.cancel"]);
-    expect(f.logOf(SID).outcomes.map((o) => (o.outcome.ok ? "ok" : o.outcome.code))).toEqual(["insufficient_credits", "ok", "insufficient_credits"]);
+    expect(f.logOf(SID).outcomes.map((o) => (o.outcome.ok ? "ok" : o.outcome.code))).toEqual(["insufficient_credits", "insufficient_credits", "ok"]);
+  });
+
+  it("an organization out of credits is refused before its computer is woken (no host: nothing wakes)", async () => {
+    const f = fixture({ admitted: false, protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.state.admissions).toEqual([SID]);
+    expect(f.logOf(SID).outcomes).toEqual([{ id: "ie_0000000000000001", outcome: { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." } }]);
+    expect(f.state.wakes).toBe(0);
+    expect(f.api.owes()).toBe(true); // the runner's `start` still waits for a host; it wakes nothing
+  });
+
+  it("refused turns leave the entries that spend nothing, and those still wake the machine", async () => {
+    const f = fixture({ admitted: false, protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" }), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.logOf(SID).outcomes.map((o) => [o.id, o.outcome.ok ? "ok" : o.outcome.code])).toEqual([["ie_0000000000000001", "insufficient_credits"]]);
+    expect(f.logOf(SID).entries.map((e) => e.id)).toEqual(["ie_0000000000000002"]);
+    expect(f.state.wakes).toBe(1);
+  });
+
+  it("billing unavailable: the turn waits, the drain stays owed, and nothing wakes", async () => {
+    const f = fixture({ admitted: "throws", protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.logOf(SID).outcomes).toEqual([]);
+    expect(f.logOf(SID).entries).toHaveLength(1);
+    expect(f.state.wakes).toBe(0);
+    expect(owed.has(f.store, `drain:${SID}`)).toBe(true);
+  });
+
+  it("an admitted turn with no host wakes the machine; admission is asked once per drain", async () => {
+    const f = fixture({ protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" }), entry("ie_0000000000000002", "compact")];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.state.admissions).toEqual([SID]);
+    expect(f.state.wakes).toBe(1);
+    expect(f.logOf(SID).outcomes).toEqual([]);
+  });
+
+  it("the Computer's other owed calls share the outbox: sent through its own sender, and never taken for a drain", async () => {
+    const f = fixture({ protocol: null });
+    owed.add(f.store, { group: "slack-billing", key: "billing:admitted", call: "billing", body: { kind: "admitted" } });
+    expect(f.api.owes()).toBe(false);
+    await f.api.wakeFailed();
+    expect(owed.groups(f.store)).toEqual(["slack-billing"]);
+    await f.api.runOwed("slack-billing");
+    expect(f.state.otherOwed).toEqual([["billing", { kind: "admitted" }]]);
+    expect(owed.groups(f.store)).toEqual([]);
   });
 
   it("a host that disconnects mid-drain leaves the entry waiting and the drain owed here, the machine woken", async () => {
@@ -414,6 +473,8 @@ describe("the drain's alert events (no-host, dark dispatch, held writes)", () =>
     await created(f);
     f.answers.set("sessions.suspend", () => ({ result: {} }));
     f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "no", status: 409, retryable: false } }));
+    // The start's own drain settles first: one in flight when the host goes would re-owe the drain past this one.
+    await Promise.all(f.pending());
     f.state.protocol = null;
     f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
     await f.api.drain(SID);

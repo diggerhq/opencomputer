@@ -45,13 +45,11 @@ pub async fn run(ctx: &mut Ctx, args: SendArgs) -> Result<i32> {
     }
 
     // Attach while the message is sent, so following costs no extra round trip.
-    let wire = ctx.open_wire(vec![Attach { session_id: sid.clone(), ..Default::default() }], false);
-    let (wire, sent) = tokio::join!(wire, send(ctx, &sid, &message, if_busy, Some(&key)));
-    let (wire, rx) = wire?;
-    let sent = sent?;
+    let (live, rx) = ctx.open_live(vec![Attach { session_id: sid.clone(), ..Default::default() }], false);
+    let sent = send(ctx, &sid, &message, if_busy, Some(&key)).await?;
     remember(&sid, Some(&sent.turn.id));
     let steered = (sent.delivery == "steered" || sent.delivery == "held").then(|| message.clone());
-    let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.clone(), false)]);
+    let mut f = Follower::new(ctx.http.clone(), live, rx, &[(sid.clone(), false)]);
     let tracker = Tracker::new(&sid, Goal::Turn(sent.turn.id.clone()), args.on_ask.unwrap_or(OnAsk::Fail), args.wait_subagents).steered(steered).sent_seq(sent.seq);
     let format = if args.json { Format::Json } else { Format::Text };
     let printer = Printer { format, partial: false, progress: false, sessions: vec![sid.clone()] };

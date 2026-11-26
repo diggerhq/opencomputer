@@ -186,8 +186,13 @@ export interface SessionsApiDeps {
   /** Starts or wakes the computer (no Slack notice). */
   wake: () => Promise<void>;
   computerStatus: () => "ready" | "asleep" | "not_set_up";
-  /** Billing's admission (cached like Slack's); throws when billing is unavailable. */
-  admitted: () => Promise<boolean>;
+  /**
+   * Billing's admission for a session's spending entries, asked before the machine is woken or a frame
+   * sent (cached); a refusal owes the session's paywall. Throws when billing is unavailable.
+   */
+  admitted: (row: ApiRow) => Promise<boolean>;
+  /** The calls owed here that are not drains (the Computer's own, on the same outbox). */
+  sendOwed: (call: string, body: unknown) => Promise<void>;
   slackPerson: (slackUserId: string) => CalvinPerson;
   linkOfSlack: (slackUserId: string) => string | undefined;
   /** The vault's secrets for a session (secrets-store.ts `forSession`), sent with its `start`. Absent: none. */
@@ -452,9 +457,9 @@ export class ComputerSessionsApi {
     await this.runOwed(sessionId);
   }
 
-  /** The drains owed here: one session's, or all that are due (the alarm). */
-  runOwed(sessionId?: string): Promise<void> {
-    return owed.run(this.deps.store, this.sendOwed, Date.now(), this.emit, sessionId);
+  /** The calls owed here: one group's (a session's drain, or the Computer's own `group`), or all that are due (the alarm). */
+  runOwed(group?: string): Promise<void> {
+    return owed.run(this.deps.store, this.sendOwed, Date.now(), this.emit, group);
   }
 
   private readonly emit = emitter("computer", () => ({ org: this.deps.organizationId() }), {
@@ -464,7 +469,7 @@ export class ComputerSessionsApi {
   });
 
   private readonly sendOwed = async (call: string, body: unknown): Promise<void> => {
-    if (call !== "drain") return;
+    if (call !== "drain") return this.deps.sendOwed(call, body);
     const { sessionId, start } = body as OwedDrain;
     await this.drainNow(sessionId, start === true);
   };
@@ -483,14 +488,14 @@ export class ComputerSessionsApi {
     // No runner row, no drain.
     if (!this.row(sessionId)) return;
     const log = this.log(sessionId);
-    let inbox = await log.inbox();
+    let inbox = await this.admit(sessionId, await log.inbox());
     if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries);
     if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox) : undefined;
     const moving = this.epochSends.get(sessionId);
     if (moving) {
       // The host hears the new epoch first; the frames then carry the log as it is after.
       await moving;
-      inbox = await log.inbox();
+      inbox = await this.admit(sessionId, await log.inbox());
     }
     for (const entry of inbox.entries) {
       const row = this.row(sessionId);
@@ -503,6 +508,20 @@ export class ComputerSessionsApi {
       }
       await log.delivered(entry.id, outcome);
     }
+  }
+
+  /**
+   * The credit gate, before anything wakes the machine: when entries that spend wait and billing refuses
+   * the organization, each is reported `insufficient_credits` here, and the inbox goes on with the rest.
+   * Billing unavailable throws: the entries wait and the owed drain is tried again, waking nothing.
+   */
+  private async admit(sessionId: string, inbox: Inbox): Promise<Inbox> {
+    const spending = inbox.entries.filter((entry) => SPENDS.has(entry.kind));
+    const row = this.row(sessionId);
+    if (spending.length === 0 || !row || (await this.deps.admitted(row))) return inbox;
+    const log = this.log(sessionId);
+    for (const entry of spending) await log.delivered(entry.id, { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." });
+    return { ...inbox, entries: inbox.entries.filter((entry) => !SPENDS.has(entry.kind)) };
   }
 
   /** The `start` frame: the runner up before its first entry. A refused route starts nothing: the first turn reports it. */
@@ -536,13 +555,11 @@ export class ComputerSessionsApi {
     this.deps.waitUntil(this.deps.wake().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.api_wake_failed", message: String(error) }))));
   }
 
-  /** One entry to the host: admission and the model route first (a turn's), then the `api` frame. */
+  /** One entry to the host: the model route first (a turn's; admitted already, `admit`), then the `api` frame. */
   private async deliver(row: ApiRow, entry: InboxEntry, inbox: Inbox): Promise<DeliveredOutcome | "lost"> {
     let session = this.spec(row);
     let model: RoutedApiSession["model"];
     if (SPENDS.has(entry.kind)) {
-      // Billing unavailable throws: the entry waits and the owed drain is tried again.
-      if (!(await this.deps.admitted())) return { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." };
       if (this.deps.routeSession) {
         const routed = await this.deps.routeSession(session, entry.actor.subject);
         if (routed.refused) return { ok: false, code: "model_refused", message: routed.error?.message ?? "The model is not available." };
@@ -605,12 +622,17 @@ export class ComputerSessionsApi {
 
   /** Whether a session's drain waits for the machine: a wake that fails then owes `wakeFailed`. */
   owes(): boolean {
-    return owed.groups(this.deps.store).length > 0;
+    return this.drainsOwed().length > 0;
+  }
+
+  /** The sessions whose drain is owed (the outbox also holds the Computer's other calls). */
+  private drainsOwed(): string[] {
+    return owed.groups(this.deps.store).filter((group) => owed.has(this.deps.store, drainKey(group)));
   }
 
   /** A wake that failed for good: each waiting entry of each waiting session is reported `computer_unavailable`. */
   async wakeFailed(): Promise<void> {
-    for (const sessionId of owed.groups(this.deps.store)) {
+    for (const sessionId of this.drainsOwed()) {
       const log = this.log(sessionId);
       for (const entry of (await log.inbox()).entries) {
         await log.delivered(entry.id, { ok: false, code: "computer_unavailable", message: "The computer could not start." });

@@ -394,14 +394,15 @@ fn wait_any_over_many_sessions_uses_one_connection() {
         fake.send(&sid, if i == 3 { "reply first" } else { "slow 3000" }, "queue").unwrap();
         ids.push(sid);
     }
-    let before = fake.ws_connections();
+    let before = fake.live_connections();
     let mut args = vec!["wait", "--any", "--json"];
     args.extend(ids.iter().map(String::as_str));
     let o = run(&fake, &args);
     assert_eq!(o.code, 0, "{}", o.stderr);
     check("Result", &o.json());
     assert_eq!(o.json()["sessionId"], ids[3].as_str());
-    assert_eq!(fake.ws_connections() - before, 1);
+    assert_eq!(fake.live_connections() - before, 1);
+    assert_eq!(fake.ws_connections(), 0);
 }
 
 #[test]
@@ -635,7 +636,38 @@ fn whoami_and_doctor() {
     assert_eq!(o.code, 0, "{}\n{}", o.stdout, o.stderr);
     let steps = o.json()["steps"].as_array().unwrap().clone();
     assert!(steps.iter().all(|s| s["ok"] == true), "{steps:?}");
-    assert_eq!(steps.last().unwrap()["name"], "round trip");
+    let names: Vec<&str> = steps.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names, ["config", "credential", "api", "computer", "live", "round trip", "wire"]);
+    assert!(steps[6]["detail"].as_str().unwrap().contains("ms ping"), "{steps:?}");
+}
+
+/// Live is the connection doctor checks; the wire is checked only where
+/// there is one, and a wire that refuses fails only its own step.
+#[test]
+fn doctor_checks_the_wire_only_where_there_is_one() {
+    let fake = Fake::start();
+    fake.set_wire_enabled(false);
+    let mut c = fake.opc();
+    c.env_remove("OPC_WIRE_URL").args(["doctor", "--json"]);
+    let o = c.output().unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(o.status.code(), Some(0), "{v}");
+    let steps = v["steps"].as_array().unwrap();
+    assert!(steps.iter().all(|s| s["ok"] == true), "{steps:?}");
+    assert_eq!(steps.last().unwrap()["name"], "wire");
+    assert!(steps.last().unwrap()["detail"].as_str().unwrap().starts_with("none"), "{steps:?}");
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("wire.opencomputer.dev"));
+    assert!(fake.ws_frames().is_empty());
+
+    let fake = Fake::start();
+    fake.refuse_wire(Some((4003, "no_access")));
+    let o = run(&fake, &["doctor", "--json"]);
+    assert_eq!(o.code, 3, "{}\n{}", o.stdout, o.stderr);
+    let steps = o.json()["steps"].as_array().unwrap().clone();
+    let live = steps.iter().find(|s| s["name"] == "live").unwrap();
+    assert_eq!(live["ok"], true, "{steps:?}");
+    let wire = steps.last().unwrap();
+    assert_eq!((wire["name"].as_str(), wire["ok"].as_bool()), (Some("wire"), Some(false)), "{steps:?}");
 }
 
 #[test]
@@ -728,7 +760,7 @@ fn push_gives_the_session_before_the_uploads() {
 }
 
 #[test]
-fn wire_refusing_a_valid_key_exits_forbidden() {
+fn live_refusing_a_valid_key_exits_forbidden() {
     let fake = Fake::start();
     fake.refuse_ws(Some((4003, "not_your_session")));
     let t = std::time::Instant::now();
@@ -738,19 +770,61 @@ fn wire_refusing_a_valid_key_exits_forbidden() {
     assert!(t.elapsed() < Duration::from_secs(10), "it retried: {:?}", t.elapsed());
 }
 
-/// Another environment's key never goes to the production wire: without a
-/// wire URL from that API's `/me`, opc says so and stops.
 #[test]
-fn non_default_api_without_a_wire_url_fails_clearly() {
+fn wire_refusing_a_valid_key_stops_shell() {
     let fake = Fake::start();
-    fake.set_ws_enabled(false);
+    fake.refuse_wire(Some((4003, "not_your_session")));
+    let sid = fake.seed_session(Seed::new("s"));
+    let t = std::time::Instant::now();
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_ne!(o.code, 0, "{}", o.stderr);
+    assert!(t.elapsed() < Duration::from_secs(10), "it retried: {:?}", t.elapsed());
+}
+
+/// Watching is the live socket and HTTP: a wire that refuses the key (a
+/// stack with no wire Worker) does not stop a command that only watches,
+/// and none of them dials it.
+#[test]
+fn watching_never_dials_the_wire() {
+    let fake = Fake::start();
+    fake.refuse_wire(Some((4001, "the credential is missing, expired or revoked")));
+    let o = run(&fake, &["-p", "--output-format", "json", "reply over live"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json()["result"], "over live", "{}", o.stdout);
+    let sid = o.json()["sessionId"].as_str().unwrap().to_string();
+    let o = run(&fake, &["send", &sid, "--wait", "--json", "reply again"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json()["result"], "again", "{}", o.stdout);
+    let o = run(&fake, &["wait", &sid, "--json"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let o = run(&fake, &["watch", &sid, "--from-start"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.contains("again"), "{}", o.stdout);
+    assert!(fake.ws_frames().is_empty(), "the wire was dialled: {:?}", fake.ws_frames().iter().filter_map(|f| f.text.clone()).collect::<Vec<_>>());
+}
+
+/// Another environment's key never goes to the production wire: without a
+/// wire URL from that API's `/me`, `opc shell` says so and stops; watching
+/// does not need one.
+#[test]
+fn non_default_api_without_a_wire_url() {
+    let fake = Fake::start();
+    fake.set_wire_enabled(false);
     let mut c = fake.opc();
     c.env_remove("OPC_WIRE_URL").args(["-p", "--output-format", "json", "reply hi"]);
     let o = c.output().unwrap();
     let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{stderr}");
+    let sid = fake.session_ids().pop().expect("a session");
+
+    let mut c = fake.opc();
+    c.env_remove("OPC_WIRE_URL").args(["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    let o = c.output().unwrap();
+    let stderr = String::from_utf8_lossy(&o.stderr);
     assert_ne!(o.status.code(), Some(0), "{stderr}");
-    assert!(stderr.contains("computer_not_set_up") && stderr.contains("wireUrl"), "{stderr}");
+    assert!(stderr.contains("gave no wire URL (computer.wireUrl in /me)"), "{stderr}");
     assert!(!stderr.contains("wire.opencomputer.dev"), "{stderr}");
+    assert_eq!(fake.ws_connections(), 0);
 }
 
 #[test]
@@ -853,19 +927,17 @@ fn telemetry_events(fake: &Fake) -> Vec<Value> {
     frames.iter().flat_map(|p| p["events"].as_array().unwrap().clone()).collect()
 }
 
+/// Telemetry rides the wire, so only a command that dials it (`shell`,
+/// the screen) sends any; watching commands send none.
 #[test]
 fn telemetry_rides_the_wire_without_content() {
     let fake = Fake::start();
-    let o = run(&fake, &["-p", "--output-format", "json", "reply zebra-quokka-secret"]);
+    let sid = fake.seed_session(Seed::new("s"));
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo zebra-quokka-secret"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
-    let r = o.json();
     let events = telemetry_events(&fake);
     let names: Vec<&str> = events.iter().filter_map(|e| e["name"].as_str()).collect();
-    let turn = events.iter().find(|e| e["name"] == "cli.turn").unwrap_or_else(|| panic!("no cli.turn in {names:?}"));
-    assert_eq!(turn["turnId"], r["turnId"], "{turn}");
-    assert_eq!(turn["sessionId"], r["sessionId"]);
-    assert!(turn["data"]["first_output_ms"].is_u64(), "{turn}");
-    assert!(names.contains(&"cli.attach"), "{names:?}");
+    assert!(names.contains(&"cli.connection"), "{names:?}");
     // Only the wire: no HTTP request carries telemetry.
     assert!(fake.requests().iter().all(|q| !q.path.contains("telemetry")));
     for f in fake.ws_frames().iter().filter(|f| f.dir == support::Dir::In) {
@@ -881,7 +953,8 @@ fn telemetry_rides_the_wire_without_content() {
 fn telemetry_off_sends_nothing() {
     for (k, v) in [("OPC_TELEMETRY", "0"), ("OPC_TELEMETRY", "off"), ("DO_NOT_TRACK", "1")] {
         let fake = Fake::start();
-        let o = fake.opc().env(k, v).args(["-p", "reply hello there"]).output().unwrap();
+        let sid = fake.seed_session(Seed::new("s"));
+        let o = fake.opc().env(k, v).args(["shell", &sid, "--no-tty", "-c", "echo hi"]).output().unwrap();
         assert_eq!(o.status.code(), Some(0));
         assert!(telemetry_frames(&fake).is_empty(), "{k}={v} still sent telemetry");
     }
@@ -898,7 +971,8 @@ fn opc_config_telemetry_off_and_on() {
     let o = run(&fake, &["config", "telemetry", "--json"]);
     assert_eq!(o.json()["telemetry"], false);
     assert_eq!(o.json()["source"], "config");
-    let o = run(&fake, &["-p", "reply hello there"]);
+    let sid = fake.seed_session(Seed::new("s"));
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(telemetry_frames(&fake).is_empty(), "sent after opc config telemetry off");
     // The environment wins over the file.
@@ -1017,3 +1091,4 @@ fn shell_says_why_a_session_cannot_wake() {
     assert!(!o.stderr.contains("No such session"), "{}", o.stderr);
     assert_eq!(o.stdout, "");
 }
+

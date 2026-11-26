@@ -35,13 +35,22 @@ interface Fakes {
   published: { stream: string; frame: any }[];
   admitted: boolean;
   refused: boolean;
+  /** Billing's answer beyond `admitted`: a refusal's plan and halt reason, an admission's warning. */
+  onPro: boolean;
+  haltReason: string | null;
+  warning: { reason: string; since: number | null } | null;
+  /** What Slack was owed (`billing`), and what it answers. */
+  billing: any[];
+  told: "shown" | "known" | "missed";
+  events: [string, unknown][];
+  wakes: number;
 }
 
 /** An organization's Computer with fake actors around it; no host yet. */
 async function computer(org: string): Promise<{ stub: Stub; fakes: Fakes }> {
   const stub = computers().getByName(org);
   await linkSlack(stub, org, { teamId: `T${org}`, teamName: "Tracks", botUserId: "UBOT", botToken: "xoxb-tracks-token" });
-  const fakes: Fakes = { entries: [], delivered: [], published: [], admitted: true, refused: false };
+  const fakes: Fakes = { entries: [], delivered: [], published: [], admitted: true, refused: false, onPro: false, haltReason: null, warning: null, billing: [], told: "shown", events: [], wakes: 0 };
   await inside(stub, (instance) => {
     const log = {
       inbox: async () => ({ entries: fakes.entries.slice(), epoch: 3, lastSeq: 7 }),
@@ -54,9 +63,22 @@ async function computer(org: string): Promise<{ stub: Stub; fakes: Fakes }> {
     instance.actors.log = () => log;
     instance.actors.live = () => ({ publish: async (stream: string, frame: unknown) => (fakes.published.push({ stream, frame }), { head: "1" }) });
     instance.actors.org = () => ({ forHost: async () => ({ sessions: [], admins: [], knowledge: null }), acceptMachine: async () => ({ accepted: true }) });
-    instance.actors.slack = () => ({ forHost: async () => ({ people: [], slack: null }), import: async () => undefined });
-    instance.admitForApi = async () => fakes.admitted;
-    instance.wakeForApi = async () => undefined;
+    instance.actors.slack = () => ({
+      forHost: async () => ({ people: [], slack: null }),
+      import: async () => undefined,
+      billing: async (n: unknown) => (fakes.billing.push(n), fakes.told),
+    });
+    instance.admission = async () =>
+      fakes.admitted ? { deliver: true, ...(fakes.warning ? { warning: fakes.warning } : {}) } : { deliver: false, onPro: fakes.onPro, haltReason: fakes.haltReason };
+    instance.wakeForApi = async () => void fakes.wakes++;
+    // The billing funnel's events, as emitted (calvin_events is off in tests).
+    const within = instance.telemetry.within.bind(instance.telemetry);
+    instance.telemetry.within = (t: unknown, fn: (t: any) => Promise<unknown>) =>
+      within(t, (gt: any) => {
+        const emit = gt.emit.bind(gt);
+        gt.emit = (name: string, fields: unknown) => (name.startsWith("billing.") && fakes.events.push([name, fields]), emit(name, fields));
+        return fn(gt);
+      });
     instance.api.deps.routeSession = async (session: unknown) =>
       fakes.refused
         ? { session, refused: true, error: { code: "model_unavailable", message: "No subscription.", status: 409, retryable: false } }
@@ -118,6 +140,14 @@ const entry = (id: string, kind: InboxEntry["kind"] = "turn", body: unknown = { 
 });
 
 const SESSION = (n: number) => `cs_${String(n).padStart(26, "0")}`;
+
+/** A session started from a Slack thread of the organization's workspace (`T<org>`, as computer() links it). */
+function slackSpec(org: string, id: string) {
+  const start = spec(org, id) as any;
+  start.session.owner = { id: `slack:T${org}:U1`, name: "Ada", email: null };
+  start.session.origin = { type: "slack", client: null, slack: { teamId: `T${org}`, channelId: "C1", channelName: null, threadTs: "1.2", url: "https://slack.test/t" } };
+  return start as never;
+}
 
 describe("the Computer actor of tracks and threads", () => {
   it("closes a host on protocol 5 with 4426", async () => {
@@ -202,6 +232,82 @@ describe("the Computer actor of tracks and threads", () => {
     await stub.drain(SESSION(1));
     expect(fakes.delivered.map((d) => [d.id, d.outcome.ok === false && d.outcome.code])).toEqual([["in_1", "insufficient_credits"], ["in_2", "model_refused"]]);
     expect(frames.filter((frame) => frame.t === "api")).toEqual([]);
+  });
+
+  it("an organization out of credits: the turn is refused before the computer wakes, and its Slack thread owed the paywall with plan and halt reason", async () => {
+    const { stub, fakes } = await computer("tt-paywall");
+    await stub.start(slackSpec("tt-paywall", SESSION(1)));
+    fakes.admitted = false;
+    fakes.onPro = true;
+    fakes.haltReason = "payment";
+    fakes.entries = [entry("in_1")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.events, (all) => all.length > 0, "paywall measured");
+    expect(fakes.delivered.map((d) => [d.id, d.outcome.ok === false && d.outcome.code])).toEqual([["in_1", "insufficient_credits"]]);
+    expect(fakes.wakes).toBe(0);
+    expect(fakes.billing).toEqual([{ kind: "paywall", sessionId: SESSION(1), onPro: true, haltReason: "payment" }]);
+    expect(fakes.events).toEqual([["billing.paywall_shown", { data: { reason: "payment", surface: "slack" } }]]);
+  });
+
+  it("admitted again: Slack is owed `admitted` once, and a standing warning once per reason and run", async () => {
+    const { stub, fakes } = await computer("tt-admitted");
+    await stub.start(slackSpec("tt-admitted", SESSION(1)));
+    fakes.admitted = false;
+    fakes.entries = [entry("in_1")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.billing, (all) => all.length === 1, "paywall owed");
+    fakes.admitted = true;
+    fakes.warning = { reason: "credits_low", since: 5 };
+    fakes.entries = [entry("in_2")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.billing, (all) => all.length === 3, "admitted and warning owed");
+    fakes.entries = [entry("in_3")];
+    await stub.drain(SESSION(1));
+    fakes.warning = { reason: "credits_low", since: 9 };
+    fakes.entries = [entry("in_4")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.billing, (all) => all.length === 4, "the new run's warning owed");
+    await sleep(50);
+    expect(fakes.billing).toEqual([
+      { kind: "paywall", sessionId: SESSION(1), onPro: false, haltReason: null },
+      { kind: "admitted" },
+      { kind: "warning", reason: "credits_low", since: 5, sessionId: SESSION(1) },
+      { kind: "warning", reason: "credits_low", since: 9, sessionId: SESSION(1) },
+    ]);
+    expect(fakes.events.filter(([name]) => name === "billing.warning_shown")).toEqual([
+      ["billing.warning_shown", { data: { reason: "credits_low", surface: "slack" } }],
+      ["billing.warning_shown", { data: { reason: "credits_low", surface: "slack" } }],
+    ]);
+    expect(fakes.wakes).toBeGreaterThan(0);
+  });
+
+  it("a warning Slack could not tell anyone is owed again on the next turn; an API session hears no paywall", async () => {
+    const { stub, fakes } = await computer("tt-missed");
+    await stub.start(spec("tt-missed", SESSION(1)));
+    fakes.warning = { reason: "trial_days", since: null };
+    fakes.told = "missed";
+    fakes.entries = [entry("in_1")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.billing, (all) => all.length === 1, "warning owed");
+    await sleep(20);
+    fakes.told = "shown";
+    fakes.entries = [entry("in_2")];
+    await stub.drain(SESSION(1));
+    await until(() => fakes.billing, (all) => all.length === 2, "warning owed again");
+    fakes.admitted = false;
+    fakes.entries = [entry("in_3")];
+    await stub.drain(SESSION(1));
+    await sleep(50);
+    expect(fakes.billing.map((n) => n.kind)).toEqual(["warning", "warning"]);
+    expect(fakes.events.map(([name]) => name)).toEqual(["billing.warning_shown"]);
+  });
+
+  it("a turn the model provider refused for credits owes its thread the paywall", async () => {
+    const { stub, fakes } = await computer("tt-midturn");
+    await stub.start(slackSpec("tt-midturn", SESSION(1)));
+    await inside(stub, (instance) => instance.outOfCredits("Ttt-midturn:C1:1.2"));
+    await until(() => fakes.billing, (all) => all.length === 1, "paywall owed");
+    expect(fakes.billing).toEqual([{ kind: "paywall", sessionId: SESSION(1), onPro: false, haltReason: null }]);
   });
 
   it("forwards deltas to Live only for a session with a runner row, and relays watch and block", async () => {

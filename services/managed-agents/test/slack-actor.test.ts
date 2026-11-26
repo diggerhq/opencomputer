@@ -174,7 +174,7 @@ describe("the Slack actor: accept, the queue, turns", () => {
     await settled(org);
     for (let i = 0; i < 50 && !(await slackOf(org).forHost()).people.length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
     const host = await slackOf(org).forHost();
-    expect(host.slack).toEqual({ botToken: "xoxb-test", botUserId: "UBOT", teamId: "T1" });
+    expect(host.slack).toEqual({ botToken: "xoxb-test", botUserId: "UBOT", teamId: "T1", teamName: "Acme" });
     expect(host.people).toMatchObject([{ slackUserId: "U7", gitEmail: "u7@example.com" }]);
     expect((await callsOf(computerOf(org))).filter((c) => c.method === "changed")).toEqual([{ method: "changed", args: ["slack"] }]);
   });
@@ -334,11 +334,93 @@ describe("the Slack actor: install, unlink, import", () => {
     expect(await slackOf(org).consumeInstall("nonce-1")).toEqual({ ok: true, subject: "usr_admin" });
     expect(await slackOf(org).consumeInstall("nonce-1")).toEqual({ ok: false, reason: "invalid_state" });
     await slackOf(org).install(p as never, { teamId: "T1", teamName: "Acme", botUserId: "UBOT", botToken: "xoxb-new", installerUserId: "UINST" });
-    expect((await slackOf(org).forHost()).slack).toEqual({ botToken: "xoxb-new", botUserId: "UBOT", teamId: "T1" });
+    // The installer and the team name reach Computer (its model access rekey, the day-6 unpaid DM, the overview).
+    expect((await slackOf(org).forHost()).slack).toEqual({
+      botToken: "xoxb-new",
+      botUserId: "UBOT",
+      teamId: "T1",
+      teamName: "Acme",
+      installer: { slackUser: "UINST", member: "usr_admin" },
+    });
     expect((await callsOf(orgOf(org))).filter((c) => c.method === "linkPerson")).toEqual([{ method: "linkPerson", args: ["slack:T1:UINST", "usr_admin"] }]);
     await slackOf(org).unlink(p as never);
     expect((await slackOf(org).forHost()).slack).toBeNull();
     expect((await callsOf(computerOf(org))).filter((c) => c.method === "changed")).toHaveLength(2);
+  });
+});
+
+/** Slack's Web API replaced inside the object: each call recorded, answered by `answer` (default: ok, a DM channel D1). */
+type Recorded = [string, any][];
+async function recordSlack(org: string, answer?: (method: string) => Record<string, unknown> | undefined): Promise<() => Promise<Recorded>> {
+  const inside = <T>(fn: (instance: any) => T) => runInDurableObject(slackOf(org), fn as never) as Promise<T>;
+  await inside((instance) => {
+    instance.recorded = [];
+    instance.slack = async (method: string, body: unknown) => {
+      instance.recorded.push([method, body]);
+      return answer?.(method) ?? (method === "conversations.open" ? { ok: true, channel: { id: "D1" } } : { ok: true, ts: "9.9" });
+    };
+  });
+  return () => inside((instance) => instance.recorded.splice(0) as Recorded);
+}
+
+/** Session `sid` runs in Slack thread C1/`ts`. */
+const thread = (org: string, sid: string, ts: string) => inSlack(org, (exec) => exec("INSERT INTO thread (key, session_id) VALUES (?, ?)", `T1:C1:${ts}`, sid));
+
+describe("the Slack actor: billing notices (Computer owes them)", () => {
+  it("posts the paywall by plan and halt reason, with its billing button, once per thread until the organization is admitted again", async () => {
+    const org = "org_paywall";
+    await linked(org);
+    await thread(org, "cs_paywall1", "300.1");
+    const calls = await recordSlack(org);
+    const paywall = { kind: "paywall" as const, sessionId: "cs_paywall1", onPro: false, haltReason: "trial_days" };
+    expect(await slackOf(org).billing(paywall)).toBe("shown");
+    expect(await slackOf(org).billing(paywall)).toBe("known");
+    const posted = await calls();
+    expect(posted).toHaveLength(1);
+    const [method, body] = posted[0]!;
+    expect(method).toBe("chat.postMessage");
+    expect(body).toMatchObject({ channel: "C1", thread_ts: "300.1" });
+    expect(body.text).toContain("Your 3-day trial has ended");
+    expect(body.text).toContain("https://app.opencomputer.dev/billing");
+    expect(body.blocks[1]).toMatchObject({ type: "actions", elements: [{ type: "button", text: { text: "Pick a plan" } }] });
+    // A session with no thread: nobody to tell.
+    expect(await slackOf(org).billing({ ...paywall, sessionId: "cs_api" })).toBe("known");
+    // Admitted again: the next halt is news.
+    expect(await slackOf(org).billing({ kind: "admitted" })).toBe("shown");
+    expect(await slackOf(org).billing({ ...paywall, onPro: true, haltReason: null })).toBe("shown");
+    expect((await calls()).map(([, b]) => b.text)).toEqual([expect.stringContaining("Pro credits")]);
+  });
+
+  it("tells the warning before the stop to the installer once per reason and run, and the thread when it cannot", async () => {
+    const org = "org_warning";
+    await linked(org);
+    await thread(org, "cs_warn1", "400.1");
+    await inSlack(org, (exec) => exec("INSERT INTO settings (key, value) VALUES ('slackInstallerUserId', 'UINST')"));
+    let dmFails = false;
+    const calls = await recordSlack(org, (method) => (dmFails && method === "conversations.open" ? { ok: false, error: "user_not_found" } : undefined));
+    const warning = { kind: "warning" as const, reason: "credits_low", since: 5, sessionId: "cs_warn1" };
+    expect(await slackOf(org).billing(warning)).toBe("shown");
+    expect(await slackOf(org).billing(warning)).toBe("known");
+    const dm = await calls();
+    expect(dm.map(([m, b]) => [m, b.channel ?? b.users])).toEqual([["conversations.open", "UINST"], ["chat.postMessage", "D1"]]);
+    expect(dm[1]![1].text).toContain("Your credits are under $5");
+    // A new run of the warning, and the DM refused: the thread hears it, once.
+    dmFails = true;
+    expect(await slackOf(org).billing({ ...warning, since: 6 })).toBe("shown");
+    expect(await slackOf(org).billing({ ...warning, since: 6 })).toBe("known"); // the DM is tried again, the thread is not
+    expect((await calls()).filter(([m]) => m === "chat.postMessage").map(([, b]) => [b.channel, b.thread_ts])).toEqual([["C1", "400.1"]]);
+    // No thread to fall back on: missed, so Computer owes it again.
+    expect(await slackOf(org).billing({ kind: "warning", reason: "trial_days", since: null })).toBe("missed");
+    // A reason this gateway does not word: nothing.
+    expect(await slackOf(org).billing({ ...warning, reason: "something_new" })).toBe("known");
+  });
+
+  it("a refused turn for credits takes the status and 👀 off, and leaves the paywall to `billing`", async () => {
+    const org = "org_refused_credits";
+    await linked(org);
+    const calls = await recordSlack(org);
+    await slackOf(org).notify({ kind: "refused", threadKey: "T1:C1:500.1", person: "slack:T1:U1", code: "insufficient_credits" });
+    expect((await calls()).map(([m]) => m)).toEqual(["agents.sessions.setStatus"]);
   });
 });
 

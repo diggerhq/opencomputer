@@ -45,6 +45,8 @@ async function makeHost(fake: string | null, email?: string): Promise<Host> {
     name: email?.split('@')[0],
     api: API,
     base: BASE,
+    signedOut: () => void login(),
+    billing: '/billing',
   })
 }
 

@@ -224,7 +224,6 @@ impl Printer {
                 _ => {}
             },
             Step::Delta(d) if format == Format::StreamJson && partial && d.partial() => print_line(&d.0),
-            Step::Reconnecting { attempt, retry_in, .. } if progress && follow::worth_saying(*attempt, *retry_in) => eprintln!("opc: connection lost, reconnecting in {}", render::duration(retry_in.as_millis() as u64)),
             Step::Detached(sid, reason) => eprintln!("opc: stopped receiving {sid}: {reason}"),
             _ => {}
         }
@@ -314,23 +313,20 @@ async fn print(ctx: &mut Ctx, args: RunArgs, message: String) -> Result<i32> {
             reject_new_session_options(&args.new)?;
             let resolved = super::resolve::resolve(ctx, target).await?;
             let sid = resolved.id;
-            let wire = ctx.open_wire(vec![Attach { session_id: sid.clone(), ..Default::default() }], deltas);
+            // Attach while the message is sent, so following costs no extra round trip.
+            let (live, rx) = ctx.open_live(vec![Attach { session_id: sid.clone(), ..Default::default() }], deltas);
             let key = derived_key(args.new.idempotency_key.as_deref(), "send");
             let if_busy = args.delivery.if_busy().as_str();
-            let (wire, sent) = tokio::join!(wire, send(ctx, &sid, &message, if_busy, Some(&key)));
-            let (wire, rx) = wire?;
-            let sent = sent?;
+            let sent = send(ctx, &sid, &message, if_busy, Some(&key)).await?;
             let steered = matches!(sent.delivery.as_str(), "steered" | "held").then(|| message.clone());
-            let f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.clone(), false)]);
+            let f = Follower::new(ctx.http.clone(), live, rx, &[(sid.clone(), false)]);
             (sid, sent.turn, sent.seq, steered, (f, resolved.session.map(|s| s.settings)))
         }
         None => {
             let minted = new_session_id(ctx, &args.new)?;
-            let wire = ctx.open_wire(vec![Attach { session_id: minted.clone(), from: From::Start }], deltas);
-            let (wire, created) = tokio::join!(wire, create(ctx, &minted, &args.new, Some(&message)));
-            let (wire, rx) = wire?;
-            let (created, sent) = created?;
-            let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(minted.clone(), true)]);
+            let (live, rx) = ctx.open_live(vec![Attach { session_id: minted.clone(), from: From::Start }], deltas);
+            let (created, sent) = create(ctx, &minted, &args.new, Some(&message)).await?;
+            let mut f = Follower::new(ctx.http.clone(), live, rx, &[(minted.clone(), true)]);
             let sid = created.session.id.clone();
             if sid != minted {
                 // A repeat of an earlier create: follow the original session.
