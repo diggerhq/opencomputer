@@ -4,7 +4,7 @@
 import type { Origin, SessionAccess } from "../../api-objects/objects.js";
 import { isId, isSessionId, mintId } from "../../ids/session-ids.js";
 import type { Access } from "../../auth/principal.js";
-import type { CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, SessionPage, SessionPatch, SessionRow, SlackAccessDefault } from "./contract.js";
+import type { CreateSession, ListQuery, OrgSettings, PlaceRow, SessionPage, SessionPatch, SessionRow, SlackAccessDefault } from "./contract.js";
 import type { Reply, Refusal } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
 import { byOf, mayWrite, type Principal } from "../../auth/principal.js";
@@ -13,7 +13,7 @@ import { runMutation } from "./mutations/run.js";
 import { fullName, storedRepository } from "./repository.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
 import { accessOf } from "./access.js";
-import { accessRows, accessView, audienceOf, sharedWith } from "./audience.js";
+import { accessRows, audienceOf } from "./audience.js";
 import { forClient, placeRow, sessionRow } from "./feed-rows.js";
 import { AGENT_THREADS_MAX } from "./limits.js";
 import { parse } from "./parse-json.js";
@@ -21,7 +21,7 @@ import { readPlace, readSession, readTrack, type SessionRec } from "./records.js
 import { emptySummary } from "./summary.js";
 import { titleFrom } from "./title.js";
 import { transact, type Tx } from "./tx.js";
-import { holdsTrack, isMember, ownsTrack, seesSession, visible } from "./who-may.js";
+import { holdsTrack, isMember, ownsSession, ownsTrack, seesSession, visible } from "./who-may.js";
 
 export const refusal = (code: string, status: number, message?: string, more: Record<string, unknown> = {}): Refusal => ({ ...more, ok: false, code, status, ...(message ? { message } : {}) });
 const notFound = (): Refusal => refusal("session_not_found", 404, "No such session.");
@@ -57,11 +57,17 @@ export const ACCESS_PEOPLE_MAX = 50;
 const MEMBER_ID = /^usr_[0-9a-z]{1,64}$/;
 const MODES: SessionAccess["mode"][] = ["owner", "org", "people"];
 
-/** Whether `p` may change a session's access: its owner, a person it is shared with, or an admin; never a Slack or role session's. */
+/**
+ * Whether `p` may change a session's access (`canManageAccess`): its owner only, owner first (spec 36.1). Not a
+ * person it is shared with, not an admin; never a Slack or role session's.
+ */
 export function managesAccess(p: Principal, s: SessionRec): boolean {
-  if (!isMember(p) || s.role !== null || parse<Origin>(s.origin, { type: "api", client: null, slack: null }).type === "slack") return false;
-  return s.owner === p.subject || p.admin || sharedWith(s).includes(byOf(p));
+  if (s.role !== null || parse<Origin>(s.origin, { type: "api", client: null, slack: null }).type === "slack") return false;
+  return ownsSession(p, s);
 }
+
+/** Someone who uses the session asked for what only its owner may do (spec 36.1). */
+const ownerOnly = (message: string): Refusal => refusal("forbidden", 403, message, { reason: "owner_only" });
 
 /** `access` of a create or patch, checked; `people` as member ids or emails (the Durable Object turned WorkOS ids into member ids). */
 export function parseAccess(sql: Sql, value: unknown): SessionAccess | Refusal {
@@ -105,15 +111,6 @@ function setAccess(tx: Tx, s: SessionRec, wanted: SessionAccess): void {
     tx.sql.exec("UPDATE occurrence SET audience = ? WHERE session_id = ? AND audience = ?", rows.audience, s.id, s.audience);
   }
   tx.sendAccess(s.id);
-}
-
-const outside = (p: Principal, s: SessionRec): OutsideAccess => ({ session: null, access: accessView(s), canManageAccess: managesAccess(p, s) });
-
-/** An admin outside a session reads its access and nothing else (spec 36.2). */
-export function sessionAccess(sql: Sql, p: Principal, id: string): Reply<OutsideAccess> {
-  const s = readSession(sql, id);
-  if (!s || seesSession(sql, p, s) || !managesAccess(p, s)) return notFound();
-  return { ok: true, ...outside(p, s) };
 }
 
 const DEFAULTS: OrgSettings = { apiAccessDefault: "owner" };
@@ -264,14 +261,14 @@ function mutation(tx: Tx, p: Principal, name: string, args: Record<string, unkno
   return refusal(code, STATUS_OF[code] ?? 409, undefined, { ...more, reason });
 }
 
-export function patchSession(sql: Sql, now: number, p: Principal, id: string, patch: SessionPatch): Reply<{ session: SessionRow } | OutsideAccess> {
+export function patchSession(sql: Sql, now: number, p: Principal, id: string, patch: SessionPatch): Reply<{ session: SessionRow }> {
   return transact(sql, now, (tx) => {
     const s = readSession(sql, id);
-    if (!s) return notFound();
-    // An admin outside the session may change its access and nothing else (spec 36.2).
-    const uses = seesSession(sql, p, s);
-    const onlyAccess = Object.keys(patch).every((k) => k === "access");
-    if (!uses && !(patch.access !== undefined && onlyAccess && managesAccess(p, s))) return notFound();
+    // Owner first (spec 36.1): to anyone who may not use it the session does not exist, an admin included.
+    if (!s || !seesSession(sql, p, s)) return notFound();
+    // A person it is shared with uses it but changes nothing of it: its title, archive, metadata and settings are its owner's.
+    const fields = patch.title !== undefined || patch.archived !== undefined || patch.metadata !== undefined || patch.settings !== undefined;
+    if (fields && isMember(p) && !ownsSession(p, s)) return ownerOnly("Only the session's owner can rename, archive or change its settings.");
     const done = readPlace(sql, id)?.done_at ?? null;
     let refused: Refusal | null = null;
     // All or nothing: one refused part undoes the parts before it.
@@ -295,7 +292,7 @@ export function patchSession(sql: Sql, now: number, p: Principal, id: string, pa
         const slack = parse<Origin>(s.origin, { type: "api", client: null, slack: null }).type === "slack";
         if (slack) refused = refusal("forbidden", 403, "A Slack session's access is set in its thread (`!access`).", { reason: "access_in_slack" });
         else if (s.role !== null) refused = refusal("forbidden", 403, "A track's or start session's access is its owner's.", { reason: "role_session" });
-        else if (!managesAccess(p, s)) refused = refusal("forbidden", 403, "Only the session's owner, people it is shared with, or an admin can change its access.", { reason: "not_member" });
+        else if (!managesAccess(p, s)) refused = ownerOnly("Only the session's owner can change who has access. Ask them to share it.");
         else {
           const wanted = parseAccess(sql, patch.access);
           if ("ok" in wanted) refused = wanted;
@@ -320,7 +317,7 @@ export function patchSession(sql: Sql, now: number, p: Principal, id: string, pa
     });
     if (refused) return refused;
     const after = readSession(sql, id)!;
-    return seesSession(sql, p, after) ? { ok: true, session: apiSession(sql, after, p) } : { ok: true, ...outside(p, after) };
+    return { ok: true, session: apiSession(sql, after, p) };
   });
 }
 

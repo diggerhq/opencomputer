@@ -16,6 +16,7 @@ import { orgOf } from "../../actors/addresses.js";
 import { capabilities } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "../../actors/computer/config.js";
 import { isSessionId } from "../../ids/session-ids.js";
+import { TICKET_MAX_SESSIONS } from "../../wire/ticket.js";
 import type { ApiOp, ApiReply, ApiRequest } from "../../actors/computer/contract.js";
 import type { SecretsApiOp } from "../../actors/computer/held-for-org/secrets/secrets-store.js";
 import { Reply } from "./reply.js";
@@ -144,7 +145,18 @@ async function routeApi(
     if ("error" in parsed) return out.error(...parsed.error);
     body = parsed.value;
   }
-  if (route.op === "ticket") return call({ op: "ticket", body });
+  if (route.op === "ticket") {
+    // Owner first (spec 36.1): a ticket names only sessions the caller may use; the relay checks again on attach.
+    // A body the Computer refuses anyway (no key, a project key, an agent's, a bad list) goes there for its answer.
+    const named = body && typeof body === "object" && !Array.isArray(body) ? (body as { sessionIds?: unknown }).sessionIds : undefined;
+    const mints = identity.apiKey && identity.apiKey.kind !== "project" && p.kind !== "agent";
+    if (mints && Array.isArray(named) && named.length <= TICKET_MAX_SESSIONS && named.every((id) => typeof id === "string" && isSessionId(id))) {
+      const org = orgOf(env, p.org);
+      const seen = await timedDo(out.facts, Promise.all([...new Set(named as string[])].map((id) => org.getSession(p, id))));
+      if (seen.some((r) => !r.ok)) return out.error(404, "session_not_found", "No such session.");
+    }
+    return call({ op: "ticket", body });
+  }
 
   // Per-session capabilities: the same for every session, once Org says the principal may see it.
   const sessionId = route.sessionId!;

@@ -63,7 +63,8 @@ A scope may also name sessions (`sessionIds`), be read-only (`readOnly`) and exp
 | Scope missing | `forbidden`, `reason: "missing_scope"` |
 | Credential expired or revoked | Its connections close with `4001` |
 | Caller is not the session's owner and not on its member list | `session_not_found` on every operation. A null member list means the whole organization ([Access](/api/sessions#access)) |
-| Terminal opened by someone other than the owner, a listed member, or an admin of a session open to the whole organization | `forbidden`, `reason: "terminal_owner_only"` |
+| Terminal opened by someone other than the owner or a listed person (members of an `org` session and admins included) | `forbidden`, `reason: "terminal_owner_only"` |
+| Session renamed, archived or otherwise updated, or its access changed, by someone other than its owner | `forbidden`, `reason: "owner_only"` |
 | Session set aside by someone other than its owner | `forbidden`, `reason: "aside_owner_only"` |
 
 ## Session journal

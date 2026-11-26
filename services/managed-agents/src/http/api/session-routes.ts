@@ -130,11 +130,6 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       timedDo(out.facts, org().getSession(p, sessionId)),
       timedLog(out.facts, logOf(env, sessionId).summary(minSeq, p)).catch(() => null),
     ]);
-    if (!got.ok && p.admin) {
-      // An admin outside the session reads its access and nothing else (sessions.mdx#access).
-      const outside = await timedDo(out.facts, org().sessionAccess(p, sessionId));
-      if (outside.ok) return out.send(200, strip(outside));
-    }
     if (!got.ok) return refusalOf(out, got);
     // With minSeq the log has not reached: 503 with retryAfterMs, as every read (spec 37.1).
     if (summary && !summary.ok && summary.error === "unavailable") return logRefusalOf(out, summary);

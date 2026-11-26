@@ -170,6 +170,16 @@ describe('limits and access', () => {
     ticket.ws.close();
   });
 
+  it('renames and archives over HTTP only, where Org lets only the owner (owner first): not on the wire for anyone', async () => {
+    const { port, sessions, writers } = await setup();
+    for (const c of [connectClient(port, { member: 'usr_pat' }), connectClient(port)]) {
+      const denied = await c.call('sessions.update', { sessionId: sessions[0], title: 'renamed' });
+      expect(denied.error).toMatchObject({ code: -32601 });
+      c.ws.close();
+    }
+    expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
+  });
+
   it('closes with 4001 when the key is revoked, and when the credential expires', async () => {
     const { port, host } = await setup();
     const c = connectClient(port, { keyId: 'ak_revoked00000' });

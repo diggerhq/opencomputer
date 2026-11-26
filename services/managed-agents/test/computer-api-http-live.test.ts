@@ -102,11 +102,10 @@ describe("PATCH and aside (spec 37.2)", () => {
     expect(log.accept).not.toHaveBeenCalled();
   });
 
-  it("an admin outside the session gets the access view", async () => {
-    const outside = { session: null, access: { mode: "org", people: [] }, canManageAccess: true };
-    const org = { patchSession: vi.fn(async () => ({ ok: true, ...outside })) };
+  it("one who is not the owner gets Org's owner_only, never an access view (owner first)", async () => {
+    const org = { patchSession: vi.fn(async () => ({ ok: false, code: "forbidden", status: 403, reason: "owner_only" })) };
     const r = await setup({ ORGS: ns(org) })("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } });
-    expect(r).toMatchObject({ status: 200, body: outside });
+    expect(r).toMatchObject({ status: 403, body: { error: { code: "forbidden", reason: "owner_only" } } });
   });
 
   it("aside sets and clears Org's column", async () => {
