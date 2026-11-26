@@ -24,7 +24,13 @@ import { NOWHERE } from '../host'
 import { overlay } from './overlay'
 import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
 import type { OpenBlock } from './transcript'
-import { askLine, listView, threadView, type Counts, type ListView } from './views'
+import {
+  askLine,
+  listView,
+  threadView,
+  type Counts,
+  type ListView,
+} from './views'
 
 // The surface's one store (spec 26.2): what the server last said, the
 // person's unconfirmed writes replayed on top, and what is open on screen.
@@ -164,7 +170,10 @@ export function createSurface(o: SurfaceOptions) {
 
   // Rows read by query (Earlier's pages, search): beneath the feed's.
   let under: Rows = emptyRows()
-  const answered = new Map<string, Extract<Pending, { kind: 'answer' | 'dismiss' }>>()
+  const answered = new Map<
+    string,
+    Extract<Pending, { kind: 'answer' | 'dismiss' }>
+  >()
   const compose = (base: Rows, pending: Pending[]): Rows => {
     const d = new Draft(base)
     for (const kind of ['session', 'place', 'track', 'result'] as const)
@@ -175,11 +184,17 @@ export function createSurface(o: SurfaceOptions) {
     // An answer leaves `pending` on its 2xx reply, which can come before the
     // feed's row: until that row says the ask is closed the answer stays on
     // top, so the dot does not come back and is not announced again.
-    for (const p of pending) if (p.kind === 'answer' || p.kind === 'dismiss') answered.set(p.key, p)
+    for (const p of pending)
+      if (p.kind === 'answer' || p.kind === 'dismiss') answered.set(p.key, p)
     const held: Pending[] = []
     for (const [key, p] of answered) {
       if (pending.some((x) => x.key === key)) continue
-      if (base.session.get(p.sessionId)?.asks.some((x) => x.id === p.askId && x.status === 'open')) held.push(p)
+      if (
+        base.session
+          .get(p.sessionId)
+          ?.asks.some((x) => x.id === p.askId && x.status === 'open')
+      )
+        held.push(p)
       else answered.delete(key)
     }
     return overlay(d.done(), held.length ? [...pending, ...held] : pending, me)
@@ -193,10 +208,17 @@ export function createSurface(o: SurfaceOptions) {
   // then held as rows too, so the count shown leaves those out.
   let served = NO_COUNTS
   const counted = (base: Rows): Counts => {
-    const c: Counts = { earlier: served.earlier, trackEarlier: { ...served.trackEarlier } }
+    const c: Counts = {
+      earlier: served.earlier,
+      trackEarlier: { ...served.trackEarlier },
+    }
     for (const p of under.place.values()) {
       if (p.earlierAt === null || base.place.has(p.id)) continue
-      if (p.trackId) c.trackEarlier[p.trackId] = Math.max(0, (c.trackEarlier[p.trackId] ?? 0) - 1)
+      if (p.trackId)
+        c.trackEarlier[p.trackId] = Math.max(
+          0,
+          (c.trackEarlier[p.trackId] ?? 0) - 1,
+        )
       else c.earlier = Math.max(0, c.earlier - 1)
     }
     return c
@@ -232,7 +254,10 @@ export function createSurface(o: SurfaceOptions) {
     const s = get()
     return listView(s.rows, me, s.loc.thread, s.counts)
   }
-  const visible = o.visible ?? (() => typeof document === 'undefined' || document.visibilityState === 'visible')
+  const visible =
+    o.visible ??
+    (() =>
+      typeof document === 'undefined' || document.visibilityState === 'visible')
 
   function after() {
     const s = get()
@@ -242,23 +267,34 @@ export function createSurface(o: SurfaceOptions) {
     if (sid && visible() && !s.loc.result) {
       const row = s.rows.session.get(sid)
       const read = readRow((id) => s.rows.read.get(id), me, sid)?.readSeq ?? 0
-      if (row && row.lastSeq > read && s.base.session.has(sid)) mutate('read.set', { sid, seq: row.lastSeq })
+      if (row && row.lastSeq > read && s.base.session.has(sid))
+        mutate('read.set', { sid, seq: row.lastSeq })
     }
     // An agent wrapped the open thread in a new track (J3): its row stays in sight.
     const around = sid ? s.rows.place.get(sid)?.trackId : null
-    if (around && s.openTracks[around] === undefined) set({ openTracks: { ...s.openTracks, [around]: true } })
+    if (around && s.openTracks[around] === undefined)
+      set({ openTracks: { ...s.openTracks, [around]: true } })
     // The thread that was open is gone: a start-box thread that became a track
     // lands on the track (J5), anything else on the start box.
     if (sid && s.synced && !s.rows.session.has(sid)) {
       let track: string | null = null
-      for (const t of s.rows.track.values()) if (t.createdBy === `agent:${sid}`) track = t.id
+      for (const t of s.rows.track.values())
+        if (t.createdBy === `agent:${sid}`) track = t.id
       go({ ...NOWHERE, track, start: !track }, { replace: true })
-    } else if (!sid && s.loc.track && s.synced && !s.rows.track.has(s.loc.track)) {
+    } else if (
+      !sid &&
+      s.loc.track &&
+      s.synced &&
+      !s.rows.track.has(s.loc.track)
+    ) {
       go({ ...NOWHERE, start: true }, { replace: true })
     }
     // Only a new block is announced outside the app (R27).
     const l = list()
-    const now = new Map<string, { title: string; body: string; askId?: string; approval: boolean }>()
+    const now = new Map<
+      string,
+      { title: string; body: string; askId?: string; approval: boolean }
+    >()
     for (const t of [...l.threads, ...l.tracks.flatMap((k) => k.threads)])
       if (t.mark === 'blocked')
         now.set(t.id, {
@@ -270,7 +306,12 @@ export function createSurface(o: SurfaceOptions) {
     for (const k of l.tracks)
       if (k.agent?.blocked) {
         const ask = k.agent.asks.find((a) => a.status === 'open')
-        now.set(k.agentSession, { title: k.name, body: ask ? askLine(ask) : 'Needs you', askId: ask?.id, approval: ask?.kind === 'approval' })
+        now.set(k.agentSession, {
+          title: k.name,
+          body: ask ? askLine(ask) : 'Needs you',
+          askId: ask?.id,
+          approval: ask?.kind === 'approval',
+        })
       }
     if (blockedBefore && s.synced)
       for (const [id, b] of now)
@@ -296,9 +337,12 @@ export function createSurface(o: SurfaceOptions) {
   function go(loc: Location, opt?: { replace?: boolean }) {
     const s = get()
     const change: Partial<State> = { loc }
-    const track = loc.thread ? (s.rows.place.get(loc.thread)?.trackId ?? null) : loc.track
+    const track = loc.thread
+      ? (s.rows.place.get(loc.thread)?.trackId ?? null)
+      : loc.track
     // A track opens in the list when something in it is selected (R12).
-    if (track && !s.openTracks[track]) change.openTracks = { ...s.openTracks, [track]: true }
+    if (track && !s.openTracks[track])
+      change.openTracks = { ...s.openTracks, [track]: true }
     set(change)
     host.location.set(loc, opt)
     after()
@@ -315,12 +359,15 @@ export function createSurface(o: SurfaceOptions) {
       // A track's agent has no row of its own: open its track.
       const s = get()
       for (const k of s.rows.track.values())
-        if (k.agentSession === t.threadId) return go({ ...NOWHERE, track: k.id })
+        if (k.agentSession === t.threadId)
+          return go({ ...NOWHERE, track: k.id })
       go({ ...NOWHERE, thread: t.threadId })
     } else if (t.trackId) go({ ...NOWHERE, track: t.trackId })
   })
   host.onAnswer?.((a) => {
-    client.answer(a.threadId, a.askId, { decision: a.choice === 'allow' ? 'allow' : 'deny' })
+    client.answer(a.threadId, a.askId, {
+      decision: a.choice === 'allow' ? 'allow' : 'deny',
+    })
     sync()
   })
 
@@ -332,7 +379,8 @@ export function createSurface(o: SurfaceOptions) {
     set({ toasts: [...get().toasts.slice(-2), { ...t, id }] })
     setTimeout(() => dismissToast(id), t.undo ? 8000 : 5000)
   }
-  const dismissToast = (id: string) => set({ toasts: get().toasts.filter((t) => t.id !== id) })
+  const dismissToast = (id: string) =>
+    set({ toasts: get().toasts.filter((t) => t.id !== id) })
 
   function mutate<N extends MutationName>(name: N, args: MutationArgs[N]) {
     const r = client.mutate(name, args)
@@ -369,7 +417,10 @@ export function createSurface(o: SurfaceOptions) {
 
   // ---- conversations ----
 
-  const watching = new Map<string, { n: number; started: boolean; stop: () => void }>()
+  const watching = new Map<
+    string,
+    { n: number; started: boolean; stop: () => void }
+  >()
   const patchConvo = (sid: string, fn: (c: Convo) => Convo) => {
     const convos = get().convos
     const next = fn(convos[sid] ?? EMPTY_CONVO)
@@ -378,7 +429,11 @@ export function createSurface(o: SurfaceOptions) {
   const onEvents = (sid: string, u: EventsUpdate) =>
     patchConvo(sid, (c) => {
       let events = c.events
-      if (u.reset) events = u.reset.seq === null ? [] : events.filter((e) => e.seq <= u.reset!.seq!)
+      if (u.reset)
+        events =
+          u.reset.seq === null
+            ? []
+            : events.filter((e) => e.seq <= u.reset!.seq!)
       if (u.events.length) {
         const last = events.length ? events[events.length - 1].seq : -1
         if (u.events[0].seq > last) events = [...events, ...u.events]
@@ -389,7 +444,9 @@ export function createSurface(o: SurfaceOptions) {
         }
       }
       // The block that was streaming has arrived whole, or its turn is over.
-      const closes = u.events.some((e) => e.type === 'message.completed' || e.type.startsWith('turn.'))
+      const closes = u.events.some(
+        (e) => e.type === 'message.completed' || e.type.startsWith('turn.'),
+      )
       return { events, loaded: true, open: closes || u.reset ? null : c.open }
     })
 
@@ -399,11 +456,15 @@ export function createSurface(o: SurfaceOptions) {
   const onDelta = (sid: string, d: Delta) => {
     if (d.type !== 'message.delta' || typeof d.data.text !== 'string') return
     const blockId = d.data.blockId ?? d.turnId
-    const held = buffered.has(sid) ? buffered.get(sid)! : (get().convos[sid]?.open ?? null)
+    const held = buffered.has(sid)
+      ? buffered.get(sid)!
+      : (get().convos[sid]?.open ?? null)
     let text: string
-    if (d.whole || !held || held.blockId !== blockId) text = d.offset === 0 || d.whole ? d.data.text : ''
+    if (d.whole || !held || held.blockId !== blockId)
+      text = d.offset === 0 || d.whole ? d.data.text : ''
     else if (d.offset === held.text.length) text = held.text + d.data.text
-    else if (d.offset < held.text.length) text = held.text.slice(0, d.offset) + d.data.text
+    else if (d.offset < held.text.length)
+      text = held.text.slice(0, d.offset) + d.data.text
     else return
     buffered.set(sid, { blockId, type: d.type, turnId: d.turnId, text })
     flush ??= setTimeout(() => {
@@ -411,7 +472,9 @@ export function createSurface(o: SurfaceOptions) {
       for (const [id, open] of buffered) {
         // A delta that trails its completed message is dropped.
         const done = get().convos[id]?.events.some(
-          (e) => e.type === 'message.completed' && (e.data as { blockId?: string } | null)?.blockId === open?.blockId,
+          (e) =>
+            e.type === 'message.completed' &&
+            (e.data as { blockId?: string } | null)?.blockId === open?.blockId,
         )
         patchConvo(id, (c) => ({ ...c, open: done ? null : open }))
       }
@@ -426,7 +489,9 @@ export function createSurface(o: SurfaceOptions) {
   const begin = (sid: string) => {
     const w = watching.get(sid)
     if (!w || w.started || !get().base.session.has(sid)) return
-    const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
+    const a = client
+      .events(sid, { tailTurns: 30 })
+      .subscribe((u) => onEvents(sid, u))
     const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
     w.started = true
     w.stop = () => (a(), b())
@@ -456,7 +521,22 @@ export function createSurface(o: SurfaceOptions) {
   // ---- start ----
 
   void client.ready.then(() => {
-    stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
+    stops.push(
+      client
+        .feed([
+          'session',
+          'place',
+          'track',
+          'result',
+          'proposal',
+          'doc',
+          'read',
+          'pref',
+          'machine',
+          'op',
+        ])
+        .subscribe(onFrame),
+    )
     stops.push(client.pending().subscribe((pending) => recompose({ pending })))
     stops.push(client.failures.subscribe(onFailure))
     stops.push(
@@ -465,12 +545,19 @@ export function createSurface(o: SurfaceOptions) {
         if (status === 'online') set({ synced: true })
       }),
     )
-    set({ ready: true, status: client.status.get(), pending: client.pending().get() })
+    set({
+      ready: true,
+      status: client.status.get(),
+      pending: client.pending().get(),
+    })
     recompose()
   })
   stops.push(
     store.subscribe((s, p) => {
-      if (KEPT.some((k) => s[k] !== p[k])) o.kept?.set(JSON.stringify(Object.fromEntries(KEPT.map((k) => [k, s[k]]))))
+      if (KEPT.some((k) => s[k] !== p[k]))
+        o.kept?.set(
+          JSON.stringify(Object.fromEntries(KEPT.map((k) => [k, s[k]]))),
+        )
     }),
   )
 
@@ -520,7 +607,13 @@ export function createSurface(o: SurfaceOptions) {
     },
     toggleEarlier(tid?: string) {
       const s = get()
-      if (tid) set({ trackEarlierOpen: { ...s.trackEarlierOpen, [tid]: !s.trackEarlierOpen[tid] } })
+      if (tid)
+        set({
+          trackEarlierOpen: {
+            ...s.trackEarlierOpen,
+            [tid]: !s.trackEarlierOpen[tid],
+          },
+        })
       else set({ earlierOpen: !s.earlierOpen })
       const key = tid ?? ''
       if (get().earlierNext[key] === undefined) void actions.loadEarlier(tid)
@@ -557,7 +650,11 @@ export function createSurface(o: SurfaceOptions) {
     // A2, A3: a reply to a working agent steers it.
     send(sid: string, input: string) {
       const st = get().rows.session.get(sid)?.status
-      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined }))
+      settle(
+        client.send(sid, input, {
+          ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined,
+        }),
+      )
     },
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))
@@ -577,7 +674,8 @@ export function createSurface(o: SurfaceOptions) {
       stopIfWorking(sid)
       mutate('thread.done', { sid })
       const s = get()
-      if (s.loc.thread === sid && !opt?.stay) go({ ...NOWHERE, track: p.trackId, start: !p.trackId })
+      if (s.loc.thread === sid && !opt?.stay)
+        go({ ...NOWHERE, track: p.trackId, start: !p.trackId })
       toast({ text: 'Marked done', undo: () => actions.reopen(sid) })
     },
     reopen(sid: string) {
@@ -591,13 +689,21 @@ export function createSurface(o: SurfaceOptions) {
       const tid = makeId('trk')
       mutate('track.create', { tid, agentSessionId: makeId('cs'), sid })
       set({ openTracks: { ...get().openTracks, [tid]: true } })
-      toast({ text: 'Now in a track', undo: () => mutate('track.dissolve', { tid, threads: 'keep' }) })
+      toast({
+        text: 'Now in a track',
+        undo: () => mutate('track.dissolve', { tid, threads: 'keep' }),
+      })
     },
     place(sid: string, trackId: string | null) {
       const from = place(sid)?.trackId ?? null
       if (from === trackId) return
       mutate('thread.place', { sid, trackId })
-      toast({ text: trackId ? 'Moved' : 'Taken out of the track', undo: from ? () => mutate('thread.place', { sid, trackId: from }) : undefined })
+      toast({
+        text: trackId ? 'Moved' : 'Taken out of the track',
+        undo: from
+          ? () => mutate('thread.place', { sid, trackId: from })
+          : undefined,
+      })
     },
     keep(sid: string, keep: boolean) {
       mutate('thread.keep', { sid, keep })
@@ -606,7 +712,8 @@ export function createSurface(o: SurfaceOptions) {
       const s = get()
       const p = place(sid)
       stopIfWorking(sid)
-      if (s.loc.thread === sid) go({ ...NOWHERE, track: p?.trackId ?? null, start: !p?.trackId })
+      if (s.loc.thread === sid)
+        go({ ...NOWHERE, track: p?.trackId ?? null, start: !p?.trackId })
       mutate('thread.delete', { sid })
     },
 
@@ -615,7 +722,8 @@ export function createSurface(o: SurfaceOptions) {
       if (name.trim()) mutate('track.rename', { tid, name: name.trim() })
     },
     stopAll(tid: string) {
-      for (const p of get().rows.place.values()) if (p.trackId === tid) stopIfWorking(p.id)
+      for (const p of get().rows.place.values())
+        if (p.trackId === tid) stopIfWorking(p.id)
     },
     // A11: lands on the start box.
     trackDone(tid: string, proposalId?: string) {
@@ -625,7 +733,10 @@ export function createSurface(o: SurfaceOptions) {
       const s = get()
       const open = s.loc.thread ? place(s.loc.thread)?.trackId : s.loc.track
       if (open === tid) go({ ...NOWHERE, start: true })
-      toast({ text: 'Marked done', undo: () => mutate('track.reopen', { tid }) })
+      toast({
+        text: 'Marked done',
+        undo: () => mutate('track.reopen', { tid }),
+      })
     },
     trackReopen(tid: string) {
       mutate('track.reopen', { tid })
@@ -664,9 +775,14 @@ export function createSurface(o: SurfaceOptions) {
     accept(proposalId: string) {
       const p = get().rows.proposal.get(proposalId)
       // G8 accepted is A11.
-      if (p?.type === 'done' && get().rows.track.has(p.target)) return actions.trackDone(p.target, proposalId)
+      if (p?.type === 'done' && get().rows.track.has(p.target))
+        return actions.trackDone(p.target, proposalId)
       mutate('proposal.accept', { proposalId })
-      if (p?.type === 'done') toast({ text: 'Marked done', undo: () => mutate('thread.reopen', { sid: p.target }) })
+      if (p?.type === 'done')
+        toast({
+          text: 'Marked done',
+          undo: () => mutate('thread.reopen', { sid: p.target }),
+        })
     },
     dismissProposal(proposalId: string) {
       mutate('proposal.dismiss', { proposalId })
@@ -700,7 +816,9 @@ export function createSurface(o: SurfaceOptions) {
       }
     },
     async search(q: string) {
-      const reply = await client.read<SearchReply>(`/work/search?q=${encodeURIComponent(q)}&limit=20`)
+      const reply = await client.read<SearchReply>(
+        `/work/search?q=${encodeURIComponent(q)}&limit=20`,
+      )
       addUnder(reply.rows)
       return reply.rows
     },
@@ -708,7 +826,11 @@ export function createSurface(o: SurfaceOptions) {
       return client.read<Review>(`/work/results/${resultId}/review`)
     },
     async diff(resultId: string) {
-      return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff
+      return (
+        await client.read<{ head: string; diff: string }>(
+          `/work/results/${resultId}/diff`,
+        )
+      ).diff
     },
     openExternal(url: string) {
       host.openExternal(url)

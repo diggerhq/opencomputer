@@ -5,7 +5,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memoryStorage, type Failure } from '@opencomputer/sdk/computer'
-import { createFakeServer, type FakeOptions, type FakeServer } from '@opencomputer/sdk/computer/fake'
+import {
+  createFakeServer,
+  type FakeOptions,
+  type FakeServer,
+} from '@opencomputer/sdk/computer/fake'
 import type { Host, Location } from '../host'
 import { NOWHERE } from '../host'
 import { createSurface } from './index'
@@ -15,7 +19,8 @@ import type { Mark, ThreadView, TrackView } from './views'
 const DAY = 24 * 60 * 60 * 1000
 // The real one, for a turn of the event loop while the clock is faked.
 const realTimeout = globalThis.setTimeout
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 type Note = Parameters<Host['notify']>[0]
 
@@ -25,10 +30,15 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-async function until(fake: FakeServer, what: () => unknown, ms = 2000): Promise<void> {
+async function until(
+  fake: FakeServer,
+  what: () => unknown,
+  ms = 2000,
+): Promise<void> {
   const end = Date.now() + ms
   while (!what()) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${String(what)}`)
+    if (Date.now() > end)
+      throw new Error(`timed out waiting for ${String(what)}`)
     await fake.idle()
     await sleep(1)
   }
@@ -54,19 +64,30 @@ async function open(o: FakeOptions = {}) {
       onChange: () => () => {},
     },
   }
-  const s = createSurface({ host, storage: memoryStorage(), visible: () => true })
+  const s = createSurface({
+    host,
+    storage: memoryStorage(),
+    visible: () => true,
+  })
   const failures: Failure[] = []
   const stop = s.client.failures.subscribe((f) => void failures.push(f))
   closers.push(() => (stop(), s.close()))
   await until(fake, () => s.get().ready && s.get().synced)
 
   const wait = (what: () => unknown) => until(fake, what)
-  const loose = (sid: string): ThreadView | undefined => s.list().threads.find((t) => t.id === sid)
-  const track = (tid: string): TrackView | undefined => s.list().tracks.find((t) => t.id === tid)
+  const loose = (sid: string): ThreadView | undefined =>
+    s.list().threads.find((t) => t.id === sid)
+  const track = (tid: string): TrackView | undefined =>
+    s.list().tracks.find((t) => t.id === tid)
   // Nobody is waiting on anybody, and nothing of ours is unconfirmed.
   const settled = (sid: string) => {
     const t = s.thread(sid)
-    return !!t && t.session.status === 'idle' && t.session.lastAgentSeq > 0 && !s.get().pending.length
+    return (
+      !!t &&
+      t.session.status === 'idle' &&
+      t.session.lastAgentSeq > 0 &&
+      !s.get().pending.length
+    )
   }
   // Every mark a thread shows from here on.
   const marks = (sid: string) => {
@@ -80,7 +101,8 @@ async function open(o: FakeOptions = {}) {
     return seen
   }
   // The messages of a conversation, as the pane would list them.
-  const transcript = (sid: string) => buildTranscript(s.get().convos[sid]?.events ?? [])
+  const transcript = (sid: string) =>
+    buildTranscript(s.get().convos[sid]?.events ?? [])
 
   // J5's opening, for the journeys that happen in a track: a track with the
   // two threads its agent starts, all quiet.
@@ -88,22 +110,42 @@ async function open(o: FakeOptions = {}) {
     s.start('Build the billing page, track it', { open: true })
     await wait(() => s.list().tracks[0]?.threads.length === 2)
     const tid = s.list().tracks[0].id
-    await wait(() => track(tid)!.threads.every((t) => settled(t.id)) && track(tid)!.agent?.status === 'idle')
+    await wait(
+      () =>
+        track(tid)!.threads.every((t) => settled(t.id)) &&
+        track(tid)!.agent?.status === 'idle',
+    )
     return { tid, threads: track(tid)!.threads.map((t) => t.id) }
   }
 
-  return { fake, s, notes, failures, wait, loose, track, settled, marks, transcript, startTrack }
+  return {
+    fake,
+    s,
+    notes,
+    failures,
+    wait,
+    loose,
+    track,
+    settled,
+    marks,
+    transcript,
+    startTrack,
+  }
 }
 
-const text = (items: ReturnType<typeof buildTranscript>, kind: 'user' | 'agent') =>
-  items.flatMap((i) => (i.kind === kind ? [i.text] : []))
+const text = (
+  items: ReturnType<typeof buildTranscript>,
+  kind: 'user' | 'agent',
+) => items.flatMap((i) => (i.kind === kind ? [i.text] : []))
 
 describe('journeys', () => {
   it('J1 first use: a row under Threads at once, the agent names it, the transcript has both sides', async () => {
     const { s, wait, loose, settled, transcript } = await open()
     expect(s.list()).toMatchObject({ tracks: [], threads: [], earlier: 0 })
 
-    const sid = s.start('What does the handler do? Keep it short', { open: true })
+    const sid = s.start('What does the handler do? Keep it short', {
+      open: true,
+    })
     // Before the server has heard of it.
     expect(s.list().threads.map((t) => t.id)).toEqual([sid])
     expect(loose(sid)!.title).toBe('What does the handler do? Keep it short')
@@ -116,8 +158,12 @@ describe('journeys', () => {
     expect(loose(sid)!.title).toBe('What does the handler do')
 
     await wait(() => text(transcript(sid), 'agent').length)
-    expect(text(transcript(sid), 'user')).toEqual(['What does the handler do? Keep it short'])
-    expect(text(transcript(sid), 'agent')[0]).toContain('On it: What does the handler do?')
+    expect(text(transcript(sid), 'user')).toEqual([
+      'What does the handler do? Keep it short',
+    ])
+    expect(text(transcript(sid), 'agent')[0]).toContain(
+      'On it: What does the handler do?',
+    )
     stop()
   })
 
@@ -127,7 +173,11 @@ describe('journeys', () => {
     expect(s.get().loc.thread).toBeNull()
     await wait(() => settled(sid))
     // Answered, not proposed as done (R8): no mark, bold.
-    expect(loose(sid)).toMatchObject({ mark: null, unread: true, proposals: [] })
+    expect(loose(sid)).toMatchObject({
+      mark: null,
+      unread: true,
+      proposals: [],
+    })
 
     // Unread does not age.
     fake.age(8 * DAY)
@@ -167,7 +217,9 @@ describe('journeys', () => {
     // The person stays in the thread (R22).
     expect(s.get().loc.thread).toBe(sid)
 
-    const op = [...s.get().rows.op.values()].find((o) => o.name === 'track.create' && o.trackId === tid)
+    const op = [...s.get().rows.op.values()].find(
+      (o) => o.name === 'track.create' && o.trackId === tid,
+    )
     expect(op).toBeDefined()
     s.undo(op!.id)
     await wait(() => !s.list().tracks.length && !s.get().pending.length)
@@ -191,7 +243,11 @@ describe('journeys', () => {
     await wait(() => s.get().rows.doc.get(k.id)?.text)
     expect(s.get().rows.doc.get(k.id)!.text).toContain('Build the billing page')
     // L4: the track, no thread, until the person clicks one (R22).
-    expect(s.get().loc).toMatchObject({ thread: null, track: k.id, start: false })
+    expect(s.get().loc).toMatchObject({
+      thread: null,
+      track: k.id,
+      start: false,
+    })
     expect(s.get().openTracks[k.id]).toBe(true)
   })
 
@@ -215,7 +271,10 @@ describe('journeys', () => {
     expect(track(tid)!.threads.map((t) => t.id)).toEqual(threads)
     expect(s.get().loc).toMatchObject({ thread: null, track: tid })
     expect(notes.map((n) => n.threadId)).toEqual([sid])
-    expect(notes[0]).toMatchObject({ askId: ask.id, choices: [{ id: 'allow' }, { id: 'deny' }] })
+    expect(notes[0]).toMatchObject({
+      askId: ask.id,
+      choices: [{ id: 'allow' }, { id: 'deny' }],
+    })
 
     const seen = marks(sid)
     s.answer(sid, ask.id, { decision: 'allow' })
@@ -244,7 +303,11 @@ describe('journeys', () => {
     // A look is not acceptance (R7): the ring and the bold go, nothing else.
     s.openThread(sid)
     await wait(() => loose(sid)?.mark === null && !s.get().pending.length)
-    expect(loose(sid)).toMatchObject({ unread: false, done: false, readyResult: null })
+    expect(loose(sid)).toMatchObject({
+      unread: false,
+      done: false,
+      readyResult: null,
+    })
     expect(loose(sid)!.proposals).toHaveLength(1)
 
     s.done(sid)
@@ -255,7 +318,8 @@ describe('journeys', () => {
     await wait(() => !s.get().pending.length && s.list().earlier === 1)
     expect(s.list().threads).toEqual([])
     const kept = s.thread(sid)
-    if (kept) expect(kept).toMatchObject({ done: true, outcome: 'done', earlier: true })
+    if (kept)
+      expect(kept).toMatchObject({ done: true, outcome: 'done', earlier: true })
 
     expect(s.undoLast()).toBe(true)
     await wait(() => loose(sid) && !s.get().pending.length)
@@ -316,7 +380,12 @@ describe('journeys', () => {
     expect(track(tid)).toMatchObject({ mark: null, keep: true })
     await wait(() => !s.get().pending.length)
     await sleep(5)
-    expect(track(tid)).toMatchObject({ mark: null, keep: true, done: false, proposals: [] })
+    expect(track(tid)).toMatchObject({
+      mark: null,
+      keep: true,
+      done: false,
+      proposals: [],
+    })
     expect(s.list().earlierTracks).toEqual([])
   })
 
@@ -361,10 +430,17 @@ describe('journeys', () => {
     await tick(20)
     expect(loose(sid)!.title).toBe('Slow builds')
     expect(s.get().pending).toHaveLength(1)
-    expect(fake.row('session', sid)).toMatchObject({ title: 'Why is the build slow' })
+    expect(fake.row('session', sid)).toMatchObject({
+      title: 'Why is the build slow',
+    })
 
     fake.setOffline(false)
-    for (let i = 0; i < 100 && (s.get().pending.length || s.get().status !== 'online'); i++) await tick(250)
+    for (
+      let i = 0;
+      i < 100 && (s.get().pending.length || s.get().status !== 'online');
+      i++
+    )
+      await tick(250)
     vi.useRealTimers()
 
     expect(s.get().status).toBe('online')
@@ -385,7 +461,10 @@ describe('journeys', () => {
     expect(s.thread(sid)!.trackId).toBe('trk_nosuchtrack')
 
     await wait(() => failures.length)
-    expect(failures[0].entry).toMatchObject({ kind: 'mutation', name: 'thread.place' })
+    expect(failures[0].entry).toMatchObject({
+      kind: 'mutation',
+      name: 'thread.place',
+    })
     expect(s.get().pending).toEqual([])
     expect(loose(sid)).toBeDefined()
     expect(s.thread(sid)!.trackId).toBeNull()
@@ -394,11 +473,25 @@ describe('journeys', () => {
     expect(said[0].text).toMatch(/^Could not move it: /)
   })
 
-  it.todo('J13 a done track reopens on a message to the track itself (T12): the fake reopens a track only on a reply in one of its done threads')
-  it.todo('J3.3 the wrapped track opens with the user’s message and its agent starts further threads: the fake’s track agent only does this for a track made from the start box')
-  it.todo('J4 the agent does not wrap the same thread again after Undo (R30, R34): the fake’s script proposes on every message with "track"')
-  it.todo('J6 a one-line question to the start box becomes a thread: covered by J1, there is no second action')
-  it.todo('J8 clicking the notification opens the thread at the block: Host.onOpen is the host’s to call; at the block is the UI’s')
-  it.todo('J10 changing course from the track (G4): the fake’s track agent passes a message on but stops no thread and rewrites no stand')
-  it.todo('J12 a standing track is not suggested again after Keep open: the fake’s clock cannot make a track "quiet for weeks"')
+  it.todo(
+    'J13 a done track reopens on a message to the track itself (T12): the fake reopens a track only on a reply in one of its done threads',
+  )
+  it.todo(
+    'J3.3 the wrapped track opens with the user’s message and its agent starts further threads: the fake’s track agent only does this for a track made from the start box',
+  )
+  it.todo(
+    'J4 the agent does not wrap the same thread again after Undo (R30, R34): the fake’s script proposes on every message with "track"',
+  )
+  it.todo(
+    'J6 a one-line question to the start box becomes a thread: covered by J1, there is no second action',
+  )
+  it.todo(
+    'J8 clicking the notification opens the thread at the block: Host.onOpen is the host’s to call; at the block is the UI’s',
+  )
+  it.todo(
+    'J10 changing course from the track (G4): the fake’s track agent passes a message on but stops no thread and rewrites no stand',
+  )
+  it.todo(
+    'J12 a standing track is not suggested again after Keep open: the fake’s clock cannot make a track "quiet for weeks"',
+  )
 })

@@ -1,4 +1,9 @@
-import type { Channel, ClientFrame, Principal, ServerFrame } from '@opencomputer/sdk/computer'
+import type {
+  Channel,
+  ClientFrame,
+  Principal,
+  ServerFrame,
+} from '@opencomputer/sdk/computer'
 import type { Host, Location } from './host'
 import { NOWHERE } from './host'
 
@@ -8,7 +13,9 @@ import { NOWHERE } from './host'
 // /<base>, /<base>/new, /<base>/t/<thread>, /<base>/k/<track>; ?r=<result> over any of them.
 export function urlLocation(base: string): Host['location'] {
   const read = (): Location => {
-    const rest = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : ''
+    const rest = location.pathname.startsWith(base)
+      ? location.pathname.slice(base.length)
+      : ''
     const [, kind, id] = rest.split('/')
     const result = new URLSearchParams(location.search).get('r')
     return {
@@ -20,7 +27,13 @@ export function urlLocation(base: string): Host['location'] {
     }
   }
   const write = (l: Location) => {
-    const path = l.thread ? `/t/${encodeURIComponent(l.thread)}` : l.track ? `/k/${encodeURIComponent(l.track)}` : l.start ? '/new' : ''
+    const path = l.thread
+      ? `/t/${encodeURIComponent(l.thread)}`
+      : l.track
+        ? `/k/${encodeURIComponent(l.track)}`
+        : l.start
+          ? '/new'
+          : ''
     // Other parameters (the fake's switches) stay.
     const q = new URLSearchParams(location.search)
     if (l.result) q.set('r', l.result)
@@ -91,15 +104,30 @@ export function socketChannel(url: string, protocols: string[]): Channel {
 }
 
 // What every browser host shares: notifications from the page, links in a new tab.
-export function browserParts(): Pick<Host, 'notify' | 'badge' | 'openExternal' | 'onOpen'> {
+export function browserParts(): Pick<
+  Host,
+  'notify' | 'badge' | 'openExternal' | 'onOpen'
+> {
   let open: Parameters<Host['onOpen']>[0] = () => {}
   // Permission can only be asked from a gesture: the first click asks.
-  if (typeof Notification !== 'undefined' && Notification.permission === 'default')
-    addEventListener('pointerdown', () => void Notification.requestPermission(), { once: true })
+  if (
+    typeof Notification !== 'undefined' &&
+    Notification.permission === 'default'
+  )
+    addEventListener(
+      'pointerdown',
+      () => void Notification.requestPermission(),
+      { once: true },
+    )
   return {
     notify(n) {
       // Only while the person is elsewhere (R27).
-      if (typeof Notification === 'undefined' || Notification.permission !== 'granted' || document.hasFocus()) return
+      if (
+        typeof Notification === 'undefined' ||
+        Notification.permission !== 'granted' ||
+        document.hasFocus()
+      )
+        return
       const note = new Notification(n.title, { body: n.body, tag: n.threadId })
       note.onclick = () => {
         window.focus()
@@ -117,14 +145,20 @@ export function browserParts(): Pick<Host, 'notify' | 'badge' | 'openExternal' |
   }
 }
 
-export function webHost(o: { principal: Principal; name?: string; api: string; base: string }): Host {
+export function webHost(o: {
+  principal: Principal
+  name?: string
+  api: string
+  base: string
+}): Host {
   const ws = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${o.api}/live`
   return {
     platform: 'web',
     principal: o.principal,
     name: o.name,
     api: {
-      fetch: (path, init) => fetch(`${o.api}${path}`, { ...init, credentials: 'include' }),
+      fetch: (path, init) =>
+        fetch(`${o.api}${path}`, { ...init, credentials: 'include' }),
     },
     connect: () => socketChannel(ws, ['oc.live.v1']),
     location: urlLocation(o.base),

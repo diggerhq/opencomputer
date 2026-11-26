@@ -1,30 +1,57 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { toast } from 'sonner'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useS, useSurface } from '../hooks'
-import { I } from './bits'
-import './review.css'
+import { oneLayer } from './bits'
 
-// The newest thing said; what can be undone says so (Z).
+// What the surface says, through sonner: the store decides when a toast comes
+// and goes; what can be undone carries Undo (Z).
 export function Toasts() {
   const surface = useSurface()
-  const t = useS((s) => s.toasts[s.toasts.length - 1])
-  if (!t) return null
-  const undo = t.undo
-  return (
-    <div className={t.tone === 'error' ? 'toast on err' : 'toast on'} role="status">
-      {undo && I.check}
-      <span>{t.text}</span>
-      {undo && (
-        <button
-          onClick={() => {
-            undo()
-            surface.dismissToast(t.id)
-          }}
-        >
-          Undo<kbd>Z</kbd>
-        </button>
-      )}
-    </div>
-  )
+  const toasts = useS((s) => s.toasts)
+  const shown = useRef(new Set<string>())
+  useEffect(() => {
+    const now = new Set(toasts.map((t) => t.id))
+    for (const id of shown.current) if (!now.has(id)) toast.dismiss(id)
+    for (const t of toasts) {
+      if (shown.current.has(t.id)) continue
+      const undo = t.undo
+      ;(t.tone === 'error' ? toast.error : undo ? toast.success : toast)(
+        t.text,
+        {
+          id: t.id,
+          duration: Infinity,
+          onDismiss: () => surface.dismissToast(t.id),
+          action: undo
+            ? {
+                label: (
+                  <>
+                    Undo{' '}
+                    <Kbd className="bg-transparent text-inherit opacity-60">
+                      Z
+                    </Kbd>
+                  </>
+                ),
+                onClick: () => {
+                  undo()
+                  surface.dismissToast(t.id)
+                },
+              }
+            : undefined,
+        },
+      )
+    }
+    shown.current = now
+  }, [surface, toasts])
+  useEffect(() => () => shown.current.forEach((id) => toast.dismiss(id)), [])
+  return null
 }
 
 // Spec section 12.
@@ -47,37 +74,30 @@ const KEYS: [string, string[]][] = [
 export function KeysSheet() {
   const surface = useSurface()
   const on = useS((s) => s.keysSheet)
-  useEffect(() => {
-    if (!on) return
-    const key = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      // This layer only (R19).
-      e.preventDefault()
-      e.stopPropagation()
-      surface.setKeysSheet(false)
-    }
-    window.addEventListener('keydown', key, true)
-    return () => window.removeEventListener('keydown', key, true)
-  }, [surface, on])
-  if (!on) return null
   return (
-    <>
-      <div className="scrim on" role="presentation" onClick={() => surface.setKeysSheet(false)} />
-      <div className="help on" role="dialog" aria-label="Shortcuts">
-        <h3>Shortcuts</h3>
-        <dl>
+    <Dialog open={on} onOpenChange={(open) => surface.setKeysSheet(open)}>
+      <DialogContent className="sm:max-w-130" onEscapeKeyDown={oneLayer}>
+        <DialogHeader>
+          <DialogTitle>Shortcuts</DialogTitle>
+          <DialogDescription className="sr-only">
+            Keys for the frequent actions
+          </DialogDescription>
+        </DialogHeader>
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 max-[700px]:grid-cols-1">
           {KEYS.map(([what, keys]) => (
-            <div key={what}>
-              <dt>{what}</dt>
-              <dd>
-                {keys.map((k) => (
-                  <kbd key={k}>{k}</kbd>
-                ))}
+            <div key={what} className="flex items-center gap-2">
+              <dt className="text-muted-foreground">{what}</dt>
+              <dd className="ml-auto">
+                <KbdGroup>
+                  {keys.map((k) => (
+                    <Kbd key={k}>{k}</Kbd>
+                  ))}
+                </KbdGroup>
               </dd>
             </div>
           ))}
         </dl>
-      </div>
-    </>
+      </DialogContent>
+    </Dialog>
   )
 }

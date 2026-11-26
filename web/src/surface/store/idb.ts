@@ -17,7 +17,10 @@ export function idbStorage(p: Principal): Storage & { drop(): Promise<void> } {
       }
       req.onerror = () => reject(req.error)
     }))
-  const run = async <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T> => {
+  const run = async <T>(
+    mode: IDBTransactionMode,
+    fn: (s: IDBObjectStore) => IDBRequest<T> | void,
+  ): Promise<T> => {
     const attempt = async () => {
       const tx = (await open()).transaction('kv', mode)
       return new Promise<T>((resolve, reject) => {
@@ -57,7 +60,8 @@ export function idbStorage(p: Principal): Storage & { drop(): Promise<void> } {
     },
     batch: (ops) =>
       run('readwrite', (s) => {
-        for (const op of ops) 'put' in op ? s.put(op.value, op.put) : s.delete(op.delete)
+        for (const op of ops)
+          'put' in op ? s.put(op.value, op.put) : s.delete(op.delete)
       }),
     async drop() {
       ;(await open()).close()

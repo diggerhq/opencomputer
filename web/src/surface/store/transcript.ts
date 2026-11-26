@@ -1,18 +1,57 @@
-import type { ApiEvent, Ask, InboxEntry, OpRow, Pending } from '@opencomputer/sdk/computer'
+import type {
+  ApiEvent,
+  Ask,
+  InboxEntry,
+  OpRow,
+  Pending,
+} from '@opencomputer/sdk/computer'
 
 // Folds a session's events into what a conversation shows: people's messages,
 // the agent's replies, its steps as single lines, and its asks. Types it does
 // not know are skipped, as the API asks of every client.
 
 export type Item =
-  | { kind: 'user'; key: string; text: string; author: string | null; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
-  | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
-  | { kind: 'step'; key: string; title: string; status: 'running' | 'done' | 'failed'; at: string }
+  | {
+      kind: 'user'
+      key: string
+      text: string
+      author: string | null
+      at: string
+      state?: 'sending' | 'queued' | 'failed'
+      reason?: string
+    }
+  | {
+      kind: 'agent'
+      key: string
+      text: string
+      at: string
+      streaming?: boolean
+    }
+  | {
+      kind: 'step'
+      key: string
+      title: string
+      status: 'running' | 'done' | 'failed'
+      at: string
+    }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
-  | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
+  | {
+      kind: 'line'
+      key: string
+      text: string
+      tone: 'muted' | 'error'
+      at: string
+      undo?: string
+      undone?: boolean
+    }
 
-export type OpenBlock = { blockId: string; type: string; turnId: string; text: string }
+export type OpenBlock = {
+  blockId: string
+  type: string
+  turnId: string
+  text: string
+}
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 
@@ -20,7 +59,10 @@ const withoutSlackHeader = (text: string | null): string | null =>
   text && text.replace(/^\[Slack: from [^\n]*\]\n?/gm, '').trim()
 
 // `me`: the person looking; their own messages carry no name.
-export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[] {
+export function buildTranscript(
+  events: readonly ApiEvent[],
+  me?: string,
+): Item[] {
   const items: Item[] = []
   const steps = new Map<string, Extract<Item, { kind: 'step' }>>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
@@ -34,15 +76,30 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         const name = e.actor?.name
         if (!text) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
-        if (e.actor?.via === 'agent') items.push({ kind: 'line', key: e.turnId ?? e.id, text, tone: 'muted', at: e.createdAt })
+        if (e.actor?.via === 'agent')
+          items.push({
+            kind: 'line',
+            key: e.turnId ?? e.id,
+            text,
+            tone: 'muted',
+            at: e.createdAt,
+          })
         else
-          items.push({ kind: 'user', key: e.turnId ?? e.id, text, author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null, at: e.createdAt })
+          items.push({
+            kind: 'user',
+            key: e.turnId ?? e.id,
+            text,
+            author:
+              name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
+            at: e.createdAt,
+          })
         break
       }
       case 'message.completed': {
         if (d.parentCallId) break
         const text = str(d.text)
-        if (text) items.push({ kind: 'agent', key: e.id, text, at: e.createdAt })
+        if (text)
+          items.push({ kind: 'agent', key: e.id, text, at: e.createdAt })
         break
       }
       case 'tool.started':
@@ -50,11 +107,22 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       case 'tool.failed': {
         if (d.parentCallId) break
         const callId = str(d.callId) ?? e.id
-        const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
+        const status =
+          e.type === 'tool.started'
+            ? 'running'
+            : e.type === 'tool.completed'
+              ? 'done'
+              : 'failed'
         const have = steps.get(callId)
         if (have) have.status = status
         else {
-          const step = { kind: 'step' as const, key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status, at: e.createdAt } as Extract<Item, { kind: 'step' }>
+          const step = {
+            kind: 'step' as const,
+            key: `step-${callId}`,
+            title: str(d.title) ?? str(d.toolName) ?? 'Tool',
+            status,
+            at: e.createdAt,
+          } as Extract<Item, { kind: 'step' }>
           steps.set(callId, step)
           items.push(step)
         }
@@ -67,7 +135,12 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         const seen = asks.get(ask.id)
         if (seen) seen.ask = ask
         else {
-          const item = { kind: 'ask' as const, key: `ask-${ask.id}`, ask, at: e.createdAt }
+          const item = {
+            kind: 'ask' as const,
+            key: `ask-${ask.id}`,
+            ask,
+            at: e.createdAt,
+          }
           asks.set(ask.id, item)
           items.push(item)
         }
@@ -75,16 +148,35 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       }
       case 'track.note': {
         const text = str(d.text)
-        if (text) items.push({ kind: 'line', key: e.id, text, tone: 'muted', at: e.createdAt })
+        if (text)
+          items.push({
+            kind: 'line',
+            key: e.id,
+            text,
+            tone: 'muted',
+            at: e.createdAt,
+          })
         break
       }
       case 'turn.failed': {
         const err = d.error as { message?: unknown } | undefined
-        items.push({ kind: 'line', key: e.id, text: str(err?.message) ?? 'The turn failed.', tone: 'error', at: e.createdAt })
+        items.push({
+          kind: 'line',
+          key: e.id,
+          text: str(err?.message) ?? 'The turn failed.',
+          tone: 'error',
+          at: e.createdAt,
+        })
         break
       }
       case 'turn.cancelled':
-        items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
+        items.push({
+          kind: 'line',
+          key: e.id,
+          text: 'Stopped',
+          tone: 'muted',
+          at: e.createdAt,
+        })
         break
       case 'turn.completed':
       case 'turn.started':
@@ -97,26 +189,55 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
 
 // The person's own messages that no event shows yet: queued here, waiting in
 // the session's inbox, or refused by the host (spec 40.2, steps 6 and 7).
-export function unsent(events: readonly ApiEvent[], pending: readonly Pending[], inbox: readonly InboxEntry[], sid: string): Item[] {
+export function unsent(
+  events: readonly ApiEvent[],
+  pending: readonly Pending[],
+  inbox: readonly InboxEntry[],
+  sid: string,
+): Item[] {
   const seen = new Set<string>()
-  for (const e of events) if (e.type === 'message.received' && e.turnId) seen.add(e.turnId)
+  for (const e of events)
+    if (e.type === 'message.received' && e.turnId) seen.add(e.turnId)
   const out: Item[] = []
   const mine = new Set<string>()
   for (const p of pending) {
     if (p.kind === 'session' && p.sessionId === sid) {
       mine.add(p.body.turnId)
       if (!seen.has(p.body.turnId))
-        out.push({ kind: 'user', key: p.body.turnId, text: p.body.input, author: null, at: new Date(p.at).toISOString(), state: 'sending' })
+        out.push({
+          kind: 'user',
+          key: p.body.turnId,
+          text: p.body.input,
+          author: null,
+          at: new Date(p.at).toISOString(),
+          state: 'sending',
+        })
     } else if (p.kind === 'turn' && p.sessionId === sid) {
       mine.add(p.turnId)
       if (!seen.has(p.turnId))
-        out.push({ kind: 'user', key: p.turnId, text: p.input, author: null, at: new Date(p.at).toISOString(), state: 'sending' })
+        out.push({
+          kind: 'user',
+          key: p.turnId,
+          text: p.input,
+          author: null,
+          at: new Date(p.at).toISOString(),
+          state: 'sending',
+        })
     }
   }
   for (const i of inbox) {
-    if (i.kind !== 'turn' || seen.has(i.id) || mine.has(i.id) || !i.text) continue
+    if (i.kind !== 'turn' || seen.has(i.id) || mine.has(i.id) || !i.text)
+      continue
     if (i.by.startsWith('agent:') || i.by === 'platform') continue
-    out.push({ kind: 'user', key: i.id, text: i.text, author: null, at: i.at, state: i.error ? 'failed' : 'queued', reason: i.error ?? undefined })
+    out.push({
+      kind: 'user',
+      key: i.id,
+      text: i.text,
+      author: null,
+      at: i.at,
+      state: i.error ? 'failed' : 'queued',
+      reason: i.error ?? undefined,
+    })
   }
   return out
 }
@@ -140,17 +261,29 @@ export function opLines(
   const out: Item[] = []
   const inThread = 'sessionId' in where
   for (const op of ops) {
-    if (inThread ? op.sessionId !== where.sessionId : op.trackId !== where.trackId) continue
+    if (
+      inThread ? op.sessionId !== where.sessionId : op.trackId !== where.trackId
+    )
+      continue
     if (!op.by.startsWith('agent:') || op.name === 'undo') continue
     const a = op.args as Record<string, string | null | undefined>
-    const before = (op.inverse as { args?: Record<string, string> } | null)?.args
+    const before = (op.inverse as { args?: Record<string, string> } | null)
+      ?.args
     let text: string | null = null
-    if (op.name === 'track.create' && inThread) text = op.undoneBy ? 'Was made a track' : `Now in the track **${names.track(String(a.tid))}**`
+    if (op.name === 'track.create' && inThread)
+      text = op.undoneBy
+        ? 'Was made a track'
+        : `Now in the track **${names.track(String(a.tid))}**`
     else if (op.name === 'thread.place' && inThread)
-      text = a.trackId ? `Moved to the track **${names.track(a.trackId)}**` : 'Taken out of its track'
-    else if (op.name === 'thread.place' && a.sid) text = `**${names.thread(a.sid)}** joined`
-    else if (op.name === 'thread.rename' && before?.title && inThread) text = `Renamed from **${before.title}**`
-    else if (op.name === 'track.rename' && before?.name && !inThread) text = `Renamed from **${before.name}**`
+      text = a.trackId
+        ? `Moved to the track **${names.track(a.trackId)}**`
+        : 'Taken out of its track'
+    else if (op.name === 'thread.place' && a.sid)
+      text = `**${names.thread(a.sid)}** joined`
+    else if (op.name === 'thread.rename' && before?.title && inThread)
+      text = `Renamed from **${before.title}**`
+    else if (op.name === 'track.rename' && before?.name && !inThread)
+      text = `Renamed from **${before.name}**`
     if (!text) continue
     out.push({
       kind: 'line',

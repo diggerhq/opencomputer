@@ -1,8 +1,19 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { ResultRow, Review as Written } from '@opencomputer/sdk/computer'
 import { useS, useSurface, useThread } from '../hooks'
-import { I, Mk, Rich, resultTitle } from './bits'
-import './review.css'
+import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { cn } from '@/lib/utils'
+import { HD, I, LEFT, Mk, Rich, resultTitle } from './bits'
 
 // ---- the diff as GitHub sends it ----
 
@@ -24,7 +35,11 @@ interface DiffFile {
   height: number
 }
 
-function parseDiff(text: string): { files: DiffFile[]; add: number; del: number } {
+function parseDiff(text: string): {
+  files: DiffFile[]
+  add: number
+  del: number
+} {
   const files: DiffFile[] = []
   let f: DiffFile | null = null
   let o = 0
@@ -75,7 +90,11 @@ function parseDiff(text: string): { files: DiffFile[]; add: number; del: number 
     else if (raw.startsWith('rename to ')) {
       f.path = raw.slice(10)
       f.tag = 'renamed'
-    } else if (raw.startsWith('Binary files') || raw.startsWith('GIT binary patch')) f.tag ||= 'binary'
+    } else if (
+      raw.startsWith('Binary files') ||
+      raw.startsWith('GIT binary patch')
+    )
+      f.tag ||= 'binary'
     else if (raw.startsWith('+++ b/')) f.path = raw.slice(6)
   }
   let add = 0
@@ -117,7 +136,8 @@ function useHeld(resultId: string): Held {
     )
     surface.diff(resultId).then(
       (text) => {
-        if (held.get(resultId)?.text !== text) put({ text, diff: parseDiff(text) })
+        if (held.get(resultId)?.text !== text)
+          put({ text, diff: parseDiff(text) })
       },
       () => {},
     )
@@ -141,7 +161,10 @@ interface Part {
   del: number
 }
 
-function group(review: Written | null | undefined, files: DiffFile[] | undefined): Part[] {
+function group(
+  review: Written | null | undefined,
+  files: DiffFile[] | undefined,
+): Part[] {
   const byPath = new Map((files ?? []).map((f) => [f.path, f]))
   const parts: Part[] = (review?.parts ?? []).map((p) => {
     const own: DiffFile[] = []
@@ -152,10 +175,26 @@ function group(review: Written | null | undefined, files: DiffFile[] | undefined
       byPath.delete(path)
       own.push(f)
     }
-    return { title: p.title, note: p.note, eye: p.weight === 'eye', listed: p.files.length, files: own, add: 0, del: 0 }
+    return {
+      title: p.title,
+      note: p.note,
+      eye: p.weight === 'eye',
+      listed: p.files.length,
+      files: own,
+      add: 0,
+      del: 0,
+    }
   })
   if (byPath.size)
-    parts.push({ title: parts.length ? 'Everything else' : '', note: null, eye: false, listed: byPath.size, files: [...byPath.values()], add: 0, del: 0 })
+    parts.push({
+      title: parts.length ? 'Everything else' : '',
+      note: null,
+      eye: false,
+      listed: byPath.size,
+      files: [...byPath.values()],
+      add: 0,
+      del: 0,
+    })
   for (const p of parts) {
     p.add = p.files.reduce((k, f) => k + f.add, 0)
     p.del = p.files.reduce((k, f) => k + f.del, 0)
@@ -179,24 +218,84 @@ function placeOf(resultId: string): Place {
 const nf = (n: number) => n.toLocaleString('en-US')
 const filesWord = (n: number) => `${nf(n)} ${n === 1 ? 'file' : 'files'}`
 
-function Pm({ add, del }: { add: number; del: number }) {
+// Counts; a zero is faint.
+function Pm({
+  add,
+  del,
+  a,
+  d,
+}: {
+  add: number
+  del: number
+  a?: string
+  d?: string
+}) {
   return (
     <>
-      <span className={add ? 'a' : 'a z'}>+{nf(add)}</span>
-      <span className={del ? 'd' : 'd z'}>−{nf(del)}</span>
+      <span
+        className={cn(
+          add ? 'text-status-running' : 'text-muted-foreground/70',
+          a,
+        )}
+      >
+        +{nf(add)}
+      </span>
+      <span
+        className={cn(
+          del ? 'text-status-error' : 'text-muted-foreground/70',
+          d,
+        )}
+      >
+        −{nf(del)}
+      </span>
     </>
   )
 }
 
+// A part's number.
+const ON_N =
+  'text-muted-foreground/70 w-4 flex-none pt-0.5 font-mono text-[11px] font-semibold'
+
+// Text that keeps the end of a path when it is cut.
+const PATH =
+  'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]'
+
+// Heights are fixed (22px a row, 24px + 8px margin a gap): DiffFile.height counts on them.
 const row = (l: Line, i: number) =>
   l.t === '~' ? (
-    <div className="gap" key={i}>
-      <span>⋯ {l.s}</span>
+    <div
+      className="bg-sidebar text-muted-foreground/70 border-border/60 my-1 h-6 border-y pr-3 pl-[62px] text-[11.5px] leading-[22px] whitespace-nowrap select-none"
+      key={i}
+    >
+      <span className="sticky left-[62px]">⋯ {l.s}</span>
     </div>
   ) : (
-    <div className={l.t === '+' ? 'dl a' : l.t === '-' ? 'dl d' : 'dl'} key={i}>
-      <i>{l.new ?? l.old}</i>
-      <u>{l.t}</u>
+    <div
+      className={cn(
+        'flex h-[22px] pr-4 leading-[22px] whitespace-pre',
+        l.t === '+'
+          ? 'bg-status-running-bg'
+          : l.t === '-'
+            ? 'bg-status-error-bg'
+            : 'bg-card',
+      )}
+      key={i}
+    >
+      <i className="text-muted-foreground/70 sticky left-0 w-11 flex-none bg-inherit pr-2.5 text-right not-italic select-none">
+        {l.new ?? l.old}
+      </i>
+      <u
+        className={cn(
+          'sticky left-11 w-[18px] flex-none bg-inherit no-underline select-none',
+          l.t === '+'
+            ? 'text-status-running'
+            : l.t === '-'
+              ? 'text-status-error'
+              : 'text-muted-foreground',
+        )}
+      >
+        {l.t}
+      </u>
       {l.s}
     </div>
   )
@@ -207,24 +306,37 @@ const FileCard = memo(function FileCard({ file }: { file: DiffFile }) {
   const [near, setNear] = useState(false)
   useEffect(() => {
     const el = ref.current!
-    const io = new IntersectionObserver((es) => setNear(es[es.length - 1].isIntersecting), {
-      root: el.closest('.rvc, .rvr'),
-      rootMargin: '1200px 0px',
-    })
+    const io = new IntersectionObserver(
+      (es) => setNear(es[es.length - 1].isIntersecting),
+      {
+        root: el.closest('[data-scroller]'),
+        rootMargin: '1200px 0px',
+      },
+    )
     io.observe(el)
     return () => io.disconnect()
   }, [])
   return (
-    <div className="fc" data-path={file.path} ref={ref}>
-      <div className="fh">
-        <span className="nm">
+    <div
+      className="bg-card ring-border mb-4 overflow-clip rounded-[10px] ring-1"
+      data-path={file.path}
+      ref={ref}
+    >
+      {/* Sticks at the scroller's edge: the code pane has 16px of top padding, a part's diff none. */}
+      <div className="bg-sidebar text-muted-foreground border-border/60 sticky top-[-16px] z-2 flex gap-2.5 border-b px-3 py-2 font-mono text-xs tabular-nums in-data-[exp]:top-0">
+        <span className={PATH}>
           {'‎'}
           {file.path}
         </span>
-        {file.tag && <span className="tag">{file.tag}</span>}
-        <Pm add={file.add} del={file.del} />
+        {file.tag && (
+          <span className="text-muted-foreground/70 flex-none">{file.tag}</span>
+        )}
+        <Pm add={file.add} del={file.del} a="ml-auto" />
       </div>
-      <div className="body" style={{ height: file.height }}>
+      <div
+        className="bg-card grid [scrollbar-width:thin] grid-cols-[minmax(max-content,1fr)] overflow-x-auto py-1 font-mono text-xs leading-[1.75]"
+        style={{ height: file.height }}
+      >
         {near && file.lines.map(row)}
       </div>
     </div>
@@ -258,7 +370,9 @@ function Summary({
   const max = Math.max(1, ...parts.map((p) => p.add + p.del))
   const eyes = parts.map((p, i) => ({ p, i })).filter((x) => x.p.eye)
 
-  const secs = () => [...scroller.current!.querySelectorAll<HTMLElement>('.pt')]
+  const secs = () => [
+    ...scroller.current!.querySelectorAll<HTMLElement>('[data-pt]'),
+  ]
   const act = () => {
     const c = scroller.current!
     let a = 0
@@ -286,39 +400,78 @@ function Summary({
   }, [])
 
   return (
-    <div className="rv">
+    <div className="flex min-h-0 flex-1">
       {named && (
-        <div className="rvo">
+        <div className="bg-sidebar w-[320px] flex-none cursor-default overflow-y-auto border-r px-2 py-4 select-none max-[1100px]:w-[240px] max-[700px]:hidden">
           {parts.map((p, i) => (
-            <button className={i === cur ? 'op on' : 'op'} key={i} onClick={() => go(i)}>
-              <span className="on-n">{i + 1}</span>
-              <span className="n">
+            <button
+              className={cn(
+                'focus-visible:bg-accent active:bg-row-selected flex w-full gap-2 rounded-md p-2 text-left leading-[1.35] transition-colors outline-none',
+                i === cur
+                  ? 'bg-row-selected text-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+              key={i}
+              onClick={() => go(i)}
+            >
+              <span className={ON_N}>{i + 1}</span>
+              <span className="min-w-0 flex-1">
                 {p.title}
-                {p.eye && <> <Mk mark="blocked" className="sm" /></>}
-                <span className="bar">
-                  {p.add > 0 && <i style={{ width: `${Math.max(3, (p.add / max) * 100)}%` }} />}
-                  {p.del > 0 && <b style={{ width: `${Math.max(3, (p.del / max) * 100)}%` }} />}
+                {p.eye && (
+                  <>
+                    {' '}
+                    <Mk mark="blocked" small className="ml-1 align-[1px]" />
+                  </>
+                )}
+                <span className="mt-1.5 flex h-[3px] w-full gap-0.5">
+                  {p.add > 0 && (
+                    <i
+                      className="bg-status-running rounded-[2px] opacity-70"
+                      style={{ width: `${Math.max(3, (p.add / max) * 100)}%` }}
+                    />
+                  )}
+                  {p.del > 0 && (
+                    <b
+                      className="bg-status-error rounded-[2px] opacity-70"
+                      style={{ width: `${Math.max(3, (p.del / max) * 100)}%` }}
+                    />
+                  )}
                 </span>
               </span>
             </button>
           ))}
         </div>
       )}
-      <div className="rvr" ref={scroller} onScroll={act}>
-        <article>
+      <div
+        className="relative min-w-0 flex-1 overflow-y-auto"
+        data-scroller
+        ref={scroller}
+        onScroll={act}
+      >
+        <article className="mx-auto max-w-[760px] px-8 pt-10 pb-[40vh] max-[700px]:px-4 max-[700px]:pt-6">
           {review ? (
-            <h2>
+            <h2 className="mb-3 text-[22px] leading-[1.35] font-[650] tracking-[-0.015em] text-balance">
               <Rich text={heading} />
             </h2>
           ) : (
-            <p className="none">The agent has not written a summary of this change. These are the files it touches.</p>
+            <p className="text-muted-foreground mb-4">
+              The agent has not written a summary of this change. These are the
+              files it touches.
+            </p>
           )}
           {eyes.length > 0 && (
-            <div className="blk ask" style={{ maxWidth: 'none', margin: '0 0 8px' }}>
-              <b style={{ fontWeight: 650 }}>{eyes.length === 1 ? 'One thing' : `${eyes.length} things`} worth your eye</b>
+            <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-[10px] px-4 py-3 ring-1 ring-inset">
+              <b className="font-[650]">
+                {eyes.length === 1 ? 'One thing' : `${eyes.length} things`}{' '}
+                worth your eye
+              </b>
               {eyes.map(({ p, i }) => (
-                <button className="lk" key={i} onClick={() => go(i)}>
-                  <Mk mark="blocked" className="sm" />
+                <button
+                  className="hover:bg-accent focus-visible:bg-accent active:bg-row-selected mt-2 -ml-1 flex w-full items-baseline gap-2.5 rounded-md px-1 py-0.5 text-left transition-colors outline-none"
+                  key={i}
+                  onClick={() => go(i)}
+                >
+                  <Mk mark="blocked" small className="-translate-y-px" />
                   <span>{p.title}</span>
                 </button>
               ))}
@@ -326,35 +479,59 @@ function Summary({
           )}
           {named
             ? parts.map((p, i) => (
-                <section className="pt" key={i}>
-                  <div className="ph">
-                    <span className="on-n">{i + 1}</span>
-                    <h3>{p.title}</h3>
-                    {p.eye && <span className="eye">worth your eye</span>}
+                <section
+                  className={cn(
+                    'pt-10',
+                    i > 0 && 'border-border/60 mt-10 border-t pt-8',
+                  )}
+                  data-pt
+                  key={i}
+                >
+                  <div className="flex items-baseline gap-2">
+                    <span className={cn(ON_N, 'text-xs')}>{i + 1}</span>
+                    <h3 className="text-[17px] font-[650] tracking-[-0.01em]">
+                      {p.title}
+                    </h3>
+                    {p.eye && (
+                      <span className="text-status-pending flex-none text-[11.5px] whitespace-nowrap">
+                        worth your eye
+                      </span>
+                    )}
                   </div>
-                  <div className="pm">
+                  <div className="text-muted-foreground mt-1 mb-3 ml-6 text-[12.5px] tabular-nums">
                     {filesWord(p.files.length || p.listed)}
                     {p.files.length > 0 && (
                       <>
                         {' · '}
-                        <span style={{ color: 'var(--addt)' }}>+{nf(p.add)}</span>{' '}
-                        <span style={{ color: 'var(--delt)' }}>−{nf(p.del)}</span>
+                        <span className="text-status-running">
+                          +{nf(p.add)}
+                        </span>{' '}
+                        <span className="text-status-error">−{nf(p.del)}</span>
                       </>
                     )}
                   </div>
                   {p.note && (
-                    <div className="pn">
+                    <div className="ml-6 max-w-[620px] leading-[1.6] text-pretty">
                       <Rich text={p.note} />
                     </div>
                   )}
                   {p.files.length > 0 && (
-                    <button className={open.has(i) ? 'more open' : 'more'} onClick={() => toggle(i)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        'text-muted-foreground mt-3 ml-4 gap-2 px-2 text-[12.5px] font-normal [&_svg]:transition-transform',
+                        !open.has(i) && '[&_svg]:-rotate-90',
+                      )}
+                      onClick={() => toggle(i)}
+                    >
                       {I.chev}
-                      {open.has(i) ? 'Hide' : 'Show'} the full diff of this part · {filesWord(p.files.length)}
-                    </button>
+                      {open.has(i) ? 'Hide' : 'Show'} the full diff of this part
+                      · {filesWord(p.files.length)}
+                    </Button>
                   )}
                   {open.has(i) && (
-                    <div className="exp">
+                    <div className="mt-3 ml-6" data-exp>
                       {p.files.map((f) => (
                         <FileCard file={f} key={f.path} />
                       ))}
@@ -364,8 +541,12 @@ function Summary({
               ))
             : parts.map((p) =>
                 p.files.map((f) => (
-                  <button className="rfl" key={f.path} onClick={() => toFull(f.path)}>
-                    <span>
+                  <button
+                    className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:bg-accent -mx-2 flex w-full cursor-default gap-2 rounded-md px-2 py-1 text-left font-mono text-xs tabular-nums outline-none"
+                    key={f.path}
+                    onClick={() => toFull(f.path)}
+                  >
+                    <span className={cn(PATH, 'flex-1')}>
                       {'‎'}
                       {f.path}
                     </span>
@@ -374,8 +555,15 @@ function Summary({
                 )),
               )}
           {parts.some((p) => p.files.length > 0) && (
-            <p className="end">
-              That is everything in {title}. <button onClick={() => toFull()}>Read the full diff</button> if you want every line.
+            <p className="text-muted-foreground mt-14 ml-6">
+              That is everything in {title}.{' '}
+              <button
+                className="text-foreground hover:decoration-muted-foreground/70 underline underline-offset-2"
+                onClick={() => toFull()}
+              >
+                Read the full diff
+              </button>{' '}
+              if you want every line.
             </p>
           )}
         </article>
@@ -390,14 +578,27 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
   const code = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const [seen, setCur] = useState<string | null>(null)
-  const cur = seen ?? placeOf(resultId).file ?? parts.find((p) => p.files.length)?.files[0].path ?? null
-  const partOf = useMemo(() => new Map(parts.flatMap((p, i) => p.files.map((f) => [f.path, i] as const))), [parts])
+  const cur =
+    seen ??
+    placeOf(resultId).file ??
+    parts.find((p) => p.files.length)?.files[0].path ??
+    null
+  const partOf = useMemo(
+    () =>
+      new Map(
+        parts.flatMap((p, i) => p.files.map((f) => [f.path, i] as const)),
+      ),
+    [parts],
+  )
 
-  const card = (path: string) => code.current!.querySelector<HTMLElement>(`.fc[data-path="${CSS.escape(path)}"]`)
+  const card = (path: string) =>
+    code.current!.querySelector<HTMLElement>(
+      `[data-path="${CSS.escape(path)}"]`,
+    )
   const act = () => {
     const c = code.current!
     let a: HTMLElement | null = null
-    for (const el of c.querySelectorAll<HTMLElement>('.fc')) {
+    for (const el of c.querySelectorAll<HTMLElement>('[data-path]')) {
       if (a && el.offsetTop - 136 > c.scrollTop) break
       a = el
     }
@@ -418,7 +619,11 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
   }
   useLayoutEffect(() => {
     const p = placeOf(resultId)
-    const el = p.file ? card(p.file) : p.part ? code.current!.querySelector<HTMLElement>(`[data-part="${p.part}"]`) : null
+    const el = p.file
+      ? card(p.file)
+      : p.part
+        ? code.current!.querySelector<HTMLElement>(`[data-part="${p.part}"]`)
+        : null
     if (el) code.current!.scrollTop = el.offsetTop - 16
     // Only on arriving.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -426,44 +631,75 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
   // The list follows the code, unless the reader is in the list.
   useEffect(() => {
     const l = list.current!
-    const item = l.querySelector<HTMLElement>('.fs.on')
-    if (item && !l.matches(':hover')) l.scrollTop = item.offsetTop - l.clientHeight / 3
+    const item = l.querySelector<HTMLElement>('[data-on]')
+    if (item && !l.matches(':hover'))
+      l.scrollTop = item.offsetTop - l.clientHeight / 3
   }, [cur])
 
   return (
-    <div className="rv">
-      <div className="rvs" ref={list}>
+    <div className="flex min-h-0 flex-1">
+      <div
+        className="bg-sidebar relative w-[320px] flex-none cursor-default [scrollbar-width:none] overflow-y-auto border-r px-2 pb-[60vh] select-none max-[1100px]:w-[260px] max-[700px]:hidden"
+        ref={list}
+      >
         {parts.map((p, i) => (
-          <div className="gp" key={i}>
+          <div key={i}>
             {p.title && (
-              <div className="gh">
-                <span className="on-n">{i + 1}</span>
+              <div className="bg-sidebar sticky top-0 z-1 flex gap-2 pt-4 pb-1.5 text-[12.5px] leading-[1.35] font-[650]">
+                <span className={ON_N}>{i + 1}</span>
                 {p.title}
               </div>
             )}
             {p.files.map((f) => (
-              <button className={f.path === cur ? 'fs on' : 'fs'} key={f.path} onClick={() => go(f.path)}>
-                <span className="p">
-                  <span>
+              <button
+                className={cn(
+                  'focus-visible:bg-accent block w-full rounded-md px-2 py-[5px] text-left transition-[opacity,background-color] outline-none',
+                  f.path === cur
+                    ? 'bg-row-selected'
+                    : 'hover:bg-accent opacity-70',
+                )}
+                data-on={f.path === cur || undefined}
+                key={f.path}
+                onClick={() => go(f.path)}
+              >
+                <span className="text-muted-foreground flex gap-2 font-mono text-[11.5px] tabular-nums">
+                  <span className={cn(PATH, 'flex-1')}>
                     {'‎'}
                     {f.path}
                   </span>
-                  <Pm add={f.add} del={f.del} />
+                  <Pm
+                    add={f.add}
+                    del={f.del}
+                    a="min-w-[5ch] text-right"
+                    d="min-w-[4ch] text-right"
+                  />
                 </span>
               </button>
             ))}
           </div>
         ))}
       </div>
-      <div className="rvc" ref={code} onScroll={act}>
+      <div
+        className="relative min-w-0 flex-1 overflow-y-auto px-6 pt-4 pb-[60vh] max-[700px]:px-4"
+        data-scroller
+        ref={code}
+        onScroll={act}
+      >
         {parts.map((p, i) => [
           p.title && (
-            <div className="gh2" data-part={i} key={`h${i}`}>
+            <div
+              className="mt-6 mb-1 text-[15px] font-[650] first:mt-0"
+              data-part={i}
+              key={`h${i}`}
+            >
               {i + 1} · {p.title}
             </div>
           ),
           p.title && p.note && (
-            <div className="gs" key={`n${i}`}>
+            <div
+              className="text-muted-foreground mb-3 max-w-[720px]"
+              key={`n${i}`}
+            >
               <Rich text={p.note} />
             </div>
           ),
@@ -476,7 +712,13 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
 
 // ---- the header: one way back, also Escape (R19) ----
 
-function Head({ back, children }: { back: string | undefined; children?: ReactNode }) {
+function Head({
+  back,
+  children,
+}: {
+  back: string | undefined
+  children?: ReactNode
+}) {
   const surface = useSurface()
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -491,18 +733,31 @@ function Head({ back, children }: { back: string | undefined; children?: ReactNo
     return () => window.removeEventListener('keydown', key)
   }, [surface])
   return (
-    <div className="hd">
-      <button className="pill back" onClick={() => surface.closeResult()}>
+    <div className={cn(HD, LEFT, 'max-[700px]:gap-1')}>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-muted-foreground -ml-2 min-w-0 gap-1.5 text-[12.5px] font-normal"
+        onClick={() => surface.closeResult()}
+      >
         {I.back}
-        <span>{back ?? 'Back'}</span>
-        <kbd>Esc</kbd>
-      </button>
+        <span className="truncate">{back ?? 'Back'}</span>
+        <Kbd className="ml-0.5 max-[1100px]:hidden">Esc</Kbd>
+      </Button>
       {children}
     </div>
   )
 }
 
 const isHttp = (ref: string) => /^https?:\/\//.test(ref)
+
+// The header's pieces.
+const SUB =
+  'text-muted-foreground min-w-0 overflow-hidden text-[12.5px] text-ellipsis select-text max-[700px]:hidden'
+const SEG =
+  'text-muted-foreground h-6 gap-1.5 rounded-sm px-2.5 text-[12.5px] font-normal hover:bg-transparent hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm'
+// The last button keeps 8px from the edge, but not on a phone.
+const BTN = 'text-[12.5px] last:mr-2 max-[700px]:last:mr-0'
 
 function Changes({ result }: { result: ResultRow }) {
   const surface = useSurface()
@@ -517,67 +772,93 @@ function Changes({ result }: { result: ResultRow }) {
   return (
     <>
       <Head back={thread?.title}>
-        <span className="sp" />
-        <div className="seg2">
-          <button className={mode === 'summary' ? 'on' : ''} onClick={() => surface.setReviewMode('summary')}>
+        <span className="flex-1" />
+        <ToggleGroup
+          type="single"
+          value={mode}
+          spacing={0.25}
+          className="bg-accent rounded-md p-0.5"
+        >
+          <ToggleGroupItem
+            value="summary"
+            size="sm"
+            className={SEG}
+            onClick={() => surface.setReviewMode('summary')}
+          >
             Summary
-          </button>
-          <button className={mode === 'full' ? 'on' : ''} onClick={() => surface.setReviewMode('full')}>
-            Full diff<kbd>F</kbd>
-          </button>
-        </div>
-        <span className="sp" />
-        <span className="sub" style={{ flexShrink: 99 }}>
-          {title}
-        </span>
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="full"
+            size="sm"
+            className={SEG}
+            onClick={() => surface.setReviewMode('full')}
+          >
+            Full diff
+            <Kbd className="bg-transparent max-[700px]:hidden">F</Kbd>
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <span className="flex-1" />
+        <span className={cn(SUB, 'shrink-[99]')}>{title}</span>
         {h.diff && (
-          <span className="sub tot">
-            {filesWord(h.diff.files.length)} · <span className="a">+{nf(h.diff.add)}</span> <span className="d">−{nf(h.diff.del)}</span>
+          <span className={cn(SUB, 'flex-none tabular-nums')}>
+            {filesWord(h.diff.files.length)} ·{' '}
+            <span className="text-status-running">+{nf(h.diff.add)}</span>{' '}
+            <span className="text-status-error">−{nf(h.diff.del)}</span>
           </span>
         )}
         {isHttp(result.ref) && (
-          <button className="btn" style={{ marginLeft: 12 }} onClick={() => surface.openExternal(result.ref)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(BTN, 'ml-3')}
+            onClick={() => surface.openExternal(result.ref)}
+          >
             Open on GitHub
-          </button>
+          </Button>
         )}
         {thread && !thread.done && (
-          <button
-            className="btn p"
-            style={{ marginLeft: 8 }}
+          <Button
+            size="sm"
+            className={cn(BTN, 'ml-2')}
             onClick={() => {
               // A21: done without leaving the review first; lands on the thread.
               surface.done(thread.id, { stay: true })
               surface.closeResult()
             }}
           >
-            Done<kbd>E</kbd>
-          </button>
+            Done
+            <Kbd className="bg-primary-foreground/20 text-primary-foreground/80 ml-0.5 max-[1100px]:hidden">
+              E
+            </Kbd>
+          </Button>
         )}
       </Head>
-      {mode === 'full' ? (
-        files && <Full parts={parts} resultId={result.id} />
-      ) : (
-        // Nothing until it is known whether the agent wrote a summary.
-        h.review !== undefined && (
-          <Summary
-            review={h.review}
-            parts={parts}
-            title={title}
-            heading={typeof result.meta?.title === 'string' ? result.meta.title : title}
-            resultId={result.id}
-            open={open}
-            toggle={(i) => {
-              const next = new Set(open)
-              if (!next.delete(i)) next.add(i)
-              setOpen(next)
-            }}
-            toFull={(file) => {
-              if (file) placeOf(result.id).file = file
-              surface.setReviewMode('full')
-            }}
-          />
-        )
-      )}
+      {mode === 'full'
+        ? files && <Full parts={parts} resultId={result.id} />
+        : // Nothing until it is known whether the agent wrote a summary.
+          h.review !== undefined && (
+            <Summary
+              review={h.review}
+              parts={parts}
+              title={title}
+              heading={
+                typeof result.meta?.title === 'string'
+                  ? result.meta.title
+                  : title
+              }
+              resultId={result.id}
+              open={open}
+              toggle={(i) => {
+                const next = new Set(open)
+                if (!next.delete(i)) next.add(i)
+                setOpen(next)
+              }}
+              toFull={(file) => {
+                if (file) placeOf(result.id).file = file
+                surface.setReviewMode('full')
+              }}
+            />
+          )}
     </>
   )
 }
@@ -591,22 +872,33 @@ function Site({ result }: { result: ResultRow }) {
   return (
     <>
       <Head back={thread?.title}>
-        <span className="sp" />
-        <div className="url">
+        <span className="flex-1" />
+        <div className="bg-accent text-muted-foreground [&_svg]:text-muted-foreground/70 flex h-7 min-w-[180px] flex-[0_1_340px] items-center gap-2 rounded-md px-3 text-[12.5px] [&_svg]:flex-none">
           {I.globe}
-          <span>
-            <i>{scheme}</i>
+          <span className="text-foreground truncate select-text">
+            <i className="text-muted-foreground/70 not-italic">{scheme}</i>
             {rest}
           </span>
         </div>
-        <span className="sp" />
+        <span className="flex-1" />
         {ok && (
-          <button className="btn" style={{ marginLeft: 12 }} onClick={() => surface.openExternal(result.ref)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(BTN, 'ml-3')}
+            onClick={() => surface.openExternal(result.ref)}
+          >
             Open in browser
-          </button>
+          </Button>
         )}
       </Head>
-      {ok && surface.host.platform === 'web' && <iframe className="site-frame" src={result.ref} title={resultTitle(result)} />}
+      {ok && surface.host.platform === 'web' && (
+        <iframe
+          className="min-h-0 w-full flex-1 border-0 bg-white"
+          src={result.ref}
+          title={resultTitle(result)}
+        />
+      )}
     </>
   )
 }
@@ -614,8 +906,18 @@ function Site({ result }: { result: ResultRow }) {
 export default function Review({ resultId }: { resultId: string }) {
   const result = useS((s) => s.rows.result.get(resultId))
   return (
-    <div id="review" className="on" data-pane="review">
-      {!result ? <Head back={undefined} /> : result.type === 'preview' ? <Site result={result} /> : <Changes result={result} key={result.id} />}
+    <div
+      id="review"
+      className="bg-background animate-in fade-in-0 slide-in-from-bottom-1 absolute inset-0 z-[5] flex flex-col duration-200"
+      data-pane="review"
+    >
+      {!result ? (
+        <Head back={undefined} />
+      ) : result.type === 'preview' ? (
+        <Site result={result} />
+      ) : (
+        <Changes result={result} key={result.id} />
+      )}
     </div>
   )
 }
