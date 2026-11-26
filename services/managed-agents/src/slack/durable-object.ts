@@ -296,11 +296,19 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     }
   }
 
+  /**
+   * Threads whose head (their first row pending or running) is pending and due. A thread whose head is
+   * running elsewhere (stranded by an eviction, recovered after the grace) or waiting out a retry is not
+   * ready: naming it would have the drain loop spin on a chain that returns at once.
+   */
   private readyThreads(): string[] {
     return this.sql
       .exec<{ thread: string }>(
-        `SELECT COALESCE(thread_key, 'seq:' || sequence) AS thread, MIN(sequence) AS first FROM slack_queue
-         WHERE state = 'pending' AND available_at <= ? GROUP BY thread ORDER BY first LIMIT ?`,
+        `SELECT h.thread AS thread FROM (
+           SELECT COALESCE(thread_key, 'seq:' || sequence) AS thread, MIN(sequence) AS first FROM slack_queue
+           WHERE state IN ('pending', 'running') GROUP BY thread
+         ) h JOIN slack_queue q ON q.sequence = h.first
+         WHERE q.state = 'pending' AND q.available_at <= ? ORDER BY h.first LIMIT ?`,
         Date.now(),
         PARALLEL_THREADS * 4,
       )

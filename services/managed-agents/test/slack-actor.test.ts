@@ -86,6 +86,31 @@ describe("the Slack actor: accept, the queue, turns", () => {
     expect(await callsOf(logOf(sid))).toHaveLength(1);
   });
 
+  it("does not spin on a thread whose head is stranded or waiting out a retry", async () => {
+    const org = "org_stranded";
+    await linked(org);
+    const job = (ts: string) => JSON.stringify({ eventId: `E${ts}`, teamId: "T1", channelId: "C9", threadTs: "1.1", messageTs: ts, userId: "U1", text: "x", mentioned: true, receivedAt: 0 });
+    await inSlack(org, (exec) => {
+      const now = Date.now();
+      // Left running by an evicted drain, a pending row behind it; a head backing off, a due row behind it.
+      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key, started_at) VALUES (?, 'running', ?, 'C9:1.1', ?)", job("1.1"), now, now);
+      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:1.1')", job("1.2"), now);
+      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:2.1')", job("2.1"), now + 60_000);
+      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:2.1')", job("2.2"), now);
+    });
+    // Another thread's message still runs: the drain yields.
+    await slackOf(org).accept(message({ text: "still served", ts: "150.1" }));
+    const sid = await sessionIdFor("T1:C1:150.1");
+    for (let i = 0; i < 100 && !(await callsOf(logOf(sid))).length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await callsOf(logOf(sid))).toHaveLength(1);
+    expect(await inSlack(org, (exec) => exec("SELECT thread_key, state FROM slack_queue ORDER BY sequence"))).toEqual([
+      { thread_key: "C9:1.1", state: "running" },
+      { thread_key: "C9:1.1", state: "pending" },
+      { thread_key: "C9:2.1", state: "pending" },
+      { thread_key: "C9:2.1", state: "pending" },
+    ]);
+  });
+
   it("creates a new thread's session through Org and accepts its turn in the SessionLog", async () => {
     const org = "org_new";
     await linked(org);
