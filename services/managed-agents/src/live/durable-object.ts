@@ -30,7 +30,7 @@ import {
   upgradePrincipal,
 } from "./contract.js";
 import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../actor/contracts.js";
-import { cursor } from "../actor/cursor.js";
+import { cursor } from "../durable/cursor.js";
 
 export interface LiveEnv {
   SESSION_LOG: { getByName(name: string): SessionLogWatch };

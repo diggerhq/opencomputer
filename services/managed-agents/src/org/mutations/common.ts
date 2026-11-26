@@ -10,7 +10,7 @@
 // - `restore`: snapshots of tracks the op dissolved, which undo makes again (a new agent session).
 // - `dissolve`: tracks the op made, which undo dissolves.
 
-import { byOf, type Principal } from "../../actor/principal.js";
+import { byOf, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../actor/helpers.js";
 import { owed } from "../../actor/store.js";
 import type { Origin } from "../../computer/api-types.js";

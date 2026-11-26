@@ -4,9 +4,9 @@
 import type { Origin, SessionAccess } from "../computer/api-types.js";
 import { isSessionId, mintId } from "../computer/session-ids.js";
 import type { Access, CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, Reply, Refusal, SessionPage, SessionPatch, SessionRow } from "../actor/contracts.js";
-import { cursor } from "../actor/cursor.js";
-import { byOf, type Principal } from "../actor/principal.js";
-import type { Sql } from "../actor/sql.js";
+import { cursor } from "../durable/cursor.js";
+import { byOf, type Principal } from "../auth/principal.js";
+import type { Sql } from "../durable/sql.js";
 import { runMutation } from "./mutations/index.js";
 import { fullName, storedRepository } from "./repository.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";

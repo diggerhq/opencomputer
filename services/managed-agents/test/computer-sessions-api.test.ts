@@ -16,7 +16,7 @@ import { ApiTelemetry } from "../src/computer/telemetry/api.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
 import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
-import type { Sql } from "../src/actor/sql.js";
+import type { Sql } from "../src/durable/sql.js";
 import { migrate, owed } from "../src/actor/store.js";
 
 /**

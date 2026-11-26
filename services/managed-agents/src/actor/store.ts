@@ -1,9 +1,9 @@
 // The mechanics every actor shares (spec 36.7, D21): ordered migrations, many timers on the one
 // alarm, calls owed after a transaction, idempotency. All of it over `Sql`.
 
-import type { Emitter } from "./emit.js";
+import type { Emitter } from "../telemetry/log-emitter.js";
 import { errorText } from "./helpers.js";
-import type { Sql } from "./sql.js";
+import type { Sql } from "../durable/sql.js";
 
 // ---------------------------------------------------------------- migrations
 

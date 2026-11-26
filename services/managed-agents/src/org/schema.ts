@@ -3,7 +3,7 @@
 // the first principal), `session.create_hash` (the create body's hash, for 37.2's "idempotent on
 // id with the body's hash") and `session.owner_name`, `owner_email` (the API's `Session.owner`).
 
-import type { Sql } from "../actor/sql.js";
+import type { Sql } from "../durable/sql.js";
 import { alarms } from "../actor/store.js";
 
 /** The tables whose rows are in the feed, each with its key columns. `id` in a feed row is the last of them. */

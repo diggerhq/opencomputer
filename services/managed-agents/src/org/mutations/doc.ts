@@ -5,7 +5,7 @@
 // person's span is unchanged when its lines still appear, in order and together, in the new text;
 // the server then moves the span to where they are. An agent's own lines are not marked.
 
-import type { Principal } from "../../actor/principal.js";
+import type { Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../actor/helpers.js";
 import { holdsTrack, isMember, isPerson, ownsTrack, parse, readSession, readTrack, seesSession, seesTrack, type Tx } from "../tx.js";
 import { anchorOf, byFor, isBy, isSid, isStr, isTid } from "./common.js";

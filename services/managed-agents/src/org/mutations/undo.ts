@@ -7,7 +7,7 @@
 // choice; without it, `refused` `choose_threads`. The reversal is itself an op, named `undo`.
 
 import { isMember, parse, readSession, readTrack, type Tx } from "../tx.js";
-import type { Principal } from "../../actor/principal.js";
+import type { Principal } from "../../auth/principal.js";
 import { byFor, Changes, type OpFields, type OpInverse, type Table, type Values } from "./common.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";
 import type { MutationName } from "./table.js";

@@ -7,7 +7,7 @@ import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
-import type { Access, Principal } from "./principal.js";
+import type { Access, Principal } from "../auth/principal.js";
 import type { Dead } from "./store.js";
 
 export type { Access, Principal };

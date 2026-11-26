@@ -4,7 +4,7 @@
 // `wrap` `{ name? }` on a thread; `edit` `{ baseRev, text, spans }` on a track (written by `doc.save`).
 
 import { holdsTrack, isOwnSession, parse, readPlace, readTrack, type Tx } from "../tx.js";
-import type { Principal } from "../../actor/principal.js";
+import type { Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../actor/helpers.js";
 import { byFor, isStr, isTid } from "./common.js";
 import { openProposal, ownsTarget } from "./doc.js";

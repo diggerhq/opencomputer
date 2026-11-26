@@ -2,10 +2,10 @@
 // and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9). Pure functions over `Sql`.
 
 import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "../actor/contracts.js";
-import { cursor } from "../actor/cursor.js";
-import { platformPrincipal, type Principal } from "../actor/principal.js";
+import { cursor } from "../durable/cursor.js";
+import { platformPrincipal, type Principal } from "../auth/principal.js";
 import { crockfordId } from "../actor/helpers.js";
-import type { Sql } from "../actor/sql.js";
+import type { Sql } from "../durable/sql.js";
 import { runMutation } from "./mutations/index.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";
 import {

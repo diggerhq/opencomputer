@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/computer/secrets.js";
 import { SecretsStore } from "../src/computer/secrets-store.js";
-import type { Principal } from "../src/actor/principal.js";
+import type { Principal } from "../src/auth/principal.js";
 import type { ApiRequest } from "../src/computer/sessions-api.js";
 import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
 import { secretNameProblem } from "../src/computer/secrets.js";

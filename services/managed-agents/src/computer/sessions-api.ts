@@ -18,9 +18,9 @@
 import type { Access, DeliveredOutcome, DeltaPush, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./api-model-route.js";
-import type { Principal } from "../actor/principal.js";
-import { emitter } from "../actor/emit.js";
-import type { Sql } from "../actor/sql.js";
+import type { Principal } from "../auth/principal.js";
+import { emitter } from "../telemetry/log-emitter.js";
+import type { Sql } from "../durable/sql.js";
 import { owed } from "../actor/store.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { Ask, LogSummary } from "./api-types.js";

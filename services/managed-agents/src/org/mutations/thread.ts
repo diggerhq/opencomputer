@@ -2,7 +2,7 @@
 // (`thread.rename` is in index.ts.) Authorization is 19.2's table; a row the caller may not see or
 // change is `not_found`.
 
-import type { Principal } from "../../actor/principal.js";
+import type { Principal } from "../../auth/principal.js";
 import {
   agentArranges,
   isMember,

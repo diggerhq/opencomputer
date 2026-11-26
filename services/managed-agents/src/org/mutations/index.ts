@@ -16,7 +16,7 @@
 // undo.ts; table.ts the names, routes and argument shapes clients send by; common.ts holds the argument checks and `Changes`, which writes field changes with their
 // effects and makes every op's `fields` and `inverse` (undo.ts replays them); outcome.ts the shapes.
 
-import { byOf, type Principal } from "../../actor/principal.js";
+import { byOf, type Principal } from "../../auth/principal.js";
 import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, seesSession, type Tx } from "../tx.js";
 import { applied, keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
 import { THREAD_MUTATIONS } from "./thread.js";
