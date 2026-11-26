@@ -116,6 +116,9 @@ async fn handle(sh: Arc<Shared>, req: Request<Incoming>) -> Resp {
     let is_upgrade = header(&headers, "upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
     if is_upgrade {
         log(&sh, &method, &full_path, &query, &headers, vec![], 101);
+        if full_path.ends_with("/live") {
+            return super::live::upgrade(sh, req, headers).await;
+        }
         return super::ws::upgrade(sh, req, headers).await;
     }
 

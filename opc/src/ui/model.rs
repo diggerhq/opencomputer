@@ -563,11 +563,12 @@ impl Model {
         }
     }
 
-    /// The log was rewritten from `from_seq`: what was printed stays, a line
-    /// says so, and the live state starts over from the replacement events.
-    pub fn epoch_reset(&mut self, from_seq: u64) {
-        self.events.retain(|e| e.seq() < from_seq);
-        self.last_seq = from_seq.saturating_sub(1);
+    /// The server answered `reset`: events above `seq` (all of them when it
+    /// is `None`) no longer exist. What was printed stays, a line says so,
+    /// and the live state starts over from the events that follow.
+    pub fn reset(&mut self, seq: Option<u64>) {
+        self.events.retain(|e| seq.is_some_and(|s| e.seq() <= s));
+        self.last_seq = seq.unwrap_or(0);
         if let Some(t) = self.turn.take() {
             let _ = t;
         }

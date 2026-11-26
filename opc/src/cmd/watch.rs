@@ -9,8 +9,7 @@ use crate::api::types::Event;
 use crate::cli::{Format, OnAsk, WatchArgs};
 use crate::error::{Error, Result, exit};
 use crate::render::{self, Detail, Style};
-use crate::wire::Attach;
-use std::collections::HashMap;
+use crate::wire::{Attach, From};
 
 pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
     let format = if args.json { Format::Json } else { args.output_format.unwrap_or(Format::Text) };
@@ -32,18 +31,19 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
             sessions.push(id);
         }
     }
-    let after = if args.from_start { Some(0) } else { args.after };
-    let attaches = sessions.iter().map(|s| Attach { session_id: s.clone(), after, ..Default::default() }).collect();
+    let from = match &args.after {
+        _ if args.from_start => From::Start,
+        Some(cursor) => From::Cursor(cursor.clone(), None),
+        None => From::Now,
+    };
+    let attaches = sessions.iter().map(|s| Attach { session_id: s.clone(), from: from.clone() }).collect();
     let deltas = format == Format::StreamJson && args.include_partial_messages;
     let (wire, rx) = ctx.open_wire(attaches, deltas).await?;
-    let pairs: Vec<(String, bool)> = sessions.iter().map(|s| (s.clone(), after == Some(0))).collect();
+    let pairs: Vec<(String, bool)> = sessions.iter().map(|s| (s.clone(), from == From::Start)).collect();
     let mut f = Follower::new(wire, rx, &pairs);
     let mut trackers: Vec<Tracker> = sessions.iter().map(|s| Tracker::new(s, Goal::Settled, if args.follow { OnAsk::Wait } else { OnAsk::Fail }, false)).collect();
     let style = Style { color: ctx.color };
     let several = sessions.len() > 1;
-    // With `--after`, recorded events are replayed after the attach: a session
-    // that is already idle is reported only once the replay has printed.
-    let mut printed: HashMap<String, u64> = HashMap::new();
     let mut last_done: Vec<Option<(String, super::follow::Done)>> = vec![None; trackers.len()];
     let mut failed: Vec<Option<Error>> = vec![None; trackers.len()];
 
@@ -82,10 +82,11 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
             }
             match &step {
                 Step::Event(e) => {
-                    printed.insert(e.session_id().to_string(), e.seq());
                     print_event(e, format, several, &style);
                 }
                 Step::Delta(d) if deltas && d.partial() => print_line(&d.0),
+                // What to pass to `--after` to go on from here another time.
+                Step::Cursor(sid, cursor) if format == Format::StreamJson => print_line(&serde_json::json!({"type": "cursor", "sessionId": sid, "cursor": cursor})),
                 Step::Reconnecting { attempt, retry_in, .. } if super::follow::worth_saying(*attempt, *retry_in) => ctx.progress(&format!("connection lost, reconnecting in {}", render::duration(retry_in.as_millis() as u64))),
                 _ => {}
             }
@@ -110,9 +111,7 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
                 continue;
             }
             let caught_up = |sid: &str| {
-                let Some(target) = after else { return true };
-                let snap = f.state(sid).and_then(|s| s.info.as_ref()).map(|i| i.session.last_seq).unwrap_or(0);
-                printed.get(sid).copied().unwrap_or(target) >= snap
+                from == From::Now || f.state(sid).is_some_and(|s| s.caught_up)
             };
             if trackers.iter().enumerate().all(|(i, t)| failed[i].is_some() || (t.done.is_some() && caught_up(&t.session_id))) {
                 return Ok(());

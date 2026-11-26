@@ -180,6 +180,12 @@ pub async fn run_turn(sh: Arc<Shared>, sid: String, tid: String) {
     let num = |i: usize, d: u64| words.get(i).and_then(|w| w.parse::<u64>().ok()).unwrap_or(d);
     match words.first().copied().unwrap_or("") {
         "reply" => r.reply(&rest(1)).await,
+        // Deltas reach only who is subscribed, so a test of the stream waits for its reader.
+        "streamed" => {
+            let sid = r.sid.clone();
+            r.sh.wait_until(Some(Duration::from_secs(5)), move |w| w.delta_watched.contains(&sid)).await;
+            r.reply(&rest(1)).await;
+        }
         "silent" => r.end(End::Completed { text: None, silent: true }),
         "fail" => {
             let msg = if words.len() > 1 { rest(1) } else { "scripted failure".into() };
