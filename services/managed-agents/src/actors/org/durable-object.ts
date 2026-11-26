@@ -350,6 +350,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     return sessions.forHost(this.sql, machine);
   }
 
+  async isAdmin(member: string): Promise<boolean> {
+    return sessions.adminsOf(this.sql).includes(member);
+  }
+
   // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)
 
   async repository(p: Principal): Promise<Repository | null> {

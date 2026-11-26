@@ -493,6 +493,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
       push: (which) => this.pushSecrets(which),
+      // Lazy: `this.access` is built below.
+      linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.actors.org().isAdmin(member),
       wake: (session, userId, text, ts) => this.wakeSession(session, userId, text, ts),
     });
     this.access = createModelAccess({
@@ -1748,7 +1751,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
   async computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
-    if (op.op === "secrets.session.put") {
+    if (op.op === "secrets.session.put" || op.op === "secrets.session.list" || op.op === "secrets.session.delete") {
       // The edge checked the session's access with Org; this is its runner's row.
       const row = this.api.row(op.sessionId);
       if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };

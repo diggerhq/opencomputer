@@ -194,6 +194,8 @@ export interface OrgRpc {
   access(sessionId: string): Promise<Access | null>;
   /** Computer only. */
   forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }>;
+  /** Computer only: whether a member (`usr_…`) is an admin, as Org last saw them (a session secret's owner rule in Slack). */
+  isAdmin(member: string): Promise<boolean>;
   repository(p: Principal): Promise<Repository | null>;
   setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>>;
   /** `GET /work/repositories`: what the organization's GitHub installations grant. */

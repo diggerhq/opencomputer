@@ -156,8 +156,9 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     if (is("GET", 4)) return { op: "subagents.get", sessionId, sub: p[3] };
     if (is("POST", 5) && p[4] === "stop") return { op: "subagents.stop", sessionId, sub: p[3] };
   }
+  if (r === "secrets" && is("GET", 3)) return { op: "secrets.session.list", sessionId };
   if (r === "secrets" && is("PUT", 4)) return { op: "secrets.session.put", sessionId, sub: p[3] };
-  if (r === "secrets" && is("DELETE", 4)) return { op: "secrets", sessionId };
+  if (r === "secrets" && is("DELETE", 4)) return { op: "secrets.session.delete", sessionId, sub: p[3] };
   return null;
 }
 
@@ -165,8 +166,8 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
 function scopeOf(op: string): ApiScope | null {
   if (op === "me" || op === "ticket" || op === "settings.get") return null;
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
-  if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
-  if (op === "secrets.events") return "sessions:read";
+  if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
+  if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
   if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
   if (op === "live") return "sessions:read";
   if (op === "feed" || op === "occurrences") return "sessions:read";
@@ -294,7 +295,7 @@ export function routeFamily(op: string): string {
 }
 
 const OPS = new Set([
-  "me", "ticket", "settings.get", "settings.patch", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "list", "create", "get", "patch", "capabilities",
+  "me", "ticket", "settings.get", "settings.patch", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "secrets.session.list", "secrets.session.delete", "list", "create", "get", "patch", "capabilities",
   "aside.set", "aside.clear",
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
@@ -429,18 +430,21 @@ async function routeApi(
 
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
   if (route.op === "secrets.list") return call({ op: "secrets.list" });
+  if (route.op.startsWith("secrets.session.")) {
+    // A session's own layer: Org judges who may see the session (else 404); the Computer holds its runner.
+    const sessionId = route.sessionId!;
+    if (!isSessionId(sessionId) || !(await timedDo(out.facts, orgOf(env, p.org).getSession(p, sessionId))).ok) return out.error(404, "session_not_found", "No such session.");
+    if (route.op === "secrets.session.list") return call({ op: "secrets.session.list", sessionId });
+  }
   if (route.op.startsWith("secrets.")) {
     const name = route.sub!;
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) {
-      return (route.op === "secrets.put" || route.op === "secrets.session.put") ? out.error(400, "invalid_name", "A name is letters, digits and _, not starting with a digit (at most 64).", { field: "name" }) : out.error(404, "secret_not_found", "No such organization secret.");
+      if (route.op === "secrets.put" || route.op === "secrets.session.put") return out.error(400, "invalid_name", "A name is letters, digits and _, not starting with a digit (at most 64).", { field: "name" });
+      return out.error(404, "secret_not_found", route.sessionId ? "No such secret on this session." : "No such organization secret.");
     }
     if (route.op === "secrets.events") return call({ op: "secrets.events", name });
     if (route.op === "secrets.delete") return call({ op: "secrets.delete", name });
-    if (route.op === "secrets.session.put") {
-      // Org judges who may see the session; the Computer holds its runner.
-      const sessionId = route.sessionId!;
-      if (!isSessionId(sessionId) || !(await timedDo(out.facts, orgOf(env, p.org).getSession(p, sessionId))).ok) return out.error(404, "session_not_found", "No such session.");
-    }
+    if (route.op === "secrets.session.delete") return call({ op: "secrets.session.delete", sessionId: route.sessionId!, name });
     const parsed = await bodyOf(request);
     if ("error" in parsed) return out.error(...parsed.error);
     return call(route.op === "secrets.session.put"

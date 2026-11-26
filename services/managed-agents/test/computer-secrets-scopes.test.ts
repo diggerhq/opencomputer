@@ -62,6 +62,22 @@ describe("secrets routes", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("lists and deletes a session's own secrets: listing needs sessions:read, deleting secrets:write; Org's 404 first", async () => {
+    const seen: unknown[] = [];
+    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
+    const go = (identity: RequestIdentity, method: string, path: string) =>
+      routeComputerApi(new Request(`https://blue.test/v1/computer${path}`, { method }), env, identity, "org_1", stub, path);
+    const reader = keyIdentity("org_1", "user_1", ["sessions:read"]);
+    expect((await go(reader, "GET", `/sessions/${SID}/secrets`)).status).toBe(204);
+    const refused = await go(reader, "DELETE", `/sessions/${SID}/secrets/TOKEN`);
+    expect(await code(refused)).toMatchObject({ reason: "missing_scope", scope: "secrets:write" });
+    expect((await go(person, "DELETE", `/sessions/${SID}/secrets/TOKEN`)).status).toBe(204);
+    expect(await code(await go(person, "DELETE", `/sessions/${SID}/secrets/9BAD`))).toMatchObject({ code: "secret_not_found", message: "No such secret on this session." });
+    expect((await go(person, "GET", "/sessions/cs_0000000000000000/secrets")).status).toBe(404);
+    expect((await go(person, "DELETE", "/sessions/cs_0000000000000000/secrets/TOKEN")).status).toBe(404);
+    expect(seen).toEqual([{ op: "secrets.session.list", sessionId: SID }, { op: "secrets.session.delete", sessionId: SID, name: "TOKEN" }]);
+  });
+
   it("routes organization secrets to the Computer, needing secrets:write to change one", async () => {
     const seen: unknown[] = [];
     const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
