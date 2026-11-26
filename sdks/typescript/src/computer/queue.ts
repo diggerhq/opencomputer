@@ -37,37 +37,9 @@
 
 import { refusal, transient, type Ctx, type Reply } from "./ctx.js";
 import { makeId } from "./ids.js";
+import { mutationRequest } from "./mutation-table.js";
 import { emitter, signal, type Emitter, type WritableSignal } from "./signal.js";
-import { Refused, type ApiEvent, type Failure, type FeedFrame, type MutationName, type Pending, type Row, type SessionRow } from "./types.js";
-
-const ROUTES: Record<MutationName, [method: string, path: string]> = {
-  "thread.rename": ["PUT", "/work/threads/{sid}/title"],
-  "thread.place": ["PUT", "/work/threads/{sid}/track"],
-  "thread.done": ["PUT", "/work/threads/{sid}/done"],
-  "thread.reopen": ["DELETE", "/work/threads/{sid}/done"],
-  "thread.keep": ["PUT", "/work/threads/{sid}/keep"],
-  "thread.ready": ["PUT", "/work/threads/{sid}/ready"],
-  "thread.attention": ["PUT", "/work/threads/{sid}/attention"],
-  "thread.writers": ["PUT", "/work/threads/{sid}/writers"],
-  "thread.delete": ["DELETE", "/work/threads/{sid}"],
-  "track.create": ["POST", "/work/tracks"],
-  "track.rename": ["PUT", "/work/tracks/{tid}/name"],
-  "track.set_stand": ["PUT", "/work/tracks/{tid}/stand"],
-  "track.done": ["PUT", "/work/tracks/{tid}/done"],
-  "track.reopen": ["DELETE", "/work/tracks/{tid}/done"],
-  "track.keep": ["PUT", "/work/tracks/{tid}/keep"],
-  "track.dissolve": ["POST", "/work/tracks/{tid}/dissolve"],
-  "track.delete": ["DELETE", "/work/tracks/{tid}"],
-  "read.set": ["PUT", "/work/reads/{sid}"],
-  "pref.set": ["PUT", "/work/prefs/{key}"],
-  "doc.save": ["PUT", "/work/tracks/{tid}/doc"],
-  "result.add": ["PUT", "/work/results/{resultId}"],
-  "review.save": ["PUT", "/work/results/{resultId}/review"],
-  "proposal.create": ["POST", "/work/proposals"],
-  "proposal.accept": ["POST", "/work/proposals/{proposalId}/accept"],
-  "proposal.dismiss": ["POST", "/work/proposals/{proposalId}/dismiss"],
-  undo: ["POST", "/work/ops/{opId}/undo"],
-};
+import { Refused, type ApiEvent, type Failure, type FeedFrame, type Pending, type Row, type SessionRow } from "./types.js";
 
 /** What storage holds for an entry. */
 interface Stored {
@@ -134,13 +106,7 @@ function request(e: Stored): [path: string, init: RequestInit] {
   const post = (path: string, body: unknown): [string, RequestInit] => [path, { method: "POST", headers, body: JSON.stringify(body) }];
   switch (p.kind) {
     case "mutation": {
-      const [method, template] = ROUTES[p.name];
-      const body = { ...p.args };
-      const path = template.replace(/\{(\w+)\}/g, (_, name: string) => {
-        const v = body[name];
-        delete body[name];
-        return encodeURIComponent(String(v));
-      });
+      const { method, path, body } = mutationRequest(p.name, p.args);
       return [path, { method, headers, body: JSON.stringify(body) }];
     }
     case "session":

@@ -7,6 +7,7 @@ import { isOwnSession, readSession, type Tx } from "../tx.js";
 import type { Principal } from "../../actor/principal.js";
 import { byFor, isSid, isStr, optStr } from "./common.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";
+import type { MutationName } from "./table.js";
 
 const KINDS = new Set(["pr", "changes", "preview", "file", "document"]);
 const ownAgent = (p: Principal, sid: string): boolean => p.kind === "platform" || isOwnSession(p, sid);
@@ -66,7 +67,7 @@ const reviewSave: MutationFn = (tx: Tx, p, args) => {
   return applied();
 };
 
-export const RESULT_MUTATIONS: Record<string, MutationFn> = {
+export const RESULT_MUTATIONS = {
   "result.add": resultAdd,
   "review.save": reviewSave,
-};
+} satisfies Partial<Record<MutationName, MutationFn>>;

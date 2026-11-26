@@ -9,6 +9,7 @@ import type { Principal } from "../../actor/principal.js";
 import { holdsTrack, isMember, isPerson, mint, ownsTrack, parse, readSession, readTrack, seesSession, seesTrack, type Tx } from "../tx.js";
 import { anchorOf, byFor, isBy, isSid, isStr, isTid } from "./common.js";
 import { applied, refuse, refuseKeeping, type MutationFn } from "./outcome.js";
+import type { MutationName } from "./table.js";
 
 export type Span = { from: number; to: number; by: string };
 
@@ -136,11 +137,11 @@ const prefSet: MutationFn = (tx, p, args) => {
   return applied();
 };
 
-export const DOC_MUTATIONS: Record<string, MutationFn> = {
+export const DOC_MUTATIONS = {
   "doc.save": docSave,
   "read.set": readSet,
   "pref.set": prefSet,
-};
+} satisfies Partial<Record<MutationName, MutationFn>>;
 
 /** Whether `p` may answer a proposal on `target`: a member who owns it (19.2). */
 export function ownsTarget(tx: Tx, p: Principal, target: string): boolean {

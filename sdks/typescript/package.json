@@ -12,10 +12,6 @@
       "types": "./dist/computer/index.d.ts",
       "import": "./dist/computer/index.js"
     },
-    "./computer/fake": {
-      "types": "./dist/computer/fake/index.d.ts",
-      "import": "./dist/computer/fake/index.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -26,7 +22,8 @@
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build",
-    "schema": "tsx scripts/review-schema.ts"
+    "schema": "tsx scripts/review-schema.ts",
+    "mutations": "cp ../../services/managed-agents/src/org/mutations/table.ts src/computer/mutation-table.ts"
   },
   "keywords": [
     "opencomputer",

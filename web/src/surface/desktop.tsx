@@ -8,8 +8,7 @@ import type { Host } from './host'
 import { Surface } from './Surface'
 
 // The desktop bundle's entry (spec 25): the same surface, given the shell's
-// bridge. Opened in a browser, where there is no bridge, it runs on the fake
-// server so the bundle can be looked at on its own.
+// bridge. Opened in a browser, where there is no bridge, it says so.
 
 // The dashboard's theme, before the first paint (index.html does this inline;
 // the app's CSP has no inline scripts).
@@ -21,12 +20,10 @@ document.documentElement.classList.toggle(
     : matchMedia('(prefers-color-scheme: dark)').matches,
 )
 
-async function host(): Promise<Host> {
-  if (window.oc) return (await import('./host-desktop')).desktopHost(window.oc)
-  return (await import('./host-fake')).fakeHost({
-    base: '',
-    platform: 'desktop',
-  })
+async function host(): Promise<Host | null> {
+  return window.oc
+    ? (await import('./host-desktop')).desktopHost(window.oc)
+    : null
 }
 
 // The dashboard gives the web tab its query client; the desktop has its own.
@@ -36,7 +33,13 @@ void host().then((h) =>
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <QueryClientProvider client={queries}>
-        <Surface host={h} />
+        {h ? (
+          <Surface host={h} />
+        ) : (
+          <p className="text-muted-foreground p-6 text-sm">
+            This bundle runs inside the OpenComputer desktop app.
+          </p>
+        )}
         <Toaster />
       </QueryClientProvider>
     </StrictMode>,

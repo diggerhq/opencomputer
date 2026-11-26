@@ -28,6 +28,7 @@ import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
+import { matchMutation } from "../org/mutations/table.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
@@ -49,48 +50,26 @@ interface Route {
   args?: Record<string, string>;
 }
 
-const THREAD_MARKS: Record<string, string> = { title: "thread.rename", track: "thread.place", done: "thread.done", keep: "thread.keep", ready: "thread.ready", attention: "thread.attention", writers: "thread.writers" };
-const TRACK_MARKS: Record<string, string> = { name: "track.rename", stand: "track.set_stand", done: "track.done", keep: "track.keep", doc: "doc.save" };
-
-/** The work routes of tracks and threads (spec 37.1, 37.3): the reads and one route per mutation. */
+/** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
-  const m = (name: string, args: Record<string, string> = {}): Route => ({ op: "mutate", name, args });
+  const mutation = matchMutation(method, `/work/${s.join("/")}`);
+  if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;
   const is = (verb: string, length: number) => method === verb && n === length;
   switch (a) {
     case "threads":
-      if (is("GET", 1)) return { op: "work.threads" };
-      if (is("DELETE", 2)) return m("thread.delete", { sid: b! });
-      if (is("PUT", 3) && THREAD_MARKS[c!]) return m(THREAD_MARKS[c!]!, { sid: b! });
-      if (is("DELETE", 3) && c === "done") return m("thread.reopen", { sid: b! });
-      return null;
+      return is("GET", 1) ? { op: "work.threads" } : null;
     case "tracks":
-      if (is("POST", 1)) return m("track.create");
-      if (is("DELETE", 2)) return m("track.delete", { tid: b! });
-      if (is("PUT", 3) && TRACK_MARKS[c!]) return m(TRACK_MARKS[c!]!, { tid: b! });
-      if (is("DELETE", 3) && c === "done") return m("track.reopen", { tid: b! });
-      if (is("POST", 3) && c === "dissolve") return m("track.dissolve", { tid: b! });
       if (is("GET", 3) && c === "doc") return { op: "work.doc", sub: b! };
       if (method === "GET" && c === "doc" && d === "revisions" && (n === 4 || n === 5)) return { op: "work.doc.revisions", sub: b!, ...(n === 5 ? { args: { rev: s[4]! } } : {}) };
       return null;
     case "tell-track":
       return is("POST", 1) ? { op: "work.tell" } : null;
-    case "reads":
-      return is("PUT", 2) ? m("read.set", { sid: b! }) : null;
-    case "prefs":
-      return is("PUT", 2) ? m("pref.set", { key: b! }) : null;
     case "results":
-      if (is("PUT", 2)) return m("result.add", { resultId: b! });
       if (is("GET", 3) && c === "diff") return { op: "work.diff", sub: b! };
-      if (n === 3 && c === "review") return method === "PUT" ? m("review.save", { resultId: b! }) : method === "GET" ? { op: "work.review", sub: b! } : null;
+      if (is("GET", 3) && c === "review") return { op: "work.review", sub: b! };
       return null;
-    case "proposals":
-      if (is("POST", 1)) return m("proposal.create");
-      if (is("POST", 3) && (c === "accept" || c === "dismiss")) return m(`proposal.${c}`, { proposalId: b! });
-      return null;
-    case "ops":
-      return is("POST", 3) && c === "undo" ? m("undo", { opId: b! }) : null;
     case "overview":
       return is("GET", 1) ? { op: "work.overview" } : null;
     case "search":

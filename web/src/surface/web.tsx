@@ -5,8 +5,7 @@ import type { Host } from './host'
 import { Surface } from './Surface'
 
 // The web tab (spec 25): a lazy route of the dashboard, inside its auth gate,
-// that owns the whole page. With `?fake` it runs against the fake server
-// instead of the API.
+// that owns the whole page.
 
 const BASE = '/computer/work'
 // The Computer API takes the dashboard's cookie (spec 37); Live is `${API}/live`.
@@ -18,11 +17,7 @@ function login(): Promise<never> {
   return new Promise(() => {})
 }
 
-async function makeHost(fake: string | null, email?: string): Promise<Host> {
-  if (fake !== null || import.meta.env.VITE_PREVIEW === '1') {
-    const { fakeHost } = await import('./host-fake')
-    return fakeHost({ base: BASE, seed: fake === 'empty' ? 'empty' : 'demo' })
-  }
+async function makeHost(email?: string): Promise<Host> {
   // The principal as the server names it (`usr_…`, not the dashboard's user
   // id): every feed frame carries it, and the client drops frames that differ.
   const feed = await fetch(`${API}/feed?kinds=pref`, { credentials: 'include' })
@@ -56,13 +51,11 @@ function Org() {
 
 export default function WebSurface() {
   const { user } = useAuth()
-  const fake = new URLSearchParams(location.search).get('fake')
   // One host per org: switching org clears the query cache (useAuth), so the
-  // surface is made again for the new principal. Never refetched otherwise —
-  // a second fake server would leave `window.__fake` pointing at one nothing uses.
+  // surface is made again for the new principal. Never refetched otherwise.
   const { data: host } = useQuery({
-    queryKey: ['surface-host', user?.orgId, fake],
-    queryFn: () => makeHost(fake, user?.email),
+    queryKey: ['surface-host', user?.orgId],
+    queryFn: () => makeHost(user?.email),
     enabled: !!user,
     staleTime: Infinity,
     gcTime: Infinity,

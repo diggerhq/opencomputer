@@ -13,7 +13,7 @@
 // The envelope (the `Idempotency-Key`, the publish) is `Org.mutate`'s, not a mutation's.
 //
 // Files: thread.ts, track.ts (40.7), doc.ts (doc.save, read.set, pref.set), result.ts, proposal.ts,
-// undo.ts; common.ts holds the argument checks and `Changes`, which writes field changes with their
+// undo.ts; table.ts the names, routes and argument shapes clients send by; common.ts holds the argument checks and `Changes`, which writes field changes with their
 // effects and makes every op's `fields` and `inverse` (undo.ts replays them); outcome.ts the shapes.
 
 import { byOf, type Principal } from "../../actor/principal.js";
@@ -25,6 +25,7 @@ import { DOC_MUTATIONS } from "./doc.js";
 import { RESULT_MUTATIONS } from "./result.js";
 import { PROPOSAL_MUTATIONS } from "./proposal.js";
 import { UNDO_MUTATIONS } from "./undo.js";
+import type { MutationName } from "./table.js";
 
 export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
@@ -58,7 +59,8 @@ const threadRename: MutationFn = (tx, p, args) => {
   return applied({ op });
 };
 
-export const MUTATIONS: Record<string, MutationFn> = {
+/** One per name in the table (table.ts). */
+export const MUTATIONS: Record<MutationName, MutationFn> = {
   "thread.rename": threadRename,
   ...THREAD_MUTATIONS,
   ...TRACK_MUTATIONS,
@@ -70,7 +72,7 @@ export const MUTATIONS: Record<string, MutationFn> = {
 
 /** Run one mutation by name. A refusal leaves no write behind. */
 export function runMutation(tx: Tx, p: Principal, name: string, args: unknown): MutationOutcome {
-  const fn = MUTATIONS[name];
+  const fn = Object.hasOwn(MUTATIONS, name) ? MUTATIONS[name as MutationName] : undefined;
   if (!fn) return refuse("invalid_request", "unknown_mutation");
   const input = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
   const out = tx.attempt(() => fn(tx, p, input));

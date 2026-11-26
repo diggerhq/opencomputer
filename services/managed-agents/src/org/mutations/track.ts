@@ -6,6 +6,7 @@ import type { Origin } from "../../computer/api-types.js";
 import { isPerson, ownsSession, ownsTrack, holdsTrack, isOwnSession, parse, readSession, readTrack, seesTrack, summaryOf, type TrackRec, type Tx } from "../tx.js";
 import { acceptOpenProposals, addTrackAgent, byFor, Changes, firstMachine, isSid, isStr, isTid, markDone, optStr, placesOf, removeSession } from "./common.js";
 import { applied, refuse, type MutationFn, type MutationRefusal } from "./outcome.js";
+import type { MutationName } from "./table.js";
 import { deleteThread, threadOf } from "./thread.js";
 
 const isRefusal = (v: unknown): v is MutationRefusal => typeof v === "object" && v !== null && (v as { ok?: unknown }).ok === false;
@@ -216,7 +217,7 @@ const trackDelete: MutationFn = (tx, p, args) => {
   return applied();
 };
 
-export const TRACK_MUTATIONS: Record<string, MutationFn> = {
+export const TRACK_MUTATIONS = {
   "track.create": trackCreate,
   "track.rename": trackRename,
   "track.set_stand": trackSetStand,
@@ -225,4 +226,4 @@ export const TRACK_MUTATIONS: Record<string, MutationFn> = {
   "track.keep": trackKeep,
   "track.dissolve": trackDissolve,
   "track.delete": trackDelete,
-};
+} satisfies Partial<Record<MutationName, MutationFn>>;

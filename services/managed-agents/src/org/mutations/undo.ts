@@ -10,6 +10,7 @@ import { isMember, parse, readSession, readTrack, type Tx } from "../tx.js";
 import type { Principal } from "../../actor/principal.js";
 import { byFor, Changes, type OpFields, type OpInverse, type Table, type Values } from "./common.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";
+import type { MutationName } from "./table.js";
 import { deleteThread } from "./thread.js";
 
 type OpRec = { id: string; name: string; args: string; inverse: string | null; fields: string; session_id: string | null; track_id: string | null; undone_by: string | null; audience: string };
@@ -110,4 +111,4 @@ const undo: MutationFn = (tx, p: Principal, args) => {
   return applied({ op: id });
 };
 
-export const UNDO_MUTATIONS: Record<string, MutationFn> = { undo };
+export const UNDO_MUTATIONS = { undo } satisfies Partial<Record<MutationName, MutationFn>>;

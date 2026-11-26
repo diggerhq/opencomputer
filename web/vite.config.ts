@@ -104,9 +104,6 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       // The surface reads the SDK's client from source (spec 25).
-      '@opencomputer/sdk/computer/fake': fileURLToPath(
-        new URL('../sdks/typescript/src/computer/fake/index.ts', import.meta.url),
-      ),
       '@opencomputer/sdk/computer': fileURLToPath(
         new URL('../sdks/typescript/src/computer/index.ts', import.meta.url),
       ),
