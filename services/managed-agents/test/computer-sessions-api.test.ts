@@ -406,7 +406,6 @@ describe("recovery: a lost writer", () => {
   it("an empty journal batch under an older epoch asks for epoch (rate-limited); at the row's epoch it is nothing (calvin 424bd40)", async () => {
     const f = fixture();
     await created(f);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     Object.assign(f.logOf(SID), { epoch: 2, ack: 0, epochStartSeq: 1 });
     f.sent.length = 0;
     await f.api.journal(SID, 2, []);
@@ -429,7 +428,6 @@ describe("recovery: a lost writer", () => {
     await created(f, "cs_2222222222222222");
     await created(f, "cs_3333333333333333");
     for (const sid of [SID, "cs_2222222222222222", "cs_3333333333333333"]) {
-      f.sql.exec("UPDATE sessions SET log_epoch = 2, last_seq = 6 WHERE session_id = ?", sid);
       Object.assign(f.logOf(sid), { epoch: 2, ack: 6, epochStartSeq: 4 });
     }
     f.sent.length = 0;
@@ -452,7 +450,6 @@ describe("recovery: a lost writer", () => {
     f.logOf(SID).delay = 5;
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 1 } }));
     f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     f.sent.length = 0;
     f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "hi" })];
     await f.api.drain(SID, { wait: true });
@@ -472,6 +469,19 @@ describe("hello and tickets", () => {
     expect(ok).toMatchObject({ status: 200, body: { ticket: { url: "wss://wire.opencomputer.dev/v1", expiresInMs: 600_000 } } });
     for (let i = 0; i < 59; i++) await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } });
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
+  });
+
+  it("an agent's key mints no ticket and never reaches the wire", async () => {
+    const key = { id: "key_agent", hash: "b".repeat(64), name: "Computer session", kind: "user" as const, scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null };
+    const f = fixture({ ticketKey: true });
+    const agent = (): ApiRequest => {
+      const c = caller(SID, { apiKey: key });
+      return { ...c, principal: { ...c.principal, kind: "agent", via: "agent", audiences: [], session: SID } };
+    };
+    expect(await f.api.handle(agent(), { op: "ticket", body: {} })).toMatchObject({ status: 403, error: { reason: "agent_key" } });
+    await f.api.handle(agent(), { op: "me" });
+    // The wire authorizes by a key's record; an agent's key has none, so it cannot be used there directly either.
+    expect([...f.sql.exec("SELECT key_id FROM wire_keys")]).toEqual([]);
   });
 
   it("/me names the wire and the credential", async () => {
@@ -522,7 +532,6 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
         void t.flush();
       },
       surfaceOf: () => "cli",
-      slackQueue: () => ({ rows: 1, oldestMs: 250 }),
     });
     return { telemetry, events, names: () => events.filter((e) => e.event_name !== "telemetry.dropped").map((e) => e.event_name as string) };
   }
@@ -537,7 +546,7 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     await tick();
     // The gap's 4010 is reported as it closes the socket, before its batch's append event.
     expect(r.names()).toEqual(["sessionlog.append", "sessionlog.recovery", "sessionlog.append"]);
-    expect(r.events[0]!.data).toMatchObject({ events: 40, slack_queue_rows: 1, slack_queue_oldest_ms: 250 });
+    expect(r.events[0]!.data).toMatchObject({ events: 40 });
     expect(r.events[0]!.data).toHaveProperty("do_ack_ms");
     expect(r.events[0]!.data).toHaveProperty("do_pre_ms");
     expect(r.events[1]!.data).toMatchObject({ kind: "gap_4010", epoch: 1 });

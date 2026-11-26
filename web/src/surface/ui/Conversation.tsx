@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { Ask } from '@opencomputer/sdk/computer'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -18,8 +17,9 @@ import {
 import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
 import type { Item, Step } from '../store/transcript'
+import { AskBlock } from './AskBlock'
 import { Mk, Rich } from './bits'
-import { ACTS, BLOCK, I } from './kit'
+import { I } from './kit'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
@@ -33,13 +33,6 @@ const places = new Map<
 >()
 
 const WARN = 'text-status-pending'
-const ASIDE = 'text-muted-foreground text-[12.5px]'
-// An ask still waiting on the person; one that is closed goes quiet.
-const askCls = (open: boolean) =>
-  cn(
-    BLOCK,
-    open ? 'bg-status-pending-bg border-status-pending/25' : 'opacity-70',
-  )
 const LINK =
   'text-foreground hover:decoration-muted-foreground underline underline-offset-2'
 
@@ -58,191 +51,6 @@ function dayLabel(iso: string): string {
     day: 'numeric',
     month: 'short',
   })
-}
-
-// ---- asks ----
-
-type Question = {
-  id: string
-  text: string
-  options: { label: string; description?: string }[]
-  multiSelect?: boolean
-}
-
-const questionsOf = (ask: Ask): Question[] => {
-  const qs = (ask.question?.questions ?? []) as Partial<Question>[]
-  return qs.map((q, i) => ({
-    id: q.id ?? String(i),
-    text: q.text ?? '',
-    options: q.options ?? [],
-    multiSelect: q.multiSelect,
-  }))
-}
-
-// What a closed ask shows in place of its buttons (R33).
-function answered(ask: Ask): string {
-  if (ask.status !== 'answered')
-    return ask.status === 'interrupted'
-      ? 'Stopped before it was answered'
-      : 'Dismissed'
-  const a = (ask.answer ?? {}) as {
-    decision?: string
-    answers?: { choices?: string[]; text?: string | null }[]
-  }
-  if (a.decision)
-    return a.decision === 'deny'
-      ? 'Not allowed'
-      : a.decision === 'always'
-        ? 'Always allowed'
-        : 'Allowed'
-  const said = (a.answers ?? []).flatMap((x) => [
-    ...(x.choices ?? []),
-    ...(x.text ? [x.text] : []),
-  ])
-  return said.length ? said.join(' · ') : 'Answered'
-}
-
-function AskBlock({ ask }: { ask: Ask }) {
-  const surface = useSurface()
-  const [picked, setPicked] = useState<Record<string, string[]>>({})
-  const open = ask.status === 'open'
-  const closed = open ? null : (
-    <div className={cn(ASIDE, 'mt-2')}>{answered(ask)}</div>
-  )
-
-  if (ask.kind === 'approval') {
-    const a = ask.approval ?? {}
-    const title =
-      typeof a.title === 'string'
-        ? a.title
-        : typeof a.toolName === 'string'
-          ? a.toolName
-          : null
-    const command = typeof a.command === 'string' ? a.command : null
-    return (
-      <div className={askCls(open)}>
-        <Rich text={command && title ? title : 'Needs your OK'} />
-        {(command ?? title) && (
-          <pre className="bg-card mt-2 overflow-auto rounded-md border px-3 py-2 font-mono text-xs">
-            {command ?? title}
-          </pre>
-        )}
-        {open ? (
-          <div className={ACTS}>
-            <Button
-              size="sm"
-              onClick={() =>
-                surface.answer(ask.sessionId, ask.id, { decision: 'allow' })
-              }
-            >
-              Allow
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                surface.answer(ask.sessionId, ask.id, { decision: 'deny' })
-              }
-            >
-              Don't allow
-            </Button>
-          </div>
-        ) : (
-          closed
-        )}
-      </div>
-    )
-  }
-
-  if (ask.kind === 'question') {
-    const qs = questionsOf(ask)
-    // One question with one choice is answered by the click itself.
-    const direct = qs.length === 1 && !qs[0].multiSelect
-    const send = (choices: Record<string, string[]>) =>
-      surface.answer(ask.sessionId, ask.id, {
-        answers: qs.map((q) => ({
-          questionId: q.id,
-          choices: choices[q.id] ?? [],
-          text: null,
-        })),
-      })
-    const pick = (q: Question, label: string) => {
-      if (direct) return send({ [q.id]: [label] })
-      const have = picked[q.id] ?? []
-      const next = q.multiSelect
-        ? have.includes(label)
-          ? have.filter((l) => l !== label)
-          : [...have, label]
-        : [label]
-      setPicked({ ...picked, [q.id]: next })
-    }
-    const ready = qs.every((q) => (picked[q.id] ?? []).length > 0)
-    return (
-      <div className={askCls(open)}>
-        {qs.map((q, i) => (
-          <div key={q.id} className={i ? 'mt-3' : undefined}>
-            <Rich text={q.text} />
-            {open && (
-              <div className={ACTS}>
-                {q.options.map((o) => (
-                  <Button
-                    key={o.label}
-                    size="sm"
-                    variant={
-                      (picked[q.id] ?? []).includes(o.label)
-                        ? 'default'
-                        : 'outline'
-                    }
-                    title={o.description}
-                    onClick={() => pick(q, o.label)}
-                  >
-                    {o.label}
-                  </Button>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-        {open && !direct && (
-          <div className={ACTS}>
-            <Button size="sm" disabled={!ready} onClick={() => send(picked)}>
-              Send
-            </Button>
-          </div>
-        )}
-        {closed}
-      </div>
-    )
-  }
-
-  const name = typeof ask.secret?.name === 'string' ? ask.secret.name : null
-  return (
-    <div className={askCls(open)}>
-      {name ? (
-        <>
-          This needs a secret:{' '}
-          <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
-            {name}
-          </code>
-        </>
-      ) : (
-        'This needs a secret.'
-      )}
-      {open ? (
-        <div className={ACTS}>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => surface.dismissAsk(ask.sessionId, ask.id)}
-          >
-            Dismiss
-          </Button>
-        </div>
-      ) : (
-        closed
-      )}
-    </div>
-  )
 }
 
 // ---- a structural line and its Undo (A18) ----
@@ -364,6 +172,28 @@ function Steps({ item }: { item: Extract<Item, { kind: 'steps' }> }) {
   )
 }
 
+// The agent's thinking: one folded line, like a finished turn's steps.
+function Thinking({ item }: { item: Extract<Item, { kind: 'thinking' }> }) {
+  const label =
+    item.ms === null
+      ? 'Thought'
+      : `Thought for ${Math.max(1, Math.round(item.ms / 1000))}s`
+  // Thinking the model hid has nothing to unfold.
+  if (!item.text)
+    return <div className="text-muted-foreground text-[12.5px]">{label}</div>
+  return (
+    <Collapsible className="-my-1 max-w-180">
+      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex items-center gap-1 rounded-sm text-[12.5px] outline-none">
+        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
+        {label}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="text-muted-foreground mt-1.5 ml-1.5 border-l pl-3">
+        <Rich text={item.text} />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 // ---- one item ----
 
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
@@ -388,8 +218,10 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
               'opacity-60',
           )}
         >
-          {item.author && (
-            <div className="text-muted-foreground text-xs">{item.author}</div>
+          {(item.author || item.via) && (
+            <div className="text-muted-foreground text-xs">
+              {[item.author, item.via].filter(Boolean).join(' · ')}
+            </div>
           )}
           <Rich text={item.text} />
           {item.state === 'failed' && (
@@ -407,6 +239,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       )
     case 'steps':
       return <Steps item={item} />
+    case 'thinking':
+      return <Thinking item={item} />
     case 'ask':
       return <AskBlock ask={item.ask} />
     case 'line':

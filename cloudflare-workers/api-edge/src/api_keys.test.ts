@@ -38,4 +38,8 @@ describe("createAPIKey scopes (work 095)", () => {
     expect(KEY_SCOPES).not.toContain("secrets:write");
     expect(COMPUTER_SESSION_KEY_SCOPES).not.toContain("secrets:write");
   });
+
+  it("gives a session's key no terminals, at rest as well as in its principal", () => {
+    expect(COMPUTER_SESSION_KEY_SCOPES).not.toContain("terminals");
+  });
 });

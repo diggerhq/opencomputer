@@ -115,7 +115,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         cred: principal.credential.id,
         exp: principal.credential.expiresAt ?? 0,
       },
-      cl: "",
+      h: false,
       f: false,
       w: {},
       v: Math.floor(Date.now() / 1000),
@@ -177,7 +177,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
       const a = this.sockets.get(socket);
       if (!a) continue;
       const sees = (row: { kind: string; audience: string }): boolean => a.p.aud.includes(row.audience) && (!a.k || a.k.includes(row.kind));
-      const mine = a.cl ? (push.mutations ?? []).filter((m) => m.clientId === a.cl) : [];
       // Every range goes to every subscriber, with no rows when none is theirs, so a filtered
       // reader can still tell a gap from nothing (section 18.4).
       const frame: ServerFrame = {
@@ -186,9 +185,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         to: push.to,
         rows: push.rows.filter(sees),
         gone: push.gone.filter(sees).map(({ kind, id }) => ({ kind, id })),
-        ...(mine.length > 0
-          ? { lastMutation: Math.max(...mine.map((m) => m.n)), errors: mine.flatMap((m) => m.errors ?? []) }
-          : {}),
+        version: push.version,
       };
       const text = JSON.stringify(frame);
       this.sendText(socket, encoder.encode(text).length <= MAX_FRAME_BYTES ? text : JSON.stringify({ t: "behind", stream: feedStream, head: push.to } satisfies ServerFrame));
@@ -210,10 +207,8 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     if (!a || !frame || typeof frame !== "object") return this.close(socket, CLOSE_PROTOCOL, "Not a frame.");
     if (frame.t === "ping") return this.send(socket, { t: "pong" });
     if (frame.t === "hello") {
-      if (frame.protocol !== LIVE_PROTOCOL || typeof frame.clientId !== "string" || !frame.clientId) {
-        return this.close(socket, CLOSE_PROTOCOL, `This is protocol ${LIVE_PROTOCOL}.`);
-      }
-      if (!this.save(socket, { ...a, cl: frame.clientId })) return this.close(socket, CLOSE_PROTOCOL, "The client id is too long.");
+      if (frame.protocol !== LIVE_PROTOCOL) return this.close(socket, CLOSE_PROTOCOL, `This is protocol ${LIVE_PROTOCOL}.`);
+      this.save(socket, { ...a, h: true });
       return this.send(socket, {
         t: "ready",
         connectionId: a.c,
@@ -224,7 +219,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         limits: { sessions: MAX_WATCHED_SESSIONS, frameBytes: MAX_FRAME_BYTES },
       });
     }
-    if (!a.cl) return this.close(socket, CLOSE_PROTOCOL, "The first frame is hello.");
+    if (!a.h) return this.close(socket, CLOSE_PROTOCOL, "The first frame is hello.");
     switch (frame.t) {
       case "sub":
         return this.subscribe(socket, a, frame);
@@ -270,26 +265,25 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     }
 
     const { bit, sessionId } = watched;
-    const held = a.w[sessionId] ?? 0;
-    const fits = held !== 0 || Object.keys(a.w).length < MAX_WATCHED_SESSIONS;
-    // Subscribe, then read (section 18.2): registered before the lease is asked for, so nothing
-    // published meanwhile falls between them.
-    if (!fits || !this.save(socket, { ...a, w: { ...a.w, [sessionId]: (held | bit) as 1 | 2 | 3 } })) {
-      return this.send(socket, { t: "error", code: "too_many_subscriptions", message: `A connection watches at most ${MAX_WATCHED_SESSIONS} sessions.` });
-    }
+    const tooMany = (): void =>
+      this.send(socket, { t: "error", code: "too_many_subscriptions", message: `A connection watches at most ${MAX_WATCHED_SESSIONS} sessions.` });
+    const fits = (now: LiveAttachment): boolean => now.w[sessionId] !== undefined || Object.keys(now.w).length < MAX_WATCHED_SESSIONS;
+    if (!fits(a)) return tooMany();
     const until = Date.now() + LEASE_MS;
     const before = this.heads.get(`events:${sessionId}`);
     let lease: { head: string; machine?: string } | null;
     try {
       lease = await this.env.SESSION_LOG.getByName(sessionId).watch(principalOf(a), until);
     } catch {
-      this.drop(socket, sessionId, bit);
       return this.send(socket, { t: "detached", stream, reason: "unavailable" });
     }
-    if (!lease) {
-      this.drop(socket, sessionId, bit);
-      return this.send(socket, { t: "detached", stream, reason: "forbidden" });
-    }
+    if (!lease) return this.send(socket, { t: "detached", stream, reason: "forbidden" });
+    // Indexed only once the lease grants it, so a socket is never sent a session it may not read.
+    // Subscribe, then read (section 18.2) still holds: what was published meanwhile moved the
+    // head, `subd` carries that head, and the client reads up to it over HTTP after `subd`.
+    const now = this.attachment(socket);
+    if (!now) return;
+    if (!fits(now) || !this.save(socket, { ...now, w: { ...now.w, [sessionId]: ((now.w[sessionId] ?? 0) | bit) as 1 | 2 | 3 } })) return tooMany();
     if (lease.machine) this.machines.set(sessionId, lease.machine);
     if (this.heads.get(`events:${sessionId}`) === before) this.heads.set(`events:${sessionId}`, lease.head);
     if (bit === DELTAS) this.ctx.waitUntil(this.computer(a.p.org, sessionId).watch(sessionId, until).catch(() => undefined));

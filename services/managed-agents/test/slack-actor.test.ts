@@ -38,10 +38,10 @@ async function linked(org: string): Promise<void> {
   });
 }
 
-/** Until the queue is empty. */
-async function settled(org: string): Promise<void> {
-  for (let i = 0; i < 200; i++) {
-    const left = await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM slack_queue WHERE state IN ('pending', 'running')")[0]!.n as number);
+/** Until no `process` call is owed. */
+async function settled(org: string, tries = 200): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    const left = await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM _owed WHERE call = 'process'")[0]!.n as number);
     if (left === 0) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -87,29 +87,25 @@ describe("the Slack actor: accept, the queue, turns", () => {
     expect(await callsOf(logOf(sid))).toHaveLength(1);
   });
 
-  it("does not spin on a thread whose head is stranded or waiting out a retry", async () => {
-    const org = "org_stranded";
+  it("holds a thread behind its own failed message and retries it, while another thread runs", async () => {
+    const org = "org_retry";
     await linked(org);
-    const job = (ts: string) => JSON.stringify({ eventId: `E${ts}`, teamId: "T1", channelId: "C9", threadTs: "1.1", messageTs: ts, userId: "U1", text: "x", mentioned: true, receivedAt: 0 });
-    await inSlack(org, (exec) => {
-      const now = Date.now();
-      // Left running by an evicted drain, a pending row behind it; a head backing off, a due row behind it.
-      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key, started_at) VALUES (?, 'running', ?, 'C9:1.1', ?)", job("1.1"), now, now);
-      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:1.1')", job("1.2"), now);
-      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:2.1')", job("2.1"), now + 60_000);
-      exec("INSERT INTO slack_queue (payload, state, available_at, thread_key) VALUES (?, 'pending', ?, 'C9:2.1')", job("2.2"), now);
-    });
-    // Another thread's message still runs: the drain yields.
-    await slackOf(org).accept(message({ text: "still served", ts: "150.1" }));
-    const sid = await sessionIdFor("T1:C1:150.1");
-    for (let i = 0; i < 100 && !(await callsOf(logOf(sid))).length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(await callsOf(logOf(sid))).toHaveLength(1);
-    expect(await inSlack(org, (exec) => exec("SELECT thread_key, state FROM slack_queue ORDER BY sequence"))).toEqual([
-      { thread_key: "C9:1.1", state: "running" },
-      { thread_key: "C9:1.1", state: "pending" },
-      { thread_key: "C9:2.1", state: "pending" },
-      { thread_key: "C9:2.1", state: "pending" },
+    const sid = await sessionIdFor("T1:C1:120.1");
+    await logOf(sid).set({ failures: 1 });
+    await slackOf(org).accept(message({ text: "first", ts: "120.1" }));
+    await slackOf(org).accept(message({ text: "second", ts: "120.2", thread: "120.1", mention: false }));
+    await slackOf(org).accept(message({ text: "elsewhere", ts: "130.1" }));
+    const other = await sessionIdFor("T1:C1:130.1");
+    for (let i = 0; i < 100 && !(await callsOf(logOf(other))).length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await callsOf(logOf(other))).toHaveLength(1);
+    // The failed message and the one behind it wait, in order, as owed calls of their thread.
+    expect(await inSlack(org, (exec) => exec("SELECT grp, tries FROM _owed WHERE call = 'process' ORDER BY n"))).toEqual([
+      { grp: "thread:C1:120.1", tries: 1 },
+      { grp: "thread:C1:120.1", tries: 0 },
     ]);
+    await settled(org, 400);
+    const inputs = (await callsOf(logOf(sid))).map((c) => (c.args[1] as { body: { input: string } }).body.input);
+    expect(inputs).toEqual(["first", "first", "second"]);
   });
 
   it("creates a new thread's session through Org and accepts its turn in the SessionLog", async () => {
@@ -181,6 +177,18 @@ describe("the Slack actor: accept, the queue, turns", () => {
     expect(host.slack).toEqual({ botToken: "xoxb-test", botUserId: "UBOT", teamId: "T1" });
     expect(host.people).toMatchObject([{ slackUserId: "U7", gitEmail: "u7@example.com" }]);
     expect((await callsOf(computerOf(org))).filter((c) => c.method === "changed")).toEqual([{ method: "changed", args: ["slack"] }]);
+  });
+
+  it("answers Computer's Web API calls, principals and names with its own token", async () => {
+    const org = "org_rpc";
+    await linked(org);
+    await inSlack(org, (exec) => exec("INSERT INTO link (slack_user, member) VALUES ('U2', 'usr_two')"));
+    expect(await slackOf(org).api("users.info", { user: "U2" })).toMatchObject({ ok: true, user: { id: "U2" } });
+    expect(await slackOf(org).principal("U2")).toMatchObject({ org, subject: "usr_two", kind: "member", via: "slack", audiences: ["org", "member:usr_two"] });
+    expect(await slackOf(org).principal("UGUEST2")).toBeNull();
+    expect(await slackOf(org).userName("U2")).toBe("Person U2");
+    // Not linked: no token, so Slack is not asked.
+    expect(await slackOf("org_rpc_unlinked").api("auth.test", {})).toEqual({ ok: false, error: "not_linked" });
   });
 });
 
@@ -295,30 +303,28 @@ describe("the Slack actor: post_thread", () => {
 });
 
 describe("the Slack actor: install, unlink, import", () => {
-  it("imports Computer's Slack state in two pages, once", async () => {
+  it("imports Computer's Slack install once: settings, people and links, no threads", async () => {
     const org = "org_import";
-    const people = Array.from({ length: 199 }, (_, i) => ({ type: "row" as const, table: "people", row: { slack_user_id: `UP${i}`, dir: `up${i}`, git_name: `P ${i}`, git_email: `p${i}@example.com`, updated_at: 1 } }));
-    const rows = [
-      { type: "setting" as const, key: "slackTeamId", value: "T9" },
-      { type: "setting" as const, key: "slackBotUserId", value: "UBOT" },
-      ...people,
-      { type: "link" as const, slackUser: "UP1", member: "usr_p1" },
-      { type: "thread" as const, key: "T9:C1:1.1", sessionId: "cs_imported" },
-      { type: "dispatch" as const, sessionId: "cs_imported", entry: { id: "tn_imported", kind: "turn" as const, body: { input: "pending" }, by: "user:usr_p1" } },
-    ];
-    await computerOf(org).set({ rows });
-    await Promise.all([slackOf(org).import(), slackOf(org).import()]);
-    await slackOf(org).import();
-    expect((await callsOf(computerOf(org))).filter((c) => c.method === "exportSlack").map((c) => c.args)).toEqual([[null, 200], ["200", 200]]);
-    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM people"))).toEqual([{ n: 199 }]);
+    const people = Array.from({ length: 3 }, (_, i) => ({ slack_user_id: `UP${i}`, dir: `up${i}`, git_name: `P ${i}`, git_email: `p${i}@example.com`, updated_at: 1 }));
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T9", slackBotUserId: "UBOT" }, people, links: [{ slackUser: "UP1", member: "usr_p1" }] } });
+    await Promise.all([slackOf(org).forHost(), slackOf(org).forHost()]);
+    await slackOf(org).forHost();
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "slackCarry")).toHaveLength(1);
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM people"))).toEqual([{ n: 3 }]);
     expect(await inSlack(org, (exec) => exec("SELECT slack_user, member FROM link"))).toEqual([{ slack_user: "UP1", member: "usr_p1" }]);
-    expect(await inSlack(org, (exec) => exec("SELECT key, session_id FROM thread"))).toEqual([{ key: "T9:C1:1.1", session_id: "cs_imported" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT value FROM settings WHERE key = 'slackTeamId'"))).toEqual([{ value: "T9" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM thread"))).toEqual([{ n: 0 }]);
     expect(await inSlack(org, (exec) => exec("SELECT imported FROM meta"))).toEqual([{ imported: 1 }]);
-    const [accepted] = await callsOf(logOf("cs_imported"));
-    expect(accepted!.args[0]).toMatchObject({ org, subject: "usr_p1", kind: "member" });
-    expect(accepted!.args[1]).toEqual({ id: "tn_imported", kind: "turn", body: { input: "pending" } });
     // The workspace routes to this organization.
     expect(await slackOf("slack-team:T9").teamOrg()).toBe(org);
+  });
+
+  it("imports on the first `forHost`, so Computer reads the carried install", async () => {
+    const org = "org_import_host";
+    const token = await seal("xoxb-carried", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T8`);
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T8", slackBotUserId: "UBOT", slackBotToken: token }, people: [], links: [] } });
+    expect((await slackOf(org).forHost()).slack).toEqual({ botToken: "xoxb-carried", botUserId: "UBOT", teamId: "T8" });
+    await slackOf("slack-team:T8").releaseTeam(org);
   });
 
   it("installs and unlinks a workspace", async () => {
@@ -369,13 +375,7 @@ describe("the edge's Slack routes", () => {
     const org = "org_lazy";
     await slackOf("slack-team:T1").releaseTeam("org_edge"); // the test above's link
     const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T1`);
-    await computerOf(org).set({
-      rows: [
-        { type: "setting", key: "slackTeamId", value: "T1" },
-        { type: "setting", key: "slackBotUserId", value: "UBOT" },
-        { type: "setting", key: "slackBotToken", value: token },
-      ],
-    });
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T1", slackBotUserId: "UBOT", slackBotToken: token }, people: [], links: [] } });
     await computerOf("computer-slack-team:T1").set({ teamAccount: org });
     const routeEnv = { ...bindings, SLACK_COMPUTER_SIGNING_SECRET: "shh" } as unknown as SlackRouteEnv;
     const e = message({ text: "first touch", ts: "910.1" });

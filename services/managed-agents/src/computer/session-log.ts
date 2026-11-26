@@ -30,6 +30,7 @@ import {
   alarms,
   byOf,
   computerOf,
+  emitter,
   cursor,
   hashOf,
   liveOf,
@@ -497,6 +498,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   /** Null where no bucket is bound: event data stays inline. */
   blobs: Blobs | null = this.env.SESSION_LOG_BLOBS ? r2Blobs(this.env.SESSION_LOG_BLOBS) : null;
   private readonly db: Sql;
+  private readonly emit = emitter("sessionlog", () => ({ org: this.meta?.organizationId, session: this.meta?.sessionId }));
   /** The copy of Org's access row, or null while the log holds none. */
   private access: Access | null = null;
 
@@ -527,14 +529,14 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   override async alarm(): Promise<void> {
     await alarms.run(this.db, Date.now(), {
-      [OWED_PURPOSE]: () => owed.run(this.db, this.send, Date.now()),
+      [OWED_PURPOSE]: () => owed.run(this.db, this.send, Date.now(), this.emit),
       [SWEEP_PURPOSE]: () => this.sweep(),
     });
   }
 
   /** Send what is owed and due at `now`; resolves when the pass is over. Never throws. Tests await it. */
   flush(now = Date.now()): Promise<void> {
-    return owed.run(this.db, this.send, now).catch(() => undefined);
+    return owed.run(this.db, this.send, now, this.emit).catch(() => undefined);
   }
 
   /** After a transaction that added an owed call: send it at once, without making the caller wait. */

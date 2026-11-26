@@ -160,6 +160,20 @@ describe("the principal in the assertion", () => {
       credential: { id, expiresAt: 1_900_000_000_000 },
     });
   });
+
+  it.each([
+    ["no session", null],
+    ["a Slack thread key", "T1:C1:1792176058.240229"],
+  ])("refuses a computer key with %s: it is never an organization-wide key", async (_, sessionKey) => {
+    const { db, env } = seeded();
+    const { key } = await addKey(db, { createdBy: "computer", sessionKey, expiresAt: 1_900_000_000 });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(api("/sessions", { headers: { authorization: `Bearer ${key}` } }), env, ctx());
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await new LiveCredentials(ctx(), env).principal(key)).toBeNull();
+  });
 });
 
 describe("the allowlist of tracks and threads", () => {
@@ -223,7 +237,7 @@ describe("the allowlist of tracks and threads", () => {
     expect(isComputerApiRoute(method, `/computer${path}`)).toBe(false);
   });
 
-  it("forwards trace, principal, client, n and Idempotency-Key", async () => {
+  it("forwards trace, principal and Idempotency-Key, and no longer x-oc-client or x-oc-n", async () => {
     const { db, env } = seeded();
     const { key } = await addKey(db, { scopes: "sessions:read,work:read,work:write" });
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ protocol: 1 }));
@@ -251,8 +265,8 @@ describe("the allowlist of tracks and threads", () => {
     const headers = new Headers(init.headers);
     expect(headers.get("x-oc-trace")).toBe("tr_0123456789abcdef");
     expect(headers.get("x-oc-principal")).toBe(`${ORG}/${SUBJECT}`);
-    expect(headers.get("x-oc-client")).toBe("cl_0123456789abcdef");
-    expect(headers.get("x-oc-n")).toBe("7");
+    expect(headers.get("x-oc-client")).toBeNull();
+    expect(headers.get("x-oc-n")).toBeNull();
     expect(headers.get("idempotency-key")).toBe("idem-7");
   });
 

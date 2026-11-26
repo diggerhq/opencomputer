@@ -32,12 +32,18 @@ export interface FakeOptions {
   now?(): number;
 }
 
+/** An ask a fake agent opens: an approval of a tool call (Bash unless `toolName` says), a question, or a secret it needs. */
+export type FakeAsk =
+  | { kind: "approval"; title: string; command?: string; toolName?: string; input?: Record<string, unknown>; alwaysAllows?: string }
+  | { kind: "question"; question: string; options: string[] }
+  | { kind: "secret"; name: string; purpose?: string; file?: boolean };
+
 /** What a test, or the scripted agent, does as a session's agent. Each call appends events and updates the feed as the real actors would. */
 export interface FakeAgent {
   /** The turn in progress streams `text` as deltas, then appends `message.completed`. */
   say(sessionId: string, text: string, o?: { chunk?: number }): Promise<void>;
   tool(sessionId: string, title: string, o?: { toolName?: string; fail?: boolean }): void;
-  ask(sessionId: string, ask: { kind: "approval"; title: string; command?: string } | { kind: "question"; question: string; options: string[] }): string;
+  ask(sessionId: string, ask: FakeAsk): string;
   endTurn(sessionId: string, o?: { failed?: string }): void;
   /** A mutation by `agent:<sessionId>`, through Org's mutation function: `thread.ready`, `result.add`, `proposal.create`, `track.set_stand`, `doc.save`, `thread.rename`… */
   mutate(sessionId: string, name: string, args: object): void;
@@ -57,8 +63,8 @@ export interface FakeServer {
   rows<K extends RowKind>(kind: K): RowOf<K>[];
   row(kind: RowKind, id: string): Row | undefined;
   events(sessionId: string): ApiEvent[];
-  /** Every request received, for assertions: method, path, the `x-oc-n` header. */
-  requests: { method: string; path: string; n: number | null; status: number }[];
+  /** Every request received, for assertions: method, path, the `Idempotency-Key` header. */
+  requests: { method: string; path: string; idem: string | null; status: number }[];
   chaos(c: Chaos): void;
   /** Closes every socket; while offline, `fetch` rejects and `connect()` channels close at once. */
   setOffline(offline: boolean): void;

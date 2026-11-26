@@ -771,7 +771,7 @@ describe("computer API CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-allow-headers")).toBe(
-      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, x-oc-client, x-oc-n",
+      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal",
     );
     expect(res.headers.get("access-control-allow-methods")).toBe("GET, POST, PATCH, PUT, DELETE");
     expect(res.headers.get("access-control-max-age")).toBe("600");

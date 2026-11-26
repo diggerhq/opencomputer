@@ -140,7 +140,6 @@ struct Actor {
     out: mpsc::UnboundedSender<WireEvent>,
     watches: HashMap<String, Watch>,
     next_n: u64,
-    client_id: String,
     conn: Option<Conn>,
     /// Since when a watched session has had no socket, and how long that may
     /// last before the command fails (`None`: it keeps trying).
@@ -180,7 +179,6 @@ impl Actor {
             out,
             watches: HashMap::new(),
             next_n: 1,
-            client_id: format!("cl_{}", crate::ids::random_base32(16)),
             conn: None,
             down_since: None,
             give_up: None,
@@ -512,7 +510,7 @@ impl Actor {
                 self.conn = Some(Conn { generation, tx: d.tx, quiet: false, up_since: Instant::now() });
                 self.down_since = None;
                 self.ping_at = Instant::now() + PING_EVERY;
-                self.send(json!({"t": "hello", "protocol": VERSION, "clientId": self.client_id}));
+                self.send(json!({"t": "hello", "protocol": VERSION}));
                 let ids: Vec<String> = self.watches.keys().cloned().collect();
                 for id in ids {
                     if let Some(w) = self.watches.get_mut(&id) {

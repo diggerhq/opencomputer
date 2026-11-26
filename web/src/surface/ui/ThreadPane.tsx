@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ProposalRow } from '@opencomputer/sdk/computer'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
+import { SlackMark } from '@/components/slack-mark'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useList, useS, useSurface, useThread, useTrack } from '../hooks'
@@ -27,6 +28,7 @@ import {
   useConfirm,
 } from './kit'
 import { Conversation } from './Conversation'
+import { SettingsPickers } from './SettingsPickers'
 
 // S3: the thread pane.
 
@@ -156,6 +158,8 @@ export function ThreadPane({ sid }: { sid: string }) {
   if (!thread) return <div className={IN} data-pane="thread" />
 
   const status = thread.session.status
+  const slack = thread.session.origin.slack
+  const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
 
   // A typed reply to a single open question is its answer (T3).
@@ -256,6 +260,17 @@ export function ThreadPane({ sid }: { sid: string }) {
           )}
         </span>
         <span className="flex-1" />
+        {slack?.url && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => surface.openExternal(slack.url!)}
+          >
+            <SlackMark className="size-3.5" />
+            Open in Slack
+          </Button>
+        )}
         {working && (
           <Button
             variant="ghost"
@@ -335,6 +350,19 @@ export function ThreadPane({ sid }: { sid: string }) {
         placeholder="Reply in this thread…"
         onSend={reply}
         className={COMPOSER}
+        // A thread from Slack keeps the settings Slack gave it.
+        tools={
+          !slack && (
+            <SettingsPickers
+              value={{
+                model: settings.model ?? undefined,
+                effort: settings.effort ?? undefined,
+                mode: settings.mode,
+              }}
+              onChange={(p) => surface.setSettings(sid, p)}
+            />
+          )
+        }
       />
     </div>
   )

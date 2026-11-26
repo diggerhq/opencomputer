@@ -200,16 +200,15 @@ describe("mutations", () => {
     await converged(fake, feed);
     let pendingAtFrame = -1;
     client.feed(KINDS).subscribe((f) => {
-      if (f.lastMutation !== undefined && f.lastMutation >= 1 && pendingAtFrame < 0) pendingAtFrame = client.pending().get().length;
+      if (f.rows.some((r) => r.kind === "session" && r.id === sid && r.title === "Renamed") && pendingAtFrame < 0) pendingAtFrame = client.pending().get().length;
     });
     const m = client.mutate("thread.rename", { sid, title: "Renamed" });
-    expect(m.n).toBe(1);
-    expect(client.pending().get()).toMatchObject([{ kind: "mutation", n: 1, name: "thread.rename", args: { sid, title: "Renamed" } }]);
+    expect(client.pending().get()).toMatchObject([{ kind: "mutation", name: "thread.rename", args: { sid, title: "Renamed" } }]);
     await m.settled;
     expect(client.pending().get()).toEqual([]);
     expect(pendingAtFrame).toBe(0);
     expect(feed.session(sid)!.title).toBe("Renamed");
-    expect(fake.requests.find((r) => r.n === 1)).toMatchObject({ method: "PUT", path: `/work/threads/${sid}/title`, status: 200 });
+    expect(fake.requests.find((r) => r.path === `/work/threads/${sid}/title`)).toMatchObject({ method: "PUT", idem: expect.stringMatching(/^ib_/), status: 200 });
   });
 
   it("sends a mutation again when the reply is lost, and it is applied once", async () => {
@@ -217,12 +216,14 @@ describe("mutations", () => {
     const sid = await thread(fake, client); // nobody reads the feed: only the reply confirms
     fake.chaos({ failAfter: 1 });
     const m = client.mutate("thread.rename", { sid, title: "Once" });
-    await until(fake, () => fake.requests.some((r) => r.n === 1 && r.status === 503));
+    const title = `/work/threads/${sid}/title`;
+    await until(fake, () => fake.requests.some((r) => r.path === title && r.status === 503));
     expect(client.pending().get().length).toBe(1);
     fake.chaos({});
     await m.settled;
-    const sent = fake.requests.filter((r) => r.n === 1);
+    const sent = fake.requests.filter((r) => r.path === title);
     expect(sent.length).toBeGreaterThan(1);
+    expect(new Set(sent.map((r) => r.idem)).size).toBe(1);
     expect(sent[sent.length - 1].status).toBe(200);
     expect(fake.rows("op").filter((o) => o.name === "thread.rename").length).toBe(1);
     expect((fake.row("session", sid) as SessionRow).title).toBe("Once");
@@ -236,9 +237,9 @@ describe("mutations", () => {
     client.failures.subscribe((f) => failures.push(f));
     const m = client.mutate("thread.rename", { sid: "cs_nosuchsession0000", title: "Nope" });
     await expect(m.settled).rejects.toBeInstanceOf(Refused);
-    expect(failures).toMatchObject([{ code: "not_found", entry: { kind: "mutation", n: 1, name: "thread.rename" } }]);
+    expect(failures).toMatchObject([{ code: "not_found", entry: { kind: "mutation", name: "thread.rename" } }]);
     expect(client.pending().get()).toEqual([]);
-    // The number is spent: the next mutation is n = 2 and is applied.
+    // The next mutation is applied.
     const sid = await thread(fake, client);
     await client.mutate("thread.rename", { sid, title: "After a refusal" }).settled;
     await converged(fake, feed);
@@ -254,11 +255,13 @@ describe("mutations", () => {
     await until(fake, () => client.status.get() === "offline");
     const writes = ["One", "Two", "Three"].map((title) => client.mutate("thread.rename", { sid, title }));
     await sleep(5);
-    expect(client.pending().get().map((p) => p.kind === "mutation" && p.n)).toEqual([1, 2, 3]);
-    expect(fake.requests.filter((r) => r.n !== null && r.status !== 0)).toEqual([]);
+    const queued = client.pending().get();
+    expect(queued.map((p) => p.kind === "mutation" && p.args.title)).toEqual(["One", "Two", "Three"]);
+    const title = `/work/threads/${sid}/title`;
+    expect(fake.requests.filter((r) => r.path === title && r.status !== 0)).toEqual([]);
     fake.setOffline(false);
     await Promise.all(writes.map((w) => w.settled));
-    expect(fake.requests.filter((r) => r.status === 200 && r.n !== null).map((r) => r.n)).toEqual([1, 2, 3]);
+    expect(fake.requests.filter((r) => r.status === 200 && r.path === title).map((r) => r.idem)).toEqual(queued.map((p) => p.key.slice(p.key.indexOf("-") + 1)));
     expect(client.pending().get()).toEqual([]);
     await converged(fake, feed);
     expect(feed.session(sid)!.title).toBe("Three");
@@ -274,10 +277,59 @@ describe("mutations", () => {
     fake.setOffline(false);
     const again = connect(fake, storage);
     await again.ready;
-    expect(again.pending().get()).toMatchObject([{ kind: "mutation", n: 1 }]);
+    expect(again.pending().get()).toMatchObject([{ kind: "mutation", name: "thread.rename" }]);
     await until(fake, () => again.pending().get().length === 0);
     expect((fake.row("session", sid) as SessionRow).title).toBe("From storage");
-    expect(again.mutate("thread.keep", { sid, keep: true }).n).toBe(2);
+  });
+
+  it("two tabs on one storage: both writes land, and neither tab's entry overwrites the other's", async () => {
+    const fake = createFakeServer({ seed: "empty", autoAgent: false });
+    const storage = memoryStorage();
+    let chain: Promise<unknown> = Promise.resolve();
+    const lock: NonNullable<ClientOptions["lock"]> = (_name, fn) => {
+      const r = chain.then(() => fn());
+      chain = r.catch(() => {});
+      return r as never;
+    };
+    const a = connect(fake, storage, { lock });
+    await a.ready;
+    const sid = await thread(fake, a);
+    const b = connect(fake, storage, { lock });
+    await b.ready;
+    watchFeed(a);
+    watchFeed(b);
+    const failures: Failure[] = [];
+    a.failures.subscribe((f) => failures.push(f));
+    b.failures.subscribe((f) => failures.push(f));
+    fake.setOffline(true);
+    const ma = a.mutate("thread.rename", { sid, title: "From tab A" });
+    const mb = b.mutate("thread.keep", { sid, keep: true });
+    await sleep(2);
+    expect((await storage.list("queue/")).length).toBe(2);
+    fake.setOffline(false);
+    await Promise.all([ma.settled, mb.settled]);
+    expect(failures).toEqual([]);
+    expect((fake.row("session", sid) as SessionRow).title).toBe("From tab A");
+    expect(fake.row("place", sid)).toMatchObject({ keep: true });
+  });
+
+  it("a refusal before the server sees the mutation (401 at the edge) fails that one only", async () => {
+    const fake = createFakeServer({ seed: "empty", autoAgent: false });
+    let deny = false;
+    const fetch: ClientOptions["fetch"] = async (path, init) => {
+      if (deny && path.startsWith("/work/")) {
+        deny = false;
+        return new Response(JSON.stringify({ error: { code: "unauthorized" } }), { status: 401 });
+      }
+      return fake.fetch(path, init);
+    };
+    const client = connect(fake, memoryStorage(), { fetch });
+    await client.ready;
+    const sid = await thread(fake, client);
+    deny = true;
+    await expect(client.mutate("thread.rename", { sid, title: "Lost to 401" }).settled).rejects.toBeInstanceOf(Refused);
+    await Promise.all([1, 2, 3].map((i) => client.mutate("thread.rename", { sid, title: `Later ${i}` }).settled));
+    expect((fake.row("session", sid) as SessionRow).title).toBe("Later 3");
   });
 
   it("holds a write that names a row an earlier queued write creates", async () => {

@@ -101,7 +101,7 @@ export const LIVE_CHECK_MAX = 500;
 // ---------------------------------------------------------------- the socket (section 38)
 
 export type ClientFrame =
-  | { t: "hello"; protocol: number; clientId: string }
+  | { t: "hello"; protocol: number }
   | { t: "sub"; stream: string; after?: string; kinds?: string[] }
   | { t: "unsub"; stream: string }
   | { t: "block"; session: string; blockId: string }
@@ -125,8 +125,7 @@ export type ServerFrame =
       to: string;
       rows: unknown[];
       gone: { kind: string; id: string }[];
-      lastMutation?: number;
-      errors?: { n: number; code: string; reason: string }[];
+      version: number;
     }
   | { t: "events"; session: string; from: string; to: string; events: unknown[] }
   | { t: "delta"; session: string; type: string; turnId: string | null; data: unknown; offset: number; whole?: boolean }
@@ -140,7 +139,8 @@ export type ServerFrame =
 export interface LiveAttachment {
   c: string;
   p: { org: string; subject: string; kind: Principal["kind"]; read: boolean; aud: string[]; cred: string; exp: number };
-  cl: string;
+  /** `hello` arrived. */
+  h: boolean;
   k?: string[];
   f: boolean;
   w: Record<string, 1 | 2 | 3>;

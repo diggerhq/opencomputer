@@ -124,14 +124,6 @@ GROUP BY time ORDER BY time`,
       description: 'chain_wait: behind the session\'s earlier batches; pre: received → append RPC sent; append: the SessionLog round trip; post: answered → row updated and ack sent.',
     },
     ms('Slack dispatch wait and K1 p95: busy − quiet org-minutes (hourly)', busyDelta('$__timeFilter(occurred_at)'), find(api, 'dispatch_wait_busy_delta_p95').threshold),
-    {
-      title: "The DO's Slack queue (max)",
-      unit: 'short',
-      sql: union(
-        series("'rows pending + running'", `max(${int('slack_queue_rows')})`, ['sessionlog.append', 'computer.write'], { where: "JSONHas(data, 'slack_queue_rows')" }),
-        series("'oldest pending wait (ms)'", `max(${int('slack_queue_oldest_ms')})`, ['sessionlog.append', 'computer.write'], { where: "JSONHas(data, 'slack_queue_oldest_ms')" }),
-      ),
-    },
   ];
 };
 

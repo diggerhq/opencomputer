@@ -3,7 +3,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import type { AcceptResult, ExportedSlackRow, MutateReply, Principal } from "../../src/actor/contracts.js";
+import type { AcceptResult, MutateReply, Principal, SlackCarry } from "../../src/actor/contracts.js";
 
 export { SlackDurableObject } from "../../src/slack/durable-object.js";
 
@@ -47,7 +47,7 @@ export class FakeOrg extends Recorder {
 
   async mutate(p: Principal, m: unknown): Promise<MutateReply> {
     this.record("mutate", p, m);
-    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1 };
+    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1, version: 1 };
   }
 
   async linkPerson(from: string, to: string): Promise<void> {
@@ -58,14 +58,20 @@ export class FakeOrg extends Recorder {
 export class FakeSessionLog extends Recorder {
   private answer: AcceptResult | null = null;
   private delayMs = 0;
+  private failures = 0;
 
-  async set(next: { answer?: AcceptResult | null; delayMs?: number }): Promise<void> {
+  async set(next: { answer?: AcceptResult | null; delayMs?: number; failures?: number }): Promise<void> {
     if (next.answer !== undefined) this.answer = next.answer;
     if (next.delayMs !== undefined) this.delayMs = next.delayMs;
+    if (next.failures !== undefined) this.failures = next.failures;
   }
 
   async accept(p: Principal, entry: { id: string; kind: string; body: unknown }): Promise<AcceptResult> {
     this.record("accept", p, entry);
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("the log could not be reached");
+    }
     // The first call is slow: a later message that overtook it would be recorded first.
     if (this.delayMs && this.seen.length === 1) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     return this.answer ?? { ok: true, id: entry.id, duplicate: false, machine: "org_a" };
@@ -73,12 +79,12 @@ export class FakeSessionLog extends Recorder {
 }
 
 export class FakeComputer extends Recorder {
-  private rows: ExportedSlackRow[] = [];
+  private carry: SlackCarry = { settings: {}, people: [], links: [] };
   /** As the old team router (`computer-slack-team:<T>`): the organization it names. */
   private account: string | null = null;
 
-  async set(next: { rows?: ExportedSlackRow[]; teamAccount?: string }): Promise<void> {
-    if (next.rows) this.rows = next.rows;
+  async set(next: { carry?: SlackCarry; teamAccount?: string }): Promise<void> {
+    if (next.carry) this.carry = next.carry;
     if (next.teamAccount) this.account = next.teamAccount;
   }
 
@@ -105,11 +111,9 @@ export class FakeComputer extends Recorder {
     this.record("memberLeft", slackUserId);
   }
 
-  async exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }> {
-    this.record("exportSlack", after, limit);
-    const start = after === null ? 0 : Number(after);
-    const end = Math.min(start + limit, this.rows.length);
-    return { rows: this.rows.slice(start, end), next: end < this.rows.length ? String(end) : null };
+  async slackCarry(): Promise<SlackCarry> {
+    this.record("slackCarry");
+    return this.carry;
   }
 }
 

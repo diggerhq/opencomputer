@@ -4,6 +4,7 @@
 // id with the body's hash") and `session.owner_name`, `owner_email` (the API's `Session.owner`).
 
 import type { Sql } from "../actor/sql.js";
+import { alarms } from "../actor/store.js";
 
 /** The tables whose rows are in the feed, each with its key columns. `id` in a feed row is the last of them. */
 export const FEED_TABLES = {
@@ -25,8 +26,7 @@ const FEED = "version INTEGER NOT NULL, audience TEXT NOT NULL";
 
 const V0 = [
   `CREATE TABLE meta (k INTEGER PRIMARY KEY CHECK (k = 1), version INTEGER NOT NULL, occ INTEGER NOT NULL,
-     floor INTEGER NOT NULL DEFAULT 0, admins TEXT NOT NULL DEFAULT '[]', knowledge TEXT,
-     adopted INTEGER NOT NULL DEFAULT 0, adopt_after TEXT, adopted_at INTEGER, org TEXT)`,
+     floor INTEGER NOT NULL DEFAULT 0, admins TEXT NOT NULL DEFAULT '[]', knowledge TEXT, org TEXT)`,
   `INSERT INTO meta (k, version, occ) VALUES (1, 0, 0)`,
   `CREATE TABLE session (id TEXT PRIMARY KEY, owner TEXT NOT NULL, owner_name TEXT, owner_email TEXT, origin TEXT NOT NULL, slack_thread_key TEXT,
      machine TEXT NOT NULL, role TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL,
@@ -83,5 +83,18 @@ const V1 = [
 /** Customer webhooks are gone: a poke owed to Delivery(webhook) is dropped, not retried forever. */
 const V2 = [`DELETE FROM _owed WHERE grp = 'poke:webhook'`];
 
+/** A mutation's `Idempotency-Key` names it, for members too: the per-client numbering is gone. */
+const V3 = [`DROP TABLE client`];
+
 const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
-export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1), run(V2)];
+export const STEPS: ((sql: Sql) => void)[] = [
+  run(V0),
+  run(V1),
+  run(V2),
+  run(V3),
+  // Ageing starts (it re-arms itself), and the knowledge repository setting is carried over, once, from the retired Work board.
+  (sql) => {
+    alarms.set(sql, "age", 0);
+    alarms.set(sql, "board", 0);
+  },
+];
