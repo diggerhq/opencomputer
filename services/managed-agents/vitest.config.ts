@@ -457,6 +457,7 @@ export default defineConfig({
           environment: "node",
           include: [
             "test/auth.test.ts",
+            "test/boundaries.test.ts",
             "test/computer-grants.test.ts",
             "test/computer-model-access.test.ts",
             "test/computer-model-profiles.test.ts",
