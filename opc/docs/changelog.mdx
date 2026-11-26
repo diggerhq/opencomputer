@@ -12,4 +12,5 @@ description: "Changes to opc and to the session API."
   - opc moved into [diggerhq/opencomputer](https://github.com/diggerhq/opencomputer/tree/main/opc), next to the server. Releases are tagged `opc-v*` there, and the [install](/install) URL is `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh`.
   - Session access: `owner`, `org` or `people`. `--access` and `--people` on `opc`, `opc -p` and `opc new`; `opc access` shows and changes it; `opc ls` has an `ACCESS` column. `access` and `canManageAccess` on the session object, `access` on create and `PATCH`. See [Sharing](/cli/sharing).
   - [Telemetry](/reference/telemetry): timings and error classes, never content, sent on the session's connection. Off with `OPC_TELEMETRY=0` or `opc config telemetry off`.
+  - `opc shell` and `/shell` wake a suspended or idle session first, printing `opc: waking session…`, then open the shell. A shell runs in the session's own container, as user `agent`.
 </Update>

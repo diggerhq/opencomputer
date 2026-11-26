@@ -1,6 +1,6 @@
 ---
 title: "Terminals"
-description: "A terminal is a shell or command the host starts in a session's workspace as the agent's Unix user, over WebSocket only"
+description: "A terminal is a shell or command the host starts with podman exec in the session's own container, as user agent, over WebSocket only"
 ---
 
 `opc shell` is a client for terminals.
@@ -10,8 +10,10 @@ description: "A terminal is a shell or command the host starts in a session's wo
 | Item | Rule |
 | --- | --- |
 | Caller | Someone who may use the session ([Access](/api/sessions#access)) and is its owner, a member listed in its `people`, or an admin in an `org` session, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"`. Losing access closes the terminal |
-| Process user | The agent's Unix user |
-| Environment | `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `LANG`, `TERM`. No session secrets |
+| Process | `podman exec` into the session's own container (`sp-runner-<id>`), in `/workspace`. It sees this session's workspace and the repositories it uses, not other sessions' |
+| Process user | `agent` (uid 1500), the same user as the session's agent |
+| Environment | The container's own, plus `TERM`. No session secrets |
+| Session state | The session must be running: a terminal never starts a stopped container. Resume it first (`sessions.resume`, or a message); `opc shell` does this itself |
 
 ## Open
 
@@ -33,6 +35,8 @@ description: "A terminal is a shell or command the host starts in a session's wo
 | Error | Cause |
 | --- | --- |
 | `409 too_many_terminals` | The session already holds 8 terminals, across all connections |
+| `409 conflict`, `reason: "session_not_running"` | The session's container is not running (the session is suspended, or idle after its agent exited). Resume it, then open again |
+| `404 session_not_found` | The computer has no record of the session |
 
 A session with an open terminal is not suspended for being idle. The journal records `terminal.opened` and `terminal.closed` events.
 
@@ -67,4 +71,4 @@ A terminal belongs to the connection that opened it.
 {"jsonrpc":"2.0","method":"terminal.exited","params":{"terminalId":"tm_...","exitCode":0,"signal":null}}
 ```
 
-{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (agent user, environment, 8 per session, SIGHUP/SIGKILL); computer/src/host/wire-link.ts (cwd, repeated check, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}
+{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (podman exec, agent user, environment, 8 per session, SIGHUP/SIGKILL, session_not_running); computer/src/host/sandbox/podman-args.ts (terminalArgs, SESSION_USER); computer/src/host/wire-link.ts (cwd, repeated check, known vs unknown session, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}
