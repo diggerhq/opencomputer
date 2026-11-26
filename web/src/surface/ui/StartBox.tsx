@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { SettingsPatch } from '@opencomputer/sdk/computer'
 import { useSurface } from '../hooks'
-import { Composer } from './bits'
+import { Composer } from './Composer'
 import { SettingsPickers } from './SettingsPickers'
 
 // S5: one composer, no choice of kind. Nothing exists until the first message is sent.

@@ -4,7 +4,7 @@ import type { Ask } from '@opencomputer/sdk/computer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSurface } from '../hooks'
-import { ACTS } from './kit'
+import { ACTS } from './pane-classes'
 
 // A secret the agent asked for: typed or uploaded, put straight in the
 // session's sealed store, then the agent is told to continue. The value lives

@@ -62,7 +62,7 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "../../ids/session-ids.js";
-import type { ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
+import type { AccessCarry, ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
 import type { BillingNotice, SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
 import { type Dead, OWED_PURPOSE, owed } from "../../durable/outbox.js";
@@ -134,7 +134,7 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./held-for-org/secrets/secrets.js";
 import { parseVariableCommand } from "./held-for-org/secrets/variables.js";
 import { type SecretsApiOp, SecretsStore } from "./held-for-org/secrets/secrets-store.js";
-import { driversCommandText } from "./copied/access.js";
+import { ACCESS_DEFAULT_SETTING, driversCommandText } from "./copied/access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./held-for-org/connections.js";
 import {
   AGENT_ERRORS,
@@ -309,6 +309,8 @@ export const SLACK_STRANDED_GRACE_MS = 5_000;
 export const SLACK_STRANDED_MS = 60_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
+/** A drain re-reads the organization's repositories at most this often (`definitionCheckedAt`). */
+const DEFINITION_RECHECK_MS = 60_000;
 
 type AlarmPurpose = typeof OWED_PURPOSE | "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "dial";
 
@@ -489,6 +491,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
       push: (which) => this.pushSecrets(which),
+      // Lazy: `this.access` is built below.
+      linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.actors.org().isAdmin(member),
       wake: (session, userId, text, ts) => this.wakeSession(session, userId, text, ts),
     });
     this.access = createModelAccess({
@@ -795,6 +800,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   async drain(sessionId: string): Promise<void> {
     await this.api.drain(sessionId);
+    // After the send, never before it: it calls the account and GitHub.
+    this.ctx.waitUntil(this.refreshDefinitionIfStale());
   }
 
   async watch(sessionId: string, until: number): Promise<void> {
@@ -980,6 +987,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       return member ? [{ slackUser: row.slack_user_id, member }] : [];
     });
     return { settings, people, links };
+  }
+
+  async accessCarry(): Promise<AccessCarry> {
+    const accessDefault = this.setting(ACCESS_DEFAULT_SETTING);
+    const apiAccessDefault = this.setting("apiAccessDefault");
+    return {
+      accessDefault: accessDefault === "open" || accessDefault === "owner" ? accessDefault : null,
+      apiAccessDefault: apiAccessDefault === "owner" || apiAccessDefault === "org" ? apiAccessDefault : null,
+    };
   }
 
   /** A store's `schedule(at)` for one alarm purpose: `at` arms it, null disarms it. */
@@ -1746,7 +1762,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
   async computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
-    if (op.op === "secrets.session.put") {
+    if (op.op === "secrets.session.put" || op.op === "secrets.session.list" || op.op === "secrets.session.delete") {
       // The edge checked the session's access with Org; this is its runner's row.
       const row = this.api.row(op.sessionId);
       if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
@@ -2186,6 +2202,17 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       return {};
     }
     return {};
+  }
+
+  /**
+   * Repositories connected after the host said hello (GitHub connected once the computer is up) reach it
+   * without a reconnect: on a drain, at most once a minute by the stored `definitionCheckedAt`, a changed
+   * definition goes to the host in a fresh `welcome`. Never throws.
+   */
+  private async refreshDefinitionIfStale(): Promise<void> {
+    if (!this.socket()) return;
+    if (Date.now() - Number(this.setting("definitionCheckedAt") ?? 0) < DEFINITION_RECHECK_MS) return;
+    await this.refreshDefinition();
   }
 
   /** Re-read the organization's repositories; a changed definition goes to the host in a fresh `welcome`. Never throws. */

@@ -20,10 +20,11 @@ import {
   useS,
   useSurface,
 } from './hooks'
-import { createSurface, type Surface as SurfaceApi } from './store'
+import { createSurface, type Surface as SurfaceApi } from './store/surface-store'
 import { idbStorage } from './store/idb'
-import { Tip } from './ui/bits'
-import { DRAG, I } from './ui/kit'
+import { I } from './ui/icons'
+import { DRAG } from './ui/pane-classes'
+import { Tip } from './ui/Tip'
 import { KeysSheet, Toasts } from './ui/Chrome'
 import { bindKeys } from './ui/keys'
 import { List } from './ui/List'

@@ -34,11 +34,13 @@ import {
   commandText,
   commandWord,
   declinedText,
+  defaultSetText,
   decodeAccessId,
   grantedText,
   listIsOpenText,
   noSessionText,
   notAskedText,
+  onlyAdminDefaultText,
   onlyGrantorAnswersText,
   onlyGrantorChangesText,
   ownerDecidesText,
@@ -294,7 +296,6 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       sid = await sessionIdFor(key);
       const created = await orgOf(this.env, this.org()).createSession(p, {
         id: sid,
-        writers: "members",
         slackThread: key,
         origin: this.origin(teamId, job.channelId, job.threadTs),
         ...(job.harness ? { harness: job.harness } : {}),
@@ -351,6 +352,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       return;
     }
     if (c === "access") {
+      const parsed = parseAccessCommand(text);
+      if (parsed.kind === "default") return this.ephemeral(job, await this.accessDefaultCommand(parsed.value, p));
       if (!sid) return this.ephemeral(job, noSessionText());
       return this.ephemeral(job, await this.accessCommand(text, sid, p));
     }
@@ -374,7 +377,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   /** `!access`: the state line, or `thread.writers` with the list asked for; Org decides who may. */
   private async accessCommand(text: string, sid: string, p: Principal): Promise<string> {
     const parsed = parseAccessCommand(text);
-    if (parsed.kind === "usage") return ACCESS_USAGE;
+    if (parsed.kind === "usage" || parsed.kind === "default") return ACCESS_USAGE;
     const session = await this.sessionOf(sid);
     if (!session) return noSessionText();
     const owner = this.slackIdOf(session.owner);
@@ -390,6 +393,13 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     const reply = await orgOf(this.env, this.org()).mutate(p, { name: "thread.writers", args: { sid, writers } });
     if ("error" in reply) return reply.error.code === "refused" || reply.error.code === "forbidden" ? onlyGrantorChangesText(owner) : `That did not work (${reply.error.code}).`;
     return stateText(owner, this.shownWriters(writers, session.owner));
+  }
+
+  /** `!access default open|owner`: Org keeps it and decides who may (admins). */
+  private async accessDefaultCommand(value: "open" | "owner", p: Principal): Promise<string> {
+    const reply = await orgOf(this.env, this.org()).setSlackAccessDefault(p, value);
+    if (!reply.ok) return reply.code === "admin_required" ? onlyAdminDefaultText() : `That did not work (${reply.code}).`;
+    return defaultSetText(reply.value);
   }
 
   /** Who owns a session and who may write it, read as the platform (the requester may not see it). */

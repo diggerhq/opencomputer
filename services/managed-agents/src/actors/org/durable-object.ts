@@ -15,7 +15,7 @@ import { platformPrincipal, type Access, type Principal } from "../../auth/princ
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpcAdded, type StartSpec } from "../computer/contract.js";
-import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SummaryPub } from "./contract.js";
+import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpcAdded } from "../session-log/contract.js";
@@ -47,12 +47,17 @@ async function memberIds(access: unknown): Promise<CreateSession["access"]> {
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
-  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed">;
+  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
   log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
+  /**
+   * D1 `github_installation_orgs`: the organization uses this GitHub installation, so the App's pull request
+   * webhooks reach its Org (spec 40.9). Throws when it could not be written; the owed call is tried again.
+   */
+  installationIndexed(installationId: string): Promise<void>;
   /** The knowledge repository setting the retired Work board held, read once (the `board` alarm). */
   boardRepository(): Promise<StoredRepository | null>;
   /** The organization's Account object, or null where it is not bound. */
@@ -81,6 +86,17 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     created: async (sessionId, createdAt) => {
       await this.env.SERVERLESS_AGENTS_DB?.prepare("INSERT INTO session_creations (session_id, account_id, source, created_at) VALUES (?, ?, 'computer', ?) ON CONFLICT(session_id) DO NOTHING")
         .bind(computerSessionId(sessionId), this.org, new Date(createdAt).toISOString())
+        .run();
+    },
+    installationIndexed: async (installationId) => {
+      const db = this.env.SERVERLESS_AGENTS_DB;
+      const account = this.out.account();
+      if (!db || !account) return;
+      const installation = await account.getGitHubInstallation(installationId);
+      // Removed since: nothing to index; choosing a repository again checks it.
+      if (!installation?.githubInstallationId) return;
+      await db.prepare("INSERT OR REPLACE INTO github_installation_orgs (github_installation_id, account_id, installation_id) VALUES (?, ?, ?)")
+        .bind(installation.githubInstallationId, this.org, installationId)
         .run();
     },
     boardRepository: async () =>
@@ -171,6 +187,8 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
       }
       case "usage.created":
         return this.out.created(sessionId, body.createdAt as number);
+      case "installation.indexed":
+        return this.out.installationIndexed(body.installationId as string);
       default:
         throw new Error(`Org owes an unknown call: ${call}`);
     }
@@ -194,6 +212,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
         const repository = await this.out.boardRepository();
         if (repository && !repositories.storedRepository(sql)) repositories.storeRepository(sql, repository);
         this.flush();
+      },
+      // Armed once by a migration step (schema.ts): the default access the organization's Computer held, carried over.
+      accessCarry: async () => {
+        sessions.carryAccessDefaults(sql, await this.out.computer(this.org).accessCarry());
       },
       age: () => {
         work.age(sql, Date.now());
@@ -251,6 +273,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>> {
     this.seen(p);
     return sessions.setSettings(this.sql, p, patch);
+  }
+
+  /** The Slack actor only: `!access default open|owner`. Admins only (`admin_required`). */
+  async setSlackAccessDefault(p: Principal, value: SlackAccessDefault): Promise<Reply<{ value: SlackAccessDefault }>> {
+    this.seen(p);
+    return sessions.setSlackAccessDefault(this.sql, p, value);
   }
 
   // ------------------------------------------------------------------ the feed and the work part
@@ -349,6 +377,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   async forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }> {
     return sessions.forHost(this.sql, machine);
+  }
+
+  async isAdmin(member: string): Promise<boolean> {
+    return sessions.adminsOf(this.sql).includes(member);
   }
 
   // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)

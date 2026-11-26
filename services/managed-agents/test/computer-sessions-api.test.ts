@@ -473,8 +473,8 @@ describe("the drain's alert events (no-host, dark dispatch, held writes)", () =>
     await created(f);
     f.answers.set("sessions.suspend", () => ({ result: {} }));
     f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "no", status: 409, retryable: false } }));
-    // The start's own drain settles first: one in flight when the host goes would re-owe the drain past this one.
-    await Promise.all(f.pending());
+    // The start's drain is still in flight (it read an empty inbox) when the host goes and this drain is owed:
+    // its re-owe must not push this one out, so the entries are reported parked now, not at the next hello.
     f.state.protocol = null;
     f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
     await f.api.drain(SID);

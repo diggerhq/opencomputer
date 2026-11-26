@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { Ask } from '@opencomputer/sdk/computer'
 import { cn } from '@/lib/utils'
-import { Rich } from './bits'
+import { Rich } from './Rich'
 
 // What an approval asks to run, read from its payload: `approval.input` is the
 // tool's own input (Claude Code's or Codex's), so each known tool is shown the

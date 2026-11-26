@@ -402,6 +402,44 @@ describe("computer routes", () => {
     socket.close();
   });
 
+  it("a drain sends repositories connected after the hello, at most once a minute by the stored check time", async () => {
+    const ORG = "org_drain_refresh";
+    const computer = () => computers().getByName(ORG);
+    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(computer(), fn as never) as Promise<T>;
+    const upgraded = await SELF.fetch(`${ORIGIN}/v1/computer/host?organizationId=${ORG}`, {
+      headers: { upgrade: "websocket", authorization: `Bearer ${await hostToken("test-computer-host-token-key", ORG)}` },
+    });
+    const socket = upgraded.webSocket!;
+    socket.accept();
+    const first = nextMessage(socket, "welcome");
+    socket.send(JSON.stringify({ t: "hello", protocol: CALVIN_PROTOCOL_VERSION, hostId: ORG, version: "test", sessions: [], journals: [] }));
+    await first;
+
+    // Checked just now: a drain does not look again.
+    const reads = await inside(async (instance) => {
+      let n = 0;
+      instance.put("definition", JSON.stringify({ repos: [] }));
+      instance.put("definitionCheckedAt", String(Date.now()));
+      instance.definition = async () => (n++, { repos: [{ name: "connected-later" }] });
+      await instance.drain("cs_0000000000000000");
+      await new Promise((r) => setTimeout(r, 20));
+      return n;
+    });
+    expect(reads).toBe(0);
+
+    // A minute later: the next drain re-reads them and the host gets a fresh welcome.
+    const again = nextMessage(socket, "welcome");
+    await inside(async (instance) => {
+      instance.put("definitionCheckedAt", String(Date.now() - 61_000));
+      instance.definition = async () => ({ repos: [{ name: "connected-later" }] });
+      instance.previewWelcome = async () => ({ preview: { tunnelToken: "t", key: "wire-key", ports: [] } });
+      await instance.drain("cs_0000000000000000");
+    });
+    expect((await again).definition).toEqual({ repos: [{ name: "connected-later" }] });
+    expect(Number(await inside((instance) => instance.setting("definitionCheckedAt")))).toBeGreaterThan(Date.now() - 10_000);
+    socket.close();
+  });
+
 });
 
 /** Another organization with `teamId` linked, approved by `installer`. */

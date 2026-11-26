@@ -39,7 +39,10 @@ import { refusal, transient, type Ctx, type Reply } from "./ctx.js";
 import { makeId } from "./ids.js";
 import { mutationRequest } from "./mutation-table.js";
 import { emitter, signal, type Emitter, type WritableSignal } from "./signal.js";
-import { Refused, type ApiEvent, type Failure, type FeedFrame, type Pending, type Row, type SessionRow } from "./types.js";
+import { Refused, type Failure, type Pending } from "./client-interface.js";
+import type { Row, SessionRow } from "./feed-rows.js";
+import type { FeedFrame } from "./http-bodies.js";
+import type { ApiEvent } from "./session-objects.js";
 
 /** What storage holds for an entry. */
 interface Stored {

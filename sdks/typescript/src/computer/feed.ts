@@ -9,7 +9,10 @@
 
 import { transient, type Ctx, type Op } from "./ctx.js";
 import { emitter } from "./signal.js";
-import type { FeedFrame, Row, ServerFrame, Stream } from "./types.js";
+import type { Stream } from "./client-interface.js";
+import type { Row } from "./feed-rows.js";
+import type { FeedFrame } from "./http-bodies.js";
+import type { ServerFrame } from "./socket-frames.js";
 
 export interface Feed {
   stream(kinds: string[]): Stream<FeedFrame>;

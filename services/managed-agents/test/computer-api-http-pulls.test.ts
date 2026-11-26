@@ -1,10 +1,8 @@
 // Spec 40.9: the GitHub App's pull request webhooks reach Org.acceptPull of the organizations
-// that chose a Work repository through the installation; PUT /work/repository records that.
+// that chose a Work repository through the installation; Org records that (test/org.test.ts).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
-import { memberIdentity } from "./fixtures/identity.js";
 import { receiveGitHubWebhook } from "../src/edge/git-deploy-service.js";
 
 const SECRET = "s".repeat(32);
@@ -60,25 +58,5 @@ describe("pull request webhooks (spec 40.9)", () => {
     await deliver(env, "check_suite", { action: "completed", installation: { id: 42 }, repository, check_suite: { conclusion: "failure", pull_requests: [{ number: 3 }] } });
     expect(accounts.mintGitHubInstallationToken).toHaveBeenCalledWith({ installationId: "i1", permissions: { pull_requests: "read" } });
     expect(org.acceptPull).toHaveBeenCalledWith(expect.objectContaining({ url: pr.html_url, state: "open", checks: "failure" }));
-  });
-});
-
-describe("PUT /work/repository records the installation", () => {
-  it("writes the organization under GitHub's installation id", async () => {
-    const d1 = db([]);
-    const repo = { owner: "o", name: "r" };
-    const env = {
-      SERVERLESS_AGENTS_DB: d1,
-      ORGS: { getByName: () => ({ setRepository: vi.fn(async () => ({ ok: true, repository: repo })) }) },
-      ACCOUNTS: { getByName: () => ({ getGitHubInstallation: vi.fn(async () => ({ githubInstallationId: 42 })) }) },
-    };
-    const member = memberIdentity(ORG, "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
-    const stub: ComputerApiStub = { computerApi: vi.fn() };
-    const res = await routeComputerApi(
-      new Request("https://blue.test/v1/computer/work/repository", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ installationId: "i1", owner: "o", name: "r" }) }),
-      env as never, member, ORG, stub, "/work/repository",
-    );
-    expect(res.status).toBe(200);
-    expect(d1.writes).toEqual([[expect.stringContaining("github_installation_orgs"), 42, ORG, "i1"]]);
   });
 });

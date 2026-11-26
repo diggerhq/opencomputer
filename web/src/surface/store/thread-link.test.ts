@@ -36,7 +36,7 @@ vi.mock('@opencomputer/sdk/computer', async (actual) => {
   }
 })
 
-const { createSurface } = await import('./index')
+const { createSurface } = await import('./surface-store')
 const { Refused, memoryStorage } = await import('@opencomputer/sdk/computer')
 
 const SID = 'cs_0000000000000001'

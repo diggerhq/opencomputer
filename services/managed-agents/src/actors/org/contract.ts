@@ -74,6 +74,8 @@ export interface SessionPatch {
 /** What one who manages a session's access but may not use it reads of it (an admin outside it). */
 export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };
 /** The organization's settings for the session API (spec 36.1). */
+/** Who drives a new Slack session: everyone in its thread (`open`, the default) or only its owner. */
+export type SlackAccessDefault = "open" | "owner";
 export interface OrgSettings {
   apiAccessDefault: "owner" | "org";
 }
@@ -166,6 +168,8 @@ export interface OrgRpc {
   settings(p: Principal): Promise<OrgSettings>;
   /** Admins only (`admin_required`). */
   setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>>;
+  /** The Slack actor only, `!access default`: who drives a new Slack session. Admins only (`admin_required`). */
+  setSlackAccessDefault(p: Principal, value: SlackAccessDefault): Promise<Reply<{ value: SlackAccessDefault }>>;
 
   // the feed and the work part
   feed(p: Principal, q: { after?: string; kinds?: string[] }): Promise<FeedFrame | { reset: true; cursor: null }>;
@@ -194,6 +198,8 @@ export interface OrgRpc {
   access(sessionId: string): Promise<Access | null>;
   /** Computer only. */
   forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }>;
+  /** Computer only: whether a member (`usr_…`) is an admin, as Org last saw them (a session secret's owner rule in Slack). */
+  isAdmin(member: string): Promise<boolean>;
   repository(p: Principal): Promise<Repository | null>;
   setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>>;
   /** `GET /work/repositories`: what the organization's GitHub installations grant. */

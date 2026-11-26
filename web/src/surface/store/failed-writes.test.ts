@@ -36,7 +36,7 @@ vi.mock('@opencomputer/sdk/computer', async (actual) => {
   }
 })
 
-const { createSurface } = await import('./index')
+const { createSurface } = await import('./surface-store')
 const { memoryStorage } = await import('@opencomputer/sdk/computer')
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))

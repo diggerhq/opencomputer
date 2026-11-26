@@ -91,10 +91,12 @@ import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract
 import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
+import type { AccessCarry } from "../src/actors/computer/contract.js";
 
 type Fakes = {
   calls: [string, ...unknown[]][];
   boardRepository?: StoredRepository;
+  accessCarry?: AccessCarry;
   account?: TokenMinter;
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
 };
@@ -105,11 +107,12 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
     const org = instance as unknown as OrgDurableObject;
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
     const out: OrgOut = {
-      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed") }),
+      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), accessCarry: async () => fakes.accessCarry ?? { accessDefault: null, apiAccessDefault: null } }),
       log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }) }),
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),
+      installationIndexed: rec("installation.indexed"),
       boardRepository: async () => fakes.boardRepository ?? null,
       account: () => fakes.account ?? null,
       fetch: (url, init) => (fakes.fetch ?? fetch)(url, init),
@@ -159,6 +162,54 @@ describe("Org.createSession", () => {
 
 describe("Org: session access (spec 36.2)", () => {
   const SID = "cs_0000000000000030";
+  const slackOrigin = { type: "slack" as const, client: null, slack: null };
+  const slackMember = (subject: string, org: string): Principal => ({ ...member(subject, org), via: "slack" });
+
+  it("carries the Computer's defaults over once, where Org has none, and a new Slack session takes the Slack one", async () => {
+    const fakes: Fakes = { calls: [], accessCarry: { accessDefault: "owner", apiAccessDefault: "org" } };
+    await withActor(
+      "access-carry",
+      async (org, _f, sql) => {
+        const a = member("usr_a", "access-carry");
+        await org.createSession(a, { id: "cs_0000000000000040", origin: slackOrigin });
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'accessCarry'")).toEqual([{ purpose: "accessCarry" }]);
+        expect((await org.access("cs_0000000000000040"))?.writers).toBe("members");
+        await org.alarm();
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'accessCarry'")).toEqual([]);
+        expect(await org.settings(a)).toEqual({ apiAccessDefault: "org" });
+        await org.createSession(a, { id: "cs_0000000000000041", origin: slackOrigin });
+        expect((await org.access("cs_0000000000000041"))?.writers).toEqual(["user:usr_a"]);
+        // An explicit list is kept; an API session is unaffected.
+        await org.createSession(a, { id: "cs_0000000000000042", origin: slackOrigin, writers: "members" });
+        expect((await org.access("cs_0000000000000042"))?.writers).toBe("members");
+        // What Org holds is not replaced by a later carry.
+        fakes.accessCarry = { accessDefault: "open", apiAccessDefault: "owner" };
+        sql.exec("INSERT INTO _alarm (purpose, at) VALUES ('accessCarry', 0)");
+        await org.alarm();
+        expect(await org.settings(a)).toEqual({ apiAccessDefault: "org" });
+        expect(sql.exec("SELECT slack_access_default AS v FROM meta")).toEqual([{ v: "owner" }]);
+      },
+      fakes,
+    );
+  });
+
+  it("lets only an admin change the Slack default, a Slack principal named by Org's admins too", async () => {
+    await withActor("access-slack-default", async (org, _f, sql) => {
+      const name = "access-slack-default";
+      await org.settings({ ...member("usr_boss", name), admin: true });
+      expect(await org.setSlackAccessDefault(slackMember("usr_a", name), "owner")).toMatchObject({ ok: false, code: "admin_required", status: 403 });
+      expect(await org.setSlackAccessDefault(slackMember(`slack:T1:U9`, name), "owner")).toMatchObject({ ok: false, code: "admin_required" });
+      // A Slack principal is never `admin`; it does not unmake the admin Org saw.
+      expect(await org.setSlackAccessDefault(slackMember("usr_boss", name), "owner")).toEqual({ ok: true, value: "owner" });
+      expect(sql.exec("SELECT slack_access_default AS v FROM meta")).toEqual([{ v: "owner" }]);
+      await org.createSession(slackMember("usr_a", name), { id: "cs_0000000000000043", origin: slackOrigin });
+      expect((await org.access("cs_0000000000000043"))?.writers).toEqual(["user:usr_a"]);
+      expect(await org.setSlackAccessDefault(slackMember("usr_boss", name), "open")).toEqual({ ok: true, value: "open" });
+      await org.createSession(slackMember("usr_a", name), { id: "cs_0000000000000044", origin: slackOrigin });
+      expect((await org.access("cs_0000000000000044"))?.writers).toBe("members");
+    });
+  });
+
   it("defaults from the organization's setting, which only an admin changes", async () => {
     await withActor("access-default", async (org) => {
       const a = member("usr_a", "access-default");
@@ -382,9 +433,39 @@ describe("Org's knowledge repository", () => {
         expect((await org.forHost("knowledge-board")).knowledge).toBe("acme/knowledge");
         await org.drain();
         expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
+        // The carried setting's installation is indexed for the App's webhooks, as a choice's is.
+        expect(fakes.calls).toContainEqual(["installation.indexed", "12"]);
       },
       fakes,
     );
+  });
+
+  it("indexes a stored repository's installation in D1 github_installation_orgs, owed until written", async () => {
+    await runInDurableObject(ORGS.getByName("knowledge-index"), async (instance, state) => {
+      const org = instance as unknown as OrgDurableObject & { env: Record<string, unknown> };
+      const writes: unknown[][] = [];
+      let down = true;
+      org.env.SERVERLESS_AGENTS_DB = {
+        prepare: (sql: string) => ({ bind: (...args: unknown[]) => ({ run: async () => { if (down) throw new Error("D1 down"); writes.push([sql, ...args]); return {}; } }) }),
+      } as unknown as D1Database;
+      org.out = {
+        ...org.out,
+        account: () => ({ ...account, getGitHubInstallation: () => ({ accountLogin: "acme", githubInstallationId: 42 }) }),
+        fetch: github,
+        computer: () => ({ changed: async () => undefined }) as never,
+      };
+      const a = member("usr_a", "knowledge-index");
+      expect(await org.setRepository(a, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: true });
+      await org.drain().catch(() => undefined);
+      expect(writes).toEqual([]);
+      const sql = sqlOf(state.storage);
+      expect(owed.has(sql, "installation:org")).toBe(true);
+      down = false;
+      sql.exec("UPDATE _owed SET at = 0");
+      await org.drain();
+      expect(writes).toEqual([[expect.stringContaining("github_installation_orgs"), 42, "knowledge-index", "12"]]);
+      expect(owed.has(sql, "installation:org")).toBe(false);
+    });
   });
 
   it("stores a checked choice, owes Computer `changed`, and refuses an agent", async () => {
@@ -399,6 +480,7 @@ describe("Org's knowledge repository", () => {
         expect((await org.forHost("knowledge-set")).knowledge).toBe("acme/notes");
         await org.drain();
         expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
+        expect(fakes.calls).toContainEqual(["installation.indexed", "12"]);
         expect(await org.setRepository({ ...a, kind: "agent" }, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: false, code: "forbidden", status: 403 });
       },
       fakes,

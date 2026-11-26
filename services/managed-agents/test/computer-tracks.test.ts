@@ -392,4 +392,13 @@ describe("the Computer actor of tracks and threads", () => {
     const sent = await until(() => frames.filter((frame) => frame.t === "credentials"), (all) => all.length > 0, "credentials frame");
     expect(sent.at(-1).credentials).toMatchObject({ slackBotToken: "", slackBotUserId: "" });
   });
+
+  it("hands Org the default access it held, once read, null where it held none", async () => {
+    const { stub } = await computer("tt-access-carry");
+    expect(await stub.accessCarry()).toEqual({ accessDefault: null, apiAccessDefault: null });
+    await inside(stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('accessDefault', 'owner'), ('apiAccessDefault', 'org')");
+    });
+    expect(await stub.accessCarry()).toEqual({ accessDefault: "owner", apiAccessDefault: "org" });
+  });
 });

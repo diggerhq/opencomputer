@@ -88,6 +88,11 @@ export const owed = {
   has(sql: Sql, key: string): boolean {
     return sql.exec("SELECT 1 FROM _owed WHERE key = ?", key).length > 0;
   },
+  /** The body of the call owed under this key, if one is. */
+  body(sql: Sql, key: string): unknown {
+    const row = sql.exec<{ body: string | null }>("SELECT body FROM _owed WHERE key = ?", key)[0];
+    return row?.body ? JSON.parse(row.body) : undefined;
+  },
   /** The groups with a call owed. */
   groups(sql: Sql): string[] {
     return sql.exec<{ grp: string }>("SELECT DISTINCT grp FROM _owed ORDER BY grp").map((row) => row.grp);

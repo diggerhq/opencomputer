@@ -1,7 +1,7 @@
 // A `Storage` in memory: for tests, and for a caller with nowhere to keep things. Values are copied
 // in and out as JSON, as a real store would.
 
-import type { Storage } from "./types.js";
+import type { Storage } from "./client-interface.js";
 
 export function memoryStorage(): Storage {
   const map = new Map<string, string>();

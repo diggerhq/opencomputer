@@ -229,6 +229,8 @@ type HostOutcome = { result?: unknown; error?: CalvinApiError; timedOut?: true }
 interface OwedDrain {
   sessionId: string;
   start?: true;
+  /** This drain, told from one owed after it while it ran (rows written before it have none). */
+  token?: string;
 }
 
 const drainKey = (sessionId: string) => `drain:${sessionId}`;
@@ -470,13 +472,13 @@ export class ComputerSessionsApi {
 
   private readonly sendOwed = async (call: string, body: unknown): Promise<void> => {
     if (call !== "drain") return this.deps.sendOwed(call, body);
-    const { sessionId, start } = body as OwedDrain;
-    await this.drainNow(sessionId, start === true);
+    const { sessionId, start, token } = body as OwedDrain;
+    await this.drainNow(sessionId, start === true, token);
   };
 
   /** One owed drain per session (its group, its key): a later one replaces it, so it reads the inbox again. */
   private owe(sessionId: string, opts: { start?: boolean; at?: number } = {}): void {
-    const body: OwedDrain = { sessionId, ...(opts.start ? { start: true } : {}) };
+    const body: OwedDrain = { sessionId, ...(opts.start ? { start: true } : {}), token: crypto.randomUUID() };
     owed.add(this.deps.store, { group: sessionId, key: drainKey(sessionId), call: "drain", body, ...(opts.at ? { at: opts.at } : {}) });
   }
 
@@ -484,13 +486,13 @@ export class ComputerSessionsApi {
    * The session's waiting inbox entries, in order, each as one `api` frame (the first starts the runner),
    * each then reported to its SessionLog; with none, the `start` frame if one is owed.
    */
-  private async drainNow(sessionId: string, start: boolean): Promise<void> {
+  private async drainNow(sessionId: string, start: boolean, token?: string): Promise<void> {
     // No runner row, no drain.
     if (!this.row(sessionId)) return;
     const log = this.log(sessionId);
     let inbox = await this.admit(sessionId, await log.inbox());
-    if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries);
-    if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox) : undefined;
+    if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries, token);
+    if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox, token) : undefined;
     const moving = this.epochSends.get(sessionId);
     if (moving) {
       // The host hears the new epoch first; the frames then carry the log as it is after.
@@ -525,7 +527,7 @@ export class ComputerSessionsApi {
   }
 
   /** The `start` frame: the runner up before its first entry. A refused route starts nothing: the first turn reports it. */
-  private async sendStart(sessionId: string, inbox: Inbox): Promise<void> {
+  private async sendStart(sessionId: string, inbox: Inbox, token?: string): Promise<void> {
     const row = this.row(sessionId)!;
     const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
     if (routed?.error) return;
@@ -535,7 +537,7 @@ export class ComputerSessionsApi {
       t: "start", id, session: routed?.session ?? this.spec(row), epoch: inbox.epoch, lastSeq: inbox.lastSeq,
       ...(secrets ? { secrets } : {}), role: row.role ? (JSON.parse(row.role) as CalvinRoleSpec) : null,
     });
-    if (!sent) return this.awaitHost(sessionId, true, []);
+    if (!sent) return this.awaitHost(sessionId, true, [], token);
     this.pending.set(id, { resolve: () => undefined, timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS) });
   }
 
@@ -543,7 +545,10 @@ export class ComputerSessionsApi {
    * No host: the drain stays owed until `hello` makes it due (`helloOwed`), HOST_AWAITED_MS at the latest.
    * Entries that wait wake the machine, each reported `dispatch.parked` (the no-host alert); a start alone does not.
    */
-  private awaitHost(sessionId: string, start: boolean, entries: InboxEntry[]): void {
+  private awaitHost(sessionId: string, start: boolean, entries: InboxEntry[], token?: string): void {
+    // A drain owed while this one ran replaces it and runs next, reading the inbox again: it waits and reports, not this one.
+    const current = owed.body(this.deps.store, drainKey(sessionId)) as OwedDrain | undefined;
+    if (current && current.token !== token) return;
     this.owe(sessionId, { start, at: Date.now() + HOST_AWAITED_MS });
     if (entries.length === 0) return;
     const key = this.row(sessionId)?.key;

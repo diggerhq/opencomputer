@@ -18,6 +18,11 @@ export interface SlackCarry {
   links: { slackUser: string; member: string }[];
 }
 
+export interface AccessCarry {
+  accessDefault: "open" | "owner" | null;
+  apiAccessDefault: "owner" | "org" | null;
+}
+
 export interface ComputerRpcAdded {
   start(spec: StartSpec): Promise<void>;
   stop(sessionId: string): Promise<void>;
@@ -42,6 +47,8 @@ export interface ComputerRpcAdded {
   changed(source: "org" | "slack"): Promise<void>;
   /** The Slack actor only, once: spec 43.1. */
   slackCarry(): Promise<SlackCarry>;
+  /** Org only, once: the organization's default access as this Computer held it (settings `accessDefault`, `apiAccessDefault`); null where it held none. */
+  accessCarry(): Promise<AccessCarry>;
   /**
    * The Slack actor only: an interaction whose state is Computer's (secret, variable, connection and
    * subscription modals and their buttons: a `view_submission`, `s:`, `cn:`, `v:`, `mc:connect`,

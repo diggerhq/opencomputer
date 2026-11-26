@@ -92,8 +92,14 @@ export interface RepositoriesQuery {
 /** What Org needs of the Account object. */
 export interface TokenMinter {
   mintGitHubInstallationToken(input: { installationId: string; permissions?: Record<string, "read" | "write">; repositories?: string[] }): Promise<GitHubTokenMint>;
-  getGitHubInstallation(installationId: string): Promise<{ accountLogin: string } | null> | { accountLogin: string } | null;
+  getGitHubInstallation(installationId: string): Promise<GitHubInstallation | null> | GitHubInstallation | null;
   listGitHubInstallations(): Promise<AccountInstallation[]> | AccountInstallation[];
+}
+
+/** What the Account says of one installation: its GitHub account, and GitHub's id for it (`github_installation_orgs`). */
+export interface GitHubInstallation {
+  accountLogin: string;
+  githubInstallationId?: number;
 }
 
 export interface AccountInstallation {
@@ -125,6 +131,8 @@ export function storeRepository(sql: Sql, repo: StoredRepository): void {
   sql.transaction(() => {
     sql.exec("UPDATE meta SET knowledge = ? WHERE k = 1", JSON.stringify(repo));
     if (before !== fullName(repo)) owed.add(sql, { group: "changed", key: "changed:org", call: "Computer.changed", body: {} });
+    // The App's pull request webhooks find the organization by its installation (D1 `github_installation_orgs`), however the repository was stored.
+    owed.add(sql, { group: "installation", key: "installation:org", call: "installation.indexed", body: { installationId: repo.installationId } });
   });
 }
 

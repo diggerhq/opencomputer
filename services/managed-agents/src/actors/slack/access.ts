@@ -58,6 +58,8 @@ export type AccessCommand =
   | { kind: "set"; people: "members" | string[] }
   | { kind: "add"; ids: string[] }
   | { kind: "remove"; ids: string[] }
+  /** `!access default open|owner`: who drives a new session (admins only). */
+  | { kind: "default"; value: "open" | "owner" }
   | { kind: "usage" };
 
 const MENTION = /@([UW][A-Z0-9]{6,})/g;
@@ -75,6 +77,10 @@ export function parseAccessCommand(text: string): AccessCommand {
   if (!first) return { kind: "show" };
   if (args.length === 1 && first === "open") return { kind: "set", people: "members" };
   if (args.length === 1 && first === "owner") return { kind: "set", people: [] };
+  if (first === "default") {
+    const value = (args[1] ?? "").toLowerCase();
+    return args.length === 2 && (value === "open" || value === "owner") ? { kind: "default", value } : { kind: "usage" };
+  }
   const people = (tokens: string[]) => (tokens.length && tokens.every((t) => MENTION_ONLY.test(t)) ? mentionedIds(tokens.join(" ")) : undefined);
   if (first === "add" || first === "remove") {
     const ids = people(args.slice(1));
@@ -90,6 +96,7 @@ export const ACCESS_USAGE = [
   "`!access owner`: only the owner can drive",
   "`!access @a @b`: the owner and these people can drive",
   "`!access add @a @b` / `!access remove @a`: change who is named",
+  "`!access default open|owner`: who can drive new sessions (admins only)",
 ].join("\n");
 
 // ------------------------------------------------------------------ strings
@@ -113,6 +120,9 @@ export const onlyGrantorAnswersText = (owner: string) => `Only ${shown(owner)} o
 export const onlyGrantorChangesText = (owner: string) => `Only ${shown(owner)} or an admin can change who drives this session.`;
 export const noSessionText = () => "There is no session in this thread.";
 export const notAskedText = () => "This is waiting on someone else.";
+export const defaultSetText = (value: "open" | "owner") =>
+  value === "open" ? "New sessions now start open to everyone in their thread." : "New sessions now start with only their owner driving.";
+export const onlyAdminDefaultText = () => "Only an admin can change the default.";
 export const listIsOpenText = () => "Everyone in this thread can drive already; `!access @a @b` names who can.";
 
 /** The state line: `writers` as Slack ids (or subjects), the owner left out. */
