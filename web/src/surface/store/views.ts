@@ -24,6 +24,8 @@ export interface ThreadView {
   word: string
   // One line of where it is, for its card in the track.
   line: string | null
+  // What a thread that has not begun waits on (its machine starting), else null.
+  waiting: string | null
   trackId: string | null
   done: boolean
   outcome: string | null
@@ -81,6 +83,22 @@ const WORD: Record<string, string> = {
   ready: 'ready for you',
 }
 
+// A thread that has not begun waits on its machine: say so while the machine is not up, or a
+// brand-new organization's first message (minutes of provisioning) looks like nothing happening.
+const MACHINE_LINE: Record<string, string> = {
+  provisioning: 'Setting up your computer: the first start takes a few minutes',
+  waking: 'Waking your computer',
+  failed: 'Your computer could not start',
+  deleting: 'Your computer is being deleted',
+}
+
+export function machineLine(rows: Rows, session: SessionRow): string | null {
+  if (session.status !== 'starting' || session.lastSeq > 0) return null
+  // An optimistic row does not know its machine yet; an organization has one.
+  const machine = rows.machine.get(session.machine) ?? (rows.machine.size === 1 ? rows.machine.values().next().value : undefined)
+  return machine ? (MACHINE_LINE[machine.state] ?? null) : null
+}
+
 const firstLine = (s: string | null | undefined) =>
   s ? (s.split('\n').find((l) => l.trim()) ?? null) : null
 
@@ -132,7 +150,7 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
   const read = readRow((id) => rows.read.get(id), me, sid)
   const results = ix.results.get(sid) ?? NONE
   const proposals = ix.proposals.get(sid) ?? NONE
-  const key = [place, read, rows.result, rows.proposal]
+  const key = [place, read, rows.result, rows.proposal, rows.machine]
   const hit = threadCache.get(session)
   if (hit && hit.key.every((k, i) => k === key[i])) return hit.view
 
@@ -143,6 +161,7 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
     (place.readySeq ?? -1) > readSeq || proposals.some((p) => p.type !== 'done' || (p.atSeq ?? -1) > readSeq)
   const mark: Mark = session.blocked ? 'blocked' : working ? 'working' : ready ? 'ready' : null
   const ask = session.asks.find((a) => a.status === 'open') ?? null
+  const waiting = machineLine(rows, session)
   const view: ThreadView = {
     id: sid,
     title: session.title || 'New thread',
@@ -154,7 +173,9 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
       (ask ? askLine(ask) : null) ??
       (session.lastTurn?.status === 'failed' ? (session.lastTurn.error?.message ?? 'The turn failed') : null) ??
       (ready ? place.readyWhat : null) ??
+      waiting ??
       firstLine(session.lastText),
+    waiting,
     trackId: place.trackId,
     done: place.doneAt !== null,
     outcome: place.outcome,
