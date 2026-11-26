@@ -172,7 +172,7 @@ To use an app you created by hand with the same scopes, events and URLs, put its
 
 ## People
 
-One instance serves a whole team through one Slack workspace. Only people listed in `SP_PEOPLE` can use it; anyone else who mentions the app gets "not enabled for you yet", including whoever installed the Slack app. It is a JSON array, one object per person, upserted into the gateway's database on every start:
+One instance serves a whole team through one Slack workspace. Only people listed in `SP_PEOPLE` can use it; anyone else who mentions the app gets "not enabled for you yet", including whoever installed the Slack app. It is a JSON array, one object per person; on every start the gateway's people become exactly this list:
 
 ```bash
 SP_PEOPLE='[{"slackUserId":"U0123ABCD","dir":"ada","gitName":"Ada Lovelace","gitEmail":"ada@example.com","admin":true},
@@ -188,9 +188,9 @@ SP_PEOPLE='[{"slackUserId":"U0123ABCD","dir":"ada","gitName":"Ada Lovelace","git
 
 Write it on one line in `.env` (the example above is wrapped for reading), then run `podman compose up -d`.
 
-<Warning>
-Removing someone from `SP_PEOPLE` does not revoke their access: a start only adds and updates people, it never deletes them, so a removed person can still start and drive sessions. Until the gateway can remove people, the only way is deleting their row from the `people` table in `gateway.db` while the gateway is stopped.
-</Warning>
+<Note>
+To revoke someone's access, remove them from `SP_PEOPLE` and run `podman compose up -d`: on start the gateway removes anyone no longer listed, so they can no longer start or drive sessions. Their `/data/people` directory and session history stay, and listing them again restores their access. If `SP_PEOPLE` is unset or an empty list, the people already in the database are left as they are. Gateways built before [#1249](https://github.com/diggerhq/opencomputer/pull/1249) only add and update people; on those, delete the person's row from the `people` table in `gateway.db` while the gateway is stopped.
+</Note>
 
 How several people share it:
 
@@ -247,7 +247,6 @@ These are the names both halves of the install rely on. [`selfhost/CONTRACT.md`]
 
 - **No web login or dashboard.** The only web pages are `/setup` (behind `SETUP_TOKEN`, closed once setup is done) and `/healthz`; there is no per-person sign-in.
 - **Sessions start only from Slack.** No API, CLI or browser entry point, and one Slack workspace per instance.
-- **No way to remove a person.** People are added in `SP_PEOPLE` and a restart; taking someone out of it does not revoke their access (see [People](#people)).
 - **No high availability.** One gateway, one host, one SQLite file on one VM. If the VM is down, so is the instance; Slack retries an event a few times, then drops it.
 - **No automatic backups.** Back up `gateway.db`, `.env` and `/data` yourself ([Back up and restore](#back-up-and-restore)).
 - **No egress allowlist.** Sessions reach the whole internet; restrict it with your own firewall or proxy if you need to.
