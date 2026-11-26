@@ -8,15 +8,11 @@
  * same list, so a missed edge rule is not enough.
  *
  * Also the caller as tracks and threads names it (spec 34.3): the `Principal` the edge puts
- * in the assertion as `oc_principal`, or, for an assertion without it, the same principal
- * built from the older claims.
+ * in the assertion as `oc_principal`, checked here; the one principal every route reads.
  */
 
 import type { Principal } from "../actor/principal.js";
-import { API_SCOPES, type ApiScope } from "../computer/api-types.js";
-import { apiScopes } from "../computer/keys.js";
-import { isSessionId, memberId } from "../computer/session-ids.js";
-import type { RequestIdentity } from "./auth.js";
+import { API_SCOPES } from "../computer/api-types.js";
 
 export const COMPUTER_PRINCIPAL = "computer";
 
@@ -77,51 +73,5 @@ export function principalClaim(claim: unknown, org: string): Principal | null | 
     ...(typeof c.session === "string" ? { session: c.session } : {}),
     admin: c.admin,
     credential: { id: cred.id, expiresAt: cred.expiresAt as number | null },
-  };
-}
-
-/** What a member's cookie or the app's token may do (spec 34.3); the Computer's own routes keep today's check. */
-const MEMBER_SCOPES: ApiScope[] = ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"];
-
-/**
- * The caller's principal: the edge's `oc_principal` when the assertion has it, else the same
- * principal built from the older claims. Null for a project key, which uses no session.
- */
-export async function principalOf(identity: RequestIdentity, userAgent: string | null): Promise<Principal | null> {
-  if (identity.ocPrincipal) return identity.ocPrincipal;
-  const key = identity.apiKey;
-  if (key?.kind === "project" || identity.projectId) return null;
-  const org = identity.accountId;
-  // The edge folds an organization's `owner` and `admin` roles into `admin`.
-  const admin = identity.role === "admin" || identity.role === "owner";
-  const expiresAt = key?.expiresAt ? Date.parse(key.expiresAt) : NaN;
-  const credential = { id: key?.id ?? `login:${identity.userId}`, expiresAt: Number.isFinite(expiresAt) ? expiresAt : null };
-  if (identity.principal === COMPUTER_PRINCIPAL) {
-    // A `cs_…` session key binds the agent to that session; an older Slack thread key binds it to none.
-    const session = identity.sessionKey && isSessionId(identity.sessionKey) ? identity.sessionKey : undefined;
-    const scopes = new Set<ApiScope>([...apiScopes(key?.scopes), "work:read", "work:write"]);
-    scopes.delete("terminals");
-    return {
-      org,
-      subject: session ?? COMPUTER_PRINCIPAL,
-      kind: "agent",
-      via: "agent",
-      scopes: API_SCOPES.filter((s) => scopes.has(s)),
-      audiences: [],
-      ...(session ? { session } : {}),
-      admin,
-      credential,
-    };
-  }
-  const subject = await memberId(identity.userId);
-  return {
-    org,
-    subject,
-    kind: key ? "key" : "member",
-    via: userAgent?.startsWith("opc/") ? "opc" : key ? "api" : "dashboard",
-    scopes: key ? apiScopes(key.scopes) : [...MEMBER_SCOPES],
-    audiences: ["org", `member:${subject}`],
-    admin,
-    credential,
   };
 }

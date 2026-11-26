@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
+import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
 
 const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
@@ -12,10 +13,10 @@ const SID = "cs_0123456789abcdef";
 const TID = "trk_0123456789abcdef";
 const CLIENT = "cl_0123456789abcdef";
 
-const member = { kind: "user", userId: USER, accountId: ORG, organizationId: ORG, role: "member" } as RequestIdentity;
+const member = memberIdentity(ORG, USER);
 const key = (scopes: string[]) =>
-  ({ ...member, apiKey: { id: "key_1", hash: "a".repeat(64), name: "k", kind: "user", scopes, expiresAt: null, createdAt: null } }) as RequestIdentity;
-const agent = { ...member, principal: "computer", sessionKey: SID, apiKey: { id: "key_2", hash: "b".repeat(64), name: "s", kind: "user", scopes: ["sessions:read"], expiresAt: null, createdAt: null } } as RequestIdentity;
+  keyIdentity(ORG, USER, scopes);
+const agent = agentIdentity(ORG, SID, ["sessions:read"]);
 
 function setup(org: Record<string, unknown>) {
   const env = { ORGS: { getByName: vi.fn(() => org) } };

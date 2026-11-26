@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
-import type { RequestIdentity } from "../src/edge/auth.js";
+import { memberIdentity } from "./fixtures/identity.js";
 import { receiveGitHubWebhook } from "../src/edge/git-deploy-service.js";
 
 const SECRET = "s".repeat(32);
@@ -72,7 +72,7 @@ describe("PUT /work/repository records the installation", () => {
       ORGS: { getByName: () => ({ setRepository: vi.fn(async () => ({ ok: true, repository: repo })) }) },
       ACCOUNTS: { getByName: () => ({ getGitHubInstallation: vi.fn(async () => ({ githubInstallationId: 42 })) }) },
     };
-    const member = { kind: "user", userId: "user_01JABCDEFGHJKMNPQRSTVWXYZ0", accountId: ORG, organizationId: ORG, role: "member" } as RequestIdentity;
+    const member = memberIdentity(ORG, "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
     const stub: ComputerApiStub = { computerApi: vi.fn() };
     const res = await routeComputerApi(
       new Request("https://blue.test/v1/computer/work/repository", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ installationId: "i1", owner: "o", name: "r" }) }),

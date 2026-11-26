@@ -6,7 +6,7 @@ import { ComputerKeys } from "../src/computer/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/computer/session-log-contract.js";
 import {
-  type ApiCaller,
+  type ApiRequest,
   ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
   HOST_CALL_TIMEOUT_MS,
@@ -28,14 +28,20 @@ const OWNER = "usr_01jabcdefghjkmnpqrstvwxyz0";
 const MO = "usr_01jzyxwvtsrqpnmkjhgfedcba0";
 const SID = "cs_7f3a9k2m4q8r1t6v";
 
-const caller = (member = OWNER, extra: Partial<ApiCaller> = {}): ApiCaller => ({
-  member,
-  userId: `user_${member.slice(4).toUpperCase()}`,
+const caller = (member = OWNER, { admin = false, ...extra }: Partial<ApiRequest> & { admin?: boolean } = {}): ApiRequest => ({
+  principal: {
+    org: ORG,
+    subject: member,
+    kind: "key",
+    via: "opc",
+    scopes: ["sessions:read", "sessions:write", "asks:answer"],
+    audiences: ["org", `member:${member}`],
+    admin,
+    credential: { id: "key_test", expiresAt: null },
+  },
   name: member === OWNER ? "Owner" : "Mo",
   email: null,
-  via: "opc",
   client: "opc/0.1.0",
-  scopes: ["sessions:read", "sessions:write", "asks:answer"],
   requestId: "req_test0001",
   ...extra,
 });

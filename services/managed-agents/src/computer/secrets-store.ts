@@ -37,7 +37,8 @@ import {
 import { driversCommandText } from "./access.js";
 import { LOOKUP_FAILED_TEXT } from "./threads.js";
 import { type VariableCommand, VARIABLE_HELP, credentialHint, parseVariableCommand, showValue } from "./variables.js";
-import type { ApiCaller, ApiReply } from "./sessions-api.js";
+import type { Principal } from "../actor/principal.js";
+import type { ApiReply, ApiRequest } from "./sessions-api.js";
 
 /** Slack's limit on a button's value, which carries the `!var` command for "Set it anyway". */
 const BUTTON_VALUE_MAX = 2000;
@@ -60,7 +61,7 @@ const EVENTS_PAGE = 100;
 export interface SecretActor {
   id: string;
   name?: string | null;
-  surface: "slack" | "dashboard" | "api" | "opc" | "system";
+  surface: Principal["via"] | "system";
 }
 
 /** Organization secrets and private writes to a visible session. */
@@ -499,10 +500,10 @@ export class SecretsStore {
    * (2026-11-01). api-http.ts has already refused session keys and checked scopes.
    * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
    */
-  async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
+  async api(caller: ApiRequest, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
     if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows() } };
     if (op.op === "secrets.events") return { status: 200, body: { events: this.orgEvents(op.name) } };
-    const actor: SecretActor = { id: caller.member, name: caller.name ?? caller.email, surface: caller.via };
+    const actor: SecretActor = { id: caller.principal.subject, name: caller.name ?? caller.email, surface: caller.principal.via };
     const recent = this.deps.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM secret_events WHERE actor = ? AND ts > ?",
       actor.id,

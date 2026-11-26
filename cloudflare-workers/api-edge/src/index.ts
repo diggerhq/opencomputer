@@ -1716,7 +1716,20 @@ async function computerApiCall(
   }
   facts.auth = "ok";
   facts.upstream = "blue";
-  return proxyManagedAgents(req, env, caller, "/api/managed-agents");
+  // Who asks is the principal alone; the key and the person's name and email are facts of the request.
+  return proxyManagedAgents(
+    req,
+    env,
+    {
+      orgID: caller.orgID,
+      userID: caller.userID,
+      ...(caller.key ? { key: caller.key } : {}),
+      userName: caller.userName ?? null,
+      userEmail: caller.userEmail ?? null,
+      ocPrincipal: principal,
+    },
+    "/api/managed-agents",
+  );
 }
 
 async function authCLIRevoke(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
@@ -2510,7 +2523,7 @@ export default {
       return proxyManagedAgents(
         req,
         env,
-        caller,
+        { ...caller, ocPrincipal: caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req)) },
         "/api/managed-agents",
       );
     }

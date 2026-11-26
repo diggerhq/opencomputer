@@ -5,6 +5,8 @@ import {
 
 import type { ManagedAgentIdentity } from "../protocol.js";
 import type { Principal } from "../actor/principal.js";
+import { API_SCOPES } from "../computer/api-types.js";
+import { memberId } from "../computer/session-ids.js";
 import { COMPUTER_PRINCIPAL, principalClaim } from "./computer-principal.js";
 
 export interface ManagedAgentAuthEnv {
@@ -273,9 +275,21 @@ export async function authenticateRequest(
   } else if (env.BLUE_ENVIRONMENT !== "development") {
     return null;
   }
+  // The operator of a development or self-hosted deployment: an admin member with every scope.
+  const subject = await memberId("local");
   return {
     kind: "user",
     userId: "local",
     accountId: env.BLUE_ACCOUNT_ID,
+    ocPrincipal: {
+      org: env.BLUE_ACCOUNT_ID,
+      subject,
+      kind: "member",
+      via: "api",
+      scopes: [...API_SCOPES],
+      audiences: ["org", `member:${subject}`],
+      admin: true,
+      credential: { id: "local", expiresAt: null },
+    },
   };
 }

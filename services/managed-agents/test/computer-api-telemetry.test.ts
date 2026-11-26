@@ -10,7 +10,7 @@ import { ApiTelemetry, type EmitTelemetry, surfaceOfOrigin } from "../src/comput
 import { BATCH_MS, TelemetryBatch } from "../src/computer/telemetry/batch.js";
 import { gatewayTelemetry } from "../src/computer/telemetry/gateway.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
-import type { RequestIdentity } from "../src/edge/auth.js";
+import { keyIdentity } from "./fixtures/identity.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /**
@@ -241,7 +241,9 @@ describe("ComputerKeys telemetry", () => {
 
 describe("httpapi.request: one per blue computer-API request", () => {
   const ON = { TINYBIRD_API_URL: "https://tb.test", TINYBIRD_APPEND_TOKEN: "p.append" };
-  const identity = { kind: "user", userId: "user_01JABCDEFGHJKMNPQRSTVWXYZ0", accountId: "org_1", role: "member" } as unknown as RequestIdentity;
+  // An opc key, as the edge resolves it from the key and the user agent.
+  const key = keyIdentity("org_1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0", ["sandbox:*"]);
+  const identity = { ...key, ocPrincipal: { ...key.ocPrincipal!, via: "opc" as const } };
 
   function capture() {
     const lines: Line[] = [];

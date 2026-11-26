@@ -20,13 +20,10 @@ import { base64url, computerOf, cursor, deliveryOf, hashOf, liveOf, logOf, orgOf
 import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
 import { eventsStream, type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
-import { API_SCOPES } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
-import { apiScopes } from "./keys.js";
-import { COMPUTER_PRINCIPAL, principalOf } from "../edge/computer-principal.js";
-import { CROCKFORD, isId, isSessionId, memberId } from "./session-ids.js";
-import { type ApiCaller, type ApiOp, type ApiReply, validatePatch, type WriteMethod } from "./sessions-api.js";
+import { CROCKFORD, isId, isSessionId } from "./session-ids.js";
+import { type ApiOp, type ApiRequest, type ApiReply, validatePatch, type WriteMethod } from "./sessions-api.js";
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
@@ -35,7 +32,7 @@ import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
-  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply>;
+  computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply>;
 }
 
 const BODY_MAX_BYTES = 512 * 1024;
@@ -253,28 +250,6 @@ function newRequestId(): string {
   return `req_${[...bytes].map((b) => alphabet[b & 31]).join("")}`;
 }
 
-/** The caller as the DO needs it; refuses project keys. */
-async function callerOf(request: Request, identity: RequestIdentity, requestId: string): Promise<ApiCaller | null> {
-  const key = identity.apiKey;
-  if (key?.kind === "project") return null;
-  const ua = request.headers.get("user-agent");
-  const via = ua?.startsWith("opc/") ? "opc" : key ? "api" : "dashboard";
-  return {
-    member: await memberId(identity.userId),
-    userId: identity.userId,
-    // The edge folds an organization's `owner` and `admin` roles into `admin`.
-    admin: identity.role === "admin" || identity.role === "owner",
-    name: identity.userName ?? null,
-    email: identity.userEmail ?? null,
-    via,
-    client: ua ? ua.replace(/[^\x20-\x7e]|\|/g, "").slice(0, 64) || null : null,
-    scopes: key ? apiScopes(key.scopes) : [...API_SCOPES],
-    ...(key ? { apiKey: key } : {}),
-    requestId,
-    userAgent: ua,
-  };
-}
-
 async function bodyOf(request: Request): Promise<{ value: unknown } | { error: [number, string, string, Record<string, unknown>] }> {
   const text = await readBoundedText(request, BODY_MAX_BYTES);
   if (text === null) return { error: [413, "payload_too_large", "The body is too large.", {}] };
@@ -447,8 +422,8 @@ async function routeApi(
   if (!route) return out.error(404, "not_found", "No such route.");
   out.facts.op = route.op;
   if (route.sessionId) out.facts.sessionId = route.sessionId;
-  const p = await principalOf(identity, request.headers.get("user-agent"));
-  if (!p) return out.error(403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
+  const p = identity.ocPrincipal;
+  if (!p) return out.error(401, "unauthenticated", "The request names no principal.");
   out.facts.via = p.via;
   if (p.subject.startsWith("usr_")) out.facts.member = p.subject;
   const claimed = request.headers.get("x-oc-principal");
@@ -460,15 +435,23 @@ async function routeApi(
     const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
     return actorRoute(request, env, p, person, route, out);
   }
-  // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop) keep today's caller and scopes.
-  const caller = await callerOf(request, identity, out.requestId);
-  if (!caller) return out.error(403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
+  // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop), as the same principal.
+  const ua = request.headers.get("user-agent");
+  const caller: ApiRequest = {
+    principal: p,
+    name: identity.userName ?? null,
+    email: identity.userEmail ?? null,
+    client: ua ? ua.replace(/[^\x20-\x7e]|\|/g, "").slice(0, 64) || null : null,
+    ...(identity.apiKey ? { apiKey: identity.apiKey } : {}),
+    requestId: out.requestId,
+    userAgent: ua,
+  };
   // Only people set secrets (work 095): a session's own key, whatever it names, is refused.
-  if ((route.op === "secrets" || route.op.startsWith("secrets.")) && identity.principal === COMPUTER_PRINCIPAL) {
+  if ((route.op === "secrets" || route.op.startsWith("secrets.")) && p.kind === "agent") {
     return out.error(403, "forbidden", "Sessions cannot read or set secrets over this API.", { reason: "computer_principal" });
   }
   const scope = scopeOf(route.op);
-  if (scope && !caller.scopes.includes(scope)) {
+  if (scope && !p.scopes.includes(scope)) {
     return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
   }
   const idem = request.headers.get("idempotency-key") ?? undefined;

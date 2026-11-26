@@ -19,8 +19,9 @@ import type { Access, DeliveredOutcome, DeltaPush, DrainResult, ExportedSession,
 import type { ApiTelemetry } from "./telemetry/api.js";
 import { decodeDrivers } from "./access.js";
 import type { RoutedApiSession } from "./api-model-route.js";
+import type { Principal } from "../actor/principal.js";
 import type { AssertedApiKey } from "../edge/auth.js";
-import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
+import type { Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import type { ComputerKeys } from "./keys.js";
@@ -76,20 +77,15 @@ export const GAP_CLOSE_INTERVAL_MS = 30_000;
 const TICKETS_PER_MINUTE = 60;
 const RETRY_COMPUTER_MS = 5_000;
 
-/** Who is calling, as the route resolved it (api-http.ts). */
-export interface ApiCaller {
-  /** `usr_…`. */
-  member: string;
-  /** The dashboard (WorkOS) user id. */
-  userId: string;
-  /** The caller's organization role is owner or admin: they may open terminals in any session they can see. */
-  admin?: boolean;
+/**
+ * A request to the Computer's own routes: who asks is the one principal (spec 34.3); the rest
+ * are facts of the request (the person's name and email, the key a ticket names).
+ */
+export interface ApiRequest {
+  principal: Principal;
   name: string | null;
   email: string | null;
-  /** The actor's `via`, and a new session's origin type: `opc`, `api` or `dashboard`. */
-  via: "opc" | "api" | "dashboard";
   client: string | null;
-  scopes: ApiScope[];
   apiKey?: AssertedApiKey;
   requestId: string;
   userAgent?: string | null;
@@ -283,11 +279,11 @@ export class ComputerSessionsApi {
   }
 
   /** A session the caller may see: every API session; a Slack one only by its linked owner. */
-  visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
+  visible(caller: ApiRequest, sessionId: string): ApiRow | undefined {
     if (!isSessionId(sessionId)) return undefined;
     const row = this.row(sessionId);
     if (!row) return undefined;
-    if (row.originType === "slack" && row.ownerUserId !== caller.member) return undefined;
+    if (row.originType === "slack" && row.ownerUserId !== caller.principal.subject) return undefined;
     return row;
   }
 
@@ -390,15 +386,15 @@ export class ComputerSessionsApi {
     };
   }
 
-  private actor(caller: ApiCaller): CalvinApiActor {
+  private actor(caller: ApiRequest): CalvinApiActor {
     // No profile name (common for email sign-ins): the email reads better than the raw member id.
-    return { id: caller.member, name: caller.name || caller.email, via: caller.via, client: caller.client };
+    return { id: caller.principal.subject, name: caller.name || caller.email, via: caller.principal.via, client: caller.client };
   }
 
   // ---------------------------------------------------------------- operations
 
-  async handle(caller: ApiCaller, op: ApiOp): Promise<ApiReply> {
-    if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member);
+  async handle(caller: ApiRequest, op: ApiOp): Promise<ApiReply> {
+    if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.principal.subject);
     switch (op.op) {
       case "me":
         return this.me(caller);
@@ -413,16 +409,16 @@ export class ComputerSessionsApi {
     }
   }
 
-  private me(caller: ApiCaller): ApiReply {
+  private me(caller: ApiRequest): ApiReply {
     const key = caller.apiKey;
     return {
       status: 200,
       body: {
-        person: { id: caller.member, name: caller.name ?? "", email: caller.email },
+        person: { id: caller.principal.subject, name: caller.name ?? "", email: caller.email },
         organization: { id: this.deps.organizationId(), name: null },
         credential: key
-          ? { id: key.id, name: key.name, kind: "key", scopes: caller.scopes, expiresAt: key.expiresAt, createdAt: key.createdAt }
-          : { id: null, name: null, kind: "login", scopes: caller.scopes, expiresAt: null, createdAt: null },
+          ? { id: key.id, name: key.name, kind: "key", scopes: caller.principal.scopes, expiresAt: key.expiresAt, createdAt: key.createdAt }
+          : { id: null, name: null, kind: "login", scopes: caller.principal.scopes, expiresAt: null, createdAt: null },
         computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || DEFAULT_WIRE_URL },
         defaults: { model: MODELS[0]!.id, effort: null, mode: DEFAULT_MODE, speed: null },
         capabilities: capabilities(),
@@ -430,7 +426,7 @@ export class ComputerSessionsApi {
     };
   }
 
-  private async call(caller: ApiCaller, sessionId: string, method: WriteMethod, params: Record<string, unknown>, idempotencyKey?: string): Promise<ApiReply> {
+  private async call(caller: ApiRequest, sessionId: string, method: WriteMethod, params: Record<string, unknown>, idempotencyKey?: string): Promise<ApiReply> {
     const row = this.visible(caller, sessionId);
     if (!row) return notFound();
     if (ADMITTED.has(method)) {
@@ -446,7 +442,7 @@ export class ComputerSessionsApi {
       method,
       params: { ...params, sessionId },
       actor: this.actor(caller),
-      member: caller.member,
+      member: caller.principal.subject,
       ...(idempotencyKey ? { idempotencyKey } : {}),
       requestId: caller.requestId,
       session: this.spec(row),
@@ -461,7 +457,7 @@ export class ComputerSessionsApi {
     return { status, body: result };
   }
 
-  private async ticket(caller: ApiCaller, body: unknown): Promise<ApiReply> {
+  private async ticket(caller: ApiRequest, body: unknown): Promise<ApiReply> {
     const began = performance.now();
     const facts: { sessions?: number; keyWritten?: boolean } = {};
     const reply = await this.mint(caller, body, facts);
@@ -477,12 +473,12 @@ export class ComputerSessionsApi {
             : reply.error.code === "invalid_request"
               ? "invalid"
               : reply.error.code;
-      t.ticket({ surface: caller.via === "opc" ? "cli" : "api", ms: performance.now() - began, result, ...facts });
+      t.ticket({ surface: caller.principal.via === "opc" ? "cli" : "api", ms: performance.now() - began, result, ...facts });
     }
     return reply;
   }
 
-  private async mint(caller: ApiCaller, body: unknown, facts: { sessions?: number; keyWritten?: boolean }): Promise<ApiReply> {
+  private async mint(caller: ApiRequest, body: unknown, facts: { sessions?: number; keyWritten?: boolean }): Promise<ApiReply> {
     const key = caller.apiKey;
     if (!key) return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
     if (key.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
@@ -498,11 +494,11 @@ export class ComputerSessionsApi {
     this.tickets.set(key.id, recent);
     const tunnelId = this.deps.tunnelId();
     if (!tunnelId) return this.unavailable();
-    facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
+    facts.keyWritten = await this.deps.keys.ensure(key, caller.principal.subject);
     facts.sessions = request.value.sessionIds?.length ?? 0;
     try {
       const org = this.deps.organizationId();
-      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.member, computer: org, tunnelId, keyId: key.id }, now);
+      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.principal.subject, computer: org, tunnelId, keyId: key.id }, now);
       return { status: 200, body: { ticket } };
     } catch (error) {
       if (error instanceof TicketTooLongError) return invalid("sessionIds", "Too many sessionIds for one ticket.");

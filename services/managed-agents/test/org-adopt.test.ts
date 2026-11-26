@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { routeComputerApi } from "../src/computer/api-http.js";
-import type { RequestIdentity } from "../src/edge/auth.js";
+import { memberIdentity } from "./fixtures/identity.js";
 
 /**
  * Lazy adoption (spec 43.1, rehearsal check 3.1): an organization nobody has touched since the deploy,
@@ -17,7 +17,7 @@ const e = env as unknown as { COMPUTERS: DurableObjectNamespace; ORGS: DurableOb
 
 const get = async (path: string, at: unknown = env) => {
   const url = new URL(`https://blue.test/v1/computer${path}`);
-  const identity = { kind: "user", userId: WORKOS, accountId: ORG, organizationId: ORG, role: "member" } as RequestIdentity;
+  const identity = memberIdentity(ORG, WORKOS);
   const res = await routeComputerApi(new Request(url), at as never, identity, ORG, { computerApi: async () => { throw new Error("not the Computer's"); } } as never, url.pathname.slice("/v1/computer".length));
   return { status: res.status, body: (await res.json()) as any };
 };

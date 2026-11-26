@@ -330,7 +330,7 @@ import {
 } from "./latency.js";
 import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../computer/routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
-import { COMPUTER_PRINCIPAL, isComputerGrantRoute, principalOf } from "./computer-principal.js";
+import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
 import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../slack/routes.js";
 
 export {
@@ -11328,7 +11328,7 @@ export default {
       const slackResponse = await routeSlackDashboard(
         request,
         env as Env & SlackRouteEnv,
-        () => principalOf(identity, request.headers.get("user-agent")),
+        async () => identity.ocPrincipal ?? null,
       );
       if (slackResponse) return withCors(slackResponse);
 
