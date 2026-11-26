@@ -305,6 +305,13 @@ export interface SecretRequest {
   file?: boolean;
 }
 
+/** request_connection (work 080): ask the person in the thread to grant the computer a connection. */
+export interface ConnectionRequest {
+  service: string;
+  /** One line: what it is for, shown with the button. */
+  reason: string;
+}
+
 export interface GitHubToken {
   token: string;
   /** ISO time. */
@@ -341,6 +348,8 @@ export type HostToGateway =
   | { t: 'spawn'; id: string; from: string; req: SpawnRequest }
   /** Session `from` asks its person for a secret; answered by `secret-asked`. */
   | { t: 'secret-request'; id: string; from: string; req: SecretRequest }
+  /** Session `from` asks its person to grant it a connection (work 080); answered by `connection-asked`. */
+  | { t: 'connection-request'; id: string; from: string; req: ConnectionRequest }
   /** Session `from` reads a Slack thread (work 049 L3); answered by `thread`, a refusal being a `Linked` that is not ok. */
   | { t: 'read'; id: string; from: string; req: ReadThreadRequest }
   /** Session `from` posts into a Slack thread for its owner; answered by `posted`. */
@@ -411,6 +420,7 @@ export type GatewayToHost =
   /** Answers `preview` and `unpreview`; `error` is a sentence for the model. */
   | { t: 'previewed'; id: string; result?: PreviewResult; error?: string }
   | { t: 'secret-asked'; id: string; error?: string }
+  | { t: 'connection-asked'; id: string; error?: string }
   | { t: 'reply'; id: string; ok: boolean; error?: string }
   | GatewayToHostModel
   | GatewayToHostV4;
@@ -462,6 +472,7 @@ export type HostToRunner =
   /** The session's secrets, all of them: sent before a delivery and whenever they change. */
   | { t: 'secrets'; secrets: SessionSecret[] }
   | { t: 'secret-asked'; id: string; error?: string }
+  | { t: 'connection-asked'; id: string; error?: string }
   | { t: 'checked-out'; id: string; result?: CheckoutResult[]; error?: string }
   /**
    * A spare becomes this session's runner (work 069): its fork is complete.
@@ -499,6 +510,7 @@ export type RunnerToHost =
   | { t: 'preview'; id: string; req: PreviewRequest }
   | { t: 'unpreview'; id: string; req: { name: string } }
   | { t: 'secret-request'; id: string; req: SecretRequest }
+  | { t: 'connection-request'; id: string; req: ConnectionRequest }
   /** Check repositories (names or owner/name) out into this session's fork; answered by `checked-out`. */
   | { t: 'checkout'; id: string; repos: string[] }
   /** Telemetry the runner buffered (work 054); the host re-validates and ships it. */

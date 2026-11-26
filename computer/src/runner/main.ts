@@ -59,6 +59,7 @@ import type {
   RunnerSpec,
   RunnerToHost,
   SecretRequest,
+  ConnectionRequest,
   SessionReport,
   SpawnRequest,
   SpawnResult,
@@ -246,6 +247,7 @@ const hooks: SessionHooks = {
   secrets,
   guard,
   requestSecret,
+  requestConnection,
   turns,
 };
 
@@ -461,20 +463,23 @@ function checkout(repos: string[]) {
   return checkouts.ask((id) => ({ t: 'checkout', id, repos }), (m) => answered(m, 'checkout failed'));
 }
 
-// request_secret: the gateway posts a button in the thread and answers through the host.
-const secretAsks = new Waiters<RunnerToHost, { error?: string }>({ send: toHost, ms: 30_000, late: 'no answer from the gateway within 30 s' });
+// request_secret and request_connection: the gateway posts a button in the thread and answers through the host.
+const asks = new Waiters<RunnerToHost, { error?: string }>({ send: toHost, ms: 30_000, late: 'no answer from the gateway within 30 s' });
+const refused = (m: { error?: string }) => {
+  if (m.error) throw new Error(m.error);
+};
 function requestSecret(req: SecretRequest) {
   if (ss?.kind === 'api') {
     if (!api) return Promise.reject(new Error('The session API is not ready'));
     api.api.tap.asks.open({ kind: 'secret', secret: { name: req.name, purpose: req.reason, file: !!req.file } }, () => {});
     return Promise.resolve();
   }
-  return secretAsks.ask(
-    (id) => ({ t: 'secret-request', id, req }),
-    (m) => {
-      if (m.error) throw new Error(m.error);
-    },
-  );
+  return asks.ask((id) => ({ t: 'secret-request', id, req }), refused);
+}
+function requestConnection(req: ConnectionRequest) {
+  // Connections are granted with a button in a Slack thread (work 080); an API session has none to post it in.
+  if (ss?.kind === 'api') return Promise.reject(new Error('connections are granted from a Slack thread; this API session has none'));
+  return asks.ask((id) => ({ t: 'connection-request', id, req }), refused);
 }
 
 async function onHost(m: HostToRunner) {
@@ -515,7 +520,8 @@ async function onHost(m: HostToRunner) {
       return api?.api.tap.asks.secretsSet(m.secrets.map((secret) => secret.name));
     case 'preview-ports': return previews.restore(m.ports); // after a resume: its previews answer again without a new `preview` (work 103)
     case 'secret-asked':
-      return secretAsks.answer(m.id, m);
+    case 'connection-asked':
+      return asks.answer(m.id, m);
     case 'checked-out':
       return checkouts.answer(m.id, m);
     case 'exit': // with `ms` (retired): quit after it even if busy, ending its own harness (the host may not signal it)

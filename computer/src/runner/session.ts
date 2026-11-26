@@ -26,7 +26,7 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
+import type { CheckoutResult, ConnectionRequest, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed, SpawnRequest, SpawnResult } from '../protocol.js';
 import type { ThreadHooks } from './threads.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
@@ -88,8 +88,9 @@ export interface SessionHooks {
   secrets?: SessionSecrets;
   /** Withholds copies of Calvin's own prompt from streamed text (Slack calls are guarded at the client). */
   guard?: PromptGuard;
-  /** Ask the person for a secret through the gateway; offers the request_secret tool when set. */
+  /** Ask the person for a secret, or a connection (work 080), through the gateway; offers request_secret, request_connection. */
   requestSecret?(req: SecretRequest): Promise<void>;
+  requestConnection?(req: ConnectionRequest): Promise<void>;
   /** Check out workspace repositories through the host (work 056); offers the checkout_repo tool when set. */
   checkout?(repos: string[]): Promise<CheckoutResult[]>;
   /** `!restart`: exit once the turn is over, so the next message starts on the deployed code and resumes. */
