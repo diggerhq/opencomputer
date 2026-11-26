@@ -45,13 +45,13 @@ export const KEY_SCOPES: readonly string[] = [
 
 /**
  * The scopes of the one-hour key a computer session mints. Listed apart from
- * KEY_SCOPES so that widening people's keys never widens a session's.
+ * KEY_SCOPES so that widening people's keys never widens a session's. No
+ * `terminals`: an agent's key carries none (spec 34.3), at rest as well.
  */
 export const COMPUTER_SESSION_KEY_SCOPES: readonly string[] = [
   "sessions:read",
   "sessions:write",
   "asks:answer",
-  "terminals",
 ];
 
 export interface CreateAPIKeyInput {
