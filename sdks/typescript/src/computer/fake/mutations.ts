@@ -1,7 +1,7 @@
 // The mutations of section 39, with their `op` rows and inverses, and how Org applies a member's
 // request (section 37.3, rules 1 to 6).
 
-import type { DocRow, MutationError, MutationName, OpRow, PlaceRow, ProposalRow, ResultRow, Row, RowKind, TrackRow } from "../types.js";
+import type { DocRow, MutationName, OpRow, PlaceRow, ProposalRow, ResultRow, Row, RowKind, TrackRow } from "../types.js";
 import { ReviewSummary } from "../review.js";
 import { agentActor, clone, isPerson, personActor, PLATFORM, Refusal, statusOf, type Ctx } from "./ctx.js";
 
@@ -36,27 +36,22 @@ const str = (v: unknown, name: string): string => {
 export class Mutations {
   constructor(private ctx: Ctx) {}
 
-  /** A member's request: `{ status, body }` as the HTTP reply. */
-  member(clientId: string, n: number, name: MutationName, args: Args): { status: number; body: unknown } {
+  /** A request: `{ status, body }` as the HTTP reply; with an `Idempotency-Key`, a retry gets the first reply. */
+  member(key: string | null, name: MutationName, args: Args): { status: number; body: unknown } {
     const { org } = this.ctx;
-    let c = org.clients.get(clientId);
-    if (!c) org.clients.set(clientId, (c = { last: 0, errors: [] }));
-    if (n <= c.last) return { status: 200, body: { protocol: 1, lastMutation: c.last } };
-    if (n > c.last + 1) return { status: 409, body: { error: { code: "out_of_order", message: `expected ${c.last + 1}`, lastMutation: c.last } } };
-    const client = c;
-    return org.tx(() => {
-      client.last = n;
-      org.applied(clientId, n);
-      try {
-        const value = this.run(this.ctx.principal.subject, name, args);
-        return { status: 200, body: { protocol: 1, lastMutation: n, ...(value === undefined ? {} : { value }) } };
-      } catch (e) {
-        if (!(e instanceof Refusal)) throw e;
-        const err: MutationError = { n, code: e.code, reason: e.reason };
-        client.errors.push(err);
-        return { status: statusOf(e.code), body: { error: { code: e.code, reason: e.reason, message: e.reason, lastMutation: n, ...e.detail } } };
-      }
-    });
+    const hash = JSON.stringify([name, args]);
+    const stored = key === null ? undefined : org.idem.get(key);
+    if (stored) return stored.hash === hash ? clone(stored.reply) : { status: 409, body: { error: { code: "idempotency_conflict", message: "another body" } } };
+    let reply: { status: number; body: unknown };
+    try {
+      const value = this.run(this.ctx.principal.subject, name, args);
+      reply = { status: 200, body: { protocol: 1, version: org.version, ...(value === undefined ? {} : { value }) } };
+    } catch (e) {
+      if (!(e instanceof Refusal)) throw e;
+      reply = { status: statusOf(e.code), body: { error: { code: e.code, reason: e.reason, message: e.reason, ...e.detail } } };
+    }
+    if (key !== null) org.idem.set(key, { hash, reply: clone(reply) });
+    return reply;
   }
 
   /** Org's mutation function. `by` is a member id, `agent:<session>`, `rule:<name>` or `platform`. Throws `Refusal`. */

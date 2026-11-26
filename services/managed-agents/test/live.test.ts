@@ -93,11 +93,11 @@ async function upgrade(org: string, principal: Principal | null): Promise<Respon
   return liveOf(org).fetch(new Request("https://live/v3/live", { headers }));
 }
 
-async function connect(org: string, principal: Principal = member(org), clientId = "client_1"): Promise<Client> {
+async function connect(org: string, principal: Principal = member(org)): Promise<Client> {
   const response = await upgrade(org, principal);
   expect(response.status).toBe(101);
   const client = new Client(response.webSocket!);
-  client.send({ t: "hello", protocol: 1, clientId });
+  client.send({ t: "hello", protocol: 1 });
   await client.next("ready");
   return client;
 }
@@ -113,7 +113,7 @@ describe("Live: the socket", () => {
   it("answers hello with ready, and closes on another protocol", async () => {
     const response = await upgrade("org_hello", member("org_hello"));
     const client = new Client(response.webSocket!);
-    client.send({ t: "hello", protocol: 1, clientId: "c1" });
+    client.send({ t: "hello", protocol: 1 });
     const ready = await client.next("ready");
     expect(ready).toMatchObject({ protocol: 1, org: "org_hello", subject: "user_1", expiresAt: null, limits: { sessions: 32, frameBytes: 64_000 } });
     expect(ready.connectionId).toMatch(/^cn_/);
@@ -121,16 +121,16 @@ describe("Live: the socket", () => {
     await client.next("pong");
 
     const old = new Client((await upgrade("org_hello", member("org_hello"))).webSocket!);
-    old.send({ t: "hello", protocol: 2, clientId: "c1" });
+    old.send({ t: "hello", protocol: 2 });
     expect((await old.end()).code).toBe(4400);
   });
 });
 
 describe("Live: the feed", () => {
-  it("sends each subscriber the rows of its audiences, and its own mutations", async () => {
+  it("sends each subscriber the rows of its audiences and the range's version", async () => {
     const live = liveOf("org_feed");
-    const mine = await connect("org_feed", member("org_feed"), "client_mine");
-    const other = await connect("org_feed", member("org_feed", { subject: "user_2", audiences: ["org", "member:user_2"] }), "client_other");
+    const mine = await connect("org_feed", member("org_feed"));
+    const other = await connect("org_feed", member("org_feed", { subject: "user_2", audiences: ["org", "member:user_2"] }));
     mine.send({ t: "sub", stream: "feed" });
     other.send({ t: "sub", stream: "feed", kinds: ["thread"] });
     expect(await mine.next("subd")).toEqual({ t: "subd", stream: "feed", head: null });
@@ -145,28 +145,28 @@ describe("Live: the feed", () => {
         { kind: "track", id: "tr_1", version: 1, audience: "org" },
       ],
       gone: [{ kind: "thread", id: "th_3", audience: "member:user_2" }],
-      mutations: [{ clientId: "client_mine", n: 7, errors: [{ n: 6, code: "conflict", reason: "Taken." }] }],
+      version: 5,
     });
     expect(published).toEqual({ head: "f1.5" });
 
     const a = await mine.next("feed");
-    expect(a).toMatchObject({ from: "f1.4", to: "f1.5", gone: [], lastMutation: 7, errors: [{ n: 6, code: "conflict", reason: "Taken." }] });
+    expect(a).toMatchObject({ from: "f1.4", to: "f1.5", gone: [], version: 5 });
     expect(a.rows.map((r) => (r as { id: string }).id)).toEqual(["th_1", "th_2", "tr_1"]);
     const b = await other.next("feed");
     expect(b.rows.map((r) => (r as { id: string }).id)).toEqual(["th_1"]);
     expect(b.gone).toEqual([{ kind: "thread", id: "th_3" }]);
-    expect(b.lastMutation).toBeUndefined();
+    expect(b.version).toBe(5);
 
     // A range with nothing for a subscriber still reaches it, so it can tell a gap from nothing.
-    await live.publish("feed", { from: "f1.5", to: "f1.6", rows: [{ kind: "thread", id: "th_4", version: 1, audience: "member:user_9" }], gone: [], mutations: [] });
+    await live.publish("feed", { from: "f1.5", to: "f1.6", rows: [{ kind: "thread", id: "th_4", version: 1, audience: "member:user_9" }], gone: [], version: 6 });
     expect(await mine.next("feed")).toMatchObject({ from: "f1.5", to: "f1.6", rows: [] });
 
     // After a reconnect the client resumes by its cursor: Live tells it the head it holds.
     mine.socket.close(1000, "bye");
-    const again = await connect("org_feed", member("org_feed"), "client_mine");
+    const again = await connect("org_feed", member("org_feed"));
     again.send({ t: "sub", stream: "feed", after: "f1.5" });
     expect(await again.next("subd")).toEqual({ t: "subd", stream: "feed", head: "f1.6" });
-    await live.publish("feed", { from: "f1.6", to: "f1.7", rows: [], gone: [], mutations: [] });
+    await live.publish("feed", { from: "f1.6", to: "f1.7", rows: [], gone: [], version: 7 });
     expect(await again.next("feed")).toMatchObject({ from: "f1.6", to: "f1.7" });
     expect(other.frames.filter((f) => f.t === "feed")).toHaveLength(3);
   });
@@ -181,7 +181,7 @@ describe("Live: the feed", () => {
       to: "f1.2",
       rows: [{ kind: "thread", id: "th_1", version: 1, audience: "org" }, { kind: "session", id: "cs_1", version: 1, audience: "org" }],
       gone: [],
-      mutations: [],
+      version: 2,
     });
     expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", version: 1, audience: "org" }]);
   });
@@ -191,7 +191,7 @@ describe("Live: the feed", () => {
     const client = await connect("org_big");
     client.send({ t: "sub", stream: "feed" });
     await client.next("subd");
-    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [{ kind: "thread", id: "th_1", version: 1, audience: "org", body: "x".repeat(70_000) }], gone: [], mutations: [] });
+    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [{ kind: "thread", id: "th_1", version: 1, audience: "org", body: "x".repeat(70_000) }], gone: [], version: 2 });
     expect(await client.next("behind")).toEqual({ t: "behind", stream: "feed", head: "f1.2" });
     await live.publish("feed", { head: "f1.3" });
     expect(await client.next("behind")).toEqual({ t: "behind", stream: "feed", head: "f1.3" });
@@ -311,7 +311,7 @@ describe("Live: wait and revoke", () => {
 
     const feed = live.wait(member(org), "feed", "f1.1", 5_000);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [], gone: [], mutations: [] });
+    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [], gone: [], version: 2 });
     expect(await feed).toEqual({ moved: true, head: "f1.2" });
 
     await bindings.SESSION_LOG.getByName("cs_wait_no").set({ allowed: false });

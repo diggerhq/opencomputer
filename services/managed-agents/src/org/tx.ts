@@ -434,13 +434,12 @@ export interface NewPlace {
   audience: string;
 }
 
-/** The body of the owed `Live.publish`: the range and the client mutations it confirms. */
-export type PublishOwed = { from: number; to: number; mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[] };
+/** The body of the owed `Live.publish`: the range of feed versions. */
+export type PublishOwed = { from: number; to: number };
 
 export class Tx {
   private v: number | null = null;
   private pokes = new Set<string>();
-  private mutations: PublishOwed["mutations"] = [];
 
   constructor(
     readonly sql: Sql,
@@ -626,11 +625,6 @@ export class Tx {
     this.owe({ group: sessionId, call: "SessionLog.destroy", body: { sessionId } });
   }
 
-  /** The mutation envelope's: what this transaction confirms for a client (spec 40.4, `mutations`). */
-  confirms(clientId: string, n: number, errors: { n: number; code: string; reason: string }[]): void {
-    this.mutations.push({ clientId, n, errors });
-  }
-
   /**
    * Run `fn` so that its writes are undone if it answers a refusal (`ok: false`) or throws: a
    * refused mutation changes no row (spec 37.3 step 4), whatever it wrote before it refused.
@@ -653,11 +647,7 @@ export class Tx {
 
   /** The transaction's end: the owed publish and pokes. `transact` calls it. */
   end(): void {
-    if (this.v !== null || this.mutations.length > 0) {
-      const head = this.v ?? this.sql.exec<{ version: number }>("SELECT version FROM meta WHERE k = 1")[0]!.version;
-      const body: PublishOwed = { from: this.v === null ? head : head - 1, to: head, mutations: this.mutations };
-      owed.add(this.sql, { group: "live", key: "live:feed", call: "Live.publish", body });
-    }
+    if (this.v !== null) owed.add(this.sql, { group: "live", key: "live:feed", call: "Live.publish", body: { from: this.v - 1, to: this.v } satisfies PublishOwed });
     for (const kind of this.pokes) owed.add(this.sql, { group: `poke:${kind}`, key: `poke:${kind}`, call: "Delivery.poke", body: { kind } });
   }
 }

@@ -77,8 +77,7 @@ export const createFakeServer: CreateFakeServer = (o: FakeOptions = {}): FakeSer
   const serve = async (path: string, init: RequestInit = {}): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
     const headers = new Headers(init.headers);
-    const n = headers.get("x-oc-n");
-    const entry = { method, path, n: n == null ? null : Number(n), status: 0 };
+    const entry = { method, path, idem: headers.get("idempotency-key"), status: 0 };
     requests.push(entry);
     const unreachable = () => new TypeError("Failed to fetch");
     if (offline) throw unreachable();

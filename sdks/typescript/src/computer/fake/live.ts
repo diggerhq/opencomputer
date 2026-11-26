@@ -12,7 +12,6 @@ const RANK: Record<string, number> = { events: 1, delta: 2 };
 
 class Sock implements Channel {
   state: "connecting" | "open" | "closed" = "connecting";
-  clientId: string | null = null;
   feed: { kinds: Set<string> | null } | null = null;
   events = new Set<string>();
   deltas = new Set<string>();
@@ -151,7 +150,6 @@ export class Live {
     const { org, log, principal } = this.ctx;
     switch (f.t) {
       case "hello":
-        s.clientId = f.clientId;
         return this.push(s, { t: "ready", connectionId: `conn_${++this.n}`, protocol: 1, org: principal.org, subject: principal.subject, expiresAt: this.ctx.iso(this.ctx.now() + 3_600_000), limits: { sessions: MAX_WATCHED } });
       case "ping":
         return this.push(s, { t: "pong" });
@@ -210,14 +208,13 @@ export class Live {
     for (const s of this.socks) {
       if (!s.feed) continue;
       const kinds = s.feed.kinds;
-      const mine = p.mutations.some((m) => m.clientId === s.clientId);
       this.push(s, {
         t: "feed",
         from: feedCursor(p.from),
         to: feedCursor(p.to),
         rows: clone(p.rows.filter((r) => (!kinds || kinds.has(r.kind)) && org.visible(org.audience(r)))),
         gone: p.gone.filter((g) => (!kinds || kinds.has(g.kind)) && org.visible(g.audience)).map((g) => ({ kind: g.kind, id: g.id })),
-        ...(mine && s.clientId ? org.clientState(s.clientId) : {}),
+        version: p.to,
       });
     }
   }

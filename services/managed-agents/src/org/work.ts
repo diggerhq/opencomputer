@@ -35,7 +35,6 @@ import {
 export const ADOPT_PAGE = 200;
 export const EARLIER_AFTER_MS = 7 * DAY_MS;
 export const TRACK_QUIET_MS = 21 * DAY_MS;
-export const CLIENT_UNSEEN_MS = 90 * DAY_MS;
 
 type Raw = Record<string, unknown> & { version: number; audience: string };
 const orgOf = (sql: Sql): string => sql.exec<{ org: string | null }>("SELECT org FROM meta WHERE k = 1")[0]!.org ?? "";
@@ -509,6 +508,5 @@ export function age(sql: Sql, now: number): void {
     sql.exec("DELETE FROM occurrence WHERE at < ?", old);
     sql.exec("DELETE FROM op WHERE at < ?", old);
     sql.exec("DELETE FROM _idem WHERE expires < ?", now);
-    sql.exec("DELETE FROM client WHERE seen_at < ?", now - CLIENT_UNSEEN_MS);
   });
 }

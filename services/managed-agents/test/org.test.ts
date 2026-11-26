@@ -206,36 +206,39 @@ describe("Org.feed", () => {
 });
 
 describe("Org.mutate", () => {
-  it("applies in order, answers a repeat and a gap, and records a refusal for the client", async () => {
+  it("names each mutation by its Idempotency-Key: two tabs both land, a refusal wedges nothing, a retry gets the first reply", async () => {
     await withActor("mutate", async (org, fakes, sql) => {
       const a = member("usr_a", "mutate");
       await org.createSession(a, { id: "cs_0000000000000030", input: "Mine" });
       await org.createSession(member("usr_b", "mutate"), { id: "cs_0000000000000031", input: "Theirs" });
-      const rename = (sid: string, n: number) => org.mutate(a, { name: "thread.rename", args: { sid, title: `Title ${n}` }, client: { id: "cl_1", n } });
 
-      expect(await rename("cs_0000000000000030", 1)).toMatchObject({ protocol: 1, lastMutation: 1 });
-      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 3 }]);
-      expect(await rename("cs_0000000000000030", 1)).toEqual({ protocol: 1, lastMutation: 1 });
-      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 3 }]);
-      expect(await rename("cs_0000000000000030", 3)).toEqual({ error: { code: "out_of_order", lastMutation: 1 } });
-      expect(await rename("cs_0000000000000031", 2)).toMatchObject({ error: { code: "not_found", lastMutation: 2 } });
-      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 3 }]);
-      expect(await org.mutate(member("usr_b", "mutate"), { name: "thread.rename", args: {}, client: { id: "cl_1", n: 1 } })).toEqual({ error: { code: "principal_mismatch" } });
+      // Two tabs of one person, each with its own key: both writes land, each reply names its version.
+      const renamed = await org.mutate(a, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "Tab A" }, idem: "ib_a" });
+      expect(renamed).toMatchObject({ protocol: 1, version: 3 });
+      expect(await org.mutate(a, { name: "thread.keep", args: { sid: "cs_0000000000000030", keep: true }, idem: "ib_b" })).toMatchObject({ protocol: 1, version: 4 });
+      const place = frameOf(await org.feed(a, {})).rows.find((r) => r.kind === "place" && r.id === "cs_0000000000000030");
+      expect(place).toMatchObject({ keep: true });
+      expect(frameOf(await org.feed(a, { after: "f1.3" }))).toMatchObject({ to: "f1.4", version: 4 });
 
-      expect(frameOf(await org.feed(a, { after: "f1.3", clientId: "cl_1" }))).toMatchObject({ lastMutation: 2, errors: [{ n: 2, code: "not_found", reason: "not_found" }] });
-      expect(frameOf(await org.feed(a, { after: "f1.3", clientId: "cl_1", ack: 2 }))).toMatchObject({ lastMutation: 2, errors: [] });
+      // A retry, from a new sign-in too, is the first reply; nothing is applied again.
+      const again = { ...a, credential: { id: "ses_other", expiresAt: null } };
+      expect(await org.mutate(again, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "Tab A" }, idem: "ib_a" })).toEqual(renamed);
+      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 4 }]);
 
-      // The refusal is confirmed to the client's sockets with no row.
+      // A refusal is the reply and leaves nothing behind: the next mutation applies.
+      expect(await org.mutate(a, { name: "thread.rename", args: { sid: "cs_0000000000000031", title: "No" }, idem: "ib_c" })).toMatchObject({ error: { code: "not_found" } });
+      expect(await org.mutate(a, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "After" }, idem: "ib_d" })).toMatchObject({ protocol: 1, version: 5 });
+
       await org.drain();
       const pushes = fakes.calls.filter((c) => c[0] === "Live.publish").map((c) => c[2] as FeedPush);
-      expect(pushes[pushes.length - 1]).toMatchObject({ from: "f1.3", to: "f1.3", rows: [], mutations: [{ clientId: "cl_1", n: 2 }] });
+      expect(pushes[pushes.length - 1]).toMatchObject({ from: "f1.4", to: "f1.5", version: 5 });
 
       // A key's mutation, by its idempotency key: the first answer again, another body refused.
       const key = { ...a, kind: "key" as const, credential: { id: "key_1", expiresAt: null } };
       const once = await org.mutate(key, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "By key" }, idem: "k1" });
       expect(once).toMatchObject({ protocol: 1 });
       expect(await org.mutate(key, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "By key" }, idem: "k1" })).toEqual(once);
-      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 4 }]);
+      expect(sql.exec("SELECT version FROM meta")).toEqual([{ version: 6 }]);
       expect(await org.mutate(key, { name: "thread.rename", args: { sid: "cs_0000000000000030", title: "Other" }, idem: "k1" })).toEqual({ error: { code: "idempotency_conflict" } });
     });
   });
