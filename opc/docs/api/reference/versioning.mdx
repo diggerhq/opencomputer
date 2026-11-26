@@ -1,0 +1,46 @@
+---
+title: "Versioning"
+description: "What can change without notice, what cannot, and how breaking changes would arrive."
+---
+
+The API changes by adding, never by breaking. A client written today keeps working.
+
+## What can change at any time
+
+- New routes, methods, query parameters and optional request fields
+- New fields in responses, objects, events and errors
+- New event types, notifications, error codes, ask kinds and turn failure codes
+- New values of any string enum in a response: every one is open, such as `status`, `kind`, `delivery`, `reason`, `via`, `origin.type`, `capabilities.features`, models and modes
+- The order of fields in JSON, and the text of `message` fields
+
+So, to keep working: ignore fields and event types you do not know, show unknown enum values as something neutral, and branch on `code`, not `message`. A typed client declares each enum as its known values or any string, such as `"completed" | "failed" | (string & {})` in TypeScript.
+
+## What does not change
+
+- The meaning or type of a field
+- Required request fields: none are added to existing routes
+- Event ordering guarantees, idempotency rules and close codes
+- Ids: once issued, an id always refers to the same thing
+- **Status changes are always visible.** A new event type never carries a status change on its own. Every status change of a session, turn or ask is also visible as `session.status_changed`, as `turn.status_changed` or a turn's ending event, or as `ask.closed`. A client that knows only today's events always knows every status.
+
+## Requests
+
+The server rejects request fields it does not know with `400 invalid_request`, with `field` naming the first one. A misspelled field fails instead of being ignored. A field added later is accepted from then on, so send only fields that are documented.
+
+## The WebSocket protocol version
+
+The WebSocket protocol has a version, chosen when connecting: `opc.v1`. It changes only for a change that cannot be made by adding. When `opc.v2` arrives, servers keep accepting `opc.v1` for at least 12 months, and the changelog says when it will stop. A client that offers only versions the server no longer accepts is closed with `4400`.
+
+Optional protocol features are announced, not versioned: the [`ready`](/api/websocket/connect#open) notification lists them in `protocol.features`. A client uses a feature only when it is listed, and a new one does not need `opc.v2`.
+
+The HTTP API has no version number. Its paths will not change meaning. A change that cannot be additive would come as a new route beside the old one.
+
+## Capabilities, not versions
+
+Do not check a version to decide what a session can do. Read [capabilities](/api/reference/objects#capabilities). A feature can be off for one organization and on for another, at the same version.
+
+## opc
+
+`opc` is the one client whose builds the server knows. Every request it makes carries `User-Agent: opc/0.1.0`, and when a build is retired, which happens at least 6 months after the one that replaced it shipped, every HTTP request from it is answered `426 upgrade_required` with `minVersion`, and every connection it opens is closed with `4400`. `opc` then exits with code `2` and says which version to install. Nothing is retired without an entry in the [changelog](/changelog) first.
+
+Other clients are not checked: for them, only the protocol version above matters.

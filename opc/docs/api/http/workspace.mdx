@@ -1,0 +1,119 @@
+---
+title: "Workspace"
+description: "List, read, download and upload files in a session's workspace."
+---
+
+Each session has its own workspace on the computer, with every connected repository checked out. These routes are how files move between it and anywhere else. They are what `opc push` and `opc pull` use. See [Files](/cli/files) for the rules from a person's side.
+
+They work on suspended sessions without resuming them, and never wait for the agent.
+
+## List files
+
+```http
+GET /sessions/{id}/workspace/files
+```
+
+| Query | Meaning |
+| --- | --- |
+| `path` | A directory relative to the workspace. Default: the workspace itself. |
+| `depth` | How many levels to list, 1 to 10. Default 1. |
+| `limit` | 1 to 100. Default 20. |
+| `cursor` | The `nextCursor` from the previous page |
+
+```json
+{
+  "path": "",
+  "entries": [
+    { "path": "billing", "type": "dir", "bytes": null, "modifiedAt": "2026-10-26T09:02:40.118Z", "pushedAt": "2026-10-26T09:02:40.118Z", "pushedBy": { "id": "usr_2k9d8f7a", "name": "Ada Lovelace", "via": "opc", "client": "opc/0.1.0" } },
+    { "path": "billing-service", "type": "dir", "bytes": null, "modifiedAt": "2026-10-26T08:58:01.004Z", "pushedAt": null, "pushedBy": null }
+  ],
+  "nextCursor": null
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `file`, `dir` or `symlink` |
+| `bytes` | Size in bytes, for files. `null` for directories and links. |
+| `pushedAt`, `pushedBy` | For directories at the top of the workspace: when it was uploaded and by whom, as an [Actor](/api/reference/objects#actor). `null` when it was not uploaded. |
+| `nextCursor` | For the next page, or `null` on the last |
+
+Entries are in path order, a directory before its contents. `.git` directories are listed but never descended into.
+
+## Read a file
+
+```http
+GET /sessions/{id}/workspace/file?path={path}
+```
+
+Returns the file's bytes as they are, with a `Content-Type` guessed from its name and contents, and an `ETag`. Send the `ETag` back in `If-None-Match` to get `304` when the file has not changed. For a directory, or several files, [download](#download) an archive instead.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_path` | `path` is absolute or contains `..` |
+| `404` | `path_not_found` | No file at `path`, or it is a directory |
+| `413` | `too_large` | The file is over 100 MiB. Download it as an archive. |
+
+## Download
+
+```http
+GET /sessions/{id}/workspace/archive?path={path}
+```
+
+Returns the directory or file at `path` as a tar archive, `Content-Type: application/x-tar`, streamed as it is read. Send `Accept-Encoding: zstd` or `gzip` to have it compressed; `opc pull` uses `zstd`. Paths in the archive are relative to `path`. A file comes as an archive of one entry.
+
+- `.git` directories are left out. Nothing else is.
+- Symbolic links are archived as links.
+- Ownership is not kept. Modes are kept for the executable bit only.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_path` | `path` is absolute or contains `..` |
+| `404` | `path_not_found` | |
+| `413` | `too_large` | Over 1 GiB or 100,000 files. `error.bytes` and `error.files` say how much. |
+
+## Upload
+
+```http
+PUT /sessions/{id}/workspace/archive?path={name}
+```
+
+```bash
+tar -C ~/src/billing --exclude .git -c . | zstd | curl -s -X PUT \
+  "$API/sessions/cs_7f3a9k2m4q8r1t6v/workspace/archive?path=billing" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY" -H "content-type: application/x-tar" -H "content-encoding: zstd" \
+  --data-binary @-
+```
+
+Writes the archive's contents to `workspace/{name}`, replacing what was there. The body may be sent with `Content-Encoding: zstd`, which `opc push` uses, or `gzip`.
+
+| Rule | Why |
+| --- | --- |
+| `name` is one level: letters, digits, `.`, `-` and `_`, not starting with `.` | Uploads sit beside the repositories, never inside them |
+| A `name` that exists and was not uploaded is refused with `409 path_exists` | An upload can never overwrite a repository or the agent's work |
+| A `name` uploaded before is replaced entirely, and the response says so | Re-pushing is how you update it |
+| Entries with absolute paths, `..`, hard links or device files are refused with `400 invalid_archive` | |
+
+The server applies no ignore rules: it writes what it receives. `opc push` applies `.gitignore` and `.opcignore` before sending.
+
+The response is `200`:
+
+```json
+{
+  "upload": { "path": "billing", "files": 412, "bytes": 3245112, "replaced": null },
+  "seq": 1192
+}
+```
+
+`replaced` is `{ pushedAt, pushedBy }` for the upload it replaced, or `null`. A `files.pushed` event is recorded, and `seq` is its `seq`. The agent's next turn begins with a note naming the directory and who pushed it.
+
+The upload is written to a temporary directory and moved into place when complete, so the agent never sees half an upload. An upload that fails changes nothing.
+
+Send an `Idempotency-Key` to make retries safe. A repeat with the same key returns the first response without writing again.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_path` | `name` breaks the rules above |
+| `400` | `invalid_archive` | The body is not a tar archive, or has a refused entry. `error.entry` names it. |
+| `409` | `path_exists` | `name` exists and was not uploaded |
+| `413` | `too_large` | Over 1 GiB or 100,000 files, unpacked |
