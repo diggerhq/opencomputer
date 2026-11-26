@@ -1,4 +1,5 @@
 import type { Ask, SessionEvent } from '../computer-sessions-api'
+import { fromSlack } from './slack-text'
 
 // Folds a session's events into what the transcript shows: people's messages,
 // the agent's replies, and the tool calls between them collapsed into one
@@ -71,7 +72,8 @@ export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
     switch (e.type) {
       case 'message.received': {
         closeWork()
-        const text = withoutSlackHeader(str(d.input))
+        const input = withoutSlackHeader(str(d.input))
+        const text = input && fromSlack(input)
         // Journals before the computer stopped using the git author name carry " via Computer".
         const name = e.actor?.name?.replace(/ via Computer$/, '')
         if (text)
@@ -96,7 +98,12 @@ export function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
         }
         closeWork()
         if (text)
-          items.push({ kind: 'agent', key: e.id, text, at: e.createdAt })
+          items.push({
+            kind: 'agent',
+            key: e.id,
+            text: fromSlack(text),
+            at: e.createdAt,
+          })
         break
       }
       case 'reasoning.completed':
