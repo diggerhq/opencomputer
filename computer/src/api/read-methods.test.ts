@@ -62,23 +62,6 @@ describe('dispatch', () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(1900);
   }, 10_000);
 
-  it('turns.get long-polls until the turn ends', async () => {
-    const { log, sid, call } = await fresh();
-    const t = mintId('tn');
-    log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
-    const r = call('turns.get', { sessionId: sid, turnId: t, waitMs: 2000, status: 'queued' }, ANN_CTX);
-    const p = call('turns.get', { sessionId: sid, turnId: t, waitMs: 2000 }, ANN_CTX);
-    setTimeout(() => log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN }), 10);
-    setTimeout(() => log.append('turn.completed', { text: 'x', durationMs: 1, silent: false }, { turnId: t, actor: ANN }), 30);
-    expect((await r).result).toMatchObject({ turn: { status: 'running' } });
-    expect((await p).result).toMatchObject({ turn: { status: 'completed' } });
-    // With `status`: returns once the status differs from it (here: at the timeout, as it still is that status).
-    const t0 = Date.now();
-    const q = call('turns.get', { sessionId: sid, turnId: t, waitMs: 50, status: 'completed' }, ANN_CTX);
-    expect((await q).result).toMatchObject({ turn: { status: 'completed' } });
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(45);
-  }, 10_000);
-
   it('asks.list pages newest first; asks.get finds one', async () => {
     const { log, sid, call } = await fresh();
     const t = mintId('tn');
@@ -150,7 +133,7 @@ describe('dispatch', () => {
     expect((await call('subagents.get', { sessionId: sid, subagentId: mintId('sa') }, ANN_CTX)).error).toMatchObject({ code: 'subagent_not_found', status: 404 });
   });
 
-  it('events.list: after, limit, types, turnId, tailTurns, a cursor past the end and waitMs', async () => {
+  it('events.list: after, limit, types, turnId, tailTurns, and a cursor past the end', async () => {
     const { log, sid, call } = await fresh();
     const t1 = turn(log);
     const t2 = turn(log);
@@ -169,10 +152,6 @@ describe('dispatch', () => {
     expect(tail.earlierTurns?.map((t) => t.id)).toEqual([t2, t1]);
     expect((await call('events.list', { sessionId: sid, tailTurns: 1, after: 0 }, ANN_CTX)).error).toMatchObject({ code: 'invalid_request', field: 'tailTurns' });
     expect((await ev({ after: 13 })).result).toMatchObject({ events: [], lastSeq: 12, hasMore: false });
-    const waiting = ev({ after: 12, waitMs: 2000 });
-    setTimeout(() => turn(log), 20);
-    expect((await waiting).result.events.map((e) => e.seq)).toEqual([13, 14, 15, 16]);
-    expect((await ev({ after: 16, waitMs: 20 })).result).toMatchObject({ events: [], hasMore: false });
   }, 10_000);
 });
 

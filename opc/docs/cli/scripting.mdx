@@ -196,7 +196,7 @@ With several ids, a session that is lost, because attaching to it was refused or
 
 With `--all`, `0` when every one completed, else `5` when any is waiting, else `1`, which includes a lost session. With `--any`, the code of the one that returned; a lost session does not count as returning. A session that is already idle returns at once with the status of its last turn.
 
-`opc wait` follows the session over your computer's connection, so it returns the moment the turn ends. A program without `opc` waits the same way with one long-poll: [get the turn](/api/http/turns#get-a-turn) with `waitMs`, and repeat while it has not ended.
+`opc wait` follows the session over your computer's connection, so it returns the moment the turn ends. A program without `opc` [attaches over a WebSocket](/api/websocket/methods#attach), or [gets the turn](/api/http/turns#get-a-turn) every few seconds until it has ended.
 
 ### Background subagents
 

@@ -191,6 +191,8 @@ export interface OrgRpc {
   feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;
   mutate(p: Principal, m: MutateRequest): Promise<MutateReply>;
   threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }>;
+  /** One thread's `session`, `place` and `result` rows, as `threads` holds them; null when `p` may not see it. */
+  thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
   result(p: Principal, id: string): Promise<ResultRow | null>;
   overview(p: Principal): Promise<Overview>;
@@ -329,7 +331,6 @@ export type DeltaPush = { epoch: number; deltas: { type: string; turnId: string;
 export interface LiveRpc {
   /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. The reply is the head Live now holds. */
   publish(stream: string, frame: FeedPush | EventPush | DeltaPush | { head: string }): Promise<{ head: string }>;
-  wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }>;
   revoke(credentialId: string): Promise<void>;
 }
 

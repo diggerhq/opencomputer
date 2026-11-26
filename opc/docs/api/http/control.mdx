@@ -25,7 +25,7 @@ Returns `202 { "session": Session, "seq" }` at once. In it, the running turn is 
 
 With nothing running, or with a `turnId` that has ended, it returns `200 { "session": Session, "seq" }` and does nothing. The cancelled turns' inputs are in their `turn.cancelled` events, so a client can offer them again, as `opc` does by putting them back in the prompt.
 
-To wait for the stop without a WebSocket, [get the turn](/api/http/turns#get-a-turn) with `status=cancelling&waitMs=60000`: it returns when the turn is `cancelled`.
+To wait for the stop without a WebSocket, [get the turn](/api/http/turns#get-a-turn) every few seconds until it is `cancelled`.
 
 To interrupt and send a new message in one request, [send it](/api/http/turns#send-a-message) with `ifBusy: "interrupt"`. To cancel one queued turn and leave the rest, [cancel it](/api/http/turns#cancel-a-queued-turn).
 

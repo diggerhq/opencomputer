@@ -1,7 +1,7 @@
 // The host's side of the relay's local socket (work 084; WireToHost /
 // HostToWire in src/protocol-api.ts; the relay is src/wire/host-link.ts):
 // `<dir>/wire.sock`, one JSON object per line. The host answers `where`,
-// `resume`, terminals and `/files`, and pushes what the relay needs to check
+// terminals and `/files`, and pushes what the relay needs to check
 // clients by itself: the edge key, admins, access lists, revocations, and
 // writer moves.
 //
@@ -44,8 +44,6 @@ type Workspace = { forkPath: string; owner: string; sandbox?: SandboxPlace };
 export interface WireLinkHooks {
   /** The session's writer, if this host runs the session. */
   where(sessionId: string): WhereResult | undefined | Promise<WhereResult | undefined>;
-  /** Start the session's runner if it is suspended (attach with resume=1). */
-  resume(sessionId: string, actor: ApiActor): Promise<{ status: ApiSessionStatus } | { error: ApiError }>;
   /**
    * The session's fork and owner (`usr_…`), asked before a terminal or `/files` acts in it; undefined: not a session
    * this host runs, or no fork yet.
@@ -113,10 +111,6 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
       case 'where': {
         const w = await hooks.where(m.sessionId);
         return w ? { result: w } : { error: sessionNotFound() };
-      }
-      case 'resume': {
-        const r = await hooks.resume(m.sessionId, m.actor);
-        return 'error' in r ? { error: r.error } : { result: r };
       }
       case 'terminal.open': {
         const ws = await hooks.workspace(m.sessionId);

@@ -68,7 +68,7 @@ Slack, `opc`, the dashboard and your programs are clients of the same sessions. 
 | `GET` | [`/sessions/{id}/capabilities`](/api/http/sessions#get-a-sessions-capabilities) | What the session supports and allows |
 | `POST` | [`/sessions/{id}/turns`](/api/http/turns#send-a-message) | Sends a message |
 | `GET` | [`/sessions/{id}/turns`](/api/http/turns#list-turns) | Lists turns |
-| `GET` | [`/sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn) | One turn, or waits for it to change with `waitMs` |
+| `GET` | [`/sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn) | One turn |
 | `POST` | [`/sessions/{id}/turns/{turnId}/cancel`](/api/http/turns#cancel-a-queued-turn) | Cancels a queued turn |
 | `GET` | [`/sessions/{id}/asks`](/api/http/asks#list-asks) | Lists asks |
 | `GET` | [`/sessions/{id}/asks/{askId}`](/api/http/asks#get-an-ask) | One ask |
@@ -81,7 +81,7 @@ Slack, `opc`, the dashboard and your programs are clients of the same sessions. 
 | `POST` | [`/sessions/{id}/compact`](/api/http/control#compact) | Summarizes the conversation to free context |
 | `POST` | [`/sessions/{id}/suspend`](/api/http/control#suspend) | Stops the agent process now |
 | `POST` | [`/sessions/{id}/resume`](/api/http/control#resume) | Starts it again, ahead of the next message |
-| `GET` | [`/sessions/{id}/events`](/api/http/events) | Reads the event log, or waits for new events with `waitMs` |
+| `GET` | [`/sessions/{id}/events`](/api/http/events) | Reads the event log |
 | `GET` | [`/sessions/{id}/workspace/files`](/api/http/workspace#list-files) | Lists files in the session's workspace |
 | `GET` | [`/sessions/{id}/workspace/file`](/api/http/workspace#read-a-file) | Reads one file |
 | `GET` | [`/sessions/{id}/workspace/archive`](/api/http/workspace#download) | Downloads a directory or file as tar |
@@ -101,7 +101,7 @@ Where this API differs:
 | [Asks](/api/http/asks): `approval`, `question` and `secret`, one object, answered once | `question.*` events, approvals as tool-level decisions |
 | Sending returns `{ turn, delivery, duplicate, seq }`: the Turn itself, and what happened to the message, with a turn for steered messages too | `{ turnId, status, duplicate }`, and no turn for a steered message |
 | `message.delta`, `reasoning.delta` and `tool.delta` carry a `blockId` or `callId`, unique in the session | Deltas are concatenated per turn |
-| `GET /events` pages carry `lastSeq` and `hasMore`, and wait for new events with `waitMs` | `{ events }` only |
+| `GET /events` pages carry `lastSeq` and `hasMore` | `{ events }` only |
 | Every write returns `seq`, and reads accept `minSeq` | No equivalent |
 | Session status: `starting`, `running`, `waiting`, `idle`, `suspended` | Eleven statuses including `ended` |
 | `POST /interrupt` returns the session with the turn `cancelling` | The session goes `stopping` |

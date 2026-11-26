@@ -1,8 +1,7 @@
 // The writer's side of `Writer.call` that both writers share (work 084): the
 // dispatch (decode strictly, check the session, route), every read answered
 // from the log (`sessions.get`, `turns.get`, `asks.list`, `asks.get`,
-// `subagents.list`, `subagents.get`, `events.list`, with `minSeq` and
-// long-polls), and idempotency for writes.
+// `subagents.list`, `subagents.get`, `events.list`, with `minSeq`), and idempotency for writes.
 //
 // Invariants:
 // - `call` never throws: a bad method or params is `invalid_request` naming
@@ -36,7 +35,6 @@ export type WriteHandler<M extends Method = Method> = (params: ParamsOf<M>, ctx:
 export type WriteHandlers = { [M in Method]?: WriteHandler<M> };
 
 const MIN_SEQ_WAIT_MS = 2000;
-const ENDED = ['completed', 'failed', 'cancelled'];
 
 const ok = (result: unknown): CallOutcome => ({ result });
 const fail = (code: string, message: string, status: number, extra: Record<string, unknown> = {}): CallOutcome => ({
@@ -139,9 +137,7 @@ export async function readCall(log: SessionLog, method: Method, params: Record<s
       if (late) return late;
       const first = fold.turn(p.turnId);
       if (!first) return fail('turn_not_found', `no turn ${p.turnId}`, 404);
-      const done = (t: Turn | undefined) => !t || (p.status ? t.status !== p.status : ENDED.includes(t.status));
-      if (p.waitMs && !done(first)) await log.waitFor(() => done(fold.turn(p.turnId)), p.waitMs);
-      return ok({ turn: fold.turn(p.turnId) ?? first });
+      return ok({ turn: first });
     }
     case 'asks.get': {
       const p = params as ParamsOf<'asks.get'>;
@@ -183,7 +179,6 @@ async function eventsList(log: SessionLog, p: ParamsOf<'events.list'>): Promise<
     after = log.journal.tailTurnsAfter(p.tailTurns);
     earlierTurns = log.earlierTurns(p.tailTurns);
   }
-  if (p.waitMs && after >= log.lastSeq) await log.waitFor(() => log.lastSeq > after, p.waitMs);
   const want = typeFilter(p.types);
   const events: JournalEvent[] = [];
   let scanned = after;

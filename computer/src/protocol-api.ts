@@ -161,12 +161,7 @@ export type HostToGatewayV4 =
    * The deltas of a watched session's open blocks, merged per block for 40 ms (host/delta-link.ts). Never acknowledged,
    * never resent; dropped while the socket holds more than the journal's holding mark.
    */
-  | { t: 'delta'; sessionId: string; epoch: number; deltas: HostDelta[] }
-  /**
-   * A send the host's writer queued for a session the host has no spec of (none came since it booted):
-   * the gateway answers with `start`, as for a session created without a message. Ignored for an unknown session.
-   */
-  | { t: 'wake'; sessionId: string };
+  | { t: 'delta'; sessionId: string; epoch: number; deltas: HostDelta[] };
 
 /** A `subagent.progress` delta's values (schema-events.ts). */
 export interface SubagentProgress {
@@ -189,8 +184,6 @@ export type WireToHost =
   | { t: 'hello'; version: string }
   /** Where the session's writer listens; `result: WhereResult`, or `session_not_found`. */
   | { t: 'where'; id: string; sessionId: string }
-  /** Start the session's runner if it is suspended (the interactive screen's attach with `resume=1`); `result: { status }`. */
-  | { t: 'resume'; id: string; sessionId: string; actor: ApiActor }
   /** `result: { terminalId, socket, channel? }`; bytes then flow on `socket` (a PTY, raw both ways). */
   | { t: 'terminal.open'; id: string; sessionId: string; member: string; cols: number; rows: number;
       command?: string; tty: boolean; term?: string }

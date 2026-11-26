@@ -273,10 +273,10 @@ export const CATALOG = {
   'keys.revoked': gateway('key_id', 'known', 'host_told'),
   // One per blue /v1/computer API request (Q3 delivery, Q4): route (closed: sessions turns asks subagents control
   // events workspace secrets tickets work other), op (the API op), duration_ms = the request's time in blue; do_ms/log_ms:
-  // awaiting the Computer DO / the SessionLog; wait_ms: a long-poll's asked wait; events/empty: events.list's page;
+  // awaiting the Computer DO / the SessionLog; events/empty: events.list's page;
   // oldest_age_ms/newest_age_ms: now − createdAt of its first/last event (delivery freshness).
   'httpapi.request': gateway(
-    'route', 'op', 'method', 'status', 'do_ms', 'log_ms', 'wait_ms', 'events', 'empty', 'oldest_age_ms', 'newest_age_ms', 'replayed',
+    'route', 'op', 'method', 'status', 'do_ms', 'log_ms', 'events', 'empty', 'oldest_age_ms', 'newest_age_ms', 'replayed',
   ),
   // One per wire Worker request (Q5): kind upgrade|files|other, via key|ticket|both|none, result accepted|refused|
   // unavailable|failed|not_found, reason (closed), code (close code or HTTP status), kv/tunnel hops. duration_ms ends at

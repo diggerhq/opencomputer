@@ -38,11 +38,11 @@ You can choose the session's id yourself by sending `id`, so you know it before 
 
 ```bash
 id=cs_7f3a9k2m4q8r1t6v turn=tn_4m8q2x7c1v9b
-until curl -s "$API/sessions/$id/turns/$turn?waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
-  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do :; done
+until curl -s "$API/sessions/$id/turns/$turn" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do sleep 5; done
 ```
 
-With `waitMs`, the request is held open until the turn ends, or for up to a minute, so the loop makes one request a minute while the agent works and returns the moment it is done. See [Get a turn](/api/http/turns#get-a-turn).
+The loop reads the turn every five seconds until it has ended. See [Get a turn](/api/http/turns#get-a-turn).
 
 If the session's `status` becomes `waiting` meanwhile, the agent needs a person: see [Asks](/api/http/asks).
 

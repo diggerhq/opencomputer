@@ -174,8 +174,8 @@ describe('Computer page', () => {
                 <Route path="getting-started" element={<ProjectsHome />} />
                 <Route path="automations" element={<ProjectsHome list />} />
                 <Route path="computer" element={<ComputerPage />} />
-                <Route path="computer/sessions/new" element={<div />} />
-                <Route path="computer/sessions/:id" element={<div />} />
+                <Route path="computer/work/new" element={<div />} />
+                <Route path="computer/work/t/:id" element={<div />} />
               </Routes>
               <Location />
             </MemoryRouter>
@@ -356,7 +356,7 @@ describe('Computer page', () => {
     expect(current.textContent).toContain('Give it its first task')
     // One call to action, straight to the web; no Slack pitch beside it.
     const start = current.querySelector<HTMLAnchorElement>(
-      'a[href="/computer/sessions/new"]',
+      'a[href="/computer/work/new"]',
     )!
     expect(start.textContent).toBe('Start your first session')
     expect(
@@ -370,7 +370,7 @@ describe('Computer page', () => {
 
     act(() => start.click())
     await settle(
-      () => location() === '/computer/sessions/new',
+      () => location() === '/computer/work/new',
       'the new session composer',
     )
     expect(capture).toHaveBeenCalledWith(
@@ -494,7 +494,7 @@ describe('Computer page', () => {
       }),
     )
     await settle(
-      () => location() === '/computer/sessions/ses_1',
+      () => location() === '/computer/work/t/ses_1',
       'the new session',
     )
     expect(computerApi.createComputer).not.toHaveBeenCalled()
