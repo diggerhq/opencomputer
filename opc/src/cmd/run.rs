@@ -12,7 +12,7 @@ use crate::error::{Error, Result, exit};
 use crate::http::session_path;
 use crate::ids;
 use crate::render;
-use crate::wire::Attach;
+use crate::wire::{Attach, From};
 use serde_json::{Map, Value, json};
 use std::time::{Duration, Instant};
 
@@ -324,7 +324,7 @@ async fn print(ctx: &mut Ctx, args: RunArgs, message: String) -> Result<i32> {
         }
         None => {
             let minted = new_session_id(ctx, &args.new)?;
-            let wire = ctx.open_wire(vec![Attach { session_id: minted.clone(), after: Some(0), ..Default::default() }], deltas);
+            let wire = ctx.open_wire(vec![Attach { session_id: minted.clone(), from: From::Start }], deltas);
             let (wire, created) = tokio::join!(wire, create(ctx, &minted, &args.new, Some(&message)));
             let (wire, rx) = wire?;
             let (created, sent) = created?;
@@ -333,7 +333,7 @@ async fn print(ctx: &mut Ctx, args: RunArgs, message: String) -> Result<i32> {
             if sid != minted {
                 // A repeat of an earlier create: follow the original session.
                 f.forget(&minted);
-                f.attach(Attach { session_id: sid.clone(), after: Some(0), ..Default::default() });
+                f.attach(Attach { session_id: sid.clone(), from: From::Start });
             }
             let (turn, seq) = match (sent, created.turn) {
                 (Some(s), _) => (s.turn, s.seq),

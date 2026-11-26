@@ -63,4 +63,4 @@ The outcome of a turn is not an error: it is the [Result](/api/reference/objects
 
 `turn_failed`, `turn_cancelled` and `waiting` are turn outcomes. Commands that print a Result (`opc -p`, `opc wait`, `opc watch`, `opc send --wait`) report them there, as `subtype` `error`, `cancelled` or `waiting` with the same fields, and print no error object. In `stream-json`, a failed turn's last line has `status: "failed"`; a command failure's last line does not.
 
-API error codes that are not listed here, such as `id_conflict` or `cursor_ahead`, are passed through with their `retryable`, and exit code `4` for `5xx` responses and `2` otherwise.
+API error codes that are not listed here, such as `id_conflict`, are passed through with their `retryable`, and exit code `4` for `5xx` responses and `2` otherwise.

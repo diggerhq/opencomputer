@@ -287,10 +287,11 @@ fn rate_limit_honours_retry_after() {
 #[test]
 fn reconnects_and_catches_up_without_gaps() {
     let fake = Fake::start();
-    fake.drop_ws_after(6);
+    // `ready`, `subd` and one pushed event; the rest is read after the redial.
+    fake.drop_live_after(3);
     let o = run(&fake, &["-p", "--output-format", "stream-json", "slow 600"]);
     assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(fake.ws_connections() >= 2, "expected a reconnect");
+    assert!(fake.live_connections() >= 2, "expected a reconnect");
     let seqs: Vec<u64> = o.lines().iter().filter_map(|l| l.get("event").unwrap_or(l).get("seq").and_then(Value::as_u64)).collect();
     let mut sorted = seqs.clone();
     sorted.dedup();
@@ -409,7 +410,7 @@ fn wait_all_reports_every_session_when_one_is_lost() {
     let ok = fake.seed_session(Seed::new("fine"));
     let lost = fake.seed_session(Seed::new("lost"));
     fake.send(&ok, "reply done", "queue").unwrap();
-    fake.fail_next(&format!("ws attach {lost}"), 1, Failure::forbidden("not_yours"));
+    fake.fail_next(&format!("GET /sessions/{lost}"), 1, Failure::forbidden("not_yours"));
     let o = run(&fake, &["wait", "--all", "--json", &ok, &lost]);
     assert_eq!(o.code, 1, "{}\n{}", o.stdout, o.stderr);
     let lines: Vec<serde_json::Value> = o.stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -421,7 +422,7 @@ fn wait_all_reports_every_session_when_one_is_lost() {
 
     // `--all` keeps its documented codes: not all completed is 1.
     // Text: each answer under its session, the lost one on stderr.
-    fake.fail_next(&format!("ws attach {lost}"), 1, Failure::forbidden("not_yours"));
+    fake.fail_next(&format!("GET /sessions/{lost}"), 1, Failure::forbidden("not_yours"));
     let o = run(&fake, &["wait", "--all", &ok, &lost]);
     assert_eq!(o.code, 1, "{}", o.stderr);
     assert!(o.stdout.contains(&ok), "{}", o.stdout);
@@ -434,7 +435,7 @@ fn watch_goes_on_when_one_session_is_lost() {
     let ok = fake.seed_session(Seed::new("fine"));
     let lost = fake.seed_session(Seed::new("lost"));
     fake.send(&ok, "reply done", "queue").unwrap();
-    fake.fail_next(&format!("ws attach {lost}"), 1, Failure::forbidden("not_yours"));
+    fake.fail_next(&format!("GET /sessions/{lost}"), 1, Failure::forbidden("not_yours"));
     let o = run(&fake, &["watch", "--json", &ok, &lost]);
     assert_eq!(o.code, 1, "{}\n{}", o.stdout, o.stderr);
     assert!(o.stdout.lines().any(|l| l.contains("\"type\":\"error\"") && l.contains(&lost)), "{}", o.stdout);
@@ -911,4 +912,68 @@ fn help_says_how_to_turn_telemetry_off() {
     let o = run(&fake, &["help", "telemetry"]);
     assert_eq!(o.code, 0);
     assert!(o.stdout.contains("never sends what you type"), "{}", o.stdout);
+}
+
+#[test]
+fn log_hands_out_an_opaque_cursor_and_follows_a_reset() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("cursors").turn("reply one"));
+    let first = run(&fake, &["log", "-s", &sid, "--json"]).json();
+    let cursor = first["cursor"].as_str().expect("a cursor").to_string();
+    let held = first["lastSeq"].as_u64().unwrap();
+
+    // The cursor goes back to the server exactly as it came.
+    let (t2, _) = fake.send(&sid, "reply two", "queue").unwrap();
+    assert!(fake.wait_turn(&sid, &t2, T));
+    let o = run(&fake, &["log", "-s", &sid, "--json", "--after", &cursor]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let seqs: Vec<u64> = o.json()["events"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs.first(), Some(&(held + 1)), "{seqs:?}");
+    assert!(fake.requests_to("GET /sessions/*/events").iter().any(|r| r.query.contains(&format!("after={cursor}"))));
+    let newer = o.json()["cursor"].as_str().unwrap().to_string();
+
+    // The tail is rewritten: the read is answered `reset` and goes on from its cursor.
+    fake.rewrite_above(&sid, held);
+    let o = run(&fake, &["log", "-s", &sid, "--json", "--after", &newer]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json()["events"], serde_json::json!([]));
+    assert_ne!(o.json()["cursor"], newer.as_str());
+    // A value that is no cursor (a seq of the old contract): `reset` with none, so from the start.
+    let o = run(&fake, &["log", "-s", &sid, "--json", "--after", "3"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.json()["events"].as_array().unwrap().len() as u64, held);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn watch_from_a_void_cursor_resets_and_reads_on() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("void").turn("reply one").turn("reply two"));
+    let cursor = run(&fake, &["log", "-s", &sid, "--json"]).json()["cursor"].as_str().unwrap().to_string();
+    let keep = fake.events(&sid).iter().position(|e| e["type"] == "turn.completed").unwrap() as u64 + 1;
+    fake.rewrite_above(&sid, keep);
+    let (t, _) = fake.send(&sid, "reply three", "queue").unwrap();
+    assert!(fake.wait_turn(&sid, &t, T));
+    let o = run(&fake, &["watch", &sid, "--output-format", "stream-json", "--after", &cursor]);
+    assert_eq!(o.code, 0, "{}\n{}", o.stdout, o.stderr);
+    let seqs: Vec<u64> = o.lines().iter().filter_map(|l| l.get("event").unwrap_or(l).get("seq").and_then(Value::as_u64)).collect();
+    let last = fake.events(&sid).len() as u64;
+    assert_eq!(seqs, (keep + 1..=last).collect::<Vec<u64>>(), "what follows the reset's seq, once");
+    // The cursor lines say where to go on from: nothing is new after the last one.
+    let lines = o.lines();
+    let next = lines.iter().rev().find(|l| l["type"] == "cursor").expect("a cursor line")["cursor"].as_str().unwrap();
+    let o = run(&fake, &["log", "-s", &sid, "--json", "--after", next]);
+    assert_eq!(o.json()["events"], serde_json::json!([]), "{}", o.stderr);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn streamed_text_follows_utf16_offsets() {
+    let fake = Fake::start();
+    let text = "caf\u{e9} \u{1F600} and on \u{1F680}\u{1F680} end";
+    let o = run(&fake, &["-p", "--output-format", "stream-json", "--include-partial-messages", &format!("streamed {text}")]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let streamed: String = o.lines().iter().filter(|l| l["type"] == "message.delta").filter_map(|l| l["data"]["text"].as_str().map(str::to_string)).collect();
+    assert_eq!(streamed, text, "{}", o.stdout);
+    fake.assert_no_panics();
 }
