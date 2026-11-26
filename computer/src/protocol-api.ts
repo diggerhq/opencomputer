@@ -175,7 +175,9 @@ export type WireToHost =
   | { t: 'resume'; id: string; sessionId: string; actor: ApiActor }
   /** `result: { terminalId, socket, channel? }`; bytes then flow on `socket` (a PTY, raw both ways). */
   | { t: 'terminal.open'; id: string; sessionId: string; member: string; cols: number; rows: number;
-      command?: string; tty: boolean; term?: string }
+      command?: string; tty: boolean; term?: string;
+      /** `browser`: the session's browser (host/browser-cdp.py) instead of `command`, without a tty; the host picks what runs. */
+      app?: 'browser' }
   | { t: 'terminal.resize'; id: string; terminalId: string; cols: number; rows: number }
   | { t: 'terminal.eof'; id: string; terminalId: string }
   /** Also sent for every terminal of a closing connection (SIGHUP, SIGKILL after 5 s). */

@@ -14,6 +14,7 @@ import {
 } from './sidebar-prefs'
 import {
   SIDEBAR_TABS,
+  tabsFor,
   type SidebarTab,
   type SidebarTabProps,
 } from './sidebar-tabs'
@@ -140,8 +141,15 @@ it('shows a tab strip for several tabs and keeps the shell when switching', () =
   expect(container.textContent).toContain('notes')
   click(tabs[0])
   expect(mounts).toBe(1)
-  // The real registry: only the terminal for now.
-  expect(SIDEBAR_TABS.map((t) => t.id)).toEqual(['terminal'])
+  // The real registry: the browser only where the computer runs one.
+  expect(SIDEBAR_TABS.map((t) => t.id)).toEqual(['terminal', 'browser'])
+  expect(tabsFor(undefined).map((t) => t.id)).toEqual(['terminal'])
+  expect(tabsFor({ features: { steer: true } }).map((t) => t.id)).toEqual([
+    'terminal',
+  ])
+  expect(
+    tabsFor({ features: { steer: true, browser: true } }).map((t) => t.id),
+  ).toEqual(['terminal', 'browser'])
 })
 
 it('resizes from its left edge and keeps the width within bounds', () => {

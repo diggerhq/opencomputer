@@ -18,18 +18,25 @@ async function setup(o: { access: SessionAccess[]; admins?: string[]; idleMs?: n
   const dir = mkdtempSync(path.join(os.tmpdir(), 'wire-term-'));
   const pty = new Map<string, net.Socket>();
   const servers: net.Server[] = [];
+  const opens: Record<string, unknown>[] = [];
   let n = 0;
   const host = await fakeHost({
     access: o.access,
     admins: o.admins,
     answer: async (m) => {
       if (m.t === 'terminal.open') {
-        const terminalId = `tm_${String(++n).padStart(12, '0')}`;
+        opens.push(m);
+        const browser = m.app === 'browser';
+        const terminalId = `${browser ? 'br' : 'tm'}_${String(++n).padStart(12, '0')}`;
         const socket = path.join(dir, `${terminalId}.sock`);
         const server = net.createServer((s) => {
           pty.set(terminalId, s);
           s.on('error', () => {});
           s.on('data', (d) => s.write(d)); // an echoing shell
+          if (browser) {
+            const frames = setInterval(() => s.writable && s.write('F'), 20); // a page that animates on its own
+            s.on('close', () => clearInterval(frames));
+          }
         });
         servers.push(server);
         await new Promise<void>((r) => server.listen(socket, () => r()));
@@ -53,7 +60,7 @@ async function setup(o: { access: SessionAccess[]; admins?: string[]; idleMs?: n
     },
   );
   await until(() => relay.hostLink.key !== null);
-  return { host, relay };
+  return { host, relay, opens };
 }
 
 const frame = (channel: number, text: string) => {
@@ -134,5 +141,50 @@ describe('wire terminals', () => {
     expect((await member.call('terminals.open', { sessionId: open, cols: 80, rows: 24 })).error).toBeUndefined();
     admin.ws.close();
     member.ws.close();
+  });
+});
+
+describe('wire browsers', () => {
+  it('opens the host’s browser app on one channel; the client names no command', async () => {
+    const s = sid();
+    const { relay, opens } = await setup({ access: [accessFor(s)] });
+    const c = connectClient(relay.port);
+    expect((await c.call('browsers.open', { sessionId: s, command: 'rm -rf /' })).error.data).toMatchObject({ field: 'command' });
+    const ok = await c.call('browsers.open', { sessionId: s });
+    expect(ok.result.browser).toEqual({ id: expect.stringMatching(/^br_/), channel: expect.any(Number) });
+    expect(opens.at(-1)).toMatchObject({ app: 'browser', tty: false });
+    expect(opens.at(-1)?.command).toBeUndefined();
+    c.ws.send(frame(ok.result.browser.channel, '{"t":"reload"}\n'));
+    await c.next((m) => Buffer.isBuffer(m) && m.subarray(4).toString().includes('reload'), 3000);
+    // A browser is not a terminal, and the reverse.
+    expect((await c.call('terminals.close', { terminalId: ok.result.browser.id.replace('br_', 'tm_') })).error.data).toMatchObject({ code: 'terminal_not_found' });
+    expect((await c.call('browsers.close', { browserId: ok.result.browser.id })).error).toBeUndefined();
+    const exited = await c.next((m) => m.method === 'browser.exited', 3000);
+    expect(exited.params).toEqual({ browserId: ok.result.browser.id });
+    expect(c.frames.some((m) => m.method === 'terminal.exited')).toBe(false);
+    c.ws.close();
+  });
+
+  it('counts only input toward the idle timeout: frames alone do not keep it open', async () => {
+    const s = sid();
+    const { relay } = await setup({ access: [accessFor(s)], idleMs: 200 });
+    const c = connectClient(relay.port);
+    const ok = await c.call('browsers.open', { sessionId: s });
+    const exited = await c.next((m) => m.method === 'browser.exited', 3000);
+    expect(exited.params).toEqual({ browserId: ok.result.browser.id, reason: 'idle' });
+    expect(c.frames.filter((m) => Buffer.isBuffer(m)).length).toBeGreaterThan(3);
+    c.ws.close();
+  });
+
+  it('needs the terminals scope and a writable connection, like a terminal', async () => {
+    const s = sid();
+    const { relay } = await setup({ access: [accessFor(s, 'usr_owner', ['usr_owner', 'usr_invited'])] });
+    const stranger = connectClient(relay.port, { member: 'usr_stranger' });
+    expect((await stranger.call('browsers.open', { sessionId: s })).error.data.code).toBe('session_not_found');
+    const reader = connectClient(relay.port, { scope: { scopes: ['sessions:read'] } });
+    expect((await reader.call('browsers.open', { sessionId: s })).error.data).toMatchObject({ reason: 'missing_scope', scope: 'terminals' });
+    const readOnly = connectClient(relay.port, { scope: { readOnly: true } });
+    expect((await readOnly.call('browsers.open', { sessionId: s })).error.data).toMatchObject({ reason: 'read_only' });
+    for (const c of [stranger, reader, readOnly]) c.ws.close();
   });
 });

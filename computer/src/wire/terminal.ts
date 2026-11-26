@@ -20,6 +20,10 @@
 //   SP_WIRE_TERMINAL_IDLE_MINUTES) is hung up, and its `terminal.exited` says
 //   `reason: "idle"`; one whose session the member may no longer drive is hung
 //   up with `reason: "access_lost"`. A command without a tty is never idle.
+// - A browser (`browsers.*`) is a terminal without a tty whose command the
+//   host fixes (host/browser-cdp.py): the client never names one. Its idle
+//   clock counts input only (a page animates on its own), its stderr is read
+//   and dropped, and its end is `browser.exited`, not `terminal.exited`.
 
 import net from 'node:net';
 import type { ApiError, HostToWire, SessionAccess } from '../protocol.js';
@@ -33,6 +37,7 @@ import type { WireEmit } from './telemetry.js';
 
 interface Open {
   id: string;
+  app?: 'browser';
   sessionId: string;
   channel: number;
   stderrChannel: number | null;
@@ -43,7 +48,7 @@ interface Open {
   done: boolean;
   /** Why the relay hung it up, if it did. */
   reason?: TerminalEndReason;
-  /** Last input or output (ms), for the idle timeout; tty terminals only. */
+  /** Last input or output (ms; input only for a browser), for the idle timeout; tty terminals and browsers only. */
   activeAt: number;
   idleTimer?: NodeJS.Timeout;
   /** For `wire.terminal`. */
@@ -78,6 +83,10 @@ export interface OpenParams {
   term?: string;
 }
 
+export interface BrowserParams {
+  sessionId: string;
+}
+
 const EXIT_WAIT_MS = 2000;
 
 export class WireTerminals {
@@ -94,19 +103,37 @@ export class WireTerminals {
   }
 
   async open(p: OpenParams, access: SessionAccess | undefined): Promise<CallOutcome> {
+    const tty = p.tty ?? true;
+    if (tty && (p.cols === undefined || p.rows === undefined)) return { error: errors.invalidParams(p.cols === undefined ? 'cols' : 'rows', 'cols and rows are required with tty') };
+    const r = await this.start(p.sessionId, access, { cols: p.cols ?? 80, rows: p.rows ?? 24, command: p.command, tty, term: p.term });
+    if ('error' in r) return r;
+    if (tty) this.watchIdle(r.t);
+    return { result: { terminal: { id: r.t.id, channel: r.t.channel, stderrChannel: r.t.stderrChannel } } };
+  }
+
+  /** `browsers.open`: the session's headless browser, on one channel (both directions). */
+  async openBrowser(p: BrowserParams, access: SessionAccess | undefined): Promise<CallOutcome> {
+    const r = await this.start(p.sessionId, access, { cols: 80, rows: 24, tty: false, app: 'browser' });
+    if ('error' in r) return r;
+    this.watchIdle(r.t);
+    return { result: { browser: { id: r.t.id, channel: r.t.channel } } };
+  }
+
+  private async start(
+    sessionId: string,
+    access: SessionAccess | undefined,
+    o: { cols: number; rows: number; tty: boolean; command?: string; term?: string; app?: 'browser' },
+  ): Promise<{ t: Open } | { error: ApiError }> {
     const { host, member } = this.deps;
     if (!access) return { error: errors.sessionNotFound() };
     if (!mayOpenTerminal(access, member)) return { error: errors.terminalOwnerOnly() };
-    const tty = p.tty ?? true;
-    if (tty && (p.cols === undefined || p.rows === undefined)) return { error: errors.invalidParams(p.cols === undefined ? 'cols' : 'rows', 'cols and rows are required with tty') };
-    const r = await host.call({
-      t: 'terminal.open', sessionId: p.sessionId, member, cols: p.cols ?? 80, rows: p.rows ?? 24, command: p.command, tty, term: p.term,
-    });
+    const r = await host.call({ t: 'terminal.open', sessionId, member, ...o });
     if (r.error) return { error: r.error };
     const res = r.result as { terminalId: string; socket: string; stderrSocket?: string | null };
     const t: Open = {
       id: res.terminalId,
-      sessionId: p.sessionId,
+      app: o.app,
+      sessionId,
       channel: this.nextChannel++,
       stderrChannel: res.stderrSocket ? this.nextChannel++ : null,
       sockets: [],
@@ -128,10 +155,9 @@ export class WireTerminals {
     }
     this.byId.set(t.id, t);
     this.byChannel.set(t.channel, t);
-    if (tty) this.watchIdle(t);
     this.deps.route(t.id, this);
     this.deps.onChange?.();
-    return { result: { terminal: { id: t.id, channel: t.channel, stderrChannel: t.stderrChannel } } };
+    return { t };
   }
 
   /** A binary frame from the client. */
@@ -160,18 +186,28 @@ export class WireTerminals {
   }
 
   async resize(terminalId: string, cols: number, rows: number): Promise<CallOutcome> {
-    if (!this.byId.has(terminalId)) return { error: errors.terminalNotFound() };
+    if (!this.isTerminal(terminalId)) return { error: errors.terminalNotFound() };
     return this.forward(await this.deps.host.call({ t: 'terminal.resize', terminalId, cols, rows }));
   }
 
   async eof(terminalId: string): Promise<CallOutcome> {
-    if (!this.byId.has(terminalId)) return { error: errors.terminalNotFound() };
+    if (!this.isTerminal(terminalId)) return { error: errors.terminalNotFound() };
     return this.forward(await this.deps.host.call({ t: 'terminal.eof', terminalId }));
   }
 
   async close(terminalId: string): Promise<CallOutcome> {
-    if (!this.byId.has(terminalId)) return { error: errors.terminalNotFound() };
+    if (!this.isTerminal(terminalId)) return { error: errors.terminalNotFound() };
     return this.forward(await this.deps.host.call({ t: 'terminal.close', terminalId }));
+  }
+
+  private isTerminal(id: string) {
+    const t = this.byId.get(id);
+    return t !== undefined && t.app === undefined;
+  }
+
+  async closeBrowser(browserId: string): Promise<CallOutcome> {
+    if (this.byId.get(browserId)?.app !== 'browser') return { error: errors.browserNotFound() };
+    return this.forward(await this.deps.host.call({ t: 'terminal.close', terminalId: browserId }));
   }
 
   /** The host says the terminal's process ended. */
@@ -245,8 +281,9 @@ export class WireTerminals {
       head.writeUInt32BE(channel, 0);
       s.on('data', (chunk: Buffer) => {
         const { outbox } = this.deps;
+        if (t.app && channel !== t.channel) return; // a browser's stderr: Chromium's noise
         t.bytesOut += chunk.length;
-        t.activeAt = Date.now();
+        if (!t.app) t.activeAt = Date.now();
         const room = LIMITS.terminalFrameBytes - head.length; // a frame is at most 64 KiB with its header
         for (let i = 0; i < chunk.length; i += room) {
           outbox.urgent(Buffer.concat([head, chunk.subarray(i, i + room)]));
@@ -271,8 +308,11 @@ export class WireTerminals {
     this.byChannel.delete(t.channel);
     this.deps.route(t.id, undefined);
     const m = t.exited;
+    const reason = t.reason ? { reason: t.reason } : {};
     this.deps.outbox.urgent(
-      encodeNotification('terminal.exited', { terminalId: t.id, exitCode: m?.exitCode ?? null, signal: m?.signal ?? null, ...(t.reason ? { reason: t.reason } : {}) }),
+      t.app === 'browser'
+        ? encodeNotification('browser.exited', { browserId: t.id, ...reason })
+        : encodeNotification('terminal.exited', { terminalId: t.id, exitCode: m?.exitCode ?? null, signal: m?.signal ?? null, ...reason }),
     );
     this.deps.onChange?.();
     this.ended(t, true);

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Unavailable, UPDATING } from './unavailable.js';
-import { createTerminals, frame, frames, type Terminals, TERMINALS_PER_SESSION } from './terminal.js';
+import { browserCommand, createTerminals, frame, frames, type Terminals, TERMINALS_PER_SESSION } from './terminal.js';
 
 let dir: string;
 let terms: Terminals;
@@ -129,6 +129,38 @@ describe('terminals (real PTY)', () => {
     await terms.closeSession('cs_b');
     expect(terms.count('cs_b')).toBe(0);
   }, 20_000);
+});
+
+describe('browsers', () => {
+  it('only where the host allows them', async () => {
+    const r = await terms.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: true, app: 'browser' }, onExit);
+    expect('error' in r && r.error.code).toBe('browser_unavailable');
+    expect(terms.count('cs_c')).toBe(0);
+  });
+
+  it('runs the helper, never the caller’s command, one per session, apart from the eight terminals', async () => {
+    const b = createTerminals({ dir, launch: 'detached', path: env.PATH, browser: true });
+    try {
+      const r = (await b.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: true, command: 'echo PWNED', app: 'browser' }, onExit)) as Opened;
+      expect(r.terminalId).toMatch(/^br_/);
+      expect(r.stderrSocket).not.toBeNull(); // no tty: Chromium's stderr stays off the frame stream
+      const again = await b.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'browser' }, onExit);
+      expect('error' in again && again.error.code).toBe('too_many_browsers');
+      for (let i = 0; i < TERMINALS_PER_SESSION; i++) {
+        expect('terminalId' in (await b.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: true, command: 'sleep 30' }, onExit))).toBe(true);
+      }
+      const out = collect(await connect(r.socket));
+      await b.close(r.terminalId);
+      await until(() => out.ended);
+      expect(out.text).not.toContain('PWNED');
+    } finally {
+      await b.closeAll();
+    }
+  }, 20_000);
+
+  it('quotes the helper path', () => {
+    expect(browserCommand("/opt/it's/browser-cdp.py")).toBe("exec python3 -I '/opt/it'\\''s/browser-cdp.py'");
+  });
 });
 
 describe('terminals in containers (work 103, C13)', () => {

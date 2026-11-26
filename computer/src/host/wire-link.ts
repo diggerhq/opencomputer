@@ -122,7 +122,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(
-          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term },
+          { sessionId: m.sessionId, sandbox: ws.sandbox?.id, cwd: ws.sandbox ? WORKSPACE : ws.forkPath, cols: m.cols, rows: m.rows, command: m.command, tty: m.tty, term: m.term, app: m.app },
           (terminalId, exitCode, signal) => {
             const t = terms.get(terminalId);
             terms.delete(terminalId);
@@ -134,7 +134,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         if ('error' in r) return { error: r.error };
         terms.set(r.terminalId, { sessionId: m.sessionId, peer });
         changed(m.sessionId);
-        void hooks.record?.(m.sessionId, 'terminal.opened', { terminalId: r.terminalId, command: m.command ?? null }, memberActor(m.member)).catch((e) => log.warn('wire: terminal.opened not recorded', e));
+        void hooks.record?.(m.sessionId, 'terminal.opened', { terminalId: r.terminalId, command: m.app ? null : (m.command ?? null), ...(m.app ? { app: m.app } : {}) }, memberActor(m.member)).catch((e) => log.warn('wire: terminal.opened not recorded', e));
         return { result: r };
       }
       // Bound to the relay peer that opened the terminal: another peer gets "not found", as for an unknown id.

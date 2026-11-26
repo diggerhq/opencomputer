@@ -692,6 +692,7 @@ const capabilities = {
     workspace: true,
     reasoning: true,
     subagents: true,
+    browser: true,
   },
 }
 
@@ -769,6 +770,12 @@ export function computerSessionsMock(
   ) as Json
 
   if (rest === '/capabilities') return { capabilities }
+  // Terminal and browser tickets name a real wire only when one is configured (a local relay); otherwise the tabs say they could not connect.
+  if (rest === '/tickets' && method === 'POST') {
+    const url = import.meta.env.VITE_PREVIEW_WIRE_URL
+    if (!url) throw new ApiError('The preview has no wire to connect to.', 503)
+    return { ticket: { token: 'tk_preview.local', url } }
+  }
 
   // The old dashboard list shares the path without a query; leave it alone.
   if (rest === '/sessions' && method === 'GET' && search) {
