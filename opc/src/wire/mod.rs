@@ -12,6 +12,7 @@
 pub mod client;
 pub mod live;
 pub mod reconnect;
+pub mod redial;
 
 use crate::api::types::{Capabilities, Delta, Event, Session, Turn};
 use crate::error::Error;

@@ -1,14 +1,16 @@
 // One client WebSocket (opc docs websocket/connect.mdx and methods.mdx): the
-// `ready` greeting, JSON-RPC dispatch, scopes and access, calls to session
+// `ready` greeting, JSON-RPC dispatch, scopes and access, reads from session
 // writers, terminals, keepalive and the connection's own close codes. It
 // carries no session events: clients watch sessions through the cloud (work
-// 118), so there is no attach.
+// 118), so there is no attach. It carries no session writes either: a turn,
+// an answer, a stop or a change of settings goes through the session's inbox
+// over HTTP (spec 19.1), so a write method is not found here.
 //
 // Invariants:
 // - `ready` is the first frame.
 // - Every method is checked in this order: known, params, scope, the ticket's
 //   sessions, the session's access list (an unknown id waits up to 2 s for its
-//   create), read-only, then run. A refusal never reaches a writer.
+//   create), read-only (terminals.open), then run. A refusal never reaches a writer.
 // - The connection closes with 1001 after two missed pings, 4001 when its
 //   credential's `until` passes or its key is revoked, 4008 when more than
 //   16 MiB wait to be sent; closing hangs up its terminals and links.
@@ -24,11 +26,11 @@ import { randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import type { SessionAccess } from '../protocol.js';
 import { checkCliFrame, CLI_LIMITS } from '../api/cli-telemetry.js';
-import { decodeParams, isMethod, type Method, WRITES } from '../api/schema.js';
+import { decodeParams, isMethod, type Method } from '../api/schema.js';
 import type { CallOutcome } from '../api/writer.js';
 import { isSessionId, mintId } from '../session-ids.js';
 import type { WireClaims } from '../signed-header.js';
-import { actorFor, hasScope, inTicket, mayAttach, scopeFor } from './edge-auth.js';
+import { actorFor, hasScope, inTicket, mayAttach, onWire, scopeFor } from './edge-auth.js';
 import type { HostLink } from './host-link.js';
 import { LIMITS, TokenBucket } from './limits.js';
 import { Outbox } from './outbox.js';
@@ -61,7 +63,7 @@ export interface ConnectionStats {
   duration_ms: number;
 }
 
-const TIMED: ReadonlySet<string> = new Set(['turns.send', 'sessions.compact', 'ping']);
+const TIMED: ReadonlySet<string> = new Set(['ping']);
 const us = (t0: bigint) => Number((process.hrtime.bigint() - t0) / 1000n);
 const requestId = () => `req_${randomBytes(9).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '0')}`;
 
@@ -193,7 +195,7 @@ export class Connection {
       this.terminals.pendingError = undefined;
       return this.outbox.urgent(encodeError(m.id, e));
     }
-    if (!isMethod(m.method)) return this.outbox.urgent(encodeRpcError(m.id, -32601, 'Method not found'));
+    if (!onWire(m.method)) return this.outbox.urgent(encodeRpcError(m.id, -32601, 'Method not found'));
     const t0 = process.hrtime.bigint();
     let out: CallOutcome;
     try {
@@ -250,15 +252,16 @@ export class Connection {
     const sessionId = params.sessionId as string;
     const access = await this.access(sessionId, true);
     if ('error' in access) return access;
-    if (WRITES.has(method) && this.claims.scope.readOnly) return { error: errors.readOnly() };
-    if (method === 'terminals.open') return this.terminals.open(params as unknown as OpenParams, access.access);
+    if (method === 'terminals.open') {
+      if (this.claims.scope.readOnly) return { error: errors.readOnly() };
+      return this.terminals.open(params as unknown as OpenParams, access.access);
+    }
     const link = await this.links.get(sessionId);
     if ('error' in link) return { error: link.error };
     const rid = requestId();
     const out = await link.call(method, raw, {
       actor: this.actor,
       member: this.member,
-      idempotencyKey: typeof params.idempotencyKey === 'string' ? params.idempotencyKey : undefined,
       requestId: rid,
     });
     return out.error && !out.error.requestId ? { error: { ...out.error, requestId: rid } } : out;

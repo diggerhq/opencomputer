@@ -102,7 +102,7 @@ Slack ──HTTPS──▶ gateway ◀──WebSocket (dialed out)── host ag
 
 | Piece | Job | Code |
 |---|---|---|
-| **Gateway** | Slack's HTTP endpoint, event de-dup, allowlist, session table, `/setup`, GitHub webhooks and token minting. It holds no per-session runtime state, so it can restart at any time. | `src/gateway/`, `src/setup/`, `src/github/` |
+| **Gateway** | Slack's HTTP endpoint, event de-dup, allowlist, session table, `/setup`, GitHub webhooks and token minting. It holds no per-session runtime state, so it can restart at any time. | the backend's `ComputerDurableObject` (`services/managed-agents/src/computer/`) |
 | **Host agent** | Dials out to the gateway (no inbound ports), forks workspaces, starts one runner per active thread outside its own process tree, rediscovers them after a restart, stops idle ones, serves GitHub tokens to git. | `src/host/`, `src/workspaces/` |
 | **Runner** | One agent session per process. It renders to Slack directly, so streaming does not go through the gateway. | `src/runner/` |
 
@@ -226,8 +226,7 @@ drive it (see below).
 **Where values live.** The gateway is the copy of record: AES-256-GCM, with
 each row's scope, owner and name as associated data, so a row copied elsewhere
 does not decrypt. In production that is the backend's per-organization
-`ComputerDurableObject` (`src/computer/secrets-store.ts`); the Node gateway uses its SQLite (`user_secrets`, key from
-`SP_STORE_KEY`, admins are `"admin": true` in `SP_PEOPLE`). A session's set
+`ComputerDurableObject` (`src/computer/secrets-store.ts`). A session's set
 rides on every delivery and is pushed whenever it changes.
 
 **On the host** the runner writes them to a per-session directory under
@@ -406,9 +405,6 @@ cd modelproxy && go build -o /tmp/mp/oc-modelproxy . && /tmp/mp/oc-modelproxy -i
 # the host: SP_MODEL_PROXY=/tmp/mp/control.sock SP_MODEL_SOCKET=/tmp/mp/api.sock
 ```
 
-The Node gateway in `src/gateway/` is the self-hosted alternative and what the
-laptop and the e2e checks use; the `Dockerfile` packages it as a container.
-
 
 ### Workspaces
 
@@ -524,14 +520,12 @@ environment, which any session can change.
 | `SP_VERSION` | `dev` | the release's commit, in `ready.server.version` (the unit reads it from `.sp-version.env`) |
 | `SP_REGION` | unset (`null`) | `ready.server.region` |
 
-Gateway variables, the model credentials among them, are documented at the top of `src/gateway/main.ts`.
-
 ## Development
 
 `npm run check` is the gate: typecheck (`tsc`), lint (`biome lint`), unit tests
 (`vitest run`, the `*.test.ts` files next to the code) and a file-size ratchet
 (`scripts/max-lines.mjs`) and an import-boundary check (`scripts/boundaries.mjs`:
-`gateway/`, `host/` and `runner/` share code only through top-level `src/`).
+`host/`, `runner/` and `wire/` share code only through top-level `src/`).
 CI runs it on every pull request, and `main` deploys only after it passes. `npm run format` applies the formatter.
 
 The integration checks below spawn real processes and are run by hand. None
@@ -540,22 +534,16 @@ of them need a real Slack workspace.
 | Command | What it checks |
 |---|---|
 | `npx tsx src/dev/fake-run.ts "<prompt>" ["<steer sent 8s later>"]` | A real agent session against a fake Slack client. Prints every Slack API call with a timestamp and approves prompts automatically. The fast loop for event mapping, batching and steering. |
-| `npx tsx src/dev/e2e-check.ts [--keep]` | The whole split deployment on one machine, with fake Slack and GitHub APIs served by the check itself: `/setup`, mention → fork → runner → turn, thread replies, mid-turn messages, a permission button, host and gateway restarts under a live runner, GitHub tokens through the credential helper and `gh` shim, a push webhook. Prints the latency rows it can measure. Scratch space is `/tmp/spe2e`. |
-| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway, with oc-modelproxy built from `modelproxy/` (needs Go and openssl; Linux) and run with `-identity=single`: spawn, forwarding, token relay, restart with rediscovery, idle exit. `--claude` makes the first turn real, on `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` as the gateway routes them. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn (its request held by a profile whose upstream never answers), before and after a host restart. |
 | `sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE=… SP_IMAGE_ABI=… node --import tsx src/dev/sandbox-check.ts` (on a computer, from its release directory, with no host agent running) | The host with `SP_LAUNCH=podman` against an in-process fake gateway and a fake Slack (work 103): a session's runner is a container in a unit of the runners' slice, its record is written, its cwd is `/workspace`, its report names the host's path, its token socket is linked into its run directory, it exits when idle leaving its container, and the next message resumes the same container with its home intact. With a definition of two public repositories: helper containers clone them, a thread has its workspace, its worktree and its own registry mounted, a sibling thread and another person's thread see none of it, `git worktree prune` in one leaves the other, the mount helper refuses what is not the person's, a session of the API has its journal directory, `checkout` adds a repository, and housekeeping removes a stopped thread's ignored `node_modules`. Step 9: two threads, each with a server on the same port and the check's own on the host's; the real `preview` tool, called by a scripted stand-in for the model inside the container (`src/dev/fake-model.mjs`, no credential), reaches the gateway as a virtual port, and the proxy answers from inside the right container and never from the host's port; the probe; a terminal and `/files` over the wire socket (`src/dev/wire-client.ts`), running and stopped, each inside its own thread only (`src/dev/sandbox-check-reach.ts`). Both together: an upload to a running thread is in its workspace directory on the host and reads back while it is stopped, one to a stopped thread (a helper container) is in `/workspace` once it runs again; a terminal commits in the worktree; links to a sibling thread's workspace and to another person's lead nowhere, running or stopped; and a session of the API has `terminal.opened`, `terminal.closed` and `files.pushed` in its journal, written by its runner. With `SP_RUN` / `SP_DATA` it runs on roots of its own, laid out as `deploy/vm/provision.sh` lays out the computer's. With `--spares` it runs step 10 instead (`src/dev/sandbox-check-spares.ts`), on four hosts it starts one after the other: what an unclaimed spare container holds (its mounts, environment, `boot.env`, token socket: nothing of anyone) and costs (its unit's cgroup), a new thread's claim of one (the record under the spare's id, the mounts and worktrees made in the running container, the timings of each part), the pool's size and refill, a delivery beside a refill, new threads back to back, a claim that fails (the spares are paused) answered by a cold start under the same id, the spares of a killed host removed by the next one, which runs another `SP_VERSION` and image name, a spare that outlives the idle time, a spare told to go when its host stops, and the image lock when its file is there; it prints the first reply of new threads with a spare and without, with a repository and with none (`SP_CHECK_N` threads each, 6 unless set). Model access is the release's oc-modelproxy (`modelproxy/oc-modelproxy`), run by the check with a profile whose upstream is `src/dev/fake-model.mjs`. Needs podman, openssl and the network (github.com), so it does not run in CI. |
 | `npx tsx src/dev/workspaces-check.ts [--real]` | Clones, forks, housekeeping and git auth against local bare repositories. |
-| `npx tsx src/dev/gateway-check.ts`, `setup-check.ts` | Gateway routing and `/setup`. |
 | `npx tsx src/dev/links-check.ts` | Linked threads against a fake workspace: public, private, DM, guest and Slack Connect cases, other workspaces, caps, and injected instructions in linked text. |
-| `npx tsx src/dev/secrets-check.ts` | Secrets: the encrypted vault and its scopes, the env file as bash sources it (changes, removal, files, quoting), redaction of streamed and posted text, `!secret` → button → modal → stored and pushed to a fake host, `request_secret`, `!var` variables, and a real runner process with fake Slack. |
+| `npx tsx src/dev/secrets-check.ts` | Secrets on the machine: the env file as bash sources it (changes, removal, files, quoting), redaction of streamed and posted text, and a real runner process given secrets and variables over its socket. |
 | `npx tsx src/dev/silent-check.ts` | Silent turns from scripted model streams: a `<no-reply/>` reply posts nothing and is never shown. |
 | `npx tsx src/dev/model-check.ts` | `!model` and `+smart`/`+fast` against the real Agent SDK with a local stand-in for the Anthropic API (no credentials): switching while idle, mid-turn, an unknown id (clear error, nothing changes) and across a runner restart, asserting the model each API request actually used. |
 | `npx tsx src/dev/names-check.ts` | What the model reads about who is speaking and where, against the real Agent SDK with a stand-in Anthropic API (no credentials): the sender's and mentioned people's Slack names, the channel name, one lookup per person and per session, and ids standing in (within ~0.8 s) when Slack fails or hangs. |
 | `npx tsx src/dev/telemetry-check.ts` | Runner telemetry (work 054) against the real Agent SDK with a stand-in Anthropic API (no credentials): the event sequence and turn row of a turn that thinks, runs a tool and answers, then a warm turn; thinking counted as model time, not overhead. |
 | `npx tsx src/dev/addressing-check.ts` | A real agent in a multi-person thread: answers messages for it, stays silent on others. |
 | `npx tsx src/dev/tunnel-check.ts` | Starts the tunnel and Bolt's receiver, then sends a signed `url_verification` through it. |
-
-The e2e check reaches the fakes through the dev-only `SP_SLACK_API_URL` and
-`SP_GITHUB_API_URL`.
 
 ## Project layout
 
@@ -565,16 +553,11 @@ src/
   ipc.ts            newline-delimited JSON over unix sockets (host ⇄ runner, helpers → host)
   tiers.ts          +smart / +fast model tiers (parsed by the gateway, applied by the runner)
   secret-names.ts   which names a secret may have (gateway and runner)
-  variables.ts      `!var` syntax and how values are shown (gateway; ported to the backend)
   slack-text.ts     Slack message markup → plain text for the model
   links.ts          Slack permalinks in a message → linked thread content, if everyone may see it
   access.ts         session roles: who may do what, `!access` syntax, the strings (access-views.ts: Block Kit)
   build.ts          which commit is running (shown in footers and !status)
   log.ts, env.ts    logging; .env load and write-back
-  gateway/          Slack endpoint, routing, SQLite tables, host WebSockets;
-                    vault.ts and secrets-ui.ts: secrets storage, !secret and the modal;
-                    variables-ui.ts: !var; threads.ts: read_thread and post_thread;
-                    access-store.ts, access-flow.ts, access-ui.ts: who can drive a session
   host/             host agent: forks, runner lifecycle, token relay;
                     previews.ts: preview URLs (cloudflared, preview-proxy.ts, preview-probe.ts,
                     preview-dial.ts and sandbox/preview-ports.ts for sessions in containers)
@@ -595,8 +578,6 @@ src/
     send-file.ts      the send_file tool: workspace files → the thread
     post-card.ts      the post_card tool: json-render specs → Block Kit cards
     session-secrets.ts  a session's secrets: env file, redaction, the request_secret tool
-  setup/            /setup: Slack app, secrets, host tokens
-  github/           GitHub App manifest and token minting
   workspaces/       definitions, clones, worktree forks, housekeeping
   main.ts           the one-machine bot (Bolt, HTTP + OAuth install)
   provision.ts      config-token rotation, app manifest create/update, ngrok

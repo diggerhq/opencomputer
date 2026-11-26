@@ -39,12 +39,11 @@ export default defineConfig({
         test: { name: "live", include: ["test/live.test.ts"] },
       },
       {
-        // Tracks and threads: Delivery alone, with fakes of Org, SessionLog, the Slack actor and
-        // the network a webhook is sent into.
+        // Tracks and threads: Delivery alone, with fakes of Org, SessionLog, the Slack actor and Svix.
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.delivery-test.jsonc" },
-            miniflare: { outboundService: fakeDeliveryOutbound },
+            miniflare: { outboundService: fakeDeliveryOutbound, bindings: { SVIX_API_TOKEN: "testsk_delivery" } },
           }),
         ],
         test: { name: "delivery", include: ["test/delivery.test.ts"] },

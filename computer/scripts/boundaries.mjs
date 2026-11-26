@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Import boundaries between the four processes. Each of src/gateway, src/host,
-// src/runner and src/wire (the relay, work 084) is one deployable; they share code only through the
+// Import boundaries between the three processes. Each of src/host, src/runner
+// and src/wire (the relay, work 084) is one deployable; they share code only through the
 // top-level modules of src/ (protocol.ts above all). A process importing
 // another process's directory couples deployables that must be able to
 // change and restart on their own, so this fails `npm run check`.
@@ -28,7 +28,7 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SRC = path.join(ROOT, 'src');
-const PROCESSES = ['gateway', 'host', 'runner', 'wire'];
+const PROCESSES = ['host', 'runner', 'wire'];
 const WIRE_MAY = new Set(['protocol.ts', 'protocol-api.ts', 'signed-header.ts', 'session-ids.ts', 'ipc.ts', 'log.ts']);
 /** Whether src/wire may import `target` (a path under src/, extension as written: .js). */
 const wireMay = (target) => {

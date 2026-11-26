@@ -1,9 +1,10 @@
 // DeliveryDurableObject (tracks and threads, spec sections 35.3, 36.5 and 40.6): a reader of the
 // organization's occurrence stream with its own cursor, one per organization and kind of
 // destination, named `<org>:<kind>`. Three handlers behind one cursor loop: `wake` (a turn for a
-// track's agent or a parent session), `webhook` (a customer's endpoint) and `slack` (the echo).
-// Each occurrence it must act on is an owed call written in the transaction that advances the
-// cursor, so a slow destination delays neither the read nor another destination.
+// track's agent or a parent session), `webhook` (a message to Svix, which delivers it to the
+// customer's endpoints) and `slack` (the echo). Each occurrence it must act on is an owed call
+// written in the transaction that advances the cursor, so a slow destination delays neither the
+// read nor another destination.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -16,7 +17,6 @@ import {
   type Reply,
   type Sql,
   alarms,
-  base64url,
   byOf,
   cursor,
   emitter,
@@ -30,6 +30,7 @@ import {
   slackOf,
   sqlOf,
 } from "../actor/index.js";
+import { audiencesOf } from "../org/tx.js";
 import {
   DELIVERY_KINDS,
   type DeliveryRpcFull,
@@ -41,33 +42,33 @@ import {
   POLL_MS,
   RETRY_MS,
   SLACK_KINDS,
+  svixApp,
   WAKE_DEBOUNCE_MS,
   WAKE_KINDS,
 } from "./contract.js";
-import { post, urlRefusal } from "./webhook.js";
+import { type Endpoint as SvixEndpoint, type EndpointParams, SvixClient, SvixError, sanitizeEventID } from "./svix.js";
 
 const POLL = "poll";
 const WAKE = "wake";
 
-interface EndpointRecord {
-  id: string;
-  url: string;
-  secret: string;
-  kinds: string;
-  created_by: string;
-  audiences: string;
-  enabled: number;
-}
+type DeliveryEnv = ActorEnv & { SVIX_API_TOKEN?: string };
 
 const refuse = (code: string, status: number, message: string): Refusal => ({ ok: false, code, status, message });
 
-const publicEndpoint = (row: EndpointRecord): Endpoint => ({
-  id: row.id,
-  url: row.url,
-  kinds: JSON.parse(row.kinds) as string[],
-  enabled: row.enabled === 1,
-  createdBy: row.created_by,
+const publicEndpoint = (e: SvixEndpoint): Endpoint => ({
+  id: e.uid ?? e.id,
+  url: e.url,
+  kinds: e.filterTypes ?? [],
+  enabled: e.disabled !== true,
+  createdBy: e.metadata?.createdBy ?? "",
 });
+
+/** Svix's refusal of a request, as ours: its 4xx is the caller's, anything else is Svix's. */
+const svixRefusal = (error: unknown): Refusal => {
+  if (error instanceof SvixError && !error.transient) return refuse("invalid_request", 400, `Svix refused it: ${error.message}`);
+  return refuse("unavailable", 502, `Svix did not answer: ${errorText(error)}`);
+};
+const notFound = (error: unknown): boolean => error instanceof SvixError && error.status === 404;
 
 /** A wake's turn id: the same for the same target and last occurrence, so a repeat is a duplicate. */
 async function wakeTurnId(target: string, lastN: number): Promise<string> {
@@ -75,14 +76,14 @@ async function wakeTurnId(target: string, lastN: number): Promise<string> {
   return `tn_${[...digest.slice(0, 12)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export class DeliveryDurableObject extends DurableObject<ActorEnv> implements DeliveryRpcFull {
+export class DeliveryDurableObject extends DurableObject<DeliveryEnv> implements DeliveryRpcFull {
   private readonly sql: Sql;
   private readonly org: string;
   private readonly kind: DeliveryKind;
   private readonly emit = emitter("delivery", () => ({ org: this.org, kind: this.kind }));
   private reading: Promise<void> | null = null;
 
-  constructor(ctx: DurableObjectState, env: ActorEnv) {
+  constructor(ctx: DurableObjectState, env: DeliveryEnv) {
     super(ctx, env);
     // The name is the whole of its identity: `<org>:<kind>` (deliveryOf).
     const name = ctx.id.name ?? "";
@@ -100,6 +101,13 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
         sql.exec(
           "CREATE TABLE endpoint (id TEXT PRIMARY KEY, url TEXT NOT NULL, secret TEXT NOT NULL, kinds TEXT NOT NULL, created_by TEXT NOT NULL, audiences TEXT NOT NULL, enabled INTEGER NOT NULL)",
         );
+      },
+      (sql) => {
+        // Endpoints are Svix's; the row says the organization's Svix application exists, so an
+        // organization that never made a webhook sends Svix nothing.
+        sql.exec("DROP TABLE endpoint");
+        sql.exec("DELETE FROM _owed WHERE call = 'webhook'");
+        sql.exec("CREATE TABLE svix (k INTEGER PRIMARY KEY CHECK (k = 1))");
       },
     ]);
   }
@@ -194,11 +202,8 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
   /** Records what one occurrence asks of this kind. Runs inside the transaction that advances the cursor. */
   private handle(entry: Occurrence, n: number, targets: string[], now: number): void {
     if (this.kind === "webhook") {
-      for (const endpoint of this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE enabled = 1 ORDER BY id")) {
-        const kinds = JSON.parse(endpoint.kinds) as string[];
-        if (kinds.length > 0 && !kinds.includes(entry.kind)) continue;
-        owed.add(this.sql, { group: `endpoint:${endpoint.id}`, call: "webhook", body: { endpoint: endpoint.id, n, occurrence: entry }, schedule: RETRY_MS });
-      }
+      // One message per occurrence, in order, retried without limit: past Svix's acceptance, Svix delivers.
+      if (this.sql.exec("SELECT 1 FROM svix").length > 0) owed.add(this.sql, { group: "svix", call: "webhook", body: entry });
       return;
     }
     if (this.kind === "slack") {
@@ -250,14 +255,23 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
   private async send(call: string, body: unknown): Promise<void> {
     const org = orgOf(this.env, this.org) as OrgForDelivery;
     if (call === "webhook") {
-      const { endpoint: id, n, occurrence } = body as { endpoint: string; n: number; occurrence: Occurrence };
-      const endpoint = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ? AND enabled = 1", id)[0];
-      if (!endpoint) return;
-      // Whether the endpoint's creator may see this occurrence is Org's to say, at each delivery:
-      // the read is made as the creator, and an occurrence it does not return is not sent.
-      const seen = await org.occurrences(this.creator(endpoint), { after: cursor.encode("o", [n - 1]), limit: 1 });
-      if ("reset" in seen || seen.entries[0]?.key !== occurrence.key) return;
-      return post(endpoint, occurrence.key, JSON.stringify(occurrence), Date.now());
+      const { audience, ...occurrence } = body as Occurrence;
+      try {
+        // Idempotent on the occurrence's key. Svix sends it to each endpoint whose kinds include its
+        // kind and whose channels (its creator's audiences) include its audience.
+        await this.svix().createMessage(svixApp(this.org), {
+          eventType: occurrence.kind,
+          payload: occurrence,
+          eventId: occurrence.key,
+          idempotencyKey: occurrence.key,
+          channels: [sanitizeEventID(audience ?? "org")],
+        });
+      } catch (error) {
+        // A request Svix refuses will not be taken on a retry; Svix being away will.
+        if (!(error instanceof SvixError) || error.transient) throw error;
+        this.emit("delivery.svix_refused", { key: occurrence.key, error: errorText(error) }, "error");
+      }
+      return;
     }
     if (call === "wake") {
       const { target, firstN, lastN } = body as { target: string; firstN: number; lastN: number };
@@ -282,21 +296,6 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
     throw new Error(`Unknown owed call ${call}.`);
   }
 
-  /** The principal an endpoint reads as: its creator's audiences, kept when it was made. */
-  private creator(endpoint: EndpointRecord): Principal {
-    const key = endpoint.created_by.startsWith("key:");
-    return {
-      org: this.org,
-      subject: endpoint.created_by.replace(/^(user|key):/, ""),
-      kind: key ? "key" : "member",
-      via: "api",
-      scopes: ["work:read"],
-      audiences: JSON.parse(endpoint.audiences) as string[],
-      admin: false,
-      credential: { id: `webhook:${endpoint.id}`, expiresAt: null },
-    };
-  }
-
   // ---------------------------------------------------------------- endpoints (webhook only)
 
   private refusal(p: Principal, scope: "work:read" | "work:write"): Refusal | null {
@@ -307,51 +306,82 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
     return null;
   }
 
+  private svix(): SvixClient {
+    if (!this.env.SVIX_API_TOKEN) throw new Error("SVIX_API_TOKEN is not set.");
+    return new SvixClient(this.env.SVIX_API_TOKEN);
+  }
+
+  /** Svix's endpoint by our id, or null. */
+  private async svixEndpoint(svix: SvixClient, id: string): Promise<SvixEndpoint | null> {
+    try {
+      return await svix.getEndpoint(svixApp(this.org), id);
+    } catch (error) {
+      if (notFound(error)) return null;
+      throw error;
+    }
+  }
+
   async setEndpoint(p: Principal, id: string, e: EndpointInput): Promise<Reply<{ endpoint: Endpoint }>> {
     const refused = this.refusal(p, "work:write");
     if (refused) return refused;
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return refuse("invalid_request", 400, "The id is 1 to 64 letters, digits, - or _.");
     if (!e || typeof e !== "object") return refuse("invalid_request", 400, "The body must be a JSON object.");
-    const bad = typeof e.url === "string" ? urlRefusal(e.url) : "The URL is required.";
-    if (bad) return refuse("invalid_request", 400, bad);
+    if (typeof e.url !== "string" || !URL.canParse(e.url) || new URL(e.url).protocol !== "https:") return refuse("invalid_request", 400, "The URL must be https.");
     const kinds = e.kinds ?? [];
-    if (!Array.isArray(kinds) || kinds.length > 64 || !kinds.every((kind) => typeof kind === "string" && kind.length <= 64)) {
+    if (!Array.isArray(kinds) || kinds.length > 64 || !kinds.every((kind) => typeof kind === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(kind))) {
       return refuse("invalid_request", 400, "kinds is a list of occurrence kinds.");
     }
-    const existing = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", id)[0];
-    if (!existing && this.sql.exec<{ c: number }>("SELECT COUNT(*) AS c FROM endpoint")[0]!.c >= MAX_ENDPOINTS) {
-      return refuse("limit_reached", 409, `An organization has at most ${MAX_ENDPOINTS} webhooks.`);
+    // An endpoint receives what its creator sees: Svix channels, one per audience. None would mean all.
+    const audiences = audiencesOf(p);
+    if (audiences.length === 0) return refuse("forbidden", 403, "The caller sees no occurrences.");
+    const app = svixApp(this.org);
+    const params: EndpointParams = {
+      uid: id,
+      url: e.url,
+      channels: audiences.map(sanitizeEventID),
+      disabled: e.enabled === false,
+      metadata: { createdBy: p.kind === "key" ? `key:${p.subject}` : byOf(p) },
+      ...(kinds.length > 0 ? { filterTypes: kinds } : {}),
+    };
+    try {
+      const svix = this.svix();
+      await svix.ensureApplication(app, `org:${this.org}`);
+      this.sql.exec("INSERT OR IGNORE INTO svix (k) VALUES (1)");
+      // Svix's filterTypes must name event types that exist.
+      await Promise.all(kinds.map((kind) => svix.ensureEventType(kind)));
+      if (await this.svixEndpoint(svix, id)) return { ok: true, endpoint: publicEndpoint(await svix.updateEndpoint(app, id, params)) };
+      if ((await svix.listEndpoints(app)).length >= MAX_ENDPOINTS) return refuse("limit_reached", 409, `An organization has at most ${MAX_ENDPOINTS} webhooks.`);
+      const created = await svix.createEndpoint(app, params);
+      // The signing secret is shown on the answer that made the endpoint.
+      return { ok: true, endpoint: { ...publicEndpoint(created), secret: await svix.getEndpointSecret(app, id) } };
+    } catch (error) {
+      return svixRefusal(error);
     }
-    // The secret is made once and survives an update; the creator and its audiences are whoever set it last.
-    const secret = existing?.secret ?? `whsec_${base64url.encode(crypto.getRandomValues(new Uint8Array(32)))}`;
-    this.sql.exec(
-      `INSERT INTO endpoint (id, url, secret, kinds, created_by, audiences, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET url = excluded.url, kinds = excluded.kinds, created_by = excluded.created_by, audiences = excluded.audiences, enabled = excluded.enabled`,
-      id,
-      e.url,
-      secret,
-      JSON.stringify(kinds),
-      p.kind === "key" ? `key:${p.subject}` : byOf(p),
-      JSON.stringify(p.audiences),
-      e.enabled === false ? 0 : 1,
-    );
-    const row = this.sql.exec<EndpointRecord>("SELECT * FROM endpoint WHERE id = ?", id)[0]!;
-    return { ok: true, endpoint: { ...publicEndpoint(row), ...(existing ? {} : { secret }) } };
   }
 
   async listEndpoints(p: Principal): Promise<Reply<{ endpoints: Endpoint[] }>> {
     const refused = this.refusal(p, "work:read");
     if (refused) return refused;
-    return { ok: true, endpoints: this.sql.exec<EndpointRecord>("SELECT * FROM endpoint ORDER BY id").map(publicEndpoint) };
+    if (this.sql.exec("SELECT 1 FROM svix").length === 0) return { ok: true, endpoints: [] };
+    try {
+      const endpoints = (await this.svix().listEndpoints(svixApp(this.org))).map(publicEndpoint);
+      return { ok: true, endpoints: endpoints.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
+    } catch (error) {
+      return svixRefusal(error);
+    }
   }
 
   async removeEndpoint(p: Principal, id: string): Promise<Reply<{ removed: boolean }>> {
     const refused = this.refusal(p, "work:write");
     if (refused) return refused;
-    const removed = this.sql.transaction(() => {
-      owed.drop(this.sql, { group: `endpoint:${id}` });
-      return this.sql.exec("DELETE FROM endpoint WHERE id = ? RETURNING id", id).length > 0;
-    });
-    return { ok: true, removed };
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return { ok: true, removed: false };
+    if (this.sql.exec("SELECT 1 FROM svix").length === 0) return { ok: true, removed: false };
+    try {
+      await this.svix().deleteEndpoint(svixApp(this.org), id);
+      return { ok: true, removed: true };
+    } catch (error) {
+      if (notFound(error)) return { ok: true, removed: false };
+      return svixRefusal(error);
+    }
   }
 }

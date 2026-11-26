@@ -22,11 +22,11 @@
 //!   delivered and the block is asked for (`block`); the `whole` delta that
 //!   answers replaces the block held.
 //!
-//! When the socket closes it is dialed again after a random 1 to 5 s,
-//! doubling to 60 s, and every session subscribes again with its cursor.
+//! When the socket closes it is dialed again on the wire's backoff
+//! ([`super::redial`]), and every session subscribes again with its cursor.
 
 use super::client::{self, Frame};
-use super::reconnect::backoff;
+use super::redial::{self, Redial, backoff, hinted};
 use super::{Attach, AttachInfo, From, WireEvent};
 use crate::api::types::{Capabilities, Delta, Event, Session, Turn};
 use crate::error::{Error, Result};
@@ -45,10 +45,6 @@ pub const PROTOCOL: &str = "oc.live.v1";
 const VERSION: u64 = 1;
 const PAGE: &str = "500";
 const PING_EVERY: Duration = Duration::from_secs(20);
-const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
-const RETRY_MIN: Duration = Duration::from_secs(1);
-const RETRY_SPREAD: Duration = Duration::from_secs(4);
-const RETRY_MAX: Duration = Duration::from_secs(60);
 /// A session this command is creating is looked for this many times, 100 ms
 /// apart, before `session_not_found` is believed.
 const NOT_FOUND_TRIES: u32 = 20;
@@ -135,6 +131,7 @@ struct Conn {
     tx: mpsc::UnboundedSender<Message>,
     /// A `ping` went out and nothing has arrived since.
     quiet: bool,
+    up_since: Instant,
 }
 
 struct Actor {
@@ -151,8 +148,7 @@ struct Actor {
     give_up: Option<Duration>,
     generation: u64,
     dialing: bool,
-    attempt: u32,
-    retry_at: Option<Instant>,
+    redial: Redial,
     ping_at: Instant,
     frames_tx: mpsc::UnboundedSender<(u64, Frame)>,
     frames_rx: mpsc::UnboundedReceiver<(u64, Frame)>,
@@ -190,8 +186,7 @@ impl Actor {
             give_up: None,
             generation: 0,
             dialing: false,
-            attempt: 0,
-            retry_at: None,
+            redial: Redial::default(),
             ping_at: Instant::now() + PING_EVERY,
             frames_tx,
             frames_rx,
@@ -204,7 +199,7 @@ impl Actor {
     async fn run(mut self, mut cmds: mpsc::UnboundedReceiver<Cmd>) {
         while !self.closed {
             let mut deadline = Instant::now() + Duration::from_secs(3600);
-            if let Some(t) = self.retry_at {
+            if let Some(t) = self.redial.at {
                 deadline = deadline.min(t);
             }
             if self.conn.is_some() {
@@ -279,7 +274,7 @@ impl Actor {
         self.start(&id, Duration::ZERO);
         if self.conn.is_none() {
             self.down_since.get_or_insert_with(Instant::now);
-            if !self.dialing && self.retry_at.is_none() {
+            if !self.dialing && self.redial.at.is_none() {
                 self.dial();
             }
         }
@@ -434,7 +429,7 @@ impl Actor {
             }
             Err(e) if transient(&e) => {
                 w.errors = w.errors.saturating_add(1);
-                let delay = backoff(w.errors).max(Duration::from_millis(e.retry_after_ms().unwrap_or(0)).min(RETRY_MAX));
+                let delay = hinted(backoff(w.errors), e.retry_after_ms());
                 self.read(id, delay);
             }
             Err(e) => {
@@ -504,13 +499,9 @@ impl Actor {
         self.dialing = true;
         self.generation += 1;
         let (generation, url, key) = (self.generation, http.live_url(), http.key().unwrap_or_default().to_string());
-        let (frames, internal) = (self.frames_tx.clone(), self.internal_tx.clone());
-        tokio::spawn(async move {
-            let r = match tokio::time::timeout(DIAL_TIMEOUT, client::dial(&url, &key, PROTOCOL, generation, frames)).await {
-                Ok(r) => r,
-                Err(_) => Err(Error::unreachable("timed out connecting to the live socket")),
-            };
-            let _ = internal.send(Internal::Dialed(generation, r));
+        let internal = self.internal_tx.clone();
+        redial::dial(url, key, PROTOCOL, generation, self.frames_tx.clone(), "timed out connecting to the live socket", move |g, r| {
+            let _ = internal.send(Internal::Dialed(g, r));
         });
     }
 
@@ -518,7 +509,7 @@ impl Actor {
         self.dialing = false;
         match result {
             Ok(d) => {
-                self.conn = Some(Conn { generation, tx: d.tx, quiet: false });
+                self.conn = Some(Conn { generation, tx: d.tx, quiet: false, up_since: Instant::now() });
                 self.down_since = None;
                 self.ping_at = Instant::now() + PING_EVERY;
                 self.send(json!({"t": "hello", "protocol": VERSION, "clientId": self.client_id}));
@@ -533,20 +524,11 @@ impl Actor {
             Err(e) if matches!(e.code.as_str(), "upgrade_required" | "usage") => self.fatal(e),
             Err(e) => {
                 log::debug(&format!("live: cannot connect: {}", e.message));
-                self.retry();
+                if !self.closed {
+                    self.redial.back_off(e.retry_after_ms());
+                }
             }
         }
-    }
-
-    /// The next dial: a random 1 to 5 s away, doubling to 60 s.
-    fn retry(&mut self) {
-        if self.closed {
-            return;
-        }
-        let r = u16::from_le_bytes(crate::ids::random_bytes::<2>()) as f64 / u16::MAX as f64;
-        let delay = retry_delay(self.attempt, r);
-        self.attempt = self.attempt.saturating_add(1);
-        self.retry_at = Some(Instant::now() + delay);
     }
 
     fn on_timer(&mut self) {
@@ -556,8 +538,7 @@ impl Actor {
         {
             return self.fatal(Error::unreachable(format!("cannot reach the live socket (disconnected for {}s)", limit.as_secs())));
         }
-        if self.retry_at.is_some_and(|t| now >= t) {
-            self.retry_at = None;
+        if self.redial.due(now) {
             self.dial();
         }
         if self.conn.is_some() && now >= self.ping_at {
@@ -578,6 +559,7 @@ impl Actor {
     fn lost(&mut self) {
         if let Some(c) = self.conn.take() {
             let _ = c.tx.send(Message::Close(None));
+            self.redial.ended(c.up_since.elapsed());
         }
         for w in self.watches.values_mut() {
             w.subscribed = false;
@@ -606,7 +588,14 @@ impl Actor {
                 if code == 4003 {
                     return self.fatal(Error::new("forbidden", format!("the live socket refused this key access ({reason})")).with("reason", reason.as_str()).with("closeCode", 4003u64));
                 }
-                self.retry();
+                if !self.closed {
+                    // Going away or restarting: come back soon, spread out.
+                    if matches!(code, 1001 | 1012 | 4008) {
+                        self.redial.soon(true);
+                    } else {
+                        self.redial.back_off(None);
+                    }
+                }
             }
         }
     }
@@ -614,8 +603,6 @@ impl Actor {
     fn on_json(&mut self, v: &Value) {
         let str_of = |k: &str| v.get(k).and_then(Value::as_str);
         match str_of("t").unwrap_or("") {
-            // A socket that stays up starts the next backoff from its start.
-            "ready" => self.attempt = 0,
             "subd" | "behind" => {
                 let Some(id) = str_of("stream").and_then(|s| stream_session(s, "events")).map(str::to_string) else { return };
                 let head = str_of("head");
@@ -701,12 +688,6 @@ impl Actor {
     }
 }
 
-/// A random 1 to 5 s, doubling with each attempt, at most 60 s. `r` is the
-/// random draw in `[0, 1]`.
-fn retry_delay(attempt: u32, r: f64) -> Duration {
-    (RETRY_MIN + RETRY_SPREAD.mul_f64(r)).saturating_mul(1u32 << attempt.min(6)).min(RETRY_MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,7 +696,7 @@ mod tests {
         let (out, rx) = mpsc::unbounded_channel();
         let mut a = Actor::new(None, true, out);
         let (tx, sent) = mpsc::unbounded_channel();
-        a.conn = Some(Conn { generation: 1, tx, quiet: false });
+        a.conn = Some(Conn { generation: 1, tx, quiet: false, up_since: Instant::now() });
         for (id, from) in sessions {
             a.attach(Attach { session_id: id.to_string(), from: from.clone() });
             let w = a.watches.get_mut(*id).unwrap();
@@ -898,13 +879,5 @@ mod tests {
         a.on_page("cs_b", Err(Error::from_api(404, &json!({"error": {"code": "session_not_found", "message": "gone"}}))));
         assert!(matches!(&drain(&mut rx)[..], [WireEvent::Detached { reason, .. }] if reason == "session_not_found"));
         assert!(a.watches.is_empty());
-    }
-
-    #[test]
-    fn redials_wait_one_to_five_seconds_doubling_to_sixty() {
-        assert_eq!(retry_delay(0, 0.0), Duration::from_secs(1));
-        assert_eq!(retry_delay(0, 1.0), Duration::from_secs(5));
-        assert_eq!(retry_delay(2, 0.5), Duration::from_secs(12));
-        assert_eq!(retry_delay(9, 1.0), Duration::from_secs(60));
     }
 }

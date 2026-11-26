@@ -26,7 +26,7 @@ import type { Attachment } from './attachments.js';
 import { labelled, type Mentioned } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
-import type { CheckoutResult, Delivery, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
+import type { CheckoutResult, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
 import type { Work } from './work.js';
 import { prefaced } from './role-notes.js';
 import type { PreviewHooks } from './preview.js';
@@ -201,7 +201,7 @@ export class Session {
    * side by side; the message goes to the model once names and attachments
    * are in, and output waits for the intro only to be posted below it.
    */
-  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom, role?: Delivery['role']) {
+  async send(raw: string, userId: string | undefined, files: Attachment[] | Promise<Attachment[]> = [], mentioned?: Mentioned, from?: SentFrom, role?: 'owner' | 'driver' | 'participant') {
     this.shadow.cancel();
     this.info.userId = userId ?? this.info.userId;
     if (role !== 'participant') this.driver = role === 'driver' ? userId : undefined;

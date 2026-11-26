@@ -51,7 +51,7 @@ pub async fn run(ctx: &mut Ctx, args: SendArgs) -> Result<i32> {
     let sent = sent?;
     remember(&sid, Some(&sent.turn.id));
     let steered = (sent.delivery == "steered" || sent.delivery == "held").then(|| message.clone());
-    let mut f = Follower::new(wire, rx, &[(sid.clone(), false)]);
+    let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.clone(), false)]);
     let tracker = Tracker::new(&sid, Goal::Turn(sent.turn.id.clone()), args.on_ask.unwrap_or(OnAsk::Fail), args.wait_subagents).steered(steered).sent_seq(sent.seq);
     let format = if args.json { Format::Json } else { Format::Text };
     let printer = Printer { format, partial: false, progress: false, sessions: vec![sid.clone()] };
