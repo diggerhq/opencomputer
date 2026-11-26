@@ -18,7 +18,6 @@ import {
   forClient,
   iso,
   isPerson,
-  parse,
   readPlace,
   readSession,
   readTrack,
@@ -58,7 +57,7 @@ function snapshotWhere(table: FeedTable, now: number): { sql: string; args: unkn
   }
 }
 
-export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; kinds?: string[]; clientId?: string; ack?: number; sum?: boolean }): FeedRead {
+export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): FeedRead {
   return sql.transaction(() => {
     const meta = metaOf(sql);
     let after = 0;
@@ -124,21 +123,8 @@ export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; k
       more: to < meta.version,
       rows,
       gone,
+      version: to,
     };
-
-    if (q.clientId !== undefined) {
-      const client = sql.exec<{ last_mutation: number; errors: string }>("SELECT last_mutation, errors FROM client WHERE principal = ? AND client_id = ?", p.subject, q.clientId)[0];
-      if (client) {
-        let errors = parse<{ n: number; code: string; reason: string }[]>(client.errors, []);
-        if (q.ack !== undefined) errors = errors.filter((e) => e.n > q.ack!);
-        sql.exec("UPDATE client SET errors = ?, seen_at = ? WHERE principal = ? AND client_id = ?", JSON.stringify(errors), now, p.subject, q.clientId);
-        frame.lastMutation = client.last_mutation;
-        frame.errors = errors;
-      } else {
-        frame.lastMutation = 0;
-        frame.errors = [];
-      }
-    }
 
     if (snapshot && audiences.length > 0) {
       const earlier = sql.exec<{ track_id: string | null; c: number }>(`SELECT track_id, COUNT(*) AS c FROM place WHERE earlier_at IS NOT NULL AND audience IN (${marks}) GROUP BY track_id`, ...audiences);
@@ -183,7 +169,7 @@ export async function checksum(entries: string[]): Promise<string> {
 export function publishFrame(sql: Sql, body: PublishOwed, whole: boolean): FeedPush | { head: string } {
   const head = metaOf(sql).version;
   if (!whole || body.to !== head) return { head: cursor.encode("f", [head]) };
-  const push: FeedPush = { from: cursor.encode("f", [body.from]), to: cursor.encode("f", [body.to]), ...(body.from === body.to ? { rows: [], gone: [] } : changesAt(sql, body.to)), mutations: body.mutations };
+  const push: FeedPush = { from: cursor.encode("f", [body.from]), to: cursor.encode("f", [body.to]), ...changesAt(sql, body.to), version: body.to };
   return JSON.stringify(push).length > PUSH_BYTES_MAX ? { head: push.to } : push;
 }
 
@@ -216,44 +202,38 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
 
 type MutateError = Extract<MutateReply, { error: unknown }>["error"];
 
-function apply(tx: Tx, p: Principal, m: MutateRequest): { reply: MutateReply; refused: { code: string; reason: string } | null } {
+function apply(tx: Tx, p: Principal, m: MutateRequest): { protocol: 1; value?: unknown } | { error: MutateError } {
   // `person` is the edge's, never the body's: a body's is replaced.
   const args = typeof m.args === "object" && m.args !== null && !Array.isArray(m.args) ? { ...(m.args as Record<string, unknown>), person: m.person } : m.args;
   const out = runMutation(tx, p, m.name, args);
-  if (out.ok) return { reply: { protocol: 1, ...(out.value !== undefined ? { value: out.value } : {}) }, refused: null };
+  if (out.ok) return { protocol: 1, ...(out.value !== undefined ? { value: out.value } : {}) };
   const { ok: _ok, ...error } = out;
-  return { reply: { error: error as MutateError }, refused: { code: out.code, reason: out.reason } };
+  return { error: error as MutateError };
 }
 
-/** `hash`: the request's (name and args), for the `idem` path. */
+/** The key of a mutation's `Idempotency-Key`: a member's is the person's, since signing in again changes the credential. */
+function idemKey(p: Principal, key: string): string | null {
+  if (p.kind === "agent") return `tool:${p.session ?? p.subject}:${key}`;
+  if (p.kind === "member") return `member:${p.subject}:${key}`;
+  if (p.kind === "key") return `key:${p.credential.id}:${key}`;
+  return null;
+}
+
+/** `hash`: the request's (name and args). With an `Idempotency-Key`, a retry gets the first reply, `version` included. */
 export function mutate(sql: Sql, now: number, p: Principal, m: MutateRequest, hash: string): MutateReply {
   return transact(sql, now, (tx) => {
-    if (m.client && (p.kind === "member" || p.kind === "key")) {
-      const { id, n } = m.client;
-      if (!Number.isSafeInteger(n) || n < 1) return { error: { code: "invalid_request", reason: "n" } };
-      const other = sql.exec<{ principal: string }>("SELECT principal FROM client WHERE client_id = ? AND principal != ?", id, p.subject)[0];
-      if (other) return { error: { code: "principal_mismatch" } };
-      sql.exec("INSERT INTO client (principal, client_id, seen_at) VALUES (?, ?, ?) ON CONFLICT(principal, client_id) DO UPDATE SET seen_at = excluded.seen_at", p.subject, id, now);
-      const client = sql.exec<{ last_mutation: number; errors: string }>("SELECT last_mutation, errors FROM client WHERE principal = ? AND client_id = ?", p.subject, id)[0]!;
-      if (n <= client.last_mutation) return { protocol: 1, lastMutation: client.last_mutation };
-      if (n > client.last_mutation + 1) return { error: { code: "out_of_order", lastMutation: client.last_mutation } };
-      const { reply, refused } = apply(tx, p, m);
-      const errors = parse<{ n: number; code: string; reason: string }[]>(client.errors, []);
-      if (refused) errors.push({ n, ...refused });
-      sql.exec("UPDATE client SET last_mutation = ?, errors = ? WHERE principal = ? AND client_id = ?", n, JSON.stringify(errors.slice(-100)), p.subject, id);
-      tx.confirms(id, n, errors);
-      return "error" in reply ? { error: { ...reply.error, lastMutation: n } } : { ...reply, lastMutation: n };
-    }
-    if (m.idem !== undefined && p.kind !== "platform") {
-      const key = p.kind === "agent" ? `tool:${p.session ?? p.subject}:${m.idem}` : `key:${p.credential.id}:${m.idem}`;
-      const stored = idem.get(sql, key, hash);
-      if (stored && "conflict" in stored) return { error: { code: "idempotency_conflict" } };
-      if (stored) return stored.result as MutateReply;
-      const { reply } = apply(tx, p, m);
-      idem.put(sql, key, hash, reply, IDEM_TTL_MS);
-      return reply;
-    }
-    return apply(tx, p, m).reply;
+    const run = (): MutateReply => {
+      const reply = apply(tx, p, m);
+      return "error" in reply ? reply : { ...reply, version: tx.changed ? tx.version() : metaOf(sql).version };
+    };
+    const key = m.idem !== undefined ? idemKey(p, m.idem) : null;
+    if (key === null) return run();
+    const stored = idem.get(sql, key, hash);
+    if (stored && "conflict" in stored) return { error: { code: "idempotency_conflict" } };
+    if (stored) return stored.result as MutateReply;
+    const reply = run();
+    idem.put(sql, key, hash, reply, IDEM_TTL_MS);
+    return reply;
   });
 }
 

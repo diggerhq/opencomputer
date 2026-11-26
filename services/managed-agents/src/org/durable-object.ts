@@ -311,7 +311,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   // ------------------------------------------------------------------ the feed and the work part
 
-  async feed(p: Principal, q: { after?: string; kinds?: string[]; clientId?: string; ack?: number; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }> {
+  async feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }> {
     await this.ready(p);
     const read = feeds.feed(this.sql, Date.now(), p, q);
     if ("reset" in read) return read;

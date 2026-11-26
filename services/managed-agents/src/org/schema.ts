@@ -83,5 +83,8 @@ const V1 = [
 /** Customer webhooks are gone: a poke owed to Delivery(webhook) is dropped, not retried forever. */
 const V2 = [`DELETE FROM _owed WHERE grp = 'poke:webhook'`];
 
+/** A mutation's `Idempotency-Key` names it, for members too: the per-client numbering is gone. */
+const V3 = [`DROP TABLE client`];
+
 const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
-export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1), run(V2)];
+export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1), run(V2), run(V3)];
