@@ -140,7 +140,8 @@ interface OwedRow {
   schedule: string | null;
 }
 
-const running = new WeakMap<Sql, { again: boolean; done: Promise<void> }>();
+/** The group runs in flight, per actor: a call during one makes that group go round once more. */
+const running = new WeakMap<Sql, Map<string, { again: boolean; done: Promise<void> }>>();
 
 export const owed = {
   /** Write the call in the caller's transaction. Call `run` after it commits. */
@@ -167,35 +168,28 @@ export const owed = {
   has(sql: Sql, key: string): boolean {
     return sql.exec("SELECT 1 FROM _owed WHERE key = ?", key).length > 0;
   },
+  /** The groups with a call owed. */
+  groups(sql: Sql): string[] {
+    return sql.exec<{ grp: string }>("SELECT DISTINCT grp FROM _owed ORDER BY grp").map((row) => row.grp);
+  },
+  /** What waited for an event (a peer that came back): due now, every group's or one group's. Call `run` after. */
+  due(tx: Sql, group?: string): void {
+    const now = Date.now();
+    if (group === undefined) tx.exec("UPDATE _owed SET at = ? WHERE at > ?", now, now);
+    else tx.exec("UPDATE _owed SET at = ? WHERE at > ? AND grp = ?", now, now, group);
+    alarms.set(tx, OWED_PURPOSE, now);
+  },
   /**
-   * Send what is due: each group's calls in order, stopping a group at its first failure. A call
-   * is removed when `send` resolves; a row replaced (by key) while its call was in flight is a new
-   * row and is sent again. One run at a time per actor: a call during a run makes it go round once more.
+   * Send what is due: each group's calls in order, stopping a group at its first failure; `only`: that
+   * group's alone. A call is removed when `send` resolves; a row replaced (by key) while its call was in
+   * flight is a new row and is sent again. One run at a time per group: a call during a group's run makes
+   * it go round once more, and resolves when that is over. Groups do not wait for each other.
    * A call that goes to the dead list is reported on `emit` as `owed.dead`, at error level, to alert on.
    */
-  run(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
-    const current = running.get(sql);
-    if (current) {
-      current.again = true;
-      return current.done;
-    }
-    const state = { again: false, done: Promise.resolve() };
-    state.done = (async () => {
-      try {
-        let at = now;
-        do {
-          state.again = false;
-          await pass(sql, send, at, emit);
-          at = Date.now();
-        } while (state.again);
-      } finally {
-        running.delete(sql);
-        const next = sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM (SELECT at, MIN(n) FROM _owed GROUP BY grp)")[0]?.at;
-        if (next !== null && next !== undefined) alarms.set(sql, OWED_PURPOSE, next);
-      }
-    })();
-    running.set(sql, state);
-    return state.done;
+  async run(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter, only?: string): Promise<void> {
+    sql.exec("DELETE FROM _dead WHERE at < ?", now - DEAD_TTL_MS);
+    const groups = only === undefined ? owed.groups(sql) : [only];
+    await Promise.all(groups.map((group) => runGroup(sql, group, send, now, emit)));
   },
   /** The dead list, oldest first, kept 30 days. */
   dead(sql: Sql): Dead[] {
@@ -205,37 +199,58 @@ export const owed = {
   },
 };
 
-async function pass(sql: Sql, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
-  sql.exec("DELETE FROM _dead WHERE at < ?", now - DEAD_TTL_MS);
-  const groups = sql.exec<{ grp: string }>("SELECT DISTINCT grp FROM _owed").map((row) => row.grp);
-  await Promise.all(
-    groups.map(async (group) => {
-      for (;;) {
-        const row = sql.exec<OwedRow>("SELECT n, grp, call, body, at, tries, schedule FROM _owed WHERE grp = ? ORDER BY n LIMIT 1", group)[0];
-        if (!row || row.at > now) return;
-        try {
-          await send(row.call, row.body === null ? undefined : JSON.parse(row.body));
-          sql.exec("DELETE FROM _owed WHERE n = ?", row.n);
-        } catch (error) {
-          const tries = row.tries + 1;
-          const schedule = row.schedule ? (JSON.parse(row.schedule) as number[]) : null;
-          const wait = schedule ? schedule[tries - 1] : tries < BACKOFF_TRIES ? (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS) : undefined;
-          if (wait === undefined) {
-            const died = sql.transaction(() => {
-              // Only if the row is still this one: a replaced slot is a new call.
-              if (sql.exec("DELETE FROM _owed WHERE n = ? RETURNING n", row.n).length === 0) return false;
-              sql.exec("INSERT INTO _dead (grp, call, body, tries, last_error, at) VALUES (?, ?, ?, ?, ?, ?)", row.grp, row.call, row.body, tries, errorText(error), Date.now());
-              return true;
-            });
-            if (died) emit("owed.dead", { group: row.grp, call: row.call, tries, error: errorText(error) }, "error");
-            continue;
-          }
-          sql.exec("UPDATE _owed SET tries = ?, at = ?, last_error = ? WHERE n = ?", tries, Date.now() + wait, errorText(error), row.n);
-          return;
-        }
+function runGroup(sql: Sql, group: string, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
+  let groups = running.get(sql);
+  if (!groups) running.set(sql, (groups = new Map()));
+  const current = groups.get(group);
+  if (current) {
+    current.again = true;
+    return current.done;
+  }
+  const state = { again: false, done: Promise.resolve() };
+  state.done = (async () => {
+    try {
+      let at = now;
+      do {
+        state.again = false;
+        await sendGroup(sql, group, send, at, emit);
+        at = Date.now();
+      } while (state.again);
+    } finally {
+      groups.delete(group);
+      const next = sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM (SELECT at, MIN(n) FROM _owed GROUP BY grp)")[0]?.at;
+      if (next !== null && next !== undefined) alarms.set(sql, OWED_PURPOSE, next);
+    }
+  })();
+  groups.set(group, state);
+  return state.done;
+}
+
+async function sendGroup(sql: Sql, group: string, send: (call: string, body: unknown) => Promise<void>, now: number, emit: Emitter): Promise<void> {
+  for (;;) {
+    const row = sql.exec<OwedRow>("SELECT n, grp, call, body, at, tries, schedule FROM _owed WHERE grp = ? ORDER BY n LIMIT 1", group)[0];
+    if (!row || row.at > now) return;
+    try {
+      await send(row.call, row.body === null ? undefined : JSON.parse(row.body));
+      sql.exec("DELETE FROM _owed WHERE n = ?", row.n);
+    } catch (error) {
+      const tries = row.tries + 1;
+      const schedule = row.schedule ? (JSON.parse(row.schedule) as number[]) : null;
+      const wait = schedule ? schedule[tries - 1] : tries < BACKOFF_TRIES ? (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS) : undefined;
+      if (wait === undefined) {
+        const died = sql.transaction(() => {
+          // Only if the row is still this one: a replaced slot is a new call.
+          if (sql.exec("DELETE FROM _owed WHERE n = ? RETURNING n", row.n).length === 0) return false;
+          sql.exec("INSERT INTO _dead (grp, call, body, tries, last_error, at) VALUES (?, ?, ?, ?, ?, ?)", row.grp, row.call, row.body, tries, errorText(error), Date.now());
+          return true;
+        });
+        if (died) emit("owed.dead", { group: row.grp, call: row.call, tries, error: errorText(error) }, "error");
+        continue;
       }
-    }),
-  );
+      sql.exec("UPDATE _owed SET tries = ?, at = ?, last_error = ? WHERE n = ?", tries, Date.now() + wait, errorText(error), row.n);
+      return;
+    }
+  }
 }
 
 // --------------------------------------------------------------- idempotency
