@@ -149,7 +149,8 @@ pub fn rpc_error(e: &Value) -> Error {
             if code == -32602 && data.get("code").is_none() {
                 err.code = "invalid_request".into();
             }
-            err
+            // Every method on the wire is about a session.
+            crate::error::session_access(err)
         }
         _ => {
             let message = e.get("message").and_then(Value::as_str).unwrap_or("request failed").to_string();
@@ -863,7 +864,7 @@ impl Actor {
             "sessions.attached" => {
                 let Some(id) = params.get("sessionId").and_then(Value::as_str).map(str::to_string) else { return };
                 let result = match params.get("error").filter(|e| !e.is_null()) {
-                    Some(e) => Err(crate::http::api_error(e.get("status").and_then(Value::as_u64).unwrap_or(400) as u16, e, &http::HeaderMap::new())),
+                    Some(e) => Err(crate::error::session_access(crate::http::api_error(e.get("status").and_then(Value::as_u64).unwrap_or(400) as u16, e, &http::HeaderMap::new()))),
                     None => Ok(params),
                 };
                 self.on_attach_result(&id, result);

@@ -47,6 +47,8 @@ Starts a new session. With a message, sends it. With `-p`, runs one turn non-int
 | `--title <title>` | Title, instead of one from the first message |
 | `--metadata <key=value>` | Metadata for the new session. Repeatable. |
 | `--push <dir>` | Pushes a directory into the new session before sending. Repeatable. `opc` prints `opc: session <id> <url>` on standard error before the uploads start. |
+| `--access <owner\|org\|people>` | Who may use the new session. Default: your organization's setting, `owner` unless an admin changed it. See [Sharing](/cli/sharing). |
+| `--people <user>` | With `--access people`: someone to share with, by user id or email. Repeatable. Alone, it means `--access people`. |
 | `--idempotency-key <k>` | With `-p`: a repeat re-attaches to the original turn and waits for it |
 | `--output-format <format>` | With `-p`: `text`, `json` or `stream-json` |
 | `--json` | With `-p`: short for `--output-format json` |
@@ -69,6 +71,7 @@ Creates a session, sends the message if given, and returns at once. Prints the s
 | --- | --- |
 | `--push <dir>` | Pushes a directory into the new session before sending. Repeatable. |
 | `--model`, `--effort`, `--speed`, `--mode`, `--title` | As for `opc` |
+| `--access`, `--people` | As for `opc` |
 | `--metadata <key=value>` | Repeatable |
 | `--idempotency-key <k>` | A repeat returns the same session and turn |
 | `--json` | Prints what [creating a session](/api/http/sessions#create-a-session) returned: `{ session, turn, delivery, duplicate, seq }`. `turn` and `delivery` are `null` without a message. |
@@ -105,6 +108,8 @@ Lists sessions. Alias: `opc list`.
 | `--limit <n>` | At most `n` rows, up to 500. Default 50. `opc` pages through the API as needed. |
 | `--long` | Adds the last line the agent wrote |
 | `--json` | A JSON array of [session objects](/api/reference/objects#session) |
+
+The `ACCESS` column says who may use each session: `owner only`, `organization`, or how many people it is shared with.
 
 ## opc log
 
@@ -256,6 +261,23 @@ opc rename <id> <title>
 ```
 
 Sets a session's title. In a session, `/rename` or `/title`.
+
+## opc access
+
+```
+opc access <id>
+opc access <id> owner | org
+opc access <id> people <user>...
+opc access <id> --add <user> --remove <user>
+```
+
+Shows or changes who may see and drive a session: only its owner, everyone in the organization, or the owner and the people listed. People are user ids or emails. `--add` and `--remove` change the people list of an owner-only or people session and are repeatable; removing the last person makes it owner only. Sharing prints a warning on standard error: the agent runs as the owner, with the owner's secrets and subscription. See [Sharing](/cli/sharing).
+
+The owner, the people a session is shared with and organization admins can change it. Anyone else who may use the session gets exit code `3`; to someone who may not, the session does not exist (exit code `2`). People must be members of your organization who have used OpenComputer; anyone else is refused with exit code `2`. An admin can show and change the access of a session they cannot use, `--add` and `--remove` included, but sees nothing else of it.
+
+| Option | Does |
+| --- | --- |
+| `--json` | Prints `{ sessionId, access, canManageAccess }`, as in the [session object](/api/reference/objects#session) |
 
 ## opc archive, unarchive
 

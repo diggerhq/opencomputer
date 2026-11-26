@@ -36,7 +36,9 @@ The objects and events are also published as JSON Schema: [`https://raw.githubus
   "syncedAt": "2026-10-26T09:14:51.009Z",
   "urls": {
     "dashboard": "https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v"
-  }
+  },
+  "access": { "mode": "owner", "people": [] },
+  "canManageAccess": true
 }
 ```
 
@@ -63,6 +65,8 @@ The objects and events are also published as JSON Schema: [`https://raw.githubus
 | `createdAt`, `lastActiveAt` | string | Creation, and the newest event |
 | `syncedAt` | string or null | `null` over the WebSocket, where the computer itself answers. Over HTTP, when the server last heard from the session on the computer. When the computer is not running and `syncedAt` is old, show the session as possibly stale. |
 | `urls` | object | `dashboard`: the session on the dashboard, or `null` over the WebSocket. A Slack session's thread is `origin.slack.url`. |
+| `access` | object | Who may see and drive the session. `mode` is `owner` (only the owner), `org` (every member of the organization) or `people` (the owner and `people`). `people` is a list of `usr_…` ids, `[]` unless `mode` is `people`. The owner always has access and is never in `people`. Sessions created before access settings existed are `org`; Slack sessions show `owner`, and their drivers are managed in Slack. Set on [create](/api/http/sessions#create-a-session) and with [`PATCH`](/api/http/sessions#update-a-session). |
+| `canManageAccess` | boolean | Whether the caller may change `access`: the owner, the session's `people` and organization admins may. |
 
 Lists and `GET /sessions/{id}` return the identical object. A session's [capabilities](#capabilities) are read separately.
 

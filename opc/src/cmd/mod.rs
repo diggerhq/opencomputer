@@ -1,6 +1,7 @@
 //! Commands. [`Ctx`] is what every command gets: the configuration, the
 //! shared HTTP connection, the global options and what the terminal is.
 
+pub mod access;
 pub mod ask;
 pub mod attach;
 pub mod auth;
@@ -266,6 +267,7 @@ pub async fn dispatch(cli: Cli, ctx: &mut Ctx) -> Result<i32> {
         Command::Subagents(a) => subagents::run(ctx, a).await,
         Command::Secrets(a) => secrets::run(ctx, a).await,
         Command::Rename(a) => manage::rename(ctx, a).await,
+        Command::Access(a) => access::run(ctx, a).await,
         Command::Archive(a) => manage::archive(ctx, a, true).await,
         Command::Unarchive(a) => manage::archive(ctx, a, false).await,
         Command::Open(a) => manage::open(ctx, a).await,
