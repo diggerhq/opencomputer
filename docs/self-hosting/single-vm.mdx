@@ -1,0 +1,293 @@
+---
+title: "Single VM"
+description: "Run @computer on one Linux VM: the gateway in a container, the host agent and model proxy on the host, Slack through a tunnel"
+---
+
+The single-VM self-host puts the whole of @computer on one Linux machine you control. There is no Cloudflare account to set up and no database server: the gateway keeps its state in SQLite on a container volume.
+
+| Piece | Runs as | Installed by |
+| --- | --- | --- |
+| Gateway: Slack's HTTP endpoint, routing, the `/setup` pages, SQLite | A container (`gateway`) | `selfhost/compose.yaml` |
+| Tunnel: gives Slack an HTTPS URL for the gateway | A container (`cloudflared` or `ngrok`), or your own | `selfhost/compose.yaml` |
+| Host agent and the model proxy | systemd services on the VM | `selfhost/host-install.sh` |
+| Sessions | Rootless Podman containers of the session image | The host agent, on demand |
+
+Slack reaches the gateway only through the tunnel. The host agent dials the gateway's WebSocket at `ws://127.0.0.1:8080/host`; the gateway sends it the Slack and model credentials over that connection and never connects to the host itself. Nothing listens on a public port.
+
+## What you need
+
+| | |
+| --- | --- |
+| A Linux VM | Ubuntu 24.04 or similar, with a user that has `sudo`; size it for the sessions you expect to run at once |
+| Podman 4.7 or newer, and a compose provider | Sessions need Podman 4.4 (`--userns=keep-id:uid=`, `--network=pasta`); the `podman compose` command this guide uses arrived in 4.7. Ubuntu 24.04 ships 4.9.3, the version this is tested on, and `host-install.sh` refuses anything below 4.7. `podman compose` needs **podman-compose 1.1.0 or newer** (`pipx install podman-compose`) or Docker Compose v2. Ubuntu's packaged podman-compose 1.0.6 ignores compose profiles and starts both tunnels. Docker with `docker compose` also works for the containers. |
+| A public HTTPS hostname | A Cloudflare zone for a named tunnel, or an ngrok account with a reserved domain |
+| A Slack workspace | Permission to create and install apps |
+| A GitHub organization | Permission to create a GitHub App in it |
+| A model credential | A Claude Code setup token (`claude setup-token`) or an Anthropic API key; an OpenAI key for Codex threads |
+
+## Install
+
+Clone the repository on the VM as your own sudo user. The containers then run as `oc-gateway`, a user `host-install.sh` creates for them, from a copy it owns. [`selfhost/CONTRACT.md`](https://github.com/diggerhq/opencomputer/blob/main/selfhost/CONTRACT.md) is the full contract between the host and the gateway.
+
+<Steps>
+<Step title="Pick the public hostname">
+Decide the hostname Slack will call, for example `computer.example.com`. It becomes `SP_ORIGIN=https://computer.example.com`. With Cloudflare, create a named tunnel (Zero Trust → Networks → Tunnels), add a public hostname for it with the service `http://gateway:8080`, and copy the tunnel's token. With ngrok, reserve a domain and copy your authtoken.
+</Step>
+
+<Step title="Install the host">
+```bash
+sudo selfhost/host-install.sh
+```
+
+It installs rootless Podman, the session image, the host agent and the model proxy as systemd services, and podman-compose. It also creates the `oc-gateway` user (home `/var/lib/oc-gateway`) with its own rootless Podman, lingering and `podman-restart.service`. The host agent stays stopped until it has a host token.
+</Step>
+
+<Step title="Copy the stack to oc-gateway">
+Compose builds the gateway from `../computer`, so copy both directories:
+
+```bash
+sudo mkdir -p /var/lib/oc-gateway/opencomputer
+sudo cp -r selfhost computer /var/lib/oc-gateway/opencomputer/
+sudo chown -R oc-gateway:oc-gateway /var/lib/oc-gateway/opencomputer
+```
+
+Run every `podman compose` command on this page as `oc-gateway`, from that copy:
+
+```bash
+sudo -iu oc-gateway
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+cd ~/opencomputer/selfhost
+```
+
+<Warning>
+The stack runs as `oc-gateway`, and only as `oc-gateway` (or another dedicated user named with `GATEWAY_USER`). `agent` (uid 1500) is the user sessions run as inside their containers; never start compose as `agent`, `sp-host` or root. Sessions run tools as `agent` without asking for permission, so whatever `agent` can read, a session can read: as `agent`, `podman inspect` would show the gateway's environment, every secret it holds.
+</Warning>
+</Step>
+
+<Step title="Configure the containers">
+As `oc-gateway`:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+Fill in at least:
+
+| Variable | Value |
+| --- | --- |
+| `SP_ORIGIN` | `https://<your hostname>` |
+| `SETUP_TOKEN` | `openssl rand -hex 32`; opens the `/setup` pages |
+| `SP_STORE_KEY` | `openssl rand -hex 32`; encrypts the secrets kept in SQLite. Back it up: without it they are unreadable |
+| `SP_HOST_TOKENS` | the host token (next step) |
+| `SP_PEOPLE` | who may use the instance (see [People](#people)) |
+| `GITHUB_ORG` | the GitHub organization that will own the GitHub App |
+| `CLOUDFLARE_TUNNEL_TOKEN`, or `NGROK_AUTHTOKEN` and `NGROK_URL` | the tunnel you chose |
+
+Every variable is described in `.env.example`.
+
+<Warning>
+Compose takes a variable from your shell's environment before `.env`. If your shell exports `ANTHROPIC_API_KEY` or another variable of the same name, the container gets that value. Unset it, or run compose from a clean shell.
+</Warning>
+</Step>
+
+<Step title="Set the host token">
+Generate one value and put it in two places:
+
+```bash
+openssl rand -hex 32
+```
+
+| File | Line |
+| --- | --- |
+| `/var/lib/oc-gateway/opencomputer/selfhost/.env` (the gateway) | `SP_HOST_TOKENS=<the value>` |
+| `/etc/opencomputer/selfhost.env` (the host agent; root, mode 0600) | `SP_HOST_TOKEN=<the value>` |
+
+`selfhost.env` already sets `SP_GATEWAY_URL=ws://127.0.0.1:8080/host`; change its port only if you changed `GATEWAY_PORT`. Then start the host agent with `sudo systemctl restart slack-presence-host`. It retries until the gateway is up, so the order of these steps does not matter to it.
+</Step>
+
+<Step title="Start the containers">
+```bash
+podman compose --profile cloudflared up -d   # Cloudflare named tunnel
+podman compose --profile ngrok up -d         # or ngrok
+podman compose up -d                         # or no tunnel container: bring your own
+```
+
+The first start builds the gateway image from `computer/Dockerfile` on the VM. That is the default and needs no registry login.
+
+To run a published image instead, set `GATEWAY_IMAGE=ghcr.io/diggerhq/computer-gateway:<version>` in `.env`. The package on GHCR is private, so log in first, as `oc-gateway`, with a GitHub token that has `read:packages` and access to it:
+
+```bash
+podman login ghcr.io -u <github-user>    # paste the token at the prompt, not on the command line
+podman compose pull gateway
+```
+
+Without such a token, stay on the local build (`GATEWAY_IMAGE` empty), or build and tag it yourself: `podman build -t computer-gateway:local ../computer`. The session image the host pulls (`ghcr.io/diggerhq/computer-session`) is public.
+
+`docker compose` takes the same commands.
+</Step>
+
+<Step title="Run /setup">
+Open `https://<your hostname>/setup?token=<SETUP_TOKEN>`. The page walks through the Slack app, the GitHub App and the Claude credential; every step can be re-run while setup is open.
+
+Once every step is done (Slack app installed, GitHub App installed, a model credential, and a host token in `SP_HOST_TOKENS` or issued on `/setup`), `/setup` closes: it answers `404`, and the Slack and GitHub webhooks keep working. To repair or rotate something later, set `SP_SETUP_OPEN=1` in `.env`, run `podman compose up -d`, finish, then remove it and run `podman compose up -d` again. Gateways built before this lock existed leave `/setup` open behind `SETUP_TOKEN`.
+</Step>
+</Steps>
+
+### Start on boot
+
+The containers' restart policy is `always`: Ubuntu 24.04's Podman (4.9) brings back only `always` containers at boot, through the `podman-restart.service` user unit. `host-install.sh` enables lingering and that unit for `oc-gateway`, which also gives Podman the systemd user session it needs to run healthchecks. To set it up by hand for another user:
+
+```bash
+sudo loginctl enable-linger <user>
+systemctl --user enable --now podman-restart.service   # as that user
+```
+
+Docker needs nothing extra. `podman compose stop` stops the containers until the next reboot; `podman compose down` removes them.
+
+## Slack app
+
+On `/setup`, step 1 creates the app from a manifest through Slack's App Manifest API. It needs a configuration token, not a bot token:
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps), scroll to **Your App Configuration Tokens**, and **Generate Token** for your workspace.
+2. Paste the **refresh token** (it starts with `xoxe-1-`) into `/setup` and create the app.
+3. Press **Connect URLs**. Slack checks the gateway's URLs right away, so the tunnel must already work.
+4. Install the app to the workspace from the link `/setup` shows (`/slack/install`).
+
+The gateway stores the app's credentials in SQLite, encrypted with `SP_STORE_KEY`, and starts answering Slack without a restart.
+
+The manifest asks for these bot scopes:
+
+```text
+app_mentions:read  assistant:write  channels:history  channels:read  channels:manage
+groups:history  groups:read  groups:write  im:history  im:read  im:write
+chat:write  chat:write.customize  files:read  files:write  reactions:write  users:read
+```
+
+and subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im` and `agent_session_stopped`. Events, interactivity and the OAuth redirect all point at the gateway: `<SP_ORIGIN>/slack/events` and `<SP_ORIGIN>/slack/oauth_redirect`. Socket Mode is off.
+
+<Note>
+To use an app you created by hand with the same scopes, events and URLs, put its `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in `.env`, or a `SLACK_BOT_TOKEN` with `SLACK_BOT_USER_ID` and `SLACK_TEAM_ID` for an already installed app. Values in `.env` win over what `/setup` stored.
+</Note>
+
+## People
+
+One instance serves a whole team through one Slack workspace. Only people listed in `SP_PEOPLE` can use it; anyone else who mentions the app gets "not enabled for you yet", including whoever installed the Slack app. It is a JSON array, one object per person; on every start the gateway's people become exactly this list:
+
+```bash
+SP_PEOPLE='[{"slackUserId":"U0123ABCD","dir":"ada","gitName":"Ada Lovelace","gitEmail":"ada@example.com","admin":true},
+            {"slackUserId":"U0456EFGH","dir":"grace","gitName":"Grace Hopper","gitEmail":"grace@example.com"}]'
+```
+
+| Field | |
+| --- | --- |
+| `slackUserId` | The person's Slack member id (profile → ⋮ → Copy member ID) |
+| `dir` | Their directory on the host, `/data/people/<dir>`: workspaces and session forks. Unique per person |
+| `gitName`, `gitEmail` | The author of commits made in their sessions |
+| `admin` | Optional. Admins manage workspace-wide secrets, may change who drives any session, and set the default with `!access default open\|owner` |
+
+Write it on one line in `.env` (the example above is wrapped for reading), then run `podman compose up -d`.
+
+<Note>
+To revoke someone's access, remove them from `SP_PEOPLE` and run `podman compose up -d`: on start the gateway removes anyone no longer listed, so they can no longer start or drive sessions. Their `/data/people` directory and session history stay, and listing them again restores their access. If `SP_PEOPLE` is unset or an empty list, the people already in the database are left as they are. Gateways built before [#1249](https://github.com/diggerhq/opencomputer/pull/1249) only add and update people; on those, delete the person's row from the `people` table in `gateway.db` while the gateway is stopped.
+</Note>
+
+How several people share it:
+
+- **Starting a session**: any listed person mentions the app in a channel it was invited to, or DMs it. The session belongs to that person (its owner) and runs with their `dir` and git identity. Sessions start only from Slack.
+- **Driving a session**: who else may instruct it follows the default for new sessions, `open` unless an admin set `owner`. With `open`, every listed person in the thread drives it; with `owner`, the others' messages reach it only as context, and mentioning the app asks the owner to let them drive. The owner (or an admin) changes it in the thread with `!access open`, `!access owner`, `!access @a @b`, or `!access add` / `remove`.
+- **Secrets**: `!secret` and `!var` in Slack set them for one session, for all of your own sessions, or for the whole workspace (admins only).
+- **Everyone else**: people not in `SP_PEOPLE` can read the thread but cannot drive or start sessions.
+
+## Tunnel options
+
+| Profile | Set in `.env` | Notes |
+| --- | --- | --- |
+| `cloudflared` | `CLOUDFLARE_TUNNEL_TOKEN` | A named tunnel; its public hostname's service is `http://gateway:8080` (the compose network name, not `localhost`) |
+| `ngrok` | `NGROK_AUTHTOKEN`, `NGROK_URL` | `NGROK_URL` is your reserved domain; `SP_ORIGIN` must be `https://` plus that domain. A random ngrok URL changes on restart and breaks Slack's URLs |
+| none | | Point your own reverse proxy or tunnel at `127.0.0.1:8080` on the VM |
+
+If the hostname changes, update `SP_ORIGIN`, run `podman compose up -d`, then press **Connect URLs** on `/setup` again so the Slack app points at the new URLs.
+
+## Verify
+
+```bash
+podman compose ps                        # gateway: Up (healthy)
+curl -s http://127.0.0.1:8080/healthz    # {"ok":true,"mode":"setup",...}
+curl -s https://<your hostname>/healthz  # the same, through the tunnel
+```
+
+`mode` is `setup` until the Slack app exists, then `slack`. `hosts` lists the connected host agents: once `host-install.sh` has run, it should name your VM. Then mention the app in a Slack channel it was invited to: a session starts and replies in the thread.
+
+When something is off, `podman compose logs -f gateway` shows what the gateway is doing. A host token it does not know is refused with `401` on `/host`.
+
+## How the containers and the host connect
+
+These are the names both halves of the install rely on. [`selfhost/CONTRACT.md`](https://github.com/diggerhq/opencomputer/blob/main/selfhost/CONTRACT.md) has the full contract.
+
+| | Value |
+| --- | --- |
+| Gateway address on the VM | `127.0.0.1:8080` (`GATEWAY_PORT`), loopback only; the container listens on `8080` (`PORT`) |
+| Host agent's gateway URL | `SP_GATEWAY_URL=ws://127.0.0.1:8080/host` |
+| Host authentication | The host agent sends `Authorization: Bearer $SP_HOST_TOKEN`; the gateway accepts tokens in `SP_HOST_TOKENS` and tokens issued on `/setup` (`sph_…`) |
+| Model proxy | Reached only by the host agent and sessions on the VM; the gateway sends hosts the model credentials and never calls the proxy |
+| Users | The stack runs as the dedicated `oc-gateway` user; the host agent as `sp-host`; `agent` (uid 1500) is only the user sessions run as inside their containers. Never run the stack as `agent` |
+| Gateway state | SQLite at `SP_DB=/data/gateway.db` on the volume `opencomputer_gateway-data` |
+
+## Isolation and limits
+
+- **One container per session.** Each session runs in its own rootless Podman container of the session image, with its own home volume, process and memory limits, and no access to the gateway's container or its environment.
+- **One host user and one kernel for all.** Every session's container belongs to the same host user, `agent`, and shares the VM's kernel. Rootless containers keep sessions apart from each other and from the host's other users, but this is not a VM boundary: a kernel or Podman escape from one session reaches every other session's files under `/data/people`. Run only people you trust with each other's work on one VM.
+- **Shared resources.** `limits.sh` caps all sessions together below the VM's memory and CPU, so the host agent, SSH and the gateway stay responsive; each session gets 60%/75% of RAM as its soft/hard cap (`SP_RUNNER_MEMORY_MAX` moves it). One heavy session can still slow the others down. Size the VM for the sessions you expect at once.
+- **Open internet egress.** Sessions have unrestricted outbound network access (`pasta`), so they can fetch packages and call APIs, and can also send anything they can read anywhere. Only the cloud metadata service is blocked (`slack-presence-imds-block.service`).
+- **No permission prompts by default.** `PERMISSION_MODE` defaults to `bypassPermissions` ("yolo"): the agent runs any tool without asking. Combined with open egress, treat anything a session can read, including secrets set with `!secret`, as reachable by whoever can steer the session through Slack or through content it reads (prompt injection). Set `PERMISSION_MODE` to `default`, `acceptEdits`, `plan` or `auto` in `.env` for a stricter default.
+- **No sudo on the host.** `agent` has no sudo on the VM; inside its container a session may use `sudo`.
+
+## What the single VM does not provide (yet)
+
+- **No web login or dashboard.** The only web pages are `/setup` (behind `SETUP_TOKEN`, closed once setup is done) and `/healthz`; there is no per-person sign-in.
+- **Sessions start only from Slack.** No API, CLI or browser entry point, and one Slack workspace per instance.
+- **No high availability.** One gateway, one host, one SQLite file on one VM. If the VM is down, so is the instance; Slack retries an event a few times, then drops it.
+- **No automatic backups.** Back up `gateway.db`, `.env` and `/data` yourself ([Back up and restore](#back-up-and-restore)).
+- **No egress allowlist.** Sessions reach the whole internet; restrict it with your own firewall or proxy if you need to.
+- **No automatic updates.** Neither the gateway nor the host agent updates itself; follow [Upgrade](#upgrade).
+- **No previews.** Sessions cannot publish a URL for a server they run.
+- **amd64 Ubuntu only.** `host-install.sh` supports Ubuntu 24.04 on amd64 (22.04 only with a newer Podman from an added repository).
+
+## Upgrade
+
+From your checkout, copy the new code to `oc-gateway` (its `.env` is kept), then rebuild as `oc-gateway`:
+
+```bash
+git pull
+sudo cp -r selfhost computer /var/lib/oc-gateway/opencomputer/
+sudo chown -R oc-gateway:oc-gateway /var/lib/oc-gateway/opencomputer
+# as oc-gateway, in ~/opencomputer/selfhost:
+podman compose build gateway
+podman compose up -d
+```
+
+With a published image, change `GATEWAY_IMAGE` to the new version, then `podman compose pull gateway && podman compose up -d`. The gateway keeps no state outside the volume, so a restart only drops in-flight Slack requests, which Slack retries. Upgrade the host agent with `host-install.sh`.
+
+## Back up and restore
+
+Everything the gateway knows is in one SQLite database, `gateway.db`, on the volume `opencomputer_gateway-data`: the Slack and GitHub app credentials, people, sessions, host tokens and session secrets. Back it up together with `.env`; the stored secrets are useless without `SP_STORE_KEY`.
+
+An online backup, safe while the gateway runs:
+
+```bash
+podman compose exec gateway node -e "const s = require('node:sqlite'); s.backup(new s.DatabaseSync('/data/gateway.db'), '/tmp/gateway.db')"
+podman compose exec -T gateway cat /tmp/gateway.db > gateway-$(date +%F).db
+podman compose exec gateway rm /tmp/gateway.db
+```
+
+To restore, stop the gateway, replace the database and start it again:
+
+```bash
+podman compose stop gateway
+podman run --rm -v opencomputer_gateway-data:/data -v "$PWD":/backup:ro docker.io/library/alpine:3 \
+  sh -c 'rm -f /data/gateway.db-wal /data/gateway.db-shm && cp /backup/gateway-YYYY-MM-DD.db /data/gateway.db'
+podman compose start gateway
+```
+
+`podman compose down` keeps the volume; `down -v` deletes it and the instance with it.

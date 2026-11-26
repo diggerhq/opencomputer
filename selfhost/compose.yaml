@@ -1,0 +1,103 @@
+# Single-VM self-host: the containers. Run as the dedicated oc-gateway user
+# (made by host-install.sh), never as agent (the sessions' user), from a copy
+# of this directory and ../computer that it owns. selfhost/CONTRACT.md is the host <-> gateway contract.
+#
+#   cp .env.example .env    # fill it in
+#   podman compose up -d                      # gateway only (bring your own tunnel)
+#   podman compose --profile cloudflared up -d   # or with a Cloudflare tunnel
+#   podman compose --profile ngrok up -d         # or with ngrok
+#
+# `docker compose` reads the same file. Guide: docs/self-hosting/single-vm.mdx.
+#
+# Who connects to whom: Slack calls the gateway over HTTPS through the tunnel
+# (SP_ORIGIN). The host agent on the VM dials the gateway's WebSocket at
+# ws://127.0.0.1:${GATEWAY_PORT}/host (its SP_GATEWAY_URL). The gateway itself
+# makes no calls to the host agent or the model proxy; it sends hosts their
+# credentials over that WebSocket.
+
+name: opencomputer
+
+services:
+  gateway:
+    # Built from computer/Dockerfile unless GATEWAY_IMAGE names a published
+    # image (ghcr.io/diggerhq/computer-gateway:<version>); then
+    # `podman compose pull gateway` before `up -d`.
+    image: ${GATEWAY_IMAGE:-computer-gateway:local}
+    build:
+      context: ../computer
+      dockerfile: Dockerfile
+      args:
+        SP_VERSION: ${SP_VERSION:-dev}
+    # `always`, not `unless-stopped`: Podman 4.9's podman-restart.service
+    # (Ubuntu 24.04) revives only `always` containers after a reboot.
+    restart: always
+    # Loopback only: the host agent dials here, the tunnel reaches the
+    # gateway over the compose network. Nothing else should.
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    environment:
+      # Fixed inside the container (the image's defaults); GATEWAY_PORT moves the host side.
+      PORT: "8080"
+      SP_DB: /data/gateway.db
+      SP_ORIGIN: ${SP_ORIGIN:?set SP_ORIGIN in .env to the tunnel's https URL}
+      SETUP_TOKEN: ${SETUP_TOKEN:?set SETUP_TOKEN in .env (openssl rand -hex 32)}
+      SP_STORE_KEY: ${SP_STORE_KEY:?set SP_STORE_KEY in .env (openssl rand -hex 32)}
+      SP_HOST_TOKENS: ${SP_HOST_TOKENS:-}
+      SP_PEOPLE: ${SP_PEOPLE:-[]}
+      GITHUB_ORG: ${GITHUB_ORG:-}
+      SLACK_APP_NAME: ${SLACK_APP_NAME:-Computer}
+      PERMISSION_MODE: ${PERMISSION_MODE:-bypassPermissions}
+      # 1 reopens /setup after setup is complete (repair, rotate); leave unset otherwise.
+      SP_SETUP_OPEN: ${SP_SETUP_OPEN:-}
+      # Model credentials: optional here, /setup can store a Claude credential instead.
+      MODEL_PROFILE: ${MODEL_PROFILE:-}
+      MODEL_TOKEN: ${MODEL_TOKEN:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Slack app credentials: optional, /setup creates the app and stores them.
+      # Set here only for an app you created by hand (env wins over the store).
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_BOT_USER_ID: ${SLACK_BOT_USER_ID:-}
+      SLACK_TEAM_ID: ${SLACK_TEAM_ID:-}
+    volumes:
+      - gateway-data:/data
+    healthcheck:
+      # The image has no curl; node's fetch against the gateway's own /healthz.
+      # A shell string, not exec form: podman-compose re-quotes exec form.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Cloudflare Tunnel (named tunnel, token from the Zero Trust dashboard).
+  # Its public hostname's service must be http://gateway:8080.
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
+    profiles: ["cloudflared"]
+    restart: always
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - gateway
+
+  # ngrok on a reserved domain: SP_ORIGIN must be https://<NGROK_URL>.
+  ngrok:
+    image: docker.io/ngrok/ngrok:${NGROK_VERSION:-latest}
+    profiles: ["ngrok"]
+    restart: always
+    command: ["http", "--url", "${NGROK_URL:-}", "gateway:8080"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    depends_on:
+      - gateway
+
+volumes:
+  # The whole instance: SQLite (gateway.db) with Slack and GitHub app
+  # credentials (encrypted with SP_STORE_KEY), people, sessions, host tokens.
+  gateway-data:

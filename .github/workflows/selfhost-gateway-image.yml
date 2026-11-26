@@ -1,0 +1,98 @@
+name: Self-host gateway image
+
+# The Node gateway (computer/Dockerfile) for the single-VM self-host
+# (selfhost/compose.yaml), built for linux/amd64 and linux/arm64 and pushed
+# to ghcr.io/diggerhq/computer-gateway. Runs only on a tag push:
+#
+#   gateway-v1.2.3   pushes :1.2.3 and :latest
+#
+# `gateway-v*`, not `v*`: `v*` tags already exist for other releases, and the
+# gateway's version is its own (as `opc-v*` is for opc-release.yml).
+# Every pushed image gets GitHub's build provenance attestation. The only
+# credential is GITHUB_TOKEN.
+
+on:
+  push:
+    tags: ['gateway-v*']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/diggerhq/computer-gateway
+  CONTEXT: computer
+
+concurrency:
+  group: selfhost-gateway-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#gateway-v}"
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::tag $GITHUB_REF_NAME is not gateway-v<semver>"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # The image's own check before anything is pushed: it starts, answers
+      # /healthz in setup mode, and keeps SQLite on /data.
+      - name: Test
+        env:
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          docker buildx build --platform linux/amd64 --load --build-arg "SP_VERSION=$SHA" -t gateway:test "$CONTEXT"
+          docker run -d --name gw -p 127.0.0.1:8080:8080 -e SP_ORIGIN=http://127.0.0.1:8080 gateway:test
+          for _ in $(seq 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8080/healthz | jq -e --arg v "$SHA" '.ok and .mode == "setup" and .version == $v'
+          docker exec gw test -s /data/gateway.db
+          docker rm -f gw
+
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push
+        id: push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          tags=(-t "$IMAGE:$VERSION")
+          # A pre-release (1.2.3-rc.1) does not move :latest.
+          [[ $VERSION == *-* ]] || tags+=(-t "$IMAGE:latest")
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --build-arg "SP_VERSION=$SHA" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            "${tags[@]}" "$CONTEXT"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "\`$IMAGE:$VERSION\` = \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
