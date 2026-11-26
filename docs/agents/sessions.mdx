@@ -113,7 +113,8 @@ Naming a question that is not the open one is refused with
 question.
 
 While a question is open, a turn sent without `answers` does not run on its
-own. It is held, and delivered with the answer, in order, as `steering`, so
+own, except when the question was asked in a
+[Slack](/agents/slack#questions) thread, which a question does not hold. It is held, and delivered with the answer, in order, as `steering`, so
 the turn that interprets the answer sees every constraint written in the
 meantime. `steering` carries a bounded number of held inputs, up to 64 KiB;
 the rest run as ordinary turns after the answer, in order. The API answers a
@@ -133,6 +134,7 @@ a new question. A question closes without an answer with
 | `dismissed` | [Dismiss](/agents/api#questions) was called | Run as ordinary turns, in order |
 | `ended` | The session was ended | Not run |
 | `undeliverable` | The question could not be posted to Linear | Run as ordinary turns, in order |
+| `superseded` | On [Slack](/agents/slack#questions), the agent replied to a later message in the thread, or asked again | None: Slack holds nothing behind a question |
 
 Interrupting a turn does not close a question. In Linear, messages typed
 while the agent works usually arrive after the answer; see

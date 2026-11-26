@@ -180,7 +180,9 @@ Input that arrives while the question is open without answering it does not
 run a turn of its own. It is held and delivered with the answer as
 `steering`, in the order it arrived; past a bounded number of items or 64 KiB,
 the rest run as ordinary turns after the answer. In Linear, `steering` is
-usually empty; see [Ask before acting](/agents/linear#ask-before-acting).
+usually empty; see [Ask before acting](/agents/linear#ask-before-acting). On
+[Slack](/agents/slack#questions) nothing is held: a message typed while the
+question is open runs as its own turn.
 
 | Field | Meaning |
 | --- | --- |
