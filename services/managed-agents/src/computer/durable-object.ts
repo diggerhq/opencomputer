@@ -821,6 +821,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.api.setAccess(sessionId, access, admins);
   }
 
+  /**
+   * Under the name `computer-slack-team:<team>`: the organization a Slack workspace was claimed for before the
+   * Slack actor held the claims. Read by the Slack routes for an organization not imported yet; written by nothing.
+   */
+  teamAccount(): string | null {
+    return this.setting("teamLinkAccountId") ?? null;
+  }
+
   async changed(source: "org" | "slack"): Promise<void> {
     // An organization whose first act is the Slack install: this object is named by its id and not bound yet.
     const named = this.ctx.id.name;
