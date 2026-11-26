@@ -1,10 +1,11 @@
 ---
 title: "Limits and defaults"
+description: "Every limit and default, where it is set in the code, and the variable that changes it"
 ---
 
 - **Configurable:** a variable from [Configuration](/reference/configuration), or "No" for a constant in the code.
 - **Per runner:** the count resets when the session's runner restarts (idle exit, `!restart`).
-- **Memory and CPU:** to change them, see Resource limits.
+- **Memory and CPU:** one runner's memory limits change with `SP_SYSTEMD_RUN`. The limits on all runners together, the agent user and the host are sized from the machine's RAM and CPUs by `deploy/vm/limits.sh` at every boot, so they change only with the machine's size.
 
 ## Slack, sessions and the computer
 
