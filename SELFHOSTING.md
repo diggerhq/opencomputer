@@ -1,5 +1,11 @@
 # Self-hosting OpenComputer
 
+> **Stale.** This page predates the current self-hosting guides and may not
+> match the code. To run @computer on one Linux VM (gateway container,
+> host agent, Slack through a tunnel), see
+> [`docs/self-hosting/single-vm.mdx`](docs/self-hosting/single-vm.mdx); for the
+> cloud deployments, the rest of [`docs/self-hosting/`](docs/self-hosting/).
+
 This document describes the supported shape for running OpenComputer in your
 own cloud account. OpenComputer is a control plane plus a fleet of bare-metal
 worker machines that run real Linux VMs with QEMU/KVM. The same runtime can run

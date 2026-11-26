@@ -54,6 +54,7 @@
         "group": "Self-hosting",
         "pages": [
           "self-hosting/overview",
+          "self-hosting/single-vm",
           "self-hosting/azure",
           "self-hosting/aws",
           "self-hosting/gcp",
