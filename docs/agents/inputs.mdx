@@ -156,7 +156,7 @@ export default function Agent() {
 | `event.occurredAt` | When the source turn settled |
 | `event.reason` | Why it failed or was cancelled, when recorded |
 | `event.error` | The failure message, bounded, when it failed |
-| `event.result` | `{ text, truncated }`: the final assistant message of a completed turn, bounded to 16 KB |
+| `event.result` | `{ text, truncated }`: the last message of a completed turn that wrote text, bounded to 16 KB |
 
 An event input carries no `text`; read `event`. The turn's recorded input in
 the [event log](/agents/events) is a text description of the same outcome.
