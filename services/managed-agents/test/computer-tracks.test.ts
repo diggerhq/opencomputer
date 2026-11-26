@@ -163,6 +163,18 @@ describe("the Computer actor of tracks and threads", () => {
     expect(fakes.delivered).toHaveLength(2);
   });
 
+  it("a turn entry's id is the turnId the host is sent (spec 40.2): one id from the inbox to the log", async () => {
+    const { stub, fakes } = await computer("tt-turn-id");
+    const { frames } = await host("tt-turn-id");
+    fakes.entries = [entry("tn_0123456789ab", "turn", { input: "go", ifBusy: "queue" }), entry("ie_0123456789abcdef", "interrupt", {})];
+    await stub.start(spec("tt-turn-id", SESSION(1)));
+    await stub.drain(SESSION(1), { wait: true });
+    await until(() => fakes.delivered, (all) => all.length === 2, "delivered");
+    const api = frames.filter((frame) => frame.t === "api");
+    expect(api[0]).toMatchObject({ method: "turns.send", idempotencyKey: "tn_0123456789ab", params: { input: "go", ifBusy: "queue", turnId: "tn_0123456789ab" } });
+    expect(api[1]!.params).toEqual({ sessionId: SESSION(1) });
+  });
+
   it("answers waking with no host and drains at hello", async () => {
     const { stub, fakes } = await computer("tt-waking");
     fakes.entries = [entry("in_1")];
