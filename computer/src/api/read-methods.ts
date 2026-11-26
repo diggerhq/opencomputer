@@ -69,12 +69,15 @@ export function dispatch(
 }
 
 /**
- * A `turns.send` naming a turn the log already has (the cloud redelivering an inbox entry after a crash lost the
- * idempotency record, or a rebuilt disk never had it): that turn, as a duplicate, not a second message.
+ * A `turns.send` naming a turn the log already has, or a steer it already took (the cloud redelivering an inbox entry
+ * after a crash lost the idempotency record, or a rebuilt disk never had it): that turn, as a duplicate, not a second message.
  */
 function repeat(log: SessionLog, method: Method, v: ParamsOf<Method>): CallOutcome | undefined {
   const id = method === 'turns.send' ? (v as ParamsOf<'turns.send'>).turnId : undefined;
-  const turn = id ? log.fold.turn(id) : undefined;
+  if (!id) return undefined;
+  const steered = log.fold.steered(id);
+  if (steered) return ok({ turn: log.fold.turn(steered), delivery: 'steered', duplicate: true, seq: log.lastSeq });
+  const turn = log.fold.turn(id);
   return turn && ok({ turn, delivery: turn.status === 'queued' ? 'queued' : 'started', duplicate: true, seq: log.lastSeq });
 }
 

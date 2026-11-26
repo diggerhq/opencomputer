@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 
-import type { Access, DrainResult, EventPush, Principal, SessionLogRpcAdded, SummaryPub } from "../src/actor/index.js";
+import type { Access, EventPush, Principal, SessionLogRpcAdded, SummaryPub } from "../src/actor/index.js";
 import type { Actor, ApiEvent } from "../src/computer/api-types.js";
 import type { SessionLogDurableObject } from "../src/computer/session-log.js";
 import type { SessionLogRpc } from "../src/computer/session-log-contract.js";
@@ -52,8 +52,8 @@ export interface Fakes {
   orgAnswers: ((pub: SummaryPub, log: SessionLogDurableObject) => number | Promise<number>) | null;
   /** Every drain call's machine. */
   drains: string[];
-  /** What `Computer.drain` does; default: answers `waking`. */
-  drain: (log: SessionLogDurableObject) => Promise<DrainResult> | DrainResult;
+  /** What `Computer.drain` does; default: takes it and delivers nothing (the machine is waking). */
+  drain: (log: SessionLogDurableObject) => Promise<void> | void;
   /** Every publish. */
   published: { topic: string; value: EventPush | { head: string } }[];
   publishFails: boolean;
@@ -71,7 +71,7 @@ export async function openLog(over: Partial<Fakes> = {}) {
     summaries: [],
     orgAnswers: null,
     drains: [],
-    drain: () => ({ state: "waking" }),
+    drain: () => undefined,
     published: [],
     publishFails: false,
     ...over,

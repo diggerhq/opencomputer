@@ -105,7 +105,7 @@ describe("a start is bounded by the host's dial", () => {
     const stub = await readySmall("org_never_dialed");
     const late = () => inside(stub, (instance) => instance.put("hostAwaitedAt", String(Date.now() - HOST_DIAL_MS - 1)));
     await inside(stub, (instance) => {
-      instance.api.owe("drainOwed", "cs_00000000000000000000000001");
+      instance.api.owe("cs_00000000000000000000000001", { at: Date.now() + 3_600_000 });
       instance.failedWakes = 0;
       instance.api.wakeFailed = async () => void (instance.failedWakes += 1);
     });

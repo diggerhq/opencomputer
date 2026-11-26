@@ -16,8 +16,8 @@
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
-import { base64url, computerOf, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
-import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
+import { base64url, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
+import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
@@ -611,9 +611,9 @@ function refusalOf(out: Reply, r: Refusal): Response {
   return out.error(statusOf(code, status), code, message ?? `Refused: ${code}.`, extra);
 }
 
-/** A host's error from a delivered entry (`ask_closed`, `queue_full`, …), with its own status when it has one. */
-function hostErrorOf(out: Reply, error: NonNullable<Extract<DrainResult, { state: "delivered" }>["results"][number]["error"]>): Response {
-  const { code, message, requestId: _requestId, retryable: _retryable, status, ...extra } = error;
+/** A host's refusal of a delivered entry (`ask_closed`, `queue_full`, …), with its own status when it has one. */
+function hostErrorOf(out: Reply, error: EntryError): Response {
+  const { code, message, status, ...extra } = error;
   return out.error(typeof status === "number" || code in STATUS_OF ? statusOf(code, status) : 500, code, message, extra);
 }
 
@@ -652,25 +652,19 @@ async function timedDo<T>(facts: RequestFacts, call: Promise<T>): Promise<T> {
 type Sent = { delivered: unknown } | { waking: true } | { response: Response };
 
 /**
- * One inbox entry, as spec 40.2: `SessionLog.accept`, then `drain` on the machine it names. Delivered:
- * the host's result (or its error); not up: waking.
+ * One inbox entry, as spec 40.2: `SessionLog.accept` with `wait`, the one path to the machine (the log's
+ * own drain delivers it). Delivered: the host's result (or its refusal); still waiting: waking.
  */
 async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, entry: { id: string; kind: InboxKind; body: unknown }, trace: string | undefined, out: Reply): Promise<Sent> {
-  const accepted = await timedLog(out.facts, logOf(env, sessionId).accept(p, { ...entry, ...(trace ? { trace } : {}) }));
+  const accepted = await timedLog(out.facts, logOf(env, sessionId).accept(p, { ...entry, ...(trace ? { trace } : {}) }, { wait: true }));
   if (!accepted.ok) {
     const code = accepted.code === "forbidden" || accepted.code === "not_found" ? "session_not_found" : accepted.code;
     return { response: refusalOf(out, { ok: false, code, message: code === "session_not_found" ? "No such session." : `Refused: ${code}.` }) };
   }
   if (accepted.duplicate) out.facts.replayed = true;
-  if (accepted.duplicate && accepted.result !== undefined) return { delivered: accepted.result };
-  const drained = await timedDo(out.facts, computerOf(env, accepted.machine).drain(sessionId, { wait: true }));
-  const mine = drained.state === "delivered" ? drained.results.find((r) => r.id === entry.id) : undefined;
-  if (mine) return mine.error ? { response: hostErrorOf(out, mine.error) } : { delivered: mine.result ?? null };
-  // Not among this drain's results: the SessionLog's own owed drain (which `accept` starts) took the entry
-  // first, and this call only waited behind it. The entry's outcome is in the inbox, whoever delivered it.
-  const outcome = await timedLog(out.facts, logOf(env, sessionId).entry(entry.id));
-  if (outcome?.state === "delivered") return { delivered: outcome.result ?? null };
-  if (outcome?.state === "refused") return { response: hostErrorOf(out, { ...outcome.error, requestId: trace ?? "", retryable: false }) };
+  const { outcome } = accepted;
+  if (outcome.state === "delivered") return { delivered: outcome.result ?? null };
+  if (outcome.state === "refused") return { response: hostErrorOf(out, outcome.error) };
   return { waking: true };
 }
 
@@ -988,7 +982,9 @@ async function orgRoute(
   if (protocol !== null && !(Number(protocol) >= PROTOCOL)) return reset(out, `This server speaks protocol ${PROTOCOL}.`);
   // Path ids of the wrong shape name nothing.
   for (const [name, value] of Object.entries(route.args ?? {})) {
-    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) return out.error(404, "not_found", `No such ${name}.`);
+    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) {
+      return name === "sid" ? out.error(404, "session_not_found", "No such session.") : out.error(404, "not_found", `No such ${name}.`);
+    }
   }
   if (route.sub !== undefined && route.op !== "work.review" && !PATH_ID.tid!.test(route.sub)) return out.error(404, "not_found", "No such track.");
   if (route.op === "work.review" && !PATH_ID.resultId!.test(route.sub!)) return out.error(404, "not_found", "No such result.");

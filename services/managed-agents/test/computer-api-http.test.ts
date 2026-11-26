@@ -73,41 +73,31 @@ function setup(f: Fakes) {
   return { env, call, stub };
 }
 
-const delivered = (result: unknown) => ({ drain: vi.fn(async (_sid: string, _o: unknown) => ({ state: "delivered", results: [{ id: "*", result }] })) });
+/** A computer the edge must never call: a write's one path is SessionLog's inbox and its own drain. */
+const untouched = () => ({ drain: vi.fn() });
 
-/** A log whose accept echoes the entry's id, and a computer that delivers it with `result`. */
+/** A log whose accept (awaiting its own drain) answers the entry delivered with `result`, or still waiting. */
 function inbox(result: unknown = { turn: { id: "tn" }, delivery: "started", seq: 4 }, state: "delivered" | "waking" = "delivered") {
-  const entries: { p: Principal; entry: { id: string; kind: string; body: unknown; trace?: string } }[] = [];
+  const entries: { p: Principal; entry: { id: string; kind: string; body: unknown; trace?: string }; opts: unknown }[] = [];
   const log = {
-    accept: vi.fn(async (p: Principal, entry: { id: string; kind: string; body: unknown; trace?: string }) => {
-      entries.push({ p, entry });
-      return { ok: true, id: entry.id, duplicate: false, machine: ORG };
+    accept: vi.fn(async (p: Principal, entry: { id: string; kind: string; body: unknown; trace?: string }, opts?: unknown) => {
+      entries.push({ p, entry, opts });
+      return { ok: true, id: entry.id, duplicate: false, outcome: state === "waking" ? { state: "waiting" } : { state: "delivered", result } };
     }),
-    entry: vi.fn(async (_id: string): Promise<unknown> => ({ state: "waiting" })),
   };
-  const computer = {
-    drain: vi.fn(async () => (state === "waking" ? { state } : { state, results: [{ id: entries.at(-1)!.entry.id, result }] })),
-  };
-  return { log, computer, entries };
+  return { log, computer: untouched(), entries };
 }
 
-/**
- * The machine is up and the SessionLog's own drain (started by `accept`) delivers the entry before the
- * edge's: the edge's drain finds nothing waiting. The host's turn carries the `turnId` it was sent, the entry's id.
- */
+/** The machine is up: the log's drain delivers the entry, and the host's turn carries the `turnId` it was sent, the entry's id. */
 function ownDrain() {
   const entries: { id: string; kind: string; body: unknown }[] = [];
-  const outcomes = new Map<string, unknown>();
   const log = {
-    accept: vi.fn(async (_p: Principal, entry: { id: string; kind: string; body: unknown }) => {
+    accept: vi.fn(async (_p: Principal, entry: { id: string; kind: string; body: unknown }, _opts?: unknown): Promise<unknown> => {
       entries.push(entry);
-      outcomes.set(entry.id, { state: "delivered", result: { turn: { id: entry.id, status: "running" }, delivery: "started", duplicate: false, seq: 5 } });
-      return { ok: true, id: entry.id, duplicate: false, machine: ORG };
+      return { ok: true, id: entry.id, duplicate: false, outcome: { state: "delivered", result: { turn: { id: entry.id, status: "running" }, delivery: "started", duplicate: false, seq: 5 } } };
     }),
-    entry: vi.fn(async (id: string) => outcomes.get(id) ?? null),
   };
-  const computer = { drain: vi.fn(async () => ({ state: "delivered", results: [] })) };
-  return { log, computer, entries, outcomes };
+  return { log, computer: untouched(), entries };
 }
 
 describe("one turn id, and the result to the caller that accepted the entry (spec 37.2, 40.2)", () => {
@@ -120,7 +110,8 @@ describe("one turn id, and the result to the caller that accepted the entry (spe
     const id = up.entries[0]!.id;
     expect(id).toMatch(/^tn_[0-9a-hjkmnp-tv-z]{12}$/);
     expect(r).toEqual({ status: 201, body: { session: row(), turn: { id, status: "running" }, delivery: "started", duplicate: false, seq: 5 } });
-    expect(up.log.entry).toHaveBeenCalledWith(id);
+    expect(up.log.accept).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id }), { wait: true });
+    expect(up.computer.drain).not.toHaveBeenCalled();
   });
 
   it("POST /sessions/{id}/turns, the machine up, the log's own drain first: 200 with SendResult, its turn's id the entry's", async () => {
@@ -130,20 +121,15 @@ describe("one turn id, and the result to the caller that accepted the entry (spe
     const id = up.entries[0]!.id;
     expect(r).toEqual({ status: 200, body: { turn: { id, status: "running" }, delivery: "started", duplicate: false, seq: 5 } });
     // Refused by whichever drain took it: the error, not 202.
-    up.log.accept.mockImplementationOnce(async (_p, entry) => {
-      up.outcomes.set(entry.id, { state: "refused", error: { code: "queue_full", message: "full" } });
-      return { ok: true, id: entry.id, duplicate: false, machine: ORG };
-    });
+    up.log.accept.mockImplementationOnce(async (_p, entry) => ({ ok: true, id: entry.id, duplicate: false, outcome: { state: "refused", error: { code: "queue_full", message: "full" } } }));
     expect(await call("POST", `/sessions/${SID}/turns`, { body: { input: "more" } })).toMatchObject({ status: 429, body: { error: { code: "queue_full" } } });
     // The host's own status and fields, as the inbox kept them.
-    up.log.accept.mockImplementationOnce(async (_p, entry) => {
-      up.outcomes.set(entry.id, { state: "refused", error: { code: "session_busy", message: "a turn is running", status: 409, feature: "x" } });
-      return { ok: true, id: entry.id, duplicate: false, machine: ORG };
-    });
+    up.log.accept.mockImplementationOnce(async (_p, entry) => ({
+      ok: true, id: entry.id, duplicate: false, outcome: { state: "refused", error: { code: "session_busy", message: "a turn is running", status: 409, feature: "x" } },
+    }));
     expect(await call("POST", `/sessions/${SID}/turns`, { body: { input: "busy" } })).toMatchObject({ status: 409, body: { error: { code: "session_busy", feature: "x" } } });
-    // Still waiting behind a drain that answered: 202 with the entry's id.
-    up.log.accept.mockImplementationOnce(async (_p, entry) => ({ ok: true, id: entry.id, duplicate: false, machine: ORG }));
-    up.log.entry.mockImplementationOnce(async () => ({ state: "waiting" }));
+    // Still waiting when the log's drain answered (the machine is waking): 202 with the entry's id.
+    up.log.accept.mockImplementationOnce(async (_p, entry) => ({ ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }));
     const waits = await call("POST", `/sessions/${SID}/turns`, { body: { id: "tn_zzzzzzzzzzzz", input: "later" } });
     expect(waits).toEqual({ status: 202, body: { accepted: true, id: "tn_zzzzzzzzzzzz" } });
   });
@@ -275,7 +261,8 @@ describe("the session directory through Org", () => {
     expect(r).toEqual({ status: 201, body: { session: row(), turn: { id: "tn_0123456789ab" }, delivery: "started", duplicate: false, seq: 4 } });
     expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, input: "hello", person: { name: null, email: null } });
     expect(up.entries[0]!.entry).toEqual({ id: "tn_0123456789ab", kind: "turn", body: { input: "hello", ifBusy: "queue" }, trace: "tr_0123456789abcdef" });
-    expect(up.computer.drain).toHaveBeenCalledWith(SID, { wait: true });
+    expect(up.entries[0]!.opts).toEqual({ wait: true });
+    expect(up.computer.drain).not.toHaveBeenCalled();
 
     const down = inbox(undefined, "waking");
     const w = setup({ org, ...down });
@@ -336,21 +323,12 @@ describe("the writes through the inbox (spec 37.2, 40.2)", () => {
     expect(e).not.toBe(f);
   });
 
-  it("a repeat already delivered answers the stored result without draining", async () => {
-    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_0123456789ab", duplicate: true, machine: ORG, result: { delivery: "queued" } })) };
-    const computer = { drain: vi.fn() };
-    const { call } = setup({ log, computer });
+  it("a repeat already delivered answers the stored result; the edge never drains (one path: the log's)", async () => {
+    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_0123456789ab", duplicate: true, outcome: { state: "delivered", result: { delivery: "queued" } } })) };
+    const { call, env } = setup({ log, computer: untouched() });
     const r = await call("POST", `/sessions/${SID}/turns`, { body: { id: "tn_0123456789ab", input: "go" } });
     expect(r).toEqual({ status: 200, body: { delivery: "queued" } });
-    expect(computer.drain).not.toHaveBeenCalled();
-  });
-
-  it("drains the machine accept names", async () => {
-    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_0123456789ab", duplicate: false, machine: "mc_0123456789abcdef" })), entry: vi.fn(async () => null) };
-    const computer = delivered({ ok: 1 });
-    const { call, env } = setup({ log, computer });
-    await call("POST", `/sessions/${SID}/turns`, { body: { id: "tn_0123456789ab", input: "go" } });
-    expect(env.COMPUTERS.getByName).toHaveBeenCalledWith("mc_0123456789abcdef");
+    expect(env.COMPUTERS.getByName).not.toHaveBeenCalled();
   });
 
   it("refusals: accept's codes and the host's error are HTTP errors", async () => {
@@ -367,12 +345,13 @@ describe("the writes through the inbox (spec 37.2, 40.2)", () => {
     expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).status).toBe(429);
 
     const host = inbox();
-    host.computer.drain = vi.fn(async () => ({ state: "delivered", results: [{ id: host.entries.at(-1)!.entry.id, error: { code: "queue_full", message: "full", requestId: "x", retryable: true, status: 429 } }] })) as never;
+    const refused = (error: Record<string, unknown>) => async (_p: Principal, entry: { id: string }) => ({ ok: true, id: entry.id, duplicate: false, outcome: { state: "refused", error } });
+    host.log.accept.mockImplementationOnce(refused({ code: "queue_full", message: "full", status: 429 }) as never);
     const h = setup(host);
     const r = await h.call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } });
     expect(r.status).toBe(429);
     expect(r.body.error).toMatchObject({ code: "queue_full", message: "full" });
-    host.computer.drain = vi.fn(async () => ({ state: "delivered", results: [{ id: host.entries.at(-1)!.entry.id, error: { code: "ask_closed", message: "closed", requestId: "x", retryable: false } }] })) as never;
+    host.log.accept.mockImplementationOnce(refused({ code: "ask_closed", message: "closed" }) as never);
     expect((await h.call("POST", `/sessions/${SID}/asks/ak_0123456789ab/answer`, { body: { decision: "allow" } })).status).toBe(409);
   });
 

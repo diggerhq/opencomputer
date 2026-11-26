@@ -3435,6 +3435,11 @@
                 "pattern": "^ak_[0-9a-hjkmnp-tv-z]{12}$",
                 "description": "`ak_` + 12 lowercase Crockford base32"
               }
+            },
+            "messageId": {
+              "type": "string",
+              "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`tn_` + 12 lowercase Crockford base32"
             }
           },
           "required": [

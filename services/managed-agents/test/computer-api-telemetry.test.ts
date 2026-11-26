@@ -253,7 +253,7 @@ describe("httpapi.request: one per blue computer-API request", () => {
     const c = capture();
     const stub: ComputerApiStub = { computerApi: vi.fn() };
     // The turn goes through the session's inbox: a repeat already delivered answers its stored result.
-    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_000000000000", duplicate: true, machine: "org_1", result: { delivery: "queued" } })) };
+    const log = { accept: vi.fn(async () => ({ ok: true, id: "tn_000000000000", duplicate: true, outcome: { state: "delivered", result: { delivery: "queued" } } })) };
     const env = { ...ON, SESSION_LOG: { getByName: () => log } };
     const res = await routeComputerApi(
       new Request(`https://blue.test/v1/computer/sessions/${SID}/turns?secret=1`, {
