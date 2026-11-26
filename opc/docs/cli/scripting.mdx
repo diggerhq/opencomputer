@@ -1,0 +1,301 @@
+---
+title: "Scripting"
+description: "opc -p, new, send, wait, watch and log: Computer in a shell pipeline."
+---
+
+Every interactive feature has a non-interactive form, with output a program can read and exit codes it can act on. None of these commands ever prompts, opens a browser or waits for a key. [For agents and scripts](/cli/agents) lists them on one page.
+
+## Run one turn: `opc -p`
+
+```bash
+opc -p "summarize what changed in billing-service this week"
+```
+
+`-p` (`--print`) creates a session, sends the message, waits for the turn to end and prints the agent's final message to standard output. Progress goes to standard error only when it is a terminal.
+
+The message can come from standard input instead:
+
+```bash
+git diff main | opc -p "review this diff for security problems"
+cat task.md | opc -p
+```
+
+With both, the argument comes first, then a blank line, then standard input.
+
+With a message as an argument, `opc -p` reads standard input only when it is a file, or a pipe that has data or closes within 200 ms. A pipe that stays open and silent is ignored, so a job runner that leaves standard input open does not hang `opc`; data that arrives later is not read. To wait for standard input however long it takes, pass `-` as the message.
+
+To continue an existing session instead of creating one, pass `--session` (`-s`):
+
+```bash
+opc -p -s cs_7f3a9k2m4q8r1t6v "now open the pull request"
+```
+
+With `-s`, the message is queued behind a running turn, as `opc send` does, so two programs never change each other's turns. `--steer` or `--interrupt` changes that. `opc -p` reports on the turn the message ended up in: for a message steered into a running turn, including one that declined an open ask, that is the running turn.
+
+When standard input or standard output is not a terminal, `opc "message"` behaves like `opc -p "message"`, handle line included.
+
+### The handle comes first
+
+As soon as the session exists, before the agent starts, `opc -p` writes one line to standard error, even with `-q`:
+
+```
+opc: session cs_7f3a9k2m4q8r1t6v turn tn_4m8q2x7c1v9b https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v
+```
+
+In `stream-json`, the first line on standard output carries the same:
+
+```json
+{"type":"system","subtype":"init","sessionId":"cs_7f3a9k2m4q8r1t6v","turnId":"tn_4m8q2x7c1v9b","url":"https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v","settings":{"model":"claude-opus-5-5","effort":"high","mode":"auto"}}
+```
+
+So a script that is killed, or gives up, still knows which session to return to. With `--push`, the uploads come before the send, so `opc` first writes `opc: session <id> <url>` as soon as the session exists, then the full line once the message is sent. The `init` line comes after the send, because it carries the turn id.
+
+### Stopping early
+
+`Ctrl+C` stops waiting, not the turn. `opc` prints `still running: opc a cs_7f3a9k2m4q8r1t6v` to standard error and exits `130`; the turn keeps running on the computer. `--timeout` does the same with exit `124`. With `--interrupt-on-exit`, `opc` interrupts the turn before it exits, for either.
+
+### Output formats
+
+| Format | Prints |
+| --- | --- |
+| `text` | The final message, as plain text. The default. |
+| `json` | One [Result](/api/reference/objects#result) object when the turn ends |
+| `stream-json` | The `init` line, then one [event](/api/reference/events) per line as it happens, then the Result as the last line |
+
+The Result:
+
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "isError": false,
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "status": "completed",
+  "result": "The nightly build fails because…",
+  "error": null,
+  "reason": null,
+  "ask": null,
+  "url": "https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v",
+  "durationMs": 48211,
+  "usage": { "inputTokens": 81233, "outputTokens": 2210, "reasoningTokens": 940, "cachedTokens": 76002, "cacheWriteTokens": 5120, "costUsd": "0.41" },
+  "turn": { "id": "tn_4m8q2x7c1v9b", "…": "Turn" }
+}
+```
+
+`status` is `completed`, `failed`, `cancelled` or `waiting`, and `subtype` is `success`, `error`, `cancelled` or `waiting` to match. With `failed`, `error` holds the [turn failure](/api/reference/errors#turn-failures). With `cancelled`, `reason` says why. With `waiting`, `ask` holds the open [ask](/api/reference/objects#ask). `usage` is the turn's `usage`, and `turn` is the whole [Turn](/api/reference/objects#turn).
+
+`stream-json` prints recorded events only. Add `--include-partial-messages` to also print what streams: text and reasoning as `message.delta` and `reasoning.delta` lines, a tool call while the model writes it as `tool.preparing`, and a running tool's output as `tool.delta`.
+
+**The output contract.** The outcome of a turn, whatever it is, is the Result on standard output. A failure of the command itself, such as a usage error, a rejected credential or an unreachable computer, is `{"error": …}` on standard error, and in `stream-json` also a last line `{"type":"result","subtype":"error","isError":true,"error":{…}}` on standard output, so a reader of the stream always gets one. Errors are JSON whenever any JSON format is selected. See [Exit codes](/reference/exit-codes).
+
+### Compared with `claude -p`
+
+The flags and the three formats follow Claude Code's `claude -p`. The lines are this API's events, and the result line is this API's Result object, in camelCase.
+
+| | `claude -p` | `opc -p` |
+| --- | --- | --- |
+| Lines in `stream-json` | Claude Code messages: `system`, `assistant`, `user`, `result` | The `init` line, this API's [events](/api/reference/events), the Result |
+| Field names | snake_case | camelCase |
+| Session id | `session_id` | `sessionId` |
+| Error flag | `is_error` | `isError` |
+| Cost | `total_cost_usd`, a number | `usage.costUsd`, a decimal string |
+| Duration | `duration_ms` | `durationMs` |
+
+There are no snake_case aliases.
+
+### Options for `-p`
+
+| Option | Does |
+| --- | --- |
+| `-s`, `--session <id>` | Sends to this session instead of creating one |
+| `--steer`, `--queue`, `--interrupt` | With `-s`: how the message is delivered if a turn is running. Default `--queue`. |
+| `--push <dir>` | Copies a local directory into the new session's workspace before sending. Repeatable. See [Files](/cli/files). |
+| `--model`, `--effort`, `--speed`, `--mode` | Settings for a new session. `--permission-mode` is the same as `--mode`. |
+| `--title <title>` | Title for a new session |
+| `--metadata <key=value>` | Metadata for a new session. Repeatable. |
+| `--idempotency-key <k>` | Makes a retry safe. See [Retrying safely](#retrying-safely). |
+| `--on-ask <action>` | `fail`, `dismiss` or `wait`. See [When the agent needs a person](#when-the-agent-needs-a-person). |
+| `--timeout <duration>` | Gives up after this long, such as `90s` or `20m`, exit code `124`. The turn keeps running. |
+| `--interrupt-on-timeout` | With `--timeout`, interrupts the turn before exiting |
+| `--interrupt-on-exit` | Interrupts the turn whenever `opc` exits before it ends: `--timeout`, `Ctrl+C` or a signal |
+| `--wait-subagents` | Also waits for the background subagents the turn started. See [Background subagents](#background-subagents). |
+
+## When the agent needs a person
+
+A script cannot answer an [ask](/terminal/asks) itself. By default, `--on-ask fail`, `opc -p` prints the ask and the commands that answer it to standard error, and exits with code `5`:
+
+```
+opc: waiting for a person: approval for "Bash: terraform apply" in session cs_7f3a9k2m4q8r1t6v
+     answer it with one of:
+       opc ask allow ak_9b4m8q2x7c1v
+       opc ask deny ak_9b4m8q2x7c1v -m "<what to do instead>"
+       opc a cs_7f3a9k2m4q8r1t6v
+```
+
+In the JSON formats, the Result on standard output has `status: "waiting"` and the ask. An approval with an `alwaysAllows` rule also gets `opc ask always ak_…`. For a question the commands are `opc ask answer ak_… --choice "<label>"` and `opc ask dismiss ak_…`. A secret request is answered in Slack, so the only command for it is `opc ask dismiss ak_…`, which skips it. The session keeps waiting.
+
+| `--on-ask` | When an ask opens |
+| --- | --- |
+| `fail` | Exit `5`, as above. The default. |
+| `dismiss` | Dismiss it with the message "running unattended" and carry on. The agent decides how to go on, for an approval as if denied. |
+| `wait` | Keep waiting until someone answers it elsewhere, up to `--timeout` |
+
+A [permission mode](/concepts#settings) decides only whether approvals open. Questions and secret requests can open in every mode. When nobody will be there, run with a mode that does not ask for approval, such as `--mode auto` or `--mode dontAsk`, and choose `--on-ask` for the rest. `--mode acceptEdits` still asks before running commands, so a task that runs tests stops with exit `5` there.
+
+Asks can also be listed and answered from another process, with the same [Ask](/api/reference/objects#ask) objects the API returns:
+
+```bash
+opc ask ls --json                                    # open asks in your sessions
+opc ask allow ak_9b4m8q2x7c1v
+opc ask always ak_9b4m8q2x7c1v                       # and its alwaysAllows rule, for the rest of the session
+opc ask answer ak_2c7v1b4m8q9x --choice "Make the test wait for the debounce"
+opc ask dismiss ak_2c7v1b4m8q9x -m "decide yourself"
+```
+
+## Start without waiting: `opc new`
+
+```bash
+id=$(opc new --metadata job=nightly "find why the nightly build fails")
+```
+
+Creates a session, sends the message if there is one, and returns at once with the session's id. `--json` prints what the API returned, `{ session, turn, delivery, duplicate, seq }`. It takes the same `--push`, settings, `--metadata` and `--idempotency-key` options as `opc -p`.
+
+## Send without waiting: `opc send`
+
+```bash
+opc send cs_7f3a9k2m4q8r1t6v "also add a regression test"
+opc send cs_7f3a9k2m4q8r1t6v --steer "use the existing fixture"
+echo "stop, the bug is in the parser" | opc send cs_7f3a9k2m4q8r1t6v --interrupt -
+```
+
+Sends a message and returns as soon as the session accepted it. If a turn is running, `--queue` (the default) runs the message as its own turn after it, `--steer` delivers it into the running turn, and `--interrupt` stops the running turn and every queued one first. The default matches the API, so two programs sending to one session never change each other's turns; the interactive prompt steers, because a person typing while the agent works means to redirect it. `-` reads the message from standard input.
+
+Prints the turn id, and on standard error, when it is a terminal, the command that waits for it: `opc wait tn_9x2c7v1b4m8q`. `--json` prints what the API returned, `{ turn, delivery, duplicate, seq }`. `--wait` sends, then waits for the turn the message ended up in and prints its Result, as `opc wait` does. It takes `--on-ask`, as `opc wait` does; the default is `fail`.
+
+## Wait for a session or a turn: `opc wait`
+
+```bash
+opc wait cs_7f3a9k2m4q8r1t6v && echo done
+opc wait tn_9x2c7v1b4m8q
+opc wait --all --json cs_7f3a9k2m4q8r1t6v cs_9c1e4b7n2d8k5m3q
+```
+
+With a session, blocks until it has nothing left to do: no turn running or queued. With a turn id, alone or as `--turn`, blocks until that turn ends or waits for a person. `opc wait tn_…` alone finds the session for turns sent from this machine, the last 500 of them; for an older turn, or one sent elsewhere, name both: `opc wait cs_… --turn tn_…`. The handle line gives both ids. `--on-ask fail|dismiss|wait` works as it does for [`opc -p`](#when-the-agent-needs-a-person).
+
+With several ids, `--all` returns when every one is done and `--any` when the first is. `--json` prints the [Result](/api/reference/objects#result) of the last turn, and with several ids one Result per line, as each is done. Without `--json`, the last turn's final message, and with several ids each one under a `── <session id>` line.
+
+With several ids, a session that is lost, because attaching to it was refused or the server stopped sending it, is reported on its own and the others go on: with `--json`, as a Result line with `subtype` `error` and its `sessionId`; without, as `opc: <id>: <message>` on standard error. With one id, a lost session fails the command, with an [error object](/reference/exit-codes#error-objects). Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The last turn completed |
+| `1` | The last turn failed or was cancelled |
+| `5` | The session is waiting for a person |
+| `124` | `--timeout` passed |
+
+With `--all`, `0` when every one completed, else `5` when any is waiting, else `1`, which includes a lost session. With `--any`, the code of the one that returned; a lost session does not count as returning. A session that is already idle returns at once with the status of its last turn.
+
+`opc wait` follows the session over your computer's connection, so it returns the moment the turn ends. A program without `opc` waits the same way with one long-poll: [get the turn](/api/http/turns#get-a-turn) with `waitMs`, and repeat while it has not ended.
+
+### Background subagents
+
+A turn can complete while [subagents](/terminal/session-screen#subagents) it started in the background still run. The Result lists them in `subagents`, as `running`. To wait for them too, pass `--wait-subagents` to `opc -p`, `opc wait` or `opc send --wait`; the Result then shows them ended. Read one's answer with `opc subagents result`:
+
+```bash
+opc wait tn_4m8q2x7c1v9b --wait-subagents --json | jq -r '.subagents[].id' |
+  while read -r sa; do opc subagents result "$sa" -s cs_7f3a9k2m4q8r1t6v; done
+```
+
+## Follow a session: `opc watch`
+
+```bash
+opc watch cs_7f3a9k2m4q8r1t6v
+opc watch cs_7f3a9k2m4q8r1t6v --output-format stream-json | jq -c 'select(.type == "tool.started")'
+opc watch cs_7f3a9k2m4q8r1t6v --after 1184 --follow --output-format stream-json
+```
+
+Prints a session's events as they happen, read-only, and exits as `opc wait` does. `--after <seq>` prints the recorded events after that `seq` first, then live ones, with no gap and no repeat; `--from-start` is `--after 0`. `--follow` keeps watching across turns until interrupted. `--output-format json` prints the Result of the last turn it saw end. Several ids are followed over one connection; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
+
+## Read the history: `opc log`
+
+```bash
+opc log cs_7f3a9k2m4q8r1t6v
+opc log cs_7f3a9k2m4q8r1t6v --after 1184 --types 'tool.*' --output-format stream-json
+```
+
+Prints what happened and exits. The default is one line per message, tool call and answer; `--details` prints everything. `--after <seq>`, `--turn <tn_…>` and `--types <glob>` narrow it. `--output-format stream-json` prints the recorded [events](/api/reference/events), one per line, and `json` prints `{ events, lastSeq, hasMore }`.
+
+`opc log`, `opc watch` and `opc wait` never resume a suspended session: they read the log as it is.
+
+## Stop a turn: `opc interrupt`
+
+```bash
+opc interrupt cs_7f3a9k2m4q8r1t6v
+```
+
+Interrupts the running turn, with its subagents, and cancels queued messages, as `Esc` does. Returns when the turn has stopped.
+
+## Retrying safely
+
+`--idempotency-key <k>` on `opc -p`, `opc new`, `opc send` and `opc push` makes a command safe to run twice. A repeat with the same key within 24 hours creates and sends nothing new: `opc new` and `opc send` print the original session or turn, and `opc -p` re-attaches to the original turn and waits for it.
+
+```bash
+opc -p --idempotency-key "release-notes-$(git rev-parse HEAD)" "write the release notes"
+```
+
+Commands that make several requests derive one key per request from yours: `<k>:create`, `<k>:upload:<n>` for each `--push`, and `<k>:send`. So a retry after a failure part way picks up where the first run stopped. Use a key that names the work, never a random one per run.
+
+`opc` itself retries `429` and `503` responses, after the `retryAfterMs` they carry, until `--timeout` passes, or for 60 seconds without one.
+
+## Tagging sessions
+
+`--metadata key=value`, repeatable, on `opc -p` and `opc new` sets the new session's [metadata](/api/reference/objects#session): up to 20 keys. `opc ls --metadata key=value` finds them again:
+
+```bash
+opc ls --metadata job=nightly --metadata run=1842 --json
+```
+
+## Running many
+
+Each `opc` process uses one HTTP/2 connection to OpenComputer's API. `opc -p`, `opc wait`, `opc watch` and `opc a` also open one WebSocket connection to your computer; the other commands do not. `opc wait --any`, `opc wait --all` and `opc watch` with several ids follow up to 20 sessions over one connection. Your computer accepts up to 50 connections per member, so to follow more sessions than that, wait for them in groups.
+
+Any number of `opc` processes can run at once on one machine. They share `opc`'s cache files safely, with file locks.
+
+## A complete script
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Send the local checkout, ask for a fix, bring the result back.
+name=$(basename "$PWD")
+rev=$(git rev-parse HEAD)
+
+out=$(opc -p --push . --mode auto --on-ask dismiss --output-format json \
+  --idempotency-key "fix-tests-$name-$rev" \
+  --metadata repo="$name" --metadata rev="$rev" \
+  "make the tests in ./$name pass; do not commit")
+id=$(jq -r .sessionId <<<"$out")   # a full id: cs_…
+
+opc pull -s "$id" "$name" ./fixed
+jq -r .result <<<"$out"
+```
+
+`--mode auto` runs the tests without asking for approval, and `--on-ask dismiss` carries on past a question nobody can answer, so the script never stops with exit `5`. Run again for the same commit, it re-attaches to the same turn.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | The turn failed or was cancelled |
+| `2` | Usage error, or this version of `opc` is no longer supported |
+| `3` | Not logged in, the credential was rejected, or your organization's computer is not set up |
+| `4` | Cannot reach OpenComputer or your computer, or rate limited. Retry. |
+| `5` | Waiting for a person |
+| `6` | Your organization cannot run work: it is out of credits |
+| `124` | Timed out |
+| `130` | Interrupted with `Ctrl+C` |
+
+See [Exit codes](/reference/exit-codes) for the error codes printed with `--json`.

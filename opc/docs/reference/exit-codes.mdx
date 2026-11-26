@@ -1,0 +1,66 @@
+---
+title: "Exit codes"
+description: "What each exit code means, and the error codes printed with --json."
+---
+
+| Code | Meaning | Typical cause |
+| --- | --- | --- |
+| `0` | Success | The turn completed; you detached from an interactive session |
+| `1` | The turn failed or was cancelled | The agent hit an error; someone interrupted it |
+| `2` | Usage error | An unknown option, a missing argument, an ambiguous session prefix, no `-s` in a script, or a version of `opc` the server no longer supports |
+| `3` | Authentication or setup | Not logged in; the credential was revoked or expired; a key without the scope or access the command needs; your organization's computer is not set up |
+| `4` | Unreachable or busy, retry | No network; OpenComputer is down; your computer could not start; rate limited; the session's queue is full |
+| `5` | Waiting for a person | An ask is open in the session |
+| `6` | The organization cannot run work | Out of credits |
+| `124` | Timed out | `--timeout` passed. The turn keeps running. |
+| `130` | Interrupted | `Ctrl+C`. The turn keeps running unless you passed `--interrupt-on-exit`. |
+
+`opc` retries `429` and `503` responses itself, after the `retryAfterMs` they carry, until `--timeout` passes, or for 60 seconds without one. Exit `4` means it ran out of time or the failure was not one it retries.
+
+## Error objects
+
+The outcome of a turn is not an error: it is the [Result](/api/reference/objects#result) object on standard output. A command failure is one object on standard error, whenever any JSON output format is selected:
+
+```json
+{ "error": { "code": "session_ambiguous", "message": "7f matches 3 sessions; use more characters", "retryable": false, "matches": ["cs_7f3a9k2m4q8r1t6v", "cs_7f9c2d8e4b1n6p0q", "cs_7fk2m9x4c8v1b3n5"] } }
+```
+
+`code`, `message` and `retryable` are always present. `retryable` is `true` when the same command, run again later, may succeed. `hint`, when present, is what to do about it, such as `pass -s <id>`. With `--output-format stream-json`, a command failure also ends standard output with `{"type": "result", "subtype": "error", "isError": true, "error": {…}}`, so a reader of the stream always gets a last line.
+
+| `code` | Exit | Retryable | Meaning |
+| --- | --- | --- | --- |
+| `usage` | 2 | no | The command line is wrong. `message` says how. |
+| `upgrade_required` | 2 | no | This build of `opc` is retired. `minVersion` says what to install. The API's code. |
+| `session_ambiguous` | 2 | no | The prefix or words match several sessions. `matches` lists them. |
+| `session_not_found` | 2 | no | No session matches, or you cannot see it |
+| `not_logged_in` | 3 | no | No credential in the environment or the configuration file |
+| `unauthenticated` | 3 | no | The credential was rejected, revoked or has expired |
+| `forbidden` | 3 | no | The credential cannot do this. `reason` says why: `project_key`, or `missing_scope` with `scope` naming the [scope](/cli/ci) the key lacks. |
+| `computer_not_set_up` | 3 | no | Your organization has not finished setting up its computer. `message` has the link. |
+| `unreachable` | 4 | yes | OpenComputer's API cannot be reached |
+| `computer_unavailable` | 4 | yes | Your computer could not start or cannot be reached. `retryAfterMs` says when to retry, when known. |
+| `rate_limited` | 4 | yes | Too many requests. `retryAfterMs` says when to retry. |
+| `queue_full` | 4 | yes | 20 turns are already queued in the session. `retryAfterMs` says when to retry. |
+| `insufficient_credits` | 6 | no | Your organization is out of credits |
+| `turn_failed` | 1 | no | The turn failed. `error` carries the [failure code](/api/reference/errors#turn-failures). |
+| `turn_cancelled` | 1 | no | The turn was cancelled. `reason` says why. |
+| `waiting` | 5 | no | An ask is open. `ask` carries it. |
+| `timeout` | 124 | yes | `--timeout` passed |
+| `push_rejected` | 2 | no | A push was refused. `reason` is the API's code: `path_exists`, `invalid_path` or `too_large`. |
+| `pull_rejected` | 2 | no | A pull was refused. `reason` is `path_not_found`, `too_large`, or `destination_not_empty` when the local directory has files. |
+| `ask_not_found` | 2 | no | No open ask with that id in the sessions you can see. Pass `-s <id>`. |
+| `invalid_answer` | 2 | no | The choice is not one of the question's options, or the question takes one choice |
+| `answer_with_secret` | 2 | no | The ask is a secret request, which `opc ask answer` does not answer. It is answered in Slack. |
+| `subagent_running` | 5 | no | `opc subagents result`: the subagent is still running. `message` says what it is doing. |
+| `detached` | 2 | no | The server stopped sending the session. `message` gives the reason. |
+| `too_far_behind`, `too_many_attached`, `too_large` | 2 | no | Your computer's connection refused the request: the session is too far behind to attach, too many sessions are attached, or a message is too large for the connection |
+| `feature_unavailable`, `invalid_request` | 2 | no | Your computer refused the request: the feature is not available on it, or the request was malformed |
+| `io` | 2 | no | A local file could not be read or written. `message` names it. |
+| `config_unreadable` | 2 | no | `opc doctor`: the configuration file exists but cannot be read |
+| `invalid_response` | 2 | no | `opc` could not read what the server sent |
+| `internal` | 4 | yes | Something failed inside `opc` or on the server. Run it again; if it keeps failing, `opc doctor` and `OPC_LOG=debug` show more. |
+| `interrupted` | 130 | no | `Ctrl+C` or a signal |
+
+`turn_failed`, `turn_cancelled` and `waiting` are turn outcomes. Commands that print a Result (`opc -p`, `opc wait`, `opc watch`, `opc send --wait`) report them there, as `subtype` `error`, `cancelled` or `waiting` with the same fields, and print no error object. In `stream-json`, a failed turn's last line has `status: "failed"`; a command failure's last line does not.
+
+API error codes that are not listed here, such as `id_conflict` or `cursor_ahead`, are passed through with their `retryable`, and exit code `4` for `5xx` responses and `2` otherwise.
