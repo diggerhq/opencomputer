@@ -120,7 +120,9 @@ describe("the Slack actor: accept, the queue, turns", () => {
     const [create] = (await callsOf(orgOf(org))).filter((c) => c.method === "createSession");
     const [p, body] = create!.args as [Record<string, unknown>, Record<string, unknown>];
     expect(p).toMatchObject({ org, subject: "slack:T1:U1", kind: "member", via: "slack", audiences: [], admin: false });
-    expect(body).toMatchObject({ id: sid, writers: "members", slackThread: key, harness: "codex", origin: { type: "slack", slack: { teamId: "T1", channelId: "C1", threadTs: "200.1" } } });
+    // Who drives it is Org's: the organization's Slack default.
+    expect(body.writers).toBeUndefined();
+    expect(body).toMatchObject({ id: sid, slackThread: key, harness: "codex", origin: { type: "slack", slack: { teamId: "T1", channelId: "C1", threadTs: "200.1" } } });
 
     const [accepted] = await callsOf(logOf(sid));
     const [tp, entry] = accepted!.args as [Record<string, unknown>, Record<string, unknown>];
@@ -207,6 +209,18 @@ describe("the Slack actor: commands, buttons, held messages", () => {
     const entries = (await callsOf(logOf(sid))).map((c) => c.args[1] as { id: string; kind: string; body: unknown });
     expect(entries.map((e) => e.kind)).toEqual(["turn", "interrupt"]);
     expect(entries[1]).toEqual({ id: await entryIdFor("in", `${key}\0${"500.2"}`), kind: "interrupt", body: {} });
+  });
+
+  it("makes `!access default owner` Org's setting, with no session needed", async () => {
+    const org = "org_access_default";
+    await linked(org);
+    await slackOf(org).accept(message({ text: "!access default owner", ts: "550.1" }));
+    await settled(org);
+    const calls = await callsOf(orgOf(org));
+    expect(calls.map((c) => c.method)).toEqual(["setSlackAccessDefault"]);
+    expect(calls[0]!.args[0]).toMatchObject({ subject: "slack:T1:U1", via: "slack" });
+    expect(calls[0]!.args[1]).toBe("owner");
+    expect(await callsOf(logOf(await sessionIdFor("T1:C1:550.1")))).toEqual([]);
   });
 
   it("holds a refused message as context, asks the owner, and runs it once allowed", async () => {

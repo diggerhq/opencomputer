@@ -91,10 +91,12 @@ import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract
 import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
+import type { AccessCarry } from "../src/actors/computer/contract.js";
 
 type Fakes = {
   calls: [string, ...unknown[]][];
   boardRepository?: StoredRepository;
+  accessCarry?: AccessCarry;
   account?: TokenMinter;
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
 };
@@ -105,7 +107,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
     const org = instance as unknown as OrgDurableObject;
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
     const out: OrgOut = {
-      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed") }),
+      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), accessCarry: async () => fakes.accessCarry ?? { accessDefault: null, apiAccessDefault: null } }),
       log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }) }),
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
@@ -160,6 +162,54 @@ describe("Org.createSession", () => {
 
 describe("Org: session access (spec 36.2)", () => {
   const SID = "cs_0000000000000030";
+  const slackOrigin = { type: "slack" as const, client: null, slack: null };
+  const slackMember = (subject: string, org: string): Principal => ({ ...member(subject, org), via: "slack" });
+
+  it("carries the Computer's defaults over once, where Org has none, and a new Slack session takes the Slack one", async () => {
+    const fakes: Fakes = { calls: [], accessCarry: { accessDefault: "owner", apiAccessDefault: "org" } };
+    await withActor(
+      "access-carry",
+      async (org, _f, sql) => {
+        const a = member("usr_a", "access-carry");
+        await org.createSession(a, { id: "cs_0000000000000040", origin: slackOrigin });
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'accessCarry'")).toEqual([{ purpose: "accessCarry" }]);
+        expect((await org.access("cs_0000000000000040"))?.writers).toBe("members");
+        await org.alarm();
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'accessCarry'")).toEqual([]);
+        expect(await org.settings(a)).toEqual({ apiAccessDefault: "org" });
+        await org.createSession(a, { id: "cs_0000000000000041", origin: slackOrigin });
+        expect((await org.access("cs_0000000000000041"))?.writers).toEqual(["user:usr_a"]);
+        // An explicit list is kept; an API session is unaffected.
+        await org.createSession(a, { id: "cs_0000000000000042", origin: slackOrigin, writers: "members" });
+        expect((await org.access("cs_0000000000000042"))?.writers).toBe("members");
+        // What Org holds is not replaced by a later carry.
+        fakes.accessCarry = { accessDefault: "open", apiAccessDefault: "owner" };
+        sql.exec("INSERT INTO _alarm (purpose, at) VALUES ('accessCarry', 0)");
+        await org.alarm();
+        expect(await org.settings(a)).toEqual({ apiAccessDefault: "org" });
+        expect(sql.exec("SELECT slack_access_default AS v FROM meta")).toEqual([{ v: "owner" }]);
+      },
+      fakes,
+    );
+  });
+
+  it("lets only an admin change the Slack default, a Slack principal named by Org's admins too", async () => {
+    await withActor("access-slack-default", async (org, _f, sql) => {
+      const name = "access-slack-default";
+      await org.settings({ ...member("usr_boss", name), admin: true });
+      expect(await org.setSlackAccessDefault(slackMember("usr_a", name), "owner")).toMatchObject({ ok: false, code: "admin_required", status: 403 });
+      expect(await org.setSlackAccessDefault(slackMember(`slack:T1:U9`, name), "owner")).toMatchObject({ ok: false, code: "admin_required" });
+      // A Slack principal is never `admin`; it does not unmake the admin Org saw.
+      expect(await org.setSlackAccessDefault(slackMember("usr_boss", name), "owner")).toEqual({ ok: true, value: "owner" });
+      expect(sql.exec("SELECT slack_access_default AS v FROM meta")).toEqual([{ v: "owner" }]);
+      await org.createSession(slackMember("usr_a", name), { id: "cs_0000000000000043", origin: slackOrigin });
+      expect((await org.access("cs_0000000000000043"))?.writers).toEqual(["user:usr_a"]);
+      expect(await org.setSlackAccessDefault(slackMember("usr_boss", name), "open")).toEqual({ ok: true, value: "open" });
+      await org.createSession(slackMember("usr_a", name), { id: "cs_0000000000000044", origin: slackOrigin });
+      expect((await org.access("cs_0000000000000044"))?.writers).toBe("members");
+    });
+  });
+
   it("defaults from the organization's setting, which only an admin changes", async () => {
     await withActor("access-default", async (org) => {
       const a = member("usr_a", "access-default");

@@ -14,7 +14,7 @@ import { platformPrincipal, type Access, type Principal } from "../../auth/princ
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpcAdded, type StartSpec } from "../computer/contract.js";
-import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SummaryPub } from "./contract.js";
+import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpcAdded } from "../session-log/contract.js";
@@ -46,7 +46,7 @@ async function memberIds(access: unknown): Promise<CreateSession["access"]> {
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
-  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed">;
+  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
   log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
@@ -212,6 +212,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
         if (repository && !repositories.storedRepository(sql)) repositories.storeRepository(sql, repository);
         this.flush();
       },
+      // Armed once by a migration step (schema.ts): the default access the organization's Computer held, carried over.
+      accessCarry: async () => {
+        sessions.carryAccessDefaults(sql, await this.out.computer(this.org).accessCarry());
+      },
       age: () => {
         work.age(sql, Date.now());
         alarms.set(sql, "age", Date.now() + AGE_EVERY_MS);
@@ -268,6 +272,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>> {
     this.seen(p);
     return sessions.setSettings(this.sql, p, patch);
+  }
+
+  /** The Slack actor only: `!access default open|owner`. Admins only (`admin_required`). */
+  async setSlackAccessDefault(p: Principal, value: SlackAccessDefault): Promise<Reply<{ value: SlackAccessDefault }>> {
+    this.seen(p);
+    return sessions.setSlackAccessDefault(this.sql, p, value);
   }
 
   // ------------------------------------------------------------------ the feed and the work part

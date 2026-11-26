@@ -256,4 +256,13 @@ describe("the Computer actor of tracks and threads", () => {
     expect(carry.people).toEqual([{ slack_user_id: "U1", dir: "ann", git_name: "Ann", git_email: "ann@example.com", updated_at: 1 }]);
     expect(carry.links).toEqual([]);
   });
+
+  it("hands Org the default access it held, once read, null where it held none", async () => {
+    const { stub } = await computer("tt-access-carry");
+    expect(await stub.accessCarry()).toEqual({ accessDefault: null, apiAccessDefault: null });
+    await inside(stub, (_instance, state) => {
+      state.storage.sql.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('accessDefault', 'owner'), ('apiAccessDefault', 'org')");
+    });
+    expect(await stub.accessCarry()).toEqual({ accessDefault: "owner", apiAccessDefault: "org" });
+  });
 });

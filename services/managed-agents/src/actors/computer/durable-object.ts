@@ -61,7 +61,7 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "../../ids/session-ids.js";
-import type { ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
+import type { AccessCarry, ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
 import type { SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
 import { type Dead, OWED_PURPOSE } from "../../durable/outbox.js";
@@ -140,7 +140,7 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./held-for-org/secrets/secrets.js";
 import { parseVariableCommand } from "./held-for-org/secrets/variables.js";
 import { type SecretsApiOp, SecretsStore } from "./held-for-org/secrets/secrets-store.js";
-import { driversCommandText } from "./copied/access.js";
+import { ACCESS_DEFAULT_SETTING, driversCommandText } from "./copied/access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./held-for-org/connections.js";
 import {
   AGENT_ERRORS,
@@ -989,6 +989,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       return member ? [{ slackUser: row.slack_user_id, member }] : [];
     });
     return { settings, people, links };
+  }
+
+  async accessCarry(): Promise<AccessCarry> {
+    const accessDefault = this.setting(ACCESS_DEFAULT_SETTING);
+    const apiAccessDefault = this.setting("apiAccessDefault");
+    return {
+      accessDefault: accessDefault === "open" || accessDefault === "owner" ? accessDefault : null,
+      apiAccessDefault: apiAccessDefault === "owner" || apiAccessDefault === "org" ? apiAccessDefault : null,
+    };
   }
 
   /** A store's `schedule(at)` for one alarm purpose: `at` arms it, null disarms it. */
