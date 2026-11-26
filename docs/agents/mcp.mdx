@@ -79,6 +79,35 @@ The declaration contains only a secret reference. Set the secret with
 `opencomputer secrets set GITHUB_PAT`; its value is injected only into requests
 to the declared origin. See [Secrets and outbound requests](/agents/secrets).
 
+## Managed catalogs
+
+Some catalogs are built into the platform: attach them by name and the
+credential is supplied by OpenComputer — no secret to set, no connection to
+declare. The Monid catalog is the first:
+
+```tsx
+import { monid, useMcpServer } from "@opencomputer/agent";
+
+const tools = monid();
+
+export default function Agent() {
+  useMcpServer(tools);
+  return "Discover tools in the catalog when a request needs them.";
+}
+```
+
+`monid()` selects the managed `monid` MCP server
+(`https://mcp.monid.ai/v1`), which exposes catalog meta-tools — discover,
+inspect, and run — covering hundreds of providers. `useMcpServer("monid")`
+selects it the same way. When you define a `monid` connection or MCP server
+yourself, yours wins and `monid()` is a compile error.
+
+The catalog key is a platform credential resolved at the platform's egress
+edge. It only ever reaches `mcp.monid.ai` and `api.monid.ai`; agent code and
+your project's own secrets never see it. The same `platform` scope is available
+on `useSecret()` for connection headers when a deployment declares a
+platform-managed credential by name.
+
 ## Attach MCP conditionally
 
 An agent can expose a server only when the current request needs it:
