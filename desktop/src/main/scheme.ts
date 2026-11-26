@@ -3,7 +3,7 @@
 // token is added here, in the main process, and never reaches a page.
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
-import { APP_HEADER, APP_ORIGIN } from '../shared/bridge'
+import { APP_ORIGIN } from '../shared/bridge'
 import { COMPUTER_API_PREFIX } from './config'
 
 export const CSP = [
@@ -59,15 +59,23 @@ const DROP = /^(set-cookie|content-encoding|content-length|transfer-encoding|con
 const json = (status: number, code: string, message: string) =>
   new Response(JSON.stringify({ error: { code, message, retryable: false } }), { status, headers: { 'content-type': 'application/json' } })
 
-/** Whether a request may have the token attached (section 24.2). */
+/**
+ * Whether a request may have the token attached (section 24.2). Chromium
+ * sends none of these headers on oc:// today, so what holds is the fence:
+ * only the app's own documents load in the session, with no frames, and a
+ * body must be JSON. The surface does not send the spec's `x-oc-app` header
+ * yet (build log, lane 5); when it does, demand it here.
+ */
 export function mayProxy(request: Request): boolean {
-  if (request.headers.get(APP_HEADER) !== '1') return false
   const origin = request.headers.get('origin')
   if (origin !== null && origin !== APP_ORIGIN) return false
   const referer = request.headers.get('referer')
   if (referer !== null && !referer.startsWith(`${APP_ORIGIN}/`)) return false
   const site = request.headers.get('sec-fetch-site')
   if (site !== null && site !== 'same-origin') return false
+  // A fetch from script, not a navigation, an image or a form.
+  const dest = request.headers.get('sec-fetch-dest')
+  if (dest !== null && dest !== 'empty') return false
   return true
 }
 
@@ -80,7 +88,7 @@ export function createHandler(deps: SchemeDeps): (request: Request) => Promise<R
       return json(415, 'unsupported_media_type', 'A body must be application/json')
     }
     const headers = new Headers()
-    request.headers.forEach((v, k) => PASS.test(k) && k !== APP_HEADER && headers.set(k, v))
+    request.headers.forEach((v, k) => PASS.test(k) && headers.set(k, v))
 
     for (let attempt = 0; ; attempt++) {
       const token = await deps.token()

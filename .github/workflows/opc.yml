@@ -1,0 +1,53 @@
+name: opc
+
+# CI for opc/, the Rust terminal client: clippy, tests (Linux and macOS), the
+# installer test, and that opc/schema/ matches the server's in computer/.
+
+on:
+  pull_request:
+    paths:
+      - opc/**
+      - computer/schema/computer-api.v1.json
+      - .github/workflows/opc.yml
+  push:
+    branches: [main]
+    paths:
+      - opc/**
+      - computer/schema/computer-api.v1.json
+      - .github/workflows/opc.yml
+permissions:
+  contents: read
+concurrency:
+  group: opc-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    working-directory: opc
+jobs:
+  test:
+    # The org's 16-core runner; pull requests from forks run on GitHub's own
+    # runners instead, so outside code never runs on ours.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: opc
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: ci/install-test.sh
+      # The fake server validates against schema/; this keeps it the server's.
+      - run: ci/schema-check.sh
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: opc
+      - run: cargo test --locked

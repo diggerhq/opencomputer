@@ -49,12 +49,12 @@ export function toolTitle(name: string, input: any, cwd: string): string {
       return 'Question';
     case 'mcp__calvin__send_file':
       return `Send ${path.basename(String(input.path ?? ''))}`;
-    case 'mcp__calvin__spawn_thread':
+    case 'mcp__calvin__start_thread':
       return `New thread: ${one(input.task ?? '', 100)}`;
     case 'mcp__calvin__read_thread':
-      return `Read thread ${one(input.url ?? `${input.channel ?? ''} ${input.ts ?? ''}`, 100)}`;
+      return `Read thread ${one(input.thread ?? '', 100)}`;
     case 'mcp__calvin__post_thread':
-      return `Post to thread ${one(input.url ?? `${input.channel ?? ''} ${input.ts ?? ''}`, 100)}`;
+      return `Post to thread ${one(input.thread ?? '', 100)}`;
     case 'mcp__calvin__request_secret':
       return `Ask for $${one(input.name, 60)}`;
     default:

@@ -43,18 +43,22 @@ token.
 (`OC_UI_DIR` or `../web/dist-desktop`, the output of `npm run build:desktop` in `web`), and the app
 serves that in place of the placeholder. What the bundle can rely on:
 
-- It is served at `oc://app/`; any path without a file extension answers
-  `index.html`, so locations such as `/thread/cs_…` load. The start panel is a
-  second window on `oc://app/start`.
+- It is one document at `oc://app/`. What is open is not in the URL: the
+  surface mirrors it with `location` (`/t/<thread>`, `/k/<track>`, `/new`),
+  and the shell answers with an `open` message after the page's first
+  `hello`: a waiting deep link or notification, or else the mirrored place.
+- The hotkey (Option-Space) and File > New Thread send `open` with
+  `{ new: true }`.
 - Scripts and styles must be files (the content security policy allows no
-  inline script and no foreign origin).
-- `createDesktopHost()` from `desktop/src/host` gives the `Host`. API calls
-  are `/api/<route>` paths (`/api/feed`, `/api/sessions/…`) through
-  `host.api.fetch`, which adds the header the proxy demands; the main process
-  sends them to the edge's public routes with the token.
+  inline script, no foreign origin and no frames).
+- API calls are `/api/<route>` paths (`/api/feed`, `/api/sessions/…`); the
+  main process sends them to the edge's public routes with the token.
 - A channel is the main process's socket: on `open`, send `hello` and the
-  `sub` frames as section 38.3 says, and call `channel.subs(streams)` with
-  what the window watches.
+  `sub` frames as section 38.3 says.
+
+`test/e2e/surface.test.ts` runs the bundle in the shell against the SDK's fake
+server. `OC_UI=placeholder` (unpackaged only) serves the placeholder page,
+which the shell's own tests drive.
 
 ## Signing and notarisation
 

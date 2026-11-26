@@ -12,7 +12,9 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@opencomputer/sdk/computer/fake": ["../sdks/typescript/src/computer/fake/index.ts"],
+      "@opencomputer/sdk/computer": ["../sdks/typescript/src/computer/index.ts"]
     },
     "strict": true,
     "noUnusedLocals": true,

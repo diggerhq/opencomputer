@@ -15,9 +15,6 @@ export const NO_THREAD = 'this runner serves no thread';
 /** The answer's `t` for each request a runner makes. */
 const ANSWERS = {
   token: 'token',
-  spawn: 'spawned',
-  read: 'thread',
-  post: 'posted',
   'secret-request': 'secret-asked',
   preview: 'previewed',
   unpreview: 'previewed',

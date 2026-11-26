@@ -169,6 +169,7 @@ describe("the allowlist of tracks and threads", () => {
     ["GET", "/live"],
     ["GET", "/work/threads"],
     ["GET", "/work/overview"],
+    ["GET", "/work/tracks/trk_0123456789abcdef/doc"],
     ["GET", "/work/tracks/trk_0123456789abcdef/doc/revisions"],
     ["GET", "/work/tracks/trk_0123456789abcdef/doc/revisions/3"],
     ["GET", "/work/results/res_0123456789abcdef/review"],
@@ -216,6 +217,7 @@ describe("the allowlist of tracks and threads", () => {
     ["GET", "/feed/mismatch"],
     ["POST", "/work/ops/op_1/redo"],
     ["GET", "/work/tracks/trk_1/doc/revisions/1/2"],
+    ["GET", "/work/tracks/trk_1/doc/other"],
   ])("refuses %s %s", (method, path) => {
     expect(isComputerApiRoute(method, `/computer${path}`)).toBe(false);
   });

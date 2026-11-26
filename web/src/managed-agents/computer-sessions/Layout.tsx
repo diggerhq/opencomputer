@@ -185,7 +185,7 @@ function Rail() {
           <RailLink to="/computer/sessions" label="Sessions">
             <MessagesSquare className="size-4" aria-hidden />
           </RailLink>
-          <RailLink to="/computer/work" label="Board">
+          <RailLink to="/computer/work" label="Work">
             <SquareKanban className="size-4" aria-hidden />
           </RailLink>
         </>

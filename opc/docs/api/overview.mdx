@@ -1,0 +1,114 @@
+---
+title: "API overview"
+description: "The HTTP and WebSocket API behind opc, Slack and the dashboard."
+---
+
+The Computer API is what `opc` is built on. Everything `opc` does, a program can do: start sessions, send messages, stream the agent's work as it happens, answer approvals and questions, move files and open a terminal. There is no private API behind `opc`.
+
+It has two parts that share one data model:
+
+| | HTTP | WebSocket |
+| --- | --- | --- |
+| Base | `https://app.opencomputer.dev/api/managed-agents/computer` | `wss://wire.opencomputer.dev/v1` |
+| Use it for | Creating and listing sessions, single actions, reading history, files | Watching sessions live: text as it is written, a few milliseconds after the model produces it |
+| Shape | JSON requests and responses | JSON-RPC 2.0 messages |
+| Auth | An API key on every request | The API key on the upgrade request, or a short-lived [ticket](/api/http/tickets) from a browser |
+
+Every action is available over HTTP. The WebSocket adds live events, text deltas and terminals. A program that only needs to start work and collect the result never has to open a WebSocket: see [Quickstart](/api/quickstart).
+
+## Where it fits
+
+```
+ opc · your programs · the dashboard              Slack
+        │                                           │
+        │ HTTP, API key       app.opencomputer.dev  │
+        │ WebSocket, key      wire.opencomputer.dev │
+        │   (or ticket)                             │
+        ▼                                           ▼
+  OpenComputer edge ─────────────▶ your organization's computer
+```
+
+Slack, `opc`, the dashboard and your programs are clients of the same sessions. A session started in Slack can be watched and answered from the API, and a session started from the API shows on the dashboard. Slack is where some sessions start, not a different kind of session.
+
+## Conventions
+
+- **JSON**, UTF-8, camelCase field names. Requests with a body send `Content-Type: application/json`. A request field the route does not know is refused with `400 invalid_request` and `field`.
+- **Times** are ISO 8601 in UTC with milliseconds, such as `2026-10-26T09:01:02.311Z`. Durations are integers named with their unit, such as `durationMs`.
+- **Ids** have a type prefix, then lowercase [Crockford base32](https://www.crockford.com/base32.html) (`0-9a-hjkmnp-tv-z`). Treat them as opaque strings of at most 40 characters. Ids from elsewhere, such as a tool call's `toolu_…` id, are opaque strings too.
+
+  | Prefix | Is | Prefix | Is |
+  | --- | --- | --- | --- |
+  | `cs_` | Session | `tk_` | Ticket |
+  | `tn_` | Turn | `wc_` | WebSocket connection |
+  | `ak_` | Ask | `usr_` | Person |
+  | `ev_` | Event | `org_` | Organization |
+  | `tm_` | Terminal | `req_` | Request |
+  | `key_` | API key | `sa_` | Subagent |
+
+- **Envelopes.** A single resource comes back as `{ "<type>": … }`, such as `{ "session": … }`, with anything else beside it: `seq`, `delivery`, `duplicate`. A list comes back as `{ "<types>": [ … ], "nextCursor" }`. `GET /me` is the one composite.
+- **Absent and null.** Every documented field is present. A field that does not apply is `null`. Optional request fields may be omitted.
+- **Enums are open.** Every string enum in a response, such as a status, a `kind` or an event `type`, can gain values. Handle values you do not know.
+- **New fields** can appear in any response or event at any time. Ignore what you do not know. See [Versioning](/api/reference/versioning).
+- **Errors** are `{ "error": { "code", "message", "retryable", "requestId" } }` with a stable `code` to branch on and `retryable` to decide whether to try again. See [Errors](/api/reference/errors).
+- **Every response** carries an `x-request-id` header. Quote it to support.
+- **Writes are idempotent** with an `Idempotency-Key` header. See [Idempotency](/api/reference/idempotency).
+- **Every write to a session returns `seq`**: the `seq` of the last event it caused. Pass it as `minSeq` on a later read, over either transport, to read your own write. See [Consistency](/api/model#consistency).
+- **Lists** are paginated with `limit` and `cursor`, and return `nextCursor`, `null` on the last page. `limit` is 1 to 100, default 20.
+- **Events page by `seq`**, not by cursor: `after` is the last `seq` you have, and a page is `{ events, lastSeq, hasMore }`. `limit` is 1 to 500, default 100. See [Events](/api/http/events).
+
+## Routes
+
+| Method | Path | Does |
+| --- | --- | --- |
+| `GET` | [`/me`](/api/authentication#who-am-i) | You, your organization, your computer and what new sessions support |
+| `POST` | [`/sessions`](/api/http/sessions#create-a-session) | Creates a session, optionally with its first message |
+| `GET` | [`/sessions`](/api/http/sessions#list-sessions) | Lists sessions |
+| `GET` | [`/sessions/{id}`](/api/http/sessions#get-a-session) | One session |
+| `PATCH` | [`/sessions/{id}`](/api/http/sessions#update-a-session) | Changes title, model, effort, speed, permission mode, `archived` or `metadata` |
+| `GET` | [`/sessions/{id}/capabilities`](/api/http/sessions#get-a-sessions-capabilities) | What the session supports and allows |
+| `POST` | [`/sessions/{id}/turns`](/api/http/turns#send-a-message) | Sends a message |
+| `GET` | [`/sessions/{id}/turns`](/api/http/turns#list-turns) | Lists turns |
+| `GET` | [`/sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn) | One turn, or waits for it to change with `waitMs` |
+| `POST` | [`/sessions/{id}/turns/{turnId}/cancel`](/api/http/turns#cancel-a-queued-turn) | Cancels a queued turn |
+| `GET` | [`/sessions/{id}/asks`](/api/http/asks#list-asks) | Lists asks |
+| `GET` | [`/sessions/{id}/asks/{askId}`](/api/http/asks#get-an-ask) | One ask |
+| `POST` | [`/sessions/{id}/asks/{askId}/answer`](/api/http/asks#answer-an-ask) | Answers an approval or question |
+| `POST` | [`/sessions/{id}/asks/{askId}/dismiss`](/api/http/asks#dismiss-an-ask) | Closes an ask without an answer |
+| `GET` | [`/sessions/{id}/subagents`](/api/http/subagents#list-subagents) | Lists subagents |
+| `GET` | [`/sessions/{id}/subagents/{subagentId}`](/api/http/subagents#get-a-subagent) | One subagent, with its whole result |
+| `POST` | [`/sessions/{id}/subagents/{subagentId}/stop`](/api/http/subagents#stop-a-subagent) | Stops a subagent |
+| `POST` | [`/sessions/{id}/interrupt`](/api/http/control#interrupt) | Stops the running turn and every queued one |
+| `POST` | [`/sessions/{id}/compact`](/api/http/control#compact) | Summarizes the conversation to free context |
+| `POST` | [`/sessions/{id}/suspend`](/api/http/control#suspend) | Stops the agent process now |
+| `POST` | [`/sessions/{id}/resume`](/api/http/control#resume) | Starts it again, ahead of the next message |
+| `GET` | [`/sessions/{id}/events`](/api/http/events) | Reads the event log, or waits for new events with `waitMs` |
+| `GET` | [`/sessions/{id}/workspace/files`](/api/http/workspace#list-files) | Lists files in the session's workspace |
+| `GET` | [`/sessions/{id}/workspace/file`](/api/http/workspace#read-a-file) | Reads one file |
+| `GET` | [`/sessions/{id}/workspace/archive`](/api/http/workspace#download) | Downloads a directory or file as tar |
+| `PUT` | [`/sessions/{id}/workspace/archive`](/api/http/workspace#upload) | Uploads a directory as tar |
+| `POST` | [`/tickets`](/api/http/tickets) | Gets a ticket for a browser to open a WebSocket |
+
+The WebSocket's methods are on [Methods](/api/websocket/methods).
+
+## Next to the serverless agents API
+
+OpenComputer's [serverless agents](https://docs.opencomputer.dev) have a session API of the same family, and this one keeps to it wherever the two describe the same thing: the `x-api-key` header, `POST /sessions` and `GET /sessions` with `{ sessions, nextCursor }`, `POST /sessions/{id}/turns` with `queue | steer | interrupt` and `duplicate` on a repeated key, `{ events }` pages, the `message.*`, `turn.*`, `tool.*`, `usage.recorded` and `runtime.*` event names, the error shape and the turn failure codes. A client that reads one reads most of the other.
+
+Where this API differs:
+
+| Here | Serverless |
+| --- | --- |
+| [Asks](/api/http/asks): `approval`, `question` and `secret`, one object, answered once | `question.*` events, approvals as tool-level decisions |
+| Sending returns `{ turn, delivery, duplicate, seq }`: the Turn itself, and what happened to the message, with a turn for steered messages too | `{ turnId, status, duplicate }`, and no turn for a steered message |
+| `message.delta`, `reasoning.delta` and `tool.delta` carry a `blockId` or `callId`, unique in the session | Deltas are concatenated per turn |
+| `GET /events` pages carry `lastSeq` and `hasMore`, and wait for new events with `waitMs` | `{ events }` only |
+| Every write returns `seq`, and reads accept `minSeq` | No equivalent |
+| Session status: `starting`, `running`, `waiting`, `idle`, `suspended` | Eleven statuses including `ended` |
+| `POST /interrupt` returns the session with the turn `cancelling` | The session goes `stopping` |
+
+## What the API does not do
+
+- **End or delete a session.** Sessions suspend when idle and can always be resumed. [Archive](/api/http/sessions#update-a-session) one to hide it from lists. See [Retention](/api/reference/limits#retention).
+- **Read your machine.** Files reach the computer only through [workspace uploads](/api/http/workspace).
+- **Run the agent's tools on your side.** Every tool runs on the computer.
+- **Manage the computer, repositories or members.** Those are on the dashboard and in the [OpenComputer API](https://docs.opencomputer.dev).

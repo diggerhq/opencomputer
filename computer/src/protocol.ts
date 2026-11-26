@@ -458,9 +458,6 @@ export type HostToRunner =
   /** Exit when no turn is running (idle timeout, code update, drain); `ms`: quit after it anyway (a retired runner, work 084). */
   | { t: 'exit'; ms?: number }
   | { t: 'token'; id: string; result?: GitHubToken; error?: string }
-  | { t: 'spawned'; id: string; result?: SpawnResult; error?: string }
-  | { t: 'thread'; id: string; result?: Linked; error?: string }
-  | { t: 'posted'; id: string; result?: PostThreadResult; error?: string }
   | { t: 'previewed'; id: string; result?: PreviewToolResult; error?: string }
   /** The session's secrets, all of them: sent before a delivery and whenever they change. */
   | { t: 'secrets'; secrets: SessionSecret[] }
@@ -495,9 +492,6 @@ export type RunnerToHost =
   /** Sent by a runner without a session instead of `report`; never forwarded to the gateway. */
   | { t: 'spare'; spare: SpareReport }
   | { t: 'token'; id: string; repos?: string[] }
-  | { t: 'spawn'; id: string; req: SpawnRequest }
-  | { t: 'read'; id: string; req: ReadThreadRequest }
-  | { t: 'post'; id: string; req: PostThreadRequest }
   /** Work 074: answered by `previewed`, after the host's readiness probe for `preview`. */
   | { t: 'preview'; id: string; req: PreviewRequest }
   | { t: 'unpreview'; id: string; req: { name: string } }
