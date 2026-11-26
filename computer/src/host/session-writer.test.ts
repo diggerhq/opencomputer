@@ -6,7 +6,7 @@ import { mintId } from '../session-ids.js';
 import { ensureSessionJournalDir, journalPath } from '../api/journal.js';
 import { dialApi } from '../api/socket.js';
 import { ANN, ANN_CTX, askOf, assertEvent, openLog, subagentOf, tempSession, turn } from '../api/testing.js';
-import { HostSessionWriter, QUEUE_MAX, scanJournals } from './session-writer.js';
+import { HostSessionWriter, scanJournals } from './session-writer.js';
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -23,7 +23,6 @@ async function host(o: { socket?: boolean; prepare?: (log: Awaited<ReturnType<ty
     o.prepare(log);
     await log.release();
   }
-  const wakes: { sessionId: string }[] = [];
   const socket = o.socket ? { path: path.join(t.dir, 'h.api.sock'), token: 'tok' } : undefined;
   const w = await HostSessionWriter.open({
     sessionId: t.sessionId,
@@ -31,84 +30,36 @@ async function host(o: { socket?: boolean; prepare?: (log: Awaited<ReturnType<ty
     epoch: 1,
     lastSeq: 0,
     seed: { sessionId: t.sessionId, owner },
-    wake: (sessionId) => void wakes.push({ sessionId }),
     socket,
   });
   cleanups.push(() => w.handOff());
   const events = () => w.log.journal.read(0, 10_000);
   const sid = t.sessionId;
-  return { t, w, sid, wakes, events, socket };
+  return { t, w, sid, events, socket };
 }
 
 const types = (es: JournalEvent[]) => es.map((e) => e.type);
 
+/** A turn a runner queued before it ended. */
+function queue(log: Awaited<ReturnType<typeof openLog>>, turnId: string, input: string) {
+  log.append('message.received', { input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
+  log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId, actor: ANN });
+}
+
 describe('HostSessionWriter', () => {
-  it('turns.send records a queued turn, records the start, and wakes the runner with the turn', async () => {
-    const { w, sid, wakes, events } = await host({ prepare: (log) => log.append('session.status_changed', { from: null, to: 'suspended' }, { actor: null }) });
-    const out = await w.call('turns.send', { sessionId: sid, input: 'hello' }, { ...ANN_CTX, idempotencyKey: 'k' });
-    const r = out.result as { turn: { id: string; status: string; input: string }; delivery: string; seq: number };
-    expect(r).toMatchObject({ delivery: 'queued', duplicate: false, turn: { status: 'queued', input: 'hello' } });
-    expect(types(events())).toEqual(['session.status_changed', 'message.received', 'turn.queued', 'session.status_changed', 'runtime.starting']);
-    for (const e of events()) assertEvent(e);
-    expect(r.seq).toBe(5);
-    expect(wakes).toEqual([{ sessionId: sid }]);
-    // A repeat is the same turn, and wakes nothing new.
-    const again = await w.call('turns.send', { sessionId: sid, input: 'hello' }, { ...ANN_CTX, idempotencyKey: 'k' });
-    expect(again.result).toMatchObject({ duplicate: true, turn: { id: r.turn.id } });
-    expect(wakes.length).toBe(1);
-    // A second send while starting: queued at position 2, no second start.
-    await w.call('turns.send', { sessionId: sid, input: 'next' }, ANN_CTX);
-    expect(events().at(-1)).toMatchObject({ type: 'turn.queued', data: { position: 2 } });
-    expect(types(events()).filter((t) => t === 'runtime.starting').length).toBe(1);
-  });
-
-  it('an inbox entry redelivered after a crash lost its idempotency record (or onto a rebuilt disk) is the turn already there', async () => {
-    const t = tempSession();
-    cleanups.push(t.cleanup);
-    const open = () => HostSessionWriter.open({ sessionId: t.sessionId, journal: t.file, epoch: 1, lastSeq: 0, seed: { sessionId: t.sessionId, owner }, wake: () => {} });
-    const turnId = mintId('tn');
-    const send = (w: HostSessionWriter) => w.call('turns.send', { sessionId: t.sessionId, input: 'deploy it', turnId }, { ...ANN_CTX, idempotencyKey: turnId });
-    const w1 = await open();
-    expect((await send(w1)).result).toMatchObject({ duplicate: false });
-    await w1.handOff();
-    // The crash: the events reached the journal, the idempotency line did not.
-    const lines = fs.readFileSync(t.file, 'utf8').split('\n').filter(Boolean);
-    const kept = lines.filter((l) => !l.includes('"k":"idem"'));
-    expect(kept.length).toBe(lines.length - 1);
-    fs.writeFileSync(t.file, kept.join('\n') + '\n');
-    // The cloud never heard the reply: it sends the same entry again.
-    const w2 = await open();
-    cleanups.push(() => w2.handOff());
-    expect((await send(w2)).result).toMatchObject({ duplicate: true, delivery: 'queued', turn: { id: turnId, input: 'deploy it' } });
-    expect(w2.log.journal.read(0, 10_000).filter((e) => e.type === 'message.received' && e.turnId === turnId)).toHaveLength(1);
-  });
-
-  it('failQueued fails the queued turns and leaves `starting` for `suspended`', async () => {
-    const { w, sid, events } = await host({ prepare: (log) => log.append('session.status_changed', { from: null, to: 'suspended' }, { actor: null }) });
-    await w.call('turns.send', { sessionId: sid, input: 'one' }, ANN_CTX);
-    await w.call('turns.send', { sessionId: sid, input: 'two' }, ANN_CTX);
-    w.failQueued('The agent did not start');
-    const failed = events().filter((e) => e.type === 'turn.failed');
-    expect(failed.map((e) => e.data)).toEqual([0, 1].map(() => ({ error: { code: 'runtime_failed', message: 'The agent did not start' } })));
-    for (const e of events()) assertEvent(e);
-    expect(events().at(-1)).toMatchObject({ type: 'session.status_changed', data: { from: 'starting', to: 'suspended' } });
-    expect(w.log.fold.liveTurns()).toEqual([]);
-    // Nothing queued: nothing written.
-    const n = events().length;
-    w.failQueued('again');
-    expect(events().length).toBe(n);
-  });
-
-  it('refuses a send over the queue limit', async () => {
-    const { w, sid } = await host();
-    for (let i = 0; i < QUEUE_MAX; i++) expect((await w.call('turns.send', { sessionId: sid, input: `m${i}` }, ANN_CTX)).error).toBeUndefined();
-    expect((await w.call('turns.send', { sessionId: sid, input: 'one more' }, ANN_CTX)).error).toMatchObject({ code: 'queue_full', status: 409, retryable: true });
+  it('knows no write that needs the agent: the gateway starts the runner first', async () => {
+    const { w, sid, events } = await host();
+    for (const method of ['turns.send', 'sessions.resume', 'sessions.compact']) {
+      const params = method === 'turns.send' ? { sessionId: sid, input: 'x' } : { sessionId: sid };
+      expect((await w.call(method, params, ANN_CTX)).error).toMatchObject({ code: 'feature_unavailable', status: 409 });
+    }
+    expect(events()).toEqual([]);
   });
 
   it('turns.cancel withdraws a queued turn only; interrupt cancels the queue', async () => {
-    const { w, sid, events } = await host();
-    const a = ((await w.call('turns.send', { sessionId: sid, input: 'a' }, ANN_CTX)).result as { turn: { id: string } }).turn.id;
-    const b = ((await w.call('turns.send', { sessionId: sid, input: 'b' }, ANN_CTX)).result as { turn: { id: string } }).turn.id;
+    const a = mintId('tn');
+    const b = mintId('tn');
+    const { w, sid, events } = await host({ prepare: (log) => (queue(log, a, 'a'), queue(log, b, 'b')) });
     expect((await w.call('turns.cancel', { sessionId: sid, turnId: a }, ANN_CTX)).result).toMatchObject({ turn: { id: a, status: 'cancelled', reason: 'withdrawn' } });
     expect((await w.call('turns.cancel', { sessionId: sid, turnId: a }, ANN_CTX)).error).toMatchObject({ code: 'turn_not_cancellable', status: 409 });
     expect((await w.call('turns.cancel', { sessionId: sid, turnId: mintId('tn') }, ANN_CTX)).error?.code).toBe('turn_not_found');
@@ -127,10 +78,10 @@ describe('HostSessionWriter', () => {
     for (const e of events()) assertEvent(e);
   });
 
-  it('sessions.update, suspend (stopping subagents) and resume', async () => {
+  it('sessions.update and suspend (stopping subagents)', async () => {
     const t0 = mintId('tn');
     let sa = '';
-    const { w, sid, wakes, events } = await host({
+    const { w, sid, events } = await host({
       prepare: (log) => {
         log.append('session.status_changed', { from: null, to: 'idle' }, { actor: null });
         const s = subagentOf(log.sessionId, t0);
@@ -146,30 +97,15 @@ describe('HostSessionWriter', () => {
     expect(s.result).toMatchObject({ session: { status: 'suspended', subagents: [] } });
     expect(w.log.fold.subagent(sa)).toMatchObject({ status: 'stopped', stoppedBy: { id: 'usr_ann' } });
     expect(types(events()).slice(-3)).toEqual(['subagent.ended', 'runtime.suspended', 'session.status_changed']);
-    await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
-    expect(w.log.fold.status).toBe('starting');
-    expect(wakes).toEqual([{ sessionId: sid }]);
     for (const e of events()) assertEvent(e);
   });
 
-  it('sessions.resume wakes an `idle` session: its runner exited for idleness without recording it', async () => {
-    const { w, sid, wakes, events } = await host({ prepare: (log) => log.append('session.status_changed', { from: null, to: 'idle' }, { actor: null }) });
-    const r = await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
-    expect(r.result).toMatchObject({ session: { status: 'starting' } });
-    expect(types(events()).slice(-2)).toEqual(['session.status_changed', 'runtime.starting']);
-    expect(wakes).toEqual([{ sessionId: sid, delivery: undefined }]);
-    // Already starting: no second wake.
-    await w.call('sessions.resume', { sessionId: sid }, ANN_CTX);
-    expect(wakes).toHaveLength(1);
-    for (const e of events()) assertEvent(e);
-  });
-
-  it('subagents.stop, asks.answer/dismiss and compact', async () => {
+  it('subagents.stop and asks.answer/dismiss', async () => {
     const t0 = mintId('tn');
     let sa = '';
     let ak = '';
     let ak2 = '';
-    const { w, sid, wakes } = await host({
+    const { w, sid } = await host({
       prepare: (log) => {
         const s = subagentOf(log.sessionId, t0);
         sa = s.id;
@@ -193,8 +129,6 @@ describe('HostSessionWriter', () => {
     expect((await w.call('asks.answer', { sessionId: sid, askId: ak, answer }, ANN_CTX)).error?.code).toBe('ask_closed');
     expect((await w.call('asks.dismiss', { sessionId: sid, askId: ak2, message: 'no' }, ANN_CTX)).result).toMatchObject({ ask: { status: 'dismissed' } });
     expect((await w.call('asks.dismiss', { sessionId: sid, askId: mintId('ak') }, ANN_CTX)).error?.code).toBe('ask_not_found');
-    expect((await w.call('sessions.compact', { sessionId: sid }, ANN_CTX)).error).toMatchObject({ code: 'unavailable', status: 503, retryAfterMs: 2000 });
-    expect(wakes.length).toBe(1);
     for (const e of w.log.journal.read(0, 100)) assertEvent(e);
   });
 
@@ -235,12 +169,11 @@ describe('HostSessionWriter', () => {
   });
 
   it('serves its socket, and handOff detaches subscribers and frees the journal', async () => {
-    const { t, w, sid, socket } = await host({ socket: true });
+    const { t, w, sid, socket } = await host({ socket: true, prepare: (log) => queue(log, mintId('tn'), 'x') });
     const c = await dialApi(socket!.path, socket!.token);
     const detached: string[] = [];
     await c.subscribe({ deltas: false, onEvent: () => {}, onDelta: () => {}, onDetached: (r) => detached.push(r) });
     expect((await c.call('sessions.get', { sessionId: sid }, ANN_CTX)).result).toMatchObject({ session: { id: sid } });
-    await w.call('turns.send', { sessionId: sid, input: 'x' }, ANN_CTX);
     await w.handOff();
     await c.closed;
     expect(fs.existsSync(socket!.path)).toBe(false);
