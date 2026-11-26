@@ -825,7 +825,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       return r.ok ? out.send(200, { settings: r.settings }) : refusalOf(out, r);
     }
   }
-  if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
+  if (!route.sessionId) return orgRoute(request, p, person, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "session_not_found", "No such session.");
@@ -964,7 +964,6 @@ function mutateReplyOf(out: Reply, r: MutateReply): Response {
 /** The feed, the occurrence stream, the mutations and the work reads: Org's, as the principal. */
 async function orgRoute(
   request: Request,
-  env: ComputerEdgeEnv,
   p: Principal,
   person: CreateSession["person"],
   route: Route,
@@ -1091,30 +1090,10 @@ async function orgRoute(
       if ("error" in choice) return out.of(choice.error);
       const r = await timed(org().setRepository(p, choice.value));
       if (!r.ok) return refusalOf(out, r);
-      await indexInstallation(env, p.org, choice.value.installationId);
       return out.send(200, { repository: r.repository });
     }
     default:
       return out.error(404, "not_found", "No such route.");
-  }
-}
-
-/**
- * Records that the organization uses this GitHub installation, so the App's pull request webhooks
- * reach its Org (spec 40.9, git-deploy-service.ts). The repository is already chosen; a failed
- * write is logged and the next choice writes it again.
- */
-async function indexInstallation(env: ComputerEdgeEnv, org: string, installationId: string): Promise<void> {
-  if (!env.SERVERLESS_AGENTS_DB) return;
-  try {
-    const account = env.ACCOUNTS.getByName(org) as unknown as { getGitHubInstallation(id: string): Promise<{ githubInstallationId: number } | null> };
-    const installation = await account.getGitHubInstallation(installationId);
-    if (!installation) return;
-    await env.SERVERLESS_AGENTS_DB.prepare(
-      "INSERT OR REPLACE INTO github_installation_orgs (github_installation_id, account_id, installation_id) VALUES (?, ?, ?)",
-    ).bind(installation.githubInstallationId, org, installationId).run();
-  } catch (error) {
-    console.error(JSON.stringify({ level: "error", event: "work.installation_index_failed", message: error instanceof Error ? error.message : String(error) }));
   }
 }
 

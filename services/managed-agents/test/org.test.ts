@@ -110,6 +110,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),
+      installationIndexed: rec("installation.indexed"),
       boardRepository: async () => fakes.boardRepository ?? null,
       account: () => fakes.account ?? null,
       fetch: (url, init) => (fakes.fetch ?? fetch)(url, init),
@@ -382,9 +383,39 @@ describe("Org's knowledge repository", () => {
         expect((await org.forHost("knowledge-board")).knowledge).toBe("acme/knowledge");
         await org.drain();
         expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
+        // The carried setting's installation is indexed for the App's webhooks, as a choice's is.
+        expect(fakes.calls).toContainEqual(["installation.indexed", "12"]);
       },
       fakes,
     );
+  });
+
+  it("indexes a stored repository's installation in D1 github_installation_orgs, owed until written", async () => {
+    await runInDurableObject(ORGS.getByName("knowledge-index"), async (instance, state) => {
+      const org = instance as unknown as OrgDurableObject & { env: Record<string, unknown> };
+      const writes: unknown[][] = [];
+      let down = true;
+      org.env.SERVERLESS_AGENTS_DB = {
+        prepare: (sql: string) => ({ bind: (...args: unknown[]) => ({ run: async () => { if (down) throw new Error("D1 down"); writes.push([sql, ...args]); return {}; } }) }),
+      } as unknown as D1Database;
+      org.out = {
+        ...org.out,
+        account: () => ({ ...account, getGitHubInstallation: () => ({ accountLogin: "acme", githubInstallationId: 42 }) }),
+        fetch: github,
+        computer: () => ({ changed: async () => undefined }) as never,
+      };
+      const a = member("usr_a", "knowledge-index");
+      expect(await org.setRepository(a, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: true });
+      await org.drain().catch(() => undefined);
+      expect(writes).toEqual([]);
+      const sql = sqlOf(state.storage);
+      expect(owed.has(sql, "installation:org")).toBe(true);
+      down = false;
+      sql.exec("UPDATE _owed SET at = 0");
+      await org.drain();
+      expect(writes).toEqual([[expect.stringContaining("github_installation_orgs"), 42, "knowledge-index", "12"]]);
+      expect(owed.has(sql, "installation:org")).toBe(false);
+    });
   });
 
   it("stores a checked choice, owes Computer `changed`, and refuses an agent", async () => {
@@ -399,6 +430,7 @@ describe("Org's knowledge repository", () => {
         expect((await org.forHost("knowledge-set")).knowledge).toBe("acme/notes");
         await org.drain();
         expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
+        expect(fakes.calls).toContainEqual(["installation.indexed", "12"]);
         expect(await org.setRepository({ ...a, kind: "agent" }, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: false, code: "forbidden", status: 403 });
       },
       fakes,

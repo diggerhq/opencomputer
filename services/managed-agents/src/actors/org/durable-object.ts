@@ -52,6 +52,11 @@ export interface OrgOut {
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
+  /**
+   * D1 `github_installation_orgs`: the organization uses this GitHub installation, so the App's pull request
+   * webhooks reach its Org (spec 40.9). Throws when it could not be written; the owed call is tried again.
+   */
+  installationIndexed(installationId: string): Promise<void>;
   /** The knowledge repository setting the retired Work board held, read once (the `board` alarm). */
   boardRepository(): Promise<StoredRepository | null>;
   /** The organization's Account object, or null where it is not bound. */
@@ -80,6 +85,17 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     created: async (sessionId, createdAt) => {
       await this.env.SERVERLESS_AGENTS_DB?.prepare("INSERT INTO session_creations (session_id, account_id, source, created_at) VALUES (?, ?, 'computer', ?) ON CONFLICT(session_id) DO NOTHING")
         .bind(computerSessionId(sessionId), this.org, new Date(createdAt).toISOString())
+        .run();
+    },
+    installationIndexed: async (installationId) => {
+      const db = this.env.SERVERLESS_AGENTS_DB;
+      const account = this.out.account();
+      if (!db || !account) return;
+      const installation = await account.getGitHubInstallation(installationId);
+      // Removed since: nothing to index; choosing a repository again checks it.
+      if (!installation?.githubInstallationId) return;
+      await db.prepare("INSERT OR REPLACE INTO github_installation_orgs (github_installation_id, account_id, installation_id) VALUES (?, ?, ?)")
+        .bind(installation.githubInstallationId, this.org, installationId)
         .run();
     },
     boardRepository: async () =>
@@ -170,6 +186,8 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
       }
       case "usage.created":
         return this.out.created(sessionId, body.createdAt as number);
+      case "installation.indexed":
+        return this.out.installationIndexed(body.installationId as string);
       default:
         throw new Error(`Org owes an unknown call: ${call}`);
     }
