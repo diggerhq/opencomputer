@@ -138,7 +138,7 @@ const event = (seq: number, sessionId = SID): ApiEvent => ({
   data: {},
 });
 
-function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
+function fixture(options: { env?: Record<string, string>; protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
   const sql = sqlStorage();
   sql.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -164,6 +164,7 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
   const settings = new Map<string, string>();
   const env = {
     SESSION_LOG: { getByName: (id: string) => logOf(id) },
+    ...options.env,
     ...(options.ticketKey ? { WIRE_TICKET_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" } : {}),
   } as never;
   const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
@@ -543,6 +544,35 @@ describe("POST /sessions", () => {
     expect(await old.api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 503, error: { code: "computer_unavailable", retryAfterMs: 5_000 } });
     expect(old.state.wakes).toBe(1);
     expect(old.api.row(SID)).toBeUndefined();
+  });
+
+  it("the Community Edition's session cap: 429 for a new session's work, never for a running session's", async () => {
+    const selfManaged = { COMPUTER_VMS: "self-managed", COMPUTER_MAX_CONCURRENT_SESSIONS: "1" };
+    const capped = { status: 429, error: { code: "session_limit_reached", limit: 1, retryAfterMs: 30_000, message: "This organization already has 1 session running, the most the Community Edition allows. Try again when one finishes." } };
+    const f = fixture({ env: selfManaged });
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
+    await created(f);
+    f.slackRow("T1:C1:1.2");
+    // Nothing running: the first turn goes.
+    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "go" } })).status).toBe(202);
+    f.sql.exec("UPDATE sessions SET status = 'busy' WHERE runner_key = ?", SID);
+    // At the cap: a follow-up to the running session goes; a new session's first input, or another session's turn, does not.
+    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "and" } })).status).toBe(202);
+    expect(await f.api.handle(caller(), { op: "create", body: { id: "cs_8f3a9k2m4q8r1t6v", input: "hi" } })).toMatchObject(capped);
+    expect(f.api.row("cs_8f3a9k2m4q8r1t6v")).toBeUndefined();
+    expect(await f.api.handle(caller(), { op: "create", body: { id: "cs_9f3a9k2m4q8r1t6v" } })).toMatchObject({ status: 201 });
+    expect(await f.api.handle(caller(), { op: "call", sessionId: "cs_9f3a9k2m4q8r1t6v", method: "turns.send", params: { input: "hi" } })).toMatchObject(capped);
+    // Credits are asked first: an organization out of them hears that.
+    const broke = fixture({ env: selfManaged, admitted: false });
+    broke.sql.exec("INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at) VALUES ('T1:C1:9.9', 'T1', 'C1', '9.9', 'x', 'busy', 0, 0)");
+    expect(await broke.api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 402, error: { code: "insufficient_credits" } });
+    // "0", or a hosted gateway: no cap.
+    for (const env of [{ ...selfManaged, COMPUTER_MAX_CONCURRENT_SESSIONS: "0" }, { COMPUTER_MAX_CONCURRENT_SESSIONS: "1" }]) {
+      const open = fixture({ env });
+      open.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
+      open.sql.exec("INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at) VALUES ('T1:C1:9.9', 'T1', 'C1', '9.9', 'x', 'busy', 0, 0)");
+      expect((await open.api.handle(caller(), { op: "create", body: { input: "hi" } })).status).toBe(201);
+    }
   });
 
   it("validates the body", () => {

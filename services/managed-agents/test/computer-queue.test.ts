@@ -94,7 +94,7 @@ async function holdAdmission(stub: Stub, threads: string[]): Promise<void> {
     instance.releaseAdmission = () => (instance.admissionReleased = true);
     instance.admitWith = async (_t: unknown, _channelId: string, threadTs: string) => {
       while (held.has(threadTs) && !instance.admissionReleased) await sleep(10);
-      return true;
+      return "admitted";
     };
   });
 }

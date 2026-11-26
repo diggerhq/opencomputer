@@ -29,6 +29,12 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
    * VM, grows no disk and keeps no warm pool.
    */
   COMPUTER_VMS?: string;
+  /**
+   * Self-managed VMs only (Community Edition): the most sessions an
+   * organization may have running at once (admission.ts `sessionCapReached`).
+   * Unset: 100; "0": no cap. Hosted gateways have no cap and ignore it.
+   */
+  COMPUTER_MAX_CONCURRENT_SESSIONS?: string;
   /** wss origin the VM dials, e.g. wss://managedagents.opencomputer.dev. */
   COMPUTER_HOST_GATEWAY_URL?: string;
   COMPUTER_DEFAULT_SIZE?: string;
@@ -124,6 +130,22 @@ export class ComputersNotConfigured extends Error {
 /** COMPUTER_VMS is "self-managed": the operator runs the VMs, the gateway only accepts their hosts. */
 export function selfManagedVms(env: ComputerEdgeEnv): boolean {
   return env.COMPUTER_VMS === "self-managed";
+}
+
+export const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
+
+/**
+ * The most sessions an organization may have running at once, or null for no
+ * cap: only self-managed gateways cap (COMPUTER_MAX_CONCURRENT_SESSIONS,
+ * default 100, "0" none); a value that is not a whole number reads as the default.
+ */
+export function maxConcurrentSessions(env: ComputerEdgeEnv): number | null {
+  if (!selfManagedVms(env)) return null;
+  const raw = env.COMPUTER_MAX_CONCURRENT_SESSIONS?.trim();
+  if (!raw) return DEFAULT_MAX_CONCURRENT_SESSIONS;
+  const limit = Number(raw);
+  if (!Number.isInteger(limit) || limit < 0) return DEFAULT_MAX_CONCURRENT_SESSIONS;
+  return limit === 0 ? null : limit;
 }
 
 /**

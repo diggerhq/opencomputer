@@ -24,6 +24,7 @@ import {
   type AutonomousBillingEnv,
   autonomousBillingAdmission,
 } from "../edge/billing-admission.js";
+import { type ComputerEdgeEnv, maxConcurrentSessions } from "./config.js";
 import type { SlackResult } from "./slack.js";
 
 /** A Slack message whose link is a button (086: "Links are buttons, not raw URLs"); `text` keeps the URL for notifications and clients without blocks. */
@@ -172,4 +173,61 @@ export async function refuseForCredits(input: {
 /** Admitted again: a later refusal in this thread is news, so it is told again. */
 export function forgetCreditsNotice(sql: SqlStorage, channelId: string, threadTs: string): void {
   sql.exec("DELETE FROM notices WHERE thread_key = ? AND kind = 'credits'", `${channelId}:${threadTs}`);
+}
+
+// The session cap (Community Edition): a self-managed gateway admits work to
+// a session that is not already running only while the organization has
+// fewer than COMPUTER_MAX_CONCURRENT_SESSIONS (default 100) running. Running
+// is the computer's own word for it (durable-object.ts `workload`): the
+// runner last reported the session `starting` or `busy`, or its subagents
+// still run. Work for a session already running (a follow-up mid-turn) is
+// never refused by the cap.
+
+/** A session that is working, in SQL over `sessions`: its turn runs, or its subagents do (work 084). */
+export const RUNNING_SESSION = "(status IN ('starting', 'busy') OR subagents > 0)";
+
+/** Sessions running now. */
+export function runningSessions(sql: SqlStorage): number {
+  return [...sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM sessions WHERE ${RUNNING_SESSION}`)][0]?.n ?? 0;
+}
+
+/**
+ * The cap, when it refuses work for session `key` (null or unknown: a new
+ * session); null when the work may go ahead: no cap, the session is itself
+ * running, or there is room.
+ */
+export function sessionCapReached(env: ComputerEdgeEnv, sql: SqlStorage, key: string | null): number | null {
+  const limit = maxConcurrentSessions(env);
+  if (limit === null) return null;
+  if (key && [...sql.exec(`SELECT 1 FROM sessions WHERE runner_key = ? AND ${RUNNING_SESSION}`, key)].length) return null;
+  return runningSessions(sql) >= limit ? limit : null;
+}
+
+/** What a thread refused by the cap is told. */
+export function sessionCapNotice(limit: number): string {
+  return `This organization already has ${limit} ${limit === 1 ? "session" : "sessions"} running, the most the Community Edition allows. Try again when one finishes.`;
+}
+
+/**
+ * A message refused by the cap: the thread hears it once (`notices`, kind
+ * `capacity`), and Slack's working status is cleared, as refuseForCredits does.
+ * Returns whether the notice was posted now.
+ */
+export async function refuseForSessionCap(input: {
+  sql: SqlStorage;
+  slack: (method: string, body: Record<string, unknown>) => Promise<SlackResult>;
+  channelId: string;
+  threadTs: string;
+  limit: number;
+}): Promise<boolean> {
+  const inserted = input.sql.exec("INSERT OR IGNORE INTO notices (thread_key, kind) VALUES (?, 'capacity')", `${input.channelId}:${input.threadTs}`);
+  const first = inserted.rowsWritten > 0;
+  if (first) await input.slack("chat.postMessage", { channel: input.channelId, thread_ts: input.threadTs, text: `:information_source: ${sessionCapNotice(input.limit)}` });
+  await input.slack("agents.sessions.setStatus", { channel_id: input.channelId, thread_ts: input.threadTs, status: "active" });
+  return first;
+}
+
+/** Admitted again: a later refusal by the cap in this thread is told again. */
+export function forgetSessionCapNotice(sql: SqlStorage, channelId: string, threadTs: string): void {
+  sql.exec("DELETE FROM notices WHERE thread_key = ? AND kind = 'capacity'", `${channelId}:${threadTs}`);
 }

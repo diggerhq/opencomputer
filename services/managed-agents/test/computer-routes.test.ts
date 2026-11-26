@@ -766,7 +766,7 @@ describe("computer routes", () => {
         start: (name: string, fields: any) => ({ end: (more: any) => recorded.push({ name, ...fields, ...more }) }),
         emit: (name: string, fields: any) => recorded.push({ name, ...fields }),
       };
-      expect(await instance.admitWith(t, "C8", "600.99", undefined)).toBe(false);
+      expect(await instance.admitWith(t, "C8", "600.99", undefined)).toBe("no_credits");
       return recorded;
     });
     expect(spans).toEqual([

@@ -142,3 +142,120 @@ describe("self-managed computer VMs", () => {
     socket.close();
   });
 });
+
+async function slackCalls(): Promise<Array<{ method: string; body: any }>> {
+  const response = await fetch("https://slack.test/__calls");
+  return ((await response.json()) as { calls: Array<{ method: string; body: any }> }).calls;
+}
+
+async function until<T>(read: () => T | Promise<T>, done: (value: T) => boolean, what: string): Promise<T> {
+  for (let i = 0; i < 150; i += 1) {
+    const value = await read();
+    if (done(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`${what} not reached`);
+}
+
+describe("the Community Edition session cap", () => {
+  it("refuses a new session past COMPUTER_MAX_CONCURRENT_SESSIONS, tells its thread once, and never refuses a running session's follow-up", async () => {
+    const ORG = "org_self_cap";
+    const TEAM = "T0SELFCAP";
+    const CHANNEL = "CSELFCAP";
+    await computers().getByName(`computer-slack-team:${TEAM}`).claimTeam(TEAM, ORG);
+    const stub = computers().getByName(ORG);
+    await stub.linkSlack(ORG, { teamId: TEAM, teamName: "Cap", botUserId: "UBOTCAP", botToken: "xoxb-cap-token" });
+    const socket = await connectHost(ORG);
+    const frames: any[] = [];
+    socket.addEventListener("message", (event) => frames.push(JSON.parse(String(event.data))));
+    await inside(stub, (instance, state) => {
+      instance.env.COMPUTER_MAX_CONCURRENT_SESSIONS = "2";
+      state.storage.sql.exec(
+        "INSERT OR IGNORE INTO people (slack_user_id, dir, git_name, git_email, updated_at) VALUES ('U1', 'slack-u1', 'Person U1 via Computer', 'u1@example.com', ?)",
+        Date.now(),
+      );
+      // Two running: one mid-turn, one whose turn is over while its subagents still run.
+      for (const [thread, status, subagents] of [
+        ["1.1", "busy", 0],
+        ["2.1", "idle", 1],
+      ] as const) {
+        state.storage.sql.exec(
+          "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, subagents, created_at, updated_at) VALUES (?, ?, ?, ?, 'U1', 'Running', ?, ?, ?, ?)",
+          `${TEAM}:${CHANNEL}:${thread}`,
+          TEAM,
+          CHANNEL,
+          thread,
+          status,
+          subagents,
+          Date.now(),
+          Date.now(),
+        );
+      }
+    });
+    const before = (await slackCalls()).length;
+    const posts = async () =>
+      (await slackCalls())
+        .slice(before)
+        .filter((call) => call.method === "chat.postMessage" && call.body.channel === CHANNEL)
+        .map((call) => `${call.body.thread_ts}:${call.body.text}`);
+    const delivered = () => frames.filter((frame) => frame.t === "deliver").map((frame) => `${frame.session.threadTs}/${frame.msg.ts}`);
+    const queueEmpty = () => inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT 1 FROM slack_queue WHERE state IN ('pending', 'running')")].length === 0);
+    const message = async (threadTs: string, messageTs: string) => {
+      await stub.acceptSlackEvent(ORG, {
+        eventId: `Ev-cap-${messageTs}`,
+        teamId: TEAM,
+        channelId: CHANNEL,
+        threadTs,
+        messageTs,
+        userId: "U1",
+        text: "<@UBOTCAP> go",
+        mentioned: true,
+        receivedAt: Date.now(),
+      });
+      await until(queueEmpty, Boolean, `message ${messageTs} handled`);
+    };
+
+    try {
+      // A new thread at the cap: not delivered, no session, and the thread is told once.
+      await message("3.1", "3.1");
+      await message("3.1", "3.2");
+      const notice = "3.1::information_source: This organization already has 2 sessions running, the most the Community Edition allows. Try again when one finishes.";
+      expect(await until(posts, (all) => all.length > 0, "the cap's notice")).toEqual([notice]);
+      expect(delivered()).toEqual([]);
+      expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT 1 FROM sessions WHERE thread_ts = '3.1'")].length)).toBe(0);
+
+      // A follow-up to a running session is never the cap's to refuse.
+      await message("1.1", "1.2");
+      await until(delivered, (all) => all.includes("1.1/1.2"), "the follow-up's delivery");
+
+      // "0": no cap. The refused thread is admitted, and a later refusal there would be told again.
+      await inside(stub, (instance) => void (instance.env.COMPUTER_MAX_CONCURRENT_SESSIONS = "0"));
+      await message("3.1", "3.3");
+      await until(delivered, (all) => all.includes("3.1/3.3"), "the new session's delivery");
+      expect(await posts()).toEqual([notice]);
+      expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT kind FROM notices WHERE kind = 'capacity'")].length)).toBe(0);
+    } finally {
+      await inside(stub, (instance) => void delete instance.env.COMPUTER_MAX_CONCURRENT_SESSIONS);
+      socket.close();
+    }
+  });
+
+  it("refuses a session's spawn at the cap, though the parent itself is running", async () => {
+    const ORG = "org_self_cap_spawn";
+    const stub = computers().getByName(ORG);
+    await inside(stub, async (instance, state) => {
+      instance.env.COMPUTER_MAX_CONCURRENT_SESSIONS = "1";
+      try {
+        instance.put("slackTeamId", "T0CAPSPAWN");
+        state.storage.sql.exec(
+          "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, created_at, updated_at) VALUES ('T0CAPSPAWN:C1:1.1', 'T0CAPSPAWN', 'C1', '1.1', 'U1', 'Parent', 'busy', 0, 0)",
+        );
+        await expect(instance.spawn("T0CAPSPAWN:C1:1.1", { task: "more", brief: "docs/x.md" })).rejects.toThrow(
+          "This organization already has 1 session running, the most the Community Edition allows. Try again when one finishes.",
+        );
+      } finally {
+        delete instance.env.COMPUTER_MAX_CONCURRENT_SESSIONS;
+      }
+    });
+  });
+});

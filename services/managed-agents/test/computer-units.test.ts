@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, sizeFor } from "../src/computer/config.js";
+import { gatewayUrl, maxConcurrentSessions, sizeFor } from "../src/computer/config.js";
 import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
 import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
@@ -77,6 +77,18 @@ describe("computer config and vocabulary", () => {
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7" }, "max")).toBe("Standard_D4as_v7");
     expect(sizeFor({ ...env, COMPUTER_PAID_SIZE: "Standard_D4as_v7", COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "" }, "max")).toBe("Standard_D2as_v7");
+  });
+
+  it("caps concurrent sessions only on self-managed gateways: 100 unless set, none at 0", () => {
+    const env = { ACCOUNTS: {} as DurableObjectNamespace };
+    const self = { ...env, COMPUTER_VMS: "self-managed" };
+    expect(maxConcurrentSessions(env)).toBeNull();
+    expect(maxConcurrentSessions({ ...env, COMPUTER_MAX_CONCURRENT_SESSIONS: "5" })).toBeNull();
+    expect(maxConcurrentSessions(self)).toBe(100);
+    expect(maxConcurrentSessions({ ...self, COMPUTER_MAX_CONCURRENT_SESSIONS: "" })).toBe(100);
+    expect(maxConcurrentSessions({ ...self, COMPUTER_MAX_CONCURRENT_SESSIONS: "25" })).toBe(25);
+    expect(maxConcurrentSessions({ ...self, COMPUTER_MAX_CONCURRENT_SESSIONS: "0" })).toBeNull();
+    for (const bad of ["-1", "2.5", "lots"]) expect(maxConcurrentSessions({ ...self, COMPUTER_MAX_CONCURRENT_SESSIONS: bad })).toBe(100);
   });
 
   it("builds the gateway URL the host dials", () => {
