@@ -69,7 +69,7 @@ export const METHODS = {
   'sessions.resume': { params: Schema.Struct({ ...sid, ...idem }), result: SessionResult, http: 'POST /sessions/{id}/resume' },
   'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy), turnId: Schema.optionalKey(TurnId), slack: Schema.optionalKey(SlackTurn) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
   'turns.get': {
-    params: Schema.Struct({ ...sid, turnId: TurnId, waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))), status: Schema.optionalKey(Schema.String), minSeq: Schema.optionalKey(Seq) }),
+    params: Schema.Struct({ ...sid, turnId: TurnId, minSeq: Schema.optionalKey(Seq) }),
     result: Schema.Struct({ turn: Turn }), http: 'GET /sessions/{id}/turns/{turnId}',
   },
   'turns.cancel': { params: Schema.Struct({ ...sid, ...idem, turnId: TurnId }), result: Schema.Struct({ turn: Turn, seq: Seq }), http: 'POST /sessions/{id}/turns/{turnId}/cancel' },
@@ -102,7 +102,6 @@ export const METHODS = {
       ...sid,
       after: Schema.optionalKey(Seq),
       limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
-      waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))),
       tailTurns: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
       turnId: Schema.optionalKey(TurnId),
       types: Schema.optionalKey(Schema.String),

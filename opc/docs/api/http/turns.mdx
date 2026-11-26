@@ -110,20 +110,18 @@ GET /sessions/{id}/turns/{turnId}
 
 | Query | Meaning |
 | --- | --- |
-| `waitMs` | Hold the request open until the turn changes, for up to this many milliseconds, 0 to 60,000. Default `0`: answer at once. |
-| `status` | With `waitMs`: return as soon as the turn's status is not this one. Default: return when the turn ends, as `completed`, `failed` or `cancelled`. |
 | `minSeq` | Wait up to 2 seconds until the turn includes this `seq`. See [Consistency](/api/model#consistency). |
 
 Returns `{ "turn": Turn }`. `404 turn_not_found` when the turn is not in this session.
 
-To wait for a turn without a WebSocket, call this route with `waitMs=60000` in a loop until `status` is `completed`, `failed` or `cancelled`. Each call returns the moment the turn ends, or after the wait with the turn as it is, so a loop makes one request a minute while the agent works:
+The route answers at once; it never holds the request open. To wait for a turn without a WebSocket, call it every few seconds until `status` is `completed`, `failed` or `cancelled`:
 
 ```bash
-until curl -s "$API/sessions/$id/turns/$turn?waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
-  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do :; done
+until curl -s "$API/sessions/$id/turns/$turn" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do sleep 5; done
 ```
 
-To see a queued turn start, pass `status=queued`. To wait for an interrupt to finish, pass `status=cancelling`.
+To see the moment a turn ends, [attach over a WebSocket](/api/websocket/methods#attach) instead.
 
 ## Cancel a queued turn
 

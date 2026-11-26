@@ -15,7 +15,6 @@ curl -s "$API/sessions/cs_7f3a9k2m4q8r1t6v/events?after=0" -H "x-api-key: $OPENC
 | --- | --- |
 | `after` | Return events with a `seq` greater than this. Default `0`, the start. |
 | `limit` | 1 to 500. Default 100. |
-| `waitMs` | When no event is past `after`, hold the request open until one is, for up to this many milliseconds, 0 to 60,000. Default `0`: answer at once. |
 | `tailTurns` | Instead of `after`, 1 to 50: the full events of the last this many turns, with the turns before them summarized in `earlierTurns`. See [Start from the end](#start-from-the-end). |
 | `turnId` | Only events of this turn |
 | `types` | Only these types, separated by commas. A trailing `*` matches a prefix, such as `tool.*`. An unknown type matches nothing. |
@@ -70,14 +69,15 @@ A long session can have tens of thousands of events. To show it, a client needs 
 
 ## Follow a session
 
-Call this route with `after` set to the last `seq` you have and `waitMs=60000`, in a loop. Each request returns the moment a new event is recorded, or after a minute with `events: []`. This is enough for a script, and costs one request a minute while nothing happens.
+Call this route with `after` set to the last `seq` you have, every few seconds. Each request answers at once, with `events: []` when nothing is new. This is enough for a script.
 
 ```bash
 after=0
 while :; do
-  page=$(curl -s "$API/sessions/$id/events?after=$after&waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY")
+  page=$(curl -s "$API/sessions/$id/events?after=$after" -H "x-api-key: $OPENCOMPUTER_API_KEY")
   jq -c '.events[]' <<<"$page"
   after=$(jq --argjson a "$after" '.events[-1].seq // $a' <<<"$page")
+  sleep 5
 done
 ```
 
@@ -89,6 +89,6 @@ If the session's `logEpoch` has changed since you last read it, discard what you
 
 | Status | Code | When |
 | --- | --- | --- |
-| `400` | `invalid_request` | `after` is negative or not a number, `limit` or `waitMs` is out of range, or `tailTurns` is sent with `after` |
+| `400` | `invalid_request` | `after` is negative or not a number, `limit` is out of range, or `tailTurns` is sent with `after` |
 | `404` | `session_not_found` | |
 | `409` | `cursor_ahead` | `after` is greater than the session's `lastSeq`. `error.session` is the session, with its `lastSeq` and `logEpoch`. |

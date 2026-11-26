@@ -444,14 +444,6 @@
                   "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
                   "description": "`tn_` + 12 lowercase Crockford base32"
                 },
-                "waitMs": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 60000
-                },
-                "status": {
-                  "type": "string"
-                },
                 "minSeq": {
                   "type": "integer",
                   "minimum": 0,
@@ -907,11 +899,6 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 500
-                },
-                "waitMs": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 60000
                 },
                 "tailTurns": {
                   "type": "integer",
