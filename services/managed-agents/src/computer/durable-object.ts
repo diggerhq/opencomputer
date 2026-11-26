@@ -63,6 +63,7 @@
 import { isSessionId } from "./session-ids.js";
 import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
 import { type Access, type Principal, byOf } from "../actor/principal.js";
+import type { Dead } from "../actor/store.js";
 import { turnIdFor } from "../slack/store.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
 import { DurableObject } from "cloudflare:workers";
@@ -247,6 +248,8 @@ export interface OperatorComputerStatus {
   slackTeamName: string | null;
   /** Why it is `failed` (work 111), with the error as the cloud gave it; null in any other state. */
   failure: { code: string | null; message: string | null; at: string } | null;
+  /** Org's owed calls that ran out of tries (spec 18.6); null when Org could not answer. */
+  dead: Dead[] | null;
 }
 
 /** What `notifyJoinRequest` did: whether the person who linked the workspace was told. */
@@ -1562,6 +1565,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const { plan, known, usagePlan, trialEndsAt, haltedAt } = await this.knownPlan(true);
     const idleAt = [...this.ctx.storage.sql.exec<{ at: number }>("SELECT at FROM alarms WHERE purpose = 'idle'")][0]?.at;
     const iso = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString() : null);
+    const dead = await this.actors.org().dead().catch(() => null);
     return {
       accountId,
       state: row.state,
@@ -1575,6 +1579,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       nextIdleCheckAt: iso(idleAt),
       slackTeamName: this.setting("slackTeamName") ?? null,
       failure: row.state === "failed" ? { code: row.failureCode, message: row.lastError, at: iso(row.updatedAt)! } : null,
+      dead,
     };
   }
 
