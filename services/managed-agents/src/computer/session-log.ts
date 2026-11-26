@@ -147,6 +147,11 @@ export const INBOX_MAX_WAITING = 20;
 export const AGENT_TURNS_MAX = 30;
 /** A delivered or refused entry is kept this long (idempotency; "not sent" in the list), then removed. */
 export const INBOX_KEEP_MS = 24 * 60 * 60 * 1_000;
+/**
+ * An `accept` with `wait` answers by then: past one delivery's bound (the host's answer, HOST_CALL_HELD_TIMEOUT_MS),
+ * the entry is still waiting and the write answers 202.
+ */
+export const ACCEPT_WAIT_MS = 45_000;
 /** `inbox[].text` in the summary: this many characters of a turn's input. */
 export const INBOX_TEXT_CHARS = 280;
 /** An append during a running turn writes the summary slot when it was last written longer ago than this. */
@@ -572,13 +577,15 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     await this.peers.live(org).publish(`events:${this.sessionId()}`, frame);
   }
 
-  /** `Computer.drain`, owed until `delivered` leaves no entry waiting: a `waking` answer keeps it owed. */
+  /**
+   * `Computer.drain` (spec 36.3): the machine that serves the session owes its drain from then on, and
+   * resolves once it delivered or waits for its host. The only call of it.
+   */
   private async sendDrain(): Promise<void> {
     if (this.waiting() === 0) return;
     const sessionId = this.sessionId();
     if (!this.access || !sessionId) throw new Error("drain: the log holds no access");
-    const answer = await this.peers.computer(this.access.machine).drain(sessionId, { wait: false });
-    if (this.waiting() > 0) throw new Error(`drain answered ${answer.state}; entries still wait`);
+    await this.peers.computer(this.access.machine).drain(sessionId);
   }
 
   // ---- access (spec 36.2) -----------------------------------------------------------------------
@@ -681,7 +688,11 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   // ---- the inbox (spec 36.2, 40.2) --------------------------------------------------------------
 
-  async accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }): Promise<AcceptResult> {
+  /**
+   * `wait`: the caller answers with the entry's outcome (the API's writes, spec 40.2): the drain is
+   * awaited, ACCEPT_WAIT_MS at most, and the outcome is the entry's as it then is.
+   */
+  async accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts: { wait?: boolean } = {}): Promise<AcceptResult> {
     const access = await this.accessFor(p);
     if (!access) return { ok: false, code: "not_found" };
     const sessionId = this.sessionId()!;
@@ -691,13 +702,11 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const now = Date.now();
     const by = byOf(p);
     const actor = JSON.stringify({ subject: p.subject, kind: p.kind, via: p.via, admin: p.admin });
-    const machine = this.access?.machine ?? access.machine;
-    const result = this.db.transaction((): AcceptResult => {
+    const taken = this.db.transaction((): { ok: true; duplicate: boolean } | Extract<AcceptResult, { ok: false }> => {
       const existing = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", entry.id).toArray()[0];
       if (existing) {
         if (existing.hash !== hash) return { ok: false, code: "idempotency_conflict" };
-        const stored = existing.state === "delivered" && existing.result !== null ? { result: JSON.parse(existing.result) as unknown } : {};
-        return { ok: true, id: entry.id, duplicate: true, machine, ...stored };
+        return { ok: true, duplicate: true };
       }
       const insert = (state: "waiting" | "delivered") =>
         this.sql.exec(
@@ -720,7 +729,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
           insert("delivered");
           alarms.set(this.db, SWEEP_PURPOSE, now + INBOX_KEEP_MS);
           this.bump(this.meta, now);
-          return { ok: true, id: entry.id, duplicate: false, machine };
+          return { ok: true, duplicate: false };
         }
       }
       if (this.waiting() >= INBOX_MAX_WAITING) return { ok: false, code: "inbox_full" };
@@ -733,10 +742,20 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       insert("waiting");
       owed.add(this.db, { group: "drain", key: "drain", call: "drain" });
       this.bump({ ...this.meta, agentTurns }, now);
-      return { ok: true, id: entry.id, duplicate: false, machine };
+      return { ok: true, duplicate: false };
     });
-    if (result.ok && !result.duplicate) this.kick();
-    return result;
+    if (!taken.ok) return taken;
+    if (!taken.duplicate) this.kick();
+    if (opts.wait && this.outcome(entry.id).state === "waiting") await this.drained(ACCEPT_WAIT_MS);
+    return { ok: true, id: entry.id, duplicate: taken.duplicate, outcome: this.outcome(entry.id) };
+  }
+
+  /** The owed drain's run, `ms` at most. */
+  private async drained(ms: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)));
+    await Promise.race([owed.run(this.db, this.send, Date.now(), this.emit, "drain").catch(() => undefined), late]);
+    clearTimeout(timer);
   }
 
   async inbox(): Promise<Inbox> {
@@ -744,11 +763,10 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return { entries, epoch: this.meta.logEpoch, lastSeq: this.meta.ack };
   }
 
-  /** One entry's outcome, for the caller that accepted it: another drain than its own may have delivered it. */
-  async entry(id: string): Promise<EntryOutcome | null> {
+  /** One entry's outcome, whichever drain delivered it (a refused or swept one: as it was, or delivered). */
+  private outcome(id: string): EntryOutcome {
     const row = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", id).toArray()[0];
-    if (!row) return null;
-    if (row.state === "delivered") return { state: "delivered", result: row.result === null ? null : (JSON.parse(row.result) as unknown) };
+    if (!row || row.state === "delivered") return { state: "delivered", result: row?.result ? (JSON.parse(row.result) as unknown) : null };
     if (row.state === "refused") return { state: "refused", error: JSON.parse(row.error ?? "{}") as EntryError };
     return { state: "waiting" };
   }
@@ -767,7 +785,6 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
             id,
           );
       if (changed.toArray().length === 0) return;
-      if (this.waiting() === 0) owed.drop(this.db, { key: "drain" });
       alarms.set(this.db, SWEEP_PURPOSE, now + INBOX_KEEP_MS);
       this.bump(this.meta, now);
     });

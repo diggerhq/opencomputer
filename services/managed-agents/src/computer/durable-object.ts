@@ -61,9 +61,10 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "./session-ids.js";
-import type { ComputerRpcAdded, DrainResult, SlackCarry, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
+import type { ComputerRpcAdded, SlackCarry, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
 import { type Access, type Principal, byOf } from "../actor/principal.js";
-import type { Dead } from "../actor/store.js";
+import { type Dead, OWED_PURPOSE, alarms, migrate } from "../actor/store.js";
+import { type Sql, sqlOf } from "../actor/sql.js";
 import { turnIdFor } from "../slack/store.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
 import { DurableObject } from "cloudflare:workers";
@@ -310,7 +311,7 @@ export const SLACK_STRANDED_MS = 60_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
 
-type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "dial";
+type AlarmPurpose = typeof OWED_PURPOSE | "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "dial";
 
 /** How soon a refused `Org.acceptMachine` is tried again. */
 const MACHINE_RETRY_MS = 30_000;
@@ -365,6 +366,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   private readonly apiTelemetry: ApiTelemetry;
   /** Work 084: the session API, its rows and the host's v4 frames (sessions-api.ts). */
   private readonly api: ComputerSessionsApi;
+  /** This object's storage as the shared actor module's `Sql` (actor/store.ts). */
+  private readonly store: Sql;
   private pool?: ComputerPool;
   /** The organization's managed model key, in memory only (never stored here, never logged). */
   private refreshingModelKey?: Promise<string | null>;
@@ -580,8 +583,18 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       waitUntil: (promise) => ctx.waitUntil(promise),
       telemetry: this.apiTelemetry,
     });
+    // The shared actor module's tables (spec 36.7): the drains owed here. Its alarm is this object's purpose `owed`.
+    this.store = {
+      ...sqlOf(ctx.storage),
+      arm: (at) => {
+        if (at === null) sql.exec("DELETE FROM alarms WHERE purpose = ?", OWED_PURPOSE);
+        else void this.schedule(OWED_PURPOSE, at);
+      },
+    };
+    migrate(this.store, []);
     this.api = new ComputerSessionsApi({
       sql,
+      store: this.store,
       env,
       organizationId: () => this.accountId(),
       host: () => this.apiHost(),
@@ -780,8 +793,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     await this.api.stop(sessionId);
   }
 
-  async drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult> {
-    return this.api.drain(sessionId, opts);
+  async drain(sessionId: string): Promise<void> {
+    await this.api.drain(sessionId);
   }
 
   async watch(sessionId: string, until: number): Promise<void> {
@@ -1024,6 +1037,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     }
     // Periodic, idempotent and unordered against the queue: after it, off the alarm's path.
     if (due.includes("billing")) this.ctx.waitUntil(this.billingTick().catch(failed("billing")));
+    // The owed drains: one session's held delivery holds no other purpose.
+    if (due.includes(OWED_PURPOSE)) this.ctx.waitUntil(alarms.run(this.store, now, { [OWED_PURPOSE]: () => this.api.runOwed() }, (_purpose, error) => failed(OWED_PURPOSE)(error)));
     if (due.includes("size")) this.ctx.waitUntil(this.reconcileSize().catch(failed("size")));
     // Tracks and threads: Org hears a changed state or preview list.
     this.ctx.waitUntil(this.publishMachine());
@@ -2643,7 +2658,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   /**
    * A session waiting for a secret or a connection goes on: one turn in its
-   * log, as the person who gave it, then the drain. Idempotent on `ts`.
+   * log, as the person who gave it (its SessionLog owes the drain). Idempotent on `ts`.
    */
   private async wakeSession(session: { key: string }, userId: string, text: string, ts: string): Promise<void> {
     const sessionId = this.sessionIdOf(session.key);
@@ -2655,7 +2670,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       kind: "turn",
       body: { input: text, slack: { userId, ts, files: [], mentioned: true, context: [], linked: [] } },
     });
-    await this.api.drain(sessionId, { wait: false });
   }
 
   /** A runner key of this organization's workspace → its conversation. */

@@ -10,7 +10,7 @@ const turn = (id: string, input = "hello") => ({ id, kind: "turn" as const, body
 describe("access", () => {
   it("reads Org once when it holds none, and answers not_found when Org has none", async () => {
     const log = await openLog();
-    expect(await log.stub.accept(member(), turn("tn_a"))).toMatchObject({ ok: true, machine: MACHINE });
+    expect(await log.stub.accept(member(), turn("tn_a"))).toMatchObject({ ok: true, outcome: { state: "waiting" } });
     expect(await log.stub.accept(member(), turn("tn_b"))).toMatchObject({ ok: true });
     expect(log.fakes.accessReads).toBe(1);
 
@@ -120,26 +120,36 @@ describe("accept", () => {
     expect(log.fakes.accessReads).toBe(reads + 1);
   });
 
-  it("is idempotent on the id: duplicate with the stored result, conflict on another body", async () => {
+  it("is idempotent on the id: duplicate with the entry's outcome, conflict on another body", async () => {
     const log = await openLog();
-    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: false, machine: MACHINE });
-    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: true, machine: MACHINE });
+    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: false, outcome: { state: "waiting" } });
+    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: true, outcome: { state: "waiting" } });
     expect(await log.stub.accept(member(), turn("tn_a", "other"))).toEqual({ ok: false, code: "idempotency_conflict" });
     expect(await log.stub.accept(member(), { id: "tn_a", kind: "answer", body: { input: "hello" } })).toEqual({ ok: false, code: "idempotency_conflict" });
     await log.stub.delivered("tn_a", { ok: true, result: { turn: { id: "tn_a", status: "running" } } });
-    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: true, machine: MACHINE, result: { turn: { id: "tn_a", status: "running" } } });
-    // The entry's outcome, for the caller that accepted it, whichever drain delivered it.
-    expect(await log.stub.entry("tn_a")).toEqual({ state: "delivered", result: { turn: { id: "tn_a", status: "running" } } });
-    expect(await log.stub.entry("tn_none")).toBeNull();
+    expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: true, outcome: { state: "delivered", result: { turn: { id: "tn_a", status: "running" } } } });
     await log.stub.accept(member(), turn("tn_b"));
-    expect(await log.stub.entry("tn_b")).toEqual({ state: "waiting" });
     await log.stub.delivered("tn_b", { ok: false, code: "queue_full", message: "full" });
-    expect(await log.stub.entry("tn_b")).toEqual({ state: "refused", error: { code: "queue_full", message: "full" } });
-    // The host's status and fields are kept: the caller that reads the outcome later answers as the drain did.
-    await log.stub.accept(member(), { id: "ie_c", kind: "cancel", body: { turnId: "tn_b" } });
+    expect(await log.stub.accept(member(), turn("tn_b"))).toMatchObject({ outcome: { state: "refused", error: { code: "queue_full", message: "full" } } });
+    // The host's status and fields are kept: a repeat answers as the drain did.
+    const cancel = { id: "ie_c", kind: "cancel" as const, body: { turnId: "tn_b" } };
+    await log.stub.accept(member(), cancel);
     await log.stub.delivered("ie_c", { ok: false, code: "turn_not_cancellable", message: "the turn is running", status: 409, turn: { id: "tn_b", status: "running" } });
-    expect(await log.stub.entry("ie_c")).toEqual({ state: "refused", error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, turn: { id: "tn_b", status: "running" } } });
+    expect(await log.stub.accept(member(), cancel)).toMatchObject({ outcome: { state: "refused", error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, turn: { id: "tn_b", status: "running" } } } });
     expect((await log.stub.inbox()).entries).toEqual([]);
+  });
+
+  it("with wait: the entry's outcome after the log's own drain, the one path to the machine", async () => {
+    const log = await openLog();
+    log.fakes.drain = async (instance) => {
+      for (const entry of (await instance.inbox()).entries) await instance.delivered(entry.id, { ok: true, result: { turn: { id: entry.id } } });
+    };
+    expect(await log.stub.accept(member(), turn("tn_w"), { wait: true })).toEqual({ ok: true, id: "tn_w", duplicate: false, outcome: { state: "delivered", result: { turn: { id: "tn_w" } } } });
+    // One drain call for the write, from the log alone.
+    expect(log.fakes.drains).toEqual([MACHINE]);
+    // The machine is waking: the drain is its now, and the entry still waits.
+    log.fakes.drain = async () => undefined;
+    expect(await log.stub.accept(member(), turn("tn_x"), { wait: true })).toMatchObject({ ok: true, outcome: { state: "waiting" } });
   });
 
   it(`refuses the entry after ${INBOX_MAX_WAITING} waiting, and takes one again when one is delivered`, async () => {
@@ -216,36 +226,34 @@ describe("inbox", () => {
 });
 
 describe("the owed drain", () => {
-  it("is sent to the session's machine at once, and stays owed until nothing waits", async () => {
-    const log = await openLog();
+  it("is sent to the session's machine at once, and owed until the machine takes it", async () => {
+    const log = await openLog({ drain: () => Promise.reject(new Error("machine unreachable")) });
     const owes = () => log.inside((_, state) => state.storage.sql.exec("SELECT 1 FROM _owed WHERE key = 'drain'").toArray().length);
     await log.stub.accept(member(), turn("tn_a"));
     await log.flush(Date.now());
     expect(log.fakes.drains).toEqual([MACHINE]);
-    // `waking`: still owed, and sent again when due.
+    // Refused: still owed, and sent again when due.
     expect(await owes()).toBe(1);
     await log.flush();
     expect(log.fakes.drains.length).toBe(2);
     expect(await owes()).toBe(1);
-    // The machine drains: it reports each entry, and the call is owed no more.
-    log.fakes.drain = async (instance) => {
-      for (const entry of (await instance.inbox()).entries) await instance.delivered(entry.id, { ok: true, result: { id: entry.id } });
-      return { state: "delivered", results: [] };
-    };
-    await log.stub.accept(member(), turn("tn_b"));
+    // The machine takes it (it owes the delivery from then on): owed here no more.
+    log.fakes.drain = async () => undefined;
     await log.flush();
     expect(await owes()).toBe(0);
-    expect((await log.stub.inbox()).entries).toEqual([]);
     const sent = log.fakes.drains.length;
     await log.flush();
     expect(log.fakes.drains.length).toBe(sent);
   });
 
-  it("is dropped when the host reports the last entry by itself", async () => {
+  it("sends nothing when the host reported the last entry by itself", async () => {
     const log = await openLog({ drain: () => Promise.reject(new Error("machine unreachable")) });
     await log.stub.accept(member(), turn("tn_a"));
     await log.flush(Date.now());
     await log.stub.delivered("tn_a", { ok: true });
+    const sent = log.fakes.drains.length;
+    await log.flush();
+    expect(log.fakes.drains.length).toBe(sent);
     expect(await log.inside((_, state) => state.storage.sql.exec("SELECT 1 FROM _owed WHERE key = 'drain'").toArray().length)).toBe(0);
   });
 });

@@ -15,10 +15,13 @@
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
-import type { Access, DeliveredOutcome, DeltaPush, DrainResult, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
+import type { Access, DeliveredOutcome, DeltaPush, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../actor/contracts.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./api-model-route.js";
 import type { Principal } from "../actor/principal.js";
+import { emitter } from "../actor/emit.js";
+import type { Sql } from "../actor/sql.js";
+import { owed } from "../actor/store.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { Ask, LogSummary } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
@@ -50,6 +53,8 @@ export const HOST_CALL_TIMEOUT_MS = 15_000;
  * its adoption commits, up to ~25 s (review r3 P2-2).
  */
 export const HOST_CALL_HELD_TIMEOUT_MS = 40_000;
+/** A drain waiting for the host is made due by its `hello`; this is the backstop. */
+export const HOST_AWAITED_MS = 10 * 60_000;
 /** Waits before each retry of a failed `epochTail` read (review r3 P1-1). */
 export const EPOCH_TAIL_RETRY_MS = [250, 1_000, 4_000];
 /** A writer silent this long with a turn open, its runner gone, is lost. */
@@ -165,6 +170,8 @@ const COLUMNS: Array<[string, string]> = [
 
 export interface SessionsApiDeps {
   sql: SqlStorage;
+  /** The same storage as the shared actor module's `Sql`: the drains owed here (spec 36.7). */
+  store: Sql;
   env: ComputerEdgeEnv;
   organizationId: () => string;
   /** The connected host, once welcomed; undefined when none is. */
@@ -206,6 +213,14 @@ export interface SessionsApiDeps {
 }
 
 type HostOutcome = { result?: unknown; error?: CalvinApiError };
+
+/** A session's owed drain; `start`: its runner's `start` frame is owed too, sent when no entry waits. */
+interface OwedDrain {
+  sessionId: string;
+  start?: true;
+}
+
+const drainKey = (sessionId: string) => `drain:${sessionId}`;
 
 interface Pending {
   resolve: (outcome: HostOutcome) => void;
@@ -368,14 +383,12 @@ export class ComputerSessionsApi {
 
   // ---------------------------------------------------------------- tracks and threads (spec 36.3)
 
-  /** One drain per session at a time; `again` is the one follow-up queued behind it. */
-  private readonly drains = new Map<string, { run: Promise<DrainResult>; again: Promise<DrainResult> | null }>();
   /** Watch leases (spec 40.5), in memory only: session → until (ms). */
   private readonly watches = new Map<string, number>();
 
   /**
-   * Writes only the runner's row (spec 35.4) and answers; the `start` frame goes at once if the host is up,
-   * else at `hello`; then the session is drained.
+   * Writes only the runner's row (spec 35.4) and answers; the session's drain is owed with its start: the
+   * `start` frame goes when nothing waits, at once if the host is up, else at `hello`.
    */
   async start(spec: StartSpec): Promise<void> {
     const s = spec.session;
@@ -406,37 +419,15 @@ export class ComputerSessionsApi {
     }
     const row = this.row(s.id)!;
     this.deps.chooseHarness?.(row, spec.harness === "claude" || spec.harness === "codex" ? spec.harness : undefined);
-    this.owe("startOwed", s.id);
-    this.deps.waitUntil(this.started(s.id).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.start_failed", sessionId: s.id, message: String(error) }))));
-  }
-
-  /** After the row: the drain (its `api` frame carries the spec and starts the runner), or the `start` frame when nothing waits. */
-  private async started(sessionId: string): Promise<void> {
-    const drained = await this.drainQueued(sessionId);
-    if (!this.v4Host()) return;
-    const row = this.row(sessionId);
-    if (!row) return this.unowe("startOwed", sessionId);
-    if (drained.state === "waking") return;
-    if (drained.results.length === 0) {
-      const inbox = await this.log(sessionId).inbox();
-      const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
-      const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
-      const id = crypto.randomUUID();
-      const sent = !routed?.error && this.deps.send({
-        t: "start", id, session: routed?.session ?? this.spec(row), epoch: inbox.epoch, lastSeq: inbox.lastSeq,
-        ...(secrets ? { secrets } : {}), role: row.role ? (JSON.parse(row.role) as CalvinRoleSpec) : null,
-      });
-      // A refused route starts nothing: the first turn reports it. A lost host: at the next `hello`.
-      if (!sent && !routed?.error) return;
-      if (sent) this.pending.set(id, { resolve: () => undefined, timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS) });
-    }
-    this.unowe("startOwed", sessionId);
+    this.owe(s.id, { start: true });
+    this.deps.waitUntil(this.runOwed(s.id).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.start_failed", sessionId: s.id, message: String(error) }))));
   }
 
   /** The runner is suspended (the host's `sessions.suspend`); the row stays. Nothing when the host is down: no runner runs. */
   async stop(sessionId: string): Promise<void> {
     const row = this.row(sessionId);
-    this.unowe("startOwed", sessionId);
+    // A start still owed is not sent: the drain stays owed for the entries that wait, if any.
+    if (owed.has(this.deps.store, drainKey(sessionId))) this.owe(sessionId);
     this.watches.delete(sessionId);
     if (!row || !this.v4Host()) return;
     await this.ask({
@@ -447,63 +438,89 @@ export class ComputerSessionsApi {
   }
 
   /**
-   * Spec 36.3: the session's waiting inbox entries, in order, each as one `api` frame, each then reported to
-   * its SessionLog. `wait: false` answers at once and drains behind the answer.
+   * Spec 36.3, called only by the session's SessionLog (its owed `drain`): the session's drain is owed here,
+   * on the shared outbox, and run. Resolves when the waiting entries were delivered, or wait for the host.
    */
-  drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult> {
-    const run = this.drainQueued(sessionId);
-    if (opts.wait) return run;
-    this.deps.waitUntil(run.catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.drain_failed", sessionId, message: String(error) }))));
-    return Promise.resolve(this.v4Host() || !this.row(sessionId) ? { state: "delivered", results: [] } : { state: "waking" });
+  async drain(sessionId: string): Promise<void> {
+    this.owe(sessionId);
+    await this.runOwed(sessionId);
   }
 
-  private drainQueued(sessionId: string): Promise<DrainResult> {
-    const current = this.drains.get(sessionId);
-    if (current) {
-      // Entries accepted while it runs are read by one more drain behind it.
-      current.again ??= current.run.then(() => undefined, () => undefined).then(() => this.drainQueued(sessionId));
-      return current.again;
-    }
-    const run: Promise<DrainResult> = this.drainNow(sessionId).finally(() => {
-      if (this.drains.get(sessionId)?.run === run) this.drains.delete(sessionId);
-    });
-    this.drains.set(sessionId, { run, again: null });
-    return run;
+  /** The drains owed here: one session's, or all that are due (the alarm). */
+  runOwed(sessionId?: string): Promise<void> {
+    return owed.run(this.deps.store, this.sendOwed, Date.now(), this.emit, sessionId);
   }
 
-  private async drainNow(sessionId: string): Promise<DrainResult> {
+  private readonly emit = emitter("computer", () => ({ org: this.deps.organizationId() }));
+
+  private readonly sendOwed = async (call: string, body: unknown): Promise<void> => {
+    if (call !== "drain") return;
+    const { sessionId, start } = body as OwedDrain;
+    await this.drainNow(sessionId, start === true);
+  };
+
+  /** One owed drain per session (its group, its key): a later one replaces it, so it reads the inbox again. */
+  private owe(sessionId: string, opts: { start?: boolean; at?: number } = {}): void {
+    const body: OwedDrain = { sessionId, ...(opts.start ? { start: true } : {}) };
+    owed.add(this.deps.store, { group: sessionId, key: drainKey(sessionId), call: "drain", body, ...(opts.at ? { at: opts.at } : {}) });
+  }
+
+  /**
+   * The session's waiting inbox entries, in order, each as one `api` frame (the first starts the runner),
+   * each then reported to its SessionLog; with none, the `start` frame if one is owed.
+   */
+  private async drainNow(sessionId: string, start: boolean): Promise<void> {
     // No runner row, no drain.
-    if (!this.row(sessionId)) return { state: "delivered", results: [] };
+    if (!this.row(sessionId)) return;
     const log = this.log(sessionId);
     let inbox = await log.inbox();
-    if (inbox.entries.length === 0) {
-      this.unowe("drainOwed", sessionId);
-      return { state: "delivered", results: [] };
-    }
-    if (!this.v4Host()) return this.waking(sessionId);
+    if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries.length > 0);
+    if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox) : undefined;
     const moving = this.epochSends.get(sessionId);
     if (moving) {
       // The host hears the new epoch first; the frames then carry the log as it is after.
       await moving;
       inbox = await log.inbox();
     }
-    const results: Extract<DrainResult, { state: "delivered" }>["results"] = [];
     for (const entry of inbox.entries) {
       const row = this.row(sessionId);
-      if (!row) break;
+      if (!row) return;
       const outcome = await this.deliver(row, entry, inbox);
-      // No answer: the entry waits; the host's idempotency (the entry's id) covers a frame that did land.
-      if (outcome === "lost") return this.waking(sessionId);
-      await log.delivered(entry.id, outcome);
-      if (outcome.ok) results.push({ id: entry.id, result: outcome.result });
-      else {
-        const { ok: _ok, ...error } = outcome;
-        results.push({ id: entry.id, error: { ...error, requestId: entry.trace ?? "", retryable: false } });
+      if (outcome === "lost") {
+        // No answer: the entry waits and the drain is tried again; the host's idempotency (the entry's id) covers a frame that did land.
+        this.wakeHost();
+        throw new Error("the host did not answer");
       }
+      await log.delivered(entry.id, outcome);
     }
-    this.unowe("drainOwed", sessionId);
-    this.unowe("startOwed", sessionId);
-    return { state: "delivered", results };
+  }
+
+  /** The `start` frame: the runner up before its first entry. A refused route starts nothing: the first turn reports it. */
+  private async sendStart(sessionId: string, inbox: Inbox): Promise<void> {
+    const row = this.row(sessionId)!;
+    const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
+    if (routed?.error) return;
+    const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
+    const id = crypto.randomUUID();
+    const sent = this.deps.send({
+      t: "start", id, session: routed?.session ?? this.spec(row), epoch: inbox.epoch, lastSeq: inbox.lastSeq,
+      ...(secrets ? { secrets } : {}), role: row.role ? (JSON.parse(row.role) as CalvinRoleSpec) : null,
+    });
+    if (!sent) return this.awaitHost(sessionId, true, false);
+    this.pending.set(id, { resolve: () => undefined, timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS) });
+  }
+
+  /**
+   * No host: the drain stays owed until `hello` makes it due (`helloOwed`), HOST_AWAITED_MS at the latest.
+   * Entries that wait wake the machine; a start alone does not.
+   */
+  private awaitHost(sessionId: string, start: boolean, entries: boolean): void {
+    this.owe(sessionId, { start, at: Date.now() + HOST_AWAITED_MS });
+    if (entries) this.wakeHost();
+  }
+
+  private wakeHost(): void {
+    this.deps.waitUntil(this.deps.wake().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.api_wake_failed", message: String(error) }))));
   }
 
   /** One entry to the host: admission and the model route first (a turn's), then the `api` frame. */
@@ -511,7 +528,7 @@ export class ComputerSessionsApi {
     let session = this.spec(row);
     let model: RoutedApiSession["model"];
     if (SPENDS.has(entry.kind)) {
-      // Billing unavailable throws: the entry waits and the caller's owed drain retries.
+      // Billing unavailable throws: the entry waits and the owed drain is tried again.
       if (!(await this.deps.admitted())) return { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." };
       if (this.deps.routeSession) {
         const routed = await this.deps.routeSession(session, entry.actor.subject);
@@ -559,36 +576,26 @@ export class ComputerSessionsApi {
     );
   }
 
-  /** The machine is not up: the wake starts, the session is drained at `hello`. */
-  private waking(sessionId: string): DrainResult {
-    this.owe("drainOwed", sessionId);
-    this.deps.waitUntil(this.deps.wake().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.api_wake_failed", message: String(error) }))));
-    return { state: "waking" };
-  }
-
-  /** Whether a session waits for the machine: a wake that fails then owes `wakeFailed`. */
+  /** Whether a session's drain waits for the machine: a wake that fails then owes `wakeFailed`. */
   owes(): boolean {
-    return this.owed("drainOwed").length > 0;
+    return owed.groups(this.deps.store).length > 0;
   }
 
   /** A wake that failed for good: each waiting entry of each waiting session is reported `computer_unavailable`. */
   async wakeFailed(): Promise<void> {
-    for (const sessionId of this.owed("drainOwed")) {
+    for (const sessionId of owed.groups(this.deps.store)) {
       const log = this.log(sessionId);
       for (const entry of (await log.inbox()).entries) {
         await log.delivered(entry.id, { ok: false, code: "computer_unavailable", message: "The computer could not start." });
       }
-      this.unowe("drainOwed", sessionId);
+      owed.drop(this.deps.store, { group: sessionId });
     }
   }
 
-  /** At `hello`: the starts and drains that waited for the host, and the watch leases still live. */
+  /** At `hello`: the drains that waited for the host, and the watch leases still live. */
   private helloOwed(): void {
-    const quiet = (what: string, sessionId: string) => (error: unknown) =>
-      console.warn(JSON.stringify({ level: "warn", event: `computer.${what}_failed`, sessionId, message: String(error) }));
-    const starts = new Set(this.owed("startOwed"));
-    for (const sessionId of starts) this.deps.waitUntil(this.started(sessionId).catch(quiet("start", sessionId)));
-    for (const sessionId of this.owed("drainOwed")) if (!starts.has(sessionId)) this.deps.waitUntil(this.drainQueued(sessionId).catch(quiet("drain", sessionId)));
+    owed.due(this.deps.store);
+    this.deps.waitUntil(this.runOwed().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.drain_failed", message: String(error) }))));
     const now = this.now();
     for (const [sessionId, until] of this.watches) {
       if (until <= now) this.watches.delete(sessionId);
@@ -618,27 +625,6 @@ export class ComputerSessionsApi {
     const people = access.writers === "members" ? [] : access.writers.filter((by) => by.startsWith("user:") && by !== `user:${access.owner}`).map((by) => by.slice(5));
     const members = access.audience === "org" ? null : people;
     this.deps.send({ t: "access", access: { sessionId, owner: access.owner, members, ...(admins.length ? { admins } : {}) } });
-  }
-
-  private owed(key: "startOwed" | "drainOwed"): string[] {
-    try {
-      const parsed: unknown = JSON.parse(this.deps.setting(key) ?? "[]");
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
-    } catch {
-      return [];
-    }
-  }
-
-  private owe(key: "startOwed" | "drainOwed", sessionId: string): void {
-    const ids = this.owed(key);
-    if (!ids.includes(sessionId)) this.deps.put(key, JSON.stringify([...ids, sessionId]));
-  }
-
-  private unowe(key: "startOwed" | "drainOwed", sessionId: string): void {
-    const ids = this.owed(key);
-    if (!ids.includes(sessionId)) return;
-    if (ids.length === 1) this.deps.remove(key);
-    else this.deps.put(key, JSON.stringify(ids.filter((id) => id !== sessionId)));
   }
 
   // ---------------------------------------------------------------- the host
@@ -674,8 +660,8 @@ export class ComputerSessionsApi {
       case "wake":
         // The host has no spec of the session: owed a start, as one sent while it was away.
         if (this.hasRow(frame.sessionId)) {
-          this.owe("startOwed", frame.sessionId);
-          this.deps.waitUntil(this.started(frame.sessionId).catch(() => undefined));
+          this.owe(frame.sessionId, { start: true });
+          this.deps.waitUntil(this.runOwed(frame.sessionId).catch(() => undefined));
         }
         return true;
       case "delta": {

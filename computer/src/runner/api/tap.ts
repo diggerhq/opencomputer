@@ -32,6 +32,7 @@ export type IfBusy = 'queue' | 'steer' | 'interrupt';
 /** A message that came through the API, as Session.send passes it on. */
 export interface SentFrom {
   actor: Actor;
+  /** The turn it starts; a steer: its own id (its `message.received`'s `messageId`). */
   turnId?: string;
   ifBusy?: IfBusy;
   /** Its `message.received` is in the log already (queued, or recorded by the host's writer). */
@@ -206,7 +207,8 @@ export class Tap implements SessionTap {
     this.asks.closeReadySecrets(actor);
     if (steer && this.cur) {
       if (from?.recorded) return;
-      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [] }, this.cur.id, actor);
+      const named = from?.turnId ? { messageId: from.turnId } : {};
+      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], ...named }, this.cur.id, actor);
       this.steers.push({ actor, seq });
       return;
     }
@@ -223,7 +225,8 @@ export class Tap implements SessionTap {
 
   replied(text: string, slackUser: string | undefined, declined: string[], from?: SentFrom): number {
     const actor = from?.actor ?? this.h.actorOf(slackUser);
-    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined };
+    const named = from?.turnId ? { messageId: from.turnId } : {};
+    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined, ...named };
     const seq = this.append('message.received', data, this.turnId(), actor);
     this.steers.push({ actor, seq });
     return seq;

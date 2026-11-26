@@ -79,7 +79,7 @@ export class FakeSessionLog extends Recorder {
     }
     // The first call is slow: a later message that overtook it would be recorded first.
     if (this.delayMs && this.seen.length === 1) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
-    return this.answer ?? { ok: true, id: entry.id, duplicate: false, machine: "org_a" };
+    return this.answer ?? { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } };
   }
 }
 
