@@ -3,7 +3,7 @@ title: "Preview URLs"
 description: "A session gives an HTTP server it started on the computer a public URL that anyone with the link can open"
 ---
 
-<Note>Not in the open-source code yet (preview URLs on a self-hosted instance). On the hosted service this page describes what runs today. On a self-hosted instance today, the session is offered the `preview` tool and every call fails with `preview URLs need an OpenComputer computer; this gateway does not offer them`.</Note>
+<Note>Not in the open-source code yet (preview URLs on a self-hosted instance). On the hosted service this page describes what runs today.</Note>
 
 The session creates the URL with the `preview` tool and posts it in the thread. Ask for it in words: "start the app and give me a preview link".
 
@@ -36,4 +36,4 @@ Next.js, Vite and webpack-dev-server dev servers refuse requests under a host na
 | Vite | `server.allowedHosts` |
 | webpack-dev-server | `allowedHosts` |
 
-{/* Sources: computer/src/runner/preview.ts; computer/src/host/previews.ts; computer/src/host/preview-probe.ts; computer/src/host/preview-proxy.ts; computer/src/protocol.ts (PreviewRequest, PreviewToolResult); computer/src/gateway/hosts.ts (preview and unpreview refused); computer/src/host/main.ts (SP_IDLE_MS); computer/definitions/computer/AGENTS.md ("the session parks and its jobs die with it") */}
+{/* Sources: computer/src/runner/preview.ts; computer/src/host/previews.ts; computer/src/host/preview-probe.ts; computer/src/host/preview-proxy.ts; computer/src/protocol.ts (PreviewRequest, PreviewToolResult); computer/src/host/main.ts (SP_IDLE_MS); computer/definitions/computer/AGENTS.md ("the session parks and its jobs die with it") */}
