@@ -19,7 +19,7 @@
 import type { ComputerEdgeEnv } from "../config.js";
 import { isPoolId } from "../names.js";
 import { type CalvinTraceContext, sessionKey } from "../protocol.js";
-import type { SlackMessageJob } from "../slack.js";
+import type { SlackMessageJob } from "../../slack/slack-api.js";
 import type { SubscriptionEventName } from "./catalog.js";
 import { credentialId, issueTelemetryCredential } from "./credential.js";
 import type { EventFields } from "./emitter.js";

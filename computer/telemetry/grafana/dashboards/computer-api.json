@@ -461,48 +461,6 @@
     },
     {
       "id": 10,
-      "type": "timeseries",
-      "title": "The DO's Slack queue (max)",
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 32
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "${datasource}"
-          },
-          "editorType": "sql",
-          "format": 0,
-          "queryType": "timeseries",
-          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'rows pending + running' AS metric, max(JSONExtractInt(data, 'slack_queue_rows')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE JSONHas(data, 'slack_queue_rows') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'oldest pending wait (ms)' AS metric, max(JSONExtractInt(data, 'slack_queue_oldest_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE JSONHas(data, 'slack_queue_oldest_ms') GROUP BY time, metric\n) ORDER BY time"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 0,
-            "stacking": {
-              "mode": "none"
-            }
-          }
-        },
-        "overrides": []
-      }
-    },
-    {
-      "id": 11,
       "type": "row",
       "title": "Q2 · What the session log costs",
       "collapsed": false,
@@ -515,7 +473,7 @@
       "panels": []
     },
     {
-      "id": 12,
+      "id": 11,
       "type": "timeseries",
       "title": "SessionLog append latency",
       "datasource": {
@@ -557,7 +515,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 12,
       "type": "timeseries",
       "title": "Journal and SessionLog volume",
       "datasource": {
@@ -599,7 +557,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 13,
       "type": "timeseries",
       "title": "Bytes appended and spilled to R2",
       "datasource": {
@@ -641,7 +599,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 14,
       "type": "table",
       "title": "Per org: batches, bytes, spills, refolds, storage",
       "datasource": {
@@ -675,7 +633,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 15,
       "type": "row",
       "title": "Q3 · How fresh is what clients see",
       "collapsed": false,
@@ -688,7 +646,7 @@
       "panels": []
     },
     {
-      "id": 17,
+      "id": 16,
       "type": "timeseries",
       "title": "Event age p95 at each hop",
       "datasource": {
@@ -747,7 +705,7 @@
       "description": "Each hop's p95 age of an event (now − its createdAt on the runner). Runner and Cloudflare clocks differ, so blue-side ages carry the skew. The alert fires when the DO-committed or wire-socket p95 is above 2000 ms for 15 min. Per turn: the `freshness` endpoint with `per_turn`."
     },
     {
-      "id": 18,
+      "id": 17,
       "type": "row",
       "title": "Q4 · HTTP API",
       "collapsed": false,
@@ -760,7 +718,7 @@
       "panels": []
     },
     {
-      "id": 19,
+      "id": 18,
       "type": "timeseries",
       "title": "Requests by layer and status class",
       "datasource": {
@@ -802,7 +760,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 19,
       "type": "timeseries",
       "title": "Latency p95 by route: edge total and blue DO time",
       "datasource": {
@@ -844,7 +802,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 20,
       "type": "timeseries",
       "title": "503 computer_unavailable, 429s, replays, empty long-polls",
       "datasource": {
@@ -886,7 +844,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 21,
       "type": "table",
       "title": "Outages, auth failures and rate limits by key",
       "datasource": {
@@ -920,7 +878,7 @@
       }
     },
     {
-      "id": 23,
+      "id": 22,
       "type": "row",
       "title": "Q5 · Wire",
       "collapsed": false,
@@ -933,7 +891,7 @@
       "panels": []
     },
     {
-      "id": 24,
+      "id": 23,
       "type": "timeseries",
       "title": "Connects, refusals and closes",
       "datasource": {
@@ -975,7 +933,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 24,
       "type": "timeseries",
       "title": "Attach, ticket and reconnect p95",
       "datasource": {
@@ -1017,7 +975,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 25,
       "type": "timeseries",
       "title": "Backpressure: flush wait p95 and queued bytes max",
       "datasource": {
@@ -1059,7 +1017,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 26,
       "type": "timeseries",
       "title": "Bytes in and out",
       "datasource": {
@@ -1101,7 +1059,7 @@
       }
     },
     {
-      "id": 28,
+      "id": 27,
       "type": "timeseries",
       "title": "Concurrent connections, members, terminals (max per host)",
       "datasource": {
@@ -1143,7 +1101,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 28,
       "type": "row",
       "title": "Q6 · Recovery",
       "collapsed": false,
@@ -1156,7 +1114,7 @@
       "panels": []
     },
     {
-      "id": 30,
+      "id": 29,
       "type": "timeseries",
       "title": "Recovery events by kind",
       "datasource": {
@@ -1199,7 +1157,7 @@
       "description": "Alerts: journal gaps above 3 an hour, any recover-alarm fire, any held-write timeout."
     },
     {
-      "id": 31,
+      "id": 30,
       "type": "table",
       "title": "Recovery: counts and durations",
       "datasource": {
@@ -1233,7 +1191,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 31,
       "type": "row",
       "title": "Q7 · What an opc user sees",
       "collapsed": false,
@@ -1246,7 +1204,7 @@
       "panels": []
     },
     {
-      "id": 33,
+      "id": 32,
       "type": "timeseries",
       "title": "opc: Enter → first output drawn p95, by version",
       "datasource": {
@@ -1288,7 +1246,7 @@
       }
     },
     {
-      "id": 34,
+      "id": 33,
       "type": "timeseries",
       "title": "opc: steer and interrupt round trip p95, render lag p95",
       "datasource": {
@@ -1330,7 +1288,7 @@
       }
     },
     {
-      "id": 35,
+      "id": 34,
       "type": "table",
       "title": "opc errors by class, version and OS",
       "datasource": {
@@ -1364,7 +1322,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 35,
       "type": "table",
       "title": "opc versions and OS in use (turns)",
       "datasource": {
@@ -1398,7 +1356,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 36,
       "type": "row",
       "title": "Q8 · Steer, interrupt and answer through the API",
       "collapsed": false,
@@ -1411,7 +1369,7 @@
       "panels": []
     },
     {
-      "id": 38,
+      "id": 37,
       "type": "timeseries",
       "title": "Request accepted → runner applied p95 (api.write), by surface and method",
       "datasource": {
@@ -1453,7 +1411,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 38,
       "type": "timeseries",
       "title": "Blue's share: write sent → host answered p95 (computer.write)",
       "datasource": {
@@ -1495,7 +1453,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 39,
       "type": "row",
       "title": "Q9 · Keys and revocation",
       "collapsed": false,
@@ -1508,7 +1466,7 @@
       "panels": []
     },
     {
-      "id": 41,
+      "id": 40,
       "type": "table",
       "title": "Key syncs, revokes and refusals after a revoke",
       "datasource": {
@@ -1543,7 +1501,7 @@
       "description": "\"used after revoke\" counts requests carrying a revoked key; `failed` there counts the ones that were let through (should be 0). Revoke → last socket closed is not measurable: wire.close has no key_id."
     },
     {
-      "id": 42,
+      "id": 41,
       "type": "row",
       "title": "Q10 · Load on the computer",
       "collapsed": false,
@@ -1556,7 +1514,7 @@
       "panels": []
     },
     {
-      "id": 43,
+      "id": 42,
       "type": "timeseries",
       "title": "api.sample: open journals and held frames (max per host)",
       "datasource": {
@@ -1598,7 +1556,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 43,
       "type": "timeseries",
       "title": "api.sample: journal bytes on disk and spooled (max per host)",
       "datasource": {

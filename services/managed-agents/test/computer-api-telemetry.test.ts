@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import { ComputerKeys } from "../src/computer/keys.js";
-import { SLACK_QUEUE_OLDEST_SQL, SLACK_QUEUE_STATE_INDEX, SLACK_QUEUE_WAITING_SQL, slackQueueNow } from "../src/computer/slack-queue-gauge.js";
 import type { LogSummary } from "../src/computer/api-types.js";
 import type { AppendResult } from "../src/computer/session-log-contract.js";
 import { ApiTelemetry, type EmitTelemetry, surfaceOfOrigin } from "../src/computer/telemetry/api.js";
@@ -67,9 +65,9 @@ const journalEvent = (seq: number, type = "message.delta", turnId: string | null
 });
 
 describe("ApiTelemetry: one event per unit, ids only", () => {
-  it("one sessionlog.append per batch, whatever its size, with the DO time and the Slack queue", async () => {
+  it("one sessionlog.append per batch, whatever its size, with the DO time", async () => {
     const s = sink();
-    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "cli", slackQueue: () => ({ rows: 2, oldestMs: 1500.4 }), now: () => 1_800_000_000_500 });
+    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "cli", now: () => 1_800_000_000_500 });
     for (const size of [1, 50, 500]) {
       const events = Array.from({ length: size }, (_, i) => journalEvent(i + 1, i === size - 1 ? "turn.completed" : "message.delta"));
       const result: AppendResult = { ok: true, ack: size, summary: summary(size), stats };
@@ -89,26 +87,25 @@ describe("ApiTelemetry: one event per unit, ids only", () => {
     expect(out[2]!.data).toMatchObject({
       epoch: 1, events: 500, turns: 1, ended: true, append_ms: 7, commit_lag_ms_max: 499, commit_lag_ms_min: 0,
       store_ms: 3, rows: 5, spills_due: 1, storage_bytes: 65536,
-      do_chain_wait_ms: 1, do_pre_ms: 2, do_post_ms: 0, do_ack_ms: 10, slack_queue_rows: 2, slack_queue_oldest_ms: 1500,
+      do_chain_wait_ms: 1, do_pre_ms: 2, do_post_ms: 0, do_ack_ms: 10,
     });
     expect(JSON.stringify(out)).not.toContain(SECRET_TEXT);
   });
 
-  it("a refused batch: failed with the reason, no ack time; a broken queue read leaves the queue out", async () => {
+  it("a refused batch: failed with the reason, no ack time", async () => {
     const s = sink();
-    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "api", slackQueue: () => { throw new Error("sql"); } });
+    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "api" });
     t.journaled({ sessionId: SID, epoch: 2, events: [journalEvent(9, "message.delta", null)], appendMs: 4, preMs: 1, postMs: 0, result: { ok: false, reason: "gap", logEpoch: 2, ack: 3 } });
     const [e] = await s.settle();
     expect(e).toMatchObject({ outcome: "failed", error_code: "gap", data: { refused: "gap", turns: 0 } });
     expect(e).not.toHaveProperty("turn_id");
     expect(e!.data).not.toHaveProperty("do_ack_ms");
-    expect(e!.data).not.toHaveProperty("slack_queue_rows");
   });
 
   it("ticket.minted, keys.*, recovery and an outage are one event each", async () => {
     const s = sink();
     let now = 1_000;
-    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "api", slackQueue: () => ({ rows: 0, oldestMs: null }), now: () => now });
+    const t = new ApiTelemetry({ emit: s.emit, surfaceOf: () => "api", now: () => now });
     t.ticket({ surface: "api", ms: 3, result: "minted", sessions: 1, keyWritten: true });
     t.ticket({ surface: "api", ms: 1, result: "api_key_required" });
     t.keySynced({ keyId: "key_1", trigger: "ensure", ms: 2, ok: true, kvWrites: 2 });
@@ -290,37 +287,5 @@ describe("httpapi.request: one per blue computer-API request", () => {
     await c.settle();
     expect(c.lines).toHaveLength(0);
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("the Slack queue gauge is index-only", () => {
-  const schema = (db: DatabaseSync) => {
-    db.exec(`CREATE TABLE slack_queue (
-      sequence INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL, last_error TEXT, thread_key TEXT, started_at INTEGER)`);
-    db.exec(SLACK_QUEUE_STATE_INDEX);
-  };
-  const plan = (db: DatabaseSync, query: string) =>
-    (db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as { detail: string }[]).map((r) => r.detail).join(" | ");
-
-  it("both reads use the covering index on (state, available_at), never a table scan", () => {
-    const db = new DatabaseSync(":memory:");
-    schema(db);
-    for (const q of [SLACK_QUEUE_WAITING_SQL, SLACK_QUEUE_OLDEST_SQL]) {
-      const p = plan(db, q);
-      expect(p).toMatch(/USING COVERING INDEX slack_queue_state/);
-      expect(p).not.toMatch(/SCAN slack_queue(?! USING)/);
-    }
-  });
-
-  it("counts waiting rows, skips failed ones, and reads the oldest pending wait", () => {
-    const sql = sqlStorage();
-    sql.exec(`CREATE TABLE slack_queue (sequence INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', available_at INTEGER NOT NULL);`);
-    sql.exec(SLACK_QUEUE_STATE_INDEX);
-    expect(slackQueueNow(sql, 10_000)).toEqual({ rows: 0, oldestMs: null });
-    for (const [state, at] of [["pending", 7_000], ["pending", 9_000], ["running", 1_000], ["failed", 0]] as const) {
-      sql.exec("INSERT INTO slack_queue (payload, state, available_at) VALUES ('{}', ?, ?)", state, at);
-    }
-    expect(slackQueueNow(sql, 10_000)).toEqual({ rows: 3, oldestMs: 3_000 });
   });
 });
