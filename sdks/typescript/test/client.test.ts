@@ -114,7 +114,7 @@ async function rowOf(me: Caller, kind: string, id: string): Promise<Row | undefi
 /** The session's log as the server holds it. */
 async function eventsOf(me: Caller, sid: string): Promise<ApiEvent[]> {
   const out: ApiEvent[] = [];
-  let q = "tailTurns=1000";
+  let q = "tailTurns=50";
   for (;;) {
     const res = await me.fetch(`/sessions/${sid}/events?${q}`);
     const page = (await res.json()) as { events: ApiEvent[]; cursor: string; hasMore: boolean };

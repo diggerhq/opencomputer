@@ -84,7 +84,7 @@ export async function startStack(): Promise<Stack> {
       COMPUTER_PUBLIC_ORIGIN: { type: "plain_text", value: "https://app.example" },
       COMPUTER_ANTHROPIC_API_KEY: { type: "plain_text", value: "sk-ant-test" },
     } as never,
-    dev: { server: { port: 0 }, inspector: false, persist: false, logLevel: "error", outboundService: fakeComputerOutbound } as never,
+    dev: { server: { port: 0 }, inspector: false, persist: false, watch: false, logLevel: "error", outboundService: fakeComputerOutbound } as never,
   });
   await worker.ready;
   const url = String(await worker.url).replace(/\/$/, "");
