@@ -1,6 +1,8 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { migrate, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
+import { migrate } from "../src/durable/migrations.js";
+import { sqlOf, type Sql } from "../src/durable/sql.js";
+import { type Principal } from "../src/auth/principal.js";
 import type { Summary } from "../src/actor/contracts.js";
 import { runMutation, type MutationOutcome } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";

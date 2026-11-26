@@ -2,7 +2,7 @@
 // the feed `f1.<version>`, the occurrence stream `o1.<n>`, a page of a list `p1.<…>`. Opaque to a
 // client, which compares two only for equality; one this cannot read is answered `reset`.
 
-import { base64url } from "../actor/helpers.js";
+import { base64url } from "../encoding/base64url.js";
 
 export type CursorKind = "e" | "f" | "o" | "p";
 export type CursorParts = (number | string)[];

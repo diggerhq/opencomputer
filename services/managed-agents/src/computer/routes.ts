@@ -39,7 +39,7 @@ import type { ComputerDurableObject, ComputerOverview } from "./durable-object.j
 import { isHarness } from "./harnesses.js";
 import { bearerToken, hostAuthorized } from "./host-token.js";
 import { POOL_OBJECT, isPoolId } from "./names.js";
-import { liveOf } from "../actor/index.js";
+import { liveOf } from "../actors/addresses.js";
 import { apiRefusal, type ComputerApiStub, routeComputerApi } from "./api-http.js";
 import { memberId } from "./session-ids.js";
 

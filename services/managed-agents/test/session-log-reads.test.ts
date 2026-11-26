@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cursor } from "../src/actor/index.js";
+import { cursor } from "../src/durable/cursor.js";
 import type { Blobs } from "../src/computer/session-log.js";
 import { accessOf, agent, MATE_ID, member, openLog, OWNER_ID, platform } from "./session-log-kit.js";
 

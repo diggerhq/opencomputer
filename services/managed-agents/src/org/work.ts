@@ -4,7 +4,7 @@
 import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "../actor/contracts.js";
 import { cursor } from "../durable/cursor.js";
 import { platformPrincipal, type Principal } from "../auth/principal.js";
-import { crockfordId } from "../actor/helpers.js";
+import { crockfordId } from "../ids/crockford.js";
 import type { Sql } from "../durable/sql.js";
 import { runMutation } from "./mutations/index.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";

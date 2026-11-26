@@ -1,101 +1,9 @@
-// The mechanics every actor shares (spec 36.7, D21): ordered migrations, many timers on the one
-// alarm, calls owed after a transaction, idempotency. All of it over `Sql`.
+// Calls owed after a transaction (spec 36.7, D21): written in the transaction, sent after it commits,
+// retried on the alarm, set aside on the dead list when they run out of tries.
 
 import type { Emitter } from "../telemetry/log-emitter.js";
-import { errorText } from "./helpers.js";
-import type { Sql } from "../durable/sql.js";
-
-// ---------------------------------------------------------------- migrations
-
-const TABLES = `
-CREATE TABLE IF NOT EXISTS _migrations (k INTEGER PRIMARY KEY CHECK (k = 1), applied INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS _alarm (purpose TEXT PRIMARY KEY, at INTEGER, firing INTEGER);
-CREATE TABLE IF NOT EXISTS _owed (n INTEGER PRIMARY KEY AUTOINCREMENT, grp TEXT NOT NULL, key TEXT UNIQUE, call TEXT NOT NULL,
-  body TEXT, at INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, schedule TEXT, last_error TEXT);
-CREATE INDEX IF NOT EXISTS _owed_grp ON _owed (grp, n);
-CREATE TABLE IF NOT EXISTS _dead (n INTEGER PRIMARY KEY AUTOINCREMENT, grp TEXT NOT NULL, call TEXT NOT NULL, body TEXT,
-  tries INTEGER NOT NULL, last_error TEXT NOT NULL, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS _idem (key TEXT PRIMARY KEY, hash TEXT NOT NULL, result TEXT, expires INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS _idem_expires ON _idem (expires);
-`;
-
-/**
- * Apply the steps not yet applied, in order, each in its own transaction with the count. The
- * module's own tables come first, so step 0 of an actor may already use them. Never reorder or
- * edit a step that has shipped; add one.
- */
-export function migrate(sql: Sql, steps: ((sql: Sql) => void)[]): void {
-  for (const statement of TABLES.split(";")) if (statement.trim()) sql.exec(statement);
-  const applied = sql.exec<{ applied: number }>("SELECT applied FROM _migrations WHERE k = 1")[0]?.applied ?? 0;
-  for (let index = applied; index < steps.length; index += 1) {
-    sql.transaction(() => {
-      steps[index]!(sql);
-      sql.exec("INSERT INTO _migrations (k, applied) VALUES (1, ?) ON CONFLICT(k) DO UPDATE SET applied = excluded.applied", index + 1);
-    });
-  }
-}
-
-// -------------------------------------------------------------------- alarms
-
-const rearm = (sql: Sql) => sql.arm(sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM _alarm")[0]?.at ?? null);
-
-export const alarms = {
-  /** Fire `purpose` at `at`; when it is already set, the earlier of the two. */
-  set(sql: Sql, purpose: string, at: number): void {
-    sql.exec(
-      "INSERT INTO _alarm (purpose, at) VALUES (?, ?) ON CONFLICT(purpose) DO UPDATE SET at = MIN(COALESCE(at, excluded.at), excluded.at)",
-      purpose,
-      Math.floor(at),
-    );
-    rearm(sql);
-  },
-  clear(sql: Sql, purpose: string): void {
-    sql.exec("DELETE FROM _alarm WHERE purpose = ?", purpose);
-    rearm(sql);
-  },
-  /**
-   * The purposes due at `now`, and the actor's alarm re-armed for the next one. A purpose stays
-   * due (it is returned again) until `done` is called for it; `run` does both.
-   */
-  due(sql: Sql, now: number): string[] {
-    sql.exec("UPDATE _alarm SET firing = COALESCE(firing, at), at = NULL WHERE at <= ? OR (at IS NULL AND firing IS NOT NULL)", now);
-    const due = sql.exec<{ purpose: string }>("SELECT purpose FROM _alarm WHERE firing IS NOT NULL ORDER BY firing, purpose").map((row) => row.purpose);
-    rearm(sql);
-    return due;
-  },
-  /** A due purpose's handler returned. Failed: due again in a second, unless it set itself sooner. */
-  done(sql: Sql, purpose: string, ok: boolean, now: number): void {
-    if (ok) {
-      sql.exec("UPDATE _alarm SET firing = NULL WHERE purpose = ?", purpose);
-      sql.exec("DELETE FROM _alarm WHERE purpose = ? AND at IS NULL", purpose);
-      rearm(sql);
-    } else {
-      sql.exec("UPDATE _alarm SET firing = NULL WHERE purpose = ?", purpose);
-      alarms.set(sql, purpose, now + 1_000);
-    }
-  },
-  /**
-   * An actor's whole `alarm()`: every due purpose's handler, each on its own, so one that throws
-   * delays only itself. A handler that wants to run again calls `set`. A purpose with no handler is dropped.
-   */
-  async run(sql: Sql, now: number, handlers: Record<string, () => void | Promise<void>>, failed?: (purpose: string, error: unknown) => void): Promise<void> {
-    await Promise.all(
-      alarms.due(sql, now).map(async (purpose) => {
-        const handler = handlers[purpose];
-        if (!handler) return alarms.clear(sql, purpose);
-        try {
-          await handler();
-          alarms.done(sql, purpose, true, Date.now());
-        } catch (error) {
-          failed?.(purpose, error);
-          alarms.done(sql, purpose, false, Date.now());
-        }
-      }),
-    );
-  },
-};
-
-// ---------------------------------------------------------------- owed calls
+import { alarms } from "./alarms.js";
+import type { Sql } from "./sql.js";
 
 /**
  * A call with no schedule of its own: seconds 1, 2, 5, 15, then every 60 for a day. Past it the
@@ -265,25 +173,4 @@ async function sendGroup(sql: Sql, group: string, send: (call: string, body: unk
   }
 }
 
-// --------------------------------------------------------------- idempotency
-
-export const idem = {
-  /** What was stored under `key`: its result when the hash is the same, a conflict when it is not, null when nothing (or expired). */
-  get(sql: Sql, key: string, hash: string): { result: unknown } | { conflict: true } | null {
-    const row = sql.exec<{ hash: string; result: string | null }>("SELECT hash, result FROM _idem WHERE key = ? AND expires > ?", key, Date.now())[0];
-    if (!row) return null;
-    if (row.hash !== hash) return { conflict: true };
-    return { result: row.result === null ? undefined : JSON.parse(row.result) };
-  },
-  put(sql: Sql, key: string, hash: string, result: unknown, ttlMs: number): void {
-    const now = Date.now();
-    sql.exec("DELETE FROM _idem WHERE expires <= ?", now);
-    sql.exec(
-      "INSERT INTO _idem (key, hash, result, expires) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET hash = excluded.hash, result = excluded.result, expires = excluded.expires",
-      key,
-      hash,
-      result === undefined ? null : JSON.stringify(result),
-      now + ttlMs,
-    );
-  },
-};
+export const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 500);

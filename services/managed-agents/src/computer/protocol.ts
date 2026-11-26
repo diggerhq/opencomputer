@@ -10,7 +10,7 @@
 // `model`); `watch` and `block` go to the host, `delta` comes from it; model traffic goes through
 // the host's model proxy by profile.
 
-import { base64url } from "../actor/helpers.js";
+import { base64url } from "../encoding/base64url.js";
 
 export const CALVIN_PROTOCOL_VERSION = 6;
 /** The close code of a host below CALVIN_PROTOCOL_VERSION: it runs its self-update at once. */

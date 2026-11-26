@@ -4,52 +4,16 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import {
-  alarms,
-  computerOf,
-  emitter,
-  hashOf,
-  liveOf,
-  logOf,
-  migrate,
-  owed,
-  platformPrincipal,
-  slackOf,
-  sqlOf,
-  unavailable,
-  type Access,
-  type ActorEnv,
-  type ComputerRpcAdded,
-  type CreateSession,
-  type Dead,
-  type DocRev,
-  type FeedFrame,
-  type ListQuery,
-  type LiveRpc,
-  type MachinePub,
-  type MutateReply,
-  type MutateRequest,
-  type Occurrence,
-  type OrgRpc,
-  type OrgSettings,
-  type OutsideAccess,
-  type Overview,
-  type PlaceRow,
-  type Principal,
-  type PullPub,
-  type Reply,
-  type ResultRow,
-  type ReviewRow,
-  type Row,
-  type SessionLogRpcAdded,
-  type SessionPage,
-  type SessionPatch,
-  type SessionRow,
-  type SlackRpc,
-  type Sql,
-  type StartSpec,
-  type SummaryPub,
-} from "../actor/index.js";
+import { alarms } from "../durable/alarms.js";
+import { computerOf, liveOf, logOf, slackOf, type ActorEnv } from "../actors/addresses.js";
+import { emitter } from "../telemetry/log-emitter.js";
+import { hashOf } from "../encoding/canonical-json.js";
+import { migrate } from "../durable/migrations.js";
+import { owed, type Dead } from "../durable/outbox.js";
+import { platformPrincipal, type Access, type Principal } from "../auth/principal.js";
+import { sqlOf, type Sql } from "../durable/sql.js";
+import { unavailable } from "../http/unavailable.js";
+import { type ComputerRpcAdded, type CreateSession, type DocRev, type FeedFrame, type ListQuery, type LiveRpc, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type Reply, type ResultRow, type ReviewRow, type Row, type SessionLogRpcAdded, type SessionPage, type SessionPatch, type SessionRow, type SlackRpc, type StartSpec, type SummaryPub } from "../actor/contracts.js";
 import { computerSessionId } from "../computer/protocol.js";
 import { memberId } from "../computer/session-ids.js";
 import * as feeds from "./feed.js";

@@ -4,7 +4,7 @@
 // id with the body's hash") and `session.owner_name`, `owner_email` (the API's `Session.owner`).
 
 import type { Sql } from "../durable/sql.js";
-import { alarms } from "../actor/store.js";
+import { alarms } from "../durable/alarms.js";
 
 /** The tables whose rows are in the feed, each with its key columns. `id` in a feed row is the last of them. */
 export const FEED_TABLES = {

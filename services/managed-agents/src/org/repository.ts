@@ -13,7 +13,7 @@
 import type { GitHubTokenMint } from "../protocol.js";
 import type { Refusal, Reply } from "../actor/contracts.js";
 import type { Sql } from "../durable/sql.js";
-import { owed } from "../actor/store.js";
+import { owed } from "../durable/outbox.js";
 
 const GITHUB_API = "https://api.github.com";
 const GITHUB_API_VERSION = "2026-03-10";

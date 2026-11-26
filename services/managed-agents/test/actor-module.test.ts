@@ -1,6 +1,15 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { alarms, base64url, canonicalJson, cursor, type Emitter, hashOf, idem, migrate, owed, crockfordId, sqlOf, type Sql } from "../src/actor/index.js";
+import { alarms } from "../src/durable/alarms.js";
+import { base64url } from "../src/encoding/base64url.js";
+import { canonicalJson, hashOf } from "../src/encoding/canonical-json.js";
+import { cursor } from "../src/durable/cursor.js";
+import { type Emitter } from "../src/telemetry/log-emitter.js";
+import { idem } from "../src/durable/idempotency.js";
+import { migrate } from "../src/durable/migrations.js";
+import { owed } from "../src/durable/outbox.js";
+import { crockfordId } from "../src/ids/crockford.js";
+import { sqlOf, type Sql } from "../src/durable/sql.js";
 
 /** The shared actor module (spec 36.7), on a real Durable Object's storage. */
 

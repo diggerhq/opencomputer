@@ -11,8 +11,8 @@
 // - `dissolve`: tracks the op made, which undo dissolves.
 
 import { byOf, type Principal } from "../../auth/principal.js";
-import { crockfordId } from "../../actor/helpers.js";
-import { owed } from "../../actor/store.js";
+import { crockfordId } from "../../ids/crockford.js";
+import { owed } from "../../durable/outbox.js";
 import type { Origin } from "../../computer/api-types.js";
 import {
   emptySummary,

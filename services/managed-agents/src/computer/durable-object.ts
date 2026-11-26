@@ -63,7 +63,9 @@
 import { isSessionId } from "./session-ids.js";
 import type { ComputerRpcAdded, SlackCarry, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
 import { type Access, type Principal, byOf } from "../auth/principal.js";
-import { type Dead, OWED_PURPOSE, alarms, migrate } from "../actor/store.js";
+import { type Dead, OWED_PURPOSE } from "../durable/outbox.js";
+import { alarms } from "../durable/alarms.js";
+import { migrate } from "../durable/migrations.js";
 import { type Sql, sqlOf } from "../durable/sql.js";
 import { turnIdFor } from "../slack/store.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actors/addresses.js";

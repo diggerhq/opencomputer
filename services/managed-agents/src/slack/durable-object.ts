@@ -5,30 +5,17 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import {
-  type AcceptResult,
-  type ActorEnv,
-  alarms,
-  emitter,
-  errorText,
-  idem,
-  logOf,
-  migrate,
-  orgOf,
-  owed,
-  type Principal,
-  type Sql,
-  type SlackEcho,
-  type SlackGrant,
-  type SlackRpc,
-  slackOf,
-  sqlOf,
-  unavailable,
-  type Reply,
-  computerOf,
-  isRecord,
-  platformPrincipal,
-} from "../actor/index.js";
+import { type AcceptResult, type SlackEcho, type SlackGrant, type SlackRpc, type Reply } from "../actor/contracts.js";
+import { type ActorEnv, logOf, orgOf, slackOf, computerOf } from "../actors/addresses.js";
+import { alarms } from "../durable/alarms.js";
+import { emitter } from "../telemetry/log-emitter.js";
+import { errorText, owed } from "../durable/outbox.js";
+import { idem } from "../durable/idempotency.js";
+import { migrate } from "../durable/migrations.js";
+import { type Principal, platformPrincipal } from "../auth/principal.js";
+import { type Sql, sqlOf } from "../durable/sql.js";
+import { unavailable } from "../http/unavailable.js";
+import { isRecord } from "../encoding/canonical-json.js";
 import type { SlackModalReply } from "../actor/contracts.js";
 import type { Origin } from "../computer/api-types.js";
 import { seal, sha256Hex, unseal } from "../computer/crypto.js";

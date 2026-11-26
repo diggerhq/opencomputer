@@ -1,6 +1,9 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { migrate, owed, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
+import { migrate } from "../src/durable/migrations.js";
+import { owed } from "../src/durable/outbox.js";
+import { sqlOf, type Sql } from "../src/durable/sql.js";
+import { type Principal } from "../src/auth/principal.js";
 import { runMutation } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";
 import { changesAt, emptySummary, sessionRow, readSession, transact } from "../src/org/tx.js";
@@ -84,7 +87,7 @@ describe("Org's transaction", () => {
 
 // ------------------------------------------------------------------ the actor, with fakes for the others
 
-import type { FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/index.js";
+import type { FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/contracts.js";
 import type { OrgDurableObject, OrgOut } from "../src/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/org/repository.js";
 

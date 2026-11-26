@@ -2,7 +2,7 @@
 // access-views.ts, without `drivers`: a session's writers are Org's now, changed by
 // `thread.writers`). Pure: the commands as typed, the texts, and the `ac:` buttons.
 
-import { base64url } from "../actor/helpers.js";
+import { base64url } from "../encoding/base64url.js";
 
 /** Held context: text cut to this when stored, the newest rows read, rows older than this deleted. */
 export const CONTEXT_MAX_CHARS = 4_000;

@@ -5,7 +5,7 @@
 
 import { holdsTrack, isOwnSession, parse, readPlace, readTrack, type Tx } from "../tx.js";
 import type { Principal } from "../../auth/principal.js";
-import { crockfordId } from "../../actor/helpers.js";
+import { crockfordId } from "../../ids/crockford.js";
 import { byFor, isStr, isTid } from "./common.js";
 import { openProposal, ownsTarget } from "./doc.js";
 import { runMutation } from "./index.js";

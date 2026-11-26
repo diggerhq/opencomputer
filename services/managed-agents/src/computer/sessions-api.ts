@@ -21,7 +21,7 @@ import type { RoutedApiSession } from "./api-model-route.js";
 import type { Principal } from "../auth/principal.js";
 import { emitter } from "../telemetry/log-emitter.js";
 import type { Sql } from "../durable/sql.js";
-import { owed } from "../actor/store.js";
+import { owed } from "../durable/outbox.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { Ask, LogSummary } from "./api-types.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";

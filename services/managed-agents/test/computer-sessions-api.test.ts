@@ -17,7 +17,8 @@ import { createTelemetry } from "../src/computer/telemetry/emitter.js";
 import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import type { Sql } from "../src/durable/sql.js";
-import { migrate, owed } from "../src/actor/store.js";
+import { migrate } from "../src/durable/migrations.js";
+import { owed } from "../src/durable/outbox.js";
 
 /**
  * Work 084: the session API in the Computer DO against a fake v4 host and a fake SessionLog.

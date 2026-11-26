@@ -2,7 +2,8 @@
 // its settings, and the added `link`, `thread` and `meta`. Slack's event ids go to the shared
 // module's `idem`, so `slack_events` is not here.
 
-import { owed, type Sql } from "../actor/index.js";
+import { owed } from "../durable/outbox.js";
+import { type Sql } from "../durable/sql.js";
 import { CROCKFORD } from "../computer/session-ids.js";
 
 export const STEPS: ((sql: Sql) => void)[] = [

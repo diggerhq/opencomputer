@@ -5,7 +5,7 @@ import type { FeedFrame, FeedPush, MutateReply, MutateRequest, Occurrence, Row, 
 import { cursor } from "../durable/cursor.js";
 import { platformPrincipal, type Principal } from "../auth/principal.js";
 import type { Sql } from "../durable/sql.js";
-import { idem } from "../actor/store.js";
+import { idem } from "../durable/idempotency.js";
 import { runMutation } from "./mutations/index.js";
 import { FEED_KINDS, FEED_TABLES, type FeedTable } from "./schema.js";
 import {

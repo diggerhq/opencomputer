@@ -8,7 +8,7 @@ import type { CalvinPerson } from "../computer/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "../auth/principal.js";
-import type { Dead } from "./store.js";
+import type { Dead } from "../durable/outbox.js";
 
 export type { Access, Principal };
 

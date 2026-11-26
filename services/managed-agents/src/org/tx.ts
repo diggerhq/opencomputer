@@ -19,9 +19,9 @@ import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, S
 import { DEFAULT_MODE, MODELS } from "../computer/capabilities.js";
 import type { Access, PlaceRow, Row, SessionRow, Summary } from "../actor/contracts.js";
 import { byOf, type Principal } from "../auth/principal.js";
-import { crockfordId } from "../actor/helpers.js";
+import { crockfordId } from "../ids/crockford.js";
 import type { Sql } from "../durable/sql.js";
-import { owed, type Owed } from "../actor/store.js";
+import { owed, type Owed } from "../durable/outbox.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
 
 // ------------------------------------------------------------------ constants (spec 44)

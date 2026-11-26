@@ -16,8 +16,13 @@
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
-import { base64url, crockfordId, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
-import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
+import { base64url } from "../encoding/base64url.js";
+import { crockfordId } from "../ids/crockford.js";
+import { cursor } from "../durable/cursor.js";
+import { hashOf } from "../encoding/canonical-json.js";
+import { liveOf, logOf, orgOf, slackOf } from "../actors/addresses.js";
+import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Refusal, SessionPatch, SessionRow } from "../actor/contracts.js";
+import type { Principal } from "../auth/principal.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
