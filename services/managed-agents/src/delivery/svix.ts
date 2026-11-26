@@ -1,10 +1,7 @@
-// Thin Svix REST client for the Cloudflare edge. Used by api-edge (webhook
-// management: Application/Endpoint CRUD, secret, headers, test) and by
-// events-ingest (delivery: message create with sync-before-ack). Mirrors the
-// validated Go client in internal/svix (kept as throwaway discovery).
+// Thin Svix REST client. Delivery(webhook) hands each occurrence to Svix, and keeps its endpoints
+// there; Svix owns signing, retries, endpoint state and SSRF (.agents/done/sandbox-webhooks-rearchitecture.md).
 //
 // Region is encoded in the token suffix (e.g. "sk_….us" → api.us.svix.com).
-// See .agents/work/sandbox-webhooks-rearchitecture.md.
 
 export function svixBaseURL(token: string): string {
   const i = token.lastIndexOf(".");
@@ -15,12 +12,11 @@ export function svixBaseURL(token: string): string {
   return "https://api.svix.com";
 }
 
-// SanitizeEventID maps an OC event id (which uses ':', e.g.
-// "sb-x:sandbox.stopped") into Svix's eventId charset [A-Za-z0-9-_.] by
-// replacing ':' with '.'. The raw id is still passed as the Idempotency-Key
-// (header, unrestricted) for dedup.
+// sanitizeEventID maps an OC id (which uses ':', e.g. "cs_a:1:2" or "member:usr_1") into
+// Svix's eventId, uid and channel charset [A-Za-z0-9-_.]: anything else becomes '.'. The raw id
+// is still passed as the Idempotency-Key (header, unrestricted) for dedup.
 export function sanitizeEventID(id: string): string {
-  return id.replace(/:/g, ".");
+  return id.replace(/[^A-Za-z0-9\-_.]/g, ".");
 }
 
 export class SvixError extends Error {
@@ -40,6 +36,7 @@ export class SvixError extends Error {
 
 export interface Endpoint {
   id: string;
+  uid?: string;
   url: string;
   description?: string;
   disabled?: boolean;

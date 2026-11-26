@@ -3,31 +3,23 @@ title: "Methods"
 description: "Every WebSocket method, its parameters, its result and its notifications."
 ---
 
-A method is named `<plural resource>.<verb>`, and maps to the HTTP route of the same resource and verb. Its params are that route's path parameters, query and body, flattened into one object, and its result is the route's response. The one exception is `asks.answer`, whose body stays nested as `answer`: `{ sessionId, askId, answer: { decision: "allow" }, idempotencyKey? }`. Every session method takes `sessionId`. The exceptions are `sessions.attach` and `sessions.detach`, which only the WebSocket has, and the terminal methods.
+A method is named `<plural resource>.<verb>`, and maps to the HTTP route of the same resource and verb. Its params are that route's path parameters, query and body, flattened into one object, and its result is the route's response. Every session method takes `sessionId`. The exceptions are `sessions.attach` and `sessions.detach`, which only the WebSocket has, and the terminal methods.
 
-`turns.send` is the create verb for turns. It is named `send` because a message may join a running turn rather than create one.
+The WebSocket carries no session write. Sending a turn, answering or dismissing an ask, interrupting, cancelling a turn, stopping a subagent, compacting, suspending, resuming and changing a session's settings are HTTP only, because every write goes through the session's inbox, which checks who may write to it. `opc` sends them over HTTP too.
 
 | Method | HTTP equivalent |
 | --- | --- |
 | [`sessions.attach`](#attach) | none: live events |
 | [`sessions.detach`](#detach) | none |
 | `sessions.get` | [`GET /sessions/{id}`](/api/http/sessions#get-a-session) |
-| `sessions.update` | [`PATCH /sessions/{id}`](/api/http/sessions#update-a-session) |
-| [`sessions.interrupt`](#interrupt), `sessions.compact`, `sessions.suspend`, `sessions.resume` | [Control](/api/http/control) |
-| [`turns.send`](#send) | [`POST /sessions/{id}/turns`](/api/http/turns#send-a-message) |
 | `turns.get` | [`GET /sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn), with `turnId` |
-| `turns.cancel` | [`POST /sessions/{id}/turns/{turnId}/cancel`](/api/http/turns#cancel-a-queued-turn), with `turnId` |
 | `asks.list`, `asks.get` | [`GET /sessions/{id}/asks`](/api/http/asks#list-asks) and [`GET /sessions/{id}/asks/{askId}`](/api/http/asks#get-an-ask), with `askId` |
-| `asks.answer`, `asks.dismiss` | [Asks](/api/http/asks), with `askId`. `asks.answer` takes the answer as `answer`. |
 | `subagents.list`, `subagents.get` | [`GET /sessions/{id}/subagents`](/api/http/subagents#list-subagents) and [`GET /sessions/{id}/subagents/{subagentId}`](/api/http/subagents#get-a-subagent), with `subagentId` |
-| `subagents.stop` | [Stop a subagent](/api/http/subagents#stop-a-subagent), with `subagentId` |
 | `events.list` | [`GET /sessions/{id}/events`](/api/http/events) |
 | [`terminals.open`, `terminals.resize`, `terminals.eof`, `terminals.close`](/api/websocket/terminals) | none |
 | `ping` | none |
 
-Everything not in this table is HTTP only, such as creating and listing sessions, files and tickets. With the methods above, a browser holding only a ticket can read everything it was shown.
-
-The result of every write carries `seq`, the `seq` of the last event the write caused. To read it back over HTTP, pass it as `minSeq`. See [Consistency](/api/model#consistency).
+Everything not in this table is HTTP only, such as every session write, creating and listing sessions, files and tickets. With the methods above, a browser holding only a ticket can read everything it was shown.
 
 ## Attach
 
@@ -102,18 +94,6 @@ Stops sending a session's events. `{ "sessionId" }`. The result is `{}`. Events 
 ```
 
 `seq` is the last event you applied. Send it every 64 events or every 250 ms, whichever comes first, while events arrive. When a connection acks, the server measures how far behind it is from what it sent and what you acked, which is exact. Without acks it estimates from its socket buffer. Acks are optional. See [Flow control](/api/websocket/flow-control).
-
-## Send
-
-`{ sessionId, input, ifBusy?, idempotencyKey? }`. The result is what [`POST /turns`](/api/http/turns#send-a-message) returns, `{ turn, delivery, duplicate, seq }`, with `timing: { serverUs }` added.
-
-`idempotencyKey` does what the `Idempotency-Key` header does over HTTP. Send one with every message: after a reconnect you cannot know whether a request sent just before the drop arrived, and resending with the same key is safe. A method and its HTTP route share keys. See [Idempotency](/api/reference/idempotency).
-
-`ifBusy` defaults to `queue`, as over HTTP.
-
-## Interrupt
-
-`{ sessionId, turnId?, idempotencyKey? }`. With `turnId`, it interrupts only if that turn is still running or queued; otherwise it succeeds and changes nothing. So a client interrupts the turn it saw, never one that started since. The result is what [`POST /interrupt`](/api/http/control#interrupt) returns.
 
 ## Telemetry
 

@@ -4,33 +4,12 @@
 // values are ignored by both sides, so either may be newer. Only the shapes
 // this gateway sends or reads are declared here.
 
-import type { Linked } from "./threads.js";
-
-// 2 (work 077): the hello carries `features`, and `deliver.model`, `model`, `probe`/`probed`,
-// `model-bound`/`model-health`/`model-denied` exist. A host below 2 is routed managed only.
-// 3 (work 082): routes carry `provider` and `accountId`, sessions a `harness`, `model-health`
-// a `provider`, `probe` a `provider` and `accountId`. ChatGPT routes go only to a host at 3 or
-// above whose hello lists `model-proxy/chatgpt`; a host at 2 sees exactly what it saw before.
-// 4 (work 084): the streaming session API. `start`/`started`, `api`/`api-result`,
-// `journal`/`journal-ack`, `access`, `revoked`, `welcome.wire`; a session may have no Slack
-// thread (`kind: "api"`, the `cs_` id as its key) and carries its `sessionId`; a person may have
-// no Slack id. Every field is optional: a v3 frame reads unchanged, and v4 frames go only to a
-// host that says 4 (`hostSpeaksV4`).
-// 5 (work 097, design C2): every session's model traffic goes through the host's model proxy, by
-// profile. The hello lists the proxy's `profiles`; `welcome` and `credentials` carry `models`;
-// routes are `profile` or `refuse`; `model-observed`, `model-request` and `model-response` exist.
-// `managed` and `subscription` routes, the `model-proxy` features, `probe`/`probed`,
-// `model-health` and the model key in `credentials` do not exist at 5. A host that says 5 gets
-// only protocol 5's shapes, a host below it exactly what it got before: this gateway speaks both
-// until no host says 4, then everything marked protocol 4 here goes and
-// CALVIN_PROTOCOL_VERSION becomes 5.
-// 6 (tracks and threads, spec 36.3): the one number both sides speak. `watch` and `block` go to the
-// host, `delta` comes from it, `start` carries `role`, and an `api` frame carries what its runner
-// needs (`secrets`, `model`). A host that says less in `hello` is closed with 4426.
+// Protocol 6 (tracks and threads, spec 36.3) is the one number both sides speak: a host that says
+// less in `hello` is closed with 4426 and updates itself. Sessions are started with `start`
+// (carrying `role`) and written to with `api` frames (carrying what the runner needs: `secrets`,
+// `model`); `watch` and `block` go to the host, `delta` comes from it; model traffic goes through
+// the host's model proxy by profile.
 export const CALVIN_PROTOCOL_VERSION = 6;
-/** Until the protocol 4 and 5 branches are deleted, both read as "every host". */
-export const CALVIN_API_PROTOCOL = CALVIN_PROTOCOL_VERSION;
-export const CALVIN_MODEL_PROTOCOL = CALVIN_PROTOCOL_VERSION;
 /** The close code of a host below CALVIN_PROTOCOL_VERSION: it runs its self-update at once. */
 export const UPGRADE_REQUIRED = 4426;
 
@@ -120,23 +99,6 @@ export interface CalvinSlackFile {
   size?: number;
   url_private?: string;
   url_private_download?: string;
-}
-
-export interface CalvinDelivery {
-  userId: string;
-  text: string;
-  ts: string;
-  files?: CalvinSlackFile[];
-  mentioned?: boolean;
-  /** Slack threads linked in the message (work 049 L3, threads.ts): read, or why not. */
-  linked?: Linked[];
-  /**
-   * Work 112: the sender's role in the session, as this gateway decided it (access.ts).
-   * `participant` only on `!stop`, `!esc`, `!help`, `!status`. A runner remembers a
-   * `driver`'s message so only they or the owner answer the prompts it causes.
-   * Absent: as before, anyone answers.
-   */
-  role?: "owner" | "driver" | "participant";
 }
 
 /**
@@ -276,23 +238,6 @@ export type CalvinGatewayToHost =
   | { t: "people"; people: CalvinPerson[] }
   /** Protocol 5: `models` replaces the whole map of the `welcome`. */
   | { t: "credentials"; credentials: CalvinHostCredentials; models?: Partial<Record<CalvinHarness, ModelRoute>> }
-  | {
-      t: "deliver";
-      id: string;
-      session: CalvinSessionSpec;
-      msg: CalvinDelivery;
-      credentials?: CalvinHostCredentials;
-      secrets?: SessionSecret[];
-      trace?: CalvinTraceContext;
-      /**
-       * Work 077: the session's model route. Absent = managed (older gateways); never `refuse` (a refused delivery is not sent).
-       * Protocol 5: absent = `models[harness]`.
-       */
-      model?: ModelRoute;
-      /** Work 084: the log's epoch and the last seq the SessionLog holds; the writer continues at lastSeq + 1. */
-      epoch?: number;
-      lastSeq?: number;
-    }
   | { t: "secrets"; sessionKey: string; secrets: SessionSecret[] }
   /** Work 077: a live session's model route changed. The host ignores sessions it does not run. */
   | { t: "model"; sessionKey: string; model: ModelRoute }
@@ -301,23 +246,12 @@ export type CalvinGatewayToHost =
    * Work 082 adds `provider` and `accountId` (absent: anthropic); blue does not probe chatgpt yet.
    */
   | { t: "probe"; id: string; token: string; provider?: ModelProvider; accountId?: string }
-  /**
-   * A prompt button click. `role` (work 112): the clicker's, `owner` or `driver`; a runner refuses a
-   * driver's click on a prompt another's message caused, with the reply error `not-asked`
-   * (NOT_ASKED). Absent: handled as before.
-   */
-  | { t: "action"; id: string; sessionKey: string; promptId: string; value: string; userId: string; role?: "owner" | "driver" }
-  | { t: "stop"; id: string; sessionKey: string }
   | { t: "token"; id: string; result?: CalvinGitHubToken; error?: string }
-  | { t: "spawned"; id: string; result?: CalvinSpawnResult; error?: string }
   /** Work 074: answers `preview` and `unpreview`; `error` is a sentence for the model. */
   | { t: "previewed"; id: string; result?: CalvinPreviewResult; error?: string }
   | { t: "secret-asked"; id: string; error?: string }
   /** Work 080: answers `connection-request` once the button is posted. */
   | { t: "connection-asked"; id: string; error?: string }
-  /** Answers to `read` and `post` (work 049 L3); a refused read is a result with `ok: false`. */
-  | { t: "thread"; id: string; result?: Linked; error?: string }
-  | { t: "posted"; id: string; result?: CalvinPostThreadResult; error?: string }
   /**
    * Warm pool (work 052): a pool computer was claimed by an organization.
    * The host persists the new identity (organization id, host token, the
@@ -358,18 +292,14 @@ export type CalvinHostToGateway =
       repos?: string[];
       kind?: "github" | "opencomputer" | "automation-repo";
     }
-  | { t: "spawn"; id: string; from: string; req: CalvinSpawnRequest }
   /** Work 074: register a port's public URL (`preview` tool), or release a name (`unpreview`). */
   | { t: "preview"; id: string; from: string; req: CalvinPreviewRequest }
   | { t: "unpreview"; id: string; from: string; req: { name: string } }
   | { t: "secret-request"; id: string; from: string; req: SecretRequest }
   /** Work 080: request_connection, a "Grant …" button in the session's thread. */
   | { t: "connection-request"; id: string; from: string; req: { service: string; reason: string } }
-  | { t: "read"; id: string; from: string; req: CalvinReadThreadRequest }
-  | { t: "post"; id: string; from: string; req: CalvinPostThreadRequest }
   /** The model provider refused session `sessionKey`'s turn for credits (a 402). */
   | { t: "out-of-credits"; sessionKey: string }
-  | { t: "reply"; id: string; ok: boolean; error?: string }
   /** Work 077: the model proxy's answers and reports, relayed by the host. */
   | { t: "probed"; id: string; result?: { status: number; usage?: ModelUsage }; error?: string }
   /** Protocol 4: `subscription` or `managed`, with `fingerprint`. Protocol 5: `profile`, with `profile` and `key`. `refuse` in both. */
@@ -467,38 +397,6 @@ export interface CalvinPreviewResult {
   url: string;
   name: string;
   port: number;
-}
-
-/** A session starts a thread (Calvin work 047, spawn_thread). */
-export interface CalvinSpawnRequest {
-  task: string;
-  /** Workspace-relative path of the Markdown brief. */
-  brief: string;
-  briefUrl?: string;
-  /** Calvin's model tier (`smart`, `fast`, `default`); without one the thread keeps the parent's model. */
-  tier?: string;
-}
-
-/** read_thread (work 049 L3): a thread link, or a channel and the ts of a message in it. */
-export interface CalvinReadThreadRequest {
-  url?: string;
-  channel?: string;
-  ts?: string;
-}
-
-/** post_thread: a reply in that thread, in Slack mrkdwn. */
-export interface CalvinPostThreadRequest extends CalvinReadThreadRequest {
-  text: string;
-}
-
-export interface CalvinPostThreadResult {
-  ts: string;
-  url: string;
-}
-
-export interface CalvinSpawnResult {
-  key: string;
-  url?: string;
 }
 
 // ---------------------------------------------------------------- v4 (work 084)
@@ -751,9 +649,6 @@ export function parseSessionKey(key: string): { teamId: string; channelId: strin
   if (!teamId || !channelId || !threadTs || extra !== undefined) return null;
   return { teamId, channelId, threadTs };
 }
-
-/** The `reply` error of an `action` whose clicker may not answer that prompt (work 112): answered with S6. */
-export const NOT_ASKED = "not-asked";
 
 /** A prompt button the runner posted: `p:<base64url(sessionKey)>:<promptId>:<value>`. */
 export function decodeCalvinActionId(actionId: string): { sessionKey: string; promptId: string; value: string } | null {

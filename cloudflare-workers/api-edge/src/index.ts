@@ -18,6 +18,7 @@
 
 export { CreditAccount } from "../../shared/credit_account";
 export { PoolStock } from "./pool_stock";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
 import { authDashboard, handleDashboard, type DashboardEnv } from "./dashboard";
 import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
@@ -105,8 +106,6 @@ import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouch
 
 export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
   CF_ADMIN_SECRET: string;
-  /** Live's key (tracks and threads): Live presents it on the credential check. */
-  LIVE_KEY?: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
   // Coarse distributed abuse limits for the two unauthenticated WorkOS device
@@ -1825,26 +1824,23 @@ async function authLogout(req: Request, env: Env, ctx: ExecutionContext): Promis
 const LIVE_CHECK_MAX = 500;
 
 /**
- * Live's credential check (spec 18.7; services/managed-agents/src/live/
- * contract.ts EDGE_CREDENTIALS_URL): `POST /internal/live/credentials` with
- * `Authorization: Bearer <LIVE_KEY>`. `{check: [ids]}` answers `{revoked:
- * [ids]}`, the ids that no longer verify; `{token}` answers `{principal}`,
- * null when the token does not verify.
+ * Live's credential check (spec 18.7; services/managed-agents/src/live/contract.ts
+ * LiveCredentials), an entrypoint Live reaches over its `EDGE` service binding.
+ * `revoked` answers the ids that no longer verify; `principal` a token's
+ * principal, null when it does not verify.
  */
-async function liveCredentials(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/)?.[1] ?? "";
-  if (!env.LIVE_KEY || !constantTimeEqual(bearer, env.LIVE_KEY)) return json({ error: "unauthorized" }, 401);
-  const body = (await req.json().catch(() => null)) as { check?: unknown; token?: unknown } | null;
-  if (body && typeof body.token === "string") {
-    return json({ principal: await principalOfToken(body.token, env, ctx) });
+export class LiveCredentials extends WorkerEntrypoint<Env> {
+  async revoked(ids: string[]): Promise<string[]> {
+    if (!Array.isArray(ids) || ids.length > LIVE_CHECK_MAX || !ids.every((id) => typeof id === "string")) {
+      throw new Error(`expected at most ${LIVE_CHECK_MAX} credential ids`);
+    }
+    const live = await Promise.all(ids.map((id) => credentialLive(id, this.env)));
+    return ids.filter((_, i) => !live[i]);
   }
-  if (body && Array.isArray(body.check) && body.check.length <= LIVE_CHECK_MAX && body.check.every((id) => typeof id === "string")) {
-    const ids = body.check as string[];
-    const live = await Promise.all(ids.map((id) => credentialLive(id, env)));
-    return json({ revoked: ids.filter((_, i) => !live[i]) });
+
+  async principal(token: string): Promise<Principal | null> {
+    return typeof token === "string" ? principalOfToken(token, this.env, this.ctx) : null;
   }
-  return json({ error: "expected {check: [ids]} or {token}" }, 400);
 }
 
 /** The principal of a token Live was handed: an API key, null otherwise. */
@@ -2173,7 +2169,6 @@ export default {
       return handleAgentFeedback(req, env, path, ctx);
     }
 
-    if (path === "/internal/live/credentials") return liveCredentials(req, env, ctx);
 
     // Reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
     if (path === "/internal/autumn-project") {

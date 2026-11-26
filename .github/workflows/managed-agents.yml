@@ -143,13 +143,22 @@ jobs:
             projects: >-
               --project session-log
               --project wire
+              --project computer-api
           # Its own process: it shares fakeComputerOutbound's recorded Tinybird
           # posts with the computer project, whose routes test expects none.
           - name: Computer telemetry
             projects: --project computer-telemetry
+          # Tracks and threads: Live alone, with fakes of SessionLog, Computer and the edge.
+          - name: Live
+            projects: --project live
           # Tracks and threads: the Org actor (with the real Computer for adoption).
           - name: Org
             projects: --project org
+          # Tracks and threads: Delivery (with a fake Svix) and the Slack actor.
+          - name: Delivery and Slack
+            projects: >-
+              --project delivery
+              --project slack
           - name: Workerd memory
             projects: --project workerd-memory
           - name: Memory integrated

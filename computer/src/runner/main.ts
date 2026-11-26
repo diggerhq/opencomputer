@@ -54,7 +54,6 @@ import { RunningSubagents } from './api/running.js';
 import { workspacesEnabled } from '../workspaces/index.js';
 import type {
   CheckoutResult,
-  Delivery,
   HostCredentials,
   TraceContext,
   HostToRunner,

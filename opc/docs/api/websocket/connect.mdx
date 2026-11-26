@@ -87,19 +87,17 @@ To attach later on an open connection, call [`sessions.attach`](/api/websocket/m
 Every message is [JSON-RPC 2.0](https://www.jsonrpc.org/specification), one per text frame. Batches are not supported.
 
 ```json
-{ "jsonrpc": "2.0", "id": 7, "method": "turns.send", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "input": "also add a regression test", "ifBusy": "steer", "idempotencyKey": "5b0d6c1e-2f7a-4a8e-9d3c-1e2f3a4b5c6d" } }
+{ "jsonrpc": "2.0", "id": 7, "method": "turns.get", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "turnId": "tn_4m8q2x7c1v9b" } }
 ```
 
 ```json
-{ "jsonrpc": "2.0", "id": 7, "result": { "turn": { "id": "tn_4m8q2x7c1v9b", "status": "running", "…": "…" }, "delivery": "steered", "duplicate": false, "seq": 1190, "timing": { "serverUs": 1210 } } }
+{ "jsonrpc": "2.0", "id": 7, "result": { "turn": { "id": "tn_4m8q2x7c1v9b", "status": "running", "…": "…" } } }
 ```
 
 - `id` is yours: a number or a string. Responses can come back in a different order than requests, so match on `id`.
 - The server sends notifications, which have no `id`: `ready`, `sessions.attached`, `event`, `delta`, `session.detached` and `terminal.exited`. See [Methods](/api/websocket/methods#notifications).
 - Binary frames carry terminal data only. See [Terminals](/api/websocket/terminals).
 - A message is at most 1 MiB. A larger one is not read: the connection closes with `1009`.
-
-The response to a request is always sent before any event the request caused. When the response to `turns.send` arrives, you know the turn's `id` before you see its `message.received`.
 
 ## Keeping it alive
 
@@ -117,7 +115,7 @@ A socket can look open long after the network under it is gone. Send a `ping`, w
 - When the network changes
 - Before sending on a socket that has been quiet for more than 15 seconds
 
-If it times out, dial a new connection while the old one is still open, attach, and resend anything unanswered with the same idempotency key. `opc` does this.
+If it times out, dial a new connection while the old one is still open, and resend anything unanswered. `opc` does this.
 
 ## Close codes
 

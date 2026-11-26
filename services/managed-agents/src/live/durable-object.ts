@@ -12,23 +12,23 @@ import {
   CORE_KINDS,
   type ClientFrame,
   type ComputerWatch,
-  EDGE_CREDENTIALS_URL,
   LEASE_MS,
   LEASE_RENEW_MS,
+  LIVE_CHECK_MAX,
   LIVE_PROTOCOL,
   LIVE_SUBPROTOCOL,
   type LiveAttachment,
+  type LiveCredentials,
   MAX_ATTACHMENT_BYTES,
   MAX_FRAME_BYTES,
   MAX_WAIT_MS,
   MAX_WATCHED_SESSIONS,
-  PRINCIPAL_HEADER,
   type Push,
   REVALIDATE_MS,
   type ServerFrame,
   type SessionLogWatch,
   feedStream,
-  verifyPrincipal,
+  upgradePrincipal,
 } from "./contract.js";
 import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../actor/contracts.js";
 import { cursor } from "../actor/cursor.js";
@@ -36,10 +36,8 @@ import { cursor } from "../actor/cursor.js";
 export interface LiveEnv {
   SESSION_LOG: { getByName(name: string): SessionLogWatch };
   COMPUTERS: { getByName(name: string): ComputerWatch };
-  /** The edge Worker, for the credential check. */
-  EDGE: { fetch(request: Request): Promise<Response> };
-  /** Signs the principal on an upgrade and authenticates Live to the edge. */
-  LIVE_KEY: string;
+  /** api-edge's `LiveCredentials` entrypoint, for the credential check. */
+  EDGE: LiveCredentials;
 }
 
 const EVENTS = 1;
@@ -99,9 +97,10 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
 
   // ---------------------------------------------------------------- the edge
 
+  /** The socket upgrade, with the principal the edge verified (`LiveUpgrade`). */
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("Expected a WebSocket upgrade.", { status: 426 });
-    const principal = await verifyPrincipal(this.env.LIVE_KEY, request.headers.get(PRINCIPAL_HEADER));
+    const principal = upgradePrincipal(request);
     if (!principal) return new Response("Unauthenticated.", { status: 401 });
     if (this.ctx.id.name && this.ctx.id.name !== principal.org) return new Response("Forbidden.", { status: 403 });
     const offered = (request.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim());
@@ -363,7 +362,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
 
   /** An `auth` frame: renews the credential, never widens it (section 18.7). */
   private async renew(socket: WebSocket, token: string): Promise<void> {
-    const principal = typeof token === "string" ? await this.edge<{ principal: Principal | null }>({ token }) : null;
+    const principal = typeof token === "string" ? await this.edge(async (edge) => ({ principal: await edge.principal(token) })) : null;
     if (principal === null) return this.send(socket, { t: "error", code: "unavailable", message: "The credential could not be checked." });
     const a = this.attachment(socket);
     if (!a) return;
@@ -419,12 +418,13 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
       if (a.v * 1000 + REVALIDATE_MS <= now) due.add(a.p.cred);
     }
     if (due.size === 0) return;
-    const answer = await this.edge<{ revoked: string[] }>({ check: [...due] });
-    if (!answer) return;
+    const ids = [...due].slice(0, LIVE_CHECK_MAX);
+    const revoked = await this.edge((edge) => edge.revoked(ids));
+    if (!revoked) return;
     const seconds = Math.floor(now / 1000);
     for (const [socket, a] of [...this.sockets]) {
-      if (!due.has(a.p.cred)) continue;
-      if (answer.revoked.includes(a.p.cred)) this.close(socket, CLOSE_UNAUTHENTICATED, "The credential was revoked.");
+      if (!ids.includes(a.p.cred)) continue;
+      if (revoked.includes(a.p.cred)) this.close(socket, CLOSE_UNAUTHENTICATED, "The credential was revoked.");
       else this.save(socket, { ...a, v: seconds });
     }
   }
@@ -452,16 +452,9 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
   }
 
   /** The edge's credential check; null when it cannot be asked. */
-  private async edge<T>(body: unknown): Promise<T | null> {
+  private async edge<T>(ask: (edge: LiveCredentials) => Promise<T>): Promise<T | null> {
     try {
-      const response = await this.env.EDGE.fetch(
-        new Request(EDGE_CREDENTIALS_URL, {
-          method: "POST",
-          headers: { authorization: `Bearer ${this.env.LIVE_KEY}`, "content-type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-      );
-      return response.ok ? ((await response.json()) as T) : null;
+      return await ask(this.env.EDGE);
     } catch {
       return null;
     }

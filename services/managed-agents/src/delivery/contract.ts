@@ -13,14 +13,19 @@ export const SLACK_KINDS = ["turn.refused", "machine.changed"];
 export const PAGE = 100;
 export const POLL_MS = 60_000;
 export const WAKE_DEBOUNCE_MS = 20_000;
-/** An owed delivery's waits between tries; past the last it goes to the dead list (section 40.6). */
-export const RETRY_MS = [5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000];
-export const SEND_TIMEOUT_MS = 10_000;
+/**
+ * A wake's or a Slack echo's waits between tries; past the last it goes to the dead list (section
+ * 18.6). Short, so one that keeps failing holds its group minutes, not hours. A webhook has none:
+ * handing it to Svix is retried without limit, and Svix retries the endpoint.
+ */
+export const RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000];
 export const MAX_ENDPOINTS = 20;
+/** The Svix application of an organization's webhooks. */
+export const svixApp = (org: string): string => `work-${org}`;
 
 /** `PUT /webhooks/{id}`'s body. */
 export interface EndpointInput {
-  /** `https:` on port 443. */
+  /** `https:`. */
   url: string;
   /** The occurrence kinds delivered; absent or empty, all of them. */
   kinds?: string[];
@@ -37,7 +42,7 @@ export interface Endpoint {
   secret?: string;
 }
 
-/** What a webhook's `POST` carries: the occurrence, as `GET /occurrences` shows it. */
+/** What a webhook's `POST` carries: the occurrence, as `GET /occurrences` shows it, signed and sent by Svix. */
 export type WebhookBody = Occurrence;
 
 export interface DeliveryRpcFull extends DeliveryRpc {

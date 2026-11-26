@@ -12,7 +12,7 @@
 // request that carries its result is answered `done`, and the result's text
 // is kept. `GET /calls` returns what was kept: `[{ tool, input, result }]`.
 // `GET /turns` returns, for each turn's request, the text of its person's
-// messages, earlier ones too (sandbox-check-legacy.ts: a resumed transcript).
+// messages, earlier ones too (a resumed transcript).
 //
 // Invariants: plain Node, no dependency, no file written: it runs from a
 // release mounted read-only. It listens on 127.0.0.1 only.

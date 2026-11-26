@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import { routeComputerDashboard } from "../src/computer/routes.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
-import { PRINCIPAL_HEADER } from "../src/live/contract.js";
+import { PRINCIPAL_HEADER, upgradePrincipal } from "../src/live/contract.js";
 
 const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
@@ -42,18 +42,16 @@ const ns = (actor: unknown) => ({ getByName: vi.fn(() => actor) });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("/live (spec 38)", () => {
-  it("passes the upgrade to the organization's Live with the principal signed", async () => {
+  it("passes the upgrade to the organization's Live with the principal it verified", async () => {
     const live = { fetch: vi.fn(async () => new Response(null, { status: 200 })) };
-    const call = setup({ LIVE: ns(live), LIVE_KEY: "k".repeat(32) });
-    expect((await call("GET", "/live", { headers: { upgrade: "websocket" } })).status).toBe(200);
+    const call = setup({ LIVE: ns(live) });
+    const headers = { upgrade: "websocket", "x-opencomputer-agent-token": "t", [PRINCIPAL_HEADER]: JSON.stringify({ org: "forged" }) };
+    expect((await call("GET", "/live", { headers })).status).toBe(200);
     const sent = (live.fetch.mock.calls[0] as unknown as [Request])[0];
-    expect(sent.headers.get(PRINCIPAL_HEADER)).toMatch(/\./);
+    expect(upgradePrincipal(sent)).toMatchObject({ org: ORG, kind: "member" });
+    expect(sent.headers.get("upgrade")).toBe("websocket");
     expect(sent.headers.get("x-opencomputer-agent-token")).toBeNull();
     expect((await call("GET", "/live")).status).toBe(426);
-  });
-
-  it("is 503 without LIVE_KEY", async () => {
-    expect((await setup({ LIVE: ns({ fetch: vi.fn() }) })("GET", "/live", { headers: { upgrade: "websocket" } })).status).toBe(503);
   });
 
   it("the edge's revoke reaches Live; only from the edge", async () => {

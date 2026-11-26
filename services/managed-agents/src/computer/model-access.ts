@@ -375,7 +375,7 @@ export interface ModelAccessDeps {
    * The connected host's hello `protocol` and `features`, and for a host at protocol 5 the `profiles` its
    * hello listed (undefined there: it never listed any); undefined when no host is connected.
    */
-  host(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined;
+  host(): { features: string[]; profiles?: ModelProfile[] } | undefined;
   /**
    * The organization's managed models as a route the connected host takes: `managed` below protocol 5; at 5
    * the profile route with the organization's key (model-key.ts `managedModelRoute`), which the host also has

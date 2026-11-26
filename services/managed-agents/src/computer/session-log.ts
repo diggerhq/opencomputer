@@ -629,8 +629,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return this.access;
   }
 
-  /** Live's lease on this log's events (spec 40.4): the head cursor, or null when `p` may not read. */
-  async watch(p: Principal, until: number): Promise<{ head: string } | null> {
+  /** Live's lease on this log's events (spec 40.4): the head cursor and the machine that serves the session, or null when `p` may not read. */
+  async watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null> {
     const access = await this.accessFor(p);
     if (!access || !mayRead(p, access, this.sessionId()!)) return null;
     if (until > this.meta.watchedUntil) {
@@ -638,7 +638,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       this.saveMeta(next);
       this.meta = next;
     }
-    return { head: this.head() };
+    return { head: this.head(), machine: access.machine };
   }
 
   /** The events cursor of the log's end. */

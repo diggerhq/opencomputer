@@ -112,17 +112,28 @@ describe('frames', () => {
     c.ws.close();
   });
 
-  it('forwards a call to the session writer, and asks where again once it moved', async () => {
-    const { port, host, sessions, writers } = await setup({ dial: { onCall: async () => ({ result: { turnId: 'tn_000000000000' } }) } });
+  it('forwards a read to the session writer, and asks where again once it moved', async () => {
+    const { port, host, sessions, writers } = await setup({ dial: { onCall: async () => ({ result: { session: { id: sessions[0] } } }) } });
     const c = connectClient(port);
     await c.next((m) => m.method === 'ready');
-    expect((await c.call('turns.send', { sessionId: sessions[0], input: 'hi' })).result.turnId).toBe('tn_000000000000');
-    await c.call('turns.send', { sessionId: sessions[0], input: 'again' });
+    expect((await c.call('sessions.get', { sessionId: sessions[0] })).result.session.id).toBe(sessions[0]);
+    await c.call('sessions.get', { sessionId: sessions[0] });
     expect(writers.writers).toHaveLength(1);
     host.push({ t: 'moved', sessionId: sessions[0] });
     await until(() => writers.writers[0].closed);
-    await c.call('turns.send', { sessionId: sessions[0], input: 'third' });
+    await c.call('sessions.get', { sessionId: sessions[0] });
     expect(writers.writers).toHaveLength(2);
+    c.ws.close();
+  });
+
+  it('knows no session write: those go through the inbox over HTTP', async () => {
+    const { port, sessions, writers } = await setup();
+    const c = connectClient(port);
+    await c.next((m) => m.method === 'ready');
+    for (const method of ['turns.send', 'turns.cancel', 'asks.answer', 'asks.dismiss', 'sessions.interrupt', 'sessions.update', 'sessions.compact', 'sessions.suspend', 'sessions.resume', 'subagents.stop']) {
+      expect((await c.call(method, { sessionId: sessions[0] })).error.code).toBe(-32601);
+    }
+    expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
     c.ws.close();
   });
 });
@@ -146,16 +157,16 @@ describe('limits and access', () => {
     c.ws.close();
   });
 
-  it('checks scopes and read-only before any writer', async () => {
+  it('checks scopes and read-only before any writer or terminal', async () => {
     const { port, sessions, writers } = await setup();
-    const reader = connectClient(port, { scope: { scopes: ['sessions:read'] } });
-    const r = await reader.call('sessions.suspend', { sessionId: sessions[0] });
+    const blind = connectClient(port, { scope: { scopes: ['terminals'] } });
+    const r = await blind.call('sessions.get', { sessionId: sessions[0] });
     expect(JSON.stringify(r.error)).toContain('missing_scope');
     const ticket = connectClient(port, { scope: { sessionIds: [sessions[0]], readOnly: true } });
-    const ro = await ticket.call('sessions.suspend', { sessionId: sessions[0] });
+    const ro = await ticket.call('terminals.open', { sessionId: sessions[0] });
     expect(JSON.stringify(ro.error)).toContain('read_only');
     expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
-    reader.ws.close();
+    blind.ws.close();
     ticket.ws.close();
   });
 

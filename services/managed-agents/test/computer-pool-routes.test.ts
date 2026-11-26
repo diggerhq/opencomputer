@@ -141,8 +141,6 @@ describe("warm pool", () => {
 
     // The install answered with org_b's computer already claimed: ready, on a warm slot.
     expect(await lifecycleRow(computers().getByName("org_b"))).toMatchObject({ organizationId: "org_b", state: "ready", poolSlot: expect.stringMatching(/^pool-/) });
-    // Installing again claims nothing more: it has a computer.
-    expect(await computers().getByName("org_b").ensureComputerOnInstall("org_b")).toBeNull();
 
     // The organization's computer is ready at once, on the pool computer's resources.
     const orgA = computers().getByName("org_a");

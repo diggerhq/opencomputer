@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import type { Principal } from "../src/actor/contracts.js";
 import { RETRY_MS } from "../src/delivery/contract.js";
 import type { DeliveryDurableObject } from "../src/delivery/durable-object.js";
-import { sign } from "../src/delivery/webhook.js";
 import type { FakeOccurrence, FakeOrg, FakeSessionLog, FakeSlack } from "./fixtures/delivery-test-worker.js";
 
 const bindings = env as unknown as {
@@ -14,8 +13,12 @@ const bindings = env as unknown as {
   SLACK: DurableObjectNamespace<FakeSlack>;
 };
 
-type Call = { host: string; path: string; status: number; occurrence: string; timestamp: string; signature: string; body: string };
-const calls = async (host: string): Promise<Call[]> => ((await (await fetch("https://hooks.test/calls")).json()) as Call[]).filter((c) => c.host === host);
+type SvixState = {
+  apps: Record<string, { uid: string; url: string; filterTypes?: string[]; channels?: string[]; disabled: boolean; metadata?: Record<string, string> }[]>;
+  messages: { app: string; eventType: string; eventId: string; idempotencyKey: string; channels: string[]; payload: unknown }[];
+};
+const svix = async (): Promise<SvixState> => (await (await fetch("https://api.svix.com/_test")).json()) as SvixState;
+const messagesOf = async (app: string) => (await svix()).messages.filter((m) => m.app === app);
 
 const member = (org: string, over: Partial<Principal> = {}): Principal => ({
   org,
@@ -62,73 +65,51 @@ const owedRows = (stub: DurableObjectStub<DeliveryDurableObject>): Promise<{ cal
   );
 
 describe("Delivery: webhook", () => {
-  it("delivers a signed occurrence, retries a failing endpoint on the schedule, and moves its cursor regardless", async () => {
-    const org = "org_hook";
+  it("hands each occurrence to Svix once, on the occurrence's key and audience, retrying until Svix takes it", async () => {
+    const org = "org_flaky";
     const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
-    const created = await delivery.setEndpoint(member(org), "wh_ok", { url: "https://ok.hooks.test/in" });
-    if (!created.ok) throw new Error("refused");
-    const secret = created.endpoint.secret!;
-    expect(secret).toMatch(/^whsec_/);
-    await delivery.setEndpoint(member(org), "wh_flaky", { url: "https://fail-2.hooks.test/in", kinds: ["turn.completed"] });
-
-    const head = await bindings.ORGS.getByName(org).add([
-      occurrence(1, "turn.completed"),
-      occurrence(2, "ask.opened"),
-      // Not the creator's to see: Org does not return it to them, so it is not sent.
-      occurrence(3, "turn.completed", { audience: "member:usr_2" }),
-    ]);
-    await delivery.poke(head);
-    await expect.poll(() => calls("ok.hooks.test")).toHaveLength(2);
-    expect(await delivery.status()).toEqual({ cursor: 3, behind: 0, dead: 0 });
-
-    const [first, second] = await calls("ok.hooks.test");
-    expect(first).toMatchObject({ path: "/in", occurrence: "cs_a:1:1" });
-    expect(JSON.parse(first!.body)).toEqual({ n: "o1.1", key: "cs_a:1:1", kind: "turn.completed", sessionId: "cs_a", trackId: null, by: "user:usr_1", at: "2026-11-25T10:00:00.000Z" });
-    expect(first!.signature).toBe(await sign(secret, first!.timestamp, first!.body));
-    expect(second!.occurrence).toBe("cs_a:1:2");
-
-    // The flaky endpoint took only the kind it asked for, failed, and is owed again after 5 s.
-    await expect.poll(() => calls("fail-2.hooks.test")).toHaveLength(1);
-    await expect.poll(async () => (await owedRows(delivery))[0]?.tries).toBe(1);
-    let [owedCall] = await owedRows(delivery);
-    expect(owedCall!.wait).toBeGreaterThan(RETRY_MS[0]! - 2_000);
-    expect(owedCall!.wait).toBeLessThanOrEqual(RETRY_MS[0]!);
-    await elapse(delivery);
-    [owedCall] = await owedRows(delivery);
-    expect(owedCall).toMatchObject({ call: "webhook", tries: 2 });
-    expect(owedCall!.wait).toBeGreaterThan(RETRY_MS[1]! - 2_000);
-    await elapse(delivery);
-    expect((await calls("fail-2.hooks.test")).map((c) => c.status)).toEqual([500, 500, 200]);
-    // The private occurrence was dropped behind it, not sent.
-    expect(await owedRows(delivery)).toEqual([]);
-    expect(await calls("ok.hooks.test")).toHaveLength(2);
-  });
-
-  it("puts a delivery that keeps failing on the dead list, and never calls a private address or follows a redirect", async () => {
-    const org = "org_dead";
-    const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
-    for (const [id, host] of [["wh_private", "private"], ["wh_meta", "metadata"], ["wh_redirect", "redirect"]] as const) {
-      expect(await delivery.setEndpoint(member(org), id, { url: `https://${host}.hooks.test/in` })).toMatchObject({ ok: true });
-    }
+    // No webhook yet: Svix is not asked.
     await delivery.poke(await bindings.ORGS.getByName(org).add([occurrence(1, "turn.completed")]));
-    await expect.poll(async () => (await owedRows(delivery)).map((row) => row.tries)).toEqual([1, 1, 1]);
-    for (let i = 0; i < RETRY_MS.length; i += 1) await elapse(delivery);
+    await expect.poll(async () => (await delivery.status()).cursor).toBe(1);
     expect(await owedRows(delivery)).toEqual([]);
-    expect(await delivery.status()).toEqual({ cursor: 1, behind: 0, dead: 3 });
-    expect(await calls("private.hooks.test")).toEqual([]);
-    expect(await calls("metadata.hooks.test")).toEqual([]);
-    expect(await calls("ok.hooks.test").then((all) => all.filter((c) => c.path === "/elsewhere"))).toEqual([]);
-    expect((await calls("redirect.hooks.test")).length).toBe(RETRY_MS.length + 1);
+
+    const created = await delivery.setEndpoint(member(org), "wh_ok", { url: "https://ok.hooks.test/in", kinds: ["turn.completed"] });
+    if (!created.ok) throw new Error("refused");
+    expect(created.endpoint.secret).toMatch(/^whsec_/);
+    const [endpoint] = (await svix()).apps[`work-${org}`]!;
+    expect(endpoint).toMatchObject({ uid: "wh_ok", url: "https://ok.hooks.test/in", filterTypes: ["turn.completed"], channels: ["org", "member.usr_1"], disabled: false });
+
+    const head = await bindings.ORGS.getByName(org).add([occurrence(2, "turn.completed"), occurrence(3, "ask.opened", { audience: "member:usr_2" })]);
+    await delivery.poke(head);
+    // Svix answers 503 twice: the messages stay owed, in order, and the cursor has moved on.
+    await expect.poll(async () => (await owedRows(delivery)).map((row) => row.tries)).toEqual([1, 0]);
+    expect(await delivery.status()).toEqual({ cursor: 3, behind: 0, dead: 0 });
+    await elapse(delivery);
+    await elapse(delivery);
+    expect(await owedRows(delivery)).toEqual([]);
+    expect(await messagesOf(`work-${org}`)).toEqual([
+      {
+        app: `work-${org}`,
+        eventType: "turn.completed",
+        eventId: "cs_a.1.2",
+        idempotencyKey: "cs_a:1:2",
+        channels: ["org"],
+        payload: { n: "o1.2", key: "cs_a:1:2", kind: "turn.completed", sessionId: "cs_a", trackId: null, by: "user:usr_1", at: "2026-11-25T10:00:00.000Z" },
+        id: "msg_1",
+      },
+      // Svix sends it to no endpoint of this creator's: its channel is not one of theirs.
+      expect.objectContaining({ eventType: "ask.opened", idempotencyKey: "cs_a:1:3", channels: ["member.usr_2"] }),
+    ]);
   });
 
-  it("keeps endpoints for members and keys with work:write only, on https and port 443", async () => {
+  it("keeps endpoints in Svix, for members and keys with work:write only, on https", async () => {
     const org = "org_endpoints";
     const delivery = bindings.DELIVERY.getByName(`${org}:webhook`);
     expect(await delivery.setEndpoint(member(org, { kind: "agent", session: "cs_x" }), "wh_1", { url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
     expect(await delivery.setEndpoint(member(org, { scopes: ["work:read"] }), "wh_1", { url: "https://ok.hooks.test/" })).toMatchObject({ ok: false, code: "forbidden" });
     expect(await delivery.setEndpoint(member(org), "wh_1", { url: "http://ok.hooks.test/" })).toMatchObject({ ok: false, code: "invalid_request" });
-    expect(await delivery.setEndpoint(member(org), "wh_1", { url: "https://ok.hooks.test:8443/" })).toMatchObject({ ok: false, code: "invalid_request" });
     expect(await bindings.DELIVERY.getByName(`${org}:wake`).listEndpoints(member(org))).toMatchObject({ ok: false, code: "not_found" });
+    expect(await delivery.listEndpoints(member(org))).toEqual({ ok: true, endpoints: [] });
 
     const created = await delivery.setEndpoint(member(org), "wh_1", { url: "https://ok.hooks.test/", kinds: ["thread.done"] });
     expect(created).toMatchObject({ ok: true, endpoint: { id: "wh_1", kinds: ["thread.done"], enabled: true, createdBy: "user:usr_1" } });
@@ -138,6 +119,7 @@ describe("Delivery: webhook", () => {
     expect((updated as { endpoint: { secret?: string } }).endpoint.secret).toBeUndefined();
     expect(await delivery.listEndpoints(member(org))).toEqual({ ok: true, endpoints: [{ id: "wh_1", url: "https://ok.hooks.test/two", kinds: [], enabled: false, createdBy: "user:usr_1" }] });
     expect(await delivery.removeEndpoint(member(org), "wh_1")).toEqual({ ok: true, removed: true });
+    expect(await delivery.removeEndpoint(member(org), "wh_1")).toEqual({ ok: true, removed: false });
     expect(await delivery.listEndpoints(member(org))).toEqual({ ok: true, endpoints: [] });
   });
 });
@@ -173,6 +155,9 @@ describe("Delivery: wake", () => {
     await elapse(delivery);
     expect(await bindings.SESSION_LOG.getByName("cs_parent").calls()).toMatchObject([{ entry: { body: { input: "digest for cs_parent: 1 to 4" } } }]);
     expect(await delivery.status()).toEqual({ cursor: 4, behind: 0, dead: 0 });
+    // One that keeps failing holds its target's later wakes for minutes, then goes to the dead list.
+    expect(RETRY_MS).toHaveLength(8);
+    expect(RETRY_MS.reduce((sum, wait) => sum + wait, 0)).toBeLessThan(5 * 60_000);
   });
 });
 
