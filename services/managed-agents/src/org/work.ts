@@ -4,6 +4,7 @@
 import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "../actor/contracts.js";
 import { cursor } from "../actor/cursor.js";
 import { platformPrincipal, type Principal } from "../actor/principal.js";
+import { crockfordId } from "../actor/helpers.js";
 import type { Sql } from "../actor/sql.js";
 import { runMutation } from "./mutations/index.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";
@@ -24,7 +25,6 @@ import {
   statusOf,
   summaryOf,
   transact,
-  mint,
   working,
   type PlaceRec,
   type SessionRec,
@@ -63,7 +63,7 @@ export function acceptMachine(sql: Sql, now: number, pub: MachinePub): { accepte
       if (!s) continue;
       sql.exec(
         "INSERT INTO result (id, session_id, kind, ref, title, state, state_at, version, audience) VALUES (?, ?, 'preview', ?, ?, 'open', ?, ?, ?) ON CONFLICT(session_id, kind, ref) DO NOTHING",
-        mint("res"),
+        crockfordId("res"),
         v.sessionId,
         v.url,
         v.name,

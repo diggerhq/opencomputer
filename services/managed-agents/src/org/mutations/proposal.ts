@@ -3,8 +3,9 @@
 // `args` by kind: `done` `{ outcome? }` on a thread or a track; `move` `{ trackId }` on a thread;
 // `wrap` `{ name? }` on a thread; `edit` `{ baseRev, text, spans }` on a track (written by `doc.save`).
 
-import { holdsTrack, isOwnSession, mint, parse, readPlace, readTrack, type Tx } from "../tx.js";
+import { holdsTrack, isOwnSession, parse, readPlace, readTrack, type Tx } from "../tx.js";
 import type { Principal } from "../../actor/principal.js";
+import { crockfordId } from "../../actor/helpers.js";
 import { byFor, isStr, isTid } from "./common.js";
 import { openProposal, ownsTarget } from "./doc.js";
 import { runMutation } from "./index.js";
@@ -73,7 +74,7 @@ const proposalAccept: MutationFn = (tx, p, args) => {
       : r.kind === "move"
         ? ["thread.place", { sid: r.target, trackId: a.trackId }]
         : r.kind === "wrap"
-          ? ["track.create", { tid: mint("trk"), agentSessionId: mint("cs"), name: a.name, sid: r.target }]
+          ? ["track.create", { tid: crockfordId("trk"), agentSessionId: crockfordId("cs"), name: a.name, sid: r.target }]
           : ["doc.save", { tid: r.target, baseRev: a.baseRev, text: a.text, spans: a.spans ?? [] }];
   const out = runMutation(tx, p, name, margs);
   if (!out.ok) {

@@ -62,6 +62,7 @@ import {
 } from "../actor/index.js";
 import type { FoldSummary } from "./session-fold.js";
 import { decodeCursor, encodeCursor } from "./list-cursor.js";
+import { crockfordId } from "../actor/helpers.js";
 import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "./api-types.js";
 import {
   applyEvent,
@@ -346,16 +347,6 @@ CREATE TABLE IF NOT EXISTS meta (
   summary TEXT NOT NULL
 );
 `;
-
-const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
-
-/** `ev_` + 16 random lowercase Crockford base32. */
-export function newEventId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let id = "ev_";
-  for (const byte of bytes) id += CROCKFORD[byte & 31];
-  return id;
-}
 
 export function blobKey(organizationId: string, sessionId: string, epoch: number, seq: number): string {
   return `sessions/${organizationId}/${sessionId}/events/${epoch}-${seq}.json`;
@@ -910,7 +901,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const out: ApiEvent[] = [];
     let seq = this.meta.ack;
     const push = (type: string, turnId: string | null, data: unknown) =>
-      out.push({ id: newEventId(), seq: ++seq, createdAt: input.at, sessionId: input.sessionId, turnId, type, actor: SYSTEM_ACTOR, data });
+      out.push({ id: crockfordId("ev"), seq: ++seq, createdAt: input.at, sessionId: input.sessionId, turnId, type, actor: SYSTEM_ACTOR, data });
     const failTool = (call: OpenToolCall, settledBy: string) =>
       push("tool.failed", call.turnId, {
         toolName: call.toolName,

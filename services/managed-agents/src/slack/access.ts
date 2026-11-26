@@ -2,6 +2,8 @@
 // access-views.ts, without `drivers`: a session's writers are Org's now, changed by
 // `thread.writers`). Pure: the commands as typed, the texts, and the `ac:` buttons.
 
+import { base64url } from "../actor/helpers.js";
+
 /** Held context: text cut to this when stored, the newest rows read, rows older than this deleted. */
 export const CONTEXT_MAX_CHARS = 4_000;
 export const CONTEXT_MAX_ROWS = 40;
@@ -142,28 +144,13 @@ export const sessionGoneText = () => "That session is gone; nothing was set.";
 
 export type AccessVerb = "allow" | "deny";
 
-function toBase64url(s: string): string {
-  let bin = "";
-  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64url(s: string): string | undefined {
-  try {
-    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
-  } catch {
-    return undefined;
-  }
-}
-
 export function encodeAccessId(sessionKey: string, verb: AccessVerb, userId: string): string {
-  return `ac:${toBase64url(sessionKey)}:${verb}:${userId}`;
+  return `ac:${base64url.encode(sessionKey)}:${verb}:${userId}`;
 }
 
 export function decodeAccessId(actionId: string): { sessionKey: string; verb: AccessVerb; userId: string } | undefined {
   const m = actionId.match(/^ac:([A-Za-z0-9_-]+):(allow|deny):([A-Z0-9]+)$/);
-  const sessionKey = m?.[1] && fromBase64url(m[1]);
+  const sessionKey = m?.[1] && base64url.text(m[1]);
   if (!m || !sessionKey) return undefined;
   return { sessionKey, verb: m[2] as AccessVerb, userId: m[3]! };
 }
