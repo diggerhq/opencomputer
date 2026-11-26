@@ -2451,7 +2451,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.ctx.waitUntil(this.readSlack());
     this.ctx.waitUntil(this.publishMachine());
     if (!(this.setting("adopted") && this.setting("imported"))) this.ctx.waitUntil(this.migrate().catch(() => undefined));
-    this.ctx.storage.sql.exec("UPDATE dispatches SET state = 'pending' WHERE state = 'sent'");
     // The host starts over: what it reports working now is billed from now;
     // whatever the previous socket left open ends here.
     this.billing.closeAll("host_reconnected", Date.now());
