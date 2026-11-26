@@ -5,6 +5,7 @@
 import type { ApiErrorBody, ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
+import type { SlackResult } from "../slack/slack-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "./principal.js";
 
@@ -358,7 +359,13 @@ export interface SlackRpc {
   interact(id: string, interaction: unknown): Promise<SlackModalReply>;
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
-  /** Computer only. */
+  // Computer only: it reaches Slack through these and holds no token of its own.
+  /** A Web API call made with the bot token; `{ ok: false, error: "not_linked" }` when there is none. */
+  api(method: string, body: Record<string, unknown>): Promise<SlackResult>;
+  /** A Slack person's principal, or null when Slack does not report them a member of the workspace. Throws when Slack could not be asked. */
+  principal(slackUser: string): Promise<Principal | null>;
+  /** A Slack person's display name, or their id when Slack does not say. */
+  userName(slackUser: string): Promise<string>;
   /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
   forHost(): Promise<{
     people: CalvinPerson[];

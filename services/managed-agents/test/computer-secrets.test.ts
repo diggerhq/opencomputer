@@ -6,9 +6,9 @@ import type { Principal } from "../src/actor/principal.js";
 import type { ApiRequest } from "../src/computer/sessions-api.js";
 import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
 import { secretNameProblem } from "../src/computer/secrets.js";
-import type { SlackResult } from "../src/computer/slack.js";
+import type { SlackResult } from "../src/slack/slack-api.js";
 import { driversCommandText } from "../src/computer/access.js";
-import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/computer/threads.js";
+import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/slack/threads.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";

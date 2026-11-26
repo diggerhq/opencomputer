@@ -24,7 +24,7 @@ import {
   type AutonomousBillingEnv,
   autonomousBillingAdmission,
 } from "../edge/billing-admission.js";
-import type { SlackResult } from "./slack.js";
+import type { SlackResult } from "../slack/slack-api.js";
 
 /** A Slack message whose link is a button (086: "Links are buttons, not raw URLs"); `text` keeps the URL for notifications and clients without blocks. */
 export interface SlackNotice {

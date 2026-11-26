@@ -42,7 +42,7 @@ import {
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
 import { isId, isMemberId, mintId } from "./session-ids.js";
-import { slackThreadUrl } from "./slack.js";
+import { slackThreadUrl } from "../slack/slack-api.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
 /** A `start` frame's answer from the host: 15 s, then it is let go. */

@@ -59,20 +59,12 @@ export interface JournaledBatch {
   result: AppendResult;
 }
 
-/** The Slack queue at a moment: rows pending or running, and how long the oldest pending one has waited. */
-export interface SlackQueueNow {
-  rows: number;
-  oldestMs: number | null;
-}
-
 export type RecoveryKind = "gap_4010" | "stale_epoch" | "recover_alarm" | "session_recovered" | "epoch_sent" | "tail_retry";
 
 export interface ApiTelemetryOptions {
   emit: EmitTelemetry;
   /** The session's surface (a row read). */
   surfaceOf: (sessionId: string) => ApiSurface;
-  /** The DO's Slack queue now (one COUNT over a small table); absent outside the DO. */
-  slackQueue?: () => SlackQueueNow;
   now?: () => number;
 }
 
@@ -128,7 +120,6 @@ export class ApiTelemetry {
           ...ms("do_pre_ms", batch.preMs),
           ...ms("do_post_ms", batch.postMs),
           ...ms("do_ack_ms", batch.ackMs),
-          ...this.queue(),
           ...(st
             ? {
                 store_ms: Math.round(st.storeMs),
@@ -207,17 +198,6 @@ export class ApiTelemetry {
       ...(fields.ok ? {} : { error_type: "unknown" }),
       data: { key_id: fields.keyId, known: fields.known, host_told: fields.hostTold },
     });
-  }
-
-  /** The Slack queue's rows waiting now: does this work run while Slack messages wait on the same DO? */
-  private queue(): Record<string, number> {
-    try {
-      const q = this.o.slackQueue?.();
-      if (!q) return {};
-      return { slack_queue_rows: q.rows, ...(q.oldestMs !== null ? { slack_queue_oldest_ms: Math.max(0, Math.round(q.oldestMs)) } : {}) };
-    } catch {
-      return {};
-    }
   }
 
   private one<N extends EventName>(name: N, fields: EventFields<N>): void {
