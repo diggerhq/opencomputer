@@ -134,17 +134,17 @@ export class SessionApi implements Writer {
     session.hooks.api = this.tap;
     const call = dispatch(log, this.handlers());
     const onWrite = o.onWrite;
-    this.call = !onWrite
-      ? call
-      : async (method, params, ctx) => {
-          if (!WRITES.has(method as never)) return call(method, params, ctx);
-          const t0 = performance.now();
-          const out = await call(method, params, ctx);
-          try {
-            onWrite({ method, params, ctx, ms: performance.now() - t0, out });
-          } catch {} // telemetry never fails a call
-          return out;
-        };
+    this.call = async (method, params, ctx) => {
+      if (!WRITES.has(method as never)) return call(method, params, ctx);
+      const t0 = performance.now();
+      const out = await call(method, params, ctx);
+      try {
+        onWrite?.({ method, params, ctx, ms: performance.now() - t0, out });
+      } catch {} // telemetry never fails a call
+      // A suspend ends the runner once its call is over (its idempotency kept); the socket writes the reply before it closes.
+      if (method === 'sessions.suspend' && !out.error && log.fold.status === 'suspended') this.o.suspend();
+      return out;
+    };
   }
 
   /** A person set the title over the API (kept in the session's info, across restarts): the computer's naming (work 093) leaves it alone. */
@@ -192,6 +192,18 @@ export class SessionApi implements Writer {
       this.inflight--;
       this.idle();
     });
+  }
+
+  /**
+   * The runner serves the session: a journal that left it `suspended` or `starting` (a resume, a send, a wake)
+   * says the agent is up (`runtime.connected`) and idle until a turn runs.
+   */
+  connected() {
+    const was = this.log.fold.status;
+    if (was !== 'suspended' && was !== 'starting') return;
+    const resumed = was === 'suspended' || this.log.fold.turns().some((t) => t.status !== 'queued');
+    this.log.append('runtime.connected', { warm: false, resumed, durationMs: null }, { actor: null });
+    this.tap.setStatus('idle');
   }
 
   /**
@@ -384,10 +396,10 @@ export class SessionApi implements Writer {
         this.tap.asks.closeAll();
         this.log.append('runtime.suspended', { reason: 'requested' }, { actor });
         this.tap.setStatus('suspended');
-        const out = this.sessionResult();
-        this.o.suspend();
-        return out;
+        return this.sessionResult(); // the runner ends after the reply (`call`)
       },
+      // The host started this runner for the call (NEEDS_AGENT): the session is not suspended, so it is returned unchanged.
+      'sessions.resume': () => this.sessionResult(),
       'subagents.stop': async (p, ctx) => {
         const a = this.tap.subagents.get(p.subagentId) ?? fold.subagent(p.subagentId);
         if (!a) return fail('subagent_not_found', `no subagent ${p.subagentId}`, 404);

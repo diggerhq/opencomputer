@@ -44,6 +44,7 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type DeliveredOutcome,
+  type EntryError,
   type EntryOutcome,
   type EventPush,
   type EventsReset,
@@ -738,7 +739,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const row = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", id).toArray()[0];
     if (!row) return null;
     if (row.state === "delivered") return { state: "delivered", result: row.result === null ? null : (JSON.parse(row.result) as unknown) };
-    if (row.state === "refused") return { state: "refused", error: JSON.parse(row.error ?? "{}") as { code: string; message: string } };
+    if (row.state === "refused") return { state: "refused", error: JSON.parse(row.error ?? "{}") as EntryError };
     return { state: "waiting" };
   }
 
@@ -746,11 +747,12 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const now = Date.now();
     this.db.transaction(() => {
       // Only a waiting entry: a repeated report changes nothing.
-      const changed = outcome.ok
+      const { ok, ...error } = outcome;
+      const changed = ok
         ? this.sql.exec("UPDATE inbox SET state = 'delivered', result = ?, done_at = ? WHERE id = ? AND state = 'waiting' RETURNING n", JSON.stringify(outcome.result ?? null), now, id)
         : this.sql.exec(
             "UPDATE inbox SET state = 'refused', error = ?, done_at = ? WHERE id = ? AND state = 'waiting' RETURNING n",
-            JSON.stringify({ code: outcome.code, message: outcome.message }),
+            JSON.stringify(error), // the host's code with its status and fields: a later `entry` answers as the drain did
             now,
             id,
           );

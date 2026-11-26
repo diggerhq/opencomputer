@@ -34,6 +34,8 @@ export const MAX_LINE = 1 << 20;
 /** The client's cap: a writer's result may carry an events page of up to 500 events. */
 const CLIENT_MAX_LINE = 64 << 20;
 const HELLO_MS = 5000;
+/** `close` waits at most this long for the replies of calls being answered. */
+const CLOSE_REPLY_MS = 2000;
 
 /** Read NDJSON from `sock`, bounding each line; `on` runs synchronously in arrival order. */
 function readLines(sock: net.Socket, maxLine: number, on: (m: unknown) => void): void {
@@ -80,11 +82,16 @@ export interface ApiServer {
 /** Serve `writer` on the unix socket `path` (replacing a stale file), mode 0660 by default. */
 export async function serveApi(path: string, writer: Writer, o: { token: string; mode?: number }): Promise<ApiServer> {
   const socks = new Set<net.Socket>();
+  /** Calls being answered: `close` writes their replies first (a `sessions.suspend` ends the runner that answers it). */
+  const answering = new Set<Promise<unknown>>();
   const server = net.createServer((sock) => {
     socks.add(sock);
     sock.on('close', () => socks.delete(sock));
     sock.on('error', () => {});
-    connection(sock, writer, o.token);
+    connection(sock, writer, o.token, (p) => {
+      answering.add(p);
+      void p.finally(() => answering.delete(p));
+    });
   });
   fs.rmSync(path, { force: true });
   await new Promise<void>((resolve, reject) => {
@@ -98,14 +105,15 @@ export async function serveApi(path: string, writer: Writer, o: { token: string;
   return {
     connections: () => socks.size,
     close: async () => {
-      for (const s of socks) s.destroy();
+      await Promise.race([Promise.allSettled([...answering]), new Promise((r) => setTimeout(r, CLOSE_REPLY_MS).unref?.())]);
+      for (const s of socks) s.end(() => s.destroy()); // what was written goes out, then the socket closes
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(path, { force: true });
     },
   };
 }
 
-function connection(sock: net.Socket, writer: Writer, token: string): void {
+function connection(sock: net.Socket, writer: Writer, token: string, answering: (reply: Promise<unknown>) => void): void {
   let authed = false;
   let writing = 0;
   let sub: Subscription | undefined;
@@ -136,14 +144,16 @@ function connection(sock: net.Socket, writer: Writer, token: string): void {
         const ctx: CallContext = { actor: m.actor, member: m.member, idempotencyKey: m.idempotencyKey, requestId: m.requestId };
         const isWrite = WRITES.has(m.method as never);
         if (isWrite) writing++;
-        writer
-          .call(m.method, m.params, ctx)
-          .catch((e): CallOutcome => ({ error: apiError('internal', String((e as Error)?.message ?? e), 500, { retryable: true }) }))
-          .then((out) => {
-            result(m.id, out);
-            if (isWrite) writing--;
-            pump();
-          });
+        answering(
+          writer
+            .call(m.method, m.params, ctx)
+            .catch((e): CallOutcome => ({ error: apiError('internal', String((e as Error)?.message ?? e), 500, { retryable: true }) }))
+            .then((out) => {
+              result(m.id, out);
+              if (isWrite) writing--;
+              pump();
+            }),
+        );
         return;
       }
       case 'subscribe': {
