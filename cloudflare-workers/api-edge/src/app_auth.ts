@@ -12,10 +12,12 @@
 // the device, and a 15 minute life. The refresh token is stored per device
 // (migration 0025) as a hash and rotates on every use.
 
+import { base64url } from "jose";
 import { revokeLiveCredential } from "./computer_keys";
 import { authDashboard, type DashboardEnv } from "./dashboard";
 import type { ManagedAgentsEnv } from "./managed_agents";
 import { memberPrincipal, type Principal } from "./principal";
+import { signJWT, verifyJWT } from "./jwt";
 
 export type AppAuthEnv = Pick<DashboardEnv, "OPENCOMPUTER_DB" | "SESSION_JWT_SECRET"> &
   Pick<ManagedAgentsEnv, "MANAGED_AGENTS_API_URL" | "OC_MANAGED_AGENTS_SECRET">;
@@ -29,23 +31,13 @@ const DEVICE_NAME_MAX = 100;
 
 const encoder = new TextEncoder();
 
-function b64url(bytes: ArrayBuffer | Uint8Array): string {
-  let s = "";
-  for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 function randomToken(bytes = 32): string {
-  return b64url(crypto.getRandomValues(new Uint8Array(bytes)));
+  return base64url.encode(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function hmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [usage]);
 }
 
 function json(body: unknown, status = 200): Response {
@@ -67,7 +59,7 @@ export interface AppTokenClaims {
   exp: number;
 }
 
-export async function mintAppToken(secret: string, org: string, userId: string, device: string): Promise<string> {
+export function mintAppToken(secret: string, org: string, userId: string, device: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const claims: AppTokenClaims = {
     iss: APP_TOKEN_ISSUER,
@@ -78,29 +70,15 @@ export async function mintAppToken(secret: string, org: string, userId: string, 
     iat: now,
     exp: now + APP_ACCESS_TTL_SEC,
   };
-  const input =
-    b64url(encoder.encode(JSON.stringify({ alg: "HS256", typ: "JWT" }))) +
-    "." +
-    b64url(encoder.encode(JSON.stringify(claims)));
-  return `${input}.${b64url(await crypto.subtle.sign("HMAC", await hmacKey(secret, "sign"), encoder.encode(input)))}`;
+  return signJWT(secret, { ...claims });
 }
 
 /** An app access token's claims; null unless it verifies and has not expired. */
 export async function verifyAppToken(secret: string, token: string): Promise<AppTokenClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3 || !secret) return null;
-  try {
-    const signature = Uint8Array.from(atob(parts[2]!.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
-    const ok = await crypto.subtle.verify("HMAC", await hmacKey(secret, "verify"), signature, encoder.encode(`${parts[0]}.${parts[1]}`));
-    if (!ok) return null;
-    const claims = JSON.parse(atob(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"))) as AppTokenClaims;
-    if (claims.iss !== APP_TOKEN_ISSUER || typeof claims.dev !== "string") return null;
-    if (typeof claims.org_id !== "string" || typeof claims.user_id !== "string") return null;
-    if (!(claims.exp > Math.floor(Date.now() / 1000))) return null;
-    return claims;
-  } catch {
-    return null;
-  }
+  const claims = await verifyJWT<AppTokenClaims>(secret, token, APP_TOKEN_ISSUER);
+  if (!claims || typeof claims.dev !== "string") return null;
+  if (typeof claims.org_id !== "string" || typeof claims.user_id !== "string") return null;
+  return claims;
 }
 
 /** The member's role, `admin` for an owner or admin; null when not a member. */
@@ -231,7 +209,7 @@ async function token(req: Request, env: AppAuthEnv): Promise<Response> {
     }
     if (field("redirect_uri") !== row.redirect_uri) return oauthError("invalid_grant", "redirect_uri does not match.");
     const verifier = field("code_verifier");
-    const challenge = b64url(await crypto.subtle.digest("SHA-256", encoder.encode(verifier)));
+    const challenge = base64url.encode(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier))));
     if (!CHALLENGE.test(verifier) || challenge !== row.code_challenge) {
       return oauthError("invalid_grant", "code_verifier does not match.");
     }
