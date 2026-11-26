@@ -258,7 +258,7 @@ ${
 <h2>3. Claude credential: ${badge(claude.startsWith('done') ? 'done' : 'pending')}</h2>
 ${claude.startsWith('done') ? `<p>${esc(claude)}${fromEnv(secrets, 'CLAUDE_CODE_OAUTH_TOKEN') || fromEnv(secrets, 'ANTHROPIC_API_KEY') ? ', from the environment (overrides the store)' : ''}.</p>` : ''}
 <form method="post" action="/setup/claude">${hidden(ctx)}
-<p>Paste a token from <code>claude setup-token</code> (<code>sk-ant-oat…</code>) or an Anthropic API key (<code>sk-ant-api…</code>).</p>
+<p>Paste a Claude subscription token from <code>claude setup-token</code> (<code>sk-ant-oat…</code> or <code>sk-ant-usr…</code>) or an Anthropic API key (<code>sk-ant-api…</code>).</p>
 <label>Token <input type="password" name="token" autocomplete="off"></label>
 <button>Save</button></form>
 
@@ -374,9 +374,11 @@ export function setupRoutes(deps: SetupDeps): CustomRoute[] {
     // 3. Claude credential
     route('POST', '/setup/claude', (req, res) => {
       const token = (formOf(req).get('token') ?? '').trim();
-      const name = /^sk-ant-oat/.test(token) ? 'CLAUDE_CODE_OAUTH_TOKEN' : /^sk-ant-api/.test(token) ? 'ANTHROPIC_API_KEY' : undefined;
+      // Subscription tokens (setup-token `sk-ant-oat…`, `sk-ant-usr…`) authenticate as a Bearer
+      // OAuth token, so Claude Code takes them as CLAUDE_CODE_OAUTH_TOKEN; only API keys go in x-api-key.
+      const name = /^sk-ant-(oat|usr)/.test(token) ? 'CLAUDE_CODE_OAUTH_TOKEN' : /^sk-ant-api/.test(token) ? 'ANTHROPIC_API_KEY' : undefined;
       if (!name || /\s/.test(token))
-        return send(res, 400, page('Not saved', `<p class="err">Expected a <code>sk-ant-oat…</code> setup-token or a <code>sk-ant-api…</code> API key.</p>${back}`));
+        return send(res, 400, page('Not saved', `<p class="err">Expected a Claude subscription token (<code>sk-ant-oat…</code> or <code>sk-ant-usr…</code>) or a <code>sk-ant-api…</code> API key.</p>${back}`));
       // Exactly one credential (HostCredentials).
       secrets.set(name, token);
       secrets.set(name === 'ANTHROPIC_API_KEY' ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY', '');

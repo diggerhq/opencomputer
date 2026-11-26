@@ -318,6 +318,8 @@ await check('claude: setup-token or API key, exactly one kept', async () => {
   assert.equal(secrets.get('ANTHROPIC_API_KEY'), 'sk-ant-api03-fake');
   assert.equal((await post('/setup/claude', { csrf, token: 'sk-ant-oat01-fake' })).status, 303);
   assert.equal(secrets.get('CLAUDE_CODE_OAUTH_TOKEN'), 'sk-ant-oat01-fake');
+  assert.equal((await post('/setup/claude', { csrf, token: 'sk-ant-usr01-fake' })).status, 303);
+  assert.equal(secrets.get('CLAUDE_CODE_OAUTH_TOKEN'), 'sk-ant-usr01-fake');
   assert.equal(secrets.get('ANTHROPIC_API_KEY'), undefined);
 });
 
