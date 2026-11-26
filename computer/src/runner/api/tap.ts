@@ -341,20 +341,21 @@ export class Tap implements SessionTap {
       case 'tool_input':
         return this.preparing.input(e.id, e.delta);
       case 'text': {
+        const blockId = this.lastBlock.text ?? mintId('ev');
+        this.lastBlock.text = undefined;
         const silent = e.delta.trimStart().startsWith(SILENT);
         const text = silent ? e.delta.trimStart().slice(SILENT.length).trimStart() : e.delta;
         if (t && silent && !t.texts.length) t.silent = true;
         if (!t || !text) return;
         t.silent = false;
         t.texts.push(text);
-        this.append('message.completed', { blockId: this.lastBlock.text ?? mintId('ev'), parentCallId: null, text }, turnId);
-        this.lastBlock.text = undefined;
+        this.append('message.completed', { blockId, parentCallId: null, text }, turnId);
         return;
       }
       case 'thinking': {
-        if (!t) return;
         const id = this.lastBlock.thinking ?? mintId('ev');
         this.lastBlock.thinking = undefined;
+        if (!t) return;
         const at = this.blocks.get(id);
         this.blocks.delete(id);
         this.append('reasoning.completed', { blockId: id, parentCallId: null, text: e.delta, redacted: !e.delta, durationMs: at === undefined ? null : count(this.now() - at) }, turnId);
