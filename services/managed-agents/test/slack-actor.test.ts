@@ -34,6 +34,7 @@ async function linked(org: string): Promise<void> {
     for (const [key, value] of [["slackTeamId", "T1"], ["slackTeamName", "Acme"], ["slackBotUserId", "UBOT"], ["slackBotToken", token]]) {
       exec("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
     }
+    exec("INSERT OR REPLACE INTO meta (k, imported) VALUES (1, 1)");
   });
 }
 
@@ -361,6 +362,33 @@ describe("the edge's Slack routes", () => {
     await settled(org);
     const sid = await sessionIdFor("T1:C1:900.1");
     expect((await callsOf(logOf(sid))).map((c) => (c.args[1] as { id: string }).id)).toEqual([await turnIdFor("T1:C1:900.1", "900.1")]);
+  });
+
+  it("handles an un-imported organization's first Slack event, not drops it", async () => {
+    // The workspace is claimed only in Computer's old router; its Slack state is still Computer's.
+    const org = "org_lazy";
+    await slackOf("slack-team:T1").releaseTeam("org_edge"); // the test above's link
+    const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T1`);
+    await computerOf(org).set({
+      rows: [
+        { type: "setting", key: "slackTeamId", value: "T1" },
+        { type: "setting", key: "slackBotUserId", value: "UBOT" },
+        { type: "setting", key: "slackBotToken", value: token },
+      ],
+    });
+    await computerOf("computer-slack-team:T1").set({ teamAccount: org });
+    const routeEnv = { ...bindings, SLACK_COMPUTER_SIGNING_SECRET: "shh" } as unknown as SlackRouteEnv;
+    const e = message({ text: "first touch", ts: "910.1" });
+
+    const context = createExecutionContext();
+    expect((await routeSlackPublic(await signed(JSON.stringify(e.body), "shh"), routeEnv, context))?.status).toBe(200);
+    await waitOnExecutionContext(context);
+    await settled(org);
+    const key = "T1:C1:910.1";
+    expect((await callsOf(logOf(await sessionIdFor(key)))).map((c) => (c.args[1] as { id: string }).id)).toEqual([await turnIdFor(key, "910.1")]);
+    // Imported once, and the workspace now routes through the Slack actor's router.
+    expect(await slackOf("slack-team:T1").teamOrg()).toBe(org);
+    await slackOf("slack-team:T1").releaseTeam(org);
   });
 });
 
