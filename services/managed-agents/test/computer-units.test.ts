@@ -30,7 +30,7 @@ import {
   parseSlackEnvelope,
   slackThreadUrl,
 } from "../src/slack-api/web-api.js";
-import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/actors/computer/team-cache.js";
+import { TEAM_ORG_TTL_MS, TeamOrgCache } from "../src/http/slack/team-orgs.js";
 import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/actors/slack/access.js";
 import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack-api/threads.js";
 
@@ -520,9 +520,9 @@ describe("idle park setting", () => {
 });
 
 describe("Slack workspace → organization cache", () => {
-  it("asks the link object once per minute per workspace in an isolate, and never remembers an unlinked one", async () => {
+  it("asks the team router once per minute per workspace in an isolate, and never remembers an unlinked one", async () => {
     let now = 1_000;
-    const cache = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, () => now);
+    const cache = new TeamOrgCache(TEAM_ORG_TTL_MS, () => now);
     const asked: string[] = [];
     const links: Record<string, string | null> = { T1: "org_a", T2: null };
     const lookup = (teamId: string) => () => {
@@ -530,29 +530,29 @@ describe("Slack workspace → organization cache", () => {
       return Promise.resolve(links[teamId] ?? null);
     };
 
-    expect(await cache.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: null });
-    now += TEAM_ACCOUNT_TTL_MS - 1;
-    expect(await cache.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "memory" });
+    expect(await cache.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: null });
+    now += TEAM_ORG_TTL_MS - 1;
+    expect(await cache.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "memory" });
     expect(asked).toEqual(["T1"]);
     // Past the minute: asked again, and a relink is seen.
     links.T1 = "org_b";
     now += 1;
-    expect((await cache.get("T1", lookup("T1"))).accountId).toBe("org_b");
+    expect((await cache.get("T1", lookup("T1"))).org).toBe("org_b");
     expect(asked).toEqual(["T1", "T1"]);
 
     // Unlinked: asked every time, so an install links at once.
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBeNull();
+    expect((await cache.get("T2", lookup("T2"))).org).toBeNull();
     links.T2 = "org_c";
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBe("org_c");
+    expect((await cache.get("T2", lookup("T2"))).org).toBe("org_c");
     expect(asked).toEqual(["T1", "T1", "T2", "T2"]);
 
     // Forgotten (a release here): the next event asks.
     await cache.forget("T2");
     links.T2 = null;
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBeNull();
+    expect((await cache.get("T2", lookup("T2"))).org).toBeNull();
     // Remembered (an install here): no lookup.
     await cache.remember("T3", "org_d");
-    expect(await cache.get("T3", lookup("T3"))).toEqual({ accountId: "org_d", cached: "memory" });
+    expect(await cache.get("T3", lookup("T3"))).toEqual({ org: "org_d", cached: "memory" });
     expect(asked).toEqual(["T1", "T1", "T2", "T2", "T2"]);
   });
 
@@ -560,30 +560,30 @@ describe("Slack workspace → organization cache", () => {
     const colo = new Map<string, string>();
     const shared = {
       get: async (teamId: string) => colo.get(teamId) ?? null,
-      put: async (teamId: string, accountId: string) => void colo.set(teamId, accountId),
+      put: async (teamId: string, org: string) => void colo.set(teamId, org),
       delete: async (teamId: string) => void colo.delete(teamId),
     };
     const asked: string[] = [];
     const lookup = (teamId: string) => async () => (asked.push(teamId), "org_a");
-    const first = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => shared);
-    const second = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => shared);
+    const first = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => shared);
+    const second = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => shared);
 
-    expect(await first.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: null });
+    expect(await first.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: null });
     // Another isolate in the colo: no link-object call, then its own memory.
-    expect(await second.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "colo" });
-    expect(await second.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "memory" });
+    expect(await second.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "colo" });
+    expect(await second.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "memory" });
     expect(asked).toEqual(["T1"]);
     // A release forgets it in the colo too.
     await first.forget("T1");
     expect(colo.has("T1")).toBe(false);
 
     // A failing colo layer is a miss, never an error.
-    const broken = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => ({
+    const broken = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => ({
       get: () => Promise.reject(new Error("cache down")),
       put: () => Promise.reject(new Error("cache down")),
       delete: () => Promise.reject(new Error("cache down")),
     }));
-    expect(await broken.get("T9", lookup("T9"))).toEqual({ accountId: "org_a", cached: null });
+    expect(await broken.get("T9", lookup("T9"))).toEqual({ org: "org_a", cached: null });
     await broken.forget("T9");
   });
 });
