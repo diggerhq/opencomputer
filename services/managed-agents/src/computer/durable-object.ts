@@ -566,6 +566,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       push: (which) => this.pushSecrets(which),
       // Lazy: `this.access` is built below.
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
+      isAdmin: (member) => this.api.isAdmin(member),
+      name: (slackUserId) => this.threads().name(slackUserId),
       wake: (session, userId, text, ts) => this.wakeSession(session, userId, text, ts),
     });
     this.access = createModelAccess({

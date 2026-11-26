@@ -10,6 +10,6 @@ description: "Changes to opc and to the session API."
   - The session API over HTTP and the `opc.v1` WebSocket protocol.
   - A session's speed: `fast` (the default) or `standard`. `--speed` on `opc`, `opc -p` and `opc new`, `/speed` on the session screen, `speed` on create and `PATCH`.
   - opc moved into [diggerhq/opencomputer](https://github.com/diggerhq/opencomputer/tree/main/opc), next to the server. Releases are tagged `opc-v*` there, and the [install](/install) URL is `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh`.
-  - `opc secrets set|ls|rm`: a session's own secrets, with the value read from standard input or a prompt that does not echo. The API gains `GET /sessions/{id}/secrets` and `DELETE /sessions/{id}/secrets/{name}`; `PUT` on it no longer answers `409`. Only the person who set a session secret, or an organization admin, can replace or delete it (`403 forbidden`, `"reason": "not_secret_owner"`).
+  - `opc secrets set|ls|rm`: a session's own secrets, with the value read from standard input or a prompt that does not echo. The API gains `GET /sessions/{id}/secrets` and `DELETE /sessions/{id}/secrets/{name}`; `PUT` on it no longer answers `409`. Only the person who set a session secret, or an organization admin, can replace or delete it (`403 forbidden`, `"reason": "not_secret_owner"`), here and in Slack.
   - [Telemetry](/reference/telemetry): timings and error classes, never content, sent on the session's connection. Off with `OPC_TELEMETRY=0` or `opc config telemetry off`.
 </Update>
