@@ -81,7 +81,9 @@ describe('archiving many projects at once', () => {
         </QueryClientProvider>,
       ),
     )
-    await settle()
+    // The project list loads asynchronously; under a loaded CI runner one tick
+    // is not always enough.
+    await act(() => vi.waitFor(() => button('Select')))
 
     click('Select')
     click('Select Support')
