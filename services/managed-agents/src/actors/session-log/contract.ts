@@ -1,6 +1,7 @@
-// The SessionLog Durable Object's RPC surface (work 084): one object per session, named by its
-// `cs_` id (`SESSION_LOG.getByName(sessionId)`). The Computer DO is its only writer (journal
-// batches from the host, recovery); the routes read it directly. Implemented in session-log.ts.
+// The SessionLog Durable Object's contract (work 084, spec 36.2): one object per session, named by its
+// `cs_` id (`logOf(env, sessionId)`). The Computer DO stores the host's journal into it and drains its
+// inbox; every write to a session (Org, the Slack actor, the HTTP API) enters through `accept`; the
+// HTTP API and Live read it. Implemented in durable-object.ts. Types only; nothing here runs.
 
 import type { Access, Principal } from "../../auth/principal.js";
 import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "../../api-objects/objects.js";
@@ -134,47 +135,6 @@ export interface RecoverInput extends SessionLogIdentity {
   at: string;
 }
 
-export interface SessionLogRpc {
-  /**
-   * Store a journal batch: upsert by seq under `epoch`. An epoch higher than the log's starts a new
-   * one at the batch's first seq (`epochStartSeq`), replacing anything stored at or after it.
-   */
-  append(identity: SessionLogIdentity, epoch: number, events: ApiEvent[]): Promise<AppendResult>;
-  /**
-   * The writer was lost mid-turn: record, under `epoch`, `tool.failed {settledBy}` for every open call,
-   * `turn.failed {error: {code: "runtime_lost"}}` for the running turn (queued turns stay queued and
-   * run on the next start), open asks closed `interrupted`, then `runtime.suspended {reason: "lost"}`
-   * and `session.status_changed` to `suspended`. Seqs continue at the stored ack + 1; `epochStartSeq`
-   * becomes the first of them. A log with nothing open records only the epoch bump (no events) and
-   * the suspension. Returns the new summary and ack, and the new epoch's tail for the host's `epoch` frame.
-   */
-  recover(input: RecoverInput): Promise<RecoverResult>;
-  /** The current epoch's tail (the `epoch` frame's body); null for another organization's or session's log. */
-  epochTail(identity: SessionLogIdentity): Promise<EpochTail | null>;
-  /**
-   * Every read takes the reader's principal last: it answers only one that may read the session (else
-   * `not_found`), and never waits (`minSeq` not reached is `unavailable` at once, with `retryAfterMs`).
-   */
-  summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
-  events(query: EventsQuery, p: Principal): Promise<EventsPage>;
-  turns(query: TurnsQuery, p: Principal): Promise<TurnsPage>;
-  turn(turnId: string, query: TurnQuery, p: Principal): Promise<TurnResult>;
-  asks(query: AsksQuery, p: Principal): Promise<AsksPage>;
-  ask(askId: string, minSeq: number | undefined, p: Principal): Promise<AskResult>;
-  /**
-   * Subagents (subagents.md): folded from `subagent.started`/`subagent.ended`, with the latest
-   * progress (below) merged in for a running one. Running first by createdAt, then ended newest first.
-   */
-  subagents(query: SubagentsQuery, p: Principal): Promise<SubagentsPage>;
-  subagent(subagentId: string, minSeq: number | undefined, p: Principal): Promise<SubagentResult>;
-  /**
-   * The latest `subagent.progress` values (never journaled): kept per running subagent, not
-   * persisted past an eviction (a read then shows the started/ended values), ignored for an epoch
-   * other than the log's or a subagent that is not running.
-   */
-  progress(identity: SessionLogIdentity, epoch: number, progress: SubagentProgress[]): Promise<void>;
-}
-
 // ------------------------------------------------------------------ SessionLog (36.2)
 
 /** What an inbox entry asks of the session's writer; every write reaches a host this way (spec 36.3). */
@@ -205,18 +165,63 @@ export type EventPush = { from: string; to: string; events: ApiEvent[] };
 /** The events read's answers (spec 37.1): a page with the cursor after its last event, or `reset`. */
 export type EventsReset = { ok: false; error: "reset"; cursor: string | null; seq?: number };
 
-/** Added to the existing `SessionLogRpc` (session-log-contract.ts), whose methods keep their signatures. */
-export interface SessionLogRpcAdded {
-  /** Kept only if `access.revision` is newer. */
-  setAccess(access: Access): Promise<void>;
-  /** `wait`: the drain is awaited (bounded) and `outcome` is the entry's after it; the API's writes. */
-  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts?: { wait?: boolean }): Promise<AcceptResult>;
+/** Every method of SessionLog, grouped by its caller. */
+export interface SessionLogRpc {
+  // ---------------------------------------------------------------- the Computer: the journal and the drain
+  /**
+   * Store a journal batch: upsert by seq under `epoch`. An epoch higher than the log's starts a new
+   * one at the batch's first seq (`epochStartSeq`), replacing anything stored at or after it.
+   */
+  append(identity: SessionLogIdentity, epoch: number, events: ApiEvent[]): Promise<AppendResult>;
+  /**
+   * The writer was lost mid-turn: record, under `epoch`, `tool.failed {settledBy}` for every open call,
+   * `turn.failed {error: {code: "runtime_lost"}}` for the running turn (queued turns stay queued and
+   * run on the next start), open asks closed `interrupted`, then `runtime.suspended {reason: "lost"}`
+   * and `session.status_changed` to `suspended`. Seqs continue at the stored ack + 1; `epochStartSeq`
+   * becomes the first of them. A log with nothing open records only the epoch bump (no events) and
+   * the suspension. Returns the new summary and ack, and the new epoch's tail for the host's `epoch` frame.
+   */
+  recover(input: RecoverInput): Promise<RecoverResult>;
+  /** The current epoch's tail (the `epoch` frame's body); null for another organization's or session's log. */
+  epochTail(identity: SessionLogIdentity): Promise<EpochTail | null>;
+  /**
+   * The latest `subagent.progress` values (never journaled): kept per running subagent, not
+   * persisted past an eviction (a read then shows the started/ended values), ignored for an epoch
+   * other than the log's or a subagent that is not running.
+   */
+  progress(identity: SessionLogIdentity, epoch: number, progress: SubagentProgress[]): Promise<void>;
   /** The entries that are `waiting`, in order. */
   inbox(): Promise<Inbox>;
   delivered(id: string, outcome: DeliveredOutcome): Promise<void>;
-  /** The events cursor of the log's end; null when `p` may not read. */
-  watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
+
+  // ---------------------------------------------------------------- every writer (Org, the Slack actor, the HTTP API)
+  /** `wait`: the drain is awaited (bounded) and `outcome` is the entry's after it; the API's writes. */
+  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts?: { wait?: boolean }): Promise<AcceptResult>;
+
+  // ---------------------------------------------------------------- Org
+  /** Kept only if `access.revision` is newer. */
+  setAccess(access: Access): Promise<void>;
   destroy(): Promise<void>;
+
+  // ---------------------------------------------------------------- readers (the HTTP API, Live)
+  /**
+   * Every read takes the reader's principal last: it answers only one that may read the session (else
+   * `not_found`), and never waits (`minSeq` not reached is `unavailable` at once, with `retryAfterMs`).
+   */
+  summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: Summary } | LogReadRefusal>;
+  events(query: EventsQuery, p: Principal): Promise<EventsPage>;
+  turns(query: TurnsQuery, p: Principal): Promise<TurnsPage>;
+  turn(turnId: string, query: TurnQuery, p: Principal): Promise<TurnResult>;
+  asks(query: AsksQuery, p: Principal): Promise<AsksPage>;
+  ask(askId: string, minSeq: number | undefined, p: Principal): Promise<AskResult>;
+  /**
+   * Subagents (subagents.md): folded from `subagent.started`/`subagent.ended`, with the latest
+   * progress (`progress`) merged in for a running one. Running first by createdAt, then ended newest first.
+   */
+  subagents(query: SubagentsQuery, p: Principal): Promise<SubagentsPage>;
+  subagent(subagentId: string, minSeq: number | undefined, p: Principal): Promise<SubagentResult>;
+  /** Live: the events cursor of the log's end; null when `p` may not read. */
+  watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
 }
 
 /** What SessionLog hands Org (spec 35.2): today's summary and four fields. */

@@ -1,10 +1,9 @@
 // How one actor reaches another (spec 17): a typed stub by name. The only place a binding is read.
 
 import type { SessionLogRpc } from "./session-log/contract.js";
-import type { ComputerRpcAdded } from "./computer/contract.js";
+import type { ComputerRpc } from "./computer/contract.js";
 import type { LiveRpc } from "./live/contract.js";
 import type { OrgRpc } from "./org/contract.js";
-import type { SessionLogRpcAdded } from "./session-log/contract.js";
 import type { SlackRpc } from "./slack/contract.js";
 
 export interface ActorEnv {
@@ -22,9 +21,9 @@ const stub = <T>(namespace: DurableObjectNamespace | undefined, binding: string,
 };
 
 export const orgOf = (env: ActorEnv, org: string) => stub<OrgRpc>(env.ORGS, "ORGS", org);
-export const logOf = (env: ActorEnv, sessionId: string) => stub<SessionLogRpc & SessionLogRpcAdded>(env.SESSION_LOG, "SESSION_LOG", sessionId);
+export const logOf = (env: ActorEnv, sessionId: string) => stub<SessionLogRpc>(env.SESSION_LOG, "SESSION_LOG", sessionId);
 /** A machine's Computer. The organization's first machine is named by the organization's id (spec 34.1). */
-export const computerOf = (env: ActorEnv, machine: string) => stub<ComputerRpcAdded>(env.COMPUTERS, "COMPUTERS", machine);
+export const computerOf = (env: ActorEnv, machine: string) => stub<ComputerRpc>(env.COMPUTERS, "COMPUTERS", machine);
 export const slackOf = (env: ActorEnv, org: string) => stub<SlackRpc>(env.SLACK, "SLACK", org);
 /** The organization's Live, in the `opencomputer-live` script. */
 export const liveOf = (env: ActorEnv, org: string) => stub<LiveRpc>(env.LIVE, "LIVE", org);
