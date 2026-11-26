@@ -213,12 +213,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   }
 
   /** `ready` for a method that answers refusals as values. */
-  private async gate(p?: Principal): Promise<{ ok: false; code: "adopting"; status: 503; message: string } | null> {
+  private async gate(p?: Principal): Promise<{ ok: false; code: "adopting"; status: 503; message: string; retryAfterMs: number } | null> {
     try {
       await this.ready(p);
       return null;
     } catch {
-      return { ok: false, code: "adopting", status: 503, message: "The organization's sessions are being moved. Try again shortly." };
+      return { ok: false, code: "adopting", status: 503, message: "The organization's sessions are being moved. Try again shortly.", retryAfterMs: 5_000 };
     }
   }
 
