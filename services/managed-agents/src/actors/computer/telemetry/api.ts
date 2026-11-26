@@ -190,7 +190,7 @@ export class ApiTelemetry {
     });
   }
 
-  /** One revoke (Q9): `known` the computer had the key; `host_told` a v4 host was sent `revoked`. */
+  /** One revoke (Q9): `known` the computer had the key; `host_told` the host was sent `revoked`. */
   keyRevoked(fields: { keyId: string; ms: number; known: boolean; hostTold: boolean; ok: boolean }): void {
     this.one("keys.revoked", {
       duration_ms: Math.round(fields.ms),

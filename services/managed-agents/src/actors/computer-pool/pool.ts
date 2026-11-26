@@ -37,7 +37,7 @@
 // before the person has a computer (`probe`). Stateless by design: it reads
 // the slot table and writes nothing to it, makes one try on one warm slot
 // picked at random (never the oldest, which `claim` takes), and its only
-// writes are the bounded counters in pool-probe-limits.ts.
+// writes are the bounded counters in probe-limits.ts.
 
 import type { AdoptedComputer, LifecycleReply } from "../computer/machine/lifecycle.js";
 import { type ProbeOutcome, tokenFingerprint } from "../computer/held-for-org/model-access/model-access.js";

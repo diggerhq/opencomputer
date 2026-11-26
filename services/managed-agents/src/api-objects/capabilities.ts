@@ -3,7 +3,7 @@
 // so blue owns this list and checks create and PATCH against it. Static: it changes with a
 // release, not per request, so reads are free. The organization's default model is the first.
 
-import type { CalvinMode } from "../host-protocol/protocol.js";
+import type { CalvinMode } from "../host-protocol/session.js";
 
 export interface CapabilityModel {
   id: string;

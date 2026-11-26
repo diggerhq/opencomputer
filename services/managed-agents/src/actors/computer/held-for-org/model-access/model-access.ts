@@ -21,7 +21,9 @@ import { sha256Hex } from "../../../../crypto/seal.js";
 import { DEFAULT_HARNESS } from "./harnesses.js";
 import { MANAGED_MODEL_NAME } from "./model-key.js";
 import type { PoolProbeResult } from "../../../computer-pool/pool.js";
-import type { CalvinGatewayToHost, CalvinHarness, ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "../../../../host-protocol/protocol.js";
+import type { CalvinGatewayToHost } from "../../../../host-protocol/frames.js";
+import type { ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "../../../../host-protocol/model.js";
+import type { CalvinHarness } from "../../../../host-protocol/session.js";
 import type { SlackResult } from "../../../../slack-api/web-api.js";
 import type { SubscriptionEventName } from "../../../../telemetry/catalog.js";
 import type { EventFields } from "../../../../telemetry/emitter.js";
@@ -404,7 +406,7 @@ export interface ModelAccessDeps {
   waitUntil(task: Promise<unknown>): void;
   /** A Slack user's display name, best effort. */
   slackUserName(userId: string): Promise<string | undefined>;
-  /** The connect-code routing record in the `computer-connect-codes:<x>` objects (connect-code-index.ts). */
+  /** The connect-code routing record in the `computer-connect-codes:<x>` objects (actors/connect-codes/codes.ts). */
   connectCodeIndex: { put(hash: string, expiresAt: number): Promise<void>; forget(hash: string): Promise<void> };
 }
 

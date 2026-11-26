@@ -57,7 +57,7 @@ export interface ComputerKeysDeps {
   organizationId: () => string | undefined;
   /** The organization's tunnel id, or null before it has one. */
   tunnelId: () => string | null;
-  /** Tells the host a key is gone (protocol v4 `revoked`); false when no v4 host is connected. */
+  /** Tells the host a key is gone (`revoked`); false when no host is connected. */
   revoked: (keyId: string) => boolean | void;
   /** Keeps a background write alive past the response. */
   waitUntil: (promise: Promise<unknown>) => void;

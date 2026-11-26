@@ -24,7 +24,8 @@ import { previewKey } from "../../previews/auth.js";
 import { PREVIEW_DOMAIN, generatePreviewName, validPreviewName } from "../../previews/names.js";
 import { type PreviewClaim, type PreviewClaimResult, validPreviewPort } from "../../previews/registry.js";
 import { DEFAULT_WIRE_TUNNEL_DOMAIN } from "./config.js";
-import type { CalvinGatewayToHost, CalvinPreviewConfig, CalvinPreviewRequest, CalvinPreviewResult } from "../../host-protocol/protocol.js";
+import type { CalvinGatewayToHost } from "../../host-protocol/frames.js";
+import type { CalvinPreviewConfig, CalvinPreviewRequest, CalvinPreviewResult } from "../../host-protocol/previews.js";
 
 /** Names one organization may hold at once. */
 export const PREVIEW_NAME_LIMIT = 50;

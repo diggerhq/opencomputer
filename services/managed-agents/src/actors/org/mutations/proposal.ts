@@ -3,10 +3,13 @@
 // `args` by kind: `done` `{ outcome? }` on a thread or a track; `move` `{ trackId }` on a thread;
 // `wrap` `{ name? }` on a thread; `edit` `{ baseRev, text, spans }` on a track (written by `doc.save`).
 
-import { holdsTrack, isOwnSession, parse, readPlace, readTrack, type Tx } from "../tx.js";
+import { parse } from "../parse-json.js";
+import { readPlace, readTrack } from "../records.js";
+import type { Tx } from "../tx.js";
+import { holdsTrack, isOwnSession } from "../who-may.js";
 import type { Principal } from "../../../auth/principal.js";
 import { crockfordId } from "../../../ids/crockford.js";
-import { byFor, isStr, isTid } from "./common.js";
+import { byFor, isStr, isTid } from "./args.js";
 import { openProposal, ownsTarget } from "./doc.js";
 import { runMutation } from "./run.js";
 import { applied, refuse, refuseKeeping, type MutationFn, type MutationRefusal } from "./outcome.js";

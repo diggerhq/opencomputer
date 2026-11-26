@@ -9,7 +9,7 @@
 // - Writes run one at a time (`exclusive`): an append may await R2 before its transaction (data too big
 //   to hold inline, below), and the input gate opens across that await, so a second append must not
 //   interleave.
-// - `turns`, `asks` and `tools` (open calls) are derived incrementally on append by session-fold.ts;
+// - `turns`, `asks` and `tools` (open calls) are derived incrementally on append by fold.ts;
 //   reads are indexed, never a refold. Only an epoch bump that truncates stored events refolds the
 //   log (a computer lost mid-flush: rare).
 // - Event `data` over 8 KiB of JSON lives in R2 (`sessions/<org>/<session>/events/<epoch>-<seq>.json`),
@@ -39,25 +39,17 @@ import { type AcceptResult, type DeliveredOutcome, type EntryError, type EntryOu
 import { type ComputerRpc } from "../computer/contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type OrgRpc, type SummaryPub } from "../org/contract.js";
-import type { FoldSummary } from "./fold.js";
+import type { FoldSummary } from "./summary.js";
 import { decodeCursor, encodeCursor } from "../../api-objects/list-cursor.js";
 import { crockfordId } from "../../ids/crockford.js";
 import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "../../api-objects/objects.js";
-import {
-  applyEvent,
-  foldEvents,
-  initialFoldState,
-  publicTurn,
-  summarize,
-  SYSTEM_ACTOR,
-  type AskRecord,
-  type FoldState,
-  type FoldStore,
-  type MemoryFoldStore,
-  type OpenToolCall,
-  type SubagentRecord,
-  type TurnRecord,
-} from "./fold.js";
+import { initialFoldState, type AskRecord, type FoldState, type FoldStore, type OpenToolCall, type SubagentRecord, type TurnRecord } from "./fold-state.js";
+import { applyEvent } from "./fold.js";
+import { foldEvents, type MemoryFoldStore } from "./memory-fold.js";
+import { summarize } from "./summary.js";
+import { SYSTEM_ACTOR } from "./system-actor.js";
+import { MIGRATIONS, SCHEMA } from "./schema.js";
+import { publicTurn } from "./turns.js";
 import {
   type AppendResult,
   type AppendStats,
@@ -195,23 +187,6 @@ type InboxRow = {
   done_at: number | null;
 };
 
-/** The tables of spec 35.2, after the existing ones (`SCHEMA`, as before). Never edit a step; add one. */
-const MIGRATIONS: ((sql: Sql) => void)[] = [
-  (sql) => {
-    sql.exec(`CREATE TABLE inbox (n INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
-      body TEXT NOT NULL, hash TEXT NOT NULL, "by" TEXT NOT NULL, actor TEXT NOT NULL, trace TEXT, at INTEGER NOT NULL,
-      state TEXT NOT NULL, result TEXT, error TEXT, done_at INTEGER)`);
-    sql.exec("CREATE INDEX inbox_state ON inbox (state, n)");
-    sql.exec(`CREATE TABLE access (k INTEGER PRIMARY KEY CHECK (k = 1), owner TEXT NOT NULL, audience TEXT NOT NULL,
-      writers TEXT NOT NULL, readers TEXT NOT NULL, machine TEXT NOT NULL, revision INTEGER NOT NULL)`);
-    sql.exec(`CREATE TABLE occ_pending (epoch INTEGER, seq INTEGER, kind TEXT NOT NULL, "by" TEXT, at INTEGER NOT NULL, PRIMARY KEY (epoch, seq))`);
-    for (const column of ["revision", "watched_until", "slot_at", "agent_turns"]) sql.exec(`ALTER TABLE meta ADD COLUMN ${column} INTEGER`);
-  },
-  // Access's `agents` (spec 40.7): NULL in a row stored before it, which is read from Org again.
-  (sql) => sql.exec("ALTER TABLE access ADD COLUMN agents TEXT"),
-];
-
-
 const entryOfRow = (row: InboxRow): InboxEntry => ({
   id: row.id,
   kind: row.kind,
@@ -245,67 +220,6 @@ interface EventRow {
 type TurnRow = { seq: number; data: string; usage: string | null; [key: string]: SqlStorageValue };
 type AskRow = { seq: number; data: string; [key: string]: SqlStorageValue };
 type SubagentRow = { seq: number; end_seq: number | null; result_seq: number | null; data: string; [key: string]: SqlStorageValue };
-
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS events (
-  seq INTEGER PRIMARY KEY,
-  id TEXT NOT NULL,
-  epoch INTEGER NOT NULL,
-  turn_id TEXT,
-  type TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  actor TEXT,
-  data TEXT,
-  blob TEXT
-);
-CREATE INDEX IF NOT EXISTS events_turn ON events (turn_id, seq);
-CREATE TABLE IF NOT EXISTS turns (
-  id TEXT PRIMARY KEY,
-  seq INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  data TEXT NOT NULL,
-  usage TEXT
-);
-CREATE INDEX IF NOT EXISTS turns_seq ON turns (seq);
-CREATE INDEX IF NOT EXISTS turns_status ON turns (status, seq);
-CREATE TABLE IF NOT EXISTS asks (
-  id TEXT PRIMARY KEY,
-  seq INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  data TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS asks_seq ON asks (seq);
-CREATE INDEX IF NOT EXISTS asks_status ON asks (status, seq);
-CREATE TABLE IF NOT EXISTS tools (
-  call_id TEXT PRIMARY KEY,
-  turn_id TEXT,
-  seq INTEGER NOT NULL,
-  data TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS subagents (
-  id TEXT PRIMARY KEY,
-  seq INTEGER NOT NULL,
-  end_seq INTEGER,
-  created_at TEXT NOT NULL,
-  status TEXT NOT NULL,
-  result_seq INTEGER,
-  data TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS subagents_running ON subagents (status, seq);
-CREATE INDEX IF NOT EXISTS subagents_ended ON subagents (end_seq);
-CREATE INDEX IF NOT EXISTS subagents_seq ON subagents (seq);
-CREATE TABLE IF NOT EXISTS meta (
-  k INTEGER PRIMARY KEY CHECK (k = 1),
-  organization_id TEXT,
-  session_id TEXT,
-  log_epoch INTEGER NOT NULL,
-  epoch_start_seq INTEGER NOT NULL,
-  ack INTEGER NOT NULL,
-  synced_at TEXT,
-  state TEXT NOT NULL,
-  summary TEXT NOT NULL
-);
-`;
 
 export function blobKey(organizationId: string, sessionId: string, epoch: number, seq: number): string {
   return `sessions/${organizationId}/${sessionId}/events/${epoch}-${seq}.json`;

@@ -5,7 +5,7 @@
 
 import { idem } from "../../durable/idempotency.js";
 import { type Sql } from "../../durable/sql.js";
-import { parseSessionKey, sessionKey } from "../../host-protocol/protocol.js";
+import { parseSessionKey, sessionKey } from "../../host-protocol/session-key.js";
 import { type SlackResult } from "../../slack-api/web-api.js";
 import { MAX_POST_CHARS, neutralizeBroadcasts } from "../../slack-api/threads.js";
 import { threads } from "./tables.js";

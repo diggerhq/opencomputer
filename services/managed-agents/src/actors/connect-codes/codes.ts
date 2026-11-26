@@ -1,6 +1,6 @@
 // The connect-code routing record (work 082, CLI connect; work 097, 6b): the
 // public side of connect codes. A code's hash routes to its organization
-// through a `computer-connect-codes:<x>` object; routes.ts looks the hash up,
+// through a `computer-connect-codes:<x>` object; http/connect/with-code.ts looks the hash up,
 // the organization's object (connect-codes.ts, behind ModelAccess) decides.
 
 import { sha256Hex } from "../../crypto/seal.js";

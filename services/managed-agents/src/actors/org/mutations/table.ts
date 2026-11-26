@@ -1,5 +1,5 @@
 // The mutation table (spec 37.3, 39): every mutation's name, its route and its arguments, once.
-// Org's `MUTATIONS` (index.ts) is keyed by it and the API's routes (computer/api-http.ts) match it;
+// Org's `MUTATIONS` (run.ts) is keyed by it and the API's routes (http/api/dispatch.ts) match it;
 // the TypeScript SDK sends by it. The SDK ships on its own, so it holds a copy of this file
 // (sdks/typescript/src/computer/mutation-table.ts, written by `npm run mutations` there, and held
 // to this one by a test there). So this file imports nothing.

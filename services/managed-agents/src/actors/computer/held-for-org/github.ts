@@ -4,7 +4,7 @@
 // Durable Object fetches installations and repositories and mints through
 // AccountDurableObject.
 
-import type { WorkspaceDefinition, WorkspaceRepo } from "../../../host-protocol/protocol.js";
+import type { WorkspaceDefinition, WorkspaceRepo } from "../../../host-protocol/workspace.js";
 
 export interface ComputerInstallation {
   /** bluecode's connection id for the installation. */
