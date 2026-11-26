@@ -135,8 +135,6 @@ import {
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
-import { type WorkContextOp, type WorkRefsOp, type WorkStampOp, workContext, workRefs, workStamp, workStampSetup } from "./work/briefs.js";
-import { knowledgeRepository } from "./work/index-do.js";
 import { AccessStore } from "./access-store.js";
 import { driversCommandText } from "./access.js";
 import { CONNECTION_VIEW, ComputerConnections, type ConnectionRequest, type GrantableConnection } from "./connections.js";
@@ -316,8 +314,6 @@ export const SLACK_STRANDED_GRACE_MS = 5_000;
 export const SLACK_STRANDED_MS = 60_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
-/** The Work index answers from its own storage; a slow one must not hold up `welcome`. */
-const KNOWLEDGE_TIMEOUT_MS = 2_000;
 
 type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "migrate" | "dial";
 
@@ -636,8 +632,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       slackOfMember: (member) => this.access.agents.view(member).linkedSlackUser?.id,
       transaction: (fn) => ctx.storage.transactionSync(fn),
     });
-    // The Work API's stamp (work tracking 3.10): after the sessions table has the API's columns.
-    workStampSetup(sql);
+    // The retired Work board's stamp: its triggers moved a counter on every session and person write.
+    sql.exec(`
+      DROP TRIGGER IF EXISTS work_stamp_sessions_insert; DROP TRIGGER IF EXISTS work_stamp_sessions_update; DROP TRIGGER IF EXISTS work_stamp_sessions_delete;
+      DROP TRIGGER IF EXISTS work_stamp_people_insert; DROP TRIGGER IF EXISTS work_stamp_people_update; DROP TRIGGER IF EXISTS work_stamp_people_delete;
+      DROP TABLE IF EXISTS work_stamp;
+    `);
     // The tables and the `drivers` column the exports read (spec 43.1); nothing here writes them.
     new AccessStore(sql);
   }
@@ -847,7 +847,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       const got = await this.actors.org().forHost(this.accountId());
       const before = this.setting("knowledge") ?? "";
       this.put("knowledge", got.knowledge ?? "");
-      this.put("knowledgeOrg", "1");
       for (const session of got.sessions) this.api.setAccess(session.sessionId, session.access, got.admins);
       if ((got.knowledge ?? "") !== before) await this.refreshDefinition();
     } catch (error) {
@@ -1834,7 +1833,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   // ------------------------------------------------------------------ session API (work 084)
 
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
-  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply> {
+  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
     if (op.op === "secrets.session.put") {
@@ -1843,10 +1842,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       return this.secrets.api(caller, op, row.key);
     }
     if (op.op.startsWith("secrets.")) return this.secrets.api(caller, op as SecretsApiOp);
-    // The Work API's sessions and people (work tracking 3.10), likewise.
-    if (op.op === "work.context") return workContext({ sql: this.ctx.storage.sql, api: this.api }, caller, op as WorkContextOp);
-    if (op.op === "work.stamp") return workStamp(this.ctx.storage.sql);
-    if (op.op === "work.refs") return workRefs({ api: this.api }, caller, op as WorkRefsOp);
     return this.api.handle(caller, op as ApiOp);
   }
 
@@ -2906,7 +2901,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
           new Promise<null>((resolve) => setTimeout(() => resolve(null), DEFINITION_TIMEOUT_MS)),
         ]);
         if (fresh) {
-          const definition = workspaceDefinition("organization", fresh, await this.knowledge());
+          const definition = workspaceDefinition("organization", fresh, this.knowledge());
           const changed = JSON.stringify(definition) !== this.setting("definition");
           this.put("definition", JSON.stringify(definition));
           span.end({ outcome: "completed", data: { ...data(), repos: fresh.length, changed, timed_out: false } });
@@ -2922,23 +2917,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     });
   }
 
-  /**
-   * The organization's knowledge repository (`owner/name`) from the Work index
-   * (work tracking, design 3.1), or none. An index that does not answer in
-   * time keeps the last answer, so the definition does not flap.
-   */
-  private async knowledge(): Promise<string | undefined> {
-    // Org's, once it has answered `forHost` (tracks and threads); the Work index before that.
-    if (this.setting("knowledgeOrg")) return this.setting("knowledge") || undefined;
-    try {
-      const repository = await Promise.race([
-        knowledgeRepository(this.env, this.accountId()),
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), KNOWLEDGE_TIMEOUT_MS)),
-      ]);
-      if (repository !== undefined) this.put("knowledge", repository ? `${repository.owner}/${repository.name}` : "");
-    } catch (error) {
-      console.warn(JSON.stringify({ level: "warn", event: "computer.knowledge_lookup_failed", message: errorText(error) }));
-    }
+  /** The organization's knowledge repository (`owner/name`), as Org last answered `forHost` (`readOrg`), or none. */
+  private knowledge(): string | undefined {
     return this.setting("knowledge") || undefined;
   }
 

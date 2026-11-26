@@ -5,7 +5,7 @@
 import type { ApiErrorBody, ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
-import type { Repository, RepositoryChoice } from "../computer/work/index-contract.js";
+import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "./principal.js";
 
 export type { Access, Principal };
@@ -198,6 +198,8 @@ export interface OrgRpc {
   forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }>;
   repository(p: Principal): Promise<Repository | null>;
   setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>>;
+  /** `GET /work/repositories`: what the organization's GitHub installations grant. */
+  repositories(p: Principal, q: RepositoriesQuery): Promise<Reply<{ installations: GrantingInstallation[] }>>;
   /** The Slack actor only: `slack:` sessions now owned by a member. */
   linkPerson(from: string, to: string): Promise<void>;
   /** Computer only, once: spec 43.1. */
