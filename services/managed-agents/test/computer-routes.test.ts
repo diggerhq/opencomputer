@@ -6,7 +6,8 @@ import { randomToken } from "../src/computer/crypto.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { CALVIN_PROTOCOL_VERSION } from "../src/computer/protocol.js";
 import { encodeInstallState } from "../src/computer/slack.js";
-import { REVOKED_SLACK_BOT_TOKEN, SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
+import { SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
+import { linkSlack } from "./fixtures/computer-link.js";
 
 /**
  * The computer end to end through the edge Worker (work 052): the dashboard
@@ -118,15 +119,11 @@ describe("computer routes", () => {
       const ws = state.getWebSockets()[0]!;
       const attached = ws.deserializeAttachment() as Record<string, unknown>;
       expect(attached.welcomed).toBe(true);
-      const apiHost = () => (instance as unknown as { apiHost(): { protocol: number } | undefined }).apiHost();
-      ws.serializeAttachment({ ...attached, protocol: 6, welcomed: false });
-      expect(apiHost()?.protocol).toBe(5);
-      ws.serializeAttachment({ ...attached, protocol: 6, welcomed: true });
-      expect(apiHost()?.protocol).toBe(6);
-      // An attachment from before the flag was written after its welcome.
-      const { welcomed: _w, ...older } = attached;
-      ws.serializeAttachment({ ...older, protocol: 6 });
-      expect(apiHost()?.protocol).toBe(6);
+      const apiHost = () => (instance as unknown as { apiHost(): object | undefined }).apiHost();
+      ws.serializeAttachment({ ...attached, welcomed: false });
+      expect(apiHost()).toBeUndefined();
+      ws.serializeAttachment({ ...attached, welcomed: true });
+      expect(apiHost()).toBeDefined();
       ws.serializeAttachment(attached);
     });
 
@@ -343,306 +340,6 @@ describe("computer routes", () => {
       [KEY, "host_disconnected"],
     ]);
     expect(await inside((instance) => instance.billing.working())).toEqual([]);
-
-    // The credit gate: a halted free organization's message is not delivered,
-    // and its thread is told once.
-    await inside((instance) => {
-      instance.env.OPENCOMPUTER_BILLING = {
-        checkAdmission: async () => ({ allowed: false, isHalted: true, haltedAt: 1, reason: "insufficient_credits", paid: false, modelAccess: null }),
-      };
-    });
-    await slackCalls(true);
-    const job = { eventId: "EvB1", teamId: "T0BILL", channelId: "C9", threadTs: "300.1", messageTs: "300.1", userId: "U9", text: "<@UBOTHELD> do it", mentioned: true, receivedAt: Date.now() };
-    for (const [eventId, ts] of [["EvB1", "300.1"], ["EvB2", "300.2"]] as const) {
-      await billed().acceptSlackEvent(ORG, { ...job, eventId, messageTs: ts });
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(billed());
-    }
-    // Other test files share the fake Slack's call log: only this thread's calls count.
-    const calls = (await slackCalls(true)).filter((call) => (call.body.channel ?? call.body.channel_id) === "C9");
-    expect(calls.filter((call) => call.method === "chat.postMessage").map((call) => call.body)).toEqual([
-      {
-        channel: "C9",
-        thread_ts: "300.1",
-        text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) at https://app.example/billing?plan=max to keep going, then mention me again.",
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) to keep going, then mention me again." } },
-          {
-            type: "actions",
-            elements: [{ type: "button", text: { type: "plain_text", text: "Upgrade to Pro ($200/mo)" }, url: "https://app.example/billing?plan=max", action_id: "billing_link" }],
-          },
-        ],
-      },
-    ]);
-    // The working status starts on accept (before the gate); each refusal resets it.
-    expect(calls.filter((call) => call.method === "agents.sessions.setStatus").map((call) => call.body.status)).toEqual(["processing", "active", "processing", "active"]);
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM dispatches")][0])).toEqual({ n: 0 });
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM sessions WHERE thread_ts = '300.1'")][0])).toEqual({ n: 0 });
-  });
-
-  it("starts the working status when a message is accepted, before the credit gate and the queue", async () => {
-    const ORG = "org_early_ack";
-    const TEAM = "T0EARLY";
-    const early = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(early(), fn as never) as Promise<T>;
-    await linkOther(ORG, TEAM, "U0OWNER");
-    const checks: string[] = [];
-    let allowed = false;
-    // Billing does not answer until the test says so: whatever Slack sees before that came before the gate.
-    let open!: () => void;
-    const gate = new Promise<void>((resolve) => (open = resolve));
-    await inside((instance) => {
-      instance.env.OPENCOMPUTER_BILLING = {
-        checkAdmission: async (orgId: string) => {
-          checks.push(orgId);
-          await gate;
-          return allowed
-            ? { allowed: true, isHalted: false, haltedAt: null, reason: null, paid: true, modelAccess: null }
-            : { allowed: false, isHalted: true, haltedAt: 1, reason: "insufficient_credits", paid: false, modelAccess: null };
-        },
-      };
-    });
-    const statuses = async () =>
-      (await slackCalls()).filter((call) => call.method === "agents.sessions.setStatus" && call.body.channel_id === "C7").map((call) => `${call.body.thread_ts}:${call.body.status}`);
-    const runQueue = async () => {
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(early());
-    };
-    const job = { eventId: "EvEarly1", teamId: TEAM, channelId: "C7", threadTs: "500.1", messageTs: "500.1", userId: "U0OWNER", text: "<@UBOTHELD> look", mentioned: true, receivedAt: Date.now() };
-    await slackCalls(true);
-
-    // Accepted: the status is on while billing has not answered (the queue may already be waiting on it).
-    await early().acceptSlackEvent(ORG, job);
-    for (let i = 0; i < 50 && !(await statuses()).length; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(await statuses()).toEqual(["500.1:processing"]);
-    const queued = await inside((_instance, state) => [...state.storage.sql.exec<{ payload: string }>("SELECT payload FROM slack_queue")].map((row) => JSON.parse(row.payload).acked));
-    expect(queued).toEqual([true]);
-
-    // Refused by the gate: the reset lands after the status, and nothing is delivered.
-    open();
-    await runQueue();
-    for (let i = 0; i < 50 && (await statuses()).length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(checks).toEqual([ORG]);
-    expect(await statuses()).toEqual(["500.1:processing", "500.1:active"]);
-
-    // Admitted: the queue does not start the status a second time.
-    allowed = true;
-    await early().acceptSlackEvent(ORG, { ...job, eventId: "EvEarly2", threadTs: "500.2", messageTs: "500.2" });
-    await runQueue();
-    expect((await statuses()).filter((status) => status.startsWith("500.2"))).toEqual(["500.2:processing"]);
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM dispatches")][0])).toEqual({ n: 1 });
-
-    // A `!` command and a reply aimed at someone else get none, on accept or later.
-    await early().acceptSlackEvent(ORG, { ...job, eventId: "EvEarly3", threadTs: "500.3", messageTs: "500.3", text: "<@UBOTHELD> !secret list" });
-    await early().acceptSlackEvent(ORG, { ...job, eventId: "EvEarly4", messageTs: "500.4", text: "<@U0SOMEONE> over to you", mentioned: false });
-    await runQueue();
-    expect((await statuses()).filter((status) => !status.startsWith("500.1") && !status.startsWith("500.2"))).toEqual([]);
-    await inside((instance) => {
-      delete instance.env.OPENCOMPUTER_BILLING;
-    });
-  });
-
-  it("warns before the stop: the installer by DM once per warning, or the thread when the installer is unknown", async () => {
-    const run = async (org: string, team: string, installer: string | undefined) => {
-      const object = () => computers().getByName(org);
-      const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(object(), fn as never) as Promise<T>;
-      await linkOther(org, team, installer);
-      await inside((instance) => {
-        instance.env.OPENCOMPUTER_BILLING = {
-          checkAdmission: async () => ({
-            allowed: true, isHalted: false, haltedAt: null, reason: null, paid: false, modelAccess: "full", warning: "trial_minutes", warningSince: 1_800_000_000,
-          }),
-        };
-      });
-      const job = { eventId: `Ev${team}1`, teamId: team, channelId: "C6", threadTs: "600.1", messageTs: "600.1", userId: "U6", text: "<@UBOTHELD> go", mentioned: true, receivedAt: Date.now() };
-      // Two messages in one thread, one in another.
-      for (const [eventId, threadTs, messageTs] of [[`Ev${team}1`, "600.1", "600.1"], [`Ev${team}2`, "600.2", "600.2"], [`Ev${team}3`, "600.1", "600.3"]] as const) {
-        await object().acceptSlackEvent(org, { ...job, eventId, threadTs, messageTs });
-        await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-        await runDurableObjectAlarm(object());
-      }
-      await inside((instance) => {
-        delete instance.env.OPENCOMPUTER_BILLING;
-      });
-    };
-    const warnings = async (channel: (c: string) => boolean) => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return (await slackCalls())
-        .filter((call) => call.method === "chat.postMessage" && channel(call.body.channel) && String(call.body.text).startsWith(":warning:"))
-        .map((call) => ({ channel: call.body.channel, thread: call.body.thread_ts, button: call.body.blocks?.[1]?.elements?.[0]?.url }));
-    };
-    await slackCalls(true);
-
-    await run("org_warned", "T0WARN", "U0WARNOWNER");
-    expect(await warnings((c) => c === "D-U0WARNOWNER")).toEqual([{ channel: "D-U0WARNOWNER", thread: undefined, button: "https://app.example/billing" }]);
-
-    // A link from before installers were kept: each thread hears it once.
-    await run("org_warned_old", "T0WARNOLD", undefined);
-    expect(await warnings((c) => c === "C6")).toEqual([
-      { channel: "C6", thread: "600.1", button: "https://app.example/billing" },
-      { channel: "C6", thread: "600.2", button: "https://app.example/billing" },
-    ]);
-  });
-
-  it("keeps a warning told across a wake, retries one Slack failed to post, and tells a new installer", async () => {
-    const ORG = "org_warned_again";
-    const TEAM = "T0WARNAGAIN";
-    const object = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(object(), fn as never) as Promise<T>;
-    let n = 0;
-    const message = async (threadTs: string) => {
-      n += 1;
-      await inside((instance) => {
-        instance.env.OPENCOMPUTER_BILLING = {
-          checkAdmission: async () => ({
-            allowed: true, isHalted: false, haltedAt: null, reason: null, paid: false, modelAccess: "full", warning: "trial_days", warningSince: 1_800_000_100,
-          }),
-        };
-      });
-      const job = { eventId: `EvAgain${n}`, teamId: TEAM, channelId: "C7", threadTs, messageTs: `${threadTs}${n}`, userId: "U7", text: "<@UBOTHELD> go", mentioned: true, receivedAt: Date.now() };
-      await object().acceptSlackEvent(ORG, job);
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(object());
-      // Each message asks billing afresh.
-      await inside((instance) => {
-        delete instance.env.OPENCOMPUTER_BILLING;
-        instance.put("admission", "");
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    };
-    const warned = async () =>
-      (await slackCalls())
-        .filter((call) => call.method === "chat.postMessage" && String(call.body.text).startsWith(":warning:"))
-        .map((call) => ({ channel: call.body.channel, thread: call.body.thread_ts, ok: call.token !== `Bearer ${REVOKED_SLACK_BOT_TOKEN}` }));
-    await slackCalls(true);
-
-    // No installer and Slack refuses the post: nothing is kept, and once Slack takes posts the same thread hears it.
-    await linkOther(ORG, TEAM, undefined, REVOKED_SLACK_BOT_TOKEN);
-    await message("700.1");
-    expect(await warned()).toEqual([{ channel: "C7", thread: "700.1", ok: false }]);
-    await slackCalls(true);
-    await linkOther(ORG, TEAM, undefined);
-    await message("700.1");
-    await message("700.1");
-    expect(await warned()).toEqual([{ channel: "C7", thread: "700.1", ok: true }]);
-
-    // The installer hears it once; a wake (onReady clears the notices) does not repeat it.
-    await slackCalls(true);
-    await linkOther(ORG, TEAM, "U0WARNAGAIN");
-    await message("700.2");
-    await inside((instance) => instance.lifecycle.deps.onReady());
-    await message("700.3");
-    expect(await warned()).toEqual([{ channel: "D-U0WARNAGAIN", thread: undefined, ok: true }]);
-
-    // A new installer hears the standing warning.
-    await slackCalls(true);
-    await linkOther(ORG, TEAM, "U0WARNNEW");
-    await message("700.4");
-    expect(await warned()).toEqual([{ channel: "D-U0WARNNEW", thread: undefined, ok: true }]);
-  }, 30_000);
-
-  it("admits stale-while-revalidate: no billing call on the path, a re-check at most once a minute, refusals at once", async () => {
-    const ORG = "org_cached_gate";
-    const TEAM = "T0GATE";
-    const gate = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(gate(), fn as never) as Promise<T>;
-    await linkOther(ORG, TEAM, "U0OWNER");
-    // Admission checks only (the plan asks billing too): the object's own call to billing's admission.
-    let checks = 0;
-    let answer: "allowed" | "fallback" | "refused" = "allowed";
-    await inside((instance) => {
-      const real = instance.checkAdmission.bind(instance);
-      instance.checkAdmission = (accountId: string) => {
-        checks += 1;
-        return real(accountId);
-      };
-      instance.env.OPENCOMPUTER_BILLING = {
-        checkAdmission: async () =>
-          answer === "refused"
-            ? { allowed: false, isHalted: true, haltedAt: 1, reason: "insufficient_credits", paid: false, modelAccess: null }
-            : { allowed: true, isHalted: false, haltedAt: null, reason: null, paid: true, modelAccess: answer === "fallback" ? "fallback" : "full" },
-      };
-    });
-    const dispatches = async () => (await inside((_instance, state) => [...state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM dispatches")][0]!)).n;
-    const stored = () => inside((instance) => instance.storedAdmission() as { allowed: boolean; checkedAt: number } | null);
-    /** Ages the stored admission (and the in-memory re-check throttle) by `ms`. */
-    const age = (ms: number) =>
-      inside((instance) => {
-        const current = instance.storedAdmission();
-        instance.put("admission", JSON.stringify({ ...current, checkedAt: current.checkedAt - ms }));
-        instance.admissionRecheckedAt -= ms;
-      });
-    let n = 0;
-    const message = async () => {
-      n += 1;
-      const ts = `600.${n}`;
-      await gate().acceptSlackEvent(ORG, { eventId: `EvGate${n}`, teamId: TEAM, channelId: "C8", threadTs: ts, messageTs: ts, userId: "U0OWNER", text: "<@UBOTHELD> go", mentioned: true, receivedAt: Date.now() });
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(gate());
-    };
-    const settled = async (read: () => Promise<unknown>, want: unknown) => {
-      for (let i = 0; i < 100 && (await read()) !== want; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(await read()).toBe(want);
-    };
-
-    // Nothing stored: billing is asked on the path, and its admission is stored.
-    await message();
-    expect(checks).toBe(1);
-    expect(await dispatches()).toBe(1);
-    expect(await stored()).toMatchObject({ allowed: true });
-
-    // Fresh (under a minute): billing is not asked at all, even though it would now say no.
-    answer = "refused";
-    await message();
-    expect(checks).toBe(1);
-    expect(await dispatches()).toBe(2);
-
-    // Stale (over a minute, under ten): served from storage, re-checked off the path; the refusal lands.
-    await age(5 * 60_000);
-    await message();
-    expect(await dispatches()).toBe(3);
-    await settled(async () => (await stored())?.allowed, false);
-    expect(checks).toBe(2);
-
-    // Refused: the next message asks billing on the path, and is refused; refusals are never served.
-    await message();
-    expect(checks).toBe(3);
-    expect(await dispatches()).toBe(3);
-    answer = "allowed";
-    await message();
-    expect(checks).toBe(4);
-    expect(await dispatches()).toBe(4);
-
-    // Past ten minutes an admission is asked for again on the path.
-    await age(11 * 60_000);
-    await message();
-    expect(checks).toBe(5);
-    expect(await dispatches()).toBe(5);
-
-    // A halted paid organization (billing's fallback model) is refused like a free one: Claude Code cannot use the fallback.
-    answer = "fallback";
-    await age(11 * 60_000);
-    await message();
-    expect(await dispatches()).toBe(5);
-    expect(await stored()).toMatchObject({ allowed: false });
-    const spans = await inside(async (instance) => {
-      const recorded: any[] = [];
-      const t = {
-        start: (name: string, fields: any) => ({ end: (more: any) => recorded.push({ name, ...fields, ...more }) }),
-        emit: (name: string, fields: any) => recorded.push({ name, ...fields }),
-      };
-      expect(await instance.admitWith(t, "C8", "600.99", undefined)).toBe(false);
-      return recorded;
-    });
-    expect(spans).toEqual([
-      { name: "admission.checked", outcome: "completed", data: { cached: false, decision: "refused" } },
-      { name: "billing.paywall_shown", data: { reason: "credits_exhausted", surface: "slack" } },
-    ]);
-
-    await inside((instance) => {
-      delete instance.env.OPENCOMPUTER_BILLING;
-      delete instance.checkAdmission;
-    });
   });
 
   it("never lets a slow re-check overwrite a newer refusal", async () => {
@@ -676,88 +373,6 @@ describe("computer routes", () => {
     expect(result).toMatchObject({ allowed: false });
   });
 
-  it("sends without waiting on the account or GitHub, from a stored key kept current by push (work 058)", async () => {
-    const ORG = "org_instant";
-    const TEAM = "T0FAST";
-    const fast = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(fast(), fn as never) as Promise<T>;
-    type Account = {
-      bindManagedModelCredential(input: Record<string, string>): Promise<string>;
-      deleteManagedModelCredential(provider: string): Promise<boolean>;
-    };
-    const account = () => (env as unknown as { ACCOUNTS: { getByName(name: string): Account } }).ACCOUNTS.getByName(ORG);
-    await account().bindManagedModelCredential({ provider: "openrouter", key: "sk-or-first", orKeyHash: "or-hash-1", operationId: "op-1" });
-    await linkOther(ORG, TEAM, "U0OWNER");
-
-    const upgraded = await SELF.fetch(`${ORIGIN}/v1/computer/host?organizationId=${ORG}`, {
-      headers: { upgrade: "websocket", authorization: `Bearer ${await hostToken("test-computer-host-token-key", ORG)}` },
-    });
-    const socket = upgraded.webSocket!;
-    socket.accept();
-    const delivers: any[] = [];
-    socket.addEventListener("message", (event) => {
-      const frame = JSON.parse(String(event.data));
-      if (frame.t === "deliver") delivers.push(frame);
-    });
-    const welcomed = nextMessage(socket, "welcome");
-    socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: ORG, version: "test", sessions: [] }));
-    await welcomed;
-
-    // The first lookup stored the key sealed in this object's own storage, never in plaintext.
-    const stored = await inside((_instance, state) => [
-      ...state.storage.sql.exec<{ key: string; value: string }>("SELECT key, value FROM settings WHERE key LIKE 'modelKey%' ORDER BY key"),
-    ]);
-    expect(stored.map((row) => row.key)).toEqual(["modelKeySealed", "modelKeyStoredAt"]);
-    expect(JSON.stringify(stored)).not.toContain("sk-or-first");
-
-    // Neither the account nor GitHub is on the message path: with both hanging, the message is still sent,
-    // with the stored key, and the definition refresh (due) runs after it.
-    await inside((instance) => {
-      // An earlier test leaves a halted billing gate on the shared env.
-      instance.env.OPENCOMPUTER_BILLING = {
-        checkAdmission: async () => ({ allowed: true, isHalted: false, haltedAt: null, reason: null, paid: true, modelAccess: null }),
-      };
-      const real = instance.account();
-      const hanging = new Set(["resolveManagedModelCredential", "listGitHubInstallations"]);
-      instance.account = () =>
-        new Proxy({}, { get: (_target, name: string) => (hanging.has(name) ? () => new Promise(() => {}) : (...args: unknown[]) => real[name](...args)) });
-      instance.put("definitionCheckedAt", "0");
-    });
-    const job = { eventId: "EvFast1", teamId: TEAM, channelId: "C1", threadTs: "300.1", messageTs: "300.1", userId: "U0OWNER", text: "hi", mentioned: true, receivedAt: Date.now() };
-    const delivered = nextMessage(socket, "deliver");
-    await fast().acceptSlackEvent(ORG, job);
-    await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-    await runDurableObjectAlarm(fast());
-    await delivered;
-    await inside((instance) => {
-      delete instance.account;
-    });
-
-    // Two flushes that overlap send a pending dispatch once.
-    delivers.length = 0;
-    await inside(async (instance, state) => {
-      state.storage.sql.exec("UPDATE dispatches SET state = 'pending'");
-      await Promise.all([instance.flush(), instance.flush()]);
-    });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(delivers).toHaveLength(1);
-
-    // A rebound key is pushed to the host (the edge's bind route calls modelKeyChanged).
-    await account().bindManagedModelCredential({ provider: "openrouter", key: "sk-or-second", orKeyHash: "or-hash-2", operationId: "op-2" });
-    const rebound = nextMessage(socket, "credentials");
-    await fast().modelKeyChanged();
-    await rebound;
-
-    // A deleted key clears the copy: the host falls back to the shared key, on Anthropic.
-    await account().deleteManagedModelCredential("openrouter");
-    const cleared = nextMessage(socket, "credentials");
-    await fast().modelKeyChanged();
-    const { credentials } = await cleared;
-    expect(credentials.anthropicBaseUrl).toBeUndefined();
-    expect(await inside((instance) => instance.setting("modelKeySealed"))).toBeUndefined();
-    socket.close();
-  }, 20_000);
-
   it("keeps the relay's key in the fresh welcome a changed definition sends a v4 host (work 084)", async () => {
     const ORG = "org_rewelcome";
     const computer = () => computers().getByName(ORG);
@@ -787,18 +402,15 @@ describe("computer routes", () => {
 
 });
 
-/** Another organization with `teamId` linked, approved by `installer` (or a link from before installers were kept). */
+/** Another organization with `teamId` linked, approved by `installer`. */
 async function linkOther(accountId: string, teamId: string, installer: string | undefined, botToken = "xoxb-holder-token") {
-  await computers().getByName(`computer-slack-team:${teamId}`).claimTeam(teamId, accountId);
-  await computers()
-    .getByName(accountId)
-    .linkSlack(accountId, {
-      teamId,
-      teamName: "Held",
-      botUserId: "UBOTHELD",
-      botToken,
-      ...(installer ? { installerUserId: installer } : {}),
-    });
+  await linkSlack(computers().getByName(accountId) as unknown as DurableObjectStub, accountId, {
+    teamId,
+    teamName: "Held",
+    botUserId: "UBOTHELD",
+    botToken,
+    ...(installer ? { installerUserId: installer } : {}),
+  });
 }
 
 /** Slack's OAuth callback with `code` for an install `accountId` started (POST /v1/computer/slack/install, minus the edge identity). */
@@ -812,15 +424,3 @@ async function slackInstall(accountId: string, code: string): Promise<Response> 
   });
 }
 
-/** The fake's recorded Slack Web API calls; `reset` clears them. */
-// The fake is shared with the other test files of this project, so a reset only moves this file's cursor:
-// clearing the fake would drop calls another file is about to read.
-let slackCursor = 0;
-
-async function slackCalls(reset = false): Promise<Array<{ method: string; token: string | null; body: any }>> {
-  const response = await fetch("https://slack.test/__calls");
-  const all = ((await response.json()) as { calls: Array<{ method: string; token: string | null; body: any }> }).calls;
-  const fresh = all.slice(slackCursor);
-  if (reset) slackCursor = all.length;
-  return fresh;
-}

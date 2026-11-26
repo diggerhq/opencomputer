@@ -90,14 +90,7 @@ Routes. Dashboard, behind the edge assertion: `GET`/`POST /v1/computer`,
 `GET /v1/computer/host?organizationId=<id>` (WebSocket, the organization's
 host token).
 
-Sessions API rollout gate (work 084). `COMPUTER_API_ORGS` (edge var) names the
-organizations whose hosts are spoken to at protocol v4: empty or unset, none;
-`*`, all; otherwise comma-separated organization ids. Any other organization's
-host is welcomed at protocol 3 with no `wire` key and treated as a v3 host
-(no access, epoch or revoked frames, Slack deliveries as v3), and every
-sessions API call but `/me` answers `409 feature_unavailable`. A change applies
-at each host's next hello; a deploy restarts the objects and closes their host
-sockets, so every host says hello again. Production ships it empty.
+The host speaks protocol 6; a host that says less in `hello` is closed with 4426.
 
 Warm pool. With `COMPUTER_POOL_SIZE` = N (edge var; `"0"` or unset: no pool)
 the `computer-pool` object keeps N computers booted and connected, created
@@ -141,7 +134,7 @@ Configuration (empty values make computer creation answer
 
 | Worker | Secrets | Vars |
 |---|---|---|
-| edge | `COMPUTER_HOST_TOKEN_KEY`, `SLACK_COMPUTER_CLIENT_ID`, `SLACK_COMPUTER_CLIENT_SECRET`, `SLACK_COMPUTER_SIGNING_SECRET`, `COMPUTER_ANTHROPIC_API_KEY` (fallback model credentials), `BLUE_USAGE_HMAC_SECRET` and `OC_MANAGED_CRED_HMAC_SECRET` (shared with serverless agents), `SVIX_API_TOKEN` (Delivery's webhooks: Svix signs, retries and delivers them; unset, no webhook can be made) | `COMPUTER_HOST_GATEWAY_URL` (wss origin the VM dials), `COMPUTER_DEFAULT_SIZE`, `COMPUTER_MAX_SIZE` (the $200 "max" usage plan's size; `COMPUTER_PAID_SIZE` is read when it is unset), `COMPUTER_ZONES` (zones a new computer may be placed in, most preferred first; default `1,2,3`), `COMPUTER_FALLBACK_SIZES` (more sizes to build a computer on when its own has no capacity or quota, in order; each serves the plan sizes it can stand in for: same vCPUs, memory and disk controller, x86 D or E family with premium storage and no local disk), `COMPUTER_DEFAULT_DISK_GIB`, `COMPUTER_MAX_DISK_GIB` (the data disk grows on its own at 80% used up to this, default 1024), `COMPUTER_POOL_SIZE`, `COMPUTER_VMS` (`self-managed`: the operator creates and runs each organization's VM, the gateway only accepts its host's connection and needs no platform Worker), `COMPUTER_API_ORGS`, `COMPUTER_PUBLIC_ORIGIN`, `SLACK_COMPUTER_SCOPES` |
+| edge | `COMPUTER_HOST_TOKEN_KEY`, `SLACK_COMPUTER_CLIENT_ID`, `SLACK_COMPUTER_CLIENT_SECRET`, `SLACK_COMPUTER_SIGNING_SECRET`, `COMPUTER_ANTHROPIC_API_KEY` (fallback model credentials), `BLUE_USAGE_HMAC_SECRET` and `OC_MANAGED_CRED_HMAC_SECRET` (shared with serverless agents), `SVIX_API_TOKEN` (Delivery's webhooks: Svix signs, retries and delivers them; unset, no webhook can be made) | `COMPUTER_HOST_GATEWAY_URL` (wss origin the VM dials), `COMPUTER_DEFAULT_SIZE`, `COMPUTER_MAX_SIZE` (the $200 "max" usage plan's size; `COMPUTER_PAID_SIZE` is read when it is unset), `COMPUTER_ZONES` (zones a new computer may be placed in, most preferred first; default `1,2,3`), `COMPUTER_FALLBACK_SIZES` (more sizes to build a computer on when its own has no capacity or quota, in order; each serves the plan sizes it can stand in for: same vCPUs, memory and disk controller, x86 D or E family with premium storage and no local disk), `COMPUTER_DEFAULT_DISK_GIB`, `COMPUTER_MAX_DISK_GIB` (the data disk grows on its own at 80% used up to this, default 1024), `COMPUTER_POOL_SIZE`, `COMPUTER_VMS` (`self-managed`: the operator creates and runs each organization's VM, the gateway only accepts its host's connection and needs no platform Worker), `COMPUTER_PUBLIC_ORIGIN`, `SLACK_COMPUTER_SCOPES` |
 | platform | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | `AZURE_SUBSCRIPTION_ID`, `AZURE_COMPUTER_RESOURCE_GROUP`, `AZURE_COMPUTER_REGION`, `AZURE_COMPUTER_SUBNET_ID`, `AZURE_COMPUTER_IDENTITY_ID`, `AZURE_COMPUTER_IDENTITY_CLIENT_ID`, `COMPUTER_BOOTSTRAP_URL` |
 
 A production deploy sets these Worker secrets, under the same names: edge `COMPUTER_HOST_TOKEN_KEY`,

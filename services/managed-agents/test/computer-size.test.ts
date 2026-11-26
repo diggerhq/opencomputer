@@ -147,7 +147,7 @@ describe("computer size follows the usage plan", () => {
     expect((await row(pro))?.size).toBe(SMALL);
   });
 
-  it("grows a computer whose organization moved to max once it is connected and idle, queueing messages meanwhile", async () => {
+  it("grows a computer whose organization moved to max once it is connected and idle", async () => {
     const ORG = "org_size_up";
     const stub = await readySmall(ORG);
     const socket = await connectHost(ORG);
@@ -169,25 +169,7 @@ describe("computer size follows the usage plan", () => {
     expect(await row(stub)).toMatchObject({ state: "resizing", size: BIG });
     expect((await stub.overview(ORG)).computer).toMatchObject({ state: "ready", vcpus: 8, memoryGiB: 32 });
 
-    // A message meanwhile: queued, and the thread told once.
-    await stub.linkSlack(ORG, { teamId: "T0SIZE", teamName: "Size", botUserId: "UBOT", botToken: "xoxb-size" });
-    const job = { eventId: "EvS1", teamId: "T0SIZE", channelId: "CSIZE", threadTs: "1.1", messageTs: "1.2", userId: "U1", text: "<@UBOT> again", mentioned: true, receivedAt: Date.now() };
-    for (const [eventId, ts] of [["EvS1", "1.2"], ["EvS2", "1.3"]] as const) {
-      await stub.acceptSlackEvent(ORG, { ...job, eventId, messageTs: ts });
-      await inside(stub, (_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(stub);
-    }
-    // Told once (the notices table is what makes it once; the fake Slack's
-    // call log is shared with the other test file, so it is not read here).
-    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT thread_key AS t, kind FROM notices")])).toEqual([
-      { t: "CSIZE:1.1", kind: "resizing" },
-    ]);
-    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM dispatches WHERE state = 'pending'")][0])).toEqual({ n: 2 });
-
-    // The resize ends: the queued messages go to the host.
-    const delivered = nextMessage(socket, "deliver");
     await settle(stub, "ready");
-    expect((await delivered).msg).toMatchObject({ ts: "1.2" });
     expect((await row(stub))?.size).toBe(BIG);
     socket.close();
   });
