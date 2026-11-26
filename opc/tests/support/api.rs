@@ -220,7 +220,7 @@ async fn run(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
                 "organization": {"id": "org_acme0000001", "name": "acme"},
                 "credential": {"id": "key_8q2x7c1v9b4m", "name": "test-machine", "kind": "login",
                     "scopes": ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals"], "expiresAt": null, "createdAt": "2026-10-25T18:02:11.000Z"},
-                "computer": {"status": k.computer_status, "region": "fra", "wireUrl": if k.ws_enabled { json!(sh.wire_url) } else { Value::Null }},
+                "computer": {"status": k.computer_status, "region": "fra", "wireUrl": if k.wire_enabled { json!(sh.wire_url) } else { Value::Null }},
                 "defaults": {"model": "opus-5.5", "effort": "high", "mode": "default"},
                 "capabilities": capabilities(),
             });

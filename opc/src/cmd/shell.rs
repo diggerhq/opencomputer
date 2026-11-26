@@ -294,7 +294,7 @@ fn write_all(mut w: impl Write, data: &[u8]) -> std::io::Result<()> {
 }
 
 async fn open(ctx: &Ctx, session_id: &str, command: Option<&str>, tty: bool) -> Result<i32> {
-    let (wire, mut events) = ctx.open_wire(vec![], false).await?;
+    let (wire, mut events) = ctx.open_wire().await?;
     let result = session(&ctx.http, &wire, &mut events, session_id, command, tty).await;
     wire.close();
     result

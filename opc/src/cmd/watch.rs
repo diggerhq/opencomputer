@@ -38,9 +38,9 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
     };
     let attaches = sessions.iter().map(|s| Attach { session_id: s.clone(), from: from.clone() }).collect();
     let deltas = format == Format::StreamJson && args.include_partial_messages;
-    let (wire, rx) = ctx.open_wire(attaches, deltas).await?;
+    let (live, rx) = ctx.open_live(attaches, deltas);
     let pairs: Vec<(String, bool)> = sessions.iter().map(|s| (s.clone(), from == From::Start)).collect();
-    let mut f = Follower::new(ctx.http.clone(), wire, rx, &pairs);
+    let mut f = Follower::new(ctx.http.clone(), live, rx, &pairs);
     let mut trackers: Vec<Tracker> = sessions.iter().map(|s| Tracker::new(s, Goal::Settled, if args.follow { OnAsk::Wait } else { OnAsk::Fail }, false)).collect();
     let style = Style { color: ctx.color };
     let several = sessions.len() > 1;
@@ -87,7 +87,6 @@ pub async fn run(ctx: &mut Ctx, args: WatchArgs) -> Result<i32> {
                 Step::Delta(d) if deltas && d.partial() => print_line(&d.0),
                 // What to pass to `--after` to go on from here another time.
                 Step::Cursor(sid, cursor) if format == Format::StreamJson => print_line(&serde_json::json!({"type": "cursor", "sessionId": sid, "cursor": cursor})),
-                Step::Reconnecting { attempt, retry_in, .. } if super::follow::worth_saying(*attempt, *retry_in) => ctx.progress(&format!("connection lost, reconnecting in {}", render::duration(retry_in.as_millis() as u64))),
                 _ => {}
             }
             for (i, t) in trackers.iter_mut().enumerate() {
