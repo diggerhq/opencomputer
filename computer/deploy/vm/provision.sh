@@ -727,6 +727,9 @@ Environment=XDG_RUNTIME_DIR=/run/user/$AGENT_UID
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$AGENT_UID/bus
 EnvironmentFile=$SP_CURRENT/.sp-version.env
 EnvironmentFile=$HOST_ENV
+# This machine's own settings (SP_RUNNER_MEMORY_MAX, ...): never written here, so they outlive the
+# rewrite of host.env above; later in the list, so they win over it. Optional (the -).
+EnvironmentFile=-$ETC/host.local.env
 ExecStart=$SP_CURRENT/node_modules/.bin/tsx src/host/main.ts
 Restart=always
 RestartSec=2

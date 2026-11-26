@@ -1,0 +1,15 @@
+---
+title: "Changelog"
+description: "Changes to opc and to the session API."
+---
+
+<Update label="Unreleased" description="opc 0.1.0 · protocol opc.v1">
+  First release.
+
+  - `opc`, `opc -p`, `new`, `a`, `ls`, `log`, `send`, `wait`, `watch`, `interrupt`, `ask`, `subagents`, `rename`, `archive`, `unarchive`, `open`, `diff`, `push`, `pull`, `shell`, `login`, `logout`, `whoami`, `doctor`, `completion`, `config`.
+  - The session API over HTTP and the `opc.v1` WebSocket protocol.
+  - A session's speed: `fast` (the default) or `standard`. `--speed` on `opc`, `opc -p` and `opc new`, `/speed` on the session screen, `speed` on create and `PATCH`.
+  - opc moved into [diggerhq/opencomputer](https://github.com/diggerhq/opencomputer/tree/main/opc), next to the server. Releases are tagged `opc-v*` there, and the [install](/install) URL is `https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh`.
+  - [Telemetry](/reference/telemetry): timings and error classes, never content, sent on the session's connection. Off with `OPC_TELEMETRY=0` or `opc config telemetry off`.
+  - `opc shell` and `/shell` wake a suspended or idle session first, printing `opc: waking session…`, then open the shell. A shell runs in the session's own container, as user `agent`.
+</Update>

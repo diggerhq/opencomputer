@@ -103,8 +103,8 @@ export interface Sandboxed { record: SandboxRecord; run: RunRoot }
 /** What host/main.ts owns and a start needs. Everything is asked for when used, so main.ts may wire it before its parts exist. */
 export interface StartDeps {
   tm: Telemetry;
-  /** How runners are launched (launch.ts): the mode, the host's environment and its release. */
-  launch: { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string };
+  /** How runners are launched (launch.ts): the mode, the host's environment, its release and the units' prefix. */
+  launch: { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; systemdRun: string };
   /** The run root runners are started under (ipc.ts). */
   run: RunRoot;
   version: string;

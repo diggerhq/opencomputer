@@ -23,6 +23,7 @@ const hooks: WireLinkHooks = {
     sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
     : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }
     : undefined,
+  known: (sid) => sid === 'cs_a' || sid === 'cs_stopped' || sid === 'cs_unplaced',
   record: async (sid, type, data) => {
     recorded.push([sid, type, data]);
     return 42;
@@ -165,6 +166,18 @@ describe('wire link', () => {
     expect(error.message).toMatch(/[Rr]esume the session first/);
     expect(recorded).toEqual([]);
     expect(counts).toEqual([]);
+    r.sock.destroy();
+  });
+
+  it('refuses a terminal in a session it knows but cannot place (no spec since a restart) as not running, not unknown', async () => {
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    r.send({ t: 'terminal.open', id: 't1', sessionId: 'cs_unplaced', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    expect((await r.next((m) => m.id === 't1')).error).toMatchObject({ code: 'conflict', status: 409, reason: 'session_not_running' });
+    r.send({ t: 'terminal.open', id: 't2', sessionId: 'cs_nowhere', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    expect((await r.next((m) => m.id === 't2')).error).toMatchObject({ code: 'session_not_found', status: 404 });
+    expect(recorded).toEqual([]);
     r.sock.destroy();
   });
 

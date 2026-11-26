@@ -1,0 +1,39 @@
+---
+title: "Enterprise Edition"
+description: "What the Enterprise Edition adds to a self-hosted @computer, and how to get a license"
+---
+
+The Community Edition (CE) is the deployment described in [Start here](/self-hosting/overview): you run it yourself, with one Computer VM per organization and sign-in through WorkOS. The Enterprise Edition (EE) runs the same stack and adds what a larger team needs:
+
+| | Community Edition | Enterprise Edition |
+| --- | --- | --- |
+| Computer VMs | One VM per organization, sized by you | A pool of VMs per organization that grows and shrinks with the number of sessions |
+| Concurrent sessions | Up to 100 per organization | No cap: the pool grows with demand |
+| Sandboxes for heavy builds | Cloud sandbox providers only, such as OpenComputer's hosted sandboxes | Sandboxes in your own Azure, AWS or Google Cloud account |
+| Sign-in | WorkOS | WorkOS, or your identity provider directly: Okta, Microsoft Entra ID, or any SAML 2.0 or OIDC provider |
+| Images | Built from this repository | Prebuilt images that need a license key |
+| Support | GitHub issues | Custom SLAs and a shared Slack Connect channel |
+
+## Sessions on a pool of VMs
+
+In CE every session of an organization runs on its one VM, so the size of that VM caps how many sessions run at once. In EE an organization has a pool of VMs: a new session is placed on a VM with room for it, the pool adds VMs when they are full and removes idle ones, and you set the smallest and largest number of VMs and their size.
+
+## Sandboxes in your cloud account
+
+Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on a cloud sandbox provider, which is the only option in CE. You choose the worker instance types and how far the fleet scales.
+
+## Sign-in with your identity provider
+
+EE signs people in through your identity provider with SAML 2.0 or OIDC, and can create and remove users from it with SCIM. Group membership in the provider decides who belongs to which organization.
+
+## Get a license
+
+The EE images run only with a license key. [Talk to us](mailto:hello@opencomputer.dev) to get one: we set up a proof of concept with you, give you access to the images and a key, and go through the deployment together.
+
+A license covers:
+
+- An agreed number of users or concurrent sessions
+- Access to the EE images and their updates for the term of the license
+- Support with a custom SLA, in a shared Slack Connect channel
+
+{/* Draft for the POC scoping call. Product decisions behind this page are still open: see the pull request. */}
