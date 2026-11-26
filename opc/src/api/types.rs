@@ -272,8 +272,6 @@ pub struct Session {
     pub last_text: Option<String>,
     pub context: Option<Context>,
     pub last_seq: u64,
-    pub log_epoch: u64,
-    pub epoch_start_seq: u64,
     pub created_at: Option<String>,
     pub last_active_at: Option<String>,
     pub synced_at: Option<String>,
@@ -403,7 +401,7 @@ pub struct Sent {
     pub seq: u64,
 }
 
-/// `GET /sessions/{id}/events` → `{events, earlierTurns, lastSeq, hasMore}`.
+/// `GET /sessions/{id}/events` → `{events, earlierTurns, lastSeq, hasMore, cursor}`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct EventPage {
@@ -411,8 +409,8 @@ pub struct EventPage {
     pub last_seq: u64,
     pub has_more: bool,
     pub earlier_turns: Option<Vec<Turn>>,
-    pub log_epoch: Option<u64>,
-    pub epoch_start_seq: Option<u64>,
+    /// The opaque cursor after the last event returned.
+    pub cursor: Option<String>,
 }
 
 #[cfg(test)]
