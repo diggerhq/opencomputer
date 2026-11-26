@@ -175,8 +175,6 @@ async function up() {
       SLACK_COMPUTER_CLIENT_SECRET: "OC_STACK_SLACK_COMPUTER_CLIENT_SECRET",
       SLACK_COMPUTER_SIGNING_SECRET: "OC_STACK_SLACK_COMPUTER_SIGNING_SECRET",
       COMPUTER_ANTHROPIC_API_KEY: "OC_STACK_COMPUTER_ANTHROPIC_API_KEY",
-      // Delivery(webhook) hands occurrences to Svix; without it no webhook can be made.
-      SVIX_API_TOKEN: "OC_STACK_SVIX_API_TOKEN",
     }),
     ...optionalSecrets(
       {

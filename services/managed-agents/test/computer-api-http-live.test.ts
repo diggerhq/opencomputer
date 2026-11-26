@@ -1,5 +1,5 @@
 // The HTTP API of tracks and threads (spec 37), slice 3: /live and its revoke, PATCH and aside
-// through Org, the agents' routes, webhooks and result diffs. The actors are fakes.
+// through Org, the agents' routes and result diffs. The actors are fakes.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,6 @@ const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
 const SID = "cs_0123456789abcdef";
 const RID = "res_0123456789abcdef";
-const WH = "wh_0123456789abcdef";
 
 const member = memberIdentity(ORG, USER);
 const agent = agentIdentity(ORG, SID, ["sessions:read", "sessions:write"]);
@@ -127,27 +126,6 @@ describe("the agents' routes (spec 37.2)", () => {
     expect(await call("POST", `/slack/threads/${encodeURIComponent("T1:C1:1.2")}/messages`, { body: { text: "hi" }, identity: agent })).toMatchObject({ status: 200, body: { ts: "1.3" } });
     expect(slack.post).toHaveBeenCalledWith(expect.objectContaining({ kind: "agent", session: SID }), "T1:C1:1.2", "hi");
     expect((await call("POST", "/slack/threads/a%20b/messages", { body: { text: "hi" }, identity: agent })).status).toBe(404);
-  });
-});
-
-describe("webhooks (spec 37.1)", () => {
-  it("lists, sets and removes through Delivery; never an agent", async () => {
-    const delivery = {
-      listEndpoints: vi.fn(async () => [{ id: WH }]),
-      setEndpoint: vi.fn(async () => ({ ok: true, endpoint: { id: WH } })),
-      removeEndpoint: vi.fn(async () => ({ ok: true })),
-    };
-    const call = setup({ DELIVERY: ns(delivery) });
-    expect(await call("GET", "/webhooks")).toMatchObject({ status: 200, body: { endpoints: [{ id: WH }] } });
-    expect(await call("PUT", `/webhooks/${WH}`, { body: { url: "https://x.test/h" } })).toMatchObject({ status: 200, body: { endpoint: { id: WH } } });
-    expect((await call("PUT", `/webhooks/${WH}`, { body: { url: "http://x.test/h" } })).status).toBe(400);
-    expect((await call("PUT", "/webhooks/wh_bad", { body: { url: "https://x.test/h" } })).status).toBe(404);
-    expect((await call("DELETE", `/webhooks/${WH}`)).status).toBe(204);
-    expect((await call("GET", "/webhooks", { identity: agent })).status).toBe(403);
-  });
-
-  it("is 503 while Delivery has no endpoints", async () => {
-    expect((await setup({ DELIVERY: ns({}) })("GET", "/webhooks")).status).toBe(503);
   });
 });
 

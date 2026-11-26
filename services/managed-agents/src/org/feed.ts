@@ -206,7 +206,7 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
     if (audiences.length === 0) return { entries: [], to: cursor.encode("o", [after]) };
     rows = sql.exec<OccRec>(`SELECT * FROM occurrence WHERE n > ? AND audience IN (${audiences.map(() => "?").join(",")}) ORDER BY n LIMIT ?`, after, ...audiences, limit);
   }
-  const entries = rows.map((r): Occurrence => ({ n: String(r.n), key: r.key, kind: r.kind, sessionId: r.session_id, trackId: r.track_id, by: r.by, at: iso(r.at), ...(p.kind === "platform" ? { audience: r.audience } : {}) }));
+  const entries = rows.map((r): Occurrence => ({ n: String(r.n), key: r.key, kind: r.kind, sessionId: r.session_id, trackId: r.track_id, by: r.by, at: iso(r.at) }));
   // A short page reached the head: the next read starts there, past entries of other audiences.
   const to = rows.length === limit ? rows[rows.length - 1]!.n : metaOf(sql).occ;
   return { entries, to: cursor.encode("o", [Math.max(to, after)]) };

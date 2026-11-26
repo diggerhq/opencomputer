@@ -13,7 +13,7 @@ export interface ActorEnv {
   LIVE?: DurableObjectNamespace;
 }
 
-export type DeliveryKind = "wake" | "webhook" | "slack";
+export type DeliveryKind = "wake" | "slack";
 
 const stub = <T>(namespace: DurableObjectNamespace | undefined, binding: string, name: string): T => {
   if (!namespace) throw new Error(`${binding} is not bound`);
