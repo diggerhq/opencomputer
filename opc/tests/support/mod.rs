@@ -370,7 +370,7 @@ impl Fake {
         let wire_url = format!("ws://127.0.0.1:{port}/v1");
         let (bus, _) = broadcast::channel(65536);
         let (ctl, _) = broadcast::channel(64);
-        let world = World { sessions: vec![], idem: Default::default(), jobs: vec![], bus: bus.clone(), interrupt_spares_background: false };
+        let world = World { sessions: vec![], idem: Default::default(), jobs: vec![], bus: bus.clone(), interrupt_spares_background: false, delta_watched: Default::default() };
         let sh = Arc::new(Shared {
             world: Mutex::new(world),
             version: watch::channel(0).0,

@@ -171,6 +171,7 @@ impl Conn {
                 } else if let Some(sid) = session_of(&stream, "deltas") {
                     if self.sh.read(|w| w.sess(sid).is_ok()) {
                         self.deltas.insert(sid.to_string());
+                        self.sh.with(|w| w.delta_watched.insert(sid.to_string()));
                         self.send(json!({"t": "subd", "stream": stream, "head": null})).await
                     } else {
                         self.send(json!({"t": "detached", "stream": stream, "reason": "gone"})).await

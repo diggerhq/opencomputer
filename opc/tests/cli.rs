@@ -971,7 +971,7 @@ fn watch_from_a_void_cursor_resets_and_reads_on() {
 fn streamed_text_follows_utf16_offsets() {
     let fake = Fake::start();
     let text = "caf\u{e9} \u{1F600} and on \u{1F680}\u{1F680} end";
-    let o = run(&fake, &["-p", "--output-format", "stream-json", "--include-partial-messages", &format!("reply {text}")]);
+    let o = run(&fake, &["-p", "--output-format", "stream-json", "--include-partial-messages", &format!("streamed {text}")]);
     assert_eq!(o.code, 0, "{}", o.stderr);
     let streamed: String = o.lines().iter().filter(|l| l["type"] == "message.delta").filter_map(|l| l["data"]["text"].as_str().map(str::to_string)).collect();
     assert_eq!(streamed, text, "{}", o.stdout);

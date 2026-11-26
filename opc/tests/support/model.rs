@@ -294,6 +294,8 @@ pub struct World {
     pub jobs: Vec<Job>,
     pub bus: broadcast::Sender<Out>,
     pub interrupt_spares_background: bool,
+    /// Sessions whose deltas a live socket has subscribed to, ever: what the `streamed` script waits for.
+    pub delta_watched: HashSet<String>,
 }
 
 pub struct Idem {
