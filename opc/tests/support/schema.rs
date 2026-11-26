@@ -4,7 +4,7 @@
 //! - a `$defs` name (`Session`, `Turn`, `Event.turn.started`, …);
 //! - `method:<name>` for a WebSocket method's result (`method:events.list`);
 //! - `notification:<name>` (`notification:ready`);
-//! - `client:<name>` for a client notification (`client:sessions.ack`).
+//! - `client:<name>` for a client notification.
 //!
 //! `Event` and `Delta` are checked against the def for their `type` when there
 //! is one. A type the schema does not know yet (`tool.preparing` and

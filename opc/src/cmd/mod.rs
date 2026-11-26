@@ -147,8 +147,6 @@ impl Ctx {
             url: self.wire_url().await?,
             key: self.require_key()?.to_string(),
             deltas,
-            resume: false,
-            read_only: false,
             give_up: Some(Duration::from_secs(120)),
         })
     }
