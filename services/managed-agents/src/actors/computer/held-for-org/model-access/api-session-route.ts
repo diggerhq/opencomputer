@@ -2,11 +2,11 @@
 // just as Slack deliveries do. The model frame precedes the API frame so the
 // host never falls back to the organization's Claude route for a Codex model.
 
-import { harnessOnProfile } from "../../actors/computer/held-for-org/model-access/harnesses.js";
-import type { ModelAccess } from "../../actors/computer/held-for-org/model-access/model-access.js";
-import { webOwner } from "../../actors/computer/held-for-org/model-access/model-access.js";
-import type { CalvinApiError, CalvinGatewayToHost, CalvinSessionSpec, ModelProfile, ModelRoute } from "../../host-protocol/protocol.js";
-import { workOsUserOf } from "../../ids/session-ids.js";
+import { harnessOnProfile } from "./harnesses.js";
+import type { ModelAccess } from "./model-access.js";
+import { webOwner } from "./model-access.js";
+import type { CalvinApiError, CalvinGatewayToHost, CalvinSessionSpec, ModelProfile, ModelRoute } from "../../../../host-protocol/protocol.js";
+import { workOsUserOf } from "../../../../ids/session-ids.js";
 
 /** `model`: the route an `api` or `start` frame carries (protocol 6). `refused`: the route itself was `refuse`. */
 export type RoutedApiSession = { session: CalvinSessionSpec; error?: CalvinApiError; model?: ModelRoute; refused?: true };

@@ -20,7 +20,7 @@ import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind, SessionLogRpcAdded
 import type { DeltaPush, LiveRpc } from "../live/contract.js";
 import type { StartSpec } from "./contract.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
-import type { RoutedApiSession } from "../../http/api/model-route.js";
+import type { RoutedApiSession } from "./held-for-org/model-access/api-session-route.js";
 import type { Principal } from "../../auth/principal.js";
 import { emitter } from "../../telemetry/log-emitter.js";
 import type { Sql } from "../../durable/sql.js";

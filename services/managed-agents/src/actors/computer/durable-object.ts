@@ -107,7 +107,7 @@ import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, 
 import { hostToken } from "./host-link/host-token.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./machine/lifecycle.js";
 import { MANAGED_MODEL_PROVIDER, type ModelCredentials, managedModelRoute, requestManagedModelKey } from "./held-for-org/model-access/model-key.js";
-import { apiSubscriptionOwner, linkedSlackUser, routeApiSession } from "../../http/api/model-route.js";
+import { apiSubscriptionOwner, linkedSlackUser, routeApiSession } from "./held-for-org/model-access/api-session-route.js";
 import { mintOpenComputerKey } from "./held-for-org/keys/opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./machine/parking.js";

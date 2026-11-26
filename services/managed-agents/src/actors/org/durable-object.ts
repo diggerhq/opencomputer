@@ -12,7 +12,7 @@ import { migrate } from "../../durable/migrations.js";
 import { owed, type Dead } from "../../durable/outbox.js";
 import { platformPrincipal, type Access, type Principal } from "../../auth/principal.js";
 import { sqlOf, type Sql } from "../../durable/sql.js";
-import { unavailable } from "../../http/unavailable.js";
+import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpcAdded, type StartSpec } from "../computer/contract.js";
 import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";

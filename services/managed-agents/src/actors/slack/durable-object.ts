@@ -17,7 +17,7 @@ import { idem } from "../../durable/idempotency.js";
 import { migrate } from "../../durable/migrations.js";
 import { type Principal, platformPrincipal } from "../../auth/principal.js";
 import { type Sql, sqlOf } from "../../durable/sql.js";
-import { unavailable } from "../../http/unavailable.js";
+import { unavailable } from "../../durable/unavailable.js";
 import { isRecord } from "../../encoding/canonical-json.js";
 import type { SlackModalReply } from "../computer/contract.js";
 import type { Origin } from "../../api-objects/objects.js";
