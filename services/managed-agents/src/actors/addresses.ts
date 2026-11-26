@@ -2,7 +2,7 @@
 
 import type { SessionLogRpc } from "./session-log/contract.js";
 import type { ComputerRpcAdded } from "./computer/contract.js";
-import type { LiveRpc } from "./live/contract.js";
+import type { LiveRpc, LiveUpgrade } from "./live/contract.js";
 import type { OrgRpc } from "./org/contract.js";
 import type { SessionLogRpcAdded } from "./session-log/contract.js";
 import type { SlackRpc } from "./slack/contract.js";
@@ -26,5 +26,5 @@ export const logOf = (env: ActorEnv, sessionId: string) => stub<SessionLogRpc & 
 /** A machine's Computer. The organization's first machine is named by the organization's id (spec 34.1). */
 export const computerOf = (env: ActorEnv, machine: string) => stub<ComputerRpcAdded>(env.COMPUTERS, "COMPUTERS", machine);
 export const slackOf = (env: ActorEnv, org: string) => stub<SlackRpc>(env.SLACK, "SLACK", org);
-/** The organization's Live, in the `opencomputer-live` script. */
-export const liveOf = (env: ActorEnv, org: string) => stub<LiveRpc>(env.LIVE, "LIVE", org);
+/** The organization's Live, in the `opencomputer-live` script: its methods, and the socket upgrade (`LiveUpgrade`). */
+export const liveOf = (env: ActorEnv, org: string) => stub<LiveRpc & LiveUpgrade>(env.LIVE, "LIVE", org);

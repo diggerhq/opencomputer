@@ -22,11 +22,11 @@ import { cursor } from "../../durable/cursor.js";
 import { hashOf } from "../../encoding/canonical-json.js";
 import { liveOf, logOf, orgOf, slackOf } from "../../actors/addresses.js";
 import { matchMutation, type CreateSession, type ListQuery, type MutateReply, type OrgRpc, type OrgSettings, type SessionPatch, type SessionRow, type SettingsEntry } from "../../actors/org/contract.js";
-import type { EntryError, InboxKind } from "../../actors/session-log/contract.js";
+import type { EntryError, EventsReset, InboxKind, LogReadRefusal } from "../../actors/session-log/contract.js";
 import type { Refusal } from "../../durable/rpc-reply.js";
 import type { Principal } from "../../auth/principal.js";
-import { type LiveUpgrade, liveRequest } from "../../actors/live/contract.js";
-import type { ApiScope, LogSummary } from "../../api-objects/objects.js";
+import { CORE_KINDS, LIVE_PROTOCOL, liveRequest } from "../../actors/live/contract.js";
+import type { ApiScope, LogSummary, TurnStatus } from "../../api-objects/objects.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "../../actors/computer/config.js";
 import { firstTurnId, isId, isSessionId } from "../../ids/session-ids.js";
@@ -89,14 +89,14 @@ function workRoute(method: string, s: string[]): Route | null {
 }
 
 /** A path id's shape, by its argument's name: a malformed one is `not_found`. */
-const PATH_ID: Record<string, RegExp> = {
-  sid: /^cs_[0-9a-hjkmnp-tv-z]{16}$/,
-  tid: /^trk_[0-9a-hjkmnp-tv-z]{16}$/,
-  resultId: /^res_[0-9a-hjkmnp-tv-z]{16}$/,
-  proposalId: /^prp_[0-9a-hjkmnp-tv-z]{16}$/,
-  opId: /^op_[0-9a-hjkmnp-tv-z]{16}$/,
-  key: /^[A-Za-z0-9_.:-]{1,64}$/,
-  rev: /^(0|[1-9]\d{0,8})$/,
+const PATH_ID: Record<string, (value: string) => boolean> = {
+  sid: isSessionId,
+  tid: (v) => isId("trk", v),
+  resultId: (v) => isId("res", v),
+  proposalId: (v) => isId("prp", v),
+  opId: (v) => isId("op", v),
+  key: (v) => /^[A-Za-z0-9_.:-]{1,64}$/.test(v),
+  rev: (v) => /^(0|[1-9]\d{0,8})$/.test(v),
 };
 
 /** `METHOD /suffix` → the route; null when it is not one of the API's. */
@@ -400,10 +400,20 @@ async function routeApi(
   if (claimed !== null && claimed !== `${p.org}/${p.subject}`) {
     return out.error(403, "principal_mismatch", "x-oc-principal is not this credential's principal.");
   }
+  // Only people set secrets (work 095): a session's own key, whatever it names, is refused.
+  if ((route.op === "secrets" || route.op.startsWith("secrets.")) && p.kind === "agent") {
+    return out.error(403, "forbidden", "Sessions cannot read or set secrets over this API.", { reason: "computer_principal" });
+  }
+  const scope = scopeOf(route.op);
+  if (scope && !p.scopes.includes(scope)) {
+    return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
+  }
+  const idem = request.headers.get("idempotency-key") ?? undefined;
+  if (idem !== undefined && !/^[\x21-\x7e]{1,255}$/.test(idem)) return out.error(400, "invalid_request", "Idempotency-Key is 1 to 255 printable characters.", { field: "Idempotency-Key" });
   if (ACTOR_OPS.has(route.op)) {
     // `Session.owner`'s name and email: the credential's, for a person or their key.
     const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
-    return actorRoute(request, env, p, person, route, out);
+    return actorRoute(request, env, p, person, route, idem, out);
   }
   // The Computer's own routes (secrets, tickets), as the same principal.
   const ua = request.headers.get("user-agent");
@@ -416,16 +426,6 @@ async function routeApi(
     requestId: out.requestId,
     userAgent: ua,
   };
-  // Only people set secrets (work 095): a session's own key, whatever it names, is refused.
-  if ((route.op === "secrets" || route.op.startsWith("secrets.")) && p.kind === "agent") {
-    return out.error(403, "forbidden", "Sessions cannot read or set secrets over this API.", { reason: "computer_principal" });
-  }
-  const scope = scopeOf(route.op);
-  if (scope && !p.scopes.includes(scope)) {
-    return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
-  }
-  const idem = request.headers.get("idempotency-key") ?? undefined;
-  if (idem !== undefined && !/^[\x21-\x7e]{1,255}$/.test(idem)) return out.error(400, "invalid_request", "Idempotency-Key is 1 to 255 printable characters.", { field: "Idempotency-Key" });
   const call = (op: ApiOp | SecretsApiOp) => computer.computerApi(accountId, caller, op).then((reply) => out.of(reply));
 
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
@@ -540,28 +540,14 @@ const ACTOR_OPS = new Set([
   "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
 ]);
 
-const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
 const ENTRY_KINDS = {
   "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt",
   "sessions.compact": "compact", "sessions.suspend": "suspend", "sessions.resume": "resume", "turns.cancel": "cancel", "subagents.stop": "stop",
 } as const;
 
-/** SessionLog's reads as they take the principal and a cursor (session-log lane, spec 37.1). */
-type LogRefused = { ok: false; error: string; cursor?: string | null; seq?: number; retryAfterMs?: number; [field: string]: unknown };
-type LogPage = { ok: true; [field: string]: unknown };
-type EventsAnswer = (LogPage & { events: { createdAt: string }[]; cursor?: string }) | LogRefused;
-interface LogReads {
-  summary(minSeq: number | undefined, p: Principal): Promise<{ ok: true; summary: LogSummary } | LogRefused>;
-  events(q: Record<string, unknown>, p: Principal): Promise<EventsAnswer>;
-  turns(q: Record<string, unknown>, p: Principal): Promise<LogPage | LogRefused>;
-  turn(turnId: string, q: Record<string, unknown>, p: Principal): Promise<LogPage | LogRefused>;
-  asks(q: Record<string, unknown>, p: Principal): Promise<LogPage | LogRefused>;
-  ask(askId: string, minSeq: number | undefined, p: Principal): Promise<LogPage | LogRefused>;
-  subagents(q: Record<string, unknown>, p: Principal): Promise<LogPage | LogRefused>;
-  subagent(subagentId: string, minSeq: number | undefined, p: Principal): Promise<LogPage | LogRefused>;
-}
-const readsOf = (env: ComputerEdgeEnv, sessionId: string) => logOf(env, sessionId) as unknown as LogReads;
+/** A SessionLog read refused, a reset included (session-log/contract.ts). */
+type LogRefused = LogReadRefusal | EventsReset;
 
 const STATUS_OF: Record<string, number> = {
   invalid_request: 400,
@@ -608,7 +594,7 @@ function logRefusalOf(out: Reply, r: LogRefused): Response {
   if (r.error === "reset") return out.error(409, "reset", "The cursor's position no longer exists.", { cursor: r.cursor ?? null, ...(r.seq !== undefined ? { seq: r.seq } : {}) });
   if (r.error === "invalid_cursor") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
   if (r.error === "unavailable") return out.error(503, "unavailable", "The session has not reached minSeq yet.", { retryAfterMs: r.retryAfterMs ?? 1_000 });
-  if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "session_not_found", "No such session.");
+  if (r.error === "not_found") return out.error(404, "session_not_found", "No such session.");
   return out.error(404, r.error, `No such ${r.error.replace(/_not_found$/, "")}.`);
 }
 
@@ -687,7 +673,7 @@ function createInput(body: unknown): { value: CreateSession } | { error: [number
     value.metadata = m as Record<string, string>;
   }
   if (input.trackId !== undefined) {
-    if (typeof input.trackId !== "string" || !TRACK_ID.test(input.trackId)) return bad("trackId", "trackId must be trk_ and 16 lowercase Crockford base32 characters.");
+    if (!isId("trk", input.trackId)) return bad("trackId", "trackId must be trk_ and 16 lowercase Crockford base32 characters.");
     value.trackId = input.trackId;
   }
   if (input.role !== undefined) {
@@ -753,14 +739,8 @@ function withSummary(session: SessionRow, summary: LogSummary | null): SessionRo
   };
 }
 
-/** A route of spec 37 served by the actors, as the principal. */
-async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, person: CreateSession["person"], route: Route, out: Reply): Promise<Response> {
-  const scope = scopeOf(route.op);
-  if (scope && !p.scopes.includes(scope)) {
-    return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
-  }
-  const idem = request.headers.get("idempotency-key") ?? undefined;
-  if (idem !== undefined && !/^[\x21-\x7e]{1,255}$/.test(idem)) return out.error(400, "invalid_request", "Idempotency-Key is 1 to 255 printable characters.", { field: "Idempotency-Key" });
+/** A route of spec 37 served by the actors, as the principal; `routeApi` checked its scope and Idempotency-Key. */
+async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, person: CreateSession["person"], route: Route, idem: string | undefined, out: Reply): Promise<Response> {
   const rawTrace = request.headers.get("x-oc-trace");
   const trace = rawTrace && TRACE.test(rawTrace) ? rawTrace : undefined;
   const query = new URL(request.url).searchParams;
@@ -838,7 +818,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (route.op === "get") {
     const [got, summary] = await Promise.all([
       timedDo(out.facts, org().getSession(p, sessionId)),
-      timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null),
+      timedLog(out.facts, logOf(env, sessionId).summary(minSeq, p)).catch(() => null),
     ]);
     if (!got.ok && p.admin) {
       // An admin outside the session reads its access and nothing else (sessions.mdx#access).
@@ -885,10 +865,10 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   }
 
   // The session's reads: straight to its SessionLog as the principal, which checks access.
-  const log = readsOf(env, sessionId);
+  const log = logOf(env, sessionId);
   const limit = (max: number) => intParam(query, "limit", 1, max);
   const pageCursor = query.get("cursor") ?? undefined;
-  const answer = (r: LogPage | LogRefused, pick?: string) => (r.ok ? out.send(200, pick ? { [pick]: r[pick] } : strip(r)) : logRefusalOf(out, r));
+  const answer = (r: { ok: true; [field: string]: unknown } | LogRefused, pick?: string) => (r.ok ? out.send(200, pick ? { [pick]: r[pick] } : strip(r)) : logRefusalOf(out, r));
   switch (route.op) {
     case "events.list": {
       const after = query.get("after") ?? undefined;
@@ -918,7 +898,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       const lim = limit(100);
       if (lim === null) return out.error(400, "invalid_request", "limit is 1 to 100.", { field: "limit" });
       const status = query.get("status")?.split(",").filter(Boolean);
-      return answer(await timedLog(out.facts, log.turns({ ...(lim !== undefined ? { limit: lim } : {}), ...(pageCursor ? { cursor: pageCursor } : {}), ...(status ? { status } : {}), ...(minSeq !== undefined ? { minSeq } : {}) }, p)));
+      return answer(await timedLog(out.facts, log.turns({ ...(lim !== undefined ? { limit: lim } : {}), ...(pageCursor ? { cursor: pageCursor } : {}), ...(status ? { status: status as TurnStatus[] } : {}), ...(minSeq !== undefined ? { minSeq } : {}) }, p)));
     }
     case "turns.get":
       return answer(await timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p)), "turn");
@@ -945,10 +925,6 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   }
 }
 
-/** The feed's kinds a principal without `work:read` may read (spec 37.1). */
-const CORE_KINDS = ["session", "machine"];
-const PROTOCOL = 1;
-
 const reset = (out: Reply, message: string) => out.error(409, "reset", message, { cursor: null });
 
 /** A mutation's reply (spec 37.3): 200 with `protocol`, or its error with the status of spec 34.2. */
@@ -974,15 +950,15 @@ async function orgRoute(
 ): Promise<Response> {
   const timed = <T>(call: Promise<T>) => timedDo(out.facts, call);
   const protocol = query.get("protocol");
-  if (protocol !== null && !(Number(protocol) >= PROTOCOL)) return reset(out, `This server speaks protocol ${PROTOCOL}.`);
+  if (protocol !== null && !(Number(protocol) >= LIVE_PROTOCOL)) return reset(out, `This server speaks protocol ${LIVE_PROTOCOL}.`);
   // Path ids of the wrong shape name nothing.
   for (const [name, value] of Object.entries(route.args ?? {})) {
-    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) {
+    if (PATH_ID[name] && !PATH_ID[name]!(value)) {
       return name === "sid" ? out.error(404, "session_not_found", "No such session.") : out.error(404, "not_found", `No such ${name}.`);
     }
   }
-  if (route.sub !== undefined && route.op !== "work.review" && !PATH_ID.tid!.test(route.sub)) return out.error(404, "not_found", "No such track.");
-  if (route.op === "work.review" && !PATH_ID.resultId!.test(route.sub!)) return out.error(404, "not_found", "No such result.");
+  if (route.sub !== undefined && route.op !== "work.review" && !PATH_ID.tid!(route.sub)) return out.error(404, "not_found", "No such track.");
+  if (route.op === "work.review" && !PATH_ID.resultId!(route.sub!)) return out.error(404, "not_found", "No such result.");
 
   switch (route.op) {
     case "feed": {
@@ -1007,7 +983,7 @@ async function orgRoute(
       if (limit === null) return out.error(400, "invalid_request", "limit is 1 to 1000.", { field: "limit" });
       const r = await timed(org().occurrences(p, { ...(after !== undefined ? { after } : {}), ...(limit !== undefined ? { limit } : {}) }));
       if ("reset" in r) return reset(out, "The occurrence stream has moved past this cursor.");
-      return out.send(200, { protocol: PROTOCOL, entries: r.entries, to: r.to });
+      return out.send(200, { protocol: LIVE_PROTOCOL, entries: r.entries, to: r.to });
     }
     case "mutate": {
       const parsed = await bodyOf(request);
@@ -1029,7 +1005,7 @@ async function orgRoute(
       const earlier = query.get("earlier");
       if (earlier !== null && earlier !== "1" && earlier !== "true" && earlier !== "0" && earlier !== "false") return out.error(400, "invalid_request", "earlier is true or false.", { field: "earlier" });
       const track = query.get("track") ?? undefined;
-      if (track !== undefined && !PATH_ID.tid!.test(track)) return out.error(400, "invalid_request", "track is a track id.", { field: "track" });
+      if (track !== undefined && !PATH_ID.tid!(track)) return out.error(400, "invalid_request", "track is a track id.", { field: "track" });
       const before = query.get("before") ?? undefined;
       if (before !== undefined && !cursor.read("p", before)) return reset(out, "before is not a page cursor.");
       const r = await timed(org().threads(p, {
@@ -1038,31 +1014,31 @@ async function orgRoute(
         ...(before ? { before } : {}),
         ...(limit !== undefined ? { limit } : {}),
       }));
-      return out.send(200, { protocol: PROTOCOL, rows: r.rows, next: r.next });
+      return out.send(200, { protocol: LIVE_PROTOCOL, rows: r.rows, next: r.next });
     }
     case "work.thread": {
       // One thread, by id, whatever its age (a deep link to one no page has loaded): the rows a page holds for it.
       const r = await timed(org().thread(p, route.args!.sid!));
-      return r ? out.send(200, { protocol: PROTOCOL, rows: r.rows }) : out.error(404, "session_not_found", "No such session.");
+      return r ? out.send(200, { protocol: LIVE_PROTOCOL, rows: r.rows }) : out.error(404, "session_not_found", "No such session.");
     }
     case "work.overview":
-      return out.send(200, { protocol: PROTOCOL, ...(await timed(org().overview(p))) });
+      return out.send(200, { protocol: LIVE_PROTOCOL, ...(await timed(org().overview(p))) });
     case "work.doc": {
       const doc = await timed(org().doc(p, route.sub!));
-      return doc ? out.send(200, { protocol: PROTOCOL, doc }) : out.error(404, "not_found", "No such track.");
+      return doc ? out.send(200, { protocol: LIVE_PROTOCOL, doc }) : out.error(404, "not_found", "No such track.");
     }
     case "work.doc.revisions": {
       const rev = route.args?.rev;
       const revisions = await timed(org().docRevisions(p, route.sub!, rev !== undefined ? Number(rev) : undefined));
       if (rev !== undefined) {
         const one = revisions.find((r) => r.rev === Number(rev));
-        return one ? out.send(200, { protocol: PROTOCOL, revision: one }) : out.error(404, "not_found", "No such revision.");
+        return one ? out.send(200, { protocol: LIVE_PROTOCOL, revision: one }) : out.error(404, "not_found", "No such revision.");
       }
-      return out.send(200, { protocol: PROTOCOL, revisions });
+      return out.send(200, { protocol: LIVE_PROTOCOL, revisions });
     }
     case "work.review": {
       const review = await timed(org().review(p, route.sub!));
-      return review ? out.send(200, { protocol: PROTOCOL, review }) : out.error(404, "not_found", "No such review.");
+      return review ? out.send(200, { protocol: LIVE_PROTOCOL, review }) : out.error(404, "not_found", "No such review.");
     }
     case "work.search": {
       const q = query.get("q") ?? "";
@@ -1070,7 +1046,7 @@ async function orgRoute(
       const limit = intParam(query, "limit", 1, 50);
       if (limit === null) return out.error(400, "invalid_request", "limit is 1 to 50.", { field: "limit" });
       const r = await timed(org().search(p, { q, ...(limit !== undefined ? { limit } : {}) }));
-      return out.send(200, { protocol: PROTOCOL, rows: r.rows });
+      return out.send(200, { protocol: LIVE_PROTOCOL, rows: r.rows });
     }
     case "work.repository.get":
       return out.send(200, { repository: await timed(org().repository(p)) });
@@ -1101,8 +1077,7 @@ async function orgRoute(
 /** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal verified here. */
 async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal, out: Reply): Promise<Response> {
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return out.error(426, "upgrade_required", "GET /live is a WebSocket.");
-  const live = liveOf(env, p.org) as unknown as LiveUpgrade;
-  return live.fetch(liveRequest(request, p));
+  return liveOf(env, p.org).fetch(liveRequest(request, p));
 }
 
 /**
@@ -1186,7 +1161,7 @@ const PULL_URL = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{
  * installation token as the Computer gets one. `ETag` is the head commit.
  */
 async function resultDiff(request: Request, env: ComputerEdgeEnv, p: Principal, resultId: string, org: () => OrgRpc, out: Reply): Promise<Response> {
-  if (!PATH_ID.resultId!.test(resultId)) return out.error(404, "not_found", "No such result.");
+  if (!PATH_ID.resultId!(resultId)) return out.error(404, "not_found", "No such result.");
   const row = await timedDo(out.facts, org().result(p, resultId));
   const pull = row ? PULL_URL.exec(row.ref) : null;
   if (!pull) return out.error(404, "not_found", "This result is not a GitHub pull request.");
@@ -1220,7 +1195,7 @@ async function resultDiff(request: Request, env: ComputerEdgeEnv, p: Principal, 
   }
   const diff = await github("application/vnd.github.diff").catch(() => null);
   if (!diff?.ok) return unavailable();
-  const response = out.send(200, { protocol: PROTOCOL, head, diff: await diff.text() });
+  const response = out.send(200, { protocol: LIVE_PROTOCOL, head, diff: await diff.text() });
   response.headers.set("etag", etag);
   return response;
 }

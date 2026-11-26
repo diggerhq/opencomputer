@@ -463,7 +463,7 @@ describe("the session reads (spec 37.1)", () => {
   });
 
   it("events: a session the caller may not read is session_not_found, the code GET /sessions/{id} answers", async () => {
-    const log = { events: vi.fn(async () => ({ ok: false, error: "forbidden" })), turn: vi.fn(async () => ({ ok: false, error: "not_found" })) };
+    const log = { events: vi.fn(async () => ({ ok: false, error: "not_found" })), turn: vi.fn(async () => ({ ok: false, error: "not_found" })) };
     const { call } = setup({ log });
     const r = await call("GET", `/sessions/${SID}/events`);
     expect(r.status).toBe(404);
