@@ -37,6 +37,9 @@ class FakeStatement {
       if (!this.db.user) return null;
       return this.db.user as T;
     }
+    if (this.sql.includes("SELECT role FROM org_memberships WHERE org_id")) {
+      return { role: "owner" } as T;
+    }
     if (this.sql.includes("FROM api_keys WHERE id")) {
       return {
         id: "key-1",
