@@ -219,7 +219,7 @@ export class DeliveryDurableObject extends DurableObject<ActorEnv> implements De
   // ---------------------------------------------------------------- the owed calls
 
   private runOwed(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now());
+    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now(), this.emit);
   }
 
   private async send(call: string, body: unknown): Promise<void> {

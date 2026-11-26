@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { alarms, canonicalJson, cursor, hashOf, idem, migrate, owed, sqlOf, type Sql } from "../src/actor/index.js";
+import { alarms, canonicalJson, cursor, type Emitter, hashOf, idem, migrate, owed, sqlOf, type Sql } from "../src/actor/index.js";
 
 /** The shared actor module (spec 36.7), on a real Durable Object's storage. */
 
@@ -78,6 +78,8 @@ describe("alarms", () => {
   });
 });
 
+const quiet: Emitter = () => undefined;
+
 describe("owed", () => {
   it("sends a group in order, stops it at a failure, and lets other groups through", async () => {
     await withSql("owed", async (sql) => {
@@ -92,12 +94,12 @@ describe("owed", () => {
         if (call === "a" && fail) throw new Error("down");
         sent.push(call);
       };
-      await owed.run(sql, send, Date.now());
+      await owed.run(sql, send, Date.now(), quiet);
       expect(sent).toEqual(["c"]);
       fail = false;
-      await owed.run(sql, send, Date.now());
+      await owed.run(sql, send, Date.now(), quiet);
       expect(sent).toEqual(["c"]); // backing off: 1 s
-      await owed.run(sql, send, Date.now() + 1_500);
+      await owed.run(sql, send, Date.now() + 1_500, quiet);
       expect(sent).toEqual(["c", "a", "b"]);
       expect(sql.exec("SELECT n FROM _owed")).toEqual([]);
     });
@@ -114,6 +116,7 @@ describe("owed", () => {
           if (body === 2) owed.add(sql, { group: "g", key: "summary", call: "s", body: 3, at: 0 });
         },
         Date.now(),
+        quiet,
       );
       expect(sent).toEqual([2, 3]);
       expect(owed.has(sql, "summary")).toBe(false);
@@ -125,9 +128,35 @@ describe("owed", () => {
       const send = async () => {
         throw new Error("410");
       };
-      await owed.run(sql, send, Date.now());
-      await owed.run(sql, send, Date.now() + 10);
+      await owed.run(sql, send, Date.now(), quiet);
+      await owed.run(sql, send, Date.now() + 10, quiet);
       expect(owed.dead(sql)).toMatchObject([{ group: "g", call: "hook", tries: 2, lastError: "410" }]);
+      expect(sql.exec("SELECT n FROM _owed")).toEqual([]);
+    });
+  });
+  it("without a schedule, a day of tries ends in the dead list, reported, and its group moves on", async () => {
+    await withSql("owed-default-dead", async (sql) => {
+      owed.add(sql, { group: "g", call: "poison", at: 0 });
+      owed.add(sql, { group: "g", call: "next", at: 0 });
+      const sent: string[] = [];
+      const send = async (call: string) => {
+        if (call === "poison") throw new Error("never");
+        sent.push(call);
+      };
+      const events: [string, Record<string, unknown> | undefined, string | undefined][] = [];
+      const emit: Emitter = (event, fields, level) => void events.push([event, fields, level]);
+      await owed.run(sql, send, Date.now(), emit);
+      expect(sent).toEqual([]);
+      // 1, 2, 5, 15 s, then every 60 s for 24 hours: the try before the last.
+      sql.exec("UPDATE _owed SET tries = ?, at = 0 WHERE call = 'poison'", 4 + 24 * 60 - 2);
+      await owed.run(sql, send, Date.now(), emit);
+      expect(sent).toEqual([]);
+      expect(owed.dead(sql)).toEqual([]);
+      sql.exec("UPDATE _owed SET at = 0 WHERE call = 'poison'");
+      await owed.run(sql, send, Date.now(), emit);
+      expect(sent).toEqual(["next"]);
+      expect(owed.dead(sql)).toMatchObject([{ group: "g", call: "poison", tries: 4 + 24 * 60, lastError: "never" }]);
+      expect(events).toEqual([["owed.dead", { group: "g", call: "poison", tries: 4 + 24 * 60, error: "never" }, "error"]]);
       expect(sql.exec("SELECT n FROM _owed")).toEqual([]);
     });
   });
