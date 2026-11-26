@@ -283,6 +283,27 @@ describe("computer thread access", () => {
     s.socket.close();
   });
 
+  it("wakes the session in the thread it posts into, as the owner, and no other", async () => {
+    const s = await withSession("org_threads_post_wake", "T0TH20");
+    // A second session of the same owner, in the public thread the post goes to.
+    await slackEvent(s.org, s.team, "CPUB", { type: "app_mention", user: "UADA", text: "<@UBOT> do lane 2", ts: THREAD });
+    const child = `${s.team}:CPUB:${THREAD}`;
+    await until(() => s.frames.find((frame) => frame.t === "deliver" && frame.session.key === child), (found) => !!found, "the child's start");
+    const posted = await ask(s, "post", { url: PUBLIC, text: "!secret X go ahead with the plan" });
+    expect(posted.result).toEqual({ ts: "999.1", url: `https://acme.slack.com/archives/CPUB/p9991?thread_ts=${THREAD}&cid=CPUB` });
+    const computer = computers().getByName(s.org);
+    await runInDurableObject(computer, (_instance, state: DurableObjectState) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
+    await runDurableObjectAlarm(computer);
+    const woke = await until(() => s.frames.find((frame) => frame.t === "deliver" && frame.session.key === child && frame.msg.ts === "999.1"), (found) => !!found, "the wake");
+    expect(woke.msg.userId).toBe("UADA");
+    expect(woke.msg.text).toBe(
+      `Posted here for <@UADA> by the session in <https://app.slack.com/client/T0TH20/C1/thread/C1-${TS}|another thread>:\n!secret X go ahead with the plan`,
+    );
+    // Not a command, and nothing back into the session that posted.
+    expect(s.frames.filter((frame) => frame.t === "deliver" && frame.session.key === s.key && frame.msg.ts === "999.1")).toEqual([]);
+    s.socket.close();
+  });
+
   it("does not read the parent link in a spawned thread's brief", async () => {
     const s = await withSession("org_threads_spawn", THREADS_TEAM.replace("THREADS", "THSPAWN"));
     const id = crypto.randomUUID();

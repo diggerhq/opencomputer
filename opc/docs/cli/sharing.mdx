@@ -1,0 +1,24 @@
+---
+title: "Sharing"
+description: "Who can see, attach to and talk in a session."
+---
+
+Sessions are shared within an organization, the same way a Slack thread is shared within a channel.
+
+| Who | Can |
+| --- | --- |
+| The owner, who started the session | Everything, including opening a [shell](/cli/shell) in its workspace |
+| An organization admin | What any member can, and open a shell |
+| Any member of the organization | See it on the dashboard, attach by id or Slack link, send messages, answer asks, change settings. Not open a shell. |
+| Anyone but the owner, for a session started in Slack | Nothing: the session is not listed and attaching fails with `session not found`. |
+| An API key | What the member who created it can do |
+
+Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).
+
+The agent runs as the session's owner: it uses the owner's GitHub identity for commits and pull requests, and the owner's secrets. A member who sends a message to someone else's session asks the agent to act as the owner. `opc` says so the first time you send in a session you do not own:
+
+```
+  this is Mo's session. The agent acts as Mo. Send anyway? [y/N]
+```
+
+Use `--read-only` to attach without the ability to send.
