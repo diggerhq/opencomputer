@@ -116,6 +116,22 @@ describe('a sandboxed thread\'s workspace (work 103, "Sequences")', () => {
     expect(next.log[0]).toBe('ws-add.sh 0 alpha beta=trunk');
   });
 
+  it('prepare: how it went, the slowest repository\'s fetch, checkout and catch-up, and the root files\' run', async () => {
+    const t = rig(() => 'alpha\tok\tsp/C1-1-1\tmain\tabc\t\t310\t120\t40\t1\nbeta\tok\tsp/C1-1-1\ttrunk\tdef\t\t90\t640\t0\t0\nlazy\tfailed\tno clone\n');
+    const { times } = await t.w.prepare(ID, ['alpha', 'beta', 'lazy']);
+    expect(times).toEqual({
+      'container.add_repos': 2,
+      'container.add_fetch_ms': 310,
+      'container.add_checkout_ms': 640,
+      'container.add_catchup_ms': 40,
+      'container.add_overlapped': 1,
+      'container.unpack_ms': expect.any(Number),
+    });
+    // An older script's lines have no times: only what the host measured.
+    expect((await rig().w.prepare(ID, ['alpha'])).times).toEqual({ 'container.add_repos': 1, 'container.unpack_ms': expect.any(Number) });
+    expect((await rig(() => new Error('ws-add.sh: timed out')).w.prepare(ID, ['alpha'])).times).toEqual({ 'container.unpack_ms': expect.any(Number) });
+  });
+
   it('prepare: a repository that could not be added is left out; a run that failed whole leaves all out, and the thread still starts', async () => {
     const one = rig(() => 'alpha\tok\tsp/C1-1-1\tmain\tabc\tcould not resolve host\nbeta\tfailed\tno branch trunk\n');
     expect((await one.w.prepare(ID, ['alpha', 'beta'])).record.repos).toEqual({ alpha: { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc', fetchError: 'could not resolve host' } });

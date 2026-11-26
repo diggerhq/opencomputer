@@ -32,6 +32,13 @@
 // - The thread's workspace directory and its registries are made at every
 //   start: a first start may have failed before they were. The mounts
 //   (workspace.ts) are part of bringing the container up.
+// - What waits for what, before the container is up: the directories and the
+//   inventory together; the mint after the inventory (whether the session
+//   resumes its transcript depends on the home volume), together with
+//   readying or creating the container (neither touches the other's files);
+//   the start after both (the boot spec carries the API, and the journal
+//   directory the mint makes is a mount). `together` lets every step end
+//   before a failure is handled, so nothing a failed start began still runs.
 // - A thread whose record has no `repos` gets its workspace prepared while its
 //   runner boots; the runner is connected to, and so given credentials and
 //   its first message, only after that. A start whose preparation failed is
@@ -57,6 +64,7 @@ import type { Telemetry } from '../../telemetry/emitter.js';
 import type { Dimensions } from '../../telemetry/envelope.js';
 import { coldStart } from '../cold-start.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
+import { timed, together } from '../together.js';
 import type { Containers, Inventory } from './containers.js';
 import { WORKSPACE } from './mounts.js';
 import { containerName } from './podman-args.js';
@@ -162,17 +170,19 @@ export function sandboxStarts(d: SandboxStartDeps) {
         const began = Date.now();
         try {
           names = d.workspace.repos(record);
-          await d.workspace.dirs(record, names);
-          const inventory = found && !found.unclaimed && (await c.inventory());
+          const [, inventory] = await together<[unknown, Inventory | false | undefined]>([
+            timed(data, 'container.dirs_ms', d.workspace.dirs(record, names)),
+            found && !found.unclaimed ? timed(data, 'container.inventory_ms', c.inventory()) : Promise.resolve(undefined),
+          ]);
           // The transcript is in the home: resumed only into one that was there before this start.
           if (sdkSessionId && inventory && inventory.volumes.some((v) => v.id === id)) session = { ...fresh, sdkSessionId };
-          api = await d.mint(session, id, run);
-          rs = { ...rs, session: { ...session, forkPath: WORKSPACE }, api: api && { ...api, token: '' } };
-          if (inventory) {
-            const r = await ready(id, inventory);
-            data['container.recreated'] = r.recreated;
-            if (r.ms !== undefined) data['container.create_ms'] = r.ms;
-          } else {
+          const container = async () => {
+            if (inventory) {
+              const r = await ready(id, inventory);
+              data['container.recreated'] = r.recreated;
+              if (r.ms !== undefined) data['container.create_ms'] = r.ms;
+              return;
+            }
             if (record.unclaimed) {
               if (!(await c.remove(id))) throw new Error(`the spare this thread took was not claimed and could not be removed (${containerName(id)}); nothing was started`);
               const { unclaimed: _, ...claimed } = record;
@@ -183,7 +193,9 @@ export function sandboxStarts(d: SandboxStartDeps) {
               await c.remove(id); // whatever a failed Create left; the record stays
               throw e;
             });
-          }
+          };
+          [api] = await together<[RunnerApi | undefined, unknown]>([timed(data, 'container.mint_ms', d.mint(session, id, run)), container()]);
+          rs = { ...rs, session: { ...session, forkPath: WORKSPACE }, api: api && { ...api, token: '' } };
           const binds = d.workspace.binds(record, names, api && path.dirname(api.journal));
           const up = await c.up(id, rs, record, (pid) => d.workspace.mount(id, pid, record.person, binds));
           tokens = up.tokens;
@@ -204,6 +216,7 @@ export function sandboxStarts(d: SandboxStartDeps) {
               const p = await d.workspace.prepare(id, names);
               record = p.record;
               data['container.add_ms'] = p.addMs;
+              Object.assign(data, p.times);
               done.end({ outcome: 'completed', data: { repos: Object.keys(p.record.repos ?? {}).length } });
             } catch (e) {
               done.end({ outcome: 'failed', error_type: 'git_worktree', data: { fork_error_type: 'git_worktree' } });

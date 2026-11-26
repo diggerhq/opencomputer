@@ -65,7 +65,7 @@ function rig(o: { settleMs?: number; deferMs?: number; fail?: Partial<Record<'cr
         await step(`prepare ${id} ${names.join(',')}`, undefined);
         const record = { ...records.get(id)!, repos: Object.fromEntries(names.map((n) => [n, { branch: 'b', from: 'origin/main', base: 'abc' }])) };
         records.write(record);
-        return { record, addMs: 7 };
+        return { record, addMs: 7, times: { 'container.add_fetch_ms': 5, 'container.unpack_ms': 2 } };
       },
     },
     dial: o.dial ?? (async () => sock),
@@ -138,6 +138,8 @@ describe('a spare container', () => {
     expect(t.records.get(id)).not.toHaveProperty('unclaimed');
     expect(t.records.get(id)).toMatchObject({ id, key: 'C1:1.1', repos: { hello: {} } });
     expect(b).toMatchObject({ record: { id, key: 'C1:1.1' }, run: t.runRoot(id), api: { token: 'tok' }, addMs: 7 });
+    // Each step's time, those made together and prepare's.
+    expect(Object.keys(b.times).sort()).toEqual(['container.add_fetch_ms', 'container.dirs_ms', 'container.mint_ms', 'container.pid_ms', 'container.unpack_ms']);
     expect(b.session).not.toHaveProperty('sdkSessionId');
     expect(b.session).not.toHaveProperty('forkPath');
     expect(t.ids()).toEqual([]);
@@ -170,6 +172,17 @@ describe('a spare container', () => {
     await expect(t.bind(id, spec, {})).rejects.toThrow('mount refused');
     expect(t.records.get(id)).toMatchObject({ key: 'C1:1.1' });
     expect(t.records.get(id)).not.toHaveProperty('repos');
+  });
+
+  it('makes its directories, mint and pid together after the record, mounts only once all three are done, and none failed', async () => {
+    for (const at of ['pid', 'mint'] as const) {
+      const t = rig({ fail: { [at]: new Error(`no ${at}`) } });
+      const { id } = await t.launch();
+      t.log.length = 0;
+      await expect(t.bind(id, spec, {})).rejects.toThrow(`no ${at}`);
+      expect(t.log).toEqual(['dirs C1:1.1 hello', `mint ${id} RUN/${id} sdk=- fork=-`, `pid ${id}`]); // all three ran; nothing mounted
+      expect(t.records.get(id)).toMatchObject({ key: 'C1:1.1', unclaimed: true });
+    }
   });
 
   it('that could not be bound is removed, and its record and run directory stay for the cold start under the same id', async () => {

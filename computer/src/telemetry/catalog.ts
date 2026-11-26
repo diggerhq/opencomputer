@@ -77,7 +77,11 @@ export const CATALOG = {
   // `fetch_skipped`: the clone's refs were fresh (workspaces/fetch-schedule.ts), no fetch on the fork's path.
   'fork.repo': host('repo', 'fetch_ms', 'worktree_ms', 'lock_wait_ms', 'fetch_error_type', 'fetch_skipped'),
   'fork.done': host('repos', 'fork_error_type'),
-  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms'),
+  // A podman container (work 103) adds its steps: the run directories, the inventory, the token, then the worktrees (host/sandbox/workspace.ts:
+  // `add_repos` the repositories, the slowest one's fetch, checkout and catch-up, `add_overlapped` how many checked out while fetching) and the root files.
+  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms',
+    'container.dirs_ms', 'container.inventory_ms', 'container.mint_ms', 'container.add_repos', 'container.add_fetch_ms', 'container.add_checkout_ms',
+    'container.add_catchup_ms', 'container.add_overlapped', 'container.unpack_ms'),
   // One script in a helper container (work 103): `script` is a workspace script's file name, or `files` for a `/files` script on a stopped thread.
   'sandbox.helper': host('script'),
   // What one sweep of a `podman` host removed, by kind (work 103); emitted only when it removed something.
@@ -114,7 +118,10 @@ export const CATALOG = {
   'model.downgraded': runner('from', 'to'),
   // A spare became this session's runner; `duration_ms` is the claim's round trip.
   // A spare container (work 103) adds what making it the thread's took: the mounts and the worktrees.
-  'runner.claimed': host('launch_mode', 'image', 'container.mount_ms', 'container.add_ms', 'container.claim_ms'),
+  // Its steps as on runner.launched, with `pid_ms` (its process found, alongside the directories and the token) and `ready_ms` (the record and those three, before the mounts).
+  'runner.claimed': host('launch_mode', 'image', 'container.mount_ms', 'container.add_ms', 'container.claim_ms',
+    'container.ready_ms', 'container.dirs_ms', 'container.mint_ms', 'container.pid_ms', 'container.add_repos', 'container.add_fetch_ms',
+    'container.add_checkout_ms', 'container.add_catchup_ms', 'container.add_overlapped', 'container.unpack_ms'),
   'turn.abandoned': host('exit_reason'),
   'token.minted': host('cache_hit', 'repos', 'kind'),
   // `trigger`: 'periodic' (the housekeeping pass) or 'pushed' (a push to the branch forks start from).

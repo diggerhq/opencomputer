@@ -62,7 +62,7 @@ async function rig(o: { known?: boolean; bind?: () => Promise<Bound>; answer?: P
       log.push(`bind ${id} ${s.key}`);
       if (o.bind) return o.bind();
       const { sdkSessionId: _s, ...session } = s;
-      return { record, run: `/run/sp/sandbox/${ID}`, session, api: undefined, readyMs: 2, mountMs: 3, addMs: 4 };
+      return { record, run: `/run/sp/sandbox/${ID}`, session, api: undefined, readyMs: 2, mountMs: 3, addMs: 4, times: { 'container.mint_ms': 1, 'container.add_fetch_ms': 5 } };
     },
     discard: async (id) => void log.push(`removed ${id}`),
     gone: async (id) => void log.push(`gone ${id}`),
@@ -125,7 +125,7 @@ describe('a new thread on a podman host with a spare', () => {
     expect(t.proxy).toEqual([`claim ${ID} C1:1.1 claude after bind ${ID} C1:1.1`]); // the session's route is the spare's before it is claimed
     expect(claim.session).toMatchObject({ key: 'C1:1.1', forkPath: '/workspace' });
     expect(claim.session).not.toHaveProperty('sdkSessionId');
-    expect((await t.events()).find((e) => e.event_name === 'runner.claimed')).toMatchObject({ data: { launch_mode: 'podman', image: '64a672bb773b', 'container.mount_ms': 3, 'container.add_ms': 4 } });
+    expect((await t.events()).find((e) => e.event_name === 'runner.claimed')).toMatchObject({ data: { launch_mode: 'podman', image: '64a672bb773b', 'container.ready_ms': 2, 'container.mount_ms': 3, 'container.add_ms': 4, 'container.mint_ms': 1, 'container.add_fetch_ms': 5 } });
     expect(t.tm.dropped).toEqual({});
   });
 
@@ -222,7 +222,7 @@ describe('a new thread on a podman host with a spare', () => {
     await vi.waitFor(() => expect(t.log).toContain(`bind ${ID} C1:1.1`));
     for (const m of asks) t.spare.say(m);
     await vi.waitFor(() => expect(t.spare.got).toEqual(refusals));
-    bound({ record, run: `/run/sp/sandbox/${ID}`, session: spec, api: undefined, readyMs: 2, mountMs: 3, addMs: 4 });
+    bound({ record, run: `/run/sp/sandbox/${ID}`, session: spec, api: undefined, readyMs: 2, mountMs: 3, addMs: 4, times: { 'container.mint_ms': 1, 'container.add_fetch_ms': 5 } });
     await starting;
     expect(t.log.filter((l) => l.includes('handled'))).toEqual([]);
   });

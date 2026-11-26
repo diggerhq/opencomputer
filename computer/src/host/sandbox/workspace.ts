@@ -46,6 +46,29 @@ export const NO_DEFINITION = 'this host has no workspace definition; there is no
 
 type Repos = NonNullable<SandboxRecord['repos']>;
 
+/**
+ * How a `prepare` went, as calvin_events data fields beside `container.add_ms`: ws-add.sh's slowest repository's
+ * fetch, checkout and catch-up (each repository works at the same time, so the slowest sets the time), how many
+ * repositories it added and in how many the fetch overlapped the checkout, and the second run that unpacks the root
+ * files. A field is absent when nothing was measured.
+ */
+export type PrepareTimes = Partial<Record<
+  'container.add_repos' | 'container.add_fetch_ms' | 'container.add_checkout_ms' | 'container.add_catchup_ms' | 'container.add_overlapped' | 'container.unpack_ms',
+  number
+>>;
+
+/** ws-add.sh's times, from the ok lines' fields after the fetch error (bin/ws-add.sh); absent from an older script. */
+function addTimes(lines: string[][]): PrepareTimes {
+  const t: PrepareTimes = { 'container.add_repos': lines.length };
+  const max = (i: number) => Math.max(...lines.map((f) => Number(f[i]) || 0));
+  if (!lines.some((f) => f.length > 4)) return t;
+  t['container.add_fetch_ms'] = max(4);
+  t['container.add_checkout_ms'] = max(5);
+  t['container.add_catchup_ms'] = max(6);
+  t['container.add_overlapped'] = lines.filter((f) => f[7] === '1').length;
+  return t;
+}
+
 export interface WorkspaceDeps {
   as: AsRunner;
   records: Records;
@@ -122,10 +145,11 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
   const mount = (id: string, pid: number, person: string, b: Bind[]) => m.applyMounts(id, pid, person, b);
 
   /** One run of ws-add.sh in the thread's container for all of `names`: what was added, and why the rest was not. */
-  async function add(r: SandboxRecord, id: string, names: string[], def: Definition): Promise<{ added: Repos; failed: Map<string, string> }> {
+  async function add(r: SandboxRecord, id: string, names: string[], def: Definition): Promise<{ added: Repos; failed: Map<string, string>; times: PrepareTimes }> {
     const added: Repos = {};
     const failed = new Map<string, string>();
-    if (!names.length) return { added, failed };
+    const ok: string[][] = [];
+    if (!names.length) return { added, failed, times: {} };
     const clones = new Map(names.map((name) => [name, m.clone(r.person, name)] as const));
     await holding([...clones.values()], async () => {
       // One flag for the run: fetched unless every clone's refs are fresh (fetch-schedule.ts).
@@ -143,6 +167,7 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
           failed.set(name, status === 'failed' ? f[0] || 'failed' : `no result for ${name}`);
           continue;
         }
+        ok.push(f);
         const [branch, base, head, fetchError] = f;
         added[name] = { branch, from: `origin/${base}`, base: head, ...(fetchError && { fetchError }) };
         if (fetch && !fetchError) {
@@ -151,7 +176,7 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
         }
       }
     });
-    return { added, failed };
+    return { added, failed, times: addTimes(ok) };
   }
 
   /** The session's copy of the record, in the shape a fork's record has always had. */
@@ -166,9 +191,10 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
   /**
    * Make the workspace of a thread whose record has no `repos` yet, in its running container: a worktree of each of
    * `names` (those `repos` gave this start, mounted already), then `.fork.json` and the root files. Resolves with the
-   * record, now with `repos`, and the time the worktrees took. Rejects when the root files could not be written.
+   * record, now with `repos`, the time the worktrees took and how it went. Rejects when the root files could not be
+   * written.
    */
-  async function prepare(id: string, names: string[]): Promise<{ record: SandboxRecord; addMs: number }> {
+  async function prepare(id: string, names: string[]): Promise<{ record: SandboxRecord; addMs: number; times: PrepareTimes }> {
     return serial(`sandbox:${id}`, async () => {
       const r = need(id);
       const def = loadDefinition();
@@ -176,15 +202,25 @@ export function sandboxWorkspaces(d: WorkspaceDeps) {
       // Nothing here waits on a clone (work 056): eager repositories still missing are cloned in the background.
       if (!workspacePrepared(person) || def.repos.some((x) => !x.unpublished && !isLazy(x) && !cloned(r.person, x.name))) prepareInBackground(person);
       const t0 = Date.now();
-      const { added, failed } = await add(r, id, names, def).catch((e) => ({ added: {} as Repos, failed: new Map(names.map((name) => [name, errText(e)])) }));
+      const { added, failed, times } = await add(r, id, names, def).catch((e) => ({
+        added: {} as Repos,
+        failed: new Map(names.map((name) => [name, errText(e)])),
+        times: {} as PrepareTimes,
+      }));
       const addMs = Date.now() - t0;
       for (const [name, why] of failed) log.warn(`workspaces: ${name} left out of ${r.key}: ${why}`);
+      const t1 = Date.now();
       await unpack(id, r, [forkFile(r, added, addMs), ...rootFiles(def, Object.keys(added))]);
+      times['container.unpack_ms'] = Date.now() - t1;
       const record = { ...need(id), repos: added };
       d.records.write(record);
-      log.info(`workspaces: ${Object.keys(added).length} repos in the container of ${r.key} (${r.person}) in ${addMs} ms`);
+      log.info(
+        `workspaces: ${Object.keys(added).length} repos in the container of ${r.key} (${r.person}) in ${addMs} ms` +
+          ` (slowest fetch ${times['container.add_fetch_ms'] ?? '-'} ms, checkout ${times['container.add_checkout_ms'] ?? '-'} ms,` +
+          ` catch-up ${times['container.add_catchup_ms'] ?? '-'} ms, ${times['container.add_overlapped'] ?? 0} overlapped; root files ${times['container.unpack_ms']} ms)`,
+      );
       for (const [name, x] of Object.entries(added)) if (x.fetchError) log.warn(`workspaces: ${name} from cached ${x.from} (${x.base.slice(0, 8)}); fetch failed: ${x.fetchError}`);
-      return { record, addMs };
+      return { record, addMs, times };
     });
   }
 

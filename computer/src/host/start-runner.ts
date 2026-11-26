@@ -227,8 +227,10 @@ export function runnerStarts(d: StartDeps) {
         // From here on it is the record's thread's: its reports are held to the record, and what it asks for is asked for that thread.
         r.sandbox = { record: b.record, run: b.run };
         r.key = b.record.key;
+        data['container.ready_ms'] = b.readyMs;
         data['container.mount_ms'] = b.mountMs;
         data['container.add_ms'] = b.addMs;
+        Object.assign(data, b.times);
         return WORKSPACE;
       },
       claim: async (r, forkPath) => {

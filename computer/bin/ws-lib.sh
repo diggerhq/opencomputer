@@ -10,7 +10,8 @@
 #   one-line message. The exit status is non-zero only for a wrong call.
 #   A field never holds a tab or a newline: a name that could (a directory a
 #   session made) is answered by its position in the input (ws-inspect.sh).
-# - running it twice gives the same result.
+# - running it twice gives the same result, apart from how it went (a step's
+#   time in ms; ws-add.sh's overlapped fetch).
 # - git never prompts, and a command that can take long (clone, fetch, a
 #   checkout) ends with the script when the script is signalled.
 
@@ -62,13 +63,23 @@ ws_q() {
   (cd "$ws_dir" && exec "$@") 2>"$ws_tmp/err" </dev/null
 }
 
-# ws_why <fallback>: why the last ws_in or ws_q failed, in one line: git's
-# first `fatal:` or `error:` line, else the last line it wrote (errText in clones.ts).
+# ws_why <fallback> [<stderr file>]: why the last ws_in or ws_q (or the command
+# that wrote the file) failed, in one line: git's first `fatal:` or `error:`
+# line, else the last line it wrote (errText in clones.ts).
 ws_why() {
-  ws_m=$(grep -E '^(fatal|error):' "$ws_tmp/err" 2>/dev/null | head -n 1) || :
-  [ -n "$ws_m" ] || ws_m=$(grep -v '^$' "$ws_tmp/err" 2>/dev/null | tail -n 1) || :
+  ws_e=${2:-$ws_tmp/err}
+  ws_m=$(grep -E '^(fatal|error):' "$ws_e" 2>/dev/null | head -n 1) || :
+  [ -n "$ws_m" ] || ws_m=$(grep -v '^$' "$ws_e" 2>/dev/null | tail -n 1) || :
   [ -n "$ws_m" ] || ws_m=$1
   printf '%s' "$ws_m" | tr '\t\r\n' '   '
+}
+
+# ws_ms: milliseconds since the epoch, for a step's time; whole seconds where
+# date has no %N (busybox).
+ws_ms() {
+  ws_t=$(date +%s%3N 2>/dev/null) || ws_t=
+  case $ws_t in '' | *[!0-9]*) ws_t=$(($(date +%s) * 1000)) ;; esac
+  echo "$ws_t"
 }
 
 # ws_ok <repo> <field…>, ws_failed <repo> <message>: the repository's line.

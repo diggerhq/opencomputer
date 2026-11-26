@@ -19,6 +19,17 @@ const clones = path.join(tmp, 'ws');
 const workspace = path.join(tmp, 'sessions', 'k1');
 const s = hostScripts(clones);
 const run = (script: string, args: string[], stdin?: string) => s.run(script, args, { stdin, timeoutMs: 20_000 });
+/** A ws-add.sh line without its times and whether it overlapped, the fields a second run may answer differently. */
+const untimed = (out: string) => out.trimEnd().split('\t').slice(0, -4).join('\t');
+/** ws-add.sh with its overlapped fetch on or off, whatever this machine's idle CPUs. */
+async function overlapping([script, ...args]: string[], on = '1') {
+  configureAsRunner(undefined, { ...env, WS_ADD_OVERLAP: on });
+  try {
+    return await run(script, args);
+  } finally {
+    configureAsRunner(undefined, env);
+  }
+}
 /** A commit on the remote's main, through a throwaway checkout. */
 function push(file: string, text: string) {
   const co = mkdtempSync(path.join(tmp, 'co-'));
@@ -127,17 +138,67 @@ describe('workspace scripts', () => {
 
   it('ws-add.sh makes a worktree on the branch from origin/<base>, once', async () => {
     const base = git(path.join(clones, 'alpha'), 'rev-parse', 'origin/main');
-    const line = `alpha\tok\tsp/k1\tmain\t${base}\t\n`;
-    expect(await run('ws-add.sh', [clones, workspace, 'sp/k1', '0', 'alpha=main'])).toBe(line);
+    const line = `alpha\tok\tsp/k1\tmain\t${base}\t`;
+    const first = await run('ws-add.sh', [clones, workspace, 'sp/k1', '0', 'alpha=main']);
+    expect(untimed(first)).toBe(line);
+    expect(first).toMatch(/\t0\t\d+\t0\t0\n$/); // no fetch, a checkout, no catch-up, nothing overlapped
     expect(git(path.join(workspace, 'alpha'), 'symbolic-ref', '--short', 'HEAD')).toBe('sp/k1');
     expect(git(path.join(workspace, 'alpha'), 'for-each-ref', '--format=%(upstream)', 'refs/heads/sp/k1')).toBe(''); // not tracking origin/main
     // Again, with a fetch and the base left to the script: the same line, the worktree untouched.
     writeFileSync(path.join(workspace, 'alpha', 'work.txt'), 'kept');
-    expect(await run('ws-add.sh', [clones, workspace, 'sp/k1', '1', 'alpha'])).toBe(line);
+    expect(untimed(await run('ws-add.sh', [clones, workspace, 'sp/k1', '1', 'alpha']))).toBe(line);
     expect(existsSync(path.join(workspace, 'alpha', 'work.txt'))).toBe(true);
     // A worktree whose directory was deleted is added again, on the branch that exists.
     execFileSync('rm', ['-rf', path.join(workspace, 'alpha')]);
-    expect(await run('ws-add.sh', [clones, workspace, 'sp/k1', '0', 'alpha=main'])).toBe(line);
+    expect(untimed(await run('ws-add.sh', [clones, workspace, 'sp/k1', '0', 'alpha=main']))).toBe(line);
+  });
+
+  it('ws-add.sh checks a new branch out while it fetches, then catches up with what the fetch brought', async () => {
+    const clone = path.join(clones, 'alpha');
+    const cached = git(clone, 'rev-parse', 'origin/main');
+    const pushed = push('caught-up.txt', 'new');
+    const ws = path.join(tmp, 'sessions', 'k5');
+    mkdirSync(ws);
+    const [branch, base, head, fetchError, fetchMs, checkoutMs, catchupMs, overlapped] = row(await overlapping(['ws-add.sh', clones, ws, 'sp/k5', '1', 'alpha=main']), 'alpha');
+    expect([branch, base, head, fetchError, overlapped]).toEqual(['sp/k5', 'main', pushed, '', '1']);
+    expect([fetchMs, checkoutMs, catchupMs].every((t) => /^\d+$/.test(t))).toBe(true);
+    expect(cached).not.toBe(pushed);
+    // The same worktree as fetching first: on the branch, at the fetched commit, nothing changed, tracking nothing.
+    expect(git(path.join(ws, 'alpha'), 'status', '--porcelain', '--branch')).toBe('## sp/k5');
+    expect(readFileSync(path.join(ws, 'alpha', 'caught-up.txt'), 'utf8')).toBe('new');
+    expect(git(clone, 'rev-parse', 'origin/main')).toBe(pushed);
+    // Nothing new: no catch-up.
+    const ws2 = path.join(tmp, 'sessions', 'k6');
+    mkdirSync(ws2);
+    const again = row(await overlapping(['ws-add.sh', clones, ws2, 'sp/k6', '1', 'alpha=main']), 'alpha');
+    expect([again[2], again[6], again[7]]).toEqual([pushed, '0', '1']);
+    // Told not to: fetched first, as on a host with no idle CPU to overlap on.
+    const ws3 = path.join(tmp, 'sessions', 'k8');
+    mkdirSync(ws3);
+    const pushed2 = push('first.txt', 'f');
+    const seq = row(await overlapping(['ws-add.sh', clones, ws3, 'sp/k8', '1', 'alpha=main'], '0'), 'alpha');
+    expect([seq[2], seq[6], seq[7]]).toEqual([pushed2, '0', '0']);
+  });
+
+  it('ws-add.sh removes a worktree, and the branch it made, whose catch-up failed', async () => {
+    const clone = path.join(clones, 'alpha');
+    push('fails.txt', 'x');
+    // A git that cannot reset: the catch-up is the only reset ws-add.sh runs.
+    const bin = path.join(tmp, 'no-reset');
+    mkdirSync(bin);
+    const real = execFileSync('sh', ['-c', 'command -v git'], { env, encoding: 'utf8' }).trim();
+    writeFileSync(path.join(bin, 'git'), `#!/bin/sh\n[ "$1" = reset ] && { echo 'fatal: no reset here' >&2; exit 128; }\nexec ${real} "$@"\n`, { mode: 0o755 });
+    configureAsRunner(undefined, { ...env, PATH: `${bin}:${env.PATH}`, WS_ADD_OVERLAP: '1' });
+    try {
+      const ws = path.join(tmp, 'sessions', 'k7');
+      mkdirSync(ws);
+      expect(rows(await run('ws-add.sh', [clones, ws, 'sp/k7', '1', 'alpha=main'])).get('alpha')).toEqual(['failed', 'fatal: no reset here']);
+      expect(existsSync(path.join(ws, 'alpha'))).toBe(false);
+      expect(git(clone, 'branch', '--list', 'sp/k7')).toBe('');
+      expect(git(clone, 'worktree', 'list')).not.toContain('k7');
+    } finally {
+      configureAsRunner(undefined, env);
+    }
   });
 
   it('ws-add.sh unpacks a tar from its stdin into the workspace root, after the worktrees and with no repository at all', async () => {
