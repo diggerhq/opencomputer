@@ -4,9 +4,9 @@ import { migrate } from "../src/durable/migrations.js";
 import { owed } from "../src/durable/outbox.js";
 import { sqlOf, type Sql } from "../src/durable/sql.js";
 import { type Principal } from "../src/auth/principal.js";
-import { runMutation } from "../src/org/mutations/index.js";
-import { STEPS } from "../src/org/schema.js";
-import { changesAt, emptySummary, sessionRow, readSession, transact } from "../src/org/tx.js";
+import { runMutation } from "../src/actors/org/mutations/run.js";
+import { STEPS } from "../src/actors/org/schema.js";
+import { changesAt, emptySummary, sessionRow, readSession, transact } from "../src/actors/org/tx.js";
 
 /** Org's transaction helpers and one mutation, on a real Durable Object's storage (spec 35.1, 37.3). */
 
@@ -88,8 +88,8 @@ describe("Org's transaction", () => {
 // ------------------------------------------------------------------ the actor, with fakes for the others
 
 import type { FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/contracts.js";
-import type { OrgDurableObject, OrgOut } from "../src/org/durable-object.js";
-import type { StoredRepository, TokenMinter } from "../src/org/repository.js";
+import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
+import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
 
 type Fakes = {
   calls: [string, ...unknown[]][];
@@ -405,7 +405,7 @@ describe("Org's knowledge repository", () => {
   });
 });
 
-import { age } from "../src/org/work.js";
+import { age } from "../src/actors/org/work.js";
 
 describe("Org: a track, its agent, a pull request and the work reads", () => {
   it("starts the track's agent with its role, applies the rules and answers the reads", async () => {

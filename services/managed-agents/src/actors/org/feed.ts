@@ -1,12 +1,12 @@
 // Org's feed, occurrence stream, mutation envelope and summary slot (spec 37.1, 37.3, 40.3, 40.4).
 // Pure functions over `Sql`.
 
-import type { FeedFrame, FeedPush, MutateReply, MutateRequest, Occurrence, Row, Summary, SummaryPub } from "../actor/contracts.js";
-import { cursor } from "../durable/cursor.js";
-import { platformPrincipal, type Principal } from "../auth/principal.js";
-import type { Sql } from "../durable/sql.js";
-import { idem } from "../durable/idempotency.js";
-import { runMutation } from "./mutations/index.js";
+import type { FeedFrame, FeedPush, MutateReply, MutateRequest, Occurrence, Row, Summary, SummaryPub } from "../../actor/contracts.js";
+import { cursor } from "../../durable/cursor.js";
+import { platformPrincipal, type Principal } from "../../auth/principal.js";
+import type { Sql } from "../../durable/sql.js";
+import { idem } from "../../durable/idempotency.js";
+import { runMutation } from "./mutations/run.js";
 import { FEED_KINDS, FEED_TABLES, type FeedTable } from "./schema.js";
 import {
   DAY_MS,

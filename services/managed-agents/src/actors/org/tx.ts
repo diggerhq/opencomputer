@@ -15,13 +15,13 @@
 // - Calls to other actors are owed calls: `tx.sendAccess`, `tx.start`, `tx.stop`, `tx.destroy`,
 //   `tx.interrupt`, or `tx.owe` for another one. Org's Durable Object knows how to send each `call`.
 
-import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, SessionStatus } from "../api-objects/objects.js";
-import { DEFAULT_MODE, MODELS } from "../api-objects/capabilities.js";
-import type { Access, PlaceRow, Row, SessionRow, Summary } from "../actor/contracts.js";
-import { byOf, type Principal } from "../auth/principal.js";
-import { crockfordId } from "../ids/crockford.js";
-import type { Sql } from "../durable/sql.js";
-import { owed, type Owed } from "../durable/outbox.js";
+import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, SessionStatus } from "../../api-objects/objects.js";
+import { DEFAULT_MODE, MODELS } from "../../api-objects/capabilities.js";
+import type { Access, PlaceRow, Row, SessionRow, Summary } from "../../actor/contracts.js";
+import { byOf, type Principal } from "../../auth/principal.js";
+import { crockfordId } from "../../ids/crockford.js";
+import type { Sql } from "../../durable/sql.js";
+import { owed, type Owed } from "../../durable/outbox.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
 
 // ------------------------------------------------------------------ constants (spec 44)

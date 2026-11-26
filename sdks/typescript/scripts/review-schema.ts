@@ -13,7 +13,7 @@ import path from "node:path";
 import { reviewJsonSchema } from "../src/computer/review.js";
 
 const SDK = path.resolve(import.meta.dirname, "..");
-const REVIEW_SCHEMA_FILES = ["schema/review.v1.json", "../../computer/schema/review.v1.json", "../../services/managed-agents/src/org/review.v1.json"].map((f) => path.join(SDK, f));
+const REVIEW_SCHEMA_FILES = ["schema/review.v1.json", "../../computer/schema/review.v1.json", "../../services/managed-agents/src/actors/org/review.v1.json"].map((f) => path.join(SDK, f));
 const text = `${JSON.stringify(reviewJsonSchema(), null, 2)}\n`;
 
 let stale = 0;

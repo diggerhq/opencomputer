@@ -4,18 +4,18 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import { alarms } from "../durable/alarms.js";
-import { computerOf, liveOf, logOf, slackOf, type ActorEnv } from "../actors/addresses.js";
-import { emitter } from "../telemetry/log-emitter.js";
-import { hashOf } from "../encoding/canonical-json.js";
-import { migrate } from "../durable/migrations.js";
-import { owed, type Dead } from "../durable/outbox.js";
-import { platformPrincipal, type Access, type Principal } from "../auth/principal.js";
-import { sqlOf, type Sql } from "../durable/sql.js";
-import { unavailable } from "../http/unavailable.js";
-import { type ComputerRpcAdded, type CreateSession, type DocRev, type FeedFrame, type ListQuery, type LiveRpc, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type Reply, type ResultRow, type ReviewRow, type Row, type SessionLogRpcAdded, type SessionPage, type SessionPatch, type SessionRow, type SlackRpc, type StartSpec, type SummaryPub } from "../actor/contracts.js";
-import { computerSessionId } from "../host-protocol/protocol.js";
-import { memberId } from "../ids/session-ids.js";
+import { alarms } from "../../durable/alarms.js";
+import { computerOf, liveOf, logOf, slackOf, type ActorEnv } from "../addresses.js";
+import { emitter } from "../../telemetry/log-emitter.js";
+import { hashOf } from "../../encoding/canonical-json.js";
+import { migrate } from "../../durable/migrations.js";
+import { owed, type Dead } from "../../durable/outbox.js";
+import { platformPrincipal, type Access, type Principal } from "../../auth/principal.js";
+import { sqlOf, type Sql } from "../../durable/sql.js";
+import { unavailable } from "../../http/unavailable.js";
+import { type ComputerRpcAdded, type CreateSession, type DocRev, type FeedFrame, type ListQuery, type LiveRpc, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type Reply, type ResultRow, type ReviewRow, type Row, type SessionLogRpcAdded, type SessionPage, type SessionPatch, type SessionRow, type SlackRpc, type StartSpec, type SummaryPub } from "../../actor/contracts.js";
+import { computerSessionId } from "../../host-protocol/protocol.js";
+import { memberId } from "../../ids/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";
 import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";

@@ -32,8 +32,8 @@ import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "./ses
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
-import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
-import { matchMutation } from "../org/mutations/table.js";
+import { repositoriesQuery, repositoryChoice } from "../actors/org/repository.js";
+import { matchMutation } from "../actors/org/mutations/table.js";
 import { gatewayTelemetry } from "../telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */

@@ -31,7 +31,7 @@ describe("the review summary", () => {
 
   it("is published as schema/review.v1.json, and computer/ and Org ship the same file (npm run schema)", () => {
     const text = `${JSON.stringify(reviewJsonSchema(), null, 2)}\n`;
-    for (const rel of ["../../schema/review.v1.json", "../../../../computer/schema/review.v1.json", "../../../../services/managed-agents/src/org/review.v1.json"])
+    for (const rel of ["../../schema/review.v1.json", "../../../../computer/schema/review.v1.json", "../../../../services/managed-agents/src/actors/org/review.v1.json"])
       expect(readFileSync(path.resolve(import.meta.dirname, rel), "utf8")).toBe(text);
   });
 });

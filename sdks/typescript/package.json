@@ -23,7 +23,7 @@
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build",
     "schema": "tsx scripts/review-schema.ts",
-    "mutations": "cp ../../services/managed-agents/src/org/mutations/table.ts src/computer/mutation-table.ts"
+    "mutations": "cp ../../services/managed-agents/src/actors/org/mutations/table.ts src/computer/mutation-table.ts"
   },
   "keywords": [
     "opencomputer",

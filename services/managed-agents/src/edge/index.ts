@@ -317,8 +317,8 @@ import {
 } from "./computer-grants.js";
 import { SessionLogDurableObject } from "../computer/session-log.js";
 // Kept for the class that exists in production; removed with a deleted_classes migration (org/work-index.ts).
-import { WorkIndexDurableObject } from "../org/work-index.js";
-import { OrgDurableObject } from "../org/durable-object.js";
+import { WorkIndexDurableObject } from "../actors/org/work-index.js";
+import { OrgDurableObject } from "../actors/org/durable-object.js";
 import { SlackDurableObject } from "../slack/durable-object.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import {

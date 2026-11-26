@@ -1,6 +1,6 @@
 // The mutation function's shape and its answers (see index.ts).
 
-import type { Principal } from "../../auth/principal.js";
+import type { Principal } from "../../../auth/principal.js";
 import type { Tx } from "../tx.js";
 
 export type MutationRefusal = {

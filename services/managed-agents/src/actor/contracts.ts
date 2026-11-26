@@ -6,7 +6,7 @@ import type { ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSetti
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../host-protocol/protocol.js";
 import type { SlackResult } from "../slack-api/web-api.js";
-import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
+import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../actors/org/repository.js";
 import type { Access, Principal } from "../auth/principal.js";
 import type { Dead } from "../durable/outbox.js";
 
