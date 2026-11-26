@@ -11,6 +11,9 @@
 
 import net from 'node:net';
 
+/** The public API's prefix on the key's `apiUrl`, the edge's `COMPUTER_API_PREFIX` (spec 34.2). */
+const API_PREFIX = '/api/managed-agents/computer';
+
 export interface CloudKey {
   token: string;
   expiresAt: string;
@@ -32,7 +35,7 @@ export class CloudError extends Error {
 }
 
 export interface CloudApi {
-  /** `path` below `/v1/computer`, e.g. `/sessions`; resolves with the reply's JSON (null for an empty one). */
+  /** `path` below the edge's `/api/managed-agents/computer` (spec 34.2), e.g. `/sessions`; resolves with the reply's JSON (null for an empty one). */
   call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, o?: CloudCall): Promise<any>;
 }
 
@@ -74,7 +77,7 @@ export function cloudApi(o: { key: () => Promise<CloudKey>; fetch?: typeof fetch
   const once = async (method: string, path: string, c: CloudCall) => {
     const k = await key();
     if (!k.apiUrl) throw new Error('the host gave a key without its API URL');
-    const url = new URL(`${k.apiUrl.replace(/\/$/, '')}/v1/computer${path}`);
+    const url = new URL(`${k.apiUrl.replace(/\/$/, '')}${API_PREFIX}${path}`);
     for (const [name, v] of Object.entries(c.query ?? {})) if (v !== undefined) url.searchParams.set(name, String(v));
     return doFetch(url, {
       method,
@@ -96,7 +99,8 @@ export function cloudApi(o: { key: () => Promise<CloudKey>; fetch?: typeof fetch
       try {
         body = text ? JSON.parse(text) : null;
       } catch {
-        body = null;
+        // Not the API's answer (a page, a proxy's error): never read as an empty one.
+        throw new CloudError(res.status, `http_${res.status}`, `the API answered ${res.status} with a body that is not JSON`);
       }
       if (res.ok) return body;
       const e = body?.error;

@@ -5,6 +5,8 @@ import type { Summary } from "../src/actor/contracts.js";
 import { runMutation, type MutationOutcome } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";
 import { emptySummary, transact } from "../src/org/tx.js";
+import { mutate } from "../src/org/feed.js";
+import { doc as docRow } from "../src/org/work.js";
 
 /** Org's mutations (spec 19.2, 39), on a real Durable Object's storage. */
 
@@ -253,6 +255,30 @@ describe("track mutations", () => {
       expect(first).toContain("Do not start threads");
       expect(sql.exec("SELECT name FROM op")).toEqual([{ name: "track.create" }]);
       expect(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(2) })).toMatchObject({ ok: false, code: "taken" });
+    });
+  });
+
+  it("a new track's Doc reads empty at revision 0 for its owner and its agent, and its agent can edit it at once", async () => {
+    await withOrg((sql) => {
+      ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), firstInput: "Plan the launch" }));
+      const empty = { kind: "doc", id: tid(1), trackId: tid(1), rev: 0, text: "", spans: [] };
+      expect(docRow(sql, A, tid(1))).toMatchObject(empty);
+      expect(docRow(sql, agent(agentSid(1)), tid(1))).toMatchObject(empty);
+      expect(docRow(sql, B, tid(1))).toBeNull();
+      expect(docRow(sql, agent(sid(9)), tid(1))).toBeNull();
+      ok(run(sql, agent(agentSid(1)), "doc.save", { tid: tid(1), baseRev: 0, text: "# Plan" }));
+      expect(docRow(sql, agent(agentSid(1)), tid(1))).toMatchObject({ rev: 1, text: "# Plan" });
+    });
+  });
+
+  it("track.create by a person with no thread: its agent's Session.owner has the edge's name, never a body's", async () => {
+    await withOrg((sql) => {
+      const person = { name: "Ada Lovelace", email: "ada@example.com" };
+      const r = transact(sql, Date.now(), () => mutate(sql, Date.now(), A, { name: "track.create", args: { tid: tid(1), agentSessionId: agentSid(1), firstInput: "x", person: { name: "Mallory", email: null } }, person }, "h1"));
+      expect(r).toMatchObject({ protocol: 1 });
+      expect(sql.exec("SELECT owner_name, owner_email FROM session WHERE id = ?", agentSid(1))).toEqual([{ owner_name: "Ada Lovelace", owner_email: "ada@example.com" }]);
+      mutate(sql, Date.now(), A, { name: "track.create", args: { tid: tid(2), agentSessionId: agentSid(2), person: { name: "Mallory", email: null } } }, "h2");
+      expect(sql.exec("SELECT owner_name FROM session WHERE id = ?", agentSid(2))).toEqual([{ owner_name: null }]);
     });
   });
 
