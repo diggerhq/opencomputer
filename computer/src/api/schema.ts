@@ -9,7 +9,7 @@
 
 import { Schema } from 'effect';
 import { Delta, Event, EVENT_TYPES } from './schema-events.js';
-import { CLIENT_NOTIFICATIONS, CreateSessionBody, METHODS, NOTIFICATIONS } from './schema-methods.js';
+import { CLIENT_NOTIFICATIONS, CreateSessionBody, METHODS, NOTIFICATIONS, OrganizationSettings, UpdateSessionBody } from './schema-methods.js';
 import { Actor, ApiError, Ask, Capabilities, DeclineAnswer, Person, Result, Secret, Session, Turn, TurnSummary } from './schema-objects.js';
 
 export * from './schema-events.js';
@@ -26,7 +26,7 @@ export function apiJsonSchema(): Record<string, unknown> {
     methods: Schema.Struct(methods),
     notifications: Schema.Struct(NOTIFICATIONS),
     clientNotifications: Schema.Struct(CLIENT_NOTIFICATIONS),
-    http: Schema.Struct({ createSession: CreateSessionBody }),
+    http: Schema.Struct({ createSession: CreateSessionBody, updateSession: UpdateSessionBody, settings: OrganizationSettings }),
   });
   const doc = Schema.toJsonSchemaDocument(root) as unknown as { schema: Record<string, unknown>; definitions: Record<string, unknown> };
   return {

@@ -65,6 +65,9 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (p[0] === "me" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) return { op: "secrets" };
   // The same for every session, so the new-session screen can read it before there is one.
   if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
+  // The organization's API settings (CTO-37): `apiAccessDefault`.
+  if (is("GET", 1) && p[0] === "settings") return { op: "settings.get" };
+  if (is("PATCH", 1) && p[0] === "settings") return { op: "settings.patch" };
   // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
   if (p[0] === "work") {
     if (p[1] === "repository" && p.length === 2) return method === "GET" ? { op: "work.repository.get" } : method === "PUT" ? { op: "work.repository.put" } : null;
@@ -118,6 +121,7 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "secrets.events") return "sessions:read";
   if (op === "work.repository.put") return "work:write";
   if (op.startsWith("work.")) return "work:read";
+  if (op === "settings.get") return null;
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
   return "sessions:write";
 }
@@ -427,6 +431,7 @@ async function routeApi(
   if (route.op === "me") return call({ op: "me" });
   if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities() });
   if (route.op === "list") return call({ op: "list", query: [...query.entries()] });
+  if (route.op === "settings.get") return call({ op: "settings.get" });
 
   const needsBody = request.method === "POST" || request.method === "PATCH" || request.method === "PUT";
   let body: unknown;
@@ -436,6 +441,7 @@ async function routeApi(
     body = parsed.value;
   }
   if (route.op === "ticket") return call({ op: "ticket", body });
+  if (route.op === "settings.patch") return call({ op: "settings.patch", body });
   if (route.op === "create") return call({ op: "create", body, ...(idem ? { idempotencyKey: idem } : {}) });
 
   const sessionId = route.sessionId!;

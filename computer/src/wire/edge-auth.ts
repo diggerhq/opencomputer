@@ -68,12 +68,8 @@ export const hasScope = (scope: WireScope, needed: string | undefined) => needed
 /** Whether the credential may name this session at all (a ticket's `sessionIds`). */
 export const inTicket = (scope: WireScope, sessionId: string) => !scope.sessionIds || scope.sessionIds.includes(sessionId);
 
-/** Whether `member` may see the session, by its access list. */
-export const mayAttach = (access: SessionAccess, member: string) => access.owner === member || access.members === null || access.members.includes(member);
-
-/** Whether `member` may open a terminal: the owner, or an admin of the organization (the host's list or the access frame's). */
-export const mayOpenTerminal = (access: SessionAccess, member: string, admins: ReadonlySet<string>) =>
-  access.owner === member || admins.has(member) || !!access.admins?.includes(member);
+/** Who may attach and open terminals (shared with the host). */
+export { mayAttach, mayOpenTerminal } from '../api/session-access.js';
 
 /** The actor the relay stamps on a member's calls (API `Actor`): `via` from the client label. */
 export function actorFor(claims: WireClaims): { id: string; name: null; via: string; client: string | null } {

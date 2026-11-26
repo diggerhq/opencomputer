@@ -40,6 +40,19 @@ import {
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
 import { isSessionId, memberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
+import { ApiMembers } from "./api-members.js";
+import {
+  API_ACCESS_DEFAULT_SETTING,
+  type AccessInput,
+  type AccessRow,
+  accessOf,
+  mayManage,
+  mayUse,
+  membersOf,
+  parseAccessInput,
+  readApiAccessDefault,
+  storedAccess,
+} from "./session-access.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
 /** A write's answer from the host: 15 s, then 503. */
@@ -100,7 +113,9 @@ export type ApiOp =
   | { op: "patch"; sessionId: string; body: unknown; idempotencyKey?: string }
   | { op: "aside.set"; sessionId: string; body: unknown }
   | { op: "aside.clear"; sessionId: string }
-  | { op: "ticket"; body: unknown };
+  | { op: "ticket"; body: unknown }
+  | { op: "settings.get" }
+  | { op: "settings.patch"; body: unknown };
 
 export interface ApiErrorReply {
   code: string;
@@ -167,6 +182,10 @@ export interface ApiRow {
   createHash: string | null;
   activeTurnId: string | null;
   asideRef: string | null;
+  /** CTO-37: `owner` | `org` | `people`; NULL is org (sessions from before access modes). */
+  accessMode: string | null;
+  /** JSON list of `usr_…` when `accessMode` is `people`. */
+  accessPeople: string | null;
 }
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
@@ -175,7 +194,7 @@ const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id A
   origin_client AS originClient, last_seq AS lastSeq, log_epoch AS logEpoch, epoch_start_seq AS epochStartSeq,
   summary, api_status AS apiStatus, archived, metadata, created_at AS createdAt, updated_at AS updatedAt,
   last_active_at AS lastActiveAt, synced_at AS syncedAt, subagents, create_hash AS createHash,
-  active_turn_id AS activeTurnId, aside_ref AS asideRef FROM sessions`;
+  active_turn_id AS activeTurnId, aside_ref AS asideRef, access_mode AS accessMode, access_people AS accessPeople FROM sessions`;
 
 /** Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). */
 const COLUMNS: Array<[string, string]> = [
@@ -200,6 +219,8 @@ const COLUMNS: Array<[string, string]> = [
   ["create_hash", "TEXT"],
   ["active_turn_id", "TEXT"],
   ["aside_ref", "TEXT"],
+  ["access_mode", "TEXT"],
+  ["access_people", "TEXT"],
 ];
 
 export interface SessionsApiDeps {
@@ -255,6 +276,7 @@ export class ComputerSessionsApi {
   private readonly waiters = new Map<string, Array<{ seq: number; done: () => void }>>();
   private readonly tickets = new Map<string, number[]>();
   private gapClosedAt = 0;
+  private readonly members: ApiMembers;
 
   constructor(private readonly deps: SessionsApiDeps) {
     this.now = deps.now ?? Date.now;
@@ -275,6 +297,7 @@ export class ComputerSessionsApi {
       );
       CREATE INDEX IF NOT EXISTS api_idempotency_created ON api_idempotency (created_at);
     `);
+    this.members = new ApiMembers(sql, this.now);
   }
 
   // ---------------------------------------------------------------- rows
@@ -287,13 +310,17 @@ export class ComputerSessionsApi {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE runner_key = ?`, key)][0] as unknown as ApiRow | undefined;
   }
 
-  /** A session the caller may see: every API session; a Slack one only by its linked owner. */
+  /**
+   * A session the caller may use (read or drive), by its access (session-access.ts): a Slack one only by its
+   * linked owner. Every read and write goes through here; an admin is no exception (Q4).
+   */
   visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
-    if (!isSessionId(sessionId)) return undefined;
-    const row = this.row(sessionId);
-    if (!row) return undefined;
-    if (row.originType === "slack" && row.ownerUserId !== caller.member) return undefined;
-    return row;
+    const row = this.anyRow(sessionId);
+    return row && mayUse(row, caller) ? row : undefined;
+  }
+
+  private anyRow(sessionId: string): ApiRow | undefined {
+    return isSessionId(sessionId) ? this.row(sessionId) : undefined;
   }
 
   private v4Host(): boolean {
@@ -306,8 +333,11 @@ export class ComputerSessionsApi {
     return ns.getByName(sessionId) as unknown as SessionLogRpc;
   }
 
-  /** The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns. */
-  compose(row: ApiRow, fresh?: Partial<Session>): Session {
+  /**
+   * The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns.
+   * `caller` decides `canManageAccess` (false without one).
+   */
+  compose(row: ApiRow, fresh?: Partial<Session>, caller?: ApiCaller): Session {
     const summary = row.summary ? (JSON.parse(row.summary) as LogSummary) : null;
     const owner: Person = { id: row.ownerUserId ?? "", name: row.ownerName ?? "", email: row.ownerEmail };
     const origin: Origin =
@@ -351,12 +381,17 @@ export class ComputerSessionsApi {
       lastActiveAt: new Date(row.lastActiveAt ?? row.updatedAt).toISOString(),
       syncedAt: row.syncedAt ? new Date(row.syncedAt).toISOString() : null,
       urls: { dashboard: null },
+      access: accessOf(row),
+      canManageAccess: caller ? mayManage(row, caller) : false,
     };
     if (!fresh) return base;
     // The writer's own view is newer than the row; the row owns who, where, archive, aside and labels.
     const asks = fresh.asks ?? base.asks;
     const aside = row.asideRef !== null && row.asideRef === attentionRef(asks);
-    return { ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls };
+    return {
+      ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls,
+      access: base.access, canManageAccess: base.canManageAccess,
+    };
   }
 
   /** The runner's spec for a session: an API one (`kind: "api"`) or a Slack thread. */
@@ -406,6 +441,7 @@ export class ComputerSessionsApi {
     }
     if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member);
     if (caller.admin !== undefined) this.noteAdmin(caller.member, caller.admin);
+    this.members.observe(caller.member, caller.email, caller.name);
     switch (op.op) {
       case "me":
         return this.me(caller);
@@ -429,7 +465,40 @@ export class ComputerSessionsApi {
         return this.aside(caller, op);
       case "ticket":
         return this.ticket(caller, op.body);
+      case "settings.get":
+        return this.settings();
+      case "settings.patch":
+        return this.patchSettings(caller, op.body);
     }
+  }
+
+  /** The organization's settings for the API (CTO-37). Any member reads them. */
+  private settings(): ApiReply {
+    return { status: 200, body: { settings: { apiAccessDefault: readApiAccessDefault(this.deps.setting(API_ACCESS_DEFAULT_SETTING)) } } };
+  }
+
+  /** Only an org admin changes them; Slack's own default (`accessDefault`) is not touched. */
+  private patchSettings(caller: ApiCaller, body: unknown): ApiReply {
+    if (!caller.admin) return { status: 403, error: { code: "admin_required", message: "Only an organization admin can change these settings." } };
+    const input = object(body);
+    if (isReply(input)) return input;
+    const fields = Object.keys(input);
+    if (!fields.length) return invalid("", "The body names nothing to change.");
+    for (const field of fields) if (field !== "apiAccessDefault") return invalid(field, `Unknown field ${field}.`);
+    const value = input.apiAccessDefault;
+    if (value !== "owner" && value !== "org") return invalid("apiAccessDefault", "apiAccessDefault is owner or org.");
+    this.deps.put(API_ACCESS_DEFAULT_SETTING, value);
+    return this.settings();
+  }
+
+  /** `access` of a create or patch, resolved: people as member ids, known in this organization. */
+  private async resolveAccess(input: AccessInput): Promise<{ mode: AccessInput["mode"]; people: string[] } | { error: ApiReply }> {
+    if (input.mode !== "people") return { mode: input.mode, people: [] };
+    const resolved = await this.members.resolve(input.people ?? []);
+    if ("unknown" in resolved) {
+      return { error: { status: 400, error: { code: "invalid_request", message: `${resolved.unknown} is not a member of this organization (or has never signed in to OpenComputer).`, field: "access.people", reason: "unknown_member" } } };
+    }
+    return { mode: "people", people: resolved.members };
   }
 
   private me(caller: ApiCaller): ApiReply {
@@ -465,7 +534,7 @@ export class ComputerSessionsApi {
           const turnId = (stored.turn as { id?: unknown } | null)?.id;
           const now = typeof turnId === "string" ? await this.log(stored.sessionId).turn(turnId, {}) : null;
           const turn = now?.ok ? now.turn : stored.turn;
-          return { status: 200, body: { session: this.compose(row), turn, delivery: stored.delivery, duplicate: true, seq: stored.seq } };
+          return { status: 200, body: { session: this.compose(row, undefined, caller), turn, delivery: stored.delivery, duplicate: true, seq: stored.seq } };
         }
       }
     }
@@ -484,13 +553,18 @@ export class ComputerSessionsApi {
     if (!this.v4Host()) return this.unavailable();
 
     if (!row) {
+      // Omitted: the organization's default for the dashboard, opc and the API (Q5), owner when unset.
+      const wanted = v.access ?? { mode: readApiAccessDefault(this.deps.setting(API_ACCESS_DEFAULT_SETTING)) };
+      const access = await this.resolveAccess(wanted);
+      if ("error" in access) return access.error;
+      const stored = storedAccess(caller.member, access.mode, access.people);
       const now = this.now();
       const title = v.title ?? (v.input ? titleFrom(v.input) : "Untitled");
       this.deps.sql.exec(
         `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, mode, model, created_at, updated_at,
            session_id, origin_type, origin_client, owner_user_id, owner_name, owner_email, effort, speed, metadata, create_hash,
-           api_status, last_active_at)
-         VALUES (?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?)`,
+           api_status, last_active_at, access_mode, access_people)
+         VALUES (?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?)`,
         id,
         title,
         v.mode ?? DEFAULT_MODE,
@@ -508,9 +582,11 @@ export class ComputerSessionsApi {
         v.metadata ? JSON.stringify(v.metadata) : null,
         hash,
         now,
+        stored.mode,
+        stored.people,
       );
       row = this.row(id)!;
-      this.sendAccess({ sessionId: id, originType: "api", ownerUserId: caller.member });
+      this.sendAccess(row);
     }
 
     let turn: unknown = null;
@@ -544,7 +620,7 @@ export class ComputerSessionsApi {
       duplicate = true;
     }
     if (idempotencyKey) this.remember(caller.member, "create", idempotencyKey, hash, { sessionId: id, turn, delivery, seq });
-    return { status: duplicate ? 200 : 201, body: { session: this.compose(this.row(id) ?? row), turn, delivery, duplicate, seq } };
+    return { status: duplicate ? 200 : 201, body: { session: this.compose(this.row(id) ?? row, undefined, caller), turn, delivery, duplicate, seq } };
   }
 
   /** The host has no spec of the session: `start`, after an epoch send in flight (the host adopts the epoch first), with the row as it is then. */
@@ -580,13 +656,18 @@ export class ComputerSessionsApi {
 
   private async get(caller: ApiCaller, sessionId: string, minSeq?: number): Promise<ApiReply> {
     let row = this.visible(caller, sessionId);
-    if (!row) return notFound();
+    if (!row) {
+      // An admin outside the session reads its access and nothing else, as the PATCH returns it (Q4).
+      const found = this.anyRow(sessionId);
+      if (!found || !mayManage(found, caller)) return notFound();
+      return { status: 200, body: { session: null, access: accessOf(found), canManageAccess: true, seq: found.lastSeq } };
+    }
     if (minSeq !== undefined && row.lastSeq < minSeq) {
       await this.waitSeq(sessionId, minSeq, MIN_SEQ_WAIT_MS);
       row = this.row(sessionId)!;
       if (row.lastSeq < minSeq) return { status: 503, error: { code: "unavailable", message: `The session has not reached seq ${minSeq} yet.`, retryAfterMs: 500 } };
     }
-    return { status: 200, body: { session: this.compose(row) } };
+    return { status: 200, body: { session: this.compose(row, undefined, caller) } };
   }
 
   private async call(caller: ApiCaller, sessionId: string, method: WriteMethod, params: Record<string, unknown>, idempotencyKey?: string): Promise<ApiReply> {
@@ -616,7 +697,7 @@ export class ComputerSessionsApi {
     const result = { ...(outcome.result as Record<string, unknown>) };
     // A new message brings an archived session back (sessions.mdx#update-a-session).
     if (method === "turns.send" && row.archived) this.deps.sql.exec("UPDATE sessions SET archived = 0 WHERE session_id = ?", sessionId);
-    if (result.session && typeof result.session === "object") result.session = this.compose(this.row(sessionId) ?? row, result.session as Partial<Session>);
+    if (result.session && typeof result.session === "object") result.session = this.compose(this.row(sessionId) ?? row, result.session as Partial<Session>, caller);
     let status = 200;
     if (method === "turns.send" || method === "sessions.compact") status = result.duplicate === true ? 200 : 202;
     else if (ACTS.has(method)) status = typeof result.seq === "number" && result.seq > before ? 202 : 200;
@@ -624,11 +705,53 @@ export class ComputerSessionsApi {
   }
 
   private async patch(caller: ApiCaller, sessionId: string, body: unknown, idempotencyKey?: string): Promise<ApiReply> {
-    const row = this.visible(caller, sessionId);
-    if (!row) return notFound();
+    const found = this.anyRow(sessionId);
+    const uses = !!found && mayUse(found, caller);
+    // An admin outside the session may change its access and nothing else, and learns nothing more of it (Q4).
+    if (!found || (!uses && !mayManage(found, caller))) return notFound();
     const parsed = validatePatch(body);
     if ("error" in parsed) return parsed.error;
-    const p = parsed.value;
+    const { access: wanted, ...p } = parsed.value;
+    const fields = Object.keys(p).length > 0;
+    if (!uses && fields) return notFound();
+    let access: { mode: AccessInput["mode"]; people: string[] } | undefined;
+    if (wanted) {
+      if (found.originType === "slack") {
+        return { status: 403, error: { code: "forbidden", message: "A Slack session's access is set in its thread (`!access`).", reason: "access_in_slack" } };
+      }
+      if (!mayManage(found, caller)) {
+        return { status: 403, error: { code: "forbidden", message: "Only the session's owner, people it is shared with, or an admin can change its access.", reason: "not_member" } };
+      }
+      const resolved = await this.resolveAccess(wanted);
+      if ("error" in resolved) return resolved.error;
+      access = resolved;
+    }
+    let reply: ApiReply | undefined;
+    if (fields) {
+      reply = await this.patchFields(caller, found, p, idempotencyKey);
+      if (reply.error) return reply;
+    }
+    if (access) this.setAccess(found, access);
+    const row = this.row(sessionId)!;
+    if (reply) {
+      const out = reply.body as { session: Session; seq: number };
+      return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller) } } };
+    }
+    if (mayUse(row, caller)) return { status: 200, body: { session: this.compose(row, undefined, caller), seq: row.lastSeq } };
+    return { status: 200, body: { session: null, access: accessOf(row), canManageAccess: mayManage(row, caller), seq: row.lastSeq } };
+  }
+
+  /** Stores a session's new access and tells the host, whose relay drops attachments and terminals it no longer allows. */
+  private setAccess(row: ApiRow, access: { mode: AccessInput["mode"]; people: string[] }): void {
+    const stored = storedAccess(row.ownerUserId ?? "", access.mode, access.people);
+    this.deps.sql.exec("UPDATE sessions SET access_mode = ?, access_people = ? WHERE session_id = ?", stored.mode, stored.people, row.sessionId);
+    console.log(JSON.stringify({ event: "computer.session_access_changed", sessionId: row.sessionId, mode: stored.mode, people: access.people.length }));
+    this.sendAccess(this.row(row.sessionId)!);
+  }
+
+  /** The rest of a patch: title, settings, archive and labels, through the session's writer. */
+  private async patchFields(caller: ApiCaller, row: ApiRow, p: Omit<PatchInput, "access">, idempotencyKey?: string): Promise<ApiReply> {
+    const sessionId = row.sessionId;
     const settings = checkSettings(
       { ...(p.model !== undefined ? { model: p.model } : {}), ...(p.effort !== undefined ? { effort: p.effort } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) },
       { model: row.model, effort: row.effort },
@@ -696,7 +819,7 @@ export class ComputerSessionsApi {
       metadata ? JSON.stringify(metadata) : null,
       sessionId,
     );
-    return { status: 200, body: { session: this.compose(this.row(sessionId)!, fresh), seq } };
+    return { status: 200, body: { session: this.compose(this.row(sessionId)!, fresh, caller), seq } };
   }
 
   /**
@@ -718,7 +841,7 @@ export class ComputerSessionsApi {
       ref = value;
     }
     this.deps.sql.exec("UPDATE sessions SET aside_ref = ? WHERE session_id = ?", ref, op.sessionId);
-    return { status: 200, body: { session: this.compose(this.row(op.sessionId)!) } };
+    return { status: 200, body: { session: this.compose(this.row(op.sessionId)!, undefined, caller) } };
   }
 
   private async ticket(caller: ApiCaller, body: unknown): Promise<ApiReply> {
@@ -781,8 +904,13 @@ export class ComputerSessionsApi {
     for (const name of q.keys()) {
       if (!["owner", "status", "origin", "archived", "q", "order", "limit", "cursor"].includes(name)) return invalid(name, `Unknown query parameter ${name}.`);
     }
-    const where = ["session_id IS NOT NULL", "(origin_type != 'slack' OR owner_user_id = ?)"];
-    const args: SqlStorageValue[] = [caller.member];
+    // Only sessions the caller may use (session-access.ts mayUse); admins included (Q4).
+    const where = [
+      "session_id IS NOT NULL",
+      `(owner_user_id = ? OR (origin_type != 'slack' AND (access_mode IS NULL OR access_mode = 'org'
+        OR (access_mode = 'people' AND EXISTS (SELECT 1 FROM json_each(access_people) WHERE value = ?)))))`,
+    ];
+    const args: SqlStorageValue[] = [caller.member, caller.member];
     const owner = q.get("owner") ?? "me";
     if (owner === "me") {
       where.push("owner_user_id = ?");
@@ -850,7 +978,7 @@ export class ComputerSessionsApi {
     const last = page[page.length - 1];
     const nextCursor =
       rows.length > limit && last ? encodeCursor(order, order === "active" ? (last.lastActiveAt ?? last.updatedAt) : last.createdAt, last.sessionId, filter) : null;
-    return { status: 200, body: { sessions: page.map((row) => this.compose(row)), nextCursor } };
+    return { status: 200, body: { sessions: page.map((row) => this.compose(row, undefined, caller)), nextCursor } };
   }
 
   // ---------------------------------------------------------------- the host
@@ -1216,11 +1344,11 @@ export class ComputerSessionsApi {
   }
 
   /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
-  private sendAccess(row: { sessionId: string; originType: string; ownerUserId: string | null }): void {
+  private sendAccess(row: { sessionId: string } & AccessRow): void {
     const admins = this.admins();
     const extra = admins.length ? { admins } : {};
-    if (row.originType !== "slack") this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: null, ...extra } });
-    else if (row.ownerUserId) this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId, members: [row.ownerUserId], ...extra } });
+    if (row.originType === "slack" && !row.ownerUserId) return;
+    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row), ...extra } });
   }
 
   /**
@@ -1229,8 +1357,9 @@ export class ComputerSessionsApi {
    * workspace's threads) are left out by the query, not read and skipped.
    */
   private sendAllAccess(): void {
-    const rows = this.deps.sql.exec<{ sessionId: string; originType: string; ownerUserId: string | null }>(
-      `SELECT session_id AS sessionId, origin_type AS originType, owner_user_id AS ownerUserId FROM sessions
+    const rows = this.deps.sql.exec<{ sessionId: string; originType: string; ownerUserId: string | null; accessMode: string | null; accessPeople: string | null }>(
+      `SELECT session_id AS sessionId, origin_type AS originType, owner_user_id AS ownerUserId, access_mode AS accessMode,
+         access_people AS accessPeople FROM sessions
        WHERE session_id IS NOT NULL AND (origin_type != 'slack' OR owner_user_id IS NOT NULL)`,
     );
     for (const row of rows) this.sendAccess(row);
@@ -1491,7 +1620,7 @@ export class ComputerSessionsApi {
         key,
       );
       row = this.rowByKey(key)!;
-      this.sendAccess({ sessionId: row.sessionId, originType: "slack", ownerUserId: row.ownerUserId });
+      this.sendAccess({ sessionId: row.sessionId, originType: "slack", ownerUserId: row.ownerUserId, accessMode: null, accessPeople: null });
     }
     return { sessionId: row.sessionId, ...(row.ownerUserId ? { userId: row.ownerUserId } : {}), epoch: row.logEpoch, lastSeq: row.lastSeq };
   }
@@ -1529,7 +1658,7 @@ export class ComputerSessionsApi {
         email,
         ownerId,
       );
-      if (this.v4Host()) for (const { sessionId } of rows) this.sendAccess({ sessionId, originType: "slack", ownerUserId: member });
+      if (this.v4Host()) for (const { sessionId } of rows) this.sendAccess({ sessionId, originType: "slack", ownerUserId: member, accessMode: null, accessPeople: null });
     }
   }
 
@@ -1688,9 +1817,10 @@ interface CreateInput {
   mode?: string;
   speed?: Speed;
   metadata?: Record<string, string>;
+  access?: AccessInput;
 }
 
-const CREATE_FIELDS = new Set(["id", "input", "title", "model", "effort", "mode", "speed", "metadata"]);
+const CREATE_FIELDS = new Set(["id", "input", "title", "model", "effort", "mode", "speed", "metadata", "access"]);
 
 function object(body: unknown): Record<string, unknown> | ApiReply {
   if (body === undefined || body === null) return {};
@@ -1741,6 +1871,11 @@ export function validateCreate(body: unknown): { value: CreateInput } | { error:
     if (isReply(m)) return { error: m };
     value.metadata = m as Record<string, string>;
   }
+  if (input.access !== undefined) {
+    const a = parseAccessInput(input.access);
+    if ("field" in a) return { error: invalid(a.field, a.message) };
+    value.access = a.value;
+  }
   const settings = checkSettings({
     ...(value.model !== undefined ? { model: value.model } : {}),
     ...(value.effort !== undefined ? { effort: value.effort } : {}),
@@ -1758,9 +1893,10 @@ interface PatchInput {
   speed?: Speed;
   archived?: boolean;
   metadata?: Record<string, string | null>;
+  access?: AccessInput;
 }
 
-const PATCH_FIELDS = new Set(["title", "model", "effort", "mode", "speed", "archived", "metadata"]);
+const PATCH_FIELDS = new Set(["title", "model", "effort", "mode", "speed", "archived", "metadata", "access"]);
 
 export function validatePatch(body: unknown): { value: PatchInput } | { error: ApiReply } {
   const input = object(body);
@@ -1786,6 +1922,11 @@ export function validatePatch(body: unknown): { value: PatchInput } | { error: A
     const m = metadataOf(input.metadata, true);
     if (isReply(m)) return { error: m };
     value.metadata = m;
+  }
+  if (input.access !== undefined) {
+    const a = parseAccessInput(input.access);
+    if ("field" in a) return { error: invalid(a.field, a.message) };
+    value.access = a.value;
   }
   return { value };
 }

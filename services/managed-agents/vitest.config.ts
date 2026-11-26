@@ -467,6 +467,7 @@ export default defineConfig({
             "test/previews.test.ts",
             "test/computer-previews.test.ts",
             "test/computer-sessions-api.test.ts",
+            "test/computer-session-access.test.ts",
           "test/git-deploy.test.ts",
             "test/automation-repository.test.ts",
             "test/github-credential.test.ts",

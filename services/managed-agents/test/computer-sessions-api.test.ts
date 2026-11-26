@@ -1,14 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ApiEvent, Ask, LogSummary } from "../src/computer/api-types.js";
+import type { Ask } from "../src/computer/api-types.js";
 import { type ComputerApiStub, matchApiRoute, routeComputerApi, writeParams } from "../src/computer/api-http.js";
 import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
-import { ComputerKeys } from "../src/computer/keys.js";
-import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
-import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/computer/session-log-contract.js";
 import {
-  type ApiCaller,
-  ComputerSessionsApi,
   EPOCH_TAIL_RETRY_MS,
   GAP_CLOSE_INTERVAL_MS,
   HOST_CALL_HELD_TIMEOUT_MS,
@@ -23,224 +18,13 @@ import { createTelemetry } from "../src/computer/telemetry/emitter.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { routeApiSession } from "../src/computer/api-model-route.js";
 import { noModelAccess, type ResolvedRoute } from "../src/computer/model-access.js";
-import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
-import { sqlStorage } from "./fixtures/computer-sql.js";
+import { caller, created, event, fixture, MO, ORG, OWNER, SID, summary } from "./fixtures/computer-sessions-api.js";
 
 /**
  * Work 084: the session API in the Computer DO against a fake v4 host and a fake SessionLog.
  * Epoch fencing, minSeq and the journal's order first; then create, writes, visibility, recovery
- * and the Slack path.
+ * and the Slack path. Who may use and manage a session: computer-session-access.test.ts.
  */
-
-const ORG = "org_sessions";
-const OWNER = "usr_01jabcdefghjkmnpqrstvwxyz0";
-const MO = "usr_01jzyxwvtsrqpnmkjhgfedcba0";
-const SID = "cs_7f3a9k2m4q8r1t6v";
-
-const caller = (member = OWNER, extra: Partial<ApiCaller> = {}): ApiCaller => ({
-  member,
-  userId: `user_${member.slice(4).toUpperCase()}`,
-  name: member === OWNER ? "Owner" : "Mo",
-  email: null,
-  via: "opc",
-  client: "opc/0.1.0",
-  scopes: ["sessions:read", "sessions:write", "asks:answer"],
-  requestId: "req_test0001",
-  ...extra,
-});
-
-function summary(_sessionId: string, lastSeq: number, logEpoch: number, extra: Partial<LogSummary> = {}): LogSummary {
-  return {
-    lastSeq,
-    logEpoch,
-    epochStartSeq: 1,
-    status: "idle",
-    title: null,
-    settings: null,
-    activeTurnId: null,
-    queued: [],
-    asks: [],
-    subagents: [],
-    lastTurn: null,
-    lastText: null,
-    context: { usedTokens: null, windowTokens: null },
-    lastActiveAt: null,
-    syncedAt: null,
-    ...extra,
-  };
-}
-
-/** A SessionLog that keeps seqs contiguous per epoch, as session-log.ts does. */
-class FakeLog {
-  ack = 0;
-  epoch = 1;
-  appends: Array<{ epoch: number; seqs: number[] }> = [];
-  recovered: RecoverInput[] = [];
-  delay = 0;
-  constructor(readonly sessionId: string) {}
-  async append(_identity: unknown, epoch: number, events: ApiEvent[]): Promise<AppendResult> {
-    if (this.delay) await new Promise((r) => setTimeout(r, this.delay));
-    this.appends.push({ epoch, seqs: events.map((e) => e.seq) });
-    if (epoch < this.epoch) return { ok: false, reason: "stale_epoch", logEpoch: this.epoch, ack: this.ack };
-    const first = events[0]!.seq;
-    if (epoch > this.epoch) {
-      this.epoch = epoch;
-      this.ack = Math.min(this.ack, first - 1);
-    }
-    if (first > this.ack + 1) return { ok: false, reason: "gap", logEpoch: this.epoch, ack: this.ack };
-    this.ack = Math.max(this.ack, events[events.length - 1]!.seq);
-    return { ok: true, ack: this.ack, summary: summary(this.sessionId, this.ack, this.epoch, { title: "From the log" }) };
-  }
-  epochStartSeq = 1;
-  tailReads = 0;
-  /** Holds `recover` until it resolves (a cross-DO RPC in flight). */
-  gate: Promise<void> | null = null;
-  async recover(input: RecoverInput): Promise<RecoverResult> {
-    this.recovered.push(input);
-    if (this.gate) await this.gate;
-    if (input.epoch <= this.epoch) return { ok: false, reason: "stale_epoch", logEpoch: this.epoch, ack: this.ack };
-    this.epoch = input.epoch;
-    this.epochStartSeq = this.ack + 1;
-    this.ack += 2;
-    return {
-      ok: true,
-      ack: this.ack,
-      summary: summary(this.sessionId, this.ack, this.epoch, { status: "suspended", epochStartSeq: this.epochStartSeq }),
-      tail: this.tail(),
-    };
-  }
-  async epochTail(): Promise<EpochTail | null> {
-    this.tailReads++;
-    if (this.delay) await new Promise((r) => setTimeout(r, this.delay));
-    return this.tail();
-  }
-  private tail(): EpochTail {
-    const tail: ApiEvent[] = [];
-    for (let seq = this.epochStartSeq; seq <= this.ack; seq++) tail.push(event(seq, this.sessionId));
-    return { epoch: this.epoch, startSeq: this.epochStartSeq, lastSeq: this.ack, tail };
-  }
-  turns = new Map<string, unknown>();
-  async turn(turnId: string) {
-    const turn = this.turns.get(turnId);
-    return turn ? { ok: true as const, turn, lastSeq: this.ack } : { ok: false as const, error: "turn_not_found" as const };
-  }
-  async progress() {}
-}
-
-const event = (seq: number, sessionId = SID): ApiEvent => ({
-  id: `ev_${String(seq).padStart(16, "0")}`,
-  seq,
-  createdAt: new Date(1_800_000_000_000 + seq).toISOString(),
-  sessionId,
-  turnId: null,
-  type: "message.received",
-  actor: null,
-  data: {},
-});
-
-function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
-  const sql = sqlStorage();
-  sql.exec(`
-    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE alarms (purpose TEXT PRIMARY KEY, at INTEGER);
-    CREATE TABLE sessions (
-      runner_key TEXT PRIMARY KEY, team_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL,
-      owner_id TEXT, title TEXT NOT NULL, mode TEXT, model TEXT, sdk_session_id TEXT, fork_path TEXT, status TEXT,
-      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-    );
-  `);
-  const logs = new Map<string, FakeLog>();
-  const logOf = (id: string) => {
-    let log = logs.get(id);
-    if (!log) logs.set(id, (log = new FakeLog(id)));
-    return log;
-  };
-  const sent: CalvinGatewayToHost[] = [];
-  const closed: Array<[number, string]> = [];
-  const recovers: number[] = [];
-  const pendingWork: Promise<unknown>[] = [];
-  let clock = 1_800_000_000_000;
-  const state = { protocol: options.protocol === undefined ? 4 : options.protocol, wakes: 0, links: new Map<string, string>() };
-  const settings = new Map<string, string>();
-  const env = {
-    SESSION_LOG: { getByName: (id: string) => logOf(id) },
-    ...(options.ticketKey ? { WIRE_TICKET_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" } : {}),
-  } as never;
-  const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
-  /** The host answers each `api` frame with this (by method). */
-  const answers = new Map<string, (frame: Extract<CalvinGatewayToHost, { t: "api" }>) => { result?: unknown; error?: unknown } | null>();
-  const api: ComputerSessionsApi = new ComputerSessionsApi({
-    sql,
-    env,
-    organizationId: () => ORG,
-    host: () => (state.protocol === null ? undefined : { protocol: state.protocol }),
-    enabled: () => options.enabled ?? true,
-    routeSession: options.routeSession,
-    ...(options.secretsFor ? { secretsFor: options.secretsFor } : {}),
-    send: (frame) => {
-      if (state.protocol === null) return false;
-      sent.push(frame);
-      if (frame.t === "api") {
-        const answer = answers.get(frame.method)?.(frame);
-        if (answer) queueMicrotask(() => void api.onHostFrame({ t: "api-result", id: frame.id, ...answer } as never));
-      }
-      return true;
-    },
-    closeHost: (code, reason) => closed.push([code, reason]),
-    wake: async () => {
-      state.wakes++;
-    },
-    computerStatus: () => options.status ?? "ready",
-    admitted: async () => {
-      if (options.admitted === "throws") throw new Error("billing down");
-      return options.admitted ?? true;
-    },
-    slackPerson: (slackUserId): CalvinPerson => ({ slackUserId, name: "Owner", gitName: "Owner via Computer", gitEmail: "owner@example.com" }) as CalvinPerson,
-    linkOfSlack: (slackUserId) => state.links.get(slackUserId),
-    slackTeamId: () => "T1",
-    keys,
-    tunnelId: () => "tun",
-    waitUntil: (p) => void pendingWork.push(p),
-    scheduleRecover: async (at) => void recovers.push(at),
-    setting: (key) => settings.get(key),
-    put: (key, value) => void settings.set(key, value),
-    remove: (key) => void settings.delete(key),
-    now: () => clock,
-    ...(options.telemetry ? { telemetry: options.telemetry } : {}),
-  });
-  const slackRow = (key: string, owner = "U1") =>
-    sql.exec(
-      "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, created_at, updated_at) VALUES (?, 'T1', 'C1', '1.2', ?, 'Slack thread', 'idle', ?, ?)",
-      key,
-      owner,
-      clock,
-      clock,
-    );
-  return {
-    api,
-    sql,
-    sent,
-    closed,
-    recovers,
-    logs,
-    logOf,
-    answers,
-    state,
-    settings,
-    slackRow,
-    advance: (ms: number) => (clock += ms),
-    now: () => clock,
-    pending: () => pendingWork.splice(0),
-    frames: <T extends CalvinGatewayToHost["t"]>(t: T) => sent.filter((f): f is Extract<CalvinGatewayToHost, { t: T }> => f.t === t),
-  };
-}
-
-/** A session created over the API with no first message (a `start`). */
-async function created(f: ReturnType<typeof fixture>, id = SID, member = OWNER) {
-  const reply = await f.api.handle(caller(member), { op: "create", body: { id } });
-  expect(reply.status).toBe(201);
-  return reply;
-}
 
 describe("API model routing", () => {
   function routed() {
@@ -306,7 +90,7 @@ describe("API model routing", () => {
     const f = routed();
     const view = f.access.agents.view("");
     f.access.agents.view = vi.fn((user) => ({ ...view, linkedSlackUser: { id: user === caller().userId ? "U1" : "U2", name: "Person", teamName: "Team" } }));
-    await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
+    await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", access: { mode: "org" } } });
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
     await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hello" } });
     expect(f.access.models.forDelivery).toHaveBeenLastCalledWith({ key: SID, ownerId: "U1" }, "U2");
@@ -440,7 +224,7 @@ describe("POST /sessions", () => {
     expect(reply.status).toBe(201);
     expect(reply.body).toMatchObject({ session: { id: SID, title: "fix the flaky test", owner: { id: OWNER }, origin: { type: "opc", client: "opc/0.1.0" }, metadata: { ticket: "ENG-1" } }, delivery: "started", duplicate: false, seq: 3 });
     const [access] = f.frames("access");
-    expect(access).toEqual({ t: "access", access: { sessionId: SID, owner: OWNER, members: null } });
+    expect(access).toEqual({ t: "access", access: { sessionId: SID, owner: OWNER, members: [] } });
     const [frame] = f.frames("api");
     expect(frame).toMatchObject({ method: "turns.send", sessionId: SID, member: OWNER, idempotencyKey: `create:${SID}`, epoch: 1, lastSeq: 0, session: { kind: "api", sessionId: SID, origin: { type: "opc" } } });
     expect(frame!.session!.owner.userId).toBe(OWNER);
@@ -574,7 +358,7 @@ describe("POST /sessions", () => {
 describe("writes", () => {
   it("send: 202, the session overlaid with the row; the writer's error keeps its status", async () => {
     const f = fixture();
-    await created(f);
+    await created(f, SID, OWNER, { mode: "org" });
     f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 4 } }));
     expect(await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 202, body: { delivery: "queued" } });
     expect(f.frames("api").at(-1)).toMatchObject({ member: MO, actor: { id: MO, via: "opc" }, params: { sessionId: SID, input: "x" } });
@@ -667,7 +451,7 @@ describe("set aside (work-tracking 3.8)", () => {
 
   it("only the owner; a ref is required; an unseen session is 404", async () => {
     const f = fixture();
-    await created(f);
+    await created(f, SID, OWNER, { mode: "org" });
     expect(await f.api.handle(caller(MO), { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } })).toMatchObject({ status: 403, error: { code: "forbidden", reason: "aside_owner_only" } });
     expect(await f.api.handle(caller(MO), { op: "aside.clear", sessionId: SID })).toMatchObject({ status: 403 });
     for (const body of [{}, { ref: "" }, { ref: 1 }, null, [], { ref: "a b" }]) {
@@ -697,9 +481,9 @@ describe("set aside (work-tracking 3.8)", () => {
 });
 
 describe("visibility and lists", () => {
-  it("API sessions are visible to every member; a Slack session only to its linked owner", async () => {
+  it("org-wide API sessions are visible to every member; a Slack session only to its linked owner", async () => {
     const f = fixture();
-    await created(f);
+    await created(f, SID, OWNER, { mode: "org" });
     f.slackRow("T1:C1:1.2");
     f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
     const delivery = await f.api.slackDelivery("T1:C1:1.2", "U1");
@@ -1086,7 +870,7 @@ describe("hello and tickets", () => {
     await f.api.handle(caller(MO, { admin: true }), { op: "me" });
     expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
       [
-        { sessionId: SID, owner: OWNER, members: null, admins: [MO] },
+        { sessionId: SID, owner: OWNER, members: [], admins: [MO] },
         { sessionId: slackId, owner: OWNER, members: [OWNER], admins: [MO] },
       ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
     );
@@ -1095,7 +879,7 @@ describe("hello and tickets", () => {
     expect(f.frames("access")).toHaveLength(0);
     // New sessions and the next hello carry them too, from storage.
     await created(f, "cs_2222222222222222");
-    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: null, admins: [MO] });
+    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [], admins: [MO] });
     expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
     // Demoted: the lists go out without them.
     f.sent.length = 0;

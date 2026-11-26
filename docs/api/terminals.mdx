@@ -9,7 +9,7 @@ description: "A terminal is a shell or command the host starts with podman exec 
 
 | Item | Rule |
 | --- | --- |
-| Caller | The session's owner or an admin, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"` |
+| Caller | Someone who may use the session ([Access](/api/sessions#access)) and is its owner, a member listed in its `people`, or an admin in an `org` session, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"`. Losing access closes the terminal |
 | Process | `podman exec` into the session's own container (`sp-runner-<id>`), in `/workspace`. It sees this session's workspace and the repositories it uses, not other sessions' |
 | Process user | `agent` (uid 1500), the same user as the session's agent |
 | Environment | The container's own, plus `TERM`. No session secrets |

@@ -82,7 +82,10 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
     access: (a) => {
       for (const c of conns) c.accessChanged(a);
     },
-    admins: () => {},
+    // A demotion can take away terminals (an admin's in an organization-wide session).
+    admins: () => {
+      for (const c of conns) c.recheckAccess((sid) => hostLink.access(sid));
+    },
     revoked: (keyId) => {
       for (const c of [...conns]) c.revoked(keyId);
     },
