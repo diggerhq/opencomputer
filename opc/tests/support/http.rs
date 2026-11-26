@@ -311,8 +311,11 @@ async fn api_route(sh: &Arc<Shared>, method: &str, rel: &str, query: &str, heade
         ("GET", ["sessions", id, "subagents"]) => ("subagents.list", Some(id), None),
         ("GET", ["sessions", id, "subagents", x]) => ("subagents.get", Some(id), Some(x)),
         ("POST", ["sessions", id, "subagents", x, "stop"]) => ("subagents.stop", Some(id), Some(x)),
-        // As on the server: secrets are set in Slack only.
-        (_, ["sessions", _, "secrets", ..] | ["me" | "organization", "secrets", ..] | ["secrets", ..]) => {
+        ("GET", ["sessions", id, "secrets"]) => ("secrets.session.list", Some(id), None),
+        ("PUT", ["sessions", id, "secrets", n]) => ("secrets.session.put", Some(id), Some(n)),
+        ("DELETE", ["sessions", id, "secrets", n]) => ("secrets.session.delete", Some(id), Some(n)),
+        // As on the server: personal and organization secrets are set in Slack only.
+        (_, ["me" | "organization", "secrets", ..] | ["secrets", ..]) => {
             return Err(ApiErr::new(409, "feature_unavailable", "secrets are set in Slack"));
         }
         _ => return Err(ApiErr::new(404, "not_found", format!("no route {method} {rel}"))),

@@ -158,6 +158,8 @@ pub struct Sess {
     pub last_text: Option<String>,
     /// Top-level workspace names uploaded with `PUT /workspace/archive`: (pushedAt, pushedBy).
     pub uploads: HashMap<String, (String, Value)>,
+    /// The session's own secrets: the row the API lists, and the value it never returns.
+    pub secrets: Vec<(Value, String)>,
     /// Turns that are `/compact` requests.
     pub compact_turns: HashSet<String>,
     /// tool.started data of calls still open, per turn.
@@ -354,6 +356,7 @@ impl World {
             last_ended: None,
             last_text: None,
             uploads: HashMap::new(),
+            secrets: vec![],
             compact_turns: HashSet::new(),
             open_calls: HashMap::new(),
             unread: HashMap::new(),

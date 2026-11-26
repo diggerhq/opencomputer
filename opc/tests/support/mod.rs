@@ -490,6 +490,10 @@ impl Fake {
         self.sh.read(|w| w.sess(sid).map(|s| s.subagents.clone())).expect("no such session")
     }
     /// Read anything under the lock.
+    /// A session's secrets as (name, value); the values are the tests' own dummies.
+    pub fn secrets(&self, sid: &str) -> Vec<(String, String)> {
+        self.sh.read(|w| w.sess(sid).map(|s| s.secrets.iter().map(|(r, v)| (r["name"].as_str().unwrap_or("").to_string(), v.clone())).collect())).expect("no such session")
+    }
     pub fn read<R>(&self, f: impl FnOnce(&World) -> R) -> R {
         self.sh.read(f)
     }
