@@ -181,7 +181,8 @@ const newSession = (p: Extract<Pending, { kind: 'session' }>, me: string): [Sess
       archived: false,
       owner: { id: me, name: '', email: null },
       origin: { type: 'dashboard', client: null, slack: null },
-      settings: { model: p.body.model ?? null, effort: p.body.effort ?? null, mode: p.body.mode ?? 'default', speed: null },
+      // No mode asked for runs with full access: the server's default, so the picker does not flip.
+      settings: { model: p.body.model ?? null, effort: p.body.effort ?? null, mode: p.body.mode ?? 'bypassPermissions', speed: null },
       metadata: {},
       activeTurnId: null,
       queued: [],

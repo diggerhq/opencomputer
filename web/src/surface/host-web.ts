@@ -117,14 +117,31 @@ export function browserParts(): Pick<Host, 'notify' | 'badge' | 'openExternal' |
   }
 }
 
-export function webHost(o: { principal: Principal; name?: string; api: string; base: string }): Host {
+export function webHost(o: {
+  principal: Principal
+  name?: string
+  api: string
+  base: string
+  // The login expired while the page is open: off to log in again.
+  signedOut: () => void
+  billing?: string
+}): Host {
   const ws = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${o.api}/live`
+  let out = false
   return {
     platform: 'web',
     principal: o.principal,
     name: o.name,
+    billing: o.billing,
     api: {
-      fetch: (path, init) => fetch(`${o.api}${path}`, { ...init, credentials: 'include' }),
+      async fetch(path, init) {
+        const reply = await fetch(`${o.api}${path}`, { ...init, credentials: 'include' })
+        if (reply.status === 401 && !out) {
+          out = true
+          o.signedOut()
+        }
+        return reply
+      },
     },
     connect: () => socketChannel(ws, ['oc.live.v1']),
     location: urlLocation(o.base),

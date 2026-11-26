@@ -87,4 +87,22 @@ describe('a link to a thread the feed does not hold', () => {
     expect(loc()).toEqual({ ...NOWHERE, thread: SID })
     s.close()
   })
+
+  it('says it could not open a thread whose read failed otherwise, and Try again reads it', async () => {
+    reads.length = 0
+    answer = () => Promise.reject(new Refused('forbidden', ''))
+    const { s, loc } = open({ ...NOWHERE, thread: SID })
+    await settle()
+    await settle()
+    expect(s.get().unopened[SID]).toBe(true)
+    expect(s.get().missing[SID]).toBeUndefined()
+    expect(loc()).toEqual({ ...NOWHERE, thread: SID })
+    answer = () => Promise.resolve({ rows: [session, place] as Row[] })
+    s.retryThread(SID)
+    await settle()
+    await settle()
+    expect(s.get().unopened[SID]).toBeUndefined()
+    expect(s.thread(SID)?.title).toBe('From before')
+    s.close()
+  })
 })

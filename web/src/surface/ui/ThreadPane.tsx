@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import type { ProposalRow } from '@opencomputer/sdk/computer'
+import { useLayoutEffect, useRef, useState } from 'react'
+import type { ProposalRow, ResultRow } from '@opencomputer/sdk/computer'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { SlackMark } from '@/components/slack-mark'
@@ -144,6 +144,89 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
   )
 }
 
+// The thread's results, two rows of them; the rest behind "+N more".
+function Results({
+  results,
+  ring,
+}: {
+  results: ResultRow[]
+  ring: string | null
+}) {
+  const surface = useSurface()
+  const ref = useRef<HTMLDivElement>(null)
+  const [all, setAll] = useState(false)
+  // How many sit below the two rows shown.
+  const [hidden, setHidden] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const count = () => {
+      const below = [...el.querySelectorAll<HTMLElement>('[data-result]')].filter(
+        (b) => b.offsetTop >= el.clientHeight,
+      ).length
+      setHidden(below)
+    }
+    count()
+    const seen = new ResizeObserver(count)
+    seen.observe(el)
+    return () => seen.disconnect()
+  }, [results, all])
+  return (
+    <div className="relative flex-none border-b">
+      <div
+        ref={ref}
+        className={cn(
+          'relative flex flex-wrap gap-2 px-4 py-2',
+          all ? 'max-h-60 overflow-y-auto' : 'max-h-[73px] overflow-hidden',
+        )}
+      >
+        {results.map((r) => {
+          const detail = resultDetail(r)
+          return (
+            <Button
+              key={r.id}
+              data-result
+              variant="outline"
+              size="xs"
+              className="font-normal"
+              onClick={() => surface.openResult(r)}
+            >
+              <ResultIcon result={r} ring={ring === r.id} />
+              {resultTitle(r)}
+              {detail && (
+                <small className="text-muted-foreground text-[11.5px] tabular-nums @max-[560px]:hidden">
+                  {detail}
+                </small>
+              )}
+            </Button>
+          )
+        })}
+        {all && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-muted-foreground font-normal"
+            onClick={() => setAll(false)}
+          >
+            Less
+          </Button>
+        )}
+      </div>
+      {!all && hidden > 0 && (
+        <Button
+          variant="secondary"
+          size="xs"
+          data-more
+          className="absolute right-4 bottom-2 font-normal shadow-sm"
+          onClick={() => setAll(true)}
+        >
+          +{hidden} more
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function ThreadPane({ sid }: { sid: string }) {
   const surface = useSurface()
   const thread = useThread(sid)
@@ -155,11 +238,31 @@ export function ThreadPane({ sid }: { sid: string }) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [confirm, dialog] = useConfirm()
   const missing = useS((s) => s.missing[sid] === true)
+  const unopened = useS((s) => s.unopened[sid] === true)
 
   if (!thread && missing)
     return (
       <div className={cn(IN, 'items-center justify-center')} data-pane="thread" data-missing>
         <p className="text-muted-foreground text-sm">This thread was not found.</p>
+      </div>
+    )
+  if (!thread && unopened)
+    return (
+      <div
+        className={cn(IN, 'items-center justify-center gap-3')}
+        data-pane="thread"
+        data-unopened
+      >
+        <p className="text-muted-foreground text-sm">
+          Could not open this thread.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => surface.retryThread(sid)}
+        >
+          Try again
+        </Button>
       </div>
     )
   if (!thread) return <div className={IN} data-pane="thread" />
@@ -324,28 +427,11 @@ export function ThreadPane({ sid }: { sid: string }) {
         <MenuButton items={menu} />
       </div>
       {thread.results.length > 0 && (
-        <div className="flex max-h-[73px] flex-none flex-wrap gap-2 overflow-hidden border-b px-4 py-2">
-          {thread.results.map((r) => {
-            const detail = resultDetail(r)
-            return (
-              <Button
-                key={r.id}
-                variant="outline"
-                size="xs"
-                className="font-normal"
-                onClick={() => surface.openResult(r)}
-              >
-                <ResultIcon result={r} ring={thread.readyResult === r.id} />
-                {resultTitle(r)}
-                {detail && (
-                  <small className="text-muted-foreground text-[11.5px] tabular-nums @max-[560px]:hidden">
-                    {detail}
-                  </small>
-                )}
-              </Button>
-            )
-          })}
-        </div>
+        <Results
+          key={sid}
+          results={thread.results}
+          ring={thread.readyResult}
+        />
       )}
       <Conversation sid={sid}>
         {thread.proposals.map((p) => (

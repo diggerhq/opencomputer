@@ -28,6 +28,8 @@ export interface Host {
   }): void
   badge(count: number): void
   openExternal(url: string): void
+  // Where the person adds credits, where the host has such a page.
+  billing?: string
   onOpen(
     cb: (target: {
       threadId?: string
