@@ -78,6 +78,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   // Secrets (docs/api/http/secrets.mdx).
   { methods: new Set(["GET"]), pattern: route("/secrets") },
   { methods: new Set(["GET"]), pattern: route(`/secrets/${SEG}/events`) },
+  { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/secrets`) },
   {
     methods: new Set(["PUT", "DELETE"]),
     pattern: route(`/(?:sessions/${SEG}|me|organization)/secrets/${SEG}`),
@@ -85,10 +86,6 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   // The Work API (work tracking tech design 3.10).
   { methods: new Set(["GET", "PUT"]), pattern: route("/work/repository") },
   { methods: new Set(["GET"]), pattern: route("/work/repositories") },
-  { methods: new Set(["GET"]), pattern: route("/work/items") },
-  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}`) },
-  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}/history`) },
-  { methods: new Set(["GET"]), pattern: route(`/work/sessions/${SEG}/items`) },
 
   // Tracks and threads (spec 37.1): reads. `GET /live` is the socket.
   { methods: new Set(["GET"]), pattern: route("/feed"), scope: "sessions:read" },
@@ -105,8 +102,6 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   { methods: new Set(["GET"]), pattern: route(`/work/results/${SEG}/review`), scope: "work:read" },
   { methods: new Set(["GET"]), pattern: route(`/work/results/${SEG}/diff`), scope: "work:read" },
   { methods: new Set(["GET"]), pattern: route("/work/search"), scope: "work:read" },
-  { methods: new Set(["GET"]), pattern: route("/webhooks"), scope: "work:write" },
-  { methods: new Set(["PUT", "DELETE"]), pattern: route(`/webhooks/${SEG}`), scope: "work:write" },
   // 37.2: the new turns and sessions routes.
   { methods: new Set(["POST"]), pattern: route("/work/tell-track"), scope: "work:write" },
   {

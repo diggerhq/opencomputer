@@ -4,7 +4,7 @@
 import type { Origin, SessionAccess } from "../../api-objects/objects.js";
 import { isSessionId, mintId } from "../../ids/session-ids.js";
 import type { Access } from "../../auth/principal.js";
-import type { CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, SessionPage, SessionPatch, SessionRow } from "./contract.js";
+import type { CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, SessionPage, SessionPatch, SessionRow, SlackAccessDefault } from "./contract.js";
 import type { Reply, Refusal } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
 import { byOf, type Principal } from "../../auth/principal.js";
@@ -56,7 +56,8 @@ const apiPlace = (sql: Sql, sessionId: string): PlaceRow | null => {
 export function seen(sql: Sql, p: Principal): void {
   const meta = sql.exec<{ org: string | null; admins: string }>("SELECT org, admins FROM meta WHERE k = 1")[0]!;
   if (meta.org === null && p.org) sql.exec("UPDATE meta SET org = ? WHERE k = 1", p.org);
-  if (p.kind !== "member" || !p.subject.startsWith("usr_")) return;
+  // A Slack principal never says whether its member is an admin: it neither makes nor unmakes one.
+  if (p.kind !== "member" || !p.subject.startsWith("usr_") || p.via === "slack") return;
   const admins = parse<string[]>(meta.admins, []);
   if (p.admin === admins.includes(p.subject)) return;
   const next = p.admin ? [...admins, p.subject] : admins.filter((a) => a !== p.subject);
@@ -138,6 +139,24 @@ export function settings(sql: Sql): OrgSettings {
   return { apiAccessDefault: row.api_access_default === "org" ? "org" : DEFAULTS.apiAccessDefault };
 }
 
+export function slackAccessDefault(sql: Sql): SlackAccessDefault {
+  return sql.exec<{ v: string | null }>("SELECT slack_access_default AS v FROM meta WHERE k = 1")[0]!.v === "owner" ? "owner" : "open";
+}
+
+/** `!access default open|owner` in Slack: admins only, as Org knows them (a Slack principal is never `admin` itself). */
+export function setSlackAccessDefault(sql: Sql, p: Principal, value: SlackAccessDefault): Reply<{ value: SlackAccessDefault }> {
+  if (!(isMember(p) && (p.admin || adminsOf(sql).includes(p.subject)))) return refusal("admin_required", 403, "Only an organization admin can change the default.");
+  if (value !== "open" && value !== "owner") return refusal("invalid_request", 400, "The default is open or owner.", { field: "value" });
+  sql.exec("UPDATE meta SET slack_access_default = ? WHERE k = 1", value);
+  return { ok: true, value };
+}
+
+/** The one-time carry-over of the defaults the Computer held: each only where Org has none yet. */
+export function carryAccessDefaults(sql: Sql, carry: { accessDefault: string | null; apiAccessDefault: string | null }): void {
+  if (carry.accessDefault === "open" || carry.accessDefault === "owner") sql.exec("UPDATE meta SET slack_access_default = ? WHERE k = 1 AND slack_access_default IS NULL", carry.accessDefault);
+  if (carry.apiAccessDefault === "owner" || carry.apiAccessDefault === "org") sql.exec("UPDATE meta SET api_access_default = ? WHERE k = 1 AND api_access_default IS NULL", carry.apiAccessDefault);
+}
+
 export function setSettings(sql: Sql, p: Principal, patch: Partial<OrgSettings>): Reply<{ settings: OrgSettings }> {
   if (!(isMember(p) && p.admin)) return refusal("admin_required", 403, "Only an organization admin can change these settings.");
   const fields = patch && typeof patch === "object" && !Array.isArray(patch) ? Object.keys(patch) : null;
@@ -193,8 +212,9 @@ export function createSession(
 
     const role = body.role ?? null;
     // Who may use it (spec 36.2): an agent's thread its parent's; else as asked, else the organization's
-    // default; a Slack or role session is its owner's, driven by `writers`.
-    let rows = { audience: audienceOf(owner, origin, role), writers: body.writers ?? ("members" as "members" | string[]) };
+    // default; a Slack or role session is its owner's, driven by `writers` (a Slack one's by the organization's Slack default).
+    const writers = body.writers ?? (origin.type === "slack" && slackAccessDefault(sql) === "owner" ? [`user:${owner}`] : ("members" as const));
+    let rows = { audience: audienceOf(owner, origin, role), writers: writers as "members" | string[] };
     if (body.access !== undefined && (!isMember(p) || origin.type === "slack" || role !== null)) return refusal("invalid_request", 400, "access is a member's, for a session not from Slack and without a role.", { field: "access" });
     if (parent) rows = { audience: parent.audience, writers: parse<"members" | string[]>(parent.writers, "members") };
     else if (origin.type !== "slack" && role === null) {

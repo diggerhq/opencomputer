@@ -58,6 +58,11 @@ export class FakeOrg extends Recorder {
     return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1, version: 1 };
   }
 
+  async setSlackAccessDefault(p: Principal, value: "open" | "owner") {
+    this.record("setSlackAccessDefault", p, value);
+    return { ok: true as const, value };
+  }
+
   async linkPerson(from: string, to: string): Promise<void> {
     this.record("linkPerson", from, to);
   }
