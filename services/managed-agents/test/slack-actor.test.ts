@@ -295,30 +295,29 @@ describe("the Slack actor: post_thread", () => {
 });
 
 describe("the Slack actor: install, unlink, import", () => {
-  it("imports Computer's Slack state in two pages, once", async () => {
+  it("imports Computer's Slack install once: settings, people and links, no threads", async () => {
     const org = "org_import";
-    const people = Array.from({ length: 199 }, (_, i) => ({ type: "row" as const, table: "people", row: { slack_user_id: `UP${i}`, dir: `up${i}`, git_name: `P ${i}`, git_email: `p${i}@example.com`, updated_at: 1 } }));
-    const rows = [
-      { type: "setting" as const, key: "slackTeamId", value: "T9" },
-      { type: "setting" as const, key: "slackBotUserId", value: "UBOT" },
-      ...people,
-      { type: "link" as const, slackUser: "UP1", member: "usr_p1" },
-      { type: "thread" as const, key: "T9:C1:1.1", sessionId: "cs_imported" },
-      { type: "dispatch" as const, sessionId: "cs_imported", entry: { id: "tn_imported", kind: "turn" as const, body: { input: "pending" }, by: "user:usr_p1" } },
-    ];
-    await computerOf(org).set({ rows });
+    const people = Array.from({ length: 3 }, (_, i) => ({ slack_user_id: `UP${i}`, dir: `up${i}`, git_name: `P ${i}`, git_email: `p${i}@example.com`, updated_at: 1 }));
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T9", slackBotUserId: "UBOT" }, people, links: [{ slackUser: "UP1", member: "usr_p1" }] } });
     await Promise.all([slackOf(org).import(), slackOf(org).import()]);
     await slackOf(org).import();
-    expect((await callsOf(computerOf(org))).filter((c) => c.method === "exportSlack").map((c) => c.args)).toEqual([[null, 200], ["200", 200]]);
-    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM people"))).toEqual([{ n: 199 }]);
+    await slackOf(org).forHost();
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "slackCarry")).toHaveLength(1);
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM people"))).toEqual([{ n: 3 }]);
     expect(await inSlack(org, (exec) => exec("SELECT slack_user, member FROM link"))).toEqual([{ slack_user: "UP1", member: "usr_p1" }]);
-    expect(await inSlack(org, (exec) => exec("SELECT key, session_id FROM thread"))).toEqual([{ key: "T9:C1:1.1", session_id: "cs_imported" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT value FROM settings WHERE key = 'slackTeamId'"))).toEqual([{ value: "T9" }]);
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM thread"))).toEqual([{ n: 0 }]);
     expect(await inSlack(org, (exec) => exec("SELECT imported FROM meta"))).toEqual([{ imported: 1 }]);
-    const [accepted] = await callsOf(logOf("cs_imported"));
-    expect(accepted!.args[0]).toMatchObject({ org, subject: "usr_p1", kind: "member" });
-    expect(accepted!.args[1]).toEqual({ id: "tn_imported", kind: "turn", body: { input: "pending" } });
     // The workspace routes to this organization.
     expect(await slackOf("slack-team:T9").teamOrg()).toBe(org);
+  });
+
+  it("imports on the first `forHost`, so Computer reads the carried install", async () => {
+    const org = "org_import_host";
+    const token = await seal("xoxb-carried", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T8`);
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T8", slackBotUserId: "UBOT", slackBotToken: token }, people: [], links: [] } });
+    expect((await slackOf(org).forHost()).slack).toEqual({ botToken: "xoxb-carried", botUserId: "UBOT", teamId: "T8" });
+    await slackOf("slack-team:T8").releaseTeam(org);
   });
 
   it("installs and unlinks a workspace", async () => {
@@ -369,13 +368,7 @@ describe("the edge's Slack routes", () => {
     const org = "org_lazy";
     await slackOf("slack-team:T1").releaseTeam("org_edge"); // the test above's link
     const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T1`);
-    await computerOf(org).set({
-      rows: [
-        { type: "setting", key: "slackTeamId", value: "T1" },
-        { type: "setting", key: "slackBotUserId", value: "UBOT" },
-        { type: "setting", key: "slackBotToken", value: token },
-      ],
-    });
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T1", slackBotUserId: "UBOT", slackBotToken: token }, people: [], links: [] } });
     await computerOf("computer-slack-team:T1").set({ teamAccount: org });
     const routeEnv = { ...bindings, SLACK_COMPUTER_SIGNING_SECRET: "shh" } as unknown as SlackRouteEnv;
     const e = message({ text: "first touch", ts: "910.1" });

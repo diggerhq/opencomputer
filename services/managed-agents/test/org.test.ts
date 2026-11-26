@@ -84,26 +84,24 @@ describe("Org's transaction", () => {
 
 // ------------------------------------------------------------------ the actor, with fakes for the others
 
-import type { ExportedSession, FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/index.js";
+import type { FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/index.js";
 import type { OrgDurableObject, OrgOut } from "../src/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/org/repository.js";
 
-type Page = { rows: ExportedSession[]; next: string | null; newestCreatedAt: number };
 type Fakes = {
   calls: [string, ...unknown[]][];
-  exportSessions: (after: string | null) => Promise<Page>;
   boardRepository?: StoredRepository;
   account?: TokenMinter;
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
 };
 
 /** Run `fn` on the Org named `name`, every call out replaced by a recorder. */
-async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fakes, sql: Sql) => Promise<T>, fakes: Fakes = { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }) }): Promise<T> {
+async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fakes, sql: Sql) => Promise<T>, fakes: Fakes = { calls: [] }): Promise<T> {
   return runInDurableObject(ORGS.getByName(name), async (instance, state) => {
     const org = instance as unknown as OrgDurableObject;
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
     const out: OrgOut = {
-      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), exportSessions: (after) => fakes.exportSessions(after) }),
+      computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed") }),
       log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, machine: name }) }),
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }) }),
       delivery: (kind) => ({ poke: async (head) => void fakes.calls.push(["Delivery.poke", kind, head]) }),
@@ -214,7 +212,7 @@ describe("Org.feed", () => {
   it("stops at 2,000 rows with `more`, and resets below the floor", async () => {
     await withActor("feed-more", async (org, _fakes, sql) => {
       const a = member("usr_a", "feed-more");
-      await org.adopt();
+      await org.feed(a, {});
       for (let i = 0; i < 1_001; i += 1) seedThread(sql, `cs_1${String(i).padStart(15, "0")}`, "usr_a");
       const first = frameOf(await org.feed(a, {}));
       expect(first).toMatchObject({ to: "f1.1000", more: true });
@@ -265,65 +263,6 @@ describe("Org.mutate", () => {
   });
 });
 
-describe("Org's adoption", () => {
-  const exported = (id: string, over: Partial<ExportedSession> = {}): ExportedSession => ({
-    id,
-    owner: "usr_a",
-    origin: { type: "api", client: null, slack: null },
-    title: `Old ${id.slice(-1)}`,
-    archived: false,
-    metadata: {},
-    asideRef: null,
-    writers: "members",
-    slackThreadKey: null,
-    createdAt: Date.now() - 1_000,
-    updatedAt: Date.now() - 1_000,
-    lastActiveAt: Date.now() - 1_000,
-    summary: null,
-    createHash: null,
-    ...over,
-  });
-
-  it("adopts in pages, answers `adopting` when a page fails and resumes from the cursor", async () => {
-    const asked: (string | null)[] = [];
-    let fail = true;
-    const fakes: Fakes = {
-      calls: [],
-      exportSessions: async (after) => {
-        asked.push(after);
-        if (after === null) return { rows: [exported("cs_0000000000000041"), exported("cs_0000000000000042", { archived: true })], next: "page2", newestCreatedAt: 50 };
-        if (fail) {
-          fail = false;
-          throw new Error("Computer is away");
-        }
-        return { rows: [exported("cs_0000000000000042"), exported("cs_0000000000000043", { lastActiveAt: Date.now() - 8 * 24 * 60 * 60 * 1_000 })], next: null, newestCreatedAt: 60 };
-      },
-    };
-    await withActor(
-      "adopt",
-      async (org, _f, sql) => {
-        const a = member("usr_a", "adopt");
-        expect(await org.listSessions(a, {})).toMatchObject({ ok: false, code: "adopting", status: 503 });
-        await expect(org.feed(a, {})).resolves.toMatchObject({ rows: expect.any(Array) });
-        expect(asked).toEqual([null, "page2", "page2"]);
-        expect(sql.exec("SELECT adopted, adopt_after, adopted_at FROM meta")).toEqual([{ adopted: 1, adopt_after: null, adopted_at: 60 }]);
-        const list = await org.listSessions(a, { archived: "all" });
-        expect(list.ok && list.sessions.map((s) => `${s.id}:${s.archived}`).sort()).toEqual(["cs_0000000000000041:false", "cs_0000000000000042:true", "cs_0000000000000043:false"]);
-        expect(sql.exec("SELECT session_id, placed_by, earlier_at IS NOT NULL AS earlier FROM place ORDER BY session_id")).toEqual([
-          { session_id: "cs_0000000000000041", placed_by: "rule:adopt", earlier: 0 },
-          { session_id: "cs_0000000000000042", placed_by: "rule:adopt", earlier: 1 },
-          { session_id: "cs_0000000000000043", placed_by: "rule:adopt", earlier: 1 },
-        ]);
-        // A snapshot leaves the Earlier threads out and counts them.
-        const snap = frameOf(await org.feed(a, {}));
-        expect(kindsOf(snap).map((k) => k.split(":").slice(0, 2).join(":"))).toEqual(["place:cs_0000000000000041", "session:cs_0000000000000041"]);
-        expect(snap.counts).toEqual({ earlier: 2, trackEarlier: {} });
-      },
-      fakes,
-    );
-  });
-});
-
 describe("Org's knowledge repository", () => {
   const board: StoredRepository = { installationId: "12", owner: "acme", name: "knowledge", branch: "main", id: 7 };
   const account: TokenMinter = {
@@ -338,20 +277,27 @@ describe("Org's knowledge repository", () => {
     return Response.json({}, { status: 404 });
   };
 
-  it("reads the board's setting across once while it adopts, and hands it to the host", async () => {
+  it("copies the board's setting once, on the alarm its migration arms, and hands it to the host", async () => {
+    const fakes: Fakes = { calls: [], boardRepository: board };
     await withActor(
-      "knowledge-adopt",
-      async (org) => {
-        const a = member("usr_a", "knowledge-adopt");
+      "knowledge-board",
+      async (org, _f, sql) => {
+        const a = member("usr_a", "knowledge-board");
+        expect(await org.repository(a)).toBeNull();
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'board'")).toEqual([{ purpose: "board" }]);
+        await org.alarm();
+        expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'board'")).toEqual([]);
         expect(await org.repository(a)).toMatchObject({ installationId: "12", owner: "acme", name: "knowledge", branch: "main", problem: null });
-        expect((await org.forHost("knowledge-adopt")).knowledge).toBe("acme/knowledge");
+        expect((await org.forHost("knowledge-board")).knowledge).toBe("acme/knowledge");
+        await org.drain();
+        expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
       },
-      { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }), boardRepository: board },
+      fakes,
     );
   });
 
   it("stores a checked choice, owes Computer `changed`, and refuses an agent", async () => {
-    const fakes: Fakes = { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }), account, fetch: github };
+    const fakes: Fakes = { calls: [], account, fetch: github };
     await withActor(
       "knowledge-set",
       async (org) => {
@@ -411,7 +357,7 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       expect(await org.docRevisions(a, "trk_0001")).toEqual(expect.any(Array));
 
       // The machine: a preview opens and closes; an older revision is not taken.
-      const machine = { machine: "work", state: "ready" as const, newestCreatedAt: 0 };
+      const machine = { machine: "work", state: "ready" as const };
       expect(await org.acceptMachine({ ...machine, revision: 1, previews: [{ sessionId: thread, name: "web", url: "https://web.example" }] })).toEqual({ accepted: true });
       expect(sql.exec("SELECT kind, ref, title FROM result WHERE kind = 'preview'")).toEqual([{ kind: "preview", ref: "https://web.example", title: "web" }]);
       expect(await org.acceptMachine({ ...machine, revision: 2, previews: [] })).toEqual({ accepted: true });
