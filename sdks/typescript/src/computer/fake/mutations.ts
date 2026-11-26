@@ -1,7 +1,8 @@
 // The mutations of section 39, with their `op` rows and inverses, and how Org applies a member's
 // request (section 37.3, rules 1 to 6).
 
-import type { DocRow, MutationError, MutationName, OpRow, PlaceRow, ProposalRow, ResultRow, Review, Row, RowKind, TrackRow } from "../types.js";
+import type { DocRow, MutationError, MutationName, OpRow, PlaceRow, ProposalRow, ResultRow, Row, RowKind, TrackRow } from "../types.js";
+import { ReviewSummary } from "../review.js";
 import { agentActor, clone, isPerson, personActor, PLATFORM, Refusal, statusOf, type Ctx } from "./ctx.js";
 
 interface Ref {
@@ -449,8 +450,9 @@ export class Mutations {
 
   review$save(_by: string, a: Args): void {
     const r = this.ctx.org.need("result", a.resultId);
-    const review: Review = { resultId: r.id, head: str(a.head, "head"), parts: Array.isArray(a.parts) ? a.parts : [] };
-    this.ctx.org.reviews.set(r.id, review);
+    const body = ReviewSummary.safeParse({ head: a.head, parts: a.parts });
+    if (!body.success) throw new Refusal("invalid_request", body.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+    this.ctx.org.reviews.set(r.id, { resultId: r.id, ...body.data });
   }
 
   proposal$create(by: string, a: Args): void {

@@ -2,7 +2,8 @@
 // occurrences and the list reads. Mutations are in mutations.ts.
 
 import { checksum } from "../sum.js";
-import type { DocRow, FeedFrame, MutationError, PlaceRow, ResultRow, Review, Row, RowKind, RowOf, SessionRow, TrackRow } from "../types.js";
+import type { DocRow, FeedFrame, MutationError, PlaceRow, ResultRow, Row, RowKind, RowOf, SessionRow, TrackRow } from "../types.js";
+import type { Review } from "../review.js";
 import { ROW_KINDS } from "../types.js";
 import { clone, Refusal, type Ctx } from "./ctx.js";
 

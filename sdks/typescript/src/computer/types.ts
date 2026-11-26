@@ -1,6 +1,9 @@
 // The wire contract of tracks and threads, as a client sees it: spec sections 35 (rows), 37 (HTTP),
 // 38 (socket), 39 (mutations) and 42.1 (this SDK). Shared by the client, the fake server and the
-// surface's store. No runtime code here.
+// surface's store. No runtime code here. The review summary (`GET`/`PUT /work/results/{id}/review`, S9)
+// is a schema with its types, in review.ts.
+
+import type { ReviewPart } from "./review.js";
 
 // ---------- the session API's objects (services/managed-agents/src/computer/api-types.ts) ----------
 
@@ -300,22 +303,6 @@ export interface ThreadsPage {
 /** `GET /work/search?q&limit`. */
 export interface SearchReply {
   rows: (SessionRow | PlaceRow | TrackRow | ResultRow)[];
-}
-
-/** `GET`/`PUT /work/results/{id}/review`. `parts` is the agent's reading order for a pull request (S9). */
-export interface Review {
-  resultId: string;
-  head: string;
-  parts: ReviewPart[];
-}
-
-export interface ReviewPart {
-  title: string;
-  /** Markdown: why this part matters. */
-  note: string | null;
-  files: string[];
-  /** `eye`: worth the person's eye; `rote`: mechanical. */
-  weight?: "eye" | "rote";
 }
 
 export interface CreateSessionBody {

@@ -14,12 +14,14 @@ on:
     paths:
       - desktop/**
       - web/src/surface/**
+      - sdks/typescript/**
       - .github/workflows/desktop.yml
   push:
     branches: [main, tracks-and-threads]
     paths:
       - desktop/**
       - web/src/surface/**
+      - sdks/typescript/**
       - .github/workflows/desktop.yml
   workflow_dispatch:
     inputs:
@@ -49,8 +51,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            desktop/package-lock.json
+            sdks/typescript/package-lock.json
       - run: npm ci
+      # The fake edge and the typecheck read the SDK's source, which imports zod.
+      - name: The SDK's dependencies
+        working-directory: sdks/typescript
+        run: npm ci
       - run: npm run typecheck
       - run: npm test
       - name: The surface's desktop bundle
@@ -76,8 +84,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            desktop/package-lock.json
+            sdks/typescript/package-lock.json
       - run: npm ci
+      # The fake edge and the typecheck read the SDK's source, which imports zod.
+      - name: The SDK's dependencies
+        working-directory: sdks/typescript
+        run: npm ci
       - name: The surface's desktop bundle
         working-directory: web
         run: npm ci && npm run build:desktop

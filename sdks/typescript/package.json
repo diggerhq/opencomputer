@@ -25,7 +25,8 @@
     "build": "tsc",
     "test": "vitest run",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "schema": "tsx scripts/review-schema.ts"
   },
   "keywords": [
     "opencomputer",
@@ -55,5 +56,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }
