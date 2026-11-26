@@ -27,7 +27,8 @@ import { Kbd } from '@/components/ui/kbd'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
-import { HD, I, LEFT, Mk, Rich, resultTitle } from './bits'
+import { Mk, Rich } from './bits'
+import { HD, I, LEFT, resultTitle } from './kit'
 
 // ---- the diff as GitHub sends it, parsed and drawn by @pierre/diffs ----
 

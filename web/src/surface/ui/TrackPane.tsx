@@ -11,23 +11,25 @@ import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
 import { askLine, type ThreadView, type TrackView } from '../store/views'
 import {
-  ACTS,
-  BLOCK,
-  COMPOSER,
   Composer,
-  HD,
-  I,
-  IN,
-  LEFT,
   MenuButton,
   Mk,
   ResultIcon,
   Rich,
+  type MenuItem,
+} from './bits'
+import {
+  ACTS,
+  BLOCK,
+  COMPOSER,
+  HD,
+  I,
+  IN,
+  LEFT,
   resultDetail,
   resultTitle,
   useConfirm,
-  type MenuItem,
-} from './bits'
+} from './kit'
 import { AgentMarkdown } from '@/managed-agents/AgentMarkdown'
 import { Conversation } from './Conversation'
 

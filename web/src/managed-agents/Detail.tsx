@@ -109,41 +109,13 @@ import { ManagedProjectLinear } from './Linear'
 import { ManagedProjectServiceConnections } from './ProjectServiceConnections'
 import { ManagedProjectSettings } from './Settings'
 import { AgentMarkdown } from './AgentMarkdown'
+import { PROJECT_DETAIL_TABS, type DetailTab } from './detail-tabs'
 import { projectAgentPreviewReady } from './preview-state'
 import {
   projectCloneCommand,
   templateFirstRunMemory,
   templateFirstRunPrompt,
 } from './template-continuation'
-
-type DetailTab =
-  | 'playground'
-  | 'deployments'
-  | 'sessions'
-  | 'schedules'
-  | 'webhooks'
-  | 'memory'
-  | 'database'
-  | 'secrets'
-  | 'connections'
-  | 'github'
-  | 'byok'
-  | 'settings'
-
-export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
-  'playground',
-  'deployments',
-  'sessions',
-  'schedules',
-  'webhooks',
-  'memory',
-  'database',
-  'secrets',
-  'connections',
-  'github',
-  'byok',
-  'settings',
-])
 
 const PREVIEW_ALIAS = /^pr-[1-9][0-9]{0,8}$/
 

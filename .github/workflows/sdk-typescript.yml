@@ -1,0 +1,46 @@
+name: TypeScript SDK
+
+# CI for sdks/typescript: the typecheck (its `lint` script), the build and the
+# unit tests. Publishing is publish-ts-sdk.yml. Nothing here deploys, and no
+# job has a secret.
+
+on:
+  pull_request:
+    paths:
+      - sdks/typescript/**
+      - .github/workflows/sdk-typescript.yml
+  push:
+    branches: [main, tracks-and-threads]
+    paths:
+      - sdks/typescript/**
+      - .github/workflows/sdk-typescript.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-typescript-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: sdks/typescript
+
+jobs:
+  check:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test

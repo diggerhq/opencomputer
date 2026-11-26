@@ -151,7 +151,7 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
     const p = d.get('proposal', a.proposalId)
     if (!p || p.state !== 'open') return
     d.patch('proposal', p.id, { state: 'accepted' })
-    const args = (p.args ?? {}) as Record<string, unknown>
+    const args = p.args ?? {}
     if (p.type === 'done') {
       if (d.get('track', p.target)) TABLE['track.done'](d, { tid: p.target }, c)
       else TABLE['thread.done'](d, { sid: p.target }, c)
