@@ -108,6 +108,7 @@ NODE_MAJOR="${NODE_MAJOR:-24}"
 GATEWAY_USER="${GATEWAY_USER:-oc-gateway}"
 GATEWAY_HOME_DEFAULT=/var/lib/oc-gateway
 GATEWAY_DIR_NAME=opencomputer   # the stack's copy: $GATEWAY_HOME/opencomputer/{selfhost,computer}
+GATEWAY_NETWORKS="/srv/$GATEWAY_USER/networks"   # its Podman networks: not under /var/lib (gateway_user)
 PODMAN_COMPOSE_VERSION="${PODMAN_COMPOSE_VERSION:-1.6.0}"
 PODMAN_COMPOSE_MIN=1.1.0
 COMPOSE_VENV=/opt/podman-compose
@@ -395,6 +396,19 @@ gateway_user() {
 [storage]
 driver = "overlay"
 graphroot = "$GATEWAY_HOME/.local/share/containers/storage"
+EOF
+  fi
+  # Networks outside /var/lib. Podman 4.9's rootless network namespace mounts
+  # an empty tmpfs over /var/lib (and re-binds only the overlay store), so with
+  # the home there a compose network is created but "not found" when the
+  # container starts. GATEWAY_NETWORKS is outside it.
+  conf="$GATEWAY_HOME/.config/containers/containers.conf"
+  install -d -m 0700 -o "$GATEWAY_USER" -g "$group" "$GATEWAY_NETWORKS"
+  if [[ ! -e $conf ]] || grep -qs '^# host-install.sh' "$conf"; then
+    install -m 0644 -o "$GATEWAY_USER" -g "$group" /dev/stdin "$conf" <<EOF
+# host-install.sh: networks of $GATEWAY_USER, outside /var/lib (Podman 4.9 hides it from rootless networking).
+[network]
+network_config_dir = "$GATEWAY_NETWORKS"
 EOF
   fi
 }
@@ -700,6 +714,7 @@ purge_gateway() {
   getent group "$GATEWAY_USER" >/dev/null && run groupdel "$GATEWAY_USER"
   run sed -i "/^$GATEWAY_USER:/d" /etc/subuid /etc/subgid
   run rm -f "$SELFHOST_ETC/gateway-user-created"
+  run rm -rf "$GATEWAY_NETWORKS"
 }
 
 case $MODE in
