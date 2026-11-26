@@ -188,7 +188,6 @@ import {
 import { createModelAccess } from "./model-access-impl.js";
 import { ConnectCodeIndex, connectCodeIndexName } from "./connect-code-index.js";
 import { ApiTelemetry, surfaceOfOrigin } from "./telemetry/api.js";
-import { GATED_PROTOCOL } from "./api-gate.js";
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { type Acknowledgement, ComputerTelemetry, type HostAttachment } from "./telemetry/computer.js";
 import type { GatewayTelemetry } from "./telemetry/gateway.js";
@@ -694,7 +693,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       env,
       organizationId: () => this.accountId(),
       host: () => this.apiHost(),
-      enabled: () => this.apiEnabled(),
       send: (frame) => this.send(frame),
       routeSession: (session, member) => routeApiSession({ access: this.access, profiles: () => this.liveHost()?.profiles, send: (frame) => this.send(frame) }, session, member),
       closeHost: (code, reason) => this.socket()?.close(code, reason),
@@ -841,11 +839,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return profiles ? profileHarnesses(profiles) : computerHarnesses(this.hostFeatures());
   }
 
-  /** Work 084 rollout gate: whether this organization's host is spoken to at v4 (api-gate.ts). */
-  private apiEnabled(): boolean {
-    return true;
-  }
-
   /**
    * Whether a host that said `protocol` (the connected one's, by default) is
    * spoken to at protocol 5 (work 097): the one test in this object that
@@ -856,14 +849,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return protocol >= CALVIN_MODEL_PROTOCOL;
   }
 
-  /** The protocol every `welcome` says: ours (5 to a host that said 5), or v3 for an organization the gate holds back. */
-  private welcomeProtocol(): number {
-    if (!this.apiEnabled()) return GATED_PROTOCOL;
-    return this.speaksProfiles() ? CALVIN_MODEL_PROTOCOL : CALVIN_PROTOCOL_VERSION;
-  }
-
   /**
-   * The connected host's hello `protocol` (at most v3 when gated off, recorded at its hello) and `features`, and
+   * The connected host's hello `protocol` (recorded at its hello) and `features`, and
    * the `profiles` kept from a hello at protocol 5; undefined when none is connected.
    */
   private liveHost(): { protocol: number; features: string[]; profiles?: ModelProfile[] } | undefined {
@@ -3295,7 +3282,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const preview = await this.previewWelcome();
     this.send({
       t: "welcome",
-      protocol: this.welcomeProtocol(),
+      protocol: CALVIN_PROTOCOL_VERSION,
       ...(await this.hostCredentials()),
       people: this.people(),
       definition,
@@ -3662,9 +3649,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const previous = this.telemetry.previousConnection(ws, this.ctx.getWebSockets());
     for (const socket of this.ctx.getWebSockets()) if (socket !== ws) socket.close(4001, "replaced");
     const features = Array.isArray(event.features) ? event.features.filter((f): f is string => typeof f === "string").slice(0, 32) : undefined;
-    // Work 084 rollout gate: a gated-off organization's host is a v3 host here, whatever it speaks.
-    const said = typeof event.protocol === "number" ? event.protocol : 1;
-    const protocol = this.apiEnabled() ? said : Math.min(said, GATED_PROTOCOL);
+    const protocol = event.protocol;
     ws.serializeAttachment({
       hostId: event.hostId,
       version: event.version,
@@ -3707,7 +3692,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     ws.send(
       JSON.stringify({
         t: "welcome",
-        protocol: this.welcomeProtocol(),
+        protocol: CALVIN_PROTOCOL_VERSION,
         ...(await this.hostCredentials()),
         people: this.people(),
         ...(definition ? { definition } : {}),
@@ -3764,7 +3749,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     ws.send(
       JSON.stringify({
         t: "welcome",
-        protocol: this.welcomeProtocol(),
+        protocol: CALVIN_PROTOCOL_VERSION,
         credentials: { slackBotToken: "", slackBotUserId: "" },
         people: [],
       } satisfies CalvinGatewayToHost),

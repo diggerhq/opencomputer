@@ -721,7 +721,7 @@ async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, 
 /**
  * The wait rule (spec 37.1): the owner was read and had nothing new; wait on Live's stream from
  * `after` (empty: from wherever Live's head is), read the owner again, until `done` or the time is
- * up. Live takes the session's lease. Without Live, poll the owner every second.
+ * up. Live takes the session's lease.
  */
 async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, after: string, waitMs: number, first: T, read: () => Promise<T>, done: (r: T) => boolean): Promise<T> {
   const live = liveOf(env, p.org);
@@ -731,13 +731,9 @@ async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, af
   while (!done(r)) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    if (live) {
-      const waited = await live.wait(p, stream, head, remaining).catch(() => null);
-      if (!waited?.moved || waited.head === null) break;
-      head = waited.head;
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, remaining)));
-    }
+    const waited = await live.wait(p, stream, head, remaining).catch(() => null);
+    if (!waited?.moved || waited.head === null) break;
+    head = waited.head;
     r = await read();
   }
   return r;
@@ -1245,9 +1241,9 @@ async function indexInstallation(env: ComputerEdgeEnv, org: string, installation
 /** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal signed. */
 async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal, out: Reply): Promise<Response> {
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return out.error(426, "upgrade_required", "GET /live is a WebSocket.");
-  const live = liveOf(env, p.org) as unknown as LiveUpgrade | null;
   const key = (env as { LIVE_KEY?: string }).LIVE_KEY;
-  if (!live || !key) return out.error(503, "unavailable", "Live is not available.", { retryAfterMs: 60_000 });
+  if (!key) return out.error(503, "unavailable", "Live is not available.", { retryAfterMs: 60_000 });
+  const live = liveOf(env, p.org) as unknown as LiveUpgrade;
   const headers = new Headers(request.headers);
   headers.delete("x-opencomputer-agent-token");
   headers.set(PRINCIPAL_HEADER, await signPrincipal(key, p));

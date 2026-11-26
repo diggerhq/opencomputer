@@ -164,9 +164,7 @@ async function liveRevoke(request: Request, env: ComputerEdgeEnv, identity: Requ
   if (input instanceof Response) return input;
   if (input.org !== identity.accountId) return problem(403, "forbidden", "org is not the asserted organization");
   if (typeof input.credentialId !== "string" || !input.credentialId || input.credentialId.length > 200) return problem(400, "invalid_request", "credentialId is required");
-  const live = liveOf(env, identity.accountId);
-  if (!live) return problem(503, "unavailable", "Live is not available");
-  await live.revoke(input.credentialId);
+  await liveOf(env, identity.accountId).revoke(input.credentialId);
   return new Response(null, { status: 204 });
 }
 

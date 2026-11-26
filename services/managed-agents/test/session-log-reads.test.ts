@@ -127,7 +127,7 @@ describe("watch and the publish to Live", () => {
     expect(log.fakes.published.length).toBe(1);
   });
 
-  it("retries with the head alone, and sends nothing where Live is not bound", async () => {
+  it("retries with the head alone", async () => {
     const log = await openLog({ publishFails: true });
     await log.stub.watch(member(), Date.now() + 600_000);
     await log.stub.append(log.identity, 1, fill(log, 1, 2));
@@ -137,11 +137,6 @@ describe("watch and the publish to Live", () => {
     expect(log.fakes.published).toEqual([{ topic: `events:${log.sessionId}`, value: { head: at(1, 2) } }]);
     const owes = (l: Log) => l.inside((_, state) => state.storage.sql.exec("SELECT 1 FROM _owed WHERE key = 'live:events'").toArray().length);
     expect(await owes(log)).toBe(0);
-
-    const unbound = await openLog({ live: false });
-    await unbound.stub.watch(member(), Date.now() + 600_000);
-    await unbound.stub.append(unbound.identity, 1, fill(unbound, 1, 2));
-    expect(await owes(unbound)).toBe(0);
   });
 });
 

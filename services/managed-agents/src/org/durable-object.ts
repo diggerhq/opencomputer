@@ -66,7 +66,7 @@ export interface OrgOut {
   log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce">;
   delivery(kind: DeliveryKind): Pick<DeliveryRpc, "poke">;
-  live(): Pick<LiveRpc, "publish"> | null;
+  live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
   workIndex(): Pick<WorkIndexRpc, "repository" | "setRepository"> | null;
@@ -168,9 +168,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
       case "Delivery.poke":
         return this.out.delivery(body.kind as DeliveryKind).poke(feeds.metaOf(sql).occ);
       case "Live.publish": {
-        const live = this.out.live();
-        if (!live) return;
-        await live.publish("feed", feeds.publishFrame(sql, body as unknown as PublishOwed, true));
+        await this.out.live().publish("feed", feeds.publishFrame(sql, body as unknown as PublishOwed, true));
         return;
       }
       case "usage.created":

@@ -36,8 +36,8 @@ import { cursor } from "../actor/cursor.js";
 export interface LiveEnv {
   SESSION_LOG: { getByName(name: string): SessionLogWatch };
   COMPUTERS: { getByName(name: string): ComputerWatch };
-  /** The edge Worker, for the credential check. Unbound: credentials end at their expiry only. */
-  EDGE?: { fetch(request: Request): Promise<Response> };
+  /** The edge Worker, for the credential check. */
+  EDGE: { fetch(request: Request): Promise<Response> };
   /** Signs the principal on an upgrade and authenticates Live to the edge. */
   LIVE_KEY: string;
 }
@@ -437,7 +437,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     for (const a of this.sockets.values()) {
       if (Object.keys(a.w).length > 0) next = Math.min(next, now + LEASE_RENEW_MS);
       if (a.p.exp) next = Math.min(next, a.p.exp);
-      if (this.env.EDGE) next = Math.min(next, a.v * 1000 + REVALIDATE_MS);
+      next = Math.min(next, a.v * 1000 + REVALIDATE_MS);
     }
     if (next === Infinity) return this.ctx.storage.deleteAlarm();
     const armed = await this.ctx.storage.getAlarm();
@@ -453,7 +453,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
 
   /** The edge's credential check; null when it cannot be asked. */
   private async edge<T>(body: unknown): Promise<T | null> {
-    if (!this.env.EDGE) return null;
     try {
       const response = await this.env.EDGE.fetch(
         new Request(EDGE_CREDENTIALS_URL, {

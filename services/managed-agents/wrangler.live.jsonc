@@ -18,9 +18,8 @@
       { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
     ]
   },
-  // The credential check (EDGE_CREDENTIALS_URL) goes to the edge Worker. Bound when the edge
-  // serves it; without it a socket ends at its credential's expiry or on `revoke`.
-  // "services": [{ "binding": "EDGE", "service": "<the edge Worker>" }],
+  // The credential check (EDGE_CREDENTIALS_URL) goes to the edge Worker.
+  "services": [{ "binding": "EDGE", "service": "opencomputer-edge-prod" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["LiveDurableObject"] }
   ],

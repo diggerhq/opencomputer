@@ -134,7 +134,7 @@ const event = (seq: number, sessionId = SID): ApiEvent => ({
   data: {},
 });
 
-function fixture(options: { protocol?: number | null; enabled?: boolean; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
+function fixture(options: { protocol?: number | null; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
   const sql = sqlStorage();
   sql.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -170,8 +170,8 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
     env,
     organizationId: () => ORG,
     host: () => (state.protocol === null ? undefined : { protocol: state.protocol }),
-    enabled: () => options.enabled ?? true,
     routeSession: options.routeSession,
+    live: () => ({ publish: async () => ({ head: "" }) }) as never,
     ...(options.secretsFor ? { secretsFor: options.secretsFor } : {}),
     send: (frame) => {
       if (state.protocol === null) return false;
@@ -993,31 +993,5 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     expect(writes[0]!.data).toHaveProperty("do_ms");
     expect(r.events.filter((e) => e.event_name === "ticket.minted").map((e) => e.data.result)).toEqual(["api_key_required"]);
     expect(JSON.stringify(r.events)).not.toContain("hello there");
-  });
-});
-
-describe("rollout gate (COMPUTER_API_ORGS)", () => {
-  it("gated off: every operation but /me answers 409 feature_unavailable; nothing is stored or sent", async () => {
-    const f = fixture({ enabled: false, ticketKey: true });
-    const ops = [
-      { op: "create", body: { id: SID, input: "hi" } },
-      { op: "list", query: [] },
-      { op: "get", sessionId: SID },
-      { op: "ticket", body: { sessionIds: [SID] } },
-    ] as const;
-    for (const op of ops) {
-      const reply = await f.api.handle(caller(MO, { admin: true }), op as never);
-      expect(reply).toEqual({ status: 409, error: { code: "feature_unavailable", message: expect.any(String), feature: "sessions" } });
-    }
-    expect((await f.api.handle(caller(), { op: "me" })).status).toBe(200);
-    expect(f.sent).toHaveLength(0);
-    expect(f.settings.has("apiAdmins")).toBe(false);
-    expect([...f.sql.exec("SELECT COUNT(*) AS n FROM sessions WHERE session_id IS NOT NULL")][0]).toEqual({ n: 0 });
-  });
-
-  it("gated on: the same calls go through", async () => {
-    const f = fixture({ enabled: true });
-    await created(f);
-    expect((await f.api.handle(caller(), { op: "list", query: [] })).status).toBe(200);
   });
 });

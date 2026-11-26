@@ -54,9 +54,8 @@ export interface Fakes {
   drains: string[];
   /** What `Computer.drain` does; default: answers `waking`. */
   drain: (log: SessionLogDurableObject) => Promise<DrainResult> | DrainResult;
-  /** Every publish; null `live`: Live is not bound. */
+  /** Every publish. */
   published: { topic: string; value: EventPush | { head: string } }[];
-  live: boolean;
   publishFails: boolean;
 }
 
@@ -74,7 +73,6 @@ export async function openLog(over: Partial<Fakes> = {}) {
     drains: [],
     drain: () => ({ state: "waking" }),
     published: [],
-    live: true,
     publishFails: false,
     ...over,
   };
@@ -101,16 +99,13 @@ export async function openLog(over: Partial<Fakes> = {}) {
           return fakes.drain(instance);
         },
       }),
-      live: () =>
-        fakes.live
-          ? {
-              publish: async (topic, value) => {
-                if (fakes.publishFails) throw new Error("live is down");
-                fakes.published.push({ topic, value: value as EventPush | { head: string } });
-                return { head: "to" in value ? value.to : "head" in value ? value.head : "" };
-              },
-            }
-          : null,
+      live: () => ({
+        publish: async (topic, value) => {
+          if (fakes.publishFails) throw new Error("live is down");
+          fakes.published.push({ topic, value: value as EventPush | { head: string } });
+          return { head: "to" in value ? value.to : "head" in value ? value.head : "" };
+        },
+      }),
     };
   });
   let ms = Date.parse("2026-10-26T09:00:00.000Z");

@@ -226,8 +226,6 @@ export interface SessionsApiDeps {
   organizationId: () => string;
   /** The connected host's protocol; undefined when none is connected. */
   host: () => { protocol: number } | undefined;
-  /** The rollout gate (api-gate.ts): false, and every operation but `me` answers 409 feature_unavailable. */
-  enabled: () => boolean;
   send: (frame: CalvinGatewayToHost) => boolean;
   /** Resolves the owner's subscription and runner before starting or delivering a turn. */
   routeSession?: (session: CalvinSessionSpec, member?: string) => Promise<RoutedApiSession>;
@@ -252,8 +250,8 @@ export interface SessionsApiDeps {
   now?: () => number;
   /** A session's SessionLog (stubs.ts `logOf`). Absent: the `SESSION_LOG` binding. */
   log?: (sessionId: string) => SessionLogRpc & SessionLogRpcAdded;
-  /** The organization's Live (stubs.ts `liveOf`); null where it is not bound. */
-  live?: () => LiveRpc | null;
+  /** The organization's Live (stubs.ts `liveOf`). */
+  live: () => LiveRpc;
   /** `start`: the session's harness, the spec's or its owner's (model access's `harnessFor`). */
   chooseHarness?: (row: Pick<ApiRow, "key" | "ownerId" | "ownerUserId">, harness?: CalvinHarness) => void;
   /** The Slack user a member linked, for a Slack thread started by one. */
@@ -428,10 +426,6 @@ export class ComputerSessionsApi {
   // ---------------------------------------------------------------- operations
 
   async handle(caller: ApiCaller, op: ApiOp): Promise<ApiReply> {
-    // Gated off, the organization is v3: nothing is observed, stored or sent to its host. `me` still answers (opc's login check).
-    if (op.op !== "me" && !this.deps.enabled()) {
-      return { status: 409, error: { code: "feature_unavailable", message: "The sessions API is not enabled for this organization yet.", feature: "sessions" } };
-    }
     if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member);
     if (caller.admin !== undefined) this.noteAdmin(caller.member, caller.admin);
     switch (op.op) {
@@ -1332,8 +1326,8 @@ export class ComputerSessionsApi {
         return true;
       case "delta": {
         // Never acknowledged, never stored; dropped for a session with no runner row here (spec 36.3).
-        const live = Array.isArray(frame.deltas) && this.hasRow(frame.sessionId) ? this.deps.live?.() : null;
-        if (live) {
+        if (Array.isArray(frame.deltas) && this.hasRow(frame.sessionId)) {
+          const live = this.deps.live();
           const push = { epoch: frame.epoch, deltas: frame.deltas } as unknown as DeltaPush;
           this.deps.waitUntil(live.publish(`deltas:${frame.sessionId}`, push).then(() => undefined, () => undefined));
         }

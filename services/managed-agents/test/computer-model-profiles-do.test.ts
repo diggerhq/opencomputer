@@ -50,7 +50,6 @@ async function organization(org: string, team: string): Promise<Stub> {
   await inside(stub, (instance) => {
     instance.env = {
       ...instance.env,
-      COMPUTER_API_ORGS: "*",
       // An earlier test may leave a halted billing gate on the shared env.
       OPENCOMPUTER_BILLING: { checkAdmission: async () => ({ allowed: true, isHalted: false, haltedAt: null, reason: null, paid: true, modelAccess: null }) },
     };
