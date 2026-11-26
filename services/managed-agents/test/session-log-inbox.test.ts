@@ -62,6 +62,31 @@ describe("accept", () => {
     expect(await log.stub.accept(platform, { id: "p_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
   });
 
+  it("lets in the agent that started a thread its members write: a member-owned track's agent starts a thread (spec 40.7)", async () => {
+    // What Org.access answers for a thread the track's agent started with start_thread: `writers` stays
+    // 'members' (the owner's sessions), and the agent is in `agents` and `readers`.
+    const thread = accessOf({ writers: "members", agents: ["agent:cs_track"], readers: ["agent:cs_track"] });
+    const log = await openLog({ access: thread });
+    expect(await log.stub.accept(agent("cs_track"), turn("tn_first", "the brief"))).toMatchObject({ ok: true });
+    expect(await log.stub.accept(agent("cs_track"), { id: "in_1", kind: "interrupt", body: {} })).toMatchObject({ ok: true });
+    expect(await log.stub.accept(agent("cs_stranger"), turn("tn_stranger"))).toEqual({ ok: false, code: "forbidden" });
+    // `agents` never widens settings, which stay the owner's and the members'.
+    expect(await log.stub.accept(agent("cs_track"), { id: "st_1", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
+  });
+
+  it("reads Org again when its stored access predates `agents`", async () => {
+    const log = await openLog({ access: accessOf({ writers: "members", agents: ["agent:cs_track"], readers: ["agent:cs_track"] }) });
+    expect(await log.stub.accept(member(), turn("tn_before"))).toMatchObject({ ok: true });
+    const reads = log.fakes.accessReads;
+    // A row stored by the previous version (same revision, no agents column), loaded as at a restart.
+    await log.inside((instance, state) => {
+      state.storage.sql.exec("INSERT OR REPLACE INTO access (k, owner, audience, writers, readers, machine, revision) VALUES (1, ?, 'org', '\"members\"', '[]', ?, 1)", accessOf().owner, MACHINE);
+      (instance as unknown as { open(): void }).open();
+    });
+    expect(await log.stub.accept(agent("cs_track"), turn("tn_after"))).toMatchObject({ ok: true });
+    expect(log.fakes.accessReads).toBe(reads + 1);
+  });
+
   it("is idempotent on the id: duplicate with the stored result, conflict on another body", async () => {
     const log = await openLog();
     expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: false, machine: MACHINE });
