@@ -195,6 +195,27 @@ describe('journeys', () => {
     expect(s.get().openTracks[k.id]).toBe(true)
   })
 
+  it('S4 the Doc: a save over a Doc the agent changed meanwhile merges both, and marks the person\'s lines', async () => {
+    const { s, wait, track, startTrack } = await open()
+    const { tid } = await startTrack()
+    await wait(() => s.get().rows.doc.get(tid)?.text)
+    const before = s.get().rows.doc.get(tid)!
+    const base = { rev: before.rev, text: before.text }
+    // The person edits the first line while the agent appends a change of course.
+    const lines = before.text.split('\n')
+    lines[0] = '## Goal, as I see it'
+    const mine = lines.join('\n')
+    s.send(track(tid)!.agentSession, 'tell them to use Stripe')
+    await wait(() => s.get().rows.doc.get(tid)!.rev > base.rev && !s.get().pending.length)
+    const { conflicts } = await s.saveDoc(tid, mine, base)
+    expect(conflicts).toBe(0)
+    await wait(() => !s.get().pending.length)
+    const after = s.get().rows.doc.get(tid)!
+    expect(after.text.split('\n')[0]).toBe('## Goal, as I see it')
+    expect(after.text).toContain('## Changed course')
+    expect(after.spans).toEqual([{ from: 0, to: 1, by: s.host.principal.subject }])
+  })
+
   it('J7/J8 a blocked thread: a dot on its row and on its track, announced once; answering clears it', async () => {
     const { s, wait, track, settled, marks, notes, startTrack } = await open()
     const { tid, threads } = await startTrack()
