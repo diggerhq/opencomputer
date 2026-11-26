@@ -1,13 +1,15 @@
 // Org's contract (tracks and threads, spec 35 and 36.1): its RPC methods and the values they pass,
-// the session rows and feed rows the edge and other actors hold. Types only; nothing here runs.
+// the session rows and feed rows the edge and other actors hold, and the limits both sides check.
 
 import type { Origin, Session, SessionAccess } from "../../api-objects/objects.js";
 import type { Access, Principal } from "../../auth/principal.js";
 import type { Dead } from "../../durable/outbox.js";
 import type { Reply } from "../../durable/rpc-reply.js";
-import type { PublicComputerState } from "../computer/config.js";
+import type { PublicComputerState } from "../computer/contract.js";
 import type { Summary } from "../session-log/contract.js";
-import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "./repository.js";
+
+/** The mutation table: the API's `/work` routes match it (org/mutations/table.ts, which the SDK copies). */
+export { matchMutation } from "./mutations/table.js";
 
 /** The `session` feed row and the API's object (spec 35.1): today's `Session` and Org's fields. */
 export interface SessionRow extends Session {
@@ -61,6 +63,10 @@ export type CreateSession = CreateSessionBody & {
   slackThread?: string;
   /** The creating member's name and email, for `Session.owner`: the edge's, from its credential. An agent's child takes its parent's. */
   person?: { name: string | null; email: string | null };
+  /** With `input`: its turn's id (`tn_…`, the client's); absent, the session's first turn id (ids/session-ids.ts `firstTurnId`). */
+  turnId?: string;
+  /** The request's trace, carried to the first turn; not part of the create's idempotency. */
+  trace?: string;
 };
 export interface SessionPatch {
   title?: string;
@@ -70,6 +76,14 @@ export interface SessionPatch {
   aside?: string | null;
   /** `PATCH` with `access`: Org checks it (org/sessions.ts `parseAccess`). */
   access?: AccessInput;
+  /** `PATCH` with `model`, `effort`, `mode` or `speed`: one `settings` inbox entry, owed with the rest or not at all. */
+  settings?: SettingsEntry;
+}
+export interface SettingsEntry {
+  /** The entry's id: the edge derives it from the request's Idempotency-Key, so a retry is the same entry. */
+  id: string;
+  body: { model?: string; effort?: string; mode?: string; speed?: "fast" | "standard" };
+  trace?: string;
 }
 /** What one who manages a session's access but may not use it reads of it (an admin outside it). */
 export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };
@@ -208,4 +222,64 @@ export interface OrgRpc {
   linkPerson(from: string, to: string): Promise<void>;
   /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
   dead(): Promise<Dead[]>;
+}
+
+// ------------------------------------------------------------------ the knowledge repository (org/repository.ts)
+
+/** The last page a listing reads: 10,000 repositories an installation. */
+export const GRANTED_PAGES_MAX = 100;
+
+/** Why the repository cannot be read. A stable code. */
+export type RepositoryProblem =
+  | "installation_removed"
+  | "installation_suspended"
+  | "repository_not_found"
+  | "branch_not_found"
+  | "access_denied"
+  | "github_app_not_configured";
+
+/** The knowledge repository setting, as the API shows it. */
+export interface Repository {
+  installationId: string;
+  owner: string;
+  name: string;
+  branch: string;
+  problem: RepositoryProblem | null;
+  problemMessage: string | null;
+}
+
+/** What `PUT /work/repository` asks for; the branch defaults to the repository's default branch. */
+export interface RepositoryChoice {
+  installationId: string;
+  owner: string;
+  name: string;
+  branch?: string;
+}
+
+/** A repository an installation grants, as the picker lists it. */
+export interface GrantedRepository {
+  id: number;
+  owner: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+  pushedAt: string | null;
+}
+
+/** One of the organization's active GitHub installations, with a page of what it grants. */
+export interface GrantingInstallation {
+  id: string;
+  accountLogin: string;
+  accountType: string;
+  settingsUrl: string;
+  repositories: GrantedRepository[];
+  nextPage: number | null;
+  truncated: boolean;
+  problem: RepositoryProblem | null;
+  problemMessage: string | null;
+}
+
+export interface RepositoriesQuery {
+  installationId?: string;
+  page?: number;
 }

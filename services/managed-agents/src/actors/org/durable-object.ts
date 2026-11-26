@@ -15,7 +15,7 @@ import { platformPrincipal, type Access, type Principal } from "../../auth/princ
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpc, type StartSpec } from "../computer/contract.js";
-import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
+import { type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpc } from "../session-log/contract.js";
@@ -24,7 +24,7 @@ import { computerSessionId } from "../../host-protocol/session-key.js";
 import { memberId } from "../../ids/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";
-import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";
+import type { Fetch, StoredRepository, TokenMinter } from "./repository.js";
 import { STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf } from "./access.js";
@@ -160,7 +160,9 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
       }
       case "SessionLog.accept": {
         if (!readSession(sql, sessionId)) return;
-        const result = await this.out.log(sessionId).accept(platformPrincipal(this.org), { id: body.id as string, kind: body.kind as never, body: body.body, ...(body.trace ? { trace: body.trace as string } : {}) });
+        // From whom the transaction owed it (a session's creator, a patch's caller), else the platform.
+        const as = (body.principal as Principal | undefined) ?? platformPrincipal(this.org);
+        const result = await this.out.log(sessionId).accept(as, { id: body.id as string, kind: body.kind as never, body: body.body, ...(body.trace ? { trace: body.trace as string } : {}) });
         // Not there or not allowed: nothing a retry changes. Full: later.
         if (!result.ok && result.code !== "not_found" && result.code !== "forbidden" && result.code !== "idempotency_conflict") throw new Error(result.code);
         return;
@@ -237,7 +239,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>> {
     this.seen(p);
     body = { ...body, ...(body.access !== undefined ? { access: await memberIds(body.access) } : {}) };
-    const { person: _person, ...hashed } = body;
+    const { person: _person, trace: _trace, ...hashed } = body;
     const hash = await hashOf(hashed);
     const out = sessions.createSession(this.sql, Date.now(), p, body, hash, this.org);
     this.flush();

@@ -2,12 +2,12 @@
 // get, patch and list over Org's rows. Pure functions over `Sql`; a refusal is a value.
 
 import type { Origin, SessionAccess } from "../../api-objects/objects.js";
-import { isSessionId, mintId } from "../../ids/session-ids.js";
+import { isId, isSessionId, mintId } from "../../ids/session-ids.js";
 import type { Access } from "../../auth/principal.js";
 import type { CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, SessionPage, SessionPatch, SessionRow, SlackAccessDefault } from "./contract.js";
 import type { Reply, Refusal } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
-import { byOf, type Principal } from "../../auth/principal.js";
+import { byOf, mayWrite, type Principal } from "../../auth/principal.js";
 import type { Sql } from "../../durable/sql.js";
 import { runMutation } from "./mutations/run.js";
 import { fullName, storedRepository } from "./repository.js";
@@ -163,6 +163,7 @@ export function createSession(
   machine: string,
 ): Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }> {
   if (body.id !== undefined && !isSessionId(body.id)) return refusal("invalid_request", 400, "id must be cs_ and 16 lowercase Crockford base32 characters.", { field: "id" });
+  if (body.turnId !== undefined && !(isId("tn", body.turnId) && body.input !== undefined)) return refusal("invalid_request", 400, "turnId is tn_ and 12 lowercase Crockford base32 characters, sent only with input.", { field: "turnId" });
   if (p.kind === "platform") return refusal("forbidden", 403);
   const id = body.id ?? mintId("cs");
   return transact(sql, now, (tx) => {
@@ -228,7 +229,8 @@ export function createSession(
     });
     tx.addPlace({ sessionId: id, trackId: track?.id ?? null, placedBy: by, parentSession: parent?.id ?? null, audience: session.audience });
 
-    tx.start(id, { harness: body.harness });
+    // The first turn, owed with the session and from its creator: one turn whoever retries (spec 40.1).
+    tx.start(id, { harness: body.harness, trace: body.trace, firstInput: body.input, turnId: body.turnId, as: p });
     tx.sendAccess(id);
     tx.owe({ group: id, call: "usage.created", body: { sessionId: id, createdAt: now } });
     // The track's agent may now be told by this thread (spec 40.7 step 4).
@@ -299,6 +301,12 @@ export function patchSession(sql: Sql, now: number, p: Principal, id: string, pa
           if ("ok" in wanted) refused = wanted;
           else setAccess(tx, s, wanted);
         }
+      }
+      if (!refused && patch.settings !== undefined) {
+        // Checked as SessionLog will check it, so a write the log would refuse is not owed with the rest.
+        const access = accessOf(sql, id);
+        if (!access || !mayWrite(p, "settings", access, id)) refused = refusal("forbidden", 403, "Only a person who may write to the session changes its settings.", { reason: "settings_writer_only" });
+        else tx.accept(id, { id: patch.settings.id, kind: "settings", body: patch.settings.body, trace: patch.settings.trace }, p);
       }
       if (!refused && patch.aside !== undefined) {
         if (!(isMember(p) && s.owner === p.subject)) refused = refusal("forbidden", 403, "Only the session's owner sets it aside.", { reason: "aside_owner_only" });

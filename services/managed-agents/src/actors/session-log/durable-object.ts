@@ -27,7 +27,7 @@ import { gatewayTelemetry, type TelemetryEnv } from "../../telemetry/gateway.js"
 import { DurableObject } from "cloudflare:workers";
 
 import { alarms } from "../../durable/alarms.js";
-import { byOf, mayRead, type Access, type Principal } from "../../auth/principal.js";
+import { byOf, isPerson, knows, mayRead, mayWrite, type Access, type Principal } from "../../auth/principal.js";
 import { computerOf, liveOf, orgOf, type ActorEnv } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
 import { cursor } from "../../durable/cursor.js";
@@ -186,27 +186,6 @@ type InboxRow = {
   error: string | null;
   done_at: number | null;
 };
-
-const isPerson = (p: Principal) => p.kind === "member" || p.kind === "key";
-
-/**
- * Whether a person knows of the session: they read it, or they speak in its Slack thread (the Slack
- * actor admitted them). Anyone else is answered `not_found`, as the session API answers (spec 36.2).
- */
-const knows = (p: Principal, access: Access, sessionId: string) => p.via === "slack" || mayRead(p, access, sessionId);
-
-/** Who may put an entry of this kind in the inbox (spec 36.2). */
-function mayWrite(p: Principal, kind: InboxKind, access: Access, sessionId: string): boolean {
-  const by = byOf(p);
-  // `agents` (the session that started it, its track's agent) write whatever `writers` says (spec 40.7).
-  const listed = (access.writers !== "members" && access.writers.includes(by)) || (p.kind === "agent" && !!access.agents?.includes(by));
-  const members = access.writers === "members" && isPerson(p) && knows(p, access, sessionId);
-  // The model and its settings: a person who may write, or its owner.
-  if (kind === "settings") return isPerson(p) && (members || listed || access.owner === p.subject);
-  // Stopping work (an interrupt, a turn's cancel, a subagent's stop, a suspend): any person who may read it.
-  if (kind === "interrupt" || kind === "cancel" || kind === "stop" || kind === "suspend") return p.kind === "platform" || members || listed || (isPerson(p) && mayRead(p, access, sessionId));
-  return p.kind === "platform" || members || listed;
-}
 
 const entryOfRow = (row: InboxRow): InboxEntry => ({
   id: row.id,
@@ -595,6 +574,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       const existing = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", entry.id).toArray()[0];
       if (existing) {
         if (existing.hash !== hash) return { ok: false, code: "idempotency_conflict" };
+        // Still waiting: the drain is asked again, as its last run may have been before the machine had the session.
+        if (existing.state === "waiting") owed.add(this.db, { group: "drain", key: "drain", call: "drain" });
         return { ok: true, duplicate: true };
       }
       const insert = (state: "waiting" | "delivered") =>
@@ -634,7 +615,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       return { ok: true, duplicate: false };
     });
     if (!taken.ok) return taken;
-    if (!taken.duplicate) this.kick();
+    this.kick();
     if (opts.wait && this.outcome(entry.id).state === "waiting") await this.drained(ACCEPT_WAIT_MS);
     return { ok: true, id: entry.id, duplicate: taken.duplicate, outcome: this.outcome(entry.id) };
   }

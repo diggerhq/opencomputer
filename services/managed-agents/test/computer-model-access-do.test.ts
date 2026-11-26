@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import type { ApiRequest } from "../src/actors/computer/session-drain.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import { describe, expect, it } from "vitest";
 
 import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";

@@ -152,6 +152,18 @@ describe("accept", () => {
     expect(await log.stub.accept(member(), turn("tn_x"), { wait: true })).toMatchObject({ ok: true, outcome: { state: "waiting" } });
   });
 
+  it("with wait, a duplicate of a waiting entry asks the drain again (Org owed the first turn before the machine had the session)", async () => {
+    const log = await openLog();
+    log.fakes.drain = async () => undefined;
+    expect(await log.stub.accept(platform, turn("tn_f"))).toMatchObject({ ok: true, outcome: { state: "waiting" } });
+    const before = log.fakes.drains.length;
+    log.fakes.drain = async (instance) => {
+      for (const entry of (await instance.inbox()).entries) await instance.delivered(entry.id, { ok: true, result: { turn: { id: entry.id } } });
+    };
+    expect(await log.stub.accept(member(), turn("tn_f"), { wait: true })).toEqual({ ok: true, id: "tn_f", duplicate: true, outcome: { state: "delivered", result: { turn: { id: "tn_f" } } } });
+    expect(log.fakes.drains.length).toBeGreaterThan(before);
+  });
+
   it(`refuses the entry after ${INBOX_MAX_WAITING} waiting, and takes one again when one is delivered`, async () => {
     const log = await openLog();
     for (let i = 0; i < INBOX_MAX_WAITING; i++) expect(await log.stub.accept(member(), turn(`tn_${i}`))).toMatchObject({ ok: true });

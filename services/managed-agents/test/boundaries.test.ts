@@ -10,17 +10,13 @@ const LIBRARIES = ["durable", "encoding", "ids", "telemetry", "crypto", "api-obj
 /** Worker entries: they export Durable Object classes, so they import `durable-object.ts`. */
 const ENTRIES = ["edge/index.ts", "actors/live/worker.ts", "previews/index.ts"];
 const EXISTING: string[] = [
-  "actors/org/contract.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
   "edge/computer-grants.ts -> actors/computer/durable-object.ts (reaches into an actor past its contract)",
   "edge/index.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
   "edge/index.ts -> actors/org/work-index.ts (reaches into an actor past its contract)",
   "http/agent-body.ts -> actors/computer/held-for-org/model-access/model-access.ts (reaches into an actor past its contract)",
   "http/api/dispatch.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
-  "http/api/dispatch.ts -> actors/computer/held-for-org/github.ts (reaches into an actor past its contract)",
   "http/api/dispatch.ts -> actors/computer/held-for-org/secrets/secrets-store.ts (reaches into an actor past its contract)",
-  "http/api/dispatch.ts -> actors/computer/session-drain.ts (reaches into an actor past its contract)",
-  "http/api/dispatch.ts -> actors/org/mutations/table.ts (reaches into an actor past its contract)",
-  "http/api/dispatch.ts -> actors/org/repository.ts (reaches into an actor past its contract)",
+  "http/api/result-diff.ts -> actors/computer/held-for-org/github.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/computer/durable-object.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/connect-codes/codes.ts (reaches into an actor past its contract)",

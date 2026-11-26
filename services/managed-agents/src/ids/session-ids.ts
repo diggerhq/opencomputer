@@ -9,7 +9,8 @@
 
 export const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
 
-const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, wc: 12 } as const;
+/** Each prefix's length. `trk`, `res`, `prp`, `op`: Org's tracks, results, proposals and ops (`crockfordId`'s 16). */
+const LENGTHS = { cs: 16, ev: 16, tn: 12, ak: 12, tm: 12, wc: 12, trk: 16, res: 16, prp: 16, op: 16 } as const;
 export type IdPrefix = keyof typeof LENGTHS;
 
 const PATTERNS = Object.fromEntries(
@@ -31,6 +32,9 @@ export function isId(prefix: IdPrefix, id: unknown): id is string {
 
 /** A session id: `cs_` + 16. */
 export const isSessionId = (id: unknown): id is string => isId("cs", id);
+
+/** The id of a session's first turn when its creator names none: one per session, whoever accepts it. */
+export const firstTurnId = (sessionId: string): string => `tn_${sessionId.slice(3, 15)}`;
 
 const WORKOS_USER = /^user_([0-9A-HJKMNP-TV-Z]{26})$/;
 const MEMBER = /^usr_[0-9a-z]{1,64}$/;

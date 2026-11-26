@@ -18,15 +18,13 @@
 import type { Access } from "../../auth/principal.js";
 import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind } from "../session-log/contract.js";
 import type { DeltaPush, LiveRpc } from "../live/contract.js";
-import type { StartSpec } from "./contract.js";
+import type { ApiOp, ApiReply, ApiRequest, StartSpec } from "./contract.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./held-for-org/model-access/api-session-route.js";
-import type { Principal } from "../../auth/principal.js";
 import { logOf } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
-import type { AssertedApiKey } from "../../edge/auth.js";
 import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
@@ -79,37 +77,6 @@ const APPLIED_MAX = 1_024;
 export const GAP_CLOSE_INTERVAL_MS = 30_000;
 const TICKETS_PER_MINUTE = 60;
 const RETRY_COMPUTER_MS = 5_000;
-
-/**
- * A request to the Computer's own routes: who asks is the one principal (spec 34.3); the rest
- * are facts of the request (the person's name and email, the key a ticket names).
- */
-export interface ApiRequest {
-  principal: Principal;
-  name: string | null;
-  email: string | null;
-  client: string | null;
-  apiKey?: AssertedApiKey;
-  requestId: string;
-  userAgent?: string | null;
-}
-
-export type ApiOp =
-  | { op: "me" }
-  | { op: "ticket"; body: unknown };
-
-export interface ApiErrorReply {
-  code: string;
-  message: string;
-  retryable?: boolean;
-  [field: string]: unknown;
-}
-
-export interface ApiReply {
-  status: number;
-  body?: unknown;
-  error?: ApiErrorReply;
-}
 
 export interface ApiRow {
   key: string;
@@ -1114,91 +1081,6 @@ export function invalid(field: string, message: string, code = "invalid_request"
   return { status: 400, error: { code, message, field } };
 }
 
-/** The writer's error as the HTTP error: its `status` is the response's. */
-
-/** JSON with sorted keys: the body's hash for idempotency. */
-export function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
-      .map((k) => `${JSON.stringify(k)}:${stableJson((value as Record<string, unknown>)[k])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** A session's speed: `fast` (the default, used when absent) or `standard`. */
 type Speed = "fast" | "standard";
 const isSpeed = (value: unknown): value is Speed => value === "fast" || value === "standard";
-const SPEED_MESSAGE = "speed must be fast or standard.";
-
-function object(body: unknown): Record<string, unknown> | ApiReply {
-  if (body === undefined || body === null) return {};
-  if (typeof body !== "object" || Array.isArray(body)) return invalid("", "The body must be a JSON object.");
-  return body as Record<string, unknown>;
-}
-
-function str(input: Record<string, unknown>, field: string, min: number, max: number): string | undefined | ApiReply {
-  const value = input[field];
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length < min || value.length > max) return invalid(field, `${field} must be a string of ${min} to ${max} characters.`);
-  return value;
-}
-
-const isReply = (value: unknown): value is ApiReply => typeof value === "object" && value !== null && "status" in value && "error" in value;
-
-function metadataOf(value: unknown, nullable: boolean): Record<string, string | null> | ApiReply {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid("metadata", "metadata must be an object.");
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > 20) return invalid("metadata", "At most 20 metadata keys.");
-  for (const [k, v] of entries) {
-    if (k.length < 1 || k.length > 40) return invalid(`metadata.${k}`, "Metadata keys are 1 to 40 characters.");
-    if (!(typeof v === "string" && v.length <= 500) && !(nullable && v === null)) return invalid(`metadata.${k}`, "Metadata values are strings of at most 500 characters.");
-  }
-  return value as Record<string, string | null>;
-}
-
-interface PatchInput {
-  title?: string;
-  model?: string;
-  effort?: string;
-  mode?: string;
-  speed?: Speed;
-  archived?: boolean;
-  metadata?: Record<string, string | null>;
-  /** Who may use it: Org checks it (org/sessions.ts `parseAccess`). */
-  access?: unknown;
-}
-
-const PATCH_FIELDS = new Set(["title", "model", "effort", "mode", "speed", "archived", "metadata", "access"]);
-
-export function validatePatch(body: unknown): { value: PatchInput } | { error: ApiReply } {
-  const input = object(body);
-  if (isReply(input)) return { error: input };
-  const fields = Object.keys(input);
-  if (!fields.length) return { error: invalid("", "The body names nothing to change.") };
-  for (const field of fields) if (!PATCH_FIELDS.has(field)) return { error: invalid(field, `Unknown field ${field}.`) };
-  const value: PatchInput = {};
-  for (const [field, min, max] of [["title", 1, 200], ["model", 1, 200], ["effort", 1, 50], ["mode", 1, 50]] as const) {
-    const s = str(input, field, min, max);
-    if (isReply(s)) return { error: s };
-    if (s !== undefined) value[field] = s;
-  }
-  if (input.speed !== undefined) {
-    if (!isSpeed(input.speed)) return { error: invalid("speed", SPEED_MESSAGE) };
-    value.speed = input.speed;
-  }
-  if (input.archived !== undefined) {
-    if (typeof input.archived !== "boolean") return { error: invalid("archived", "archived must be a boolean.") };
-    value.archived = input.archived;
-  }
-  if (input.metadata !== undefined) {
-    const m = metadataOf(input.metadata, true);
-    if (isReply(m)) return { error: m };
-    value.metadata = m;
-  }
-  if (input.access !== undefined) value.access = input.access;
-  return { value };
-}

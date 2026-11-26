@@ -2,7 +2,7 @@
 
 import type { SessionLogRpc } from "./session-log/contract.js";
 import type { ComputerRpc } from "./computer/contract.js";
-import type { LiveRpc } from "./live/contract.js";
+import type { LiveRpc, LiveUpgrade } from "./live/contract.js";
 import type { OrgRpc } from "./org/contract.js";
 import type { SlackRpc } from "./slack/contract.js";
 
@@ -27,8 +27,8 @@ export const logOf = (env: ActorEnv, sessionId: string) => stub<SessionLogRpc>(e
 /** A machine's Computer. The organization's first machine is named by the organization's id (spec 34.1). */
 export const computerOf = (env: ActorEnv, machine: string) => stub<ComputerRpc>(env.COMPUTERS, machine);
 export const slackOf = (env: ActorEnv, org: string) => stub<SlackRpc>(env.SLACK, org);
-/** The organization's Live, in the `opencomputer-live` script. */
+/** The organization's Live, in the `opencomputer-live` script: its methods, and the socket upgrade (`LiveUpgrade`). */
 export const liveOf = (env: ActorEnv, org: string) => {
   if (!env.LIVE) throw new Error("LIVE is not bound: this deployment has no opencomputer-live Worker");
-  return stub<LiveRpc>(env.LIVE, org);
+  return stub<LiveRpc & LiveUpgrade>(env.LIVE, org);
 };

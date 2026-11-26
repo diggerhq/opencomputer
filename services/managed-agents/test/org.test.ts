@@ -95,6 +95,7 @@ import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
 import type { AccessCarry } from "../src/actors/computer/contract.js";
+import { firstTurnId } from "../src/ids/session-ids.js";
 
 type Fakes = {
   calls: [string, ...unknown[]][];
@@ -111,7 +112,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
     const out: OrgOut = {
       computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), accessCarry: async () => fakes.accessCarry ?? { accessDefault: null, apiAccessDefault: null } }),
-      log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }) }),
+      log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (p, entry) => (fakes.calls.push(["SessionLog.accept", entry, p]), { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }) }),
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),
@@ -159,6 +160,52 @@ describe("Org.createSession", () => {
       const list = await org.listSessions(a, {});
       expect(list).toMatchObject({ ok: true, sessions: [{ id: body.id }], nextCursor: null });
       expect(await org.access(body.id)).toMatchObject({ owner: "usr_a", audience: "member:usr_a", writers: ["user:usr_a"], machine: "create" });
+    });
+  });
+});
+
+describe("Org: one path for a create's first turn and a patch's settings", () => {
+  const accepted = (fakes: Fakes) => fakes.calls.filter((c) => c[0] === "SessionLog.accept").map((c) => ({ entry: c[1], by: (c[2] as Principal).subject }));
+
+  it("owes the first turn with the session, from its creator, once whatever retries", async () => {
+    await withActor("first-turn", async (org, fakes) => {
+      const a = member("usr_a", "first-turn");
+      const named = { id: "cs_0000000000000070", input: "Fix it", turnId: "tn_0123456789ab", trace: "tr_1" };
+      expect(await org.createSession(a, named)).toMatchObject({ ok: true, duplicate: false });
+      // A retry with another trace is the same create; with another turn id it is not.
+      expect(await org.createSession(a, { ...named, trace: "tr_2" })).toMatchObject({ ok: true, duplicate: true });
+      expect(await org.createSession(a, { ...named, turnId: "tn_bcdefghjkmnp" })).toMatchObject({ ok: false, code: "taken" });
+      const derived = "cs_0000000000000071";
+      await org.createSession(a, { id: derived, input: "And this" });
+      await org.createSession(a, { id: "cs_0000000000000072" });
+      await org.drain();
+      expect(accepted(fakes)).toEqual([
+        { entry: { id: "tn_0123456789ab", kind: "turn", body: { input: "Fix it", ifBusy: "queue" }, trace: "tr_1" }, by: "usr_a" },
+        { entry: { id: firstTurnId(derived), kind: "turn", body: { input: "And this", ifBusy: "queue" } }, by: "usr_a" },
+      ]);
+      expect(await org.createSession(a, { id: "cs_0000000000000073", turnId: "tn_0123456789ab" })).toMatchObject({ ok: false, code: "invalid_request", field: "turnId" });
+    });
+  });
+
+  it("applies every field of a patch with its settings entry, or none of them", async () => {
+    await withActor("patch-all", async (org, fakes) => {
+      const a = member("usr_a", "patch-all");
+      const sid = "cs_0000000000000074";
+      await org.createSession(a, { id: sid, title: "Before" });
+      await org.drain();
+      fakes.calls.length = 0;
+      const settings = { id: "ie_0123456789abcdef", body: { model: "claude-opus-5-5" }, trace: "tr_3" };
+      expect(await org.patchSession(a, sid, { title: "After", archived: true, metadata: { k: "v" }, settings })).toMatchObject({ ok: true, session: { title: "After", archived: true, metadata: { k: "v" } } });
+      await org.drain();
+      expect(accepted(fakes)).toEqual([{ entry: { id: settings.id, kind: "settings", body: settings.body, trace: "tr_3" }, by: "usr_a" }]);
+
+      // Settings are a person's: an agent's patch with them changes nothing, its metadata included.
+      fakes.calls.length = 0;
+      const agent: Principal = { ...a, subject: sid, kind: "agent", via: "agent", audiences: [], session: sid };
+      expect(await org.patchSession(agent, sid, { metadata: { k: "w" }, settings: { ...settings, id: "ie_1123456789abcdef" } })).toMatchObject({ ok: false, code: "forbidden", reason: "settings_writer_only" });
+      await org.drain();
+      expect(accepted(fakes)).toEqual([]);
+      expect(await org.getSession(a, sid)).toMatchObject({ ok: true, session: { title: "After", metadata: { k: "v" } } });
     });
   });
 });

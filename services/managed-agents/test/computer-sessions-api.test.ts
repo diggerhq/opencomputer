@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { DeliveredOutcome, InboxEntry, InboxKind } from "../src/actors/session-log/contract.js";
 import type { ApiEvent, LogSummary } from "../src/api-objects/objects.js";
-import { matchApiRoute, writeParams } from "../src/http/api/dispatch.js";
+import { matchApiRoute } from "../src/http/api/route-table.js";
+import { writeParams } from "../src/http/api/session-input.js";
 import { ComputerKeys } from "../src/actors/computer/held-for-org/keys/keys.js";
 import type { CalvinGatewayToHost } from "../src/host-protocol/frames.js";
 import type { CalvinPerson } from "../src/host-protocol/person.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/actors/session-log/contract.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import {
-  type ApiRequest,
   ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
   RECOVER_AFTER_MS,

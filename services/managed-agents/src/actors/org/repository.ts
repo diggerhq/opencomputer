@@ -14,6 +14,7 @@ import type { GitHubTokenMint } from "../../protocol.js";
 import type { Refusal, Reply } from "../../durable/rpc-reply.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
+import { GRANTED_PAGES_MAX, type GrantedRepository, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type RepositoryProblem } from "./contract.js";
 
 const GITHUB_API = "https://api.github.com";
 const GITHUB_API_VERSION = "2026-03-10";
@@ -21,17 +22,6 @@ const USER_AGENT = "opencomputer-managed-agents";
 /** Every GitHub request, its body included, is aborted after this. */
 const REQUEST_TIMEOUT_MS = 10_000;
 const PER_PAGE = 100;
-/** The last page a listing reads: 10,000 repositories an installation. */
-export const GRANTED_PAGES_MAX = 100;
-
-/** Why the repository cannot be read. A stable code. */
-export type RepositoryProblem =
-  | "installation_removed"
-  | "installation_suspended"
-  | "repository_not_found"
-  | "branch_not_found"
-  | "access_denied"
-  | "github_app_not_configured";
 
 /** The setting as stored: what the Work index stored under `repo`, the same shape. */
 export interface StoredRepository {
@@ -41,52 +31,6 @@ export interface StoredRepository {
   branch: string;
   /** GitHub's id for the repository, which survives renames. */
   id?: number;
-}
-
-/** The knowledge repository setting, as the API shows it. */
-export interface Repository {
-  installationId: string;
-  owner: string;
-  name: string;
-  branch: string;
-  problem: RepositoryProblem | null;
-  problemMessage: string | null;
-}
-
-/** What `PUT /work/repository` asks for; the branch defaults to the repository's default branch. */
-export interface RepositoryChoice {
-  installationId: string;
-  owner: string;
-  name: string;
-  branch?: string;
-}
-
-/** A repository an installation grants, as the picker lists it. */
-export interface GrantedRepository {
-  id: number;
-  owner: string;
-  name: string;
-  private: boolean;
-  defaultBranch: string;
-  pushedAt: string | null;
-}
-
-/** One of the organization's active GitHub installations, with a page of what it grants. */
-export interface GrantingInstallation {
-  id: string;
-  accountLogin: string;
-  accountType: string;
-  settingsUrl: string;
-  repositories: GrantedRepository[];
-  nextPage: number | null;
-  truncated: boolean;
-  problem: RepositoryProblem | null;
-  problemMessage: string | null;
-}
-
-export interface RepositoriesQuery {
-  installationId?: string;
-  page?: number;
 }
 
 /** What Org needs of the Account object. */
@@ -134,60 +78,6 @@ export function storeRepository(sql: Sql, repo: StoredRepository): void {
     // The App's pull request webhooks find the organization by its installation (D1 `github_installation_orgs`), however the repository was stored.
     owed.add(sql, { group: "installation", key: "installation:org", call: "installation.indexed", body: { installationId: repo.installationId } });
   });
-}
-
-// ------------------------------------------------------------------ requests
-
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
-const INSTALLATION_ID = /^[A-Za-z0-9_-]{1,64}$/;
-
-type Invalid = { status: 400; error: { code: "invalid_request"; message: string; field: string } };
-const invalid = (message: string, field: string): Invalid => ({ status: 400, error: { code: "invalid_request", message, field } });
-
-export function repositoryChoice(body: unknown): { value: RepositoryChoice } | { error: Invalid } {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: invalid("The body must be a JSON object.", "") };
-  const input = body as Record<string, unknown>;
-  for (const key of Object.keys(input)) {
-    if (!["installationId", "owner", "name", "branch"].includes(key)) return { error: invalid(`Unknown field ${key}.`, key) };
-  }
-  const { installationId, owner, name, branch } = input;
-  const installation =
-    typeof installationId === "number" && Number.isSafeInteger(installationId) && installationId > 0
-      ? String(installationId)
-      : typeof installationId === "string" && INSTALLATION_ID.test(installationId)
-        ? installationId
-        : null;
-  if (installation === null) return { error: invalid("installationId is the GitHub installation's id.", "installationId") };
-  if (typeof owner !== "string" || !OWNER.test(owner)) return { error: invalid("owner is a GitHub account login.", "owner") };
-  if (typeof name !== "string" || !REPO_NAME.test(name) || name === "." || name === "..") return { error: invalid("name is a GitHub repository name.", "name") };
-  if (branch !== undefined && branch !== null && (typeof branch !== "string" || !branchName(branch))) return { error: invalid("branch is a branch name.", "branch") };
-  return { value: { installationId: installation, owner, name, ...(typeof branch === "string" ? { branch } : {}) } };
-}
-
-/** `GET /work/repositories`' query: `installation` and `page`, a later page only of one installation. */
-export function repositoriesQuery(query: URLSearchParams): { value: RepositoriesQuery } | { error: Invalid } {
-  for (const name of new Set(query.keys())) {
-    if (name !== "installation" && name !== "page") return { error: invalid(`Unknown query parameter ${name}.`, name) };
-  }
-  const installation = query.get("installation");
-  const rawPage = query.get("page");
-  if (installation !== null && !INSTALLATION_ID.test(installation)) return { error: invalid("installation is an installation id.", "installation") };
-  if (rawPage !== null && (!/^[1-9]\d{0,2}$/.test(rawPage) || Number(rawPage) > GRANTED_PAGES_MAX)) return { error: invalid(`page is 1 to ${GRANTED_PAGES_MAX}.`, "page") };
-  if (rawPage !== null && rawPage !== "1" && installation === null) return { error: invalid("A later page is of one installation.", "installation") };
-  return { value: { ...(installation !== null ? { installationId: installation } : {}), ...(rawPage !== null ? { page: Number(rawPage) } : {}) } };
-}
-
-/** A name `git check-ref-format --branch` accepts, at most 255 characters. */
-export function branchName(name: string): boolean {
-  if (name.length < 1 || name.length > 255 || name === "@") return false;
-  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return false;
-  if (name.includes("..") || name.includes("@{") || name.includes("//")) return false;
-  for (let i = 0; i < name.length; i++) {
-    const c = name.charCodeAt(i);
-    if (c < 0x21 || c === 0x7f || "~^:?*[\\".includes(name[i]!)) return false;
-  }
-  return name.split("/").every((segment) => !segment.startsWith(".") && !segment.endsWith(".lock"));
 }
 
 // ------------------------------------------------------------------ GitHub

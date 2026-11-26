@@ -19,8 +19,9 @@
 import type { Origin } from "../../api-objects/objects.js";
 import type { Row } from "./contract.js";
 import type { Summary } from "../session-log/contract.js";
-import { byOf } from "../../auth/principal.js";
+import { byOf, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";
+import { firstTurnId } from "../../ids/session-ids.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed, type Owed } from "../../durable/outbox.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
@@ -260,17 +261,26 @@ export class Tx {
     this.owe({ group: sessionId, key: `access:host:${sessionId}`, call: "Computer.setAccess", body: { sessionId } });
   }
 
-  /** `Computer.start` for a session, its spec built from the rows when sent. `firstInput`: a platform turn accepted before it (spec 40.7 step 3). */
-  start(sessionId: string, extra: { harness?: string; trace?: string; firstInput?: string } = {}): void {
+  /**
+   * `Computer.start` for a session, its spec built from the rows when sent. `firstInput`: a turn accepted
+   * before it (spec 40.7 step 3), as `turnId` (else the session's first turn id) from `as` (else the platform).
+   */
+  start(sessionId: string, extra: { harness?: string; trace?: string; firstInput?: string; turnId?: string; as?: Principal } = {}): void {
     if (extra.firstInput !== undefined) {
-      this.owe({ group: sessionId, call: "SessionLog.accept", body: { sessionId, id: `tn_${sessionId.slice(3, 15)}`, kind: "turn", body: { input: extra.firstInput, ifBusy: "queue" } } });
+      const turn = { input: extra.firstInput, ifBusy: "queue" };
+      this.accept(sessionId, { id: extra.turnId ?? firstTurnId(sessionId), kind: "turn", body: turn, trace: extra.trace }, extra.as);
     }
     this.owe({ group: sessionId, key: `start:${sessionId}`, call: "Computer.start", body: { sessionId, harness: extra.harness, trace: extra.trace } });
   }
 
+  /** An entry to a session's inbox, from `as` (else the platform): `SessionLog.accept`, owed. */
+  accept(sessionId: string, entry: { id: string; kind: string; body: unknown; trace?: string }, as?: Principal): void {
+    this.owe({ group: sessionId, call: "SessionLog.accept", body: { sessionId, id: entry.id, kind: entry.kind, body: entry.body, ...(entry.trace ? { trace: entry.trace } : {}), ...(as ? { principal: as } : {}) } });
+  }
+
   /** An `interrupt` entry to a session's inbox, as the platform (spec 39, `thread.done`). */
   interrupt(sessionId: string): void {
-    this.owe({ group: sessionId, call: "SessionLog.accept", body: { sessionId, id: `int_${this.version()}_${sessionId}`, kind: "interrupt", body: {} } });
+    this.accept(sessionId, { id: `int_${this.version()}_${sessionId}`, kind: "interrupt", body: {} });
   }
 
   /** `Computer.stop`: the runner of a session that is being removed. */

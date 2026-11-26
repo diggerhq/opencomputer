@@ -46,7 +46,8 @@
 
 import type { CloudResource, CloudResourceKind, CloudTarget } from "./cloud-contract.js";
 import { CloudError, type ComputerCloud } from "./cloud.js";
-import { ComputersNotConfigured, type PublicComputer, type PublicComputerState } from "../config.js";
+import { ComputersNotConfigured, type PublicComputer } from "../config.js";
+import type { PublicComputerState } from "../contract.js";
 import { type FailureCode, failureMessage } from "./failure.js";
 import { POOL_TAG, computerName, ownerTag } from "../../../ids/computer-names.js";
 import { type Placement, candidates, isCapacity, isQuota, nvmeSize, sizeShape, validSize } from "./placement.js";
