@@ -23,7 +23,7 @@ import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import { CROCKFORD, isId, isSessionId } from "./session-ids.js";
-import { type ApiOp, type ApiRequest, type ApiReply, validatePatch, type WriteMethod } from "./sessions-api.js";
+import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "./sessions-api.js";
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
@@ -435,7 +435,7 @@ async function routeApi(
     const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
     return actorRoute(request, env, p, person, route, out);
   }
-  // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop), as the same principal.
+  // The Computer's own routes (secrets, tickets), as the same principal.
   const ua = request.headers.get("user-agent");
   const caller: ApiRequest = {
     principal: p,
@@ -467,6 +467,11 @@ async function routeApi(
     }
     if (route.op === "secrets.events") return call({ op: "secrets.events", name });
     if (route.op === "secrets.delete") return call({ op: "secrets.delete", name });
+    if (route.op === "secrets.session.put") {
+      // Org judges who may see the session; the Computer holds its runner.
+      const sessionId = route.sessionId!;
+      if (!isSessionId(sessionId) || !(await timedDo(out.facts, orgOf(env, p.org).getSession(p, sessionId))).ok) return out.error(404, "session_not_found", "No such session.");
+    }
     const parsed = await bodyOf(request);
     if ("error" in parsed) return out.error(...parsed.error);
     return call(route.op === "secrets.session.put"
@@ -485,25 +490,9 @@ async function routeApi(
   }
   if (route.op === "ticket") return call({ op: "ticket", body });
 
+  // Per-session capabilities: the same for every session, once Org says the principal may see it.
   const sessionId = route.sessionId!;
-  if (!isSessionId(sessionId)) return out.error(404, "session_not_found", "No such session.");
-  if (route.sub !== undefined && !ID.test(route.sub)) {
-    const what = route.op.split(".")[0]!.replace(/s$/, "");
-    return out.error(404, `${what}_not_found`, `No such ${what}.`);
-  }
-
-  // The controls the actors do not serve yet, to the session's writer.
-  if (needsBody) {
-    const input = asObject(body);
-    if (!input) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
-    const params = writeParams(route, input);
-    if ("error" in params) return out.error(400, params.code ?? "invalid_request", params.error, { field: params.field });
-    return call({ op: "call", sessionId, method: route.op as WriteMethod, params: params.value, ...(idem ? { idempotencyKey: idem } : {}) });
-  }
-
-  // Per-session capabilities: the same for every session, after the Computer's access check.
-  const access = await computer.computerApi(accountId, caller, { op: "access", sessionId });
-  if (access.error) return out.of(access);
+  if (!isSessionId(sessionId) || !(await timedDo(out.facts, orgOf(env, p.org).getSession(p, sessionId))).ok) return out.error(404, "session_not_found", "No such session.");
   return out.send(200, { capabilities: capabilities() });
 }
 
@@ -571,6 +560,7 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
 const ACTOR_OPS = new Set([
   "list", "create", "get", "patch", "aside.set", "aside.clear",
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
+  "sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
   "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
@@ -582,7 +572,10 @@ const ENDED_TURNS = new Set(["completed", "failed", "cancelled"]);
 /** How long `GET /sessions/{id}?minSeq` waits for the log without `waitMs`. */
 const MIN_SEQ_WAIT_MS = 10_000;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
-const ENTRY_KINDS = { "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt" } as const;
+const ENTRY_KINDS = {
+  "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt",
+  "sessions.compact": "compact", "sessions.suspend": "suspend", "sessions.resume": "resume", "turns.cancel": "cancel", "subagents.stop": "stop",
+} as const;
 
 /** SessionLog's reads as they take the principal and a cursor (session-log lane, spec 37.1). */
 type LogRefused = { ok: false; error: string; cursor?: string | null; seq?: number; retryAfterMs?: number; [field: string]: unknown };
@@ -923,7 +916,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     return r.ok ? out.send(200, { session: r.session }) : refusalOf(out, r);
   }
 
-  // The four writes, through the session's inbox (spec 37.2, 40.2).
+  // Every write, through the session's inbox (spec 37.2, 40.2).
   if (route.op in ENTRY_KINDS) {
     const op = route.op as keyof typeof ENTRY_KINDS;
     const parsed = await bodyOf(request);

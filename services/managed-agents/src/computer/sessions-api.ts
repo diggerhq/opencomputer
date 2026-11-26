@@ -26,7 +26,6 @@ import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import type { ComputerKeys } from "./keys.js";
 import {
-  type CalvinApiActor,
   type CalvinApiError,
   type CalvinGatewayToHost,
   type CalvinHarness,
@@ -42,18 +41,17 @@ import {
   sessionKey,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isId, isMemberId, isSessionId, mintId } from "./session-ids.js";
+import { isId, isMemberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
-/** A write's answer from the host: 15 s, then 503. */
+/** A `start` frame's answer from the host: 15 s, then it is let go. */
 export const HOST_CALL_TIMEOUT_MS = 15_000;
 /**
- * The answer's wait while the session's epoch is moving (an `epoch` frame in flight or sent within
- * EPOCH_MOVING_MS): the host holds the write until its adoption commits, up to ~25 s (review r3 P2-2).
+ * A drained entry's answer from the host. The host holds a write while the session's epoch moves until
+ * its adoption commits, up to ~25 s (review r3 P2-2).
  */
 export const HOST_CALL_HELD_TIMEOUT_MS = 40_000;
-export const EPOCH_MOVING_MS = 30_000;
 /** Waits before each retry of a failed `epochTail` read (review r3 P1-1). */
 export const EPOCH_TAIL_RETRY_MS = [250, 1_000, 4_000];
 /** A writer silent this long with a turn open, its runner gone, is lost. */
@@ -67,7 +65,14 @@ const DRAIN_METHODS: Record<InboxKind, string> = {
   dismiss: "asks.dismiss",
   interrupt: "sessions.interrupt",
   settings: "sessions.update",
+  compact: "sessions.compact",
+  suspend: "sessions.suspend",
+  resume: "sessions.resume",
+  cancel: "turns.cancel",
+  stop: "subagents.stop",
 };
+/** The entries that spend credits: admitted, and routed to the owner's model, before they go. */
+const SPENDS = new Set<InboxKind>(["turn", "compact", "resume"]);
 /** A `stale_epoch` batch re-sends the session's `epoch` frame at most this often. */
 export const STALE_EPOCH_RESEND_MS = 5_000;
 /** Sessions whose last applied summary is kept in memory (applySummary's change check). */
@@ -93,8 +98,6 @@ export interface ApiRequest {
 
 export type ApiOp =
   | { op: "me" }
-  | { op: "access"; sessionId: string }
-  | { op: "call"; sessionId: string; method: WriteMethod; params: Record<string, unknown>; idempotencyKey?: string }
   | { op: "ticket"; body: unknown };
 
 export interface ApiErrorReply {
@@ -109,25 +112,6 @@ export interface ApiReply {
   body?: unknown;
   error?: ApiErrorReply;
 }
-
-/** The writes that go to the session's writer as an `api` frame. */
-export const WRITE_METHODS = [
-  "turns.send",
-  "turns.cancel",
-  "sessions.interrupt",
-  "sessions.compact",
-  "sessions.suspend",
-  "sessions.resume",
-  "asks.answer",
-  "asks.dismiss",
-  "subagents.stop",
-] as const;
-export type WriteMethod = (typeof WRITE_METHODS)[number];
-
-/** Writes that spend credits: admitted like a Slack message. */
-const ADMITTED = new Set<string>(["turns.send", "sessions.compact", "sessions.resume"]);
-/** Answered 202 when they acted (the seq advanced), 200 when there was nothing to do. */
-const ACTS = new Set<string>(["sessions.interrupt", "sessions.suspend", "sessions.resume", "subagents.stop"]);
 
 export interface ApiRow {
   key: string;
@@ -278,15 +262,6 @@ export class ComputerSessionsApi {
     return [...this.deps.sql.exec<Record<string, SqlStorageValue>>(`${ROW_SELECT} WHERE runner_key = ?`, key)][0] as unknown as ApiRow | undefined;
   }
 
-  /** A session the caller may see: every API session; a Slack one only by its linked owner. */
-  visible(caller: ApiRequest, sessionId: string): ApiRow | undefined {
-    if (!isSessionId(sessionId)) return undefined;
-    const row = this.row(sessionId);
-    if (!row) return undefined;
-    if (row.originType === "slack" && row.ownerUserId !== caller.principal.subject) return undefined;
-    return row;
-  }
-
   private v4Host(): boolean {
     return this.deps.host() !== undefined;
   }
@@ -386,11 +361,6 @@ export class ComputerSessionsApi {
     };
   }
 
-  private actor(caller: ApiRequest): CalvinApiActor {
-    // No profile name (common for email sign-ins): the email reads better than the raw member id.
-    return { id: caller.principal.subject, name: caller.name || caller.email, via: caller.principal.via, client: caller.client };
-  }
-
   // ---------------------------------------------------------------- operations
 
   async handle(caller: ApiRequest, op: ApiOp): Promise<ApiReply> {
@@ -398,12 +368,6 @@ export class ComputerSessionsApi {
     switch (op.op) {
       case "me":
         return this.me(caller);
-      case "access": {
-        const row = this.visible(caller, op.sessionId);
-        return row ? { status: 200, body: { sessionId: row.sessionId } } : notFound();
-      }
-      case "call":
-        return this.call(caller, op.sessionId, op.method, op.params, op.idempotencyKey);
       case "ticket":
         return this.ticket(caller, op.body);
     }
@@ -424,37 +388,6 @@ export class ComputerSessionsApi {
         capabilities: capabilities(),
       },
     };
-  }
-
-  private async call(caller: ApiRequest, sessionId: string, method: WriteMethod, params: Record<string, unknown>, idempotencyKey?: string): Promise<ApiReply> {
-    const row = this.visible(caller, sessionId);
-    if (!row) return notFound();
-    if (ADMITTED.has(method)) {
-      const refused = await this.admission();
-      if (refused) return refused;
-    }
-    if (!this.v4Host()) return this.unavailable();
-    const at = await this.log(sessionId).inbox();
-    const outcome = await this.hostCall({
-      t: "api",
-      id: crypto.randomUUID(),
-      sessionId,
-      method,
-      params: { ...params, sessionId },
-      actor: this.actor(caller),
-      member: caller.principal.subject,
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-      requestId: caller.requestId,
-      session: this.spec(row),
-      epoch: at.epoch,
-      lastSeq: at.lastSeq,
-    });
-    if (outcome.error) return hostError(outcome.error);
-    const result = { ...(outcome.result as Record<string, unknown>) };
-    let status = 200;
-    if (method === "turns.send" || method === "sessions.compact") status = result.duplicate === true ? 200 : 202;
-    else if (ACTS.has(method)) status = typeof result.seq === "number" && result.seq > at.lastSeq ? 202 : 200;
-    return { status, body: result };
   }
 
   private async ticket(caller: ApiRequest, body: unknown): Promise<ApiReply> {
@@ -650,7 +583,7 @@ export class ComputerSessionsApi {
   private async deliver(row: ApiRow, entry: InboxEntry, inbox: Inbox): Promise<DeliveredOutcome | "lost"> {
     let session = this.spec(row);
     let model: RoutedApiSession["model"];
-    if (entry.kind === "turn") {
+    if (SPENDS.has(entry.kind)) {
       // Billing unavailable throws: the entry waits and the caller's owed drain retries.
       if (!(await this.deps.admitted())) return { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." };
       if (this.deps.routeSession) {
@@ -827,89 +760,12 @@ export class ComputerSessionsApi {
 
   // ---------------------------------------------------------------- the host
 
-  private async admission(): Promise<ApiReply | null> {
-    try {
-      return (await this.deps.admitted()) ? null : { status: 402, error: { code: "insufficient_credits", message: "Your organization is out of credits." } };
-    } catch {
-      return { status: 503, error: { code: "unavailable", message: "Billing is unavailable; retry.", retryAfterMs: 2_000 } };
-    }
-  }
-
   private unavailable(): ApiReply {
     this.deps.telemetry?.unavailable();
     this.deps.waitUntil(
       this.deps.wake().catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "computer.api_wake_failed", message: String(error) }))),
     );
     return { status: 503, error: { code: "computer_unavailable", message: "Your computer is starting. Retry.", retryAfterMs: RETRY_COMPUTER_MS } };
-  }
-
-  /** Sends a frame that the host answers by `id` (`api-result`, `started`); 503 after 15 s or a lost socket. */
-  /**
-   * One write to the host. The answer is awaited HOST_CALL_TIMEOUT_MS, or HOST_CALL_HELD_TIMEOUT_MS while the
-   * session's epoch is moving (the host holds the write until it adopts). A keyed write's answer is kept past
-   * the client's wait: a retry with the same idempotency key sends nothing and takes it (review r3 P2-2).
-   */
-  private async hostCall(frame: Extract<CalvinGatewayToHost, { t: "api" }>): Promise<HostOutcome> {
-    const t = this.deps.telemetry;
-    if (!t) return this.hostCallNow(frame);
-    const note: HostCallNote = { held: false, heldMs: 0, replayed: false, wait: 0 };
-    const began = performance.now();
-    const outcome = await this.hostCallNow(frame, note);
-    const ms = performance.now() - began;
-    const code = outcome.error?.code;
-    t.write({
-      sessionId: frame.sessionId,
-      surface: frame.actor?.via === "opc" ? "cli" : "api",
-      method: frame.method,
-      hostMs: ms,
-      // In the DO before the frame left, beyond any hold behind an epoch send.
-      ...(note.sentAt !== undefined ? { doMs: Math.max(0, note.sentAt - began - note.heldMs) } : {}),
-      held: note.held,
-      heldMs: note.heldMs,
-      replayed: note.replayed,
-      // A lost answer (hostLost) after the whole wait; a closed socket settles earlier.
-      timedOut: code === "computer_unavailable" && note.wait > 0 && ms - note.heldMs >= note.wait - 5,
-      ...(code ? { errorCode: code } : {}),
-    });
-    return outcome;
-  }
-
-  private async hostCallNow(frame: Extract<CalvinGatewayToHost, { t: "api" }>, note?: HostCallNote): Promise<HostOutcome> {
-    let resolve!: (outcome: HostOutcome) => void;
-    const result = new Promise<HostOutcome>((r) => (resolve = r));
-    const moving = this.epochSends.get(frame.sessionId);
-    if (moving) {
-      // The host hears the new epoch from `epoch` first; this frame then carries the row as it is now.
-      const heldAt = performance.now();
-      await moving;
-      if (note) (note.held = true), (note.heldMs = performance.now() - heldAt);
-      const row = this.row(frame.sessionId);
-      if (row) {
-        const at = await this.log(frame.sessionId).inbox();
-        frame = { ...frame, epoch: at.epoch, lastSeq: at.lastSeq, ...(frame.session ? { session: this.spec(row) } : {}) };
-      }
-    }
-    const wait = this.answerWait(frame.sessionId, moving !== undefined);
-    if (note) note.wait = wait;
-    if (frame.session && ADMITTED.has(frame.method) && this.deps.routeSession) {
-      const routed = await this.deps.routeSession(frame.session, frame.member).catch(() => ({ session: frame.session!, error: hostLost() }));
-      if (routed.error) {
-        const outcome = { error: routed.error };
-        resolve(outcome);
-        return outcome;
-      }
-      frame = { ...frame, session: routed.session };
-    }
-    const sent = this.deps.send(frame);
-    if (note) note.sentAt = performance.now();
-    if (!sent) return { error: hostLost() };
-    this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost() }), wait) });
-    return result;
-  }
-
-  private answerWait(sessionId: string, held: boolean): number {
-    const moving = held || this.epochSends.has(sessionId) || this.now() - (this.epochSentAt.get(sessionId) ?? -Infinity) < EPOCH_MOVING_MS;
-    return moving ? HOST_CALL_HELD_TIMEOUT_MS : HOST_CALL_TIMEOUT_MS;
   }
 
   private settle(id: string, outcome: HostOutcome): void {
@@ -1311,17 +1167,6 @@ export class ComputerSessionsApi {
 /** Why an `epoch` frame is sent (sessionlog.recovery `reason`). */
 type EpochCause = "recover" | "stale" | "hello";
 
-/** What a host call's telemetry learns on the way (hostCall). */
-interface HostCallNote {
-  held: boolean;
-  heldMs: number;
-  replayed: boolean;
-  /** The answer wait applied, ms. */
-  wait: number;
-  /** When the frame went to the host (performance.now()). */
-  sentAt?: number;
-}
-
 export function statusOfRunner(status: string | null): SessionStatus {
   if (status === "busy") return "running";
   if (status === "idle") return "idle";
@@ -1353,19 +1198,12 @@ export function attentionRef(asks: readonly Ask[]): string | null {
   return oldest?.id ?? null;
 }
 
-function notFound(): ApiReply {
-  return { status: 404, error: { code: "session_not_found", message: "No such session." } };
-}
 
 export function invalid(field: string, message: string, code = "invalid_request"): ApiReply {
   return { status: 400, error: { code, message, field } };
 }
 
 /** The writer's error as the HTTP error: its `status` is the response's. */
-function hostError(error: CalvinApiError): ApiReply {
-  const { status, ...rest } = error;
-  return { status: Number.isInteger(status) && status >= 400 && status < 600 ? status : 500, error: rest };
-}
 
 /** JSON with sorted keys: the body's hash for idempotency. */
 export function stableJson(value: unknown): string {

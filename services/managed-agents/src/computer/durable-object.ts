@@ -1835,9 +1835,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
   async computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
-    // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
     if (op.op === "secrets.session.put") {
-      const row = this.api.visible(caller, op.sessionId);
+      // The edge checked the session's access with Org; this is its runner's row.
+      const row = this.api.row(op.sessionId);
       if (!row) return { status: 404, error: { code: "session_not_found", message: "No such session." } };
       return this.secrets.api(caller, op, row.key);
     }
