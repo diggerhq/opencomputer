@@ -17,12 +17,10 @@ import {
   ChevronRight,
   Copy,
   GitBranch,
-  Brain,
   Loader2,
   MessagesSquare,
   Plug,
   RotateCcw,
-  Route,
   ShieldCheck,
   Terminal,
   TriangleAlert,
@@ -57,7 +55,15 @@ import { AuthContext } from '@/hooks/useAuth'
 import { addManagedGitHubConnection } from './api'
 import { GitHubStarBonus } from './GitHubStarBonus'
 import { launchAuthorizationWindow } from './authorization-window'
-import { SlackInstallButton, UnlinkSlackDialog } from './computer-slack'
+import {
+  SlackInstallButton,
+  SlackInstallLink,
+  UnlinkSlackDialog,
+} from './computer-slack'
+import {
+  trackFirstSessionStartClicked,
+  trackSetupSlackClicked,
+} from './computer-analytics'
 import { createSession } from './computer-sessions-api'
 import { ChatTextarea } from '@/components/chat-textarea'
 import {
@@ -803,8 +809,9 @@ function SlackInstallFailed({
 /**
  * Setup is the onboarding of every new organization: three steps, one call to
  * action at a time, and where the person is in them. No pitch; the page is not
- * a landing page (Igor, 2026-10-13). The last step starts the first session
- * here or connects Slack, whichever the person likes (Mohamed, 2026-11-18).
+ * a landing page (Igor, 2026-10-13). The last step starts the first session:
+ * in Slack once it is in, otherwise straight on the web, with Slack a quiet
+ * alternative (Mohamed, 2026-11-26).
  */
 function Setup({
   status,
@@ -967,11 +974,7 @@ function Setup({
             </SetupItem>
             <SetupItem
               number={number('start')}
-              title={
-                status.slack.installed
-                  ? 'Give it its first task'
-                  : 'Add OpenComputer to Slack'
-              }
+              title="Give it its first task"
               state={progress('start')}
             >
               {status.slack.installed ? (
@@ -1011,19 +1014,15 @@ function Setup({
                     <PulseDot tone="busy" />
                     Waiting for its first task. This page moves on by itself.
                   </p>
+                  <WebStart />
                 </>
               ) : (
-                <SlackOffer />
+                <WebFirstStart />
               )}
-              <WebStart />
             </SetupItem>
           </ol>
           <div className="flex flex-col gap-6 self-start xl:[grid-area:context]">
-            <SetupContext
-              step={step}
-              agentCard={agentCard}
-              slackInstalled={status.slack.installed}
-            />
+            <SetupContext step={step} agentCard={agentCard} />
             <GitHubStarBonus />
           </div>
           {/* The scene only uses height nobody else needs: its area is a size
@@ -1103,29 +1102,41 @@ function FirstTaskComposer() {
   )
 }
 
-/** Slack, the way in: where the team works the task together. */
-function SlackOffer() {
+/**
+ * Before Slack is in, the first session starts on the web: one button
+ * straight to the composer, which brings the computer to life with the first
+ * task. Slack stays on offer, quietly (Mohamed, 2026-11-26).
+ */
+function WebFirstStart() {
   return (
     <>
       <p>
-        Coding is more fun with your team. Mention it in any thread and work the
-        task through together, right there.
+        Ask it anything about your code, or hand it a task. It works in the
+        browser; you watch and steer as it goes.
       </p>
-      <SlackInstallButton size="lg" label="Add to Slack" />
-      {/* Most workspaces only let admins add apps; where approval is on,
-          Slack itself lets a member ask for it. */}
-      <p className="text-xs">
-        Not a Slack admin? Click it anyway: Slack lets you ask your admin to
-        approve it. Come back here once they have.
-      </p>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <Button size="lg" asChild>
+          <Link
+            to="/computer/sessions/new"
+            onClick={trackFirstSessionStartClicked}
+          >
+            Start your first session
+            <ArrowRight className="size-4" aria-hidden />
+          </Link>
+        </Button>
+        <SlackInstallLink
+          label="Or add it to Slack"
+          onClick={trackSetupSlackClicked}
+        />
+      </div>
     </>
   )
 }
 
 /**
- * The web, for whoever asks for it: Slack stays the way in, and the composer
- * only opens on request (Mohamed, 2026-11-18: shown upfront, everyone would
- * take the text box).
+ * The web, for whoever asks for it once Slack is in: Slack stays the way in,
+ * and the composer only opens on request (Mohamed, 2026-11-18: shown upfront,
+ * everyone would take the text box).
  */
 function WebStart() {
   const [open, setOpen] = useState(false)
@@ -1180,12 +1191,10 @@ function SlackNudge() {
 function SetupContext({
   step,
   agentCard,
-  slackInstalled,
   className,
 }: {
   step: SetupStep
   agentCard: AgentCardChoice
-  slackInstalled: boolean
   className?: string
 }) {
   return (
@@ -1202,18 +1211,6 @@ function SetupContext({
             fixes CI.
           </p>
         </div>
-      ) : step === 'start' && !slackInstalled ? (
-        <>
-          <ContextHeading>Better with your team</ContextHeading>
-          <SlackThreadPreview />
-          <ContextPoints
-            points={[
-              [MessagesSquare, 'Talk it through in the thread'],
-              [Route, 'Change course mid-task; it follows'],
-              [Brain, 'Knows your code from one ask to the next'],
-            ]}
-          />
-        </>
       ) : step === 'github' ? (
         <>
           <ContextHeading>What it does with your code</ContextHeading>
@@ -1264,70 +1261,6 @@ function ContextPoints({
         </li>
       ))}
     </ul>
-  )
-}
-
-/**
- * A short exchange as it looks in Slack: a question back, a steer, done a
- * minute later. Illustration, not data.
- */
-const THREAD: { app?: boolean; at: string; text: ReactNode }[] = [
-  {
-    at: '2:14',
-    text: (
-      <>
-        <span className="text-foreground/70 font-medium">@OpenComputer</span>{' '}
-        why is the checkout test flaky?
-      </>
-    ),
-  },
-  {
-    app: true,
-    at: '2:14',
-    text: 'Two tests share the cart clock. Freeze it per test, or reset it between them?',
-  },
-  { at: '2:15', text: 'freeze it' },
-  {
-    app: true,
-    at: '2:15',
-    text: (
-      <>
-        Done: 50 runs, no flakes, on{' '}
-        <span className="font-mono text-xs">fix/cart-clock</span>
-      </>
-    ),
-  },
-]
-
-function SlackThreadPreview() {
-  return (
-    <div
-      className="bg-panel text-muted-foreground space-y-2.5 rounded-lg border p-4 text-[13px] leading-snug"
-      aria-hidden
-    >
-      {THREAD.map((message, i) => (
-        <div key={i} className="flex gap-2.5">
-          {message.app ? (
-            <div className="bg-muted flex size-6 shrink-0 items-center justify-center rounded-md">
-              <ComputerIcon className="size-3" />
-            </div>
-          ) : (
-            <div className="bg-muted flex size-6 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold">
-              M
-            </div>
-          )}
-          <div className="min-w-0">
-            <p className="text-xs">
-              <span className="text-foreground/70 font-semibold">
-                {message.app ? 'OpenComputer' : 'Maya'}
-              </span>
-              <span className="ml-1.5 opacity-70">{message.at}</span>
-            </p>
-            <p className="mt-0.5">{message.text}</p>
-          </div>
-        </div>
-      ))}
-    </div>
   )
 }
 
