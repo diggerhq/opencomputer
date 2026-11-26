@@ -104,7 +104,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
     const out: OrgOut = {
       computer: () => ({ start: rec("Computer.start"), stop: rec("Computer.stop"), setAccess: rec("Computer.setAccess"), changed: rec("Computer.changed"), exportSessions: (after) => fakes.exportSessions(after) }),
-      log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, machine: name }) }),
+      log: () => ({ setAccess: rec("SessionLog.setAccess"), destroy: rec("SessionLog.destroy"), accept: async (_p, entry) => (fakes.calls.push(["SessionLog.accept", entry]), { ok: true, id: entry.id, duplicate: false, outcome: { state: "waiting" } }) }),
       slack: () => ({ announce: async (child) => (fakes.calls.push(["Slack.announce", child]), { threadKey: "T1:C1:1.2" }), notify: rec("Slack.notify") }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),

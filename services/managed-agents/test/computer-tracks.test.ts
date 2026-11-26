@@ -140,7 +140,7 @@ describe("the Computer actor of tracks and threads", () => {
     const { frames } = await host("tt-drain");
     fakes.entries = [entry("in_1"), entry("in_2", "interrupt", {})];
     await stub.start(spec("tt-drain", SESSION(1)));
-    const result = await stub.drain(SESSION(1), { wait: true });
+    await stub.drain(SESSION(1));
     await until(() => fakes.delivered, (all) => all.length === 2, "delivered");
     const api = frames.filter((frame) => frame.t === "api");
     expect(api.map((frame) => [frame.method, frame.idempotencyKey])).toEqual([["turns.send", "in_1"], ["sessions.interrupt", "in_2"]]);
@@ -157,10 +157,9 @@ describe("the Computer actor of tracks and threads", () => {
       { id: "in_1", outcome: { ok: true, result: { accepted: "in_1" } } },
       { id: "in_2", outcome: { ok: true, result: { accepted: "in_2" } } },
     ]);
-    expect(result.state).toBe("delivered");
     // No runner row, no drain.
     fakes.entries = [entry("in_3")];
-    expect(await stub.drain(SESSION(9), { wait: true })).toEqual({ state: "delivered", results: [] });
+    await stub.drain(SESSION(9));
     expect(fakes.delivered).toHaveLength(2);
   });
 
@@ -170,18 +169,18 @@ describe("the Computer actor of tracks and threads", () => {
     const turn = "tn_0123456789ab";
     fakes.entries = [entry(turn, "turn", { input: "go", ifBusy: "queue" }), entry("ie_0123456789abcdef", "interrupt", {})];
     await stub.start(spec("tt-turn-id", SESSION(1)));
-    await stub.drain(SESSION(1), { wait: true });
+    await stub.drain(SESSION(1));
     await until(() => fakes.delivered, (all) => all.length === 2, "delivered");
     const api = frames.filter((frame) => frame.t === "api");
     expect(api[0]).toMatchObject({ method: "turns.send", idempotencyKey: turn, params: { input: "go", ifBusy: "queue", turnId: turn } });
     expect(api[1]!.params).toEqual({ sessionId: SESSION(1) });
   });
 
-  it("answers waking with no host and drains at hello", async () => {
+  it("takes the drain with no host, owes it, and drains at hello", async () => {
     const { stub, fakes } = await computer("tt-waking");
     fakes.entries = [entry("in_1")];
     await stub.start(spec("tt-waking", SESSION(1)));
-    expect(await stub.drain(SESSION(1), { wait: true })).toEqual({ state: "waking" });
+    await stub.drain(SESSION(1));
     expect(fakes.delivered).toEqual([]);
     const { frames } = await host("tt-waking");
     await until(() => fakes.delivered, (all) => all.length === 1, "delivered at hello");
@@ -196,13 +195,11 @@ describe("the Computer actor of tracks and threads", () => {
     await until(() => frames, (all) => all.some((frame) => frame.t === "start"), "start frame");
     fakes.admitted = false;
     fakes.entries = [entry("in_1")];
-    const broke = await stub.drain(SESSION(1), { wait: true });
-    expect(broke).toMatchObject({ state: "delivered", results: [{ id: "in_1", error: { code: "insufficient_credits" } }] });
+    await stub.drain(SESSION(1));
     fakes.admitted = true;
     fakes.refused = true;
     fakes.entries = [entry("in_2")];
-    const refused = await stub.drain(SESSION(1), { wait: true });
-    expect(refused).toMatchObject({ state: "delivered", results: [{ id: "in_2", error: { code: "model_refused" } }] });
+    await stub.drain(SESSION(1));
     expect(fakes.delivered.map((d) => [d.id, d.outcome.ok === false && d.outcome.code])).toEqual([["in_1", "insufficient_credits"], ["in_2", "model_refused"]]);
     expect(frames.filter((frame) => frame.t === "api")).toEqual([]);
   });
