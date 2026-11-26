@@ -224,6 +224,8 @@ const MIGRATIONS: ((sql: Sql) => void)[] = [
     sql.exec(`CREATE TABLE occ_pending (epoch INTEGER, seq INTEGER, kind TEXT NOT NULL, "by" TEXT, at INTEGER NOT NULL, PRIMARY KEY (epoch, seq))`);
     for (const column of ["revision", "watched_until", "slot_at", "agent_turns"]) sql.exec(`ALTER TABLE meta ADD COLUMN ${column} INTEGER`);
   },
+  // Access's `agents` (spec 40.7): NULL in a row stored before it, which is read from Org again.
+  (sql) => sql.exec("ALTER TABLE access ADD COLUMN agents TEXT"),
 ];
 
 const isPerson = (p: Principal) => p.kind === "member" || p.kind === "key";
@@ -231,7 +233,8 @@ const isPerson = (p: Principal) => p.kind === "member" || p.kind === "key";
 /** Who may put an entry of this kind in the inbox (spec 36.2). */
 function mayWrite(p: Principal, kind: InboxKind, access: Access): boolean {
   const by = byOf(p);
-  const listed = access.writers !== "members" && access.writers.includes(by);
+  // `agents` (the session that started it, its track's agent) write whatever `writers` says (spec 40.7).
+  const listed = (access.writers !== "members" && access.writers.includes(by)) || (p.kind === "agent" && !!access.agents?.includes(by));
   const members = access.writers === "members" && isPerson(p);
   if (kind === "settings") return members || (isPerson(p) && (access.owner === p.subject || access.owner === by));
   if (kind === "interrupt") return p.kind === "platform" || isPerson(p) || listed;
@@ -583,25 +586,36 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
 
   /** Kept only if its revision is newer than the one held. */
   private putAccess(access: Access) {
-    if (this.access && access.revision <= this.access.revision) return;
+    if (this.access?.agents && access.revision <= this.access.revision) return;
+    const agents = access.agents ?? [];
     this.sql.exec(
-      "INSERT OR REPLACE INTO access (k, owner, audience, writers, readers, machine, revision) VALUES (1, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO access (k, owner, audience, writers, readers, machine, revision, agents) VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
       access.owner,
       access.audience,
       JSON.stringify(access.writers),
       JSON.stringify(access.readers),
       access.machine,
       access.revision,
+      JSON.stringify(agents),
     );
-    this.access = { owner: access.owner, audience: access.audience, writers: access.writers, readers: access.readers, machine: access.machine, revision: access.revision };
+    this.access = { owner: access.owner, audience: access.audience, writers: access.writers, agents, readers: access.readers, machine: access.machine, revision: access.revision };
   }
 
   private loadAccess(): Access | null {
     const row = this.sql
-      .exec<{ owner: string; audience: string; writers: string; readers: string; machine: string; revision: number }>("SELECT * FROM access WHERE k = 1")
+      .exec<{ owner: string; audience: string; writers: string; readers: string; machine: string; revision: number; agents: string | null }>("SELECT * FROM access WHERE k = 1")
       .toArray()[0];
     if (!row) return null;
-    return { owner: row.owner, audience: row.audience, writers: JSON.parse(row.writers), readers: JSON.parse(row.readers), machine: row.machine, revision: row.revision };
+    return {
+      owner: row.owner,
+      audience: row.audience,
+      writers: JSON.parse(row.writers),
+      // Absent in a row stored before `agents`: `accessFor` reads Org again.
+      ...(row.agents !== null ? { agents: JSON.parse(row.agents) as string[] } : {}),
+      readers: JSON.parse(row.readers),
+      machine: row.machine,
+      revision: row.revision,
+    };
   }
 
   /** The session this log is: the object's name, or what its writer said. */
@@ -618,7 +632,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     const sessionId = this.sessionId();
     if (!sessionId) return null;
     if (this.meta.organizationId !== null && this.meta.organizationId !== p.org) return null;
-    if (this.access && this.meta.organizationId !== null) return this.access;
+    if (this.access?.agents && this.meta.organizationId !== null) return this.access;
     const got = await this.peers.org(p.org).access(sessionId);
     if (!got) return null;
     if (this.meta.organizationId === null) {
