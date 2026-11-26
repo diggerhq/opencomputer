@@ -21,6 +21,7 @@ export { PoolStock } from "./pool_stock";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { decodeJwt } from "jose";
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
+import { authCache as sharedAuthCache } from "./auth_cache";
 import { authDashboard, handleDashboard, type DashboardEnv } from "./dashboard";
 import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
 import {
@@ -287,7 +288,7 @@ interface AuthEntry {
   cachedAtMs: number;
   lastBumpMs: number;
 }
-const authCache = new Map<string, AuthEntry>();
+const authCache = sharedAuthCache as Map<string, AuthEntry>;
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
   entry.lastBumpMs = nowMs;
@@ -297,6 +298,12 @@ function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): 
     .catch(() => {});
 }
 
+// A person's key works only while they are a member of the key's org: removing
+// someone revokes their keys even if a key row outlived the removal. Keys no
+// person holds are the org's own: the computer's one-hour keys and legacy rows
+// with no creator. With no row, auth returns null and the SWR refresh evicts.
+const KEY_HOLDER_IS_MEMBER = `(k.created_by IS NULL OR k.created_by = '${COMPUTER_PRINCIPAL}' OR m.user_id IS NOT NULL)`;
+
 const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at, k.session_key,
           k.id AS key_id, k.key_hash, k.name AS key_name, k.scopes AS key_scopes,
           k.created_at AS key_created_at, u.name AS user_name, u.email AS user_email,
@@ -305,7 +312,8 @@ const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at, k.session_key
      LEFT JOIN org_memberships m
        ON m.org_id = k.org_id AND m.user_id = k.created_by
      LEFT JOIN users u ON u.id = k.created_by
-    WHERE k.key_hash = ?1`;
+    WHERE k.key_hash = ?1
+      AND ${KEY_HOLDER_IS_MEMBER}`;
 
 // One row shape for both readers. refreshAuth repopulates the same cache tiers
 // the hot path reads, so a role column present in one and absent in the other
@@ -1852,8 +1860,12 @@ async function credentialLive(id: string, env: Env): Promise<boolean> {
     return member !== null;
   }
   if (id.startsWith("dev_")) return appDeviceLive(env.OPENCOMPUTER_DB, id);
+  // The same holder rule as key auth: a person's key dies with their membership.
   const key = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT 1 AS ok FROM api_keys WHERE id = ?1 AND (expires_at IS NULL OR expires_at > ?2)`,
+    `SELECT 1 AS ok FROM api_keys k
+       LEFT JOIN org_memberships m ON m.org_id = k.org_id AND m.user_id = k.created_by
+      WHERE k.id = ?1 AND (k.expires_at IS NULL OR k.expires_at > ?2)
+        AND ${KEY_HOLDER_IS_MEMBER}`,
   )
     .bind(id, nowSec)
     .first<{ ok: number }>();
@@ -2199,7 +2211,8 @@ export default {
            LEFT JOIN org_memberships m
              ON m.org_id = k.org_id AND m.user_id = k.created_by
            LEFT JOIN users u ON u.id = k.created_by
-          WHERE k.org_id = ?1`,
+          WHERE k.org_id = ?1
+            AND ${KEY_HOLDER_IS_MEMBER}`,
       ).bind(parsed.org_id).all<AuthRow & { key_hash: string }>();
 
       const at = Date.now();

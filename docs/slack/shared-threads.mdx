@@ -32,7 +32,7 @@ One-machine mode has no people list: every reply in a session thread is delivere
   <img src="/images/slack/not-enabled.png" alt="A person who is not on the people list mentions the bot and gets a reply only they can see: not enabled for you yet" />
 </Frame>
 
-<Note>Not in the open-source code yet (runner isolation). Until it lands, every session on a computer runs as one Unix user, so a session can read other sessions' files and secrets on the same computer.</Note>
+<Note>Each session runs in its own container on a computer with `SP_LAUNCH=podman`, the default for a new one. On a computer still on `SP_LAUNCH=systemd`, every session runs as one Unix user and can read other sessions' files and secrets. See [What a session can reach](/slack/permission-modes#what-a-session-can-reach).</Note>
 
 ## When the bot stays silent
 

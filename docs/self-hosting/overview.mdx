@@ -9,6 +9,8 @@ A self-hosted deployment runs the same stack as the hosted service, in your acco
 
 The Computer VM connects out to the gateway Worker; nothing connects in. You create one VM per organization in your cloud account, and the gateway shows it as `Online` while it is connected.
 
+On the VM every session runs in its own rootless Podman container. Sessions start in `bypassPermissions`, so the agent runs commands without asking; the container, not the permission mode, keeps it away from the host, the other sessions and the cloud metadata service. See [What a session can reach](/slack/permission-modes#what-a-session-can-reach).
+
 ## What you need
 
 | Account or tool | Used for |

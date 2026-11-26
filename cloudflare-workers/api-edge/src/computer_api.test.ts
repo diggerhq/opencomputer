@@ -52,6 +52,12 @@ class FakeStatement {
         role: "admin",
       } as T;
     }
+    if (this.sql.includes("SELECT role FROM org_memberships WHERE org_id")) {
+      return { role: "owner" } as T;
+    }
+    if (this.sql.includes("SELECT key_hash FROM api_keys WHERE id")) {
+      return { key_hash: `hash-${String(this.args[0])}` } as T;
+    }
     if (this.sql.includes("FROM org_memberships m LEFT JOIN users u")) {
       return { role: "owner", user_name: "Igor", user_email: "igor@example.com" } as T;
     }
