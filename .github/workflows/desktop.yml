@@ -76,6 +76,8 @@ jobs:
 
   mac:
     name: Mac build
+    # Not on pull requests into a working branch: only the ones into main, pushes and manual runs.
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
