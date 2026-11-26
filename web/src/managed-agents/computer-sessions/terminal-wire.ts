@@ -3,7 +3,7 @@
 // ticket in the `opc.ticket.<t>` subprotocol, `ready`, then `terminals.open`;
 // the shell's bytes travel as binary frames `[u32 BE channel][data]`.
 //
-// The relay opens terminals only for people who may drive the session, never
+// The relay opens terminals only for whom computer's `mayOpenTerminal` allows, never
 // wakes a stopped session (`session_not_running`: the panel offers Wake), and
 // hangs a terminal up after 15 idle minutes or when access is lost
 // (`terminal.exited` `reason`). A parked computer refuses the upgrade with
@@ -115,7 +115,7 @@ export function exitMessage(p: {
 }): string {
   if (p.reason === 'idle') return 'Closed after 15 minutes without activity.'
   if (p.reason === 'access_lost')
-    return 'Closed: you may no longer drive this session.'
+    return 'Closed: you may no longer open a terminal in this session.'
   if (p.exitCode != null) return `The shell exited (${p.exitCode}).`
   return p.signal ? `The shell ended (${p.signal}).` : 'The shell ended.'
 }

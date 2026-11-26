@@ -263,7 +263,7 @@ const TicketSchema = z.looseObject({
   ticket: z.looseObject({ token: z.string(), url: z.string() }),
 })
 
-/** A ticket for one terminal connection to session `id`; refused unless the caller may drive it. */
+/** A ticket for one terminal connection to session `id`; refused unless the caller may open one in it (owner, someone it is shared with, or an admin of an org session). */
 export async function mintTerminalTicket(id: string) {
   const { ticket } = await apiFetch(
     `${PREFIX}/tickets`,

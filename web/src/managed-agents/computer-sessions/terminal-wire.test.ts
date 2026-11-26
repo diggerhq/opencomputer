@@ -197,7 +197,7 @@ it('explains why the relay hung up', async () => {
     kind: 'ended',
     message: 'Closed after 15 minutes without activity.',
   })
-  expect(exitMessage({ reason: 'access_lost' })).toMatch(/no longer drive/)
+  expect(exitMessage({ reason: 'access_lost' })).toMatch(/no longer open a terminal/)
   expect(exitMessage({ exitCode: 0 })).toBe('The shell exited (0).')
   expect(readClose(4503, JSON.stringify({ reason: 'asleep' })).waking).toBe(
     false,

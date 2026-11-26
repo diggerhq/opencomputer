@@ -15,8 +15,8 @@
 // key: `"login":true` stands where `"keyId"` does, and exactly one of the two
 // is present. It has no record to read, so the Worker grants it a fixed,
 // read-only scope (worker.ts). A login's terminal ticket (web terminal MVP)
-// adds `"terminal":true` and names exactly one session the member may drive
-// (blue checks at minting); the Worker then grants that session's terminals.
+// adds `"terminal":true` and names exactly one session the member may open a
+// terminal in (blue checks at minting, session-access.ts `mayOpenTerminal`); the Worker then grants that session's terminals.
 
 import { base64UrlString, equalStrings, fromBase64Url, hmacBase64Url, hmacKey, utf8 } from "./crypto.js";
 

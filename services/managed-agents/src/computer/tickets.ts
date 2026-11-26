@@ -7,7 +7,7 @@
 // A dashboard login gets one too (work 113): without `keyId`, always
 // read-only, and labelled `dashboard…` so the relay's actor says so. With
 // `terminal: true` and one session (web terminal MVP), a login's ticket opens
-// terminals in that session instead; the route checks the member may drive it.
+// terminals in that session instead; the route checks the member may open one in it.
 
 import { WIRE_CLIENT } from "../wire/auth.js";
 import { SESSION_ID, TICKET_MAX_SESSIONS, TICKET_TTL_MS, TicketTooLongError, mintTicket as mintWireTicket } from "../wire/ticket.js";

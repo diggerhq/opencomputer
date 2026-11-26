@@ -130,8 +130,8 @@ it('says the computer is waking', () => {
 it('explains an idle, lost or refused terminal and reconnects', async () => {
   for (const message of [
     'Closed after 15 minutes without activity.',
-    'Closed: you may no longer drive this session.',
-    'Only people who may drive this session can open a terminal in it.',
+    'Closed: you may no longer open a terminal in this session.',
+    "Only the session's owner, someone it is shared with, or an admin of an organization-wide session can open a terminal.",
   ]) {
     state({ kind: message.startsWith('Only') ? 'error' : 'ended', message })
     expect(container.textContent).toContain(message)
