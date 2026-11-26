@@ -87,3 +87,14 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "accessCarry", 0);
   },
 ];
+
+/**
+ * A store whose steps ran before they were folded into one, and stopped before `meta.slack_access_default`
+ * (a development stack deployed between the two): its count says nothing is left to apply, so it is given
+ * the column and the carry-over those last steps held. A no-op on every other store.
+ */
+export function completeFolded(sql: Sql): void {
+  if (sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) return;
+  sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
+  alarms.set(sql, "accessCarry", 0);
+}

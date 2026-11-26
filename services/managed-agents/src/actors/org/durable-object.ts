@@ -25,7 +25,7 @@ import { memberId } from "../../ids/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";
 import type { Fetch, StoredRepository, TokenMinter } from "./repository.js";
-import { STEPS } from "./schema.js";
+import { completeFolded, STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf } from "./access.js";
 import { readSession, trackOfAgent } from "./records.js";
@@ -112,6 +112,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     if (!this.store) {
       this.store = sqlOf(this.ctx.storage);
       migrate(this.store, STEPS);
+      completeFolded(this.store);
     }
     return this.store;
   }

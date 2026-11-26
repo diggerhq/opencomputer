@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { migrate } from "../src/durable/migrations.js";
 import { sqlOf, type Sql } from "../src/durable/sql.js";
-import { STEPS as ORG } from "../src/actors/org/schema.js";
+import { completeFolded, STEPS as ORG } from "../src/actors/org/schema.js";
 import { STEPS as SLACK } from "../src/actors/slack/schema.js";
 import { MIGRATIONS as SESSION_LOG, SCHEMA as SESSION_LOG_SCHEMA } from "../src/actors/session-log/schema.js";
 import { ORG_STEPS, SESSION_LOG_MIGRATIONS, SLACK_STEPS } from "./fixtures/pre-collapse-steps.js";
@@ -58,6 +58,21 @@ async function same(name: string, before: Step[], after: Step[], first?: string)
 
 describe("storage steps collapsed before the first deploy", () => {
   it("Org: a fresh store has the schema and the carry-over alarms the eight steps gave it", () => same("collapse-org", ORG_STEPS, ORG));
+  it("Org: a store that stopped before `slack_access_default` under the old steps is completed", async () => {
+    // The first six of the eight: through `api_access_default`, as a development stack held it.
+    const stopped = await fresh("collapse-org-stopped", (sql) => {
+      migrate(sql, ORG_STEPS.slice(0, 6));
+      migrate(sql, ORG);
+      completeFolded(sql);
+      completeFolded(sql);
+    });
+    const now = await fresh("collapse-org-whole", (sql) => {
+      migrate(sql, ORG);
+      completeFolded(sql);
+    });
+    expect(stopped.applied).toBe(6);
+    expect(stopped.shape).toEqual(now.shape);
+  });
   it("Slack: a fresh store has the schema the four steps gave it", () => same("collapse-slack", SLACK_STEPS, SLACK));
   it("SessionLog: on its production tables, the two steps and the one give the same schema", () =>
     same("collapse-session-log", SESSION_LOG_MIGRATIONS, SESSION_LOG, SESSION_LOG_SCHEMA));
