@@ -125,15 +125,14 @@ describe("computer config and vocabulary", () => {
 });
 
 describe("parking decision", () => {
-  const base = { plan: "free" as const, state: "ready", hostConnected: true, busySessions: 0, pendingDispatches: 0, lastActivityAt: 0, now: IDLE_PARK_MS };
+  const base = { plan: "free" as const, state: "ready", hostConnected: true, busySessions: 0, lastActivityAt: 0, now: IDLE_PARK_MS };
   it("parks a free, idle, ready computer after two hours", () => {
     expect(parkingDecision(base)).toEqual({ park: true, recheckAt: null });
     expect(parkingDecision({ ...base, now: IDLE_PARK_MS - 1 })).toEqual({ park: false, recheckAt: IDLE_PARK_MS });
   });
-  it("never parks paid, busy, queued or non-ready computers", () => {
+  it("never parks paid, busy or non-ready computers", () => {
     expect(parkingDecision({ ...base, plan: "paid" }).park).toBe(false);
     expect(parkingDecision({ ...base, busySessions: 1 }).park).toBe(false);
-    expect(parkingDecision({ ...base, pendingDispatches: 1 }).park).toBe(false);
     expect(parkingDecision({ ...base, state: "provisioning" })).toEqual({ park: false, recheckAt: null });
     // Free computers park after 30 idle minutes by default; configurable within bounds.
     expect(IDLE_PARK_MS).toBe(30 * 60_000);
@@ -169,7 +168,7 @@ describe("parking decision", () => {
   });
   it("parks an unpaid computer without waiting to be idle: preview traffic does not keep it", () => {
     expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now })).toEqual({ park: true, recheckAt: null });
-    expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now, pendingDispatches: 1 }).park).toBe(false);
+    expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now, busySessions: 1 }).park).toBe(false);
   });
 });
 

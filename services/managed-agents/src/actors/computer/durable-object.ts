@@ -1149,13 +1149,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return tier ? sizeFor(this.env, tier) : null;
   }
 
-  /** Sessions working, and deliveries queued or sent and not yet answered. */
-  private workload(): { busySessions: number; pendingDispatches: number } {
+  /**
+   * Sessions working. The `dispatches` table is no longer written: rows an
+   * older deploy left `pending` or `sent` would hold the computer busy forever.
+   */
+  private workload(): { busySessions: number } {
     const count = (query: string) => [...this.ctx.storage.sql.exec<{ n: number }>(query)][0]?.n ?? 0;
     return {
       // Work 084: a session whose subagents still run is working, even with its turn over.
       busySessions: count("SELECT COUNT(*) AS n FROM sessions WHERE status IN ('starting', 'busy') OR subagents > 0"),
-      pendingDispatches: count("SELECT COUNT(*) AS n FROM dispatches WHERE state IN ('pending', 'sent')"),
     };
   }
 
@@ -1163,7 +1165,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * The computer follows its plan's size (2026-10-13): everyone
    * claims the warm pool's (default) size, and a "max" organization's computer
    * grows to COMPUTER_MAX_SIZE as soon as it is ready, connected and doing
-   * nothing (no starting or busy session, no queued or unanswered message):
+   * nothing (no starting or busy session, no running subagents):
    * a resize restarts the VM. Upsizes only; a downsize waits for the next
    * park and wake (wake builds the VM on the plan's size), so nobody's
    * running computer shrinks under them. An unknown plan resizes nothing.
@@ -1195,9 +1197,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const desired = await this.desiredSize();
     if (!desired || desired === row.size) return;
     if (sizeShape(desired).vcpus <= sizeShape(row.size).vcpus) return;
-    const { busySessions, pendingDispatches } = this.workload();
+    const { busySessions } = this.workload();
     // Tags still `pool` (just claimed): the platform resizes only the organization's VM.
-    if (!this.socket() || busySessions > 0 || pendingDispatches > 0 || row.tagsPending) {
+    if (!this.socket() || busySessions > 0 || row.tagsPending) {
       await this.schedule("size", Date.now() + SIZE_RECHECK_MS);
       return;
     }
@@ -2437,6 +2439,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const reported = JSON.stringify((event.sessions ?? []).map((report) => report.key));
     this.ctx.storage.sql.exec(
       "UPDATE sessions SET status = 'stopped' WHERE status IN ('starting', 'busy') AND runner_key NOT IN (SELECT value FROM json_each(?))",
+      reported,
+    );
+    // Nor are its subagents: a count it never reports again would keep the computer busy forever.
+    this.ctx.storage.sql.exec(
+      "UPDATE sessions SET subagents = 0 WHERE subagents > 0 AND runner_key NOT IN (SELECT value FROM json_each(?))",
       reported,
     );
     for (const report of event.sessions ?? []) await this.report(report);

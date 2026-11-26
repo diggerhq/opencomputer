@@ -31,8 +31,6 @@ export interface ParkingInput {
   hostConnected: boolean;
   /** Sessions whose last report was `starting` or `busy`. */
   busySessions: number;
-  /** Deliveries queued or sent and not yet answered. */
-  pendingDispatches: number;
   /** Last message, session report or wake. */
   lastActivityAt: number;
   now: number;
@@ -52,7 +50,7 @@ export function parkingDecision(input: ParkingInput): { park: boolean; recheckAt
   if (input.plan === "free" && !halted && trialEndsAt !== null && input.now < trialEndsAt) {
     return { park: false, recheckAt: Math.min(input.now + idleMs, trialEndsAt) };
   }
-  const busy = (input.hostConnected && input.busySessions > 0) || input.pendingDispatches > 0;
+  const busy = input.hostConnected && input.busySessions > 0;
   if (busy) return { park: false, recheckAt: input.now + idleMs };
   if (input.unpaid || halted) return { park: true, recheckAt: null };
   const idleUntil = input.lastActivityAt + idleMs;
