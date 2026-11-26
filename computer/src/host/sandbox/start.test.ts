@@ -66,7 +66,7 @@ function rig(o: { have?: ContainerInfo[]; homes?: string[]; fail?: Partial<Recor
         await step(`prepare ${id} ${names.join(',')}`, undefined);
         const record = { ...records.get(id)!, repos: Object.fromEntries(names.map((n) => [n, { branch: 'sp/C1-1-1', from: 'origin/main', base: 'abc' }])) };
         records.write(record);
-        return { record, addMs: 7 };
+        return { record, addMs: 7, times: { 'container.add_checkout_ms': 6, 'container.unpack_ms': 2 } };
       },
     },
     dial: o.dial ?? (async () => sock),
@@ -93,7 +93,8 @@ describe('sandbox start', () => {
     expect(s.session.sdkSessionId).toBeUndefined();
     const ev = await t.events();
     expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({
-      outcome: 'completed', data: { launch_mode: 'podman', image: '64a672bb773b', 'container.create_ms': 11, 'container.start_ms': 33, 'container.mount_ms': 4 },
+      outcome: 'completed', data: { launch_mode: 'podman', image: '64a672bb773b', 'container.create_ms': 11, 'container.start_ms': 33, 'container.mount_ms': 4,
+        'container.dirs_ms': expect.any(Number), 'container.mint_ms': expect.any(Number) },
     });
     expect(ev.some((e) => e.event_name === 'runner.ready')).toBe(true);
     expect(t.tm.dropped).toEqual({}); // every key is in the catalog
@@ -276,7 +277,7 @@ describe('sandbox start', () => {
     expect(t.records.get(id)?.repos).toEqual(s.record.repos);
     const ev = await t.events();
     expect(ev.filter((e) => e.event_name === 'runner.launched')).toHaveLength(1);
-    expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({ outcome: 'completed', data: { 'container.mount_ms': 4, 'container.add_ms': 7 } });
+    expect(ev.find((e) => e.event_name === 'runner.launched')).toMatchObject({ outcome: 'completed', data: { 'container.mount_ms': 4, 'container.add_ms': 7, 'container.add_checkout_ms': 6, 'container.unpack_ms': 2 } });
     expect(ev.find((e) => e.event_name === 'fork.done')).toMatchObject({ outcome: 'completed', data: { repos: 2 } });
     expect(t.tm.dropped).toEqual({});
   });

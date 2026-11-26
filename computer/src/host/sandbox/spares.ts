@@ -28,7 +28,10 @@
 // - The record is written before anything of the person is mounted, so a
 //   container that holds a person's files always has a record saying whose.
 // - The journal directory is among the mounts, so the API is minted before
-//   them: the runner opens its journal when it is claimed.
+//   them: the runner opens its journal when it is claimed. The directories,
+//   the mint and the container's pid need nothing of each other and are made
+//   together, after the record and before any mount (`together` waits for all
+//   three, so a failed one leaves nothing still running).
 // - A spare that leaves is Removed, container and home, and its run directory
 //   goes with it; one whose record was written keeps the record and the run
 //   directory, and the thread's next start creates a container under the same
@@ -76,6 +79,7 @@ import { log } from '../../log.js';
 import type { Telemetry } from '../../telemetry/emitter.js';
 import type { Dimensions } from '../../telemetry/envelope.js';
 import { awaitRunner, dialSocket } from '../runner-sockets.js';
+import { timed, together } from '../together.js';
 import type { Containers } from './containers.js';
 import type { Records, SandboxRecord } from './records.js';
 import type { ThreadLocks } from './thread-lock.js';
@@ -121,10 +125,12 @@ export interface Bound {
   session: SessionSpec;
   /** With its token, for the `claim` frame. */
   api?: RunnerApi;
-  /** The record, the directories and the API's mint; the mounts (with the container's pid); the worktrees and root files. */
+  /** The record, then the directories, the API's mint and the container's pid together; the mounts; the worktrees. */
   readyMs: number;
   mountMs: number;
   addMs: number;
+  /** calvin_events data fields of the steps inside these: `container.dirs_ms`, `mint_ms`, `pid_ms` and `prepare`'s. */
+  times: Record<string, number>;
 }
 
 export type SandboxSpares = ReturnType<typeof sandboxSpares>;
@@ -273,17 +279,22 @@ export function sandboxSpares(d: SpareDeps) {
     d.records.write(record);
     const run = d.runRoot(id);
     const names = d.workspace.repos(record);
-    await d.workspace.dirs(record, names);
-    const api = await d.mint(session, id, run);
+    const times: Record<string, number> = {};
+    // None of these mounts anything or needs another: the record is written, and the mounts wait for all three.
+    const [, api, pid] = await together<[unknown, RunnerApi | undefined, number]>([
+      timed(times, 'container.dirs_ms', d.workspace.dirs(record, names)),
+      timed(times, 'container.mint_ms', d.mint(session, id, run)),
+      timed(times, 'container.pid_ms', c.pid(id)),
+    ]);
     const t0 = Date.now();
     const readyMs = t0 - t00;
-    await d.workspace.mount(id, await c.pid(id), record.person, d.workspace.binds(record, names, api && path.dirname(api.journal)));
+    await d.workspace.mount(id, pid, record.person, d.workspace.binds(record, names, api && path.dirname(api.journal)));
     const mountMs = Date.now() - t0;
     const done = tm.start('fork.done', f);
     try {
       const p = await d.workspace.prepare(id, names);
       done.end({ outcome: 'completed', data: { repos: Object.keys(p.record.repos ?? {}).length } });
-      return { record: p.record, run, session, api, readyMs, mountMs, addMs: p.addMs };
+      return { record: p.record, run, session, api, readyMs, mountMs, addMs: p.addMs, times: { ...times, ...p.times } };
     } catch (e) {
       done.end({ outcome: 'failed', error_type: 'git_worktree', data: { fork_error_type: 'git_worktree' } });
       throw e;

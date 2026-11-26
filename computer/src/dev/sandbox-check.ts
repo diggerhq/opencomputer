@@ -345,7 +345,8 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   // ---- ws-add.sh again, and the mount helper
   const row = `hello\tok\t${a2.branch}\tmaster\t${a2.record()?.repos?.hello?.base}\t`;
   const again = await podman(execArgs(a2.id(), ['/bin/sh', path.join(ROOT, 'bin/ws-add.sh'), '/clones', '/workspace', a2.branch, '0', 'hello'], { dir: '/' }));
-  check(again.trimEnd() === row.trimEnd() && (await a2.inside('git -C /workspace/hello status --porcelain --branch')) === `## ${a2.branch}`, `ws-add.sh a second time answers the same and changes nothing: ${JSON.stringify(again)}`);
+  // The last four fields are how it went (the steps' ms, whether it overlapped), the only ones a second run may answer differently.
+  check(again.trimEnd().split('\t').slice(0, -4).join('\t').trimEnd() === row.trimEnd() && (await a2.inside('git -C /workspace/hello status --porcelain --branch')) === `## ${a2.branch}`, `ws-add.sh a second time answers the same and changes nothing: ${JSON.stringify(again)}`);
   const pid = await a2.pid();
   await a2.inside(`ln -s ${b.workspace} /workspace/link-out; ln -s /etc /tmp/link-etc`);
   const mount = (id: string, p: number, who: string, src: string, dst: string) =>
