@@ -117,7 +117,7 @@ Prints a session's history and exits. Reads the recorded log: it never resumes a
 | Option | Does |
 | --- | --- |
 | `--details` | Everything, as the session screen shows it with details open. The default is one line per message, tool call and answer. |
-| `--after <seq>` | Only events after this `seq` |
+| `--after <cursor>` | Only events after this cursor, the `cursor` of an earlier `--json` read |
 | `--turn <tn_…>` | Only this turn |
 | `--types <glob>` | Only these event types, such as `tool.*`. Repeatable. |
 | `--output-format <format>` | `text`, `json` for `{ events, lastSeq, hasMore }`, or `stream-json` for one recorded [event](/api/reference/events) per line |
@@ -176,8 +176,8 @@ Prints a session's activity, read-only, until it is idle or waiting, and exits a
 
 | Option | Does |
 | --- | --- |
-| `--after <seq>` | Print recorded events after this `seq` first, then live ones |
-| `--from-start` | Print the whole history first. Same as `--after 0`. |
+| `--after <cursor>` | Print recorded events after this cursor first, then live ones |
+| `--from-start` | Print the whole history first |
 | `--follow` | Keep watching across turns until interrupted |
 | `--timeout <duration>` | Give up after this long, exit `124` |
 | `--output-format <format>` | `text`, `json` for the Result of the last turn it saw end, or `stream-json` |

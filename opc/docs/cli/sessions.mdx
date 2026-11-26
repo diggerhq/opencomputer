@@ -106,7 +106,7 @@ opc diff 7f3a         # what the agent changed, as a git diff
 opc open 7f3a         # the session on the dashboard
 ```
 
-`opc log` prints the history in the same short form as the session screen and exits. `--details` prints every step in full; `--after <seq>`, `--turn <tn_…>` and `--types <glob>` narrow it, and `--json` prints the recorded [events](/api/reference/events) instead. `opc diff` shows the git diff of every repository in the session's workspace through `$PAGER`; `--stat` summarizes it. See [Commands](/reference/commands) for every option.
+`opc log` prints the history in the same short form as the session screen and exits. `--details` prints every step in full; `--after <cursor>`, `--turn <tn_…>` and `--types <glob>` narrow it, and `--json` prints the recorded [events](/api/reference/events) instead. `opc diff` shows the git diff of every repository in the session's workspace through `$PAGER`; `--stat` summarizes it. See [Commands](/reference/commands) for every option.
 
 None of them starts a suspended session's agent.
 
