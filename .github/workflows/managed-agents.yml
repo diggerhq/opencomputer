@@ -143,10 +143,20 @@ jobs:
             projects: >-
               --project session-log
               --project wire
+              --project computer-api
           # Its own process: it shares fakeComputerOutbound's recorded Tinybird
           # posts with the computer project, whose routes test expects none.
           - name: Computer telemetry
             projects: --project computer-telemetry
+          # Tracks and threads: Live alone, with fakes of SessionLog, Computer and the edge.
+          - name: Live
+            projects: --project live
+          # Tracks and threads: the Org actor (with the real Computer for adoption).
+          - name: Org
+            projects: --project org
+          # Tracks and threads: the Slack actor.
+          - name: Slack
+            projects: --project slack
           - name: Workerd memory
             projects: --project workerd-memory
           - name: Memory integrated
@@ -185,7 +195,7 @@ jobs:
       - run: npm run build
       - name: Dry-run each Worker
         run: |
-          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc; do
+          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc wrangler.live.jsonc; do
             npx wrangler deploy --config "$config" --dry-run --outdir "$RUNNER_TEMP/$config"
           done
       - name: Profile Workerd runtime startup

@@ -13,7 +13,7 @@ If nobody has used the computer for a while, it may need to start. `opc` says `s
 
 A **session** is one conversation with the agent, with its own workspace and history. A Slack thread is a session. So is every `opc` run that starts a new one.
 
-- A session belongs to the person who started it, and every member of the organization can see it and talk in it. See [Sharing](/cli/sharing).
+- A session belongs to the person who started it, and only they can see it until they share it, with named people or the whole organization. Only the owner changes who has access. See [Sharing](/cli/sharing).
 - A session is never finished. When nobody uses it for two hours, it **suspends**: the agent process stops and frees its memory. The next message resumes it, with the conversation intact.
 - A session has a title, taken from its first message. You can change it with `/title` or `opc rename`.
 - A session you are done with can be **archived**: it is left out of `opc ls` and other lists, and nothing else changes. Any new message brings it back.

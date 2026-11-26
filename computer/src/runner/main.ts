@@ -36,23 +36,24 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs
 import path from 'node:path';
 import os from 'node:os';
 import { WebClient } from '@slack/web-api';
-import { Session, type SessionHooks, prompts } from './session.js';
-import { mayAnswer } from './prompts.js';
+import { Session, type SessionHooks } from './session.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
 import { type Linked, linkedFiles, withLinked } from '../links.js';
+import { commandAction, commandWord } from '../access.js';
+import type { SlackTurn } from './api/api.js';
+import type { SentFrom } from './api/tap.js';
 import { SessionSecrets, redactingClient, sessionVars } from './session-secrets.js';
 import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
 import { fakeSlack } from '../dev/fake-slack.js';
 import { lines, pidFileFor, secretsFor, send, tokenSocketFor } from '../ipc.js';
-import { HOST_RUN, NOT_ASKED, isSlackSpec, type RunnerApi } from '../protocol.js';
+import { HOST_RUN, isSlackSpec, type RunnerApi } from '../protocol.js';
 import { type AttachedApi, attachApi } from './api/attach.js';
 import { NullSurface } from './api/surface.js';
 import { RunningSubagents } from './api/running.js';
 import { workspacesEnabled } from '../workspaces/index.js';
 import type {
   CheckoutResult,
-  Delivery,
   HostCredentials,
   TraceContext,
   HostToRunner,
@@ -60,14 +61,12 @@ import type {
   RunnerToHost,
   SecretRequest,
   SessionReport,
-  SpawnRequest,
-  SpawnResult,
-  PostThreadRequest,
-  PostThreadResult,
   PreviewToolResult,
-  ReadThreadRequest,
 } from '../protocol.js';
 import { log } from '../log.js';
+import { askKey, cloudApi } from './cloud.js';
+import type { Work } from './work.js';
+import { fileResult } from './work-tools.js';
 import { createTelemetry } from '../telemetry/emitter.js';
 import type { Dimensions } from '../telemetry/envelope.js';
 import { TIERS, tierOf } from '../tiers.js';
@@ -221,6 +220,14 @@ const previews = servedPreviews(env.SP_PREVIEW_SOCKET, {
   preview: (req) => askGateway<PreviewToolResult>((id) => ({ t: 'preview', id, req })),
   unpreview: (name) => askGateway<unknown>((id) => ({ t: 'unpreview', id, req: { name } })).then(() => {}),
 });
+// The public API as this session's agent (section 41): the key is the token socket's, bound to the session.
+const work: Work = {
+  api: cloudApi({ key: () => askKey(env.SP_TOKEN_SOCKET!) }),
+  session: () => {
+    if (!ss?.sessionId) throw new Error('this session has no id on the API yet');
+    return { id: ss.sessionId, role: ss.role, ...(isSlackSpec(ss) && ss.teamId && ss.threadTs && { slackThread: `${ss.teamId}:${ss.channel}:${ss.threadTs}` }) };
+  },
+};
 const hooks: SessionHooks = {
   busy: (busy) => {
     out({ t: 'report', report: report() });
@@ -229,8 +236,7 @@ const hooks: SessionHooks = {
     else if (!busy) sub.idle(); // a turn refused its model: retried on the one below (work 077)
   },
   output: () => clearFeedback(),
-  spawn,
-  threads: { read: readThread, post: postThread, attach: (linked) => fetchAttachments(linkedFiles([linked]), botToken, ss!.key) },
+  work,
   previews,
   ...(workspacesEnabled() && { checkout }),
   restart: () => {
@@ -315,7 +321,7 @@ function bind(b: Bound, kind?: HarnessKind) {
       speed: b.speed,
       sdkSessionId: b.sdkSessionId,
     },
-    isSlackSpec(b) ? makeClient(botToken) : new NullSurface(),
+    isSlackSpec(b) ? makeClient(botToken) : new NullSurface((f) => fileResult(work, b.forkPath, f)),
     () => out({ t: 'report', report: report() }),
     hooks,
     kind,
@@ -330,7 +336,7 @@ let api: AttachedApi | undefined;
 /** The session's API writer (work 084): takes the journal's lock, serves the API socket. */
 async function link(b: Bound, a: RunnerApi | undefined = spec.api) {
   if (!a?.token || !s || api) return;
-  api = await attachApi(a, s, { owner: b.owner, spec: b, redact: (t) => guard.redact(secrets.redact(t)), suspend: () => ((exiting = true), quit()), telemetry });
+  api = await attachApi(a, s, { owner: b.owner, spec: b, redact: (t) => guard.redact(secrets.redact(t)), suspend: () => ((exiting = true), quit()), slack: slackMessage, telemetry });
 }
 
 // A spare's Claude Code starts with what a session's would, reaching the session late-bound.
@@ -396,38 +402,37 @@ function clearFeedback(ts?: string) {
   for (const t of all) void s.client.reactions.remove({ channel: ss.channel, timestamp: t, name: 'eyes' }).catch(() => {});
 }
 
-// Deliveries arrive concurrently (one request each); they are handled one at a
-// time up to their push, so a later message can't overtake an earlier one. One
-// that hangs (a stuck interrupt or command) holds the rest for 20 s at most.
-const ordered = new Ordered(20_000, () => log.warn('a delivery is still being handled after 20 s; handling the next one'));
-const deliver = (m: Delivery, trace?: TraceContext) => ordered.run(() => handle(m, trace));
+// A Slack message is a `turns.send` with `slack` (work 118, section 40.11;
+// api/api.ts): they are handled one at a time up to their push, so a later
+// message can't overtake an earlier one. One that hangs (a stuck interrupt or
+// command) holds the rest for 20 s at most.
+const ordered = new Ordered(20_000, () => log.warn('a message is still being handled after 20 s; handling the next one'));
+const slackMessage = (text: string, m: SlackTurn, from: SentFrom) => ordered.run(() => handle(text, m, from));
 
-async function handle(m: Delivery, trace?: TraceContext) {
+async function handle(text: string, m: SlackTurn, from: SentFrom) {
   // On the way out: the host waits for this process to go and starts a new one.
   if (quitting) throw new Error('runner gone');
   if (!s || !ss) throw new Error('this runner has no session yet');
-  // A re-sent dispatch (the gateway re-flushes after a reconnect) was handled already.
-  if (!turns.delivered(trace)) return;
+  turns.delivered();
   exiting = false; // new work cancels a pending idle exit
-  // No route this harness can run on (model-access.ts): the turn is refused; commands still run.
-  const refused = !m.text.startsWith('!') && sub.refusal();
-  if (refused && m.api) throw new Error(refused);
-  if (m.api) {
-    if (!api) throw new Error('this runner is not the session API writer');
-    return void (await api.api.deliver(m.text, m.api));
-  }
-  if (m.text.startsWith('!')) {
-    await s.command(m.text, m.userId);
+  // The owner rule (section 40.11): the session's owner, or someone who may write to it (SessionLog let the message in).
+  const owner = !ss.owner.slackUserId || m.userId === ss.owner.slackUserId;
+  if (text.startsWith('!')) {
+    if (!owner && commandAction(text) === 'settings') await s.say(`<@${m.userId}> only the session's owner can use \`!${commandWord(text)}\`.`);
+    else await s.command(text, m.userId);
     return clearFeedback(m.ts);
   }
+  // No route this harness can run on (model-access.ts): the turn is refused; commands still run.
+  const refused = sub.refusal();
   if (refused) return void (await s.say(refused), clearFeedback(m.ts));
   if (!s.isBusy) awaitingOutput.push(m.ts);
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
-  const files = [...(m.files ?? []), ...linkedFiles(m.linked)];
+  const linked = [...(m.context ? [m.context] : []), ...(m.linked ?? [])];
+  const files = [...(m.files ?? []), ...linkedFiles(linked)];
   const fetching = fetchAttachments(files, botToken, ss.key);
   const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;
-  await s.send(withLinked(m.text, m.linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, undefined, m.role);
-  // The gateway set the status to `processing` on receipt. A reply that only
+  await s.send(withLinked(text, linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, from, owner ? 'owner' : 'driver');
+  // The Slack actor set the status to `processing` on receipt. A reply that only
   // answered an open prompt starts no turn, and nothing would clear it.
   if (!s.isBusy) void s.setStatus('active');
 }
@@ -438,18 +443,9 @@ const answered = <T>(m: { result?: T; error?: string }, otherwise: string): T =>
   return m.result;
 };
 
-// spawn_thread, read_thread, post_thread, preview and unpreview: the gateway answers through the host.
+// preview and unpreview: the gateway answers through the host.
 const gateway = new Waiters<RunnerToHost, { result?: unknown; error?: string }>({ send: toHost, ms: 30_000, late: 'no answer from the gateway within 30 s' });
 const askGateway = <T>(frame: (id: string) => RunnerToHost) => gateway.ask(frame, (m) => answered(m, 'no answer') as T);
-function spawn(req: SpawnRequest) {
-  return askGateway<SpawnResult>((id) => ({ t: 'spawn', id, req }));
-}
-function readThread(req: ReadThreadRequest) {
-  return askGateway<Linked>((id) => ({ t: 'read', id, req }));
-}
-function postThread(req: PostThreadRequest) {
-  return askGateway<PostThreadResult>((id) => ({ t: 'post', id, req }));
-}
 
 // checkout_repo: the host clones if needed and adds the worktree; a first clone of a large repository takes a while.
 const checkouts = new Waiters<RunnerToHost, { result?: CheckoutResult[]; error?: string }>({
@@ -484,19 +480,6 @@ async function onHost(m: HostToRunner) {
       (e) => out({ t: 'reply', id: (m as any).id, ok: false, error: String(e?.message ?? e) }),
     );
   switch (m.t) {
-    case 'deliver':
-      return reply(deliver(m.msg, m.trace));
-    case 'action':
-      return reply(
-        (async () => {
-          const p = prompts.get(m.promptId);
-          if (!p) throw new Error('no such prompt (answered already, or the runner restarted)');
-          if (!mayAnswer(p, m.role, m.userId)) throw new Error(NOT_ASKED); // the gateway answers with S6 (work 112)
-          await p.onAction(m.value, m.userId);
-        })(),
-      );
-    case 'stop':
-      return reply(s ? s.interrupt() : Promise.resolve());
     case 'claim':
       return reply(claim(m.session, m.api));
     case 'owner': // a name or email the gateway learned after the session started: commits from now on carry it
@@ -505,9 +488,6 @@ async function onHost(m: HostToRunner) {
       return void ((spec.api = m.api), ss && link(ss));
     case 'credentials':
       return applyCredentials(m.credentials);
-    case 'spawned':
-    case 'thread':
-    case 'posted':
     case 'previewed':
       return gateway.answer(m.id, m);
     case 'secrets':
@@ -518,8 +498,9 @@ async function onHost(m: HostToRunner) {
       return secretAsks.answer(m.id, m);
     case 'checked-out':
       return checkouts.answer(m.id, m);
-    case 'exit': // with `ms` (retired): quit after it even if busy, ending its own harness (the host may not signal it)
+    case 'exit': // with `ms` (retired): its turn is interrupted, and it quits after `ms` even if busy, ending its own harness (the host may not signal it)
       exiting = true;
+      if (m.ms !== undefined) void s?.interrupt().catch(() => {});
       if (!s?.isBusy && !tasks.size) quit(); else if (m.ms !== undefined) setTimeout(quit, m.ms).unref();
       return;
   }

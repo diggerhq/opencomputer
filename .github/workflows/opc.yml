@@ -43,7 +43,7 @@ jobs:
       # The fake server validates against schema/; this keeps it the server's.
       - run: ci/schema-check.sh
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

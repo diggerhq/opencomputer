@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { MODEL_ACCESS_UNAVAILABLE, noModelAccess } from "../src/computer/model-access.js";
+import { MODEL_ACCESS_UNAVAILABLE, noModelAccess } from "../src/actors/computer/held-for-org/model-access/model-access.js";
 
 /**
  * Work 097, 6b: the ModelAccess seam. The public build's `noModelAccess`
@@ -97,17 +97,17 @@ describe("the seam", () => {
       .sort();
 
   it("only model-access-impl.ts imports the hosted modules (besides themselves)", () => {
-    const outside = importers(HOSTED).filter((file) => !HOSTED.some((name) => file === `computer/${name}.ts`));
-    expect(outside.filter((file) => file !== "computer/model-access-impl.ts")).toEqual([]);
+    const outside = importers(HOSTED).filter((file) => !HOSTED.some((name) => file === `actors/computer/held-for-org/model-access/${name}.ts`));
+    expect(outside.filter((file) => file !== "actors/computer/held-for-org/model-access/model-access-impl.ts")).toEqual([]);
   });
 
   it("only the Durable Object imports model-access-impl.ts", () => {
-    expect(importers(["model-access-impl"])).toEqual(["computer/durable-object.ts"]);
+    expect(importers(["model-access-impl"])).toEqual(["actors/computer/durable-object.ts"]);
   });
 
   it("the hosted modules do not import model-access-impl.ts", () => {
     // The public build has none of them (overlay/subscriptions.json).
-    for (const file of HOSTED.map((name) => join(SRC, "computer", `${name}.ts`)).filter((file) => existsSync(file))) {
+    for (const file of HOSTED.map((name) => join(SRC, "actors/computer/held-for-org/model-access", `${name}.ts`)).filter((file) => existsSync(file))) {
       expect(importsOf(file)).not.toContain("./model-access-impl.js");
     }
   });

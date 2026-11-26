@@ -9,7 +9,7 @@
 // Errors carry the HTTP status and ARM's own error code and message, never a
 // token or the client secret.
 
-import { isCapacity } from "../../computer/placement.js";
+import { isCapacity } from "../../actors/computer/machine/placement.js";
 
 export const ARM_ORIGIN = "https://management.azure.com";
 export const LOGIN_ORIGIN = "https://login.microsoftonline.com";

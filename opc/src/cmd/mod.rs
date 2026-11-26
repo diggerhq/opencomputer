@@ -28,11 +28,19 @@ use crate::cli::{Cli, Command, Global};
 use crate::config::{Config, DEFAULT_API_URL, DEFAULT_WIRE_URL};
 use crate::error::{Error, Result};
 use crate::http::Http;
-use crate::wire::{Attach, Wire, WireEvent, WireHandle, WireOptions};
+use crate::wire::{Attach, Live, Wire, WireEvent, WireHandle, WireOptions};
 use serde_json::Value;
 use std::io::{IsTerminal, Read, Write};
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+/// How long a non-interactive command goes on without its socket.
+const GIVE_UP: Duration = Duration::from_secs(120);
+
+/// `OPC_WIRE_URL`, when it is set.
+pub fn wire_url_from_env() -> Option<String> {
+    std::env::var("OPC_WIRE_URL").ok().map(|u| u.trim().to_string()).filter(|u| !u.is_empty())
+}
 
 /// Which standard streams are terminals.
 #[derive(Debug, Clone, Copy, Default)]
@@ -103,15 +111,12 @@ impl Ctx {
         session.and_then(|s| s.urls.dashboard.clone()).unwrap_or_else(|| self.config.dashboard_url(id))
     }
 
-    /// The WebSocket URL: `OPC_WIRE_URL`, then the one `/me` gave last time,
-    /// then `/me` (only for an API other than production), then the default.
-    /// The connection's URL when it is known without the network: from
+    /// The wire's URL when it is known without the network: from
     /// `OPC_WIRE_URL`, the cache, or the default for the default API.
     pub fn wire_url_now(&self) -> Option<String> {
-        if let Ok(u) = std::env::var("OPC_WIRE_URL")
-            && !u.trim().is_empty() {
-                return Some(u.trim().to_string());
-            }
+        if let Some(u) = wire_url_from_env() {
+            return Some(u);
+        }
         if let Some(u) = crate::cache::wire_url(&self.config.api_url) {
             return Some(u);
         }
@@ -119,7 +124,7 @@ impl Ctx {
         (self.config.api_url == DEFAULT_API_URL).then(|| DEFAULT_WIRE_URL.to_string())
     }
 
-    /// The WebSocket URL. For an API other than production it comes from
+    /// The wire's URL. For an API other than production it comes from
     /// `/me` (or `OPC_WIRE_URL`) only: a key is never shown to the production
     /// wire on another environment's behalf.
     pub async fn wire_url(&self) -> Result<String> {
@@ -141,23 +146,20 @@ impl Ctx {
         }
     }
 
-    /// Options for a non-interactive command's connection: gives up after
-    /// two minutes of continuous disconnection.
-    pub async fn wire_options(&self, deltas: bool) -> Result<WireOptions> {
-        Ok(WireOptions {
-            url: self.wire_url().await?,
-            key: self.require_key()?.to_string(),
-            deltas,
-            resume: false,
-            read_only: false,
-            give_up: Some(Duration::from_secs(120)),
-        })
+    /// Watches these sessions over the live socket and HTTP. Gives up after
+    /// two minutes without the socket: for non-interactive commands.
+    pub fn open_live(&self, attaches: Vec<Attach>, deltas: bool) -> (Live, UnboundedReceiver<WireEvent>) {
+        let (out, rx) = mpsc::unbounded_channel();
+        let live = Live::open(self.http.clone(), deltas, Some(GIVE_UP), attaches, out);
+        (live, rx)
     }
 
-    /// Opens the connection with these sessions attached.
-    pub async fn open_wire(&self, attaches: Vec<Attach>, deltas: bool) -> Result<(WireHandle, UnboundedReceiver<WireEvent>)> {
-        let opts = self.wire_options(deltas).await?;
-        Ok(Wire::open(opts, attaches, Some(self.http.clone())))
+    /// Opens the wire, for what only the computer does (terminals). Gives up
+    /// after two minutes of continuous disconnection.
+    pub async fn open_wire(&self) -> Result<(WireHandle, UnboundedReceiver<WireEvent>)> {
+        let opts = WireOptions { url: self.wire_url().await?, key: self.require_key()?.to_string(), give_up: Some(GIVE_UP) };
+        let (out, rx) = mpsc::unbounded_channel();
+        Ok((Wire::open(opts, Some(self.http.clone()), out), rx))
     }
 }
 

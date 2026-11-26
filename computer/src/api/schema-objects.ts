@@ -193,9 +193,9 @@ export const Origin = Schema.Struct({
 }).annotate({ identifier: 'Origin' });
 
 /**
- * Who may use a session started from the dashboard, opc or the API (CTO-37): `owner` only its owner, `org` every
- * member of the organization, `people` the owner and the listed members (`usr_…`; the owner is never listed, and
- * `people` is empty in the other modes). A Slack session's people are managed in its thread; the API shows `owner`.
+ * Who may use a session started from the dashboard, opc or the API: `owner` only its owner, `org` every member of
+ * the organization, `people` the owner and the listed members (`usr_…`; the owner is never listed, and `people` is
+ * empty in the other modes). A Slack session's people are managed in its thread; the API shows `owner`.
  * Whoever has access drives the session with the owner's secrets and subscription.
  */
 export const SessionAccess = Schema.Struct({
@@ -230,8 +230,6 @@ export const Session = Schema.Struct({
   lastText: NullString,
   context: Schema.Struct({ usedTokens: Schema.NullOr(Count), windowTokens: Schema.NullOr(Count) }),
   lastSeq: Seq,
-  logEpoch: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  epochStartSeq: Seq,
   createdAt: Time,
   lastActiveAt: Time,
   syncedAt: Schema.NullOr(Time),
@@ -293,9 +291,9 @@ export const ApiError = Schema.Struct({
     'invalid_path', 'invalid_archive', 'invalid_cursor', 'unauthenticated', 'insufficient_credits', 'forbidden',
     'admin_required', 'not_found', 'session_not_found', 'turn_not_found', 'ask_not_found', 'path_not_found',
     'secret_not_found', 'id_conflict', 'idempotency_conflict', 'ask_closed', 'session_busy', 'turn_not_cancellable',
-    'queue_full', 'cursor_ahead', 'path_exists', 'feature_unavailable', 'computer_not_set_up', 'too_large',
+    'queue_full', 'path_exists', 'feature_unavailable', 'computer_not_set_up', 'too_large',
     'upgrade_required', 'rate_limited', 'internal', 'computer_unavailable', 'unavailable', 'terminal_not_found',
-    'too_far_behind', 'too_many_attached', 'too_many_terminals', 'subagent_not_found', 'subagent_ended',
+    'too_far_behind', 'too_many_terminals', 'subagent_not_found', 'subagent_ended',
   ]),
   message: Schema.String,
   status: Schema.optionalKey(Schema.Int),

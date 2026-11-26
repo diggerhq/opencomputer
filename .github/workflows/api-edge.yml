@@ -1,0 +1,44 @@
+name: API edge
+
+# CI for cloudflare-workers/api-edge: the typecheck and the unit tests (it has
+# no linter). Nothing here deploys, and no job has a secret.
+
+on:
+  pull_request:
+    paths:
+      - cloudflare-workers/api-edge/**
+      - .github/workflows/api-edge.yml
+  push:
+    branches: [main, tracks-and-threads]
+    paths:
+      - cloudflare-workers/api-edge/**
+      - .github/workflows/api-edge.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-edge-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: cloudflare-workers/api-edge
+
+jobs:
+  check:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare-workers/api-edge/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test -- --run

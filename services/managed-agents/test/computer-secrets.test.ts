@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/computer/secrets.js";
-import { SecretsStore } from "../src/computer/secrets-store.js";
-import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
-import { secretNameProblem } from "../src/computer/secrets.js";
-import type { SlackResult } from "../src/computer/slack.js";
-import { driversCommandText } from "../src/computer/access.js";
-import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/computer/threads.js";
+import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/actors/computer/held-for-org/secrets/secrets.js";
+import { SecretsStore } from "../src/actors/computer/held-for-org/secrets/secrets-store.js";
+import type { Principal } from "../src/auth/principal.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
+import { credentialHint, parseVariableCommand } from "../src/actors/computer/held-for-org/secrets/variables.js";
+import { secretNameProblem } from "../src/actors/computer/held-for-org/secrets/secrets.js";
+import type { SlackResult } from "../src/slack-api/web-api.js";
+import { driversCommandText } from "../src/actors/computer/copied/access.js";
+import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/slack-api/threads.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
@@ -19,12 +21,17 @@ let guests: Set<string>;
 let s: SecretsStore;
 /** Who may write to SESSION (work 112); undefined: everyone. */
 let drivers: string[] | undefined;
+/** Slack users' linked members, and the admins Org holds. */
+let links: Record<string, string>;
+let admins: Set<string>;
 
 beforeEach(() => {
   calls = [];
   pushes = [];
   woken = [];
   drivers = undefined;
+  links = {};
+  admins = new Set();
   guests = new Set(["U_GUEST", "U_EXTERNAL"]);
   const slack = async (method: string, body: Record<string, unknown>): Promise<SlackResult> => {
     calls.push({ method, body });
@@ -46,15 +53,13 @@ beforeEach(() => {
     slack,
     session: (key) => (key === SESSION.key ? SESSION : undefined),
     push: async (which) => void pushes.push(which),
-    linkOfSlack: (slackUserId) => LINKS[slackUserId],
-    isAdmin: (member) => member === LINKS.U_ADMIN,
+    linkOfSlack: (userId) => links[userId],
+    isAdmin: async (member) => admins.has(member),
     name: async (slackUserId) => `Name of ${slackUserId}`,
     wake: async (session, userId, text) => void woken.push({ key: session.key, userId, text }),
   });
 });
 
-/** Slack users linked to organization members; anyone else (U_NOLINK, …) linked none. */
-const LINKS: Record<string, string> = { U_OWNER: "usr_01jabcdefghjkmnpqrstvwxyz0", U_OTHER: "usr_01jothermemberxxxxxxxxxxxx", U_ADMIN: "usr_01jadminmemberxxxxxxxxxxxx" };
 const last = (method: string) => calls.filter((c) => c.method === method).at(-1)?.body;
 const inSession = (userId: string) => ({ userId, channelId: "C1", threadTs: "100.1", session: { key: SESSION.key, ownerId: SESSION.ownerId } });
 function submission(name: string, value: string, scope: string, meta: Record<string, string> = { k: SESSION.key, ch: "C1", th: "100.1" }): SubmittedView {
@@ -256,7 +261,7 @@ describe("!secret parsing", () => {
   });
 
   it("seals values bound to their scope, owner and name", async () => {
-    const { sealSecret, openSecret } = await import("../src/computer/secrets.js");
+    const { sealSecret, openSecret } = await import("../src/actors/computer/held-for-org/secrets/secrets.js");
     const sealed = await sealSecret("v", KEY, "user", "U1", "A");
     expect(await openSecret(sealed, KEY, "user", "U1", "A")).toBe("v");
     await expect(openSecret(sealed, KEY, "user", "U2", "A")).rejects.toThrow();
@@ -264,7 +269,14 @@ describe("!secret parsing", () => {
 });
 
 describe("organization secrets over the Computer API (work 095 v1)", () => {
-  const MEMBER = { member: "usr_01jabcdefghjkmnpqrstvwxyz0", userId: "user_1", name: "Owner", email: null, via: "dashboard" as const, client: null, scopes: [], requestId: "req_1" };
+  const as = (subject: string, via: Principal["via"] = "dashboard"): ApiRequest => ({
+    principal: { org: "org_1", subject, kind: "member", via, scopes: [], audiences: ["org", `member:${subject}`], admin: false, credential: { id: "ck_1", expiresAt: null } },
+    name: "Owner",
+    email: null,
+    client: null,
+    requestId: "req_1",
+  });
+  const MEMBER = as("usr_01jabcdefghjkmnpqrstvwxyz0");
   const VALUE = "sk-live-do-not-show";
 
   it("sets a sealed session-only secret through the API without returning the value", async () => {
@@ -277,120 +289,17 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect(JSON.stringify(calls)).not.toContain("private-value");
   });
 
-  it("lists and deletes a session's own secrets: names and metadata only, other layers untouched", async () => {
-    await s.api({ ...MEMBER, via: "opc" }, { op: "secrets.session.put", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY", body: { value: "dummy-session-value" } }, SESSION.key);
-    await submit(submission("FROM_SLACK", "dummy-slack-value", "session"), "U_OWNER");
-    await s.api(MEMBER, { op: "secrets.put", name: "ORG_ONLY", body: { value: "dummy-org-value" } });
-    const listed = await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_test" }, SESSION.key);
-    expect(listed.status).toBe(200);
-    expect(listed.body).toEqual({
-      secrets: [
-        { name: "AWS_SECRET_ACCESS_KEY", scope: "session", sessionId: "cs_test", kind: "secret", file: false, effective: true, setBy: { id: MEMBER.member, name: "Owner", via: "opc", client: null }, updatedAt: expect.any(String) },
-        { name: "FROM_SLACK", scope: "session", sessionId: "cs_test", kind: "secret", file: false, effective: true, setBy: { id: "U_OWNER", name: "U_OWNER", via: "slack", client: null }, updatedAt: expect.any(String) },
-      ],
-    });
-    expect(JSON.stringify(listed)).not.toContain("dummy-");
-    expect((await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_other" }, "other-session")).body).toEqual({ secrets: [] });
-
-    pushes = [];
-    expect(await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY" }, SESSION.key)).toEqual({ status: 204 });
-    expect(pushes).toEqual([{ key: SESSION.key }]);
-    expect((await s.forSession(SESSION.key, SESSION.ownerId)).map((x) => x.name).sort()).toEqual(["FROM_SLACK", "ORG_ONLY"]);
-    expect((await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY" }, SESSION.key)).error?.code).toBe("secret_not_found");
-    // The organization's secret of a name is not the session's to delete.
-    expect((await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "ORG_ONLY" }, SESSION.key)).error?.code).toBe("secret_not_found");
-    expect((await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_test" })).error?.code).toBe("session_not_found");
-  });
-
-  it("a session secret is replaced or deleted only by its creator or an organization admin", async () => {
-    const OTHER = { ...MEMBER, member: "usr_01jothermemberxxxxxxxxxxxx", userId: "user_2", name: "Other" };
-    const ADMIN = { ...MEMBER, member: "usr_01jadminmemberxxxxxxxxxxxx", userId: "user_3", name: "Admin", admin: true };
-    const put = (who: typeof MEMBER, name: string, value: string) => s.api(who, { op: "secrets.session.put", sessionId: "cs_test", name, body: { value } }, SESSION.key);
-    const del = (who: typeof MEMBER, name: string) => s.api(who, { op: "secrets.session.delete", sessionId: "cs_test", name }, SESSION.key);
-
-    // A new name is anyone's who may write to the session; its creator replaces and deletes it.
-    expect(await put(MEMBER, "MINE", "dummy-1")).toEqual({ status: 204 });
-    expect(await put(MEMBER, "MINE", "dummy-2")).toEqual({ status: 204 });
-    expect(await put(OTHER, "THEIRS", "dummy-3")).toEqual({ status: 204 });
-
-    // Someone else gets 403 not_secret_owner, naming the creator, and nothing changes.
-    pushes = [];
-    for (const reply of [await put(OTHER, "MINE", "dummy-4"), await del(OTHER, "MINE")]) {
-      expect(reply).toEqual({ status: 403, error: { code: "forbidden", reason: "not_secret_owner", message: "Only the person who set MINE (Owner) or an organization admin can replace or delete it." } });
-    }
-    expect(pushes).toEqual([]);
-    expect((await s.forSession(SESSION.key, SESSION.ownerId)).find((x) => x.name === "MINE")?.value).toBe("dummy-2");
-
-    // An admin may; replacing keeps the creator, so the creator still may afterwards.
-    expect(await put(ADMIN, "MINE", "dummy-5")).toEqual({ status: 204 });
-    expect((await put(OTHER, "MINE", "dummy-6")).error?.reason).toBe("not_secret_owner");
-    expect(await del(MEMBER, "MINE")).toEqual({ status: 204 });
-    expect(await del(ADMIN, "THEIRS")).toEqual({ status: 204 });
-
-    // Set in Slack: the Slack user's linked member is its creator; others are not.
-    await submit(submission("FROM_SLACK", "dummy-slack", "session"), "U_OWNER");
-    expect((await del(OTHER, "FROM_SLACK")).error?.reason).toBe("not_secret_owner");
-    expect(await del(MEMBER, "FROM_SLACK")).toEqual({ status: 204 });
-    await submit(submission("UNLINKED", "dummy-slack", "session"), "U_GUESTLESS");
-    expect((await del(MEMBER, "UNLINKED")).error?.reason).toBe("not_secret_owner");
-    expect(await del(ADMIN, "UNLINKED")).toEqual({ status: 204 });
-  });
-
-  it("in Slack too, a session secret is replaced or deleted only by its creator or an organization admin", async () => {
-    const refusal = (name: string, by: string) => `Only the person who set ${name} (Name of ${by}) or an organization admin can replace or delete it.`;
-    const rm = async (name: string, userId: string) => {
-      await s.command({ kind: "rm", name, scope: "session" }, inSession(userId));
-      return last("chat.postEphemeral")?.text;
-    };
-    const value = async (name: string) => (await s.forSession(SESSION.key, SESSION.ownerId)).find((x) => x.name === name)?.value;
-
-    // The creator replaces (modal) and deletes (`!secret rm`).
-    expect((await submit(submission("S1", "dummy-1", "session"), "U_OWNER")).errors).toBeUndefined();
-    expect((await submit(submission("S1", "dummy-2", "session"), "U_OWNER")).errors).toBeUndefined();
-    expect(await rm("S1", "U_OWNER")).toMatch(/^Removed `S1`/);
-
-    // Another member who may instruct the session: refused on both paths, naming the creator; nothing changes.
-    await submit(submission("S2", "dummy-3", "session"), "U_OWNER");
-    pushes = [];
-    expect(await s.submit(submission("S2", "dummy-4", "session"), "U_OTHER")).toEqual({ errors: { scope: refusal("S2", "U_OWNER") } });
-    expect(await rm("S2", "U_OTHER")).toBe(refusal("S2", "U_OWNER"));
-    expect(await value("S2")).toBe("dummy-3");
-    expect(pushes).toEqual([]);
-
-    // An admin may; the creator is kept, so others are still refused in the creator's name.
-    expect((await submit(submission("S2", "dummy-5", "session"), "U_ADMIN")).errors).toBeUndefined();
-    expect(await s.submit(submission("S2", "dummy-6", "session"), "U_OTHER")).toEqual({ errors: { scope: refusal("S2", "U_OWNER") } });
-    expect(await rm("S2", "U_ADMIN")).toMatch(/^Removed `S2`/);
-
-    // A Slack user who linked no member only adds new names: not even their own can be replaced or deleted.
-    expect((await submit(submission("S3", "dummy-7", "session"), "U_NOLINK")).errors).toBeUndefined();
-    expect(await s.submit(submission("S3", "dummy-8", "session"), "U_NOLINK")).toEqual({ errors: { scope: refusal("S3", "U_NOLINK") } });
-    expect(await rm("S3", "U_NOLINK")).toBe(refusal("S3", "U_NOLINK"));
-    expect(await value("S3")).toBe("dummy-7");
-
-    // Set in Slack, it is the linked member's on the API too, with the same message for others.
-    const api = (member: string, admin = false) =>
-      s.api({ ...MEMBER, member, ...(admin ? { admin } : {}) }, { op: "secrets.session.delete", sessionId: "cs_test", name: "S3" }, SESSION.key);
-    expect((await api(LINKS.U_OTHER!)).error?.message).toBe(refusal("S3", "U_NOLINK"));
-    expect(await api(LINKS.U_ADMIN!, true)).toEqual({ status: 204 });
-
-    // Personal and organization secrets keep their rules: any full member removes an organization secret.
-    await submit(submission("ORG_S", "dummy-9", "workspace", { ch: "C1" }), "U_OWNER");
-    await s.command({ kind: "rm", name: "ORG_S", scope: "workspace" }, inSession("U_OTHER"));
-    expect(last("chat.postEphemeral")?.text).toMatch(/^Removed `ORG_S`/);
-  });
-
   it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
     const created = await s.api(MEMBER, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: VALUE } });
-    expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.member, name: "Owner" } } } });
+    expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.principal.subject, name: "Owner" } } } });
     expect(pushes).toEqual([{}]);
     expect((await s.forSession(SESSION.key, SESSION.ownerId)).find((x) => x.name === "EXECUTOR_API_KEY")?.value).toBe(VALUE);
 
-    const replaced = await s.api({ ...MEMBER, via: "opc" }, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: "sk-new" } });
+    const replaced = await s.api(as(MEMBER.principal.subject, "opc"), { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: "sk-new" } });
     expect(replaced.status).toBe(200);
     const listed = await s.api(MEMBER, { op: "secrets.list" });
     expect(JSON.stringify(listed)).not.toContain("sk-");
-    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.member } }] });
+    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.principal.subject } }] });
 
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).status).toBe(204);
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).error?.code).toBe("secret_not_found");
@@ -421,8 +330,64 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect((await put("A", {})).error).toMatchObject({ code: "invalid_request", field: "value" });
     expect((await put("A", { value: "x", file: true, variable: true })).error?.code).toBe("invalid_request");
     expect((await put("A", { value: "x".repeat(64 * 1024 + 1) })).status).toBe(413);
-    for (let i = 0; i < 200; i++) await s.api({ ...MEMBER, member: `usr_${i}` }, { op: "secrets.put", name: `K${i}`, body: { value: "v" } });
+    for (let i = 0; i < 200; i++) await s.api(as(`usr_${i}`), { op: "secrets.put", name: `K${i}`, body: { value: "v" } });
     expect((await put("ONE_TOO_MANY", { value: "v" })).error?.code).toBe("limit_reached");
+  });
+
+  it("lists and deletes a session's own secrets; only their creator or an admin replaces or deletes one (opc secrets)", async () => {
+    const OTHER = as("usr_01jother000000000000000000");
+    const ADMIN: ApiRequest = { ...as("usr_01jadmin000000000000000000"), principal: { ...as("usr_01jadmin000000000000000000").principal, admin: true } };
+    const op = <T extends object>(o: T) => ({ ...o, sessionId: "cs_test" });
+    expect((await s.api(MEMBER, op({ op: "secrets.session.put" as const, name: "TOKEN", body: { value: "v1", file: true } }), SESSION.key)).status).toBe(204);
+    await submit(submission("FROM_SLACK", "v", "session"), "U_OWNER");
+
+    // Names and metadata, never a value; only this session's layer.
+    await s.api(MEMBER, { op: "secrets.put", name: "ORG_WIDE", body: { value: "o" } });
+    const listed = await s.api(OTHER, op({ op: "secrets.session.list" as const }), SESSION.key);
+    expect(JSON.stringify(listed)).not.toContain("v1");
+    expect(listed).toEqual({
+      status: 200,
+      body: {
+        secrets: [
+          { name: "FROM_SLACK", scope: "session", sessionId: "cs_test", kind: "secret", file: false, effective: true, setBy: { id: "U_OWNER", name: "U_OWNER", via: "slack", client: null }, updatedAt: expect.any(String) },
+          { name: "TOKEN", scope: "session", sessionId: "cs_test", kind: "secret", file: true, effective: true, setBy: { id: MEMBER.principal.subject, name: "Owner", via: "dashboard", client: null }, updatedAt: expect.any(String) },
+        ],
+      },
+    });
+
+    // Someone else adds a new name, but neither replaces nor deletes another's.
+    expect((await s.api(OTHER, op({ op: "secrets.session.put" as const, name: "THEIRS", body: { value: "t" } }), SESSION.key)).status).toBe(204);
+    const replace = await s.api(OTHER, op({ op: "secrets.session.put" as const, name: "TOKEN", body: { value: "v2" } }), SESSION.key);
+    expect(replace).toEqual({ status: 403, error: { code: "forbidden", reason: "not_secret_owner", message: "Only the person who set TOKEN (Owner) or an organization admin can replace or delete it." } });
+    expect((await s.api(OTHER, op({ op: "secrets.session.delete" as const, name: "TOKEN" }), SESSION.key)).error?.reason).toBe("not_secret_owner");
+    // A secret set in Slack is its linked member's.
+    // Its refusal names the Slack creator, asked of Slack when no name was recorded.
+    expect((await s.api(MEMBER, op({ op: "secrets.session.delete" as const, name: "FROM_SLACK" }), SESSION.key)).error).toMatchObject({ reason: "not_secret_owner", message: "Only the person who set FROM_SLACK (Name of U_OWNER) or an organization admin can replace or delete it." });
+    links.U_OWNER = MEMBER.principal.subject;
+    expect((await s.api(MEMBER, op({ op: "secrets.session.delete" as const, name: "FROM_SLACK" }), SESSION.key)).status).toBe(204);
+    // The creator replaces, and stays the creator; an admin deletes anyone's.
+    expect((await s.api(MEMBER, op({ op: "secrets.session.put" as const, name: "TOKEN", body: { value: "v2" } }), SESSION.key)).status).toBe(204);
+    expect((await s.api(OTHER, op({ op: "secrets.session.delete" as const, name: "TOKEN" }), SESSION.key)).status).toBe(403);
+    expect((await s.api(ADMIN, op({ op: "secrets.session.delete" as const, name: "TOKEN" }), SESSION.key)).status).toBe(204);
+    expect((await s.api(ADMIN, op({ op: "secrets.session.delete" as const, name: "TOKEN" }), SESSION.key)).error?.code).toBe("secret_not_found");
+    expect((await s.api(MEMBER, op({ op: "secrets.session.list" as const }))).error?.code).toBe("session_not_found");
+    expect(pushes.filter((p) => p.key === SESSION.key).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("in Slack, !secret rm and the form follow the same owner rule for session secrets", async () => {
+    const MEMBER_ID = "usr_01jabcdefghjkmnpqrstvwxyz0";
+    await s.api(as(MEMBER_ID), { op: "secrets.session.put", sessionId: "cs_test", name: "TOKEN", body: { value: "v" } }, SESSION.key);
+    const refusal = "Only the person who set TOKEN (Owner) or an organization admin can replace or delete it.";
+    // A Slack user with no linked member adds new names only.
+    expect(await s.submit(submission("TOKEN", "x", "session"), "U_OTHER")).toEqual({ errors: { scope: refusal } });
+    expect((await submit(submission("NEW_ONE", "x", "session"), "U_OTHER")).errors).toBeUndefined();
+    await s.command({ kind: "rm", name: "TOKEN" }, inSession("U_OTHER"));
+    expect(last("chat.postEphemeral")?.text).toBe(refusal);
+    // Through a linked member: the creator, or an admin.
+    links.U_OTHER = "usr_01jadmin000000000000000000";
+    admins.add("usr_01jadmin000000000000000000");
+    await s.command({ kind: "rm", name: "TOKEN" }, inSession("U_OTHER"));
+    expect(last("chat.postEphemeral")?.text).toContain("Removed `TOKEN`");
   });
 
   it("limits one caller to 30 changes a minute", async () => {

@@ -35,6 +35,7 @@ mod http;
 pub mod model;
 mod schema;
 mod workspace;
+mod live;
 mod ws;
 
 #[allow(unused_imports)]
@@ -189,12 +190,18 @@ pub struct Knobs {
     pub delays: Vec<(String, Duration)>,
     /// Sent as `x-opc-latest` on every response.
     pub latest: Option<String>,
-    /// `false`: `/me` has `wireUrl: null` and upgrades get 404.
-    pub ws_enabled: bool,
-    /// Accept the upgrade, then close at once with this code and reason.
+    /// `false`: there is no wire: `/me` has `wireUrl: null` and wire
+    /// upgrades get 404. The live socket is unaffected.
+    pub wire_enabled: bool,
+    /// Accept the upgrade (wire and live socket), then close at once with
+    /// this code and reason.
     pub ws_refuse: Option<(u16, String)>,
+    /// The same, for the wire only.
+    pub wire_refuse: Option<(u16, String)>,
     /// Drop the next connection (no close frame) after it has sent this many frames.
     pub ws_drop_after: Option<usize>,
+    /// Drop the next live socket (no close frame) after it has sent this many frames.
+    pub live_drop_after: Option<usize>,
     /// When `true`, an interrupt leaves background subagents running (the docs);
     /// when `false` (the default) they stop, as the server does today.
     pub interrupt_spares_background: bool,
@@ -214,9 +221,11 @@ impl Default for Knobs {
             failures: vec![],
             delays: vec![],
             latest: None,
-            ws_enabled: true,
+            wire_enabled: true,
             ws_refuse: None,
+            wire_refuse: None,
             ws_drop_after: None,
+            live_drop_after: None,
             interrupt_spares_background: false,
             device_pending: 1,
             step_ms: 5,
@@ -366,7 +375,7 @@ impl Fake {
         let wire_url = format!("ws://127.0.0.1:{port}/v1");
         let (bus, _) = broadcast::channel(65536);
         let (ctl, _) = broadcast::channel(64);
-        let world = World { sessions: vec![], idem: Default::default(), jobs: vec![], bus: bus.clone(), interrupt_spares_background: false };
+        let world = World { sessions: vec![], idem: Default::default(), jobs: vec![], bus: bus.clone(), interrupt_spares_background: false, delta_watched: Default::default() };
         let sh = Arc::new(Shared {
             world: Mutex::new(world),
             version: watch::channel(0).0,
@@ -375,6 +384,8 @@ impl Fake {
             knobs: Mutex::new(Knobs::default()),
             requests: Mutex::new(vec![]),
             frames: Mutex::new(vec![]),
+            live_frames: Mutex::new(vec![]),
+            live_connections: Mutex::new(0),
             handle,
             workspace_root: workspace.path().to_path_buf(),
             api_url: url.clone(),
@@ -457,6 +468,22 @@ impl Fake {
                 Some((v["method"].as_str()?.to_string(), v["params"].clone()))
             })
             .collect()
+    }
+    /// Every frame of the live socket so far, both directions.
+    pub fn live_frames(&self) -> Vec<WsFrame> {
+        self.sh.live_frames.lock().unwrap().clone()
+    }
+    /// Frames the client sent on the live socket.
+    pub fn live_sent(&self) -> Vec<Value> {
+        self.live_frames().into_iter().filter(|f| f.dir == Dir::In).map(|f| f.json()).collect()
+    }
+    /// How many live sockets were accepted.
+    pub fn live_connections(&self) -> u64 {
+        *self.sh.live_connections.lock().unwrap()
+    }
+    /// Rewrites a session's log above `seq`, voiding every cursor made so far.
+    pub fn rewrite_above(&self, sid: &str, seq: u64) {
+        self.sh.with(|w| w.rewrite_above(sid, seq));
     }
     /// How many WebSocket connections were accepted.
     pub fn ws_connections(&self) -> u64 {
@@ -607,8 +634,14 @@ impl Fake {
     pub fn set_latest_version(&self, v: Option<&str>) {
         self.knobs().latest = v.map(str::to_string);
     }
-    pub fn set_ws_enabled(&self, on: bool) {
-        self.knobs().ws_enabled = on;
+    /// `false`: no wire (`/me` names none); the live socket still works.
+    pub fn set_wire_enabled(&self, on: bool) {
+        self.knobs().wire_enabled = on;
+    }
+    /// Accept wire upgrades and close them at once with `code`; the live
+    /// socket still works.
+    pub fn refuse_wire(&self, close: Option<(u16, &str)>) {
+        self.knobs().wire_refuse = close.map(|(c, r)| (c, r.to_string()));
     }
     /// Accept upgrades and close them at once with `code` (`4503` takes a JSON reason).
     pub fn refuse_ws(&self, close: Option<(u16, &str)>) {
@@ -619,6 +652,10 @@ impl Fake {
         self.knobs().ws_drop_after = Some(frames);
     }
     /// Close every open connection now. `None` drops them without a close frame.
+    /// Drop the next live socket, without a close frame, after it sent `frames` frames.
+    pub fn drop_live_after(&self, frames: usize) {
+        self.knobs().live_drop_after = Some(frames);
+    }
     pub fn drop_ws_now(&self, close: Option<(u16, &str)>) {
         let _ = self.sh.ctl.send(close.map(|(c, r)| (c, r.to_string())).unwrap_or((0, String::new())));
     }

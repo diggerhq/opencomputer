@@ -1,6 +1,6 @@
 ---
 title: "Events"
-description: "Read a session's event log over HTTP, and wait for new events."
+description: "Read a session's event log over HTTP, page by page with a cursor."
 ---
 
 ```http
@@ -8,14 +8,13 @@ GET /sessions/{id}/events
 ```
 
 ```bash
-curl -s "$API/sessions/cs_7f3a9k2m4q8r1t6v/events?after=0" -H "x-api-key: $OPENCOMPUTER_API_KEY"
+curl -s "$API/sessions/cs_7f3a9k2m4q8r1t6v/events" -H "x-api-key: $OPENCOMPUTER_API_KEY"
 ```
 
 | Query | Meaning |
 | --- | --- |
-| `after` | Return events with a `seq` greater than this. Default `0`, the start. |
+| `after` | The `cursor` of the previous page: return the events after it. Omit to start at the beginning. |
 | `limit` | 1 to 500. Default 100. |
-| `waitMs` | When no event is past `after`, hold the request open until one is, for up to this many milliseconds, 0 to 60,000. Default `0`: answer at once. |
 | `tailTurns` | Instead of `after`, 1 to 50: the full events of the last this many turns, with the turns before them summarized in `earlierTurns`. See [Start from the end](#start-from-the-end). |
 | `turnId` | Only events of this turn |
 | `types` | Only these types, separated by commas. A trailing `*` matches a prefix, such as `tool.*`. An unknown type matches nothing. |
@@ -26,28 +25,29 @@ curl -s "$API/sessions/cs_7f3a9k2m4q8r1t6v/events?after=0" -H "x-api-key: $OPENC
     { "id": "ev_…", "seq": 1, "type": "session.created", "…": "…" },
     { "id": "ev_…", "seq": 2, "type": "message.received", "…": "…" }
   ],
+  "cursor": "…",
   "lastSeq": 1184,
   "hasMore": true
 }
 ```
 
-`events` are in ascending `seq`. `lastSeq` is the session's newest `seq` when the page was read. `hasMore` is `true` when events past this page remain. Deltas are never included. See [Events](/api/reference/events) for every type.
+`events` are in ascending `seq`. `cursor` is where the page ends: send it back as `after` for the next one. It is opaque: store it and compare it for equality, never read or build one. A bare `seq` as `after` gets `409 reset`. `lastSeq` is the session's newest `seq` when the page was read. `hasMore` is `true` when events past this page remain. Deltas are never included. See [Events](/api/reference/events) for every type.
 
 Events read here are complete, including a tool's large `input` or `output`.
 
-With `turnId` or `types`, `seq` values have gaps. Keep using the last `seq` you received as `after`.
+With `turnId` or `types`, `seq` values have gaps. Keep sending the page's `cursor` as `after`.
 
 ## Read a whole log
 
-Start at `after=0`, and repeat with the `seq` of the last event until `hasMore` is `false`.
+Start without `after`, and repeat with the page's `cursor` until `hasMore` is `false`.
 
 ```bash
-after=0
+q="limit=500"
 while :; do
-  page=$(curl -s "$API/sessions/$id/events?after=$after&limit=500" -H "x-api-key: $OPENCOMPUTER_API_KEY")
+  page=$(curl -s "$API/sessions/$id/events?$q" -H "x-api-key: $OPENCOMPUTER_API_KEY")
   jq -c '.events[]' <<<"$page"
   jq -e '.hasMore' <<<"$page" >/dev/null || break
-  after=$(jq '.events[-1].seq' <<<"$page")
+  q="limit=500&after=$(jq -r '.cursor | @uri' <<<"$page")"
 done
 ```
 
@@ -61,34 +61,37 @@ A long session can have tens of thousands of events. To show it, a client needs 
 {
   "events": [{ "id": "ev_…", "seq": 1102, "type": "message.received", "…": "…" }],
   "earlierTurns": [{ "id": "tn_1b4m8q9x2c7v", "status": "completed", "input": "…", "…": "Turn" }],
+  "cursor": "…",
   "lastSeq": 1184,
   "hasMore": false
 }
 ```
 
-`events` are every event of the last `n` turns and after them. `earlierTurns` are the [Turns](/api/reference/objects#turn) before those, newest first, at most 50. Read further back with `turnId`, or with `after`. `tailTurns` cannot be combined with `after`.
+`events` are every event of the last `n` turns and after them. `earlierTurns` are the [Turns](/api/reference/objects#turn) before those, newest first, at most 50. Read further back with `turnId`, or from the start without `tailTurns`. `tailTurns` cannot be combined with `after`.
 
 ## Follow a session
 
-Call this route with `after` set to the last `seq` you have and `waitMs=60000`, in a loop. Each request returns the moment a new event is recorded, or after a minute with `events: []`. This is enough for a script, and costs one request a minute while nothing happens.
+Call this route with `after` set to the last `cursor` you have, every few seconds. Each request answers at once, with `events: []` and the same `cursor` when nothing is new. This is enough for a script. The loop also follows a [reset](#reset)'s `cursor`, and starts over when it is `null`.
 
 ```bash
-after=0
+q=""
 while :; do
-  page=$(curl -s "$API/sessions/$id/events?after=$after&waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY")
-  jq -c '.events[]' <<<"$page"
-  after=$(jq --argjson a "$after" '.events[-1].seq // $a' <<<"$page")
+  page=$(curl -s "$API/sessions/$id/events?$q" -H "x-api-key: $OPENCOMPUTER_API_KEY")
+  jq -c '.events[]?' <<<"$page"
+  c=$(jq -r '(.cursor // .error.cursor // empty) | @uri' <<<"$page")
+  q=${c:+after=$c}
+  sleep 5
 done
 ```
 
-For anything a person watches, [attach over a WebSocket](/api/websocket/methods#attach) instead: events arrive the moment they are recorded, and text streams as it is written.
+For anything a person watches, use [Live](https://docs.opencomputer.dev/api/live) instead: events arrive the moment they are recorded, and text streams as it is written. Live holds no history: read here up to the end, then subscribe with the last `cursor`, and read here again whenever a pushed range does not start at your cursor.
 
-The two give the same events with the same `seq`. A client can read history here, then attach with `after` set to the last `seq` it read. A WebSocket client closed with `4008` because it stopped reading recovers here: page from its last `seq` until it is within 10,000 events of `lastSeq`, then attach. See [Flow control](/api/websocket/flow-control).
+## Reset
 
-If the session's `logEpoch` has changed since you last read it, discard what you applied at or after its `epochStartSeq` and read again from `epochStartSeq - 1`. See [If a computer is lost](/api/model#if-a-computer-is-lost).
+`409 reset` means the cursor's position no longer exists: it is not a cursor of this session's events, it is past the log's end, or the session's computer was lost mid-turn and the log was rewritten from a point. The error carries `cursor` and may carry `seq`. Discard what you applied above `seq`, then read on with `cursor` as `after`. With `cursor: null`, start again without `after`. See [If a computer is lost](/api/model#if-a-computer-is-lost).
 
 | Status | Code | When |
 | --- | --- | --- |
-| `400` | `invalid_request` | `after` is negative or not a number, `limit` or `waitMs` is out of range, or `tailTurns` is sent with `after` |
+| `400` | `invalid_request` | `limit` is out of range, or `tailTurns` is sent with `after` |
 | `404` | `session_not_found` | |
-| `409` | `cursor_ahead` | `after` is greater than the session's `lastSeq`. `error.session` is the session, with its `lastSeq` and `logEpoch`. |
+| `409` | `reset` | See [Reset](#reset). `error.cursor` is where to read on, or `null`; `error.seq`, when present, is the last event to keep. |

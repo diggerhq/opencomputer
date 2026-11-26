@@ -18,7 +18,6 @@ const counts: [string, number][] = [];
 
 const hooks: WireLinkHooks = {
   where: (sid) => (sid === 'cs_a' ? { socket: '/x/api.sock', token: 't', writer: 'host', epoch: 1 } : undefined),
-  resume: async () => ({ status: 'starting' }),
   workspace: (sid) =>
     sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
     : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }
@@ -131,7 +130,7 @@ describe('wire link', () => {
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
   });
 
-  it('lets in a listed person, and an admin only where the access list lets them attach (CTO-37 Q4)', async () => {
+  it('lets in the owner and a listed person; an admin gets no terminal by role, even in an org-wide session', async () => {
     const r = await relay();
     r.send({ t: 'hello', version: 'test' });
     await r.next((m) => m.t === 'welcome');
@@ -151,7 +150,8 @@ describe('wire link', () => {
     expect(await open('p1', 'usr_pat')).toBe('opened');
     expect(await open('p2', 'usr_admin')).toBe('terminal_owner_only');
     link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: null });
-    expect(await open('g1', 'usr_admin')).toBe('opened');
+    expect(await open('g1', 'usr_admin')).toBe('terminal_owner_only');
+    expect(await open('g3', 'usr_owner')).toBe('opened');
     expect(await open('g2', 'usr_pat')).toBe('terminal_owner_only');
     r.sock.destroy();
   });

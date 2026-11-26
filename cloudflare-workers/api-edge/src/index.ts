@@ -18,7 +18,10 @@
 
 export { CreditAccount } from "../../shared/credit_account";
 export { PoolStock } from "./pool_stock";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import { decodeJwt } from "jose";
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
+import { authCache as sharedAuthCache } from "./auth_cache";
 import { authDashboard, handleDashboard, type DashboardEnv } from "./dashboard";
 import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
 import {
@@ -72,6 +75,10 @@ import {
   computerApiKey,
   computerApiOriginAllowed,
   computerApiPreflight,
+  computerApiRouteScope,
+  COMPUTER_LIVE_SUFFIX,
+  LIVE_SUBPROTOCOL,
+  liveOffer,
   computerWorkspaceRoute,
   isComputerApiRoute,
   proxyComputerWorkspace,
@@ -86,7 +93,19 @@ import {
   reportEdgeRequest,
 } from "./computer_telemetry";
 import { computerEnabledFor } from "./computer";
-import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
+import {
+  COMPUTER_PRINCIPAL,
+  cookieCredentialId,
+  keyPrincipal,
+  memberPrincipal,
+  parseCookieCredentialId,
+  principalHeaderMatches,
+  SESSION_ID,
+  type Principal,
+} from "./principal";
+import { appDeviceLive, appTokenPrincipal, handleAppAuth, verifyAppToken } from "./app_auth";
+import { createdKeyForSync, revokeComputerKey, revokeLiveCredential, syncComputerKey } from "./computer_keys";
+import { mintSessionJWT, SESSION_TTL_SEC, verifySessionJWT } from "./jwt";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
 export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
@@ -144,38 +163,13 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-const b64url = (buf: ArrayBuffer | Uint8Array): string => {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-
-// Cache the imported HMAC signing key used to sign session JWTs. Memoized per
-// secret (shared Promise so concurrent first-callers don't double-import), so
-// only sign() runs per mint. importKey is extractable:false, so the key never
-// leaves the isolate.
-let hmacSignKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
-function hmacSignKey(secret: string): Promise<CryptoKey> {
-  if (hmacSignKeyCache && hmacSignKeyCache.secret === secret) return hmacSignKeyCache.key;
-  const key = crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  hmacSignKeyCache = { secret, key };
-  return key;
-}
-
 interface Caller {
   orgID: string;
   userID: string | null;
   role?: string;
   // Set only for the organization's computer (work 080): its one-hour keys are
   // created_by COMPUTER_PRINCIPAL, a reserved id no person has. sessionKey is
-  // the Slack thread the key was minted for, when the gateway named one.
+  // the `cs_…` session the key was minted for.
   principal?: "computer";
   sessionKey?: string;
   // The key itself, for the computer API's assertion (work 084): blue records
@@ -184,12 +178,9 @@ interface Caller {
   key?: AssertedAPIKey;
   userName?: string | null;
   userEmail?: string | null;
+  ocPrincipal?: Principal;
 }
 
-const COMPUTER_PRINCIPAL = "computer";
-// The shape of blue's sessionKey(team, channel, thread); blue checks the
-// session is live before it asks for a key.
-const SESSION_KEY_RE = /^[A-Za-z0-9._-]{1,40}:[A-Za-z0-9._-]{1,40}:[A-Za-z0-9._-]{1,40}$/;
 
 // One mapping from a key row to a Caller, for every reader (auth, refresh,
 // warm-org), so the cached shapes cannot drift apart.
@@ -221,6 +212,21 @@ function callerFromRow(row: AuthRow): Caller {
         }
       : {}),
   };
+}
+
+/** The principal of a caller that authenticated with an API key (spec 34.3); null: the key has none and is refused. */
+function principalOfKeyCaller(caller: Caller, req: Request | null): Promise<Principal | null> {
+  const expiresAt = caller.key?.expiresAt ? Date.parse(caller.key.expiresAt) : null;
+  return keyPrincipal({
+    org: caller.orgID,
+    createdBy: caller.userID,
+    admin: caller.role === "admin",
+    keyId: caller.key?.id ?? "",
+    scopes: caller.key?.scopes ?? [],
+    expiresAt,
+    sessionKey: caller.sessionKey ?? null,
+    userAgent: req?.headers.get("user-agent") ?? null,
+  });
 }
 
 function epochToISO(seconds: number | null | undefined): string | null {
@@ -282,7 +288,7 @@ interface AuthEntry {
   cachedAtMs: number;
   lastBumpMs: number;
 }
-const authCache = new Map<string, AuthEntry>();
+const authCache = sharedAuthCache as Map<string, AuthEntry>;
 function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): void {
   if (nowMs - entry.lastBumpMs < LAST_USED_BUMP_MS) return;
   entry.lastBumpMs = nowMs;
@@ -292,6 +298,12 @@ function bumpLastUsed(env: Env, hash: string, entry: AuthEntry, nowMs: number): 
     .catch(() => {});
 }
 
+// A person's key works only while they are a member of the key's org: removing
+// someone revokes their keys even if a key row outlived the removal. Keys no
+// person holds are the org's own: the computer's one-hour keys and legacy rows
+// with no creator. With no row, auth returns null and the SWR refresh evicts.
+const KEY_HOLDER_IS_MEMBER = `(k.created_by IS NULL OR k.created_by = '${COMPUTER_PRINCIPAL}' OR m.user_id IS NOT NULL)`;
+
 const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at, k.session_key,
           k.id AS key_id, k.key_hash, k.name AS key_name, k.scopes AS key_scopes,
           k.created_at AS key_created_at, u.name AS user_name, u.email AS user_email,
@@ -300,7 +312,8 @@ const AUTH_KEY_SQL = `SELECT k.org_id, k.created_by, k.expires_at, k.session_key
      LEFT JOIN org_memberships m
        ON m.org_id = k.org_id AND m.user_id = k.created_by
      LEFT JOIN users u ON u.id = k.created_by
-    WHERE k.key_hash = ?1`;
+    WHERE k.key_hash = ?1
+      AND ${KEY_HOLDER_IS_MEMBER}`;
 
 // One row shape for both readers. refreshAuth repopulates the same cache tiers
 // the hot path reads, so a role column present in one and absent in the other
@@ -516,7 +529,6 @@ function constantTimeEqual(a: string, b: string): boolean {
 // valid).
 
 const SESSION_COOKIE = "oc_session";
-const SESSION_TTL_SEC = 60 * 60 * 8; // 8h
 
 interface WorkOSProfile {
   id: string;
@@ -1519,7 +1531,14 @@ async function computerApiCall(
     return computerApiError(req, 404, "not_found", "No such route.");
   }
 
-  const credential = computerApiKey(req);
+  // `GET /live` (spec 38): a WebSocket asking for `oc.live.v1`, with a token
+  // as a second subprotocol or else the cookie from an exact Origin.
+  const live = method === "GET" && suffix === COMPUTER_LIVE_SUFFIX;
+  const offer = live ? liveOffer(req) : null;
+  if (offer && (!isWebSocketUpgrade(req) || !offer.live)) {
+    return computerApiError(req, 426, "upgrade_required", `GET /live is a WebSocket with the ${LIVE_SUBPROTOCOL} subprotocol.`);
+  }
+  const credential = offer?.token ? { key: offer.token } : computerApiKey(req);
   if ("conflict" in credential) {
     facts.auth = "conflicting";
     return computerApiError(
@@ -1531,7 +1550,17 @@ async function computerApiCall(
   }
   let caller: Caller | null = null;
   let viaKey = false;
-  if (credential.key) {
+  // A member: by cookie (the dashboard) or by the Mac app's access token.
+  let member: { orgID: string; userID: string; via: "dashboard" | "app"; credential: Principal["credential"] } | null = null;
+  if (credential.key && !credential.key.startsWith("osb_")) {
+    facts.via = "app";
+    const claims = await verifyAppToken(env.SESSION_JWT_SECRET, credential.key);
+    // A socket outlives the token, so the device is checked before Live
+    // takes it; a call is short and needs only the signature.
+    if (claims && (!live || (await appDeviceLive(env.OPENCOMPUTER_DB, claims.dev)))) {
+      member = { orgID: claims.org_id, userID: claims.user_id, via: "app", credential: { id: claims.dev, expiresAt: claims.exp * 1000 } };
+    }
+  } else if (credential.key) {
     viaKey = true;
     facts.via = "key";
     caller = await authenticateKey(credential.key, env, ctx);
@@ -1564,40 +1593,87 @@ async function computerApiCall(
       facts.via = "dashboard";
       // A cookie rides along on cross-site requests SameSite=Lax still
       // allows (sibling subdomains); unsafe methods need an allowed Origin.
-      if (!SAFE_METHODS.has(method) && !computerApiOriginAllowed(req, env)) {
+      if ((live || !SAFE_METHODS.has(method)) && !computerApiOriginAllowed(req, env)) {
         facts.auth = "origin";
         return computerApiError(req, 403, "forbidden", "Cross-origin request refused.", {
           reason: "origin_not_allowed",
         });
       }
-      // The member's name and email ride along (work tracking 3.10: the Work
-      // API's `mine` and the author of a person's write need them).
-      const membership = await env.OPENCOMPUTER_DB.prepare(
-        `SELECT m.role, u.name AS user_name, u.email AS user_email
-           FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
-          WHERE m.org_id = ?1 AND m.user_id = ?2`,
-      )
-        .bind(session.orgID, session.userID)
-        .first<{ role: string; user_name: string | null; user_email: string | null }>();
-      if (!membership) {
-        facts.auth = "not_member";
-        return computerApiError(req, 401, "unauthenticated", "Sign in again.");
-      }
-      caller = {
+      member = {
         orgID: session.orgID,
         userID: session.userID,
-        role:
-          membership.role === "owner" || membership.role === "admin"
-            ? "admin"
-            : membership.role,
-        userName: membership.user_name ?? null,
-        userEmail: membership.user_email ?? null,
+        via: "dashboard",
+        credential: {
+          id: await cookieCredentialId(
+            readCookie(req.headers.get("cookie"), SESSION_COOKIE) ?? "",
+            session.orgID,
+            session.userID,
+            session.claims.exp,
+          ),
+          expiresAt: session.claims.exp * 1000,
+        },
       };
     }
+  }
+  if (member) {
+    // The member's name and email ride along (work tracking 3.10: the Work
+    // API's `mine` and the author of a person's write need them).
+    const membership = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT m.role, u.name AS user_name, u.email AS user_email
+         FROM org_memberships m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.org_id = ?1 AND m.user_id = ?2`,
+    )
+      .bind(member.orgID, member.userID)
+      .first<{ role: string; user_name: string | null; user_email: string | null }>();
+    if (!membership) {
+      facts.auth = "not_member";
+      return computerApiError(req, 401, "unauthenticated", "Sign in again.");
+    }
+    const role =
+      membership.role === "owner" || membership.role === "admin"
+        ? "admin"
+        : membership.role;
+    caller = {
+      orgID: member.orgID,
+      userID: member.userID,
+      role,
+      userName: membership.user_name ?? null,
+      userEmail: membership.user_email ?? null,
+      ocPrincipal: await memberPrincipal({
+        org: member.orgID,
+        userId: member.userID,
+        admin: role === "admin",
+        via: member.via,
+        credential: member.credential,
+      }),
+    };
   }
   if (!caller) {
     facts.auth = credential.key ? "invalid" : "missing";
     return computerApiError(req, 401, "unauthenticated", "Missing or invalid API key.");
+  }
+  const principal = caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req));
+  if (!principal) {
+    facts.auth = "invalid";
+    return computerApiError(req, 401, "unauthenticated", "Missing or invalid API key.");
+  }
+  caller = { ...caller, ocPrincipal: principal };
+  if (!principalHeaderMatches(req, principal)) {
+    facts.auth = "principal_mismatch";
+    return computerApiError(
+      req,
+      403,
+      "principal_mismatch",
+      "x-oc-principal does not name the credential's principal.",
+    );
+  }
+  const scope = computerApiRouteScope(method, suffix);
+  if (scope && !principal.scopes.includes(scope)) {
+    facts.auth = "scope";
+    return computerApiError(req, 403, "forbidden", `This credential lacks the ${scope} scope.`, {
+      reason: "missing_scope",
+      scope,
+    });
   }
   facts.orgId = caller.orgID;
   if (caller.key?.id) facts.keyId = caller.key.id;
@@ -1625,7 +1701,20 @@ async function computerApiCall(
   }
   facts.auth = "ok";
   facts.upstream = "blue";
-  return proxyManagedAgents(req, env, caller, "/api/managed-agents");
+  // Who asks is the principal alone; the key and the person's name and email are facts of the request.
+  return proxyManagedAgents(
+    req,
+    env,
+    {
+      orgID: caller.orgID,
+      userID: caller.userID,
+      ...(caller.key ? { key: caller.key } : {}),
+      userName: caller.userName ?? null,
+      userEmail: caller.userEmail ?? null,
+      ocPrincipal: principal,
+    },
+    "/api/managed-agents",
+  );
 }
 
 async function authCLIRevoke(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
@@ -1684,17 +1773,15 @@ async function authCLIRevoke(req: Request, env: Env, ctx?: ExecutionContext): Pr
 // URL, so an unverified parse is sufficient.
 function workosSessionIdFromAccessToken(accessToken?: string): string | undefined {
   if (!accessToken) return undefined;
-  const parts = accessToken.split(".");
-  if (parts.length !== 3) return undefined;
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as { sid?: string };
-    return payload.sid;
+    const sid = decodeJwt(accessToken).sid;
+    return typeof sid === "string" ? sid : undefined;
   } catch {
     return undefined;
   }
 }
 
-async function authLogout(req: Request, env: Env): Promise<Response> {
+async function authLogout(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const clearCookie = `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
 
   // Clearing oc_session alone leaves the WorkOS SSO session alive, so the
@@ -1709,6 +1796,14 @@ async function authLogout(req: Request, env: Env): Promise<Response> {
   const m = cookie.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`));
   if (m) {
     const claims = await verifySessionJWT(env.SESSION_JWT_SECRET, m[1]);
+    // The Live sockets this cookie opened end with it.
+    if (claims) {
+      ctx.waitUntil(
+        cookieCredentialId(m[1], claims.org_id, claims.user_id, claims.exp).then((id) =>
+          revokeLiveCredential(env, claims.org_id, id),
+        ),
+      );
+    }
     if (claims?.wsid) {
       const u = new URL("https://api.workos.com/user_management/sessions/logout");
       u.searchParams.set("session_id", claims.wsid);
@@ -1720,6 +1815,61 @@ async function authLogout(req: Request, env: Env): Promise<Response> {
     status: 200,
     headers: { "content-type": "application/json", "set-cookie": clearCookie },
   });
+}
+
+const LIVE_CHECK_MAX = 500;
+
+/**
+ * Live's credential check (spec 18.7; services/managed-agents/src/actors/live/contract.ts
+ * LiveCredentials), an entrypoint Live reaches over its `EDGE` service binding.
+ * `revoked` answers the ids that no longer verify; `principal` a token's
+ * principal, null when it does not verify.
+ */
+export class LiveCredentials extends WorkerEntrypoint<Env> {
+  async revoked(ids: string[]): Promise<string[]> {
+    if (!Array.isArray(ids) || ids.length > LIVE_CHECK_MAX || !ids.every((id) => typeof id === "string")) {
+      throw new Error(`expected at most ${LIVE_CHECK_MAX} credential ids`);
+    }
+    const live = await Promise.all(ids.map((id) => credentialLive(id, this.env)));
+    return ids.filter((_, i) => !live[i]);
+  }
+
+  async principal(token: string): Promise<Principal | null> {
+    return typeof token === "string" ? principalOfToken(token, this.env, this.ctx) : null;
+  }
+}
+
+/** The principal of a token Live was handed: an API key, null otherwise. */
+async function principalOfToken(token: string, env: Env, ctx: ExecutionContext): Promise<Principal | null> {
+  if (!token.startsWith("osb_")) return appTokenPrincipal(env, token);
+  const caller = await authenticateKey(token, env, ctx);
+  return caller ? principalOfKeyCaller(caller, null) : null;
+}
+
+/** Whether a credential id still verifies, read from D1 (no cache). */
+async function credentialLive(id: string, env: Env): Promise<boolean> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cookie = parseCookieCredentialId(id);
+  if (cookie) {
+    if (cookie.expSec <= nowSec) return false;
+    const member = await env.OPENCOMPUTER_DB.prepare(
+      `SELECT 1 AS ok FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+    )
+      .bind(cookie.org, cookie.userId)
+      .first<{ ok: number }>();
+    return member !== null;
+  }
+  if (id.startsWith("dev_")) return appDeviceLive(env.OPENCOMPUTER_DB, id);
+  // The same holder rule as key auth: a person's key dies with their membership.
+  const key = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT 1 AS ok FROM api_keys k
+       LEFT JOIN org_memberships m ON m.org_id = k.org_id AND m.user_id = k.created_by
+      WHERE k.id = ?1 AND (k.expires_at IS NULL OR k.expires_at > ?2)
+        AND ${KEY_HOLDER_IS_MEMBER}`,
+  )
+    .bind(id, nowSec)
+    .first<{ ok: number }>();
+  return key !== null;
 }
 
 async function authRefresh(req: Request, env: Env): Promise<Response> {
@@ -1750,63 +1900,6 @@ async function authRefresh(req: Request, env: Env): Promise<Response> {
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
-}
-
-interface SessionClaims {
-  org_id: string;
-  user_id: string;
-  plan: string;
-  iat: number;
-  exp: number;
-  // WorkOS session id (sid). Carried so /auth/logout can build the WorkOS
-  // hosted logout URL and tear down the SSO session, not just our cookie.
-  // Optional: sessions minted before this existed won't have it.
-  wsid?: string;
-}
-
-async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string, wsid?: string): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    iss: "opensandbox-session",
-    sub: userID,
-    iat: now,
-    exp: now + SESSION_TTL_SEC,
-    org_id: orgID,
-    user_id: userID,
-    plan,
-    ...(wsid ? { wsid } : {}),
-  };
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await hmacSignKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
-async function verifySessionJWT(secret: string, token: string): Promise<SessionClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [headerB64, payloadB64, sigB64] = parts;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
-  if (b64url(expected) !== sigB64) return null;
-  try {
-    const payload = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as SessionClaims & { iss?: string };
-    if (payload.iss !== "opensandbox-session") return null;
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
-  } catch {
-    return null;
-  }
 }
 
 // ── Stripe webhook ───────────────────────────────────────────────────────
@@ -2019,6 +2112,7 @@ export default {
       return handleAgentFeedback(req, env, path, ctx);
     }
 
+
     // Reconciler trigger for the Autumn re-check+project (EVENT_SECRET HMAC).
     if (path === "/internal/autumn-project") {
       if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
@@ -2117,7 +2211,8 @@ export default {
            LEFT JOIN org_memberships m
              ON m.org_id = k.org_id AND m.user_id = k.created_by
            LEFT JOIN users u ON u.id = k.created_by
-          WHERE k.org_id = ?1`,
+          WHERE k.org_id = ?1
+            AND ${KEY_HOLDER_IS_MEMBER}`,
       ).bind(parsed.org_id).all<AuthRow & { key_hash: string }>();
 
       const at = Date.now();
@@ -2177,8 +2272,9 @@ export default {
     // (work 067): managed agents mints one when a session runs `opencomputer`,
     // instead of a long-lived key living on the VM. HMAC-auth'd with the scoped
     // OC_MANAGED_CRED_HMAC_SECRET over `${ts}.${body}`. Body: { org_id,
-    // session_key? }: the Slack thread the key is for (work 080), recorded on
-    // the key and forwarded as the assertion's session_key claim.
+    // session_key }: the `cs_…` session the key is for, recorded on the key,
+    // which makes it that session's agent (spec 34.3). There is no key
+    // without a session: it would reach the whole organization.
     if (path === "/internal/computer-keys" && req.method === "POST") {
       const ts = req.headers.get("X-Timestamp") ?? "";
       const sig = req.headers.get("X-Signature") ?? "";
@@ -2191,8 +2287,8 @@ export default {
       const parsed = JSON.parse(body) as { org_id?: string; session_key?: unknown };
       if (!parsed.org_id) return json({ error: "org_id required" }, 400);
       const sessionKey = parsed.session_key;
-      if (sessionKey !== undefined && (typeof sessionKey !== "string" || !SESSION_KEY_RE.test(sessionKey))) {
-        return json({ error: "session_key must be team:channel:thread" }, 400);
+      if (typeof sessionKey !== "string" || !SESSION_ID.test(sessionKey)) {
+        return json({ error: "session_key must be a cs_ session id" }, 400);
       }
       const org = await env.OPENCOMPUTER_DB.prepare(`SELECT id FROM orgs WHERE id = ?1`).bind(parsed.org_id).first();
       if (!org) return json({ error: "org not found" }, 404);
@@ -2202,7 +2298,7 @@ export default {
         name: "Computer session",
         scopes: COMPUTER_SESSION_KEY_SCOPES,
         expiresAt: Math.floor(Date.now() / 1000) + 3600,
-        ...(sessionKey ? { sessionKey } : {}),
+        sessionKey,
       });
       return json({ key: created.key, expiresAt: created.expiresAt });
     }
@@ -2220,9 +2316,10 @@ export default {
     }
 
     // Browser auth flow.
+    if (path.startsWith("/auth/app/")) return handleAppAuth(req, env, ctx, path);
     if (path === "/auth/login")    { if (req.method === "GET")  return withFirstTouchCookie(req, await authLogin(req, env)); }
     if (path === "/auth/callback") { if (req.method === "GET")  return authCallback(req, env, ctx); }
-    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env); }
+    if (path === "/auth/logout")   { if (req.method === "POST") return authLogout(req, env, ctx); }
     if (path === "/auth/refresh")  { if (req.method === "POST") return authRefresh(req, env); }
 
     // Stripe webhook (test mode in app2, live in app).
@@ -2350,12 +2447,9 @@ export default {
         );
         if (creditError) return creditError;
       }
-      return proxyManagedAgents(
-        req,
-        env,
-        caller,
-        "/api/managed-agents",
-      );
+      const ocPrincipal = caller.ocPrincipal ?? (await principalOfKeyCaller(caller, req));
+      if (!ocPrincipal) return json({ error: "missing or invalid API key" }, 401);
+      return proxyManagedAgents(req, env, { ...caller, ocPrincipal }, "/api/managed-agents");
     }
 
     // /api/whoami — return the authenticated caller's org (+ user). Lets a

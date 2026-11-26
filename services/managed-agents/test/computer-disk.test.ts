@@ -1,8 +1,8 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 
 /**
  * The data disk grows on its own near capacity (work 071): the host reports
@@ -49,7 +49,7 @@ async function connectHost(org: string): Promise<WebSocket> {
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = new Promise((resolve) => socket.addEventListener("message", (e) => JSON.parse(String(e.data)).t === "welcome" && resolve(null)));
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions: [] }));
   await welcomed;
   return socket;
 }

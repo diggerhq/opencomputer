@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 // SessionApi (work 084) over a real Session and a scripted harness: sends and
 // their busy policies, idempotency, interrupt with its forced cancel, asks
@@ -26,7 +27,7 @@ afterEach(async () => {
 });
 
 /** `before`: what the journal holds when the runner attaches (it then resumes, as attachApi does). */
-async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[] } = {}) {
+async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[]; connected?: boolean } = {}) {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'], now: new Date('2026-10-26T00:00:00Z') });
   const T = await import('./testing.js');
@@ -36,8 +37,15 @@ async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void
   const tmp = tempSession();
   const log = await openLog(tmp.file, tmp.sessionId);
   before?.(log);
-  const suspended = { n: 0 };
-  const api = new SessionApi(log, t.sess, { owner: OWNER, suspend: () => void suspended.n++ });
+  const suspended = { n: 0, idempotent: [] as boolean[] };
+  const api = new SessionApi(log, t.sess, {
+    owner: OWNER,
+    suspend: () => {
+      suspended.n++;
+      suspended.idempotent.push(log.journal.idemGet(createHash('sha256').update('usr_ann|sessions.suspend|k-suspend').digest('hex')) !== undefined);
+    },
+  });
+  if (o.connected) api.connected();
   if (before) api.resume();
   cleanups.push(async () => (t.sess.end(), await log.release(), tmp.cleanup()));
   const sessionId = tmp.sessionId;
@@ -75,6 +83,28 @@ describe('SessionApi', () => {
     expect(started).toEqual([a.turn.id, b.turn.id]);
     expect(w.log.fold.turn(b.turn.id)?.input).toBe('second');
     for (const e of w.events()) assertEvent(e);
+  });
+
+  it('a block reusing an earlier message\'s index (Claude restarts them per message) gets a fresh blockId, so its deltas still stream', async () => {
+    const w = await world();
+    const got: { type: string; data: unknown }[] = [];
+    const sub = w.log.subscribe({ deltas: true, onEvent: () => {}, onDelta: (d) => void got.push(d), onDetached: () => {} });
+    if ('error' in sub) throw new Error(sub.error.message);
+    await w.call('turns.send', { input: 'first' });
+    await w.t.feed(w.T.first(), ...w.T.thinking('0', 'hmm'), ...w.T.text('1', 'one'), w.T.done());
+    await w.call('turns.send', { input: 'second' });
+    await w.t.feed(w.T.first(), ...w.T.text('0', 'two'), ...w.T.text('0', 'again'));
+    await w.t.feed(w.T.first(), ...w.T.thinking('0', 'more'), ...w.T.text('1', 'three'), w.T.done());
+    const completed = w.of('message.completed').map((e) => e.data as { blockId: string; text: string });
+    expect(completed.map((c) => c.text)).toEqual(['one', 'two', 'again', 'three']);
+    // Every text block of the session has its own id, and its delta carries it.
+    expect(new Set(completed.map((c) => c.blockId)).size).toBe(4);
+    const texts = got.filter((d) => d.type === 'message.delta').map((d) => d.data as { blockId: string; text: string });
+    expect(texts.map((d) => [d.blockId, d.text])).toEqual(completed.map((c) => [c.blockId, c.text]));
+    const reasoning = w.of('reasoning.completed').map((e) => (e.data as { blockId: string }).blockId);
+    expect(new Set([...reasoning, ...completed.map((c) => c.blockId)]).size).toBe(6);
+    expect(got.filter((d) => d.type === 'reasoning.delta').map((d) => (d.data as { blockId: string }).blockId)).toEqual(reasoning);
+    sub.close();
   });
 
   it('a message from outside Slack is quoted into the thread under its sender, before the turn; one from Slack is not', async () => {
@@ -131,23 +161,54 @@ describe('SessionApi', () => {
     expect((d.error as { code: string }).code).toBe('idempotency_conflict');
   });
 
-  it('a Delivery.api with an idempotency key is one turn too, and one the host recorded starts in its turn', async () => {
-    const w = await world();
-    const d = { actor: ANN, member: 'usr_ann', ifBusy: 'queue' as const, idempotencyKey: 'k-2' };
-    await w.api.deliver('hello', d);
-    await w.api.deliver('hello', d);
+  it('an inbox entry the journal already holds (the host recorded it, its idempotency record is gone) is answered, not run twice', async () => {
+    const turnId = 'tn_0000000000r1';
+    const w = await world((log) => {
+      log.append('message.received', { input: 'deploy it', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
+      log.append('turn.queued', { position: 1 }, { turnId, actor: ANN });
+    });
     await w.t.settle();
+    expect(w.sends()).toHaveLength(1); // resume started it
+    const r = result(await w.call('turns.send', { input: 'deploy it', turnId }, { ...ANN_CTX, idempotencyKey: turnId }));
+    expect(r).toMatchObject({ duplicate: true, delivery: 'started', turn: { id: turnId } });
+    expect(w.sends()).toHaveLength(1);
     expect(w.of('message.received')).toHaveLength(1);
-    await w.t.feed(w.T.first(), ...w.T.text('0', 'hi'), w.T.done());
-    // Recorded by the host's writer while no runner ran.
+  });
+
+  it('turns.send starts the turn the caller names; a Slack message goes to the runner\'s Slack handling, a Slack button to its prompt', async () => {
+    const w = await world();
     const turnId = 'tn_0000000000zz';
-    w.log.append('message.received', { input: 'queued', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
-    w.log.append('turn.queued', { position: 1 }, { turnId, actor: ANN });
-    await w.api.deliver('queued', { ...d, idempotencyKey: undefined, turnId });
-    await w.t.settle();
-    expect(w.of('message.received')).toHaveLength(2);
+    const a = result(await w.call('turns.send', { input: 'hello', turnId }));
+    expect(a.turn.id).toBe(turnId);
     expect(w.of('turn.started').at(-1)?.turnId).toBe(turnId);
-    expect(w.sends()).toHaveLength(2);
+    await w.t.feed(w.T.first(), ...w.T.text('0', 'hi'), w.T.done());
+
+    // A Slack message: only from the Slack actor, through `slack` with the turn it names.
+    const heard: unknown[] = [];
+    (w.api as unknown as { o: { slack: unknown } }).o.slack = async (text: string, m: { userId: string }, from: { actor: { id: string }; turnId: string }) => {
+      heard.push([text, m.userId, from.actor.id, from.turnId]);
+      await w.t.sess.send(text, m.userId, [], undefined, from as never);
+    };
+    const SLACK = { actor: { id: 'usr_ann', name: 'Ann', via: 'slack', client: null }, member: 'usr_ann' };
+    const slack = { userId: 'U_ANN', ts: '1.2' };
+    const t2 = 'tn_0000000000zy';
+    const b = result(await w.call('turns.send', { input: 'from slack', turnId: t2, slack }, SLACK));
+    expect(heard).toEqual([['from slack', 'U_ANN', 'usr_ann', t2]]);
+    expect(b.delivery).toBe('started');
+    expect(b.turn.id).toBe(t2);
+    result(await w.call('turns.send', { input: 'not slack', slack }, BOB));
+    expect(heard).toHaveLength(1);
+
+    // A Slack button: the prompt its ask id names gets the click, for the person who pressed it.
+    const { prompts } = await import('../prompts.js');
+    const clicks: unknown[] = [];
+    const askId = 'ak_0000000000aa';
+    prompts.set(askId, { session: w.t.sess as never, asked: 'U_BOB', onAction: async (v, u) => void clicks.push([v, u]), onText: async () => {}, cancel: async () => {} });
+    const no = await w.call('asks.answer', { askId, slack: { userId: 'U_CAT', value: 'allow' } }, SLACK);
+    expect((no.error as { code: string }).code).toBe('not-asked');
+    result(await w.call('asks.answer', { askId, slack: { userId: 'U_BOB', value: 'allow' } }, SLACK));
+    expect(clicks).toEqual([['allow', 'U_BOB']]);
+    prompts.delete(askId);
   });
 
   it('sessions.interrupt returns at once; the turn is cancelling, then cancelled forced after 10 s', async () => {
@@ -292,6 +353,22 @@ describe('SessionApi', () => {
     expect(w.of('turn.steered')).toHaveLength(1);
   });
 
+  it('a steer the cloud redelivers (its idempotency record gone) is answered from the log, not steered twice', async () => {
+    const w = await world();
+    const a = result(await w.call('turns.send', { input: 'go' }));
+    await w.t.feed(w.T.first(), ...w.T.tool('tu_1', 'Bash', { command: 'sleep 20' }));
+    const messageId = 'tn_0000000000s1';
+    const s = result(await w.call('turns.send', { input: 'use pnpm', ifBusy: 'steer', turnId: messageId }, { ...BOB, idempotencyKey: messageId }));
+    expect(s).toMatchObject({ delivery: 'steered', duplicate: false, turn: { id: a.turn.id } });
+    expect(w.of('message.received').at(-1)!.data).toMatchObject({ delivery: 'steered', messageId });
+    // A redelivery whose idempotency line was lost: another key, the same message id.
+    const again = result(await w.call('turns.send', { input: 'use pnpm', ifBusy: 'steer', turnId: messageId }, { ...BOB, idempotencyKey: 'k-lost' }));
+    expect(again).toMatchObject({ delivery: 'steered', duplicate: true, turn: { id: a.turn.id } });
+    expect(w.sends()).toHaveLength(2);
+    expect(w.of('message.received').filter((e) => (e.data as { delivery: string }).delivery === 'steered')).toHaveLength(1);
+    for (const e of w.events()) assertEvent(e);
+  });
+
   it('a plan approval may name the mode the session continues in', async () => {
     const w = await world();
     await w.call('turns.send', { input: 'plan it' });
@@ -376,6 +453,38 @@ describe('SessionApi', () => {
     for (const e of w.events()) assertEvent(e);
   });
 
+  it('suspend ends the runner only once its call is over: the idempotency record is kept first', async () => {
+    const w = await world();
+    const r = result(await w.call('sessions.suspend', {}, { ...ANN_CTX, idempotencyKey: 'k-suspend' }));
+    expect(r.session.status).toBe('suspended');
+    expect(w.suspended).toEqual({ n: 1, idempotent: [true] });
+    expect(result(await w.call('sessions.suspend', {}, { ...ANN_CTX, idempotencyKey: 'k-suspend' })).session.status).toBe('suspended');
+  });
+
+  it('a runner attached to a suspended session says it is up and idle; sessions.resume returns it unchanged', async () => {
+    const w = await world(
+      (log) => {
+        log.append('session.status_changed', { from: 'starting', to: 'idle' }, { actor: null });
+        log.append('runtime.suspended', { reason: 'requested' }, { actor: null });
+        log.append('session.status_changed', { from: 'idle', to: 'suspended' }, { actor: null });
+      },
+      { connected: true },
+    );
+    expect(w.of('runtime.connected').map((e) => e.data)).toEqual([{ warm: false, resumed: true, durationMs: null }]);
+    expect(w.of('session.status_changed').at(-1)?.data).toEqual({ from: 'suspended', to: 'idle' });
+    const seq = w.log.lastSeq;
+    const r = result(await w.call('sessions.resume', {}, { ...ANN_CTX, idempotencyKey: 'k-resume' }));
+    expect(r.session.status).toBe('idle');
+    expect(w.log.lastSeq).toBe(seq);
+    expect(w.suspended.n).toBe(0);
+    for (const e of w.events()) assertEvent(e);
+  });
+
+  it('a runner attached to an idle session records nothing more', async () => {
+    const w = await world((log) => void log.append('session.status_changed', { from: 'starting', to: 'idle' }, { actor: null }), { connected: true });
+    expect(w.of('runtime.connected')).toEqual([]);
+  });
+
   it('the computer naming a session journals the title; a person renaming it marks it renamed', async () => {
     const w = await world();
     expect(w.api.renamed).toBe(false);
@@ -414,8 +523,6 @@ describe('SessionApi', () => {
       log.append('turn.queued', { position: 2 }, { turnId: c, actor: BOB.actor });
       log.append('turn.failed', { error: { code: 'runtime_lost', message: 'the runner ended' } }, { turnId: run });
     });
-    // The host's Delivery.api for a turn already queued does not queue it again.
-    await w.api.deliver('third', { actor: BOB.actor, member: 'usr_bob', ifBusy: 'queue', turnId: c });
     await w.t.settle();
     expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['second']);
     await w.t.feed(w.T.first(), ...w.T.text('0', 'two'), w.T.done());

@@ -17,7 +17,7 @@
 //   operation, so one idempotency key covers both.
 // - Ids: sessions `cs_…` (src/session-ids.ts); members are `usr_…` (Person.userId).
 
-import type { HostCredentials, ModelRoute, Person, SessionSecret, SessionSpec } from './protocol.js';
+import type { HostCredentials, ModelRoute, Person, RoleSpec, SessionSecret, SessionSpec } from './protocol.js';
 
 /** Who acted, as every event and write carries it (API `Actor`). */
 export interface ApiActor {
@@ -62,6 +62,12 @@ export interface JournalDelta {
   data: unknown;
 }
 
+/**
+ * A delta on the host link: `offset` is the length (UTF-16 code units, a JavaScript string's `length`) of the block's
+ * text before this delta; `whole`: `data.text` is the block so far and replaces the reader's copy.
+ */
+export type HostDelta = JournalDelta & { offset: number; whole?: true };
+
 /** Who may attach to a session (pushed by the gateway, forwarded to the relay). */
 export interface SessionAccess {
   sessionId: string;
@@ -70,8 +76,8 @@ export interface SessionAccess {
   /** Others who may attach (read and write); null: every member of the organization. */
   members: string[] | null;
   /**
-   * The organization's admins (`usr_…`), who may also open terminals in this session (attaching still follows
-   * `members`). Absent: only the host's own list (the welcome's `people[].admin`) counts.
+   * The organization's admins (`usr_…`). Unused for access: owner first, an admin attaches by `members` like anyone
+   * and opens no terminal by role (`mayOpenTerminal`). Blue no longer sends it.
    */
   admins?: string[];
 }
@@ -87,18 +93,25 @@ export type GatewayToHostV4 =
    * Claim a spare and fork for `session` with no input (a session created over the API); answered by
    * `started`. `epoch` and `lastSeq` seed the writer's journal (seq continues at max(local, lastSeq) + 1).
    */
-  | { t: 'start'; id: string; session: SessionSpec; epoch: number; lastSeq: number;
+  | { t: 'start'; id: string; session: SessionSpec; role?: RoleSpec | null; epoch: number; lastSeq: number;
       credentials?: HostCredentials; secrets?: SessionSecret[];
       model?: ModelRoute }
   /**
    * An API write or read for session `sessionId`, from an HTTP route: `method` is the WebSocket method of the same
    * operation, `params` its params. The host hands it to the session's writer; answered by `api-result` (15 s at the gateway).
+   * Protocol 6: the only way work reaches a host. `idempotencyKey` is the inbox entry's id; `credentials`, `secrets` and `model` are
+   * the sender's for the session (what `deliver` carried), and a call that needs the agent starts its runner with them.
    */
   | { t: 'api'; id: string; sessionId: string; method: string; params: unknown; actor: ApiActor;
       /** `usr_…` of the caller (the idempotency scope). */
       member: string; idempotencyKey?: string; requestId?: string;
       /** The session, when the host may not know it yet (a write to a session with no runner and no local journal). */
-      session?: SessionSpec; epoch?: number; lastSeq?: number }
+      session?: SessionSpec; epoch?: number; lastSeq?: number;
+      credentials?: HostCredentials; secrets?: SessionSecret[]; model?: ModelRoute }
+  /** Someone watches the session until `until` (ms since the epoch): its deltas go up as `delta` frames until then. A lease, re-sent on renewal. */
+  | { t: 'watch'; sessionId: string; until: number }
+  /** A watcher lost its place in block `blockId`: answered by one `delta` holding the block so far (`offset: 0`, `whole`). */
+  | { t: 'block'; sessionId: string; blockId: string }
   /**
    * The SessionLog stored every event of `epoch` up to `seq`: the host may drop them from its spool. On a gap the DO
    * acks nothing and closes the socket with 4010 ("journal gap"); the host resends everything unacked after it reconnects.
@@ -145,10 +158,10 @@ export type HostToGatewayV4 =
    */
   | { t: 'subagent-progress'; sessionId: string; epoch: number; progress: SubagentProgress[] }
   /**
-   * A send the host's writer queued for a session the host has no spec of (none came since it booted):
-   * the gateway answers with `start`, as for a session created without a message. Ignored for an unknown session.
+   * The deltas of a watched session's open blocks, merged per block for 40 ms (host/delta-link.ts). Never acknowledged,
+   * never resent; dropped while the socket holds more than the journal's holding mark.
    */
-  | { t: 'wake'; sessionId: string };
+  | { t: 'delta'; sessionId: string; epoch: number; deltas: HostDelta[] };
 
 /** A `subagent.progress` delta's values (schema-events.ts). */
 export interface SubagentProgress {
@@ -171,8 +184,6 @@ export type WireToHost =
   | { t: 'hello'; version: string }
   /** Where the session's writer listens; `result: WhereResult`, or `session_not_found`. */
   | { t: 'where'; id: string; sessionId: string }
-  /** Start the session's runner if it is suspended (the interactive screen's attach with `resume=1`); `result: { status }`. */
-  | { t: 'resume'; id: string; sessionId: string; actor: ApiActor }
   /** `result: { terminalId, socket, channel? }`; bytes then flow on `socket` (a PTY, raw both ways). */
   | { t: 'terminal.open'; id: string; sessionId: string; member: string; cols: number; rows: number;
       command?: string; tty: boolean; term?: string }
@@ -196,8 +207,6 @@ export interface WhereResult {
   token: string;
   writer: 'runner' | 'host';
   epoch: number;
-  /** The epoch's first seq (the journal's epoch line), for a relay that finds the epoch moved (`session.detached`). */
-  epochStartSeq?: number;
 }
 
 /** Sent by the host to the relay. */
@@ -207,7 +216,7 @@ export type HostToWire =
   | { t: 'access'; access: SessionAccess }
   | { t: 'admins'; admins: string[] }
   | { t: 'revoked'; keyId: string }
-  /** The session's writer changed (runner exited, started): ask `where` again and resubscribe after the last seq. */
+  /** The session's writer changed (runner exited, started): ask `where` again. */
   | { t: 'moved'; sessionId: string }
   | { t: 'terminal.exited'; terminalId: string; exitCode: number | null; signal: string | null }
   | { t: 'files.done'; id: string; result?: unknown; error?: ApiError }
@@ -216,7 +225,7 @@ export type HostToWire =
 // ---------------------------------------------------------------- client ⇄ writer (<id>.api.sock)
 
 /**
- * Sent to the session's writer by the relay (one socket per attachment) or the host's api-bridge. Several calls may be
+ * Sent to the session's writer by the relay (calls only) or the host's api-bridge. Several calls may be
  * in flight; the writer answers each with `result`, in the order it accepted them. At most one `subscribe` per socket.
  */
 export type ApiClientFrame =
@@ -225,11 +234,11 @@ export type ApiClientFrame =
   | { t: 'call'; id: string; method: string; params: unknown; actor: ApiActor; member: string;
       idempotencyKey?: string; requestId?: string }
   /**
-   * Replay then live: events with seq > `after` (or the last `tailTurns` turns), then every new one. `result` is the
-   * `sessions.attached` body less `sessionId`; events follow it. `deltas: false` drops deltas.
+   * Replay then live: events with seq > `after` (or the last `tailTurns` turns), then every new one. `result` is
+   * api/writer.ts `Attached`; events follow it. `deltas: false` drops deltas.
    */
   | { t: 'subscribe'; id: string; after?: number; tailTurns?: number; deltas: boolean; resume?: boolean; mirror?: boolean }
-  /** The client has everything up to `seq` (`sessions.ack`): the writer may drop it from this subscriber's queue. */
+  /** The subscriber has everything up to `seq`: the writer may drop it from this subscriber's queue. */
   | { t: 'ack'; seq: number };
 
 export type ApiWriterFrame =
@@ -237,7 +246,7 @@ export type ApiWriterFrame =
   | { t: 'event'; event: JournalEvent }
   | { t: 'delta'; delta: JournalDelta }
   /** The subscription ended: `too_far_behind` (its backlog), `moved` (the writer handed the journal on; ask `where`). */
-  | { t: 'detached'; reason: 'too_far_behind' | 'moved' | 'access_lost' | 'epoch_changed'; logEpoch?: number; epochStartSeq?: number };
+  | { t: 'detached'; reason: 'too_far_behind' | 'moved' | 'access_lost' };
 
 // ---------------------------------------------------------------- host ⇄ runner (v4)
 
@@ -258,23 +267,9 @@ export interface RunnerApi {
   token: string;
 }
 
-/** Delivery.api: a message that came through the API, not Slack; recorded already by the host's writer when `turnId` is set. */
-export interface ApiDelivery {
-  actor: ApiActor;
-  member: string;
-  ifBusy: 'queue' | 'steer' | 'interrupt';
-  /** The turn the host's writer recorded (`message.received`, `turn.queued`) while no runner ran. */
-  turnId?: string;
-  idempotencyKey?: string;
-  model?: string;
-  effort?: string;
-  speed?: string;
-  mode?: string;
-}
-
 // ---------------------------------------------------------------- Slack-bound narrowings
 
-/** A person with a Slack identity: everyone the Slack gateway (src/gateway/) knows. */
+/** A person with a Slack identity: everyone the gateway knows from Slack. */
 export type SlackPerson = Person & { slackUserId: string };
 
 /** A session bound to a Slack thread or channel: every session the Slack gateway creates. */

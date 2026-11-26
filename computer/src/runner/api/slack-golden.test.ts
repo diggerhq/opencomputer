@@ -216,10 +216,13 @@ afterEach(() => vi.useRealTimers());
 function normalise(events: JournalEvent[]): string {
   const seen = new Map<string, string>();
   const id = (v: string) => seen.get(v) ?? (seen.set(v, `${v.split('_')[0]}#${seen.size + 1}`), seen.get(v)!);
+  // Block ids (minted by the tap per block) are numbered on their own, so they do not shift the others.
+  const blocks = new Map<string, string>();
+  const block = (v: unknown) => (typeof v === 'string' ? blocks.get(v) ?? (blocks.set(v, `block#${blocks.size + 1}`), blocks.get(v)!) : v);
   const walk = (v: unknown): unknown =>
     typeof v === 'string' ? (/^[a-z]{2,4}_[a-z0-9]{8,}$/.test(v) ? id(v) : v)
     : Array.isArray(v) ? v.map(walk)
-    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'at' && k !== 'ts').map(([k, x]) => [k, walk(x)]))
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'at' && k !== 'ts').map(([k, x]) => [k, k === 'blockId' ? block(x) : walk(x)]))
     : v;
   return `${events.map((e) => JSON.stringify(walk({ seq: e.seq, type: e.type, turnId: e.turnId, actor: e.actor?.id ?? null, data: e.data }))).join('\n')}\n`;
 }
@@ -252,7 +255,9 @@ describe('Slack golden (work 084): what a session posts is unchanged', () => {
     });
     it(`${name}, with the API tap`, async () => {
       const { got, events } = await tapped(name);
-      expect(got).toBe(readFileSync(file, 'utf8'));
+      // With the tap a prompt's buttons name its ask (`ak_…`), not a local id (work 118).
+      const noPrompt = (t: string) => t.replace(/("action_id": "p:[^:"]+:)[^:"]+/g, '$1<prompt>');
+      expect(noPrompt(got)).toBe(noPrompt(readFileSync(file, 'utf8')));
       for (const e of events) assertEvent(e);
       const jfile = path.join(DIR, `${name}.journal.ndjson`);
       if (RECORD_JOURNAL) return void writeFileSync(jfile, normalise(events));

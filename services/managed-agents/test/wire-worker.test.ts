@@ -39,6 +39,7 @@ const KEYS = {
   project: { key: "sk_project_0000000000000", record: record("key_project", { kind: "project" }) },
   readOnly: { key: "sk_readonly_000000000000", record: record("key_readonly", { scopes: ["sessions:read"] }) },
   noRead: { key: "sk_noread_00000000000000", record: record("key_noread", { scopes: ["asks:answer"] }) },
+  ownSession: { key: "sk_ownsession_0000000000", record: record("key_own", { sessionIds: [SESSION] }) },
 };
 
 beforeAll(async () => {
@@ -138,6 +139,23 @@ describe("the wire Worker's upgrade", () => {
     expect(headers.get("x-wire-scope")).toBe(encodeWireScope({ scopes: ALL, sessionIds: [SESSION], readOnly: true, until: NOW + 3_600_000 }));
     expect(JSON.stringify([...headers])).not.toContain(token);
     response.webSocket!.accept();
+  });
+
+  it("limits a session's own key to its sessions: on its own, and through a ticket naming others", async () => {
+    const { calls, handle } = harness();
+    (await handle(dial({ authorization: `Bearer ${KEYS.ownSession.key}` }))).webSocket!.accept();
+    expect(calls[0]!.headers.get("x-wire-scope")).toBe(encodeWireScope({ scopes: ALL, sessionIds: [SESSION] }));
+    const ticket = async (sessionIds?: string[]) =>
+      mintTicket(
+        wireEnv.WIRE_TICKET_KEY,
+        { org: "org_wire", member: "usr_wire", computer: "cmp_wire", tunnelId: TUNNEL, keyId: "key_own", client: "opc/0.1.0", scope: sessionIds ? { sessionIds } : {} },
+        NOW - 60_000,
+      );
+    for (const [named, reached] of [[undefined, [SESSION]], [["cs_0000000000000000", SESSION], [SESSION]], [["cs_0000000000000000"], []]] as const) {
+      calls.length = 0;
+      (await handle(dial({ "sec-websocket-protocol": `opc.v1, opc.ticket.${await ticket(named as string[] | undefined)}` }))).webSocket!.accept();
+      expect(calls[0]!.headers.get("x-wire-scope")).toBe(encodeWireScope({ scopes: ALL, sessionIds: [...reached], until: NOW + 3_600_000 }));
+    }
   });
 
   it("closes 4001 for no, an unknown or an expired key, a bad or stale ticket, or a ticket of a revoked key", async () => {

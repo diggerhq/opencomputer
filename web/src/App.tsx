@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
+import OldSessionRedirect from './components/old-session-redirect'
 import PublicTemplateRoute from './components/PublicTemplateRoute'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
 
@@ -16,17 +17,9 @@ const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
 const ManagedComputerSecrets = lazy(
   () => import('./managed-agents/ComputerSecrets'),
 )
-const ComputerSessionsLayout = lazy(
-  () => import('./managed-agents/computer-sessions/Layout'),
-)
-const ComputerSessionsHome = lazy(
-  () => import('./managed-agents/computer-sessions/Home'),
-)
-const ComputerSession = lazy(
-  () => import('./managed-agents/computer-sessions/Session'),
-)
-const WorkBoard = lazy(() => import('./managed-agents/work/Board'))
-const WorkItem = lazy(() => import('./managed-agents/work/Item'))
+const RailLayout = lazy(() => import('./components/rail-layout'))
+// Tracks and threads: its own full-screen surface, with its own navigation inside.
+const WorkSurface = lazy(() => import('./surface/web'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
@@ -115,28 +108,28 @@ export default function App() {
               element={<ManagedAgentDetail />}
             />
           </Route>
-          {/* The computer's sessions are their own full-screen view, with
-              their own rail and sidebar (work 107); every other page opens in
-              the same rail, without the sessions sidebar. */}
+          <Route
+            path="computer/work/*"
+            element={
+              <Suspense fallback={null}>
+                <WorkSurface />
+              </Suspense>
+            }
+          />
+          {/* The old session pages' links (opc prints them). */}
+          <Route path="computer/sessions/*" element={<OldSessionRedirect />} />
+          {/* Every other page opens in the same rail. */}
           <Route
             element={
               <Suspense fallback={null}>
-                <ComputerSessionsLayout />
+                <RailLayout />
               </Suspense>
             }
           >
-            <Route path="computer/sessions">
-              <Route index element={<ComputerSessionsHome />} />
-              {/* The same home, for a phone, where the index is the list. */}
-              <Route path="new" element={<ComputerSessionsHome />} />
-              <Route path=":id" element={<ComputerSession />} />
-            </Route>
             <Route
               path="computer/secrets"
               element={<ManagedComputerSecrets />}
             />
-            <Route path="computer/work" element={<WorkBoard />} />
-            <Route path="computer/work/:number" element={<WorkItem />} />
             <Route path="automations" element={<ManagedAgentsHome list />} />
             <Route
               path="model-access/callback"

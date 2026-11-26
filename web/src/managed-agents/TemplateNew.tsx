@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useCallback, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ExternalLink, FolderGit2, Loader2, Rocket } from 'lucide-react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
@@ -55,6 +55,13 @@ export default function TemplateNew() {
   const repositoryUrl = searchParams.get('repository-url')?.trim() ?? ''
   const quickStart = searchParams.get('quick-start') === '1'
   const validRepository = GITHUB_REPOSITORY.test(repositoryUrl)
+  // Quick start lands straight on the name: focus it when the field appears.
+  const focusName = useCallback(
+    (el: HTMLInputElement | null) => {
+      if (el && quickStart && !anonymous) el.focus()
+    },
+    [quickStart, anonymous],
+  )
   const commandKey = useRef(crypto.randomUUID())
   const [projectName, setProjectName] = useState('')
   const [secrets, setSecrets] = useState<Record<string, string>>({})
@@ -66,22 +73,27 @@ export default function TemplateNew() {
     retry: false,
   })
 
-  useEffect(() => {
-    if (!inspection.data || projectName) return
-    setProjectName(
-      quickStart
-        ? 'My agent'
-        : (inspection.data.template.defaultProjectName ??
-            inspection.data.template.name),
-    )
-    setVariables(
-      Object.fromEntries(
-        inspection.data.requirements.runtimeVariables
-          .filter((requirement) => requirement.example)
-          .map((requirement) => [requirement.name, requirement.example!]),
-      ),
-    )
-  }, [inspection.data, projectName, quickStart])
+  // Seed the form from each inspection result, during render rather than in an
+  // effect, so the first paint already shows the defaults.
+  const [seededFrom, setSeededFrom] = useState(inspection.data)
+  if (inspection.data && inspection.data !== seededFrom) {
+    setSeededFrom(inspection.data)
+    if (!projectName) {
+      setProjectName(
+        quickStart
+          ? 'My agent'
+          : (inspection.data.template.defaultProjectName ??
+              inspection.data.template.name),
+      )
+      setVariables(
+        Object.fromEntries(
+          inspection.data.requirements.runtimeVariables
+            .filter((requirement) => requirement.example)
+            .map((requirement) => [requirement.name, requirement.example!]),
+        ),
+      )
+    }
+  }
 
   const install = useMutation({
     mutationFn: async () => {
@@ -287,7 +299,7 @@ export default function TemplateNew() {
               value={projectName}
               onChange={(event) => setProjectName(event.target.value)}
               disabled={anonymous}
-              autoFocus={quickStart && !anonymous}
+              ref={focusName}
               onFocus={(event) => {
                 if (quickStart) event.currentTarget.select()
               }}

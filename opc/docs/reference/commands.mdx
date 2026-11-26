@@ -117,7 +117,7 @@ Prints a session's history and exits. Reads the recorded log: it never resumes a
 | Option | Does |
 | --- | --- |
 | `--details` | Everything, as the session screen shows it with details open. The default is one line per message, tool call and answer. |
-| `--after <seq>` | Only events after this `seq` |
+| `--after <cursor>` | Only events after this cursor, the `cursor` of an earlier `--json` read |
 | `--turn <tn_…>` | Only this turn |
 | `--types <glob>` | Only these event types, such as `tool.*`. Repeatable. |
 | `--output-format <format>` | `text`, `json` for `{ events, lastSeq, hasMore }`, or `stream-json` for one recorded [event](/api/reference/events) per line |
@@ -176,8 +176,8 @@ Prints a session's activity, read-only, until it is idle or waiting, and exits a
 
 | Option | Does |
 | --- | --- |
-| `--after <seq>` | Print recorded events after this `seq` first, then live ones |
-| `--from-start` | Print the whole history first. Same as `--after 0`. |
+| `--after <cursor>` | Print recorded events after this cursor first, then live ones |
+| `--from-start` | Print the whole history first |
 | `--follow` | Keep watching across turns until interrupted |
 | `--timeout <duration>` | Give up after this long, exit `124` |
 | `--output-format <format>` | `text`, `json` for the Result of the last turn it saw end, or `stream-json` |
@@ -245,9 +245,9 @@ Sets, lists and deletes a session's own secrets. See [Secrets](/cli/secrets).
 
 | Subcommand | Does |
 | --- | --- |
-| `set` | Sets or replaces a secret. The value comes from standard input, or a prompt that does not echo when standard input is a terminal; never from an argument. Replacing needs to be the person who set it, or an organization admin. `--file`: the session gets a file, and `$NAME` is its path. |
+| `set` | Sets or replaces a secret. The value comes from standard input, or a prompt that does not echo when standard input is a terminal; never from an argument. Only the session's owner. `--file`: the session gets a file, and `$NAME` is its path. |
 | `ls`, `list` | Names, who set each and when. Never values. `--json`: `{ "secrets": [Secret…] }`. |
-| `rm`, `delete` | Deletes a secret. Only the person who set it, or an organization admin. |
+| `rm`, `delete` | Deletes a secret. Only the session's owner. |
 
 ## opc rename
 
@@ -322,7 +322,7 @@ opc whoami [--json]
 opc doctor [--json]
 ```
 
-Checks, in order, and stops at the first failure: the configuration file, the credential, the API, your computer, the connection to it, and a round trip through it. Prints each step's time. `--json` prints `{ "steps": [{ name, ok, ms, detail, error }] }`, with the failure in its step's `error` rather than on standard error. Run it first when something is wrong. See [Troubleshooting](/troubleshooting).
+Checks, in order, and stops at the first failure: the configuration file (`config`), the credential, the API, your computer, the [Live](https://docs.opencomputer.dev/api/live) socket every watching command uses (`live`), 20 pings through it (`round trip`), and the WebSocket to your computer that `opc shell` and the interactive screen use (`wire`), when this API has one. Prints each step's time. `--json` prints `{ "steps": [{ name, ok, ms, detail, error }] }`, with the failure in its step's `error` rather than on standard error. Run it first when something is wrong. See [Troubleshooting](/troubleshooting).
 
 ## opc schema
 

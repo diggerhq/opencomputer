@@ -1,7 +1,7 @@
 // End-to-end check of sessions in containers (work 103), on a computer: the
 // host agent with SP_LAUNCH=podman against a fake gateway in this process,
 // runners rendering to a fake Slack client (SP_FAKE_SLACK=1, read back with
-// `podman logs`). No model call: a delivery is `!status`, or a turn whose
+// `podman logs`). No model call: a thread is started, or given a turn whose
 // model is src/dev/fake-model.mjs behind the release's oc-modelproxy, which
 // the check runs itself (sandbox-check-model.ts): every runner is bound there
 // by its unit, as on a computer, and without a proxy no session starts.
@@ -44,7 +44,7 @@
 //   socket, and the check is the relay on it. Two threads of one person are
 //   Slack threads, whose `cs_` ids the host learns from an `api` frame each
 //   (their runners write no journal); the other person's thread is a session
-//   of the API: its deliveries carry its `sessionId`, and its runner writes
+//   of the API: its starts carry its `sessionId`, and its runner writes
 //   its journal.
 // - The host is a child of the check, and more than one in a run: `host` is
 //   the one that runs now, and `hostLines` what all of them wrote.
@@ -204,7 +204,6 @@ wss.on('connection', (c) => {
     }
   });
 });
-let ts = 1;
 /** Tell the host a thread's `cs_` id, as a gateway does with the first API call for a session it does not know. */
 async function known(session: SessionSpec): Promise<string> {
   const sessionId = session.sessionId ?? mintId('cs');
@@ -228,11 +227,18 @@ function thread(owner: Person, n: number, sessionId?: string) {
     workspace: mnt.workspace({ person: owner.dir, key }),
     registry: (repo: string) => mnt.registry({ person: owner.dir, key }, repo),
     branch: `sp/${safeKey(key)}`,
-    async deliver(trace = mkTrace(), text = '!status') {
+    /** Start its runner, as the gateway's `start` does; with `text`, then send it as a turn. The `started` answer, as `reply`. */
+    async start(trace = mkTrace(), text?: string) {
       const d = randomUUID();
       const at = Date.now();
-      toHost({ t: 'deliver', id: d, session: spec, msg: { userId: owner.slackUserId ?? 'U_OWNER', text, ts: `3.${ts++}` }, credentials, trace });
-      const reply = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'reply' }> => e.t === 'reply' && e.id === d), 120_000, SPARES ? 5 : 100);
+      toHost({ t: 'start', id: d, session: spec, epoch: 1, lastSeq: 0, credentials });
+      const started = await until(() => events.find((e): e is Extract<HostToGateway, { t: 'started' }> => e.t === 'started' && e.id === d), 120_000, SPARES ? 5 : 100);
+      const reply = started && { ok: !started.error, error: started.error?.message };
+      if (text && reply?.ok) {
+        const sessionId = (spec.sessionId ??= await known(spec));
+        const member = owner.userId ?? '';
+        toHost({ t: 'api', id: randomUUID(), sessionId, method: 'turns.send', params: { sessionId, input: text }, actor: { id: member, name: null, via: 'api', client: null }, member, session: spec });
+      }
       return { reply, ms: Date.now() - at, trace };
     },
     reports: () => events.flatMap((e) => (e.t === 'session' && e.report.key === key ? [e.report] : [])),
@@ -304,9 +310,9 @@ async function cleanup() {
   else writeFileSync(gatewayDefinitionPath(), savedDefinition);
 }
 
-/** Threads delivered to every 8 s, so that none leaves for idleness while it is looked at. */
+/** Threads started again every 8 s, so that none leaves for idleness while it is looked at. */
 const kept = new Set<Thread>();
-const keeping = setInterval(() => void Promise.all([...kept].map((t) => t.deliver())), 8000);
+const keeping = setInterval(() => void Promise.all([...kept].map((t) => t.start())), 8000);
 
 /** The step 7 checks on running threads: `a` and its sibling `a2` of one person, `b` of another, with a journal. */
 async function workspaces(a: Thread, a2: Thread, b: Thread) {
@@ -329,7 +335,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
   check(commit === 'true\nsandbox check\n0', `a session edits, runs and commits in its worktree: ${JSON.stringify(commit)}`);
 
   // ---- a sibling thread of the same person, and another person's
-  const [d2, d3] = await Promise.all([a2.deliver(), b.deliver()]);
+  const [d2, d3] = await Promise.all([a2.start(), b.start()]);
   kept.add(a2).add(b);
   check(!!d2.reply?.ok && !!d3.reply?.ok, `a second thread of ${a.owner.dir} and one of ${b.owner.dir} → ok in ${d2.ms} and ${d3.ms} ms (${d2.reply?.error ?? ''}${d3.reply?.error ?? ''})`);
   await a.inside('echo secret-of-a > /workspace/marker-a && echo secret-of-a > /workspace/hello/marker-a');
@@ -375,7 +381,7 @@ async function workspaces(a: Thread, a2: Thread, b: Thread) {
     enter: () => Promise.reject(new Error('not used')), running: async () => true });
   useScripts((clonesDir) => scripts.helperScripts(path.basename(path.dirname(clonesDir))));
   kept.delete(a2);
-  await a2.deliver(); // the host writes the record at a delivery: the last one before the checkout, which the host does not know of
+  await a2.start(); // the host writes the record at a start: the last one before the checkout, which the host does not know of
   const ws = sandboxWorkspaces({ as, records: records(), mounts: mnt, scripts: scripts.sessionScripts, pid: () => a2.pid() });
   const at = Date.now();
   const out = await ws.checkout(a2.id(), ['octocat/Spoon-Knife', 'nope', '../hello']);
@@ -426,8 +432,8 @@ try {
   check(!existsSync(mnt.clone(PAT.dir, 'spoon')), 'the lazy repository is not cloned');
 
   // ---- a new thread
-  const d1 = await A1.deliver();
-  check(!!d1.reply?.ok, `first delivery → reply ok in ${d1.ms} ms (${d1.reply?.error ?? ''})`);
+  const d1 = await A1.start();
+  check(!!d1.reply?.ok, `first start → ok in ${d1.ms} ms (${d1.reply?.error ?? ''})`);
   const record = await until(A1.record, 5000);
   const id = record?.id;
   check(!!record && record.key === A1.key && record.person === PAT.dir, `the thread has a record: ${JSON.stringify(record)}`);
@@ -464,11 +470,11 @@ try {
   await A1.inside('echo x > /workspace/hello/node_modules/pkg/made-by-root && chmod 600 /workspace/hello/node_modules/pkg/made-by-root', '0:0');
 
   // ---- warm
-  const d2 = await A1.deliver();
-  check(!!d2.reply?.ok && (await A1.pid()) === pid, `second delivery → ok in ${d2.ms} ms, same container process`);
+  const d2 = await A1.start();
+  check(!!d2.reply?.ok && (await A1.pid()) === pid, `second start → ok in ${d2.ms} ms, same container process`);
 
   // ---- what reaches into a running container (step 9): the two threads of one person
-  const dA2 = await A2.deliver();
+  const dA2 = await A2.start();
   kept.add(A2);
   check(!!dA2.reply?.ok && !!A2.id() && A2.id() !== id && (await A2.inspect('{{.State.Status}}')) === 'running', `the second thread of the same person runs in its own container ${containerName(A2.id())}`);
   sessions.push(await known(A1.spec), await known(A2.spec));
@@ -489,7 +495,7 @@ try {
     detached: (cid, argv) => podman(['exec', '--detach', '--user', '1500:1500', containerName(cid), ...argv]),
     asRunner: (argv) => as.run(argv, { timeoutMs: 10_000 }),
     status: (cid) => byId(cid).inspect('{{.State.Status}}'),
-    tell: (t, text) => byId(t.id).deliver(mkTrace(), text),
+    tell: (t, text) => byId(t.id).start(mkTrace(), text),
     filesPlace: (t, running) => files({ id: t.id, person: path.basename(path.dirname(path.dirname(t.workspace))), workspace: t.workspace, running }),
   };
   await reachRunning(kit, a, b, q);
@@ -497,10 +503,10 @@ try {
   // ---- idle exit
   kept.clear();
   clearInterval(keeping);
-  await A1.deliver();
+  await A1.start();
   const idleAt = Date.now();
   check(!!(await until(async () => ((await A1.inspect('{{.State.Status}}')) === 'exited' ? true : undefined), IDLE_MS + 40_000)),
-    `idle for ${IDLE_MS} ms: the runner left and the container is exited (${Date.now() - idleAt} ms after the delivery)`);
+    `idle for ${IDLE_MS} ms: the runner left and the container is exited (${Date.now() - idleAt} ms after the start)`);
   check(!!(await until(async () => ((await A1.unitActive()) ? undefined : true), 10_000)), 'its unit is gone');
   check((await podman(['volume', 'exists', volumeName(id)]).then(() => true, () => false)) && !!A1.record(), 'its home volume and its record stay');
   check(!!(await until(() => A1.reports().find((r) => r.status === 'stopped'))), 'the gateway was told the session stopped');
@@ -524,8 +530,8 @@ try {
   await reachStopped(kit, a, b, q);
 
   // ---- resume
-  const d3 = await A1.deliver();
-  check(!!d3.reply?.ok, `delivery after the idle exit → ok in ${d3.ms} ms (${d3.reply?.error ?? ''})`);
+  const d3 = await A1.start();
+  check(!!d3.reply?.ok, `start after the idle exit → ok in ${d3.ms} ms (${d3.reply?.error ?? ''})`);
   check(A1.record()?.id === id && (await A1.inspect('{{.State.Status}}')) === 'running' && (await A1.unitActive()), 'the same container runs again, under the same id');
   check((await A1.inside('cat /home/agent/sandbox-check-marker')) === 'kept', 'a file written in its home before the exit is there');
   const l3 = launched(d3.trace) ?? (await until(() => launched(d3.trace), 10_000));

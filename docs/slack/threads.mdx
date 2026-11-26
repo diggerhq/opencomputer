@@ -15,7 +15,7 @@ description: "Each Slack thread is one session; its runner exits after 2 hours i
 | Existing thread | A reply that mentions `@computer`. The session also receives the replies above it. | Same. |
 | Direct message | Any message. No mention needed. | Every message in that DM thread is for the agent. |
 
-Only people on the people list get a session; anyone else gets an ephemeral "not enabled for you yet" reply. One-machine mode has no people list: anyone who can reach `@computer` can start a session.
+Only full members of the Slack workspace get a session; a guest gets an ephemeral "Only full members of this workspace can drive sessions." One-machine mode has no such check: anyone who can reach `@computer` can start a session.
 
 Edited messages and messages from bots are ignored.
 
@@ -50,4 +50,4 @@ The next message starts a new runner that resumes the same conversation in the s
 
 One-machine mode has no idle exit.
 
-{/* Sources: computer/src/main.ts; computer/src/gateway/main.ts; computer/src/gateway/routing.ts (route, acknowledge, NOT_ENABLED); computer/src/gateway/hosts.ts; computer/src/runner/session.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/thinking.ts; computer/src/runner/format.ts (fmtStatus); computer/src/runner/thread.ts; computer/src/runner/commands.ts; computer/src/runner/harness/title.ts (TITLE_AFTER); computer/src/runner/harness/claude/title.ts; computer/src/runner/main.ts (idle exit, retitle); computer/src/host/main.ts (IDLE_MS, idle loop, deliver) */}
+{/* Sources: computer/src/main.ts; services/managed-agents/src/actors/slack/durable-object.ts; computer/src/runner/session.ts; computer/src/runner/segment.ts; computer/src/runner/timeline.ts; computer/src/runner/thinking.ts; computer/src/runner/format.ts (fmtStatus); computer/src/runner/thread.ts; computer/src/runner/commands.ts; computer/src/runner/harness/title.ts (TITLE_AFTER); computer/src/runner/harness/claude/title.ts; computer/src/runner/main.ts (idle exit, retitle); computer/src/host/main.ts (IDLE_MS, idle loop, deliver) */}

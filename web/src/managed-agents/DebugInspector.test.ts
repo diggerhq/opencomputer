@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { modelRouteForRender } from './DebugInspector'
+import { modelRouteForRender } from './model-route'
 import type { ManagedAgentEvent } from './api'
 
 function event(
@@ -35,7 +35,7 @@ describe('modelRouteForRender', () => {
       event(4, 'turn.completed', {}),
     ]
 
-    expect(modelRouteForRender(events, events[2]!)).toMatchObject({
+    expect(modelRouteForRender(events, events[2])).toMatchObject({
       effective: { provider: 'connection', model: 'GLM-5.3' },
       source: 'project_route',
       routeRevision: 1,
@@ -54,6 +54,6 @@ describe('modelRouteForRender', () => {
       event(3, 'agent.rendered', {}),
     ]
 
-    expect(modelRouteForRender(events, events[2]!)).toBeUndefined()
+    expect(modelRouteForRender(events, events[2])).toBeUndefined()
   })
 })

@@ -53,7 +53,7 @@ The outcome of a turn is not an error: it is the [Result](/api/reference/objects
 | `answer_with_secret` | 2 | no | The ask is a secret request, which `opc ask answer` does not answer. It is answered in Slack. |
 | `subagent_running` | 5 | no | `opc subagents result`: the subagent is still running. `message` says what it is doing. |
 | `detached` | 2 | no | The server stopped sending the session. `message` gives the reason. |
-| `too_far_behind`, `too_many_attached`, `too_large` | 2 | no | Your computer's connection refused the request: the session is too far behind to attach, too many sessions are attached, or a message is too large for the connection |
+| `too_many_attached`, `too_large` | 2 | no | Your computer's connection refused it: more than 50 connections to your computer for one member (`opc` retries first), or a message is too large for the connection |
 | `feature_unavailable`, `invalid_request` | 2 | no | Your computer refused the request: the feature is not available on it, or the request was malformed |
 | `io` | 2 | no | A local file could not be read or written. `message` names it. |
 | `config_unreadable` | 2 | no | `opc doctor`: the configuration file exists but cannot be read |
@@ -63,4 +63,4 @@ The outcome of a turn is not an error: it is the [Result](/api/reference/objects
 
 `turn_failed`, `turn_cancelled` and `waiting` are turn outcomes. Commands that print a Result (`opc -p`, `opc wait`, `opc watch`, `opc send --wait`) report them there, as `subtype` `error`, `cancelled` or `waiting` with the same fields, and print no error object. In `stream-json`, a failed turn's last line has `status: "failed"`; a command failure's last line does not.
 
-API error codes that are not listed here, such as `id_conflict` or `cursor_ahead`, are passed through with their `retryable`, and exit code `4` for `5xx` responses and `2` otherwise.
+API error codes that are not listed here, such as `id_conflict`, are passed through with their `retryable`, and exit code `4` for `5xx` responses and `2` otherwise.

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ExternalLink, Loader2 } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { ApiError } from '@/api/errors'
 import {
   SettingsAction,
@@ -8,21 +8,16 @@ import {
   SettingsSection,
 } from '@/components/settings'
 import { Button } from '@/components/ui/button'
-import { relativeTime } from '../computer-state'
 import type { Repository } from './api'
 import { repositoryName, repositoryProblem } from './board'
-import {
-  useGrantingInstallations,
-  useOpenItems,
-  useRepository,
-} from './queries'
+import { useGrantingInstallations, useRepository } from './queries'
 import { ConnectGitHubButton, RepositoryCombobox } from './RepositorySetting'
 
 // The knowledge repository setting, as one self-contained section in the
 // settings anatomy (components/settings.tsx), so it can be mounted on any
 // settings surface: which repository holds the working docs (the Repository
-// row is the picker itself), its branch, how the board's reading of it
-// stands, and the one action that fixes each problem the server reports.
+// row is the picker itself), its branch, and, when the server reports a
+// problem with it, the problem and the one action that fixes it.
 
 /** `id` goes on the section, as a link target. */
 export function KnowledgeRepositorySection({ id }: { id?: string }) {
@@ -87,15 +82,13 @@ export function KnowledgeRepositorySection({ id }: { id?: string }) {
         <SettingsRow label="Branch">
           <span className="font-mono text-[13px]">{r.branch}</span>
         </SettingsRow>
-        <SettingsRow label="State">
-          {problem ? (
-            <span className="text-status-error">{problem}</span>
-          ) : (
-            <ReadState repository={r} />
-          )}
-        </SettingsRow>
         {problem ? (
-          <Fix repository={r} onChoose={() => setChoosing(true)} />
+          <>
+            <SettingsRow label="State">
+              <span className="text-status-error">{problem}</span>
+            </SettingsRow>
+            <Fix repository={r} onChoose={() => setChoosing(true)} />
+          </>
         ) : null}
       </>
     )
@@ -105,57 +98,10 @@ export function KnowledgeRepositorySection({ id }: { id?: string }) {
     <SettingsSection
       id={id}
       title="Knowledge repository"
-      description="The GitHub repository where agents keep working docs. The board shows the items in it."
+      description="The GitHub repository where agents keep working docs."
     >
       {rows}
     </SettingsSection>
-  )
-}
-
-/** How fresh the board's reading is, from the open-items poll. */
-function ReadState({ repository: r }: { repository: Repository }) {
-  const open = useOpenItems()
-  const page = open.data?.page
-  if (!page) return <span className="text-muted-foreground">…</span>
-  if (page.building) {
-    return (
-      <span className="inline-flex items-center gap-1.5">
-        <Loader2
-          className="text-muted-foreground size-3.5 animate-spin"
-          aria-hidden
-        />
-        Reading the working docs for the first time…
-      </span>
-    )
-  }
-  if (!page.asOf) {
-    return <span className="text-muted-foreground">Not read yet</span>
-  }
-  return (
-    <span>
-      Up to date
-      <span className="text-muted-foreground">
-        {' '}
-        · read{' '}
-        <span className="tabular-nums" title={page.asOf}>
-          {relativeTime(page.asOf)}
-        </span>
-        {page.head ? (
-          <>
-            {' '}
-            at{' '}
-            <a
-              href={`https://github.com/${r.owner}/${r.name}/commit/${page.head}`}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-foreground font-mono text-xs"
-            >
-              {page.head.slice(0, 7)}
-            </a>
-          </>
-        ) : null}
-      </span>
-    </span>
   )
 }
 
@@ -233,7 +179,7 @@ function Fix({
   }
   if (code === 'github_app_not_configured') {
     return (
-      <FixRow hint="This is on our side, not yours; the board reads again once it is fixed." />
+      <FixRow hint="This is on our side, not yours; there is nothing to change here." />
     )
   }
   return <FixRow>{another(true)}</FixRow>

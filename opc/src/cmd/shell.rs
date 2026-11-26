@@ -10,6 +10,7 @@
 use super::{Ctx, resolve};
 use crate::cli::ShellArgs;
 use crate::error::{Error, Result, exit};
+use crate::http::{Http, session_path};
 use crate::wire::{WireEvent, WireHandle};
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -102,7 +103,7 @@ fn notice(msg: &str) {
 fn open_error(e: Error) -> Error {
     let reason = e.extra.get("reason").and_then(Value::as_str).unwrap_or("");
     match (e.code.as_str(), reason) {
-        ("forbidden", "terminal_owner_only") => Error { message: "only the owner of this session can open a shell in it".into(), ..e },
+        ("forbidden", "terminal_owner_only") => Error { message: "only the session's owner, or someone it is shared with by name, can open a shell in it".into(), ..e },
         ("forbidden", "missing_scope") => Error { message: "this API key cannot open shells: it needs the terminals scope".into(), ..e },
         ("feature_unavailable", _) => Error { message: "shells are not available on this computer".into(), ..e },
         ("too_many_terminals", _) => Error { message: "8 shells are already open in this session: close one first".into(), ..e },
@@ -293,8 +294,8 @@ fn write_all(mut w: impl Write, data: &[u8]) -> std::io::Result<()> {
 }
 
 async fn open(ctx: &Ctx, session_id: &str, command: Option<&str>, tty: bool) -> Result<i32> {
-    let (wire, mut events) = ctx.open_wire(vec![], false).await?;
-    let result = session(&wire, &mut events, session_id, command, tty).await;
+    let (wire, mut events) = ctx.open_wire().await?;
+    let result = session(&ctx.http, &wire, &mut events, session_id, command, tty).await;
     wire.close();
     result
 }
@@ -317,12 +318,13 @@ async fn call_open(wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireE
     }
 }
 
-/// Wakes a session that is not running, as a message would, and opens the
+/// Wakes a session that is not running, as a message would (`POST
+/// /sessions/{id}/resume`: session writes go over HTTP), and opens the
 /// terminal once it is.
-async fn wake(wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireEvent>, session_id: &str, params: &Value, early: &mut Vec<WireEvent>) -> Result<Value> {
+async fn wake(http: &Http, wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireEvent>, session_id: &str, params: &Value, early: &mut Vec<WireEvent>) -> Result<Value> {
     notice("waking session…");
-    let resume = json!({ "sessionId": session_id, "idempotencyKey": crate::ids::idempotency_key() });
-    if let Err(e) = wire.call("sessions.resume", resume).await {
+    let key = crate::ids::idempotency_key();
+    if let Err(e) = http.post(&session_path(session_id, "/resume"), &json!({}), Some(&key)).await {
         let message = format!("the session is not running, and could not be woken: {}", e.message);
         return Err(Error { message, ..e }.hint(format!("send it a message (opc send -s {session_id} …) to wake it, then run opc shell again")));
     }
@@ -343,6 +345,7 @@ async fn wake(wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireEvent>
 }
 
 async fn session(
+    http: &Http,
     wire: &WireHandle,
     events: &mut mpsc::UnboundedReceiver<WireEvent>,
     session_id: &str,
@@ -355,7 +358,7 @@ async fn session(
     // Output can arrive before the result: hold it until we know our channel.
     let mut early: Vec<WireEvent> = Vec::new();
     let opened = match call_open(wire, events, &params, &mut early).await {
-        Err(e) if not_running(&e) => wake(wire, events, session_id, &params, &mut early).await?,
+        Err(e) if not_running(&e) => wake(http, wire, events, session_id, &params, &mut early).await?,
         r => r.map_err(open_error)?,
     };
     let t = opened.get("terminal").unwrap_or(&opened);
@@ -544,7 +547,7 @@ mod tests {
     #[test]
     fn owner_only_is_exit_3_with_the_docs_message() {
         let e = open_error(Error::from_api(403, &json!({"code": "forbidden", "message": "m", "reason": "terminal_owner_only"})));
-        assert_eq!(e.message, "only the owner of this session can open a shell in it");
+        assert_eq!(e.message, "only the session's owner, or someone it is shared with by name, can open a shell in it");
         assert_eq!(e.exit_code(), 3);
     }
 

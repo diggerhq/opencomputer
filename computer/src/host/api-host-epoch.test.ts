@@ -326,26 +326,26 @@ describe('epoch adoption (recovery-fix)', () => {
     await t.a.stop();
   });
 
-  it('a deliver and an api call right behind an epoch frame wait for the slow adoption, then run under the new epoch with nothing lost (review r2 P1-1)', async () => {
+  it('a start and an api call right behind an epoch frame wait for the slow adoption, then run under the new epoch with nothing lost (review r2 P1-1)', async () => {
     const ref: { t?: Awaited<ReturnType<typeof outage>> } = {};
     const t = (ref.t = await outage({ retire: async (id) => (await settle(), await settle(), cooperative(ref.t!)(id)) }));
     const frame = t.dO.recover(3);
     t.a.onGateway(frame);
     const msg = { userId: 'U1', text: 'next', ts: '2' };
-    const delivered = t.a.onGateway({ t: 'deliver', id: 'd2', session: spec, msg, epoch: 2, lastSeq: 7 });
+    const delivered = t.a.onGateway({ t: 'start', id: 'd2', session: spec, epoch: 2, lastSeq: 7 });
     const update = t.a.onGateway({ t: 'api', id: 'w2', sessionId: S, method: 'sessions.update', params: { title: 'held' }, actor, member: 'usr_1', epoch: 2, lastSeq: 7 });
     expect(delivered).toBeInstanceOf(Promise);
     expect(update).toBeInstanceOf(Promise);
     const order: string[] = [];
     const seen = Promise.all([
-      (delivered as Promise<boolean>).then((own) => (order.push(`deliver@${readJournalFile(t.file, 0).epoch}`), own)),
+      (delivered as Promise<boolean>).then((own) => (order.push(`start@${readJournalFile(t.file, 0).epoch}`), own)),
       (update as Promise<boolean>).then((own) => (order.push(`api@${readJournalFile(t.file, 0).epoch}`), own)),
     ]);
     await settle();
     expect(order).toEqual([]); // the adoption is still retiring the runner: neither ran under epoch 1
     expect(t.sent.some((m) => m.t === 'api-result' && m.id === 'w2')).toBe(false);
-    expect(await seen).toEqual([false, true]); // the deliver goes on to main, the api call was the API's
-    expect(order).toEqual(['deliver@2', 'api@2']);
+    expect(await seen).toEqual([true, true]); // both were the API's alone
+    expect(order).toEqual(['start@2', 'api@2']);
     await until(() => t.sent.some((m) => m.t === 'api-result' && m.id === 'w2'));
     const local = readJournalFile(t.file, 0).events;
     expect(local.slice(0, 7)).toEqual(t.dO.log.slice(0, 7));
@@ -365,7 +365,7 @@ describe('epoch adoption (recovery-fix)', () => {
     const frame = t.dO.recover(3);
     t.a.onGateway(frame);
     let done = false;
-    const delivered = t.a.onGateway({ t: 'deliver', id: 'd3', session: spec, msg: { userId: 'U1', text: 'x', ts: '3' }, epoch: 2, lastSeq: 7 });
+    const delivered = t.a.onGateway({ t: 'start', id: 'd3', session: spec, epoch: 2, lastSeq: 7 });
     void (delivered as Promise<boolean>).then(() => (done = true));
     await settle();
     await settle();
@@ -386,11 +386,11 @@ describe('epoch adoption (recovery-fix)', () => {
     const ref: { t?: Awaited<ReturnType<typeof outage>> } = {};
     const t = (ref.t = await outage({ holdAskMs: 20, retire: (id) => cooperative(ref.t!)(id) }));
     const frame = t.dO.recover(3); // the DO moved to epoch 2, and the frame was lost
-    const delivered = t.a.onGateway({ t: 'deliver', id: 'd4', session: spec, msg: { userId: 'U1', text: 'x', ts: '4' }, epoch: 2, lastSeq: 7 });
+    const delivered = t.a.onGateway({ t: 'start', id: 'd4', session: spec, epoch: 2, lastSeq: 7 });
     const asked = () => t.sent.filter((m) => m.t === 'journal' && m.epoch === 1 && m.events.length === 0).length;
     await until(() => asked() >= 2); // asked again every deadline while held
     t.a.onGateway(frame); // the gateway's rule 3 answer
-    expect(await delivered).toBe(false);
+    expect(await delivered).toBe(true);
     expect(readJournalFile(t.file, 0).epoch).toBe(2);
     const n = asked();
     await settle();
@@ -429,10 +429,10 @@ describe('epoch adoption (recovery-fix)', () => {
     const a = apiHost({ dataDir, stateDir: path.join(root, 'state'), runDir: path.join(root, 'run'), runnersDir: root, send: (m) => (sent.push(m), true), start: async () => 'idle', scan: async () => [], flushMs: 1 });
     a.onGateway(welcome);
     expect(a.journals()).toEqual([{ sessionId: S, epoch: 0, startSeq: 0, lastSeq: 7 }]);
-    const delivered = a.onGateway({ t: 'deliver', id: 'd7', session: spec, msg: { userId: 'U1', text: 'x', ts: '7' }, epoch: 2, lastSeq: 7 });
+    const delivered = a.onGateway({ t: 'start', id: 'd7', session: spec, epoch: 2, lastSeq: 7 });
     expect(delivered).toBeInstanceOf(Promise);
     a.onGateway(frame);
-    expect(await delivered).toBe(false);
+    expect(await delivered).toBe(true);
     expect(readJournalFile(file, 0)).toMatchObject({ epoch: 2, startSeq: 4, lastSeq: 7 });
     expect(readJournalFile(file, 0).events).toEqual(frame.tail);
     await a.stop();

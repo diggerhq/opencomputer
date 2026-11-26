@@ -1,6 +1,8 @@
 // The Computer API's operations (work 084; opc/docs/api/websocket/methods.mdx
 // and http/*.mdx): params and result of every WebSocket method, which are also
 // its HTTP route's body/query and response, and the WebSocket notifications.
+// The wire has no attach and carries no session events (work 118): clients
+// watch sessions through the cloud.
 //
 // Invariants: params are decoded strictly (unknown fields are refused with
 // -32602 / 400 invalid_request naming the field: `decodeParams`); results are
@@ -32,29 +34,21 @@ export const SendResult = Schema.Struct({
 export const SessionResult = Schema.Struct({ session: Session, seq: Seq }).annotate({ identifier: 'SessionResult' });
 export const AskResult = Schema.Struct({ ask: Ask, seq: Seq }).annotate({ identifier: 'AskResult' });
 
-export const AttachParams = Schema.Struct({
-  ...sid,
-  after: Schema.optionalKey(Seq),
-  tailTurns: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
-  deltas: Schema.optionalKey(Schema.Boolean),
-  resume: Schema.optionalKey(Schema.Boolean),
-  readOnly: Schema.optionalKey(Schema.Boolean),
-});
-export const AttachResult = Schema.Struct({
-  session: Session,
-  logEpoch: Count,
-  epochStartSeq: Seq,
-  capabilities: Capabilities,
-  earlierTurns: Schema.NullOr(Schema.Array(Turn)),
-  timing: Timing,
-}).annotate({ identifier: 'AttachResult' });
-
 const ApprovalOrQuestion = Schema.Union([ApprovalAnswer, QuestionAnswer]);
+/** Work 118, section 40.11: the Slack message a turn's input is, and the Slack button an answer is. Honoured only from the Slack actor (`via: 'slack'`). */
+const SlackTurn = Schema.Struct({
+  userId: Schema.String,
+  ts: Schema.String,
+  files: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  mentioned: Schema.optionalKey(Schema.Boolean),
+  mentionedInline: Schema.optionalKey(Schema.Boolean),
+  context: Schema.optionalKey(Schema.Unknown),
+  linked: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+});
+const SlackButton = Schema.Struct({ userId: Schema.String, value: Schema.String });
 
 /** Params and result of every method; `http` is the route of the same operation (`-` when WebSocket only). */
 export const METHODS = {
-  'sessions.attach': { params: AttachParams, result: AttachResult, http: '-' },
-  'sessions.detach': { params: Schema.Struct(sid), result: Schema.Struct({}), http: '-' },
   'sessions.get': { params: Schema.Struct({ ...sid, minSeq: Schema.optionalKey(Seq) }), result: Schema.Struct({ session: Session }), http: 'GET /sessions/{id}' },
   'sessions.update': {
     params: Schema.Struct({
@@ -73,9 +67,9 @@ export const METHODS = {
   'sessions.compact': { params: Schema.Struct({ ...sid, ...idem, instructions: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(10_000))) }), result: SendResult, http: 'POST /sessions/{id}/compact' },
   'sessions.suspend': { params: Schema.Struct({ ...sid, ...idem, ifIdle: Schema.optionalKey(Schema.Boolean) }), result: SessionResult, http: 'POST /sessions/{id}/suspend' },
   'sessions.resume': { params: Schema.Struct({ ...sid, ...idem }), result: SessionResult, http: 'POST /sessions/{id}/resume' },
-  'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
+  'turns.send': { params: Schema.Struct({ ...sid, ...idem, input: Input, ifBusy: Schema.optionalKey(IfBusy), turnId: Schema.optionalKey(TurnId), slack: Schema.optionalKey(SlackTurn) }), result: SendResult, http: 'POST /sessions/{id}/turns' },
   'turns.get': {
-    params: Schema.Struct({ ...sid, turnId: TurnId, waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))), status: Schema.optionalKey(Schema.String), minSeq: Schema.optionalKey(Seq) }),
+    params: Schema.Struct({ ...sid, turnId: TurnId, minSeq: Schema.optionalKey(Seq) }),
     result: Schema.Struct({ turn: Turn }), http: 'GET /sessions/{id}/turns/{turnId}',
   },
   'turns.cancel': { params: Schema.Struct({ ...sid, ...idem, turnId: TurnId }), result: Schema.Struct({ turn: Turn, seq: Seq }), http: 'POST /sessions/{id}/turns/{turnId}/cancel' },
@@ -85,7 +79,7 @@ export const METHODS = {
   },
   'asks.get': { params: Schema.Struct({ ...sid, askId: AskId }), result: Schema.Struct({ ask: Ask }), http: 'GET /sessions/{id}/asks/{askId}' },
   'asks.answer': {
-    params: Schema.Struct({ ...sid, ...idem, askId: AskId, answer: ApprovalOrQuestion }),
+    params: Schema.Struct({ ...sid, ...idem, askId: AskId, answer: Schema.optionalKey(ApprovalOrQuestion), slack: Schema.optionalKey(SlackButton) }),
     result: AskResult, http: 'POST /sessions/{id}/asks/{askId}/answer (body: the answer)',
   },
   'asks.dismiss': { params: Schema.Struct({ ...sid, ...idem, askId: AskId, message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2000))) }), result: AskResult, http: 'POST /sessions/{id}/asks/{askId}/dismiss' },
@@ -108,7 +102,6 @@ export const METHODS = {
       ...sid,
       after: Schema.optionalKey(Seq),
       limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
-      waitMs: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 }))),
       tailTurns: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
       turnId: Schema.optionalKey(TurnId),
       types: Schema.optionalKey(Schema.String),
@@ -170,7 +163,7 @@ export function decodeParams<M extends Method>(method: M, params: unknown): { ok
 
 // ---------------------------------------------------------------- notifications (server → client)
 
-export const Limits = Schema.Struct({ maxAttached: Count, maxMessageBytes: Count, maxRequestsPerSecond: Count }).annotate({ identifier: 'Limits' });
+export const Limits = Schema.Struct({ maxMessageBytes: Count, maxRequestsPerSecond: Count }).annotate({ identifier: 'Limits' });
 
 export const NOTIFICATIONS = {
   ready: Schema.Struct({
@@ -181,31 +174,11 @@ export const NOTIFICATIONS = {
     expiresAt: Schema.NullOr(Schema.String),
     expiresInMs: Schema.NullOr(Count),
   }),
-  'sessions.attached': Schema.Struct({
-    sessionId: SessionId,
-    error: Schema.NullOr(ApiError),
-    session: Schema.NullOr(Session),
-    logEpoch: Schema.NullOr(Count),
-    epochStartSeq: Schema.NullOr(Seq),
-    capabilities: Schema.NullOr(Capabilities),
-    earlierTurns: Schema.NullOr(Schema.Array(Turn)),
-    timing: Schema.NullOr(Schema.Struct({ serverUs: Count })),
-  }),
-  event: Event,
-  delta: Delta,
-  'session.detached': Schema.Struct({
-    sessionId: SessionId,
-    reason: Schema.String,
-    // epoch_changed: discard from epochStartSeq and re-read from epochStartSeq - 1 (absent for other reasons).
-    logEpoch: Schema.optional(Schema.Number),
-    epochStartSeq: Schema.optional(Schema.Number),
-  }),
   'terminal.exited': Schema.Struct({ terminalId: TerminalId, exitCode: Schema.NullOr(Schema.Int), signal: Schema.NullOr(Schema.String) }),
 } as const;
 
 /** Client → server notifications. */
 export const CLIENT_NOTIFICATIONS = {
-  'sessions.ack': Schema.Struct({ sessionId: SessionId, seq: Seq }),
   /** opc's own measurements (work 084 instrumentation); never answered. The relay checks each event's data against api/cli-telemetry.ts. */
   telemetry: Schema.Struct({
     v: Schema.Literals([1]),

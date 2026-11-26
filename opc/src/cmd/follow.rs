@@ -1,7 +1,8 @@
-//! Following sessions over the connection, for the commands that wait:
-//! `opc -p`, `send --wait`, `wait` and `watch`.
+//! Following sessions over the live socket and HTTP, for the commands that
+//! wait: `opc -p`, `send --wait`, `wait` and `watch`. None of them dials the
+//! wire.
 //!
-//! [`Follower`] turns the wire's stream into [`Step`]s and keeps a small
+//! [`Follower`] turns the live stream into [`Step`]s and keeps a small
 //! [`SessionState`] per session: the running and queued turns, the open asks
 //! and the subagents. A [`Tracker`] decides from that state when a goal is
 //! done (a turn ended or waits for a person, or the session settled), takes
@@ -12,7 +13,8 @@ use crate::api::result;
 use crate::api::types::{Delta, Event, Subagent, is_ended_status};
 use crate::cli::OnAsk;
 use crate::error::{Error, Result};
-use crate::wire::{AttachInfo, WireEvent, WireHandle};
+use crate::http::{Http, session_path};
+use crate::wire::{AttachInfo, Live, WireEvent};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -29,14 +31,14 @@ const TICK: Duration = Duration::from_millis(250);
 /// updated when a step is returned.
 #[derive(Debug)]
 pub enum Step {
-    Connected { reconnect: bool },
-    Reconnecting { attempt: u32, retry_in: Duration, error: Error },
     Attached(String),
     AttachFailed(String, Error),
     Event(Event),
     Delta(Delta),
-    /// The log was rewritten from this `seq`; the state was reloaded.
+    /// The server answered `reset`; the state was reloaded.
     Reset(String),
+    /// The opaque cursor after the events returned so far for this session.
+    Cursor(String, String),
     Detached(String, String),
     /// Nothing happened for a moment (for time-based checks).
     Tick,
@@ -45,7 +47,7 @@ pub enum Step {
 impl Step {
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Step::Attached(s) | Step::AttachFailed(s, _) | Step::Reset(s) | Step::Detached(s, _) => Some(s),
+            Step::Attached(s) | Step::AttachFailed(s, _) | Step::Reset(s) | Step::Cursor(s, _) | Step::Detached(s, _) => Some(s),
             Step::Event(e) => Some(e.session_id()),
             Step::Delta(d) => Some(d.session_id()),
             _ => None,
@@ -79,8 +81,8 @@ pub struct SessionState {
     /// Turns known to exist, with their trigger.
     pub triggers: HashMap<String, Option<String>>,
     pub last_seq: u64,
-    /// Attached a second time after `session_not_found`.
-    pub reattached: bool,
+    /// Everything recorded when the watch started has been delivered.
+    pub caught_up: bool,
 }
 
 impl SessionState {
@@ -216,33 +218,34 @@ impl SessionState {
 }
 
 pub struct Follower {
-    pub wire: WireHandle,
+    /// Reads and writes: over HTTP (writes through the session's inbox).
+    pub http: Http,
+    pub live: Live,
     rx: UnboundedReceiver<WireEvent>,
     pub states: HashMap<String, SessionState>,
-    connected_once: bool,
 }
 
 impl Follower {
-    /// `from_start`: the sessions were attached with `after: 0`.
-    pub fn new(wire: WireHandle, rx: UnboundedReceiver<WireEvent>, sessions: &[(String, bool)]) -> Follower {
+    /// `from_start`: the sessions are read from the start of their logs.
+    pub fn new(http: Http, live: Live, rx: UnboundedReceiver<WireEvent>, sessions: &[(String, bool)]) -> Follower {
         let states = sessions.iter().map(|(id, from_start)| (id.clone(), SessionState::new(id, *from_start))).collect();
-        Follower { wire, rx, states, connected_once: false }
+        Follower { http, live, rx, states }
     }
 
     pub fn state(&self, id: &str) -> Option<&SessionState> {
         self.states.get(id)
     }
 
-    /// Follows one more session over the same connection.
+    /// Follows one more session over the same socket.
     pub fn attach(&mut self, attach: crate::wire::Attach) {
-        let from_start = attach.after == Some(0);
+        let from_start = attach.from == crate::wire::From::Start;
         self.states.entry(attach.session_id.clone()).or_insert_with(|| SessionState::new(&attach.session_id, from_start));
-        self.wire.attach(attach);
+        self.live.attach(attach);
     }
 
     pub fn forget(&mut self, id: &str) {
         self.states.remove(id);
-        self.wire.detach(id);
+        self.live.detach(id);
     }
 
     /// The next step. A failure the connection cannot recover from is an
@@ -254,13 +257,6 @@ impl Follower {
             Ok(Some(ev)) => ev,
         };
         Ok(match ev {
-            WireEvent::Connected { took, resumed_tls, reconnect, .. } => {
-                if !self.connected_once {
-                    crate::timing::get().mark_connect(took, resumed_tls);
-                    self.connected_once = true;
-                }
-                Step::Connected { reconnect }
-            }
             WireEvent::Attached { session_id, result } => match result {
                 Ok(info) => {
                     let st = self.states.entry(session_id.clone()).or_insert_with(|| SessionState::new(&session_id, false));
@@ -288,11 +284,19 @@ impl Follower {
                 }
                 Step::Delta(d)
             }
-            WireEvent::EpochReset { session_id, .. } => {
-                // State derived from the rewritten events cannot be undone
+            WireEvent::Cursor { session_id, cursor, head } => {
+                if head && let Some(st) = self.states.get_mut(&session_id) {
+                    st.caught_up = true;
+                }
+                Step::Cursor(session_id, cursor)
+            }
+            WireEvent::Reset { session_id, .. } => {
+                // State derived from the dropped events cannot be undone
                 // piece by piece: start again from the session as it is.
-                let got = self.wire.call("sessions.get", json!({"sessionId": session_id})).await?;
-                let info = crate::wire::reconnect::parse_attach(&got)?;
+                let got = self.http.get(&session_path(&session_id, ""), &[]).await?;
+                let session = serde_json::from_value(got.get("session").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| Error::new("internal", format!("the server sent a session opc cannot read: {e}")))?;
+                let info = AttachInfo { session, capabilities: None, earlier_turns: None };
                 let from_start = self.states.get(&session_id).is_some_and(|s| s.from_start);
                 let mut st = SessionState::new(&session_id, from_start);
                 st.apply_snapshot(&info);
@@ -302,19 +306,16 @@ impl Follower {
                 Step::Reset(session_id)
             }
             WireEvent::Detached { session_id, reason } => Step::Detached(session_id, reason),
-            WireEvent::Reconnecting { attempt, retry_in, error } => Step::Reconnecting { attempt, retry_in, error },
             WireEvent::Fatal(e) => return Err(e),
-            WireEvent::TerminalExited(_) | WireEvent::Binary { .. } => Step::Tick,
+            // The wire's own events: the live socket sends none.
+            WireEvent::Connected { .. } | WireEvent::Reconnecting { .. } | WireEvent::TerminalExited(_) | WireEvent::Binary { .. } => Step::Tick,
         })
     }
 
     /// A turn as the server has it, once it includes `min_seq`.
     pub async fn get_turn(&self, session_id: &str, turn_id: &str, min_seq: Option<u64>) -> Result<Value> {
-        let mut p = json!({"sessionId": session_id, "turnId": turn_id});
-        if let Some(s) = min_seq.filter(|s| *s > 0) {
-            p["minSeq"] = json!(s);
-        }
-        let got = self.wire.call("turns.get", p).await?;
+        let q: Vec<(String, String)> = min_seq.filter(|s| *s > 0).map(|s| ("minSeq".to_string(), s.to_string())).into_iter().collect();
+        let got = self.http.get(&session_path(session_id, &format!("/turns/{turn_id}")), &q).await?;
         Ok(got.get("turn").cloned().unwrap_or(Value::Null))
     }
 
@@ -329,7 +330,8 @@ impl Follower {
             if complete {
                 return Ok(Vec::new());
             }
-            let got = self.wire.call("subagents.list", json!({"sessionId": session_id, "status": "all", "limit": 100})).await?;
+            let q = [("status".to_string(), "all".to_string()), ("limit".to_string(), "100".to_string())];
+            let got = self.http.get(&session_path(session_id, "/subagents"), &q).await?;
             Ok::<_, Error>(
                 got.get("subagents")
                     .and_then(Value::as_array)
@@ -558,10 +560,8 @@ impl Tracker {
             OnAsk::Wait => {}
             OnAsk::Dismiss => {
                 if self.dismissed.insert(ask_id.clone()) {
-                    let r = f
-                        .wire
-                        .call("asks.dismiss", json!({"sessionId": self.session_id, "askId": ask_id, "message": UNATTENDED}))
-                        .await;
+                    let path = session_path(&self.session_id, &format!("/asks/{}/dismiss", crate::net::encode(&ask_id)));
+                    let r = f.http.post(&path, &json!({"message": UNATTENDED}), None).await;
                     match r {
                         Ok(_) => {}
                         // Someone else closed it first: carry on.
@@ -575,15 +575,9 @@ impl Tracker {
     }
 }
 
-/// Whether a reconnect is worth a line on stderr: the first few retries
-/// (0, ~250 and ~500 ms) usually succeed within a second and stay quiet.
-pub fn worth_saying(attempt: u32, retry_in: std::time::Duration) -> bool {
-    attempt >= 3 || retry_in >= std::time::Duration::from_secs(1)
-}
-
-/// The error for `session.detached` with this reason.
+/// The error for a session the server stopped sending, with its reason.
 pub fn detached_error(sid: &str, reason: &str) -> Error {
-    let code = if reason.contains("archived") || reason.contains("deleted") || reason.contains("not_found") { "session_not_found" } else { "forbidden" };
+    let code = if reason.contains("archived") || reason.contains("deleted") || reason.contains("not_found") || reason == "gone" { "session_not_found" } else { "forbidden" };
     Error::new(code, format!("stopped receiving {sid}: {reason}")).with("sessionId", sid).with("reason", reason)
 }
 
@@ -604,21 +598,6 @@ pub async fn run_until_next(
             return Ok(i);
         }
         let step = f.next().await?;
-        if let Step::AttachFailed(sid, e) = &step
-            && trackers.iter().any(|t| &t.session_id == sid)
-        {
-            // A session this command just created can be attached before
-            // the server has it (a slow or retried create): try once more.
-            if e.code == "session_not_found"
-                && let Some(st) = f.states.get_mut(sid)
-                && st.from_start
-                && !st.reattached
-            {
-                st.reattached = true;
-                f.wire.attach(crate::wire::Attach { session_id: sid.clone(), after: Some(0), ..Default::default() });
-                continue;
-            }
-        }
         let lost = match &step {
             Step::AttachFailed(sid, e) => Some((sid.clone(), e.clone())),
             Step::Detached(sid, reason) => Some((sid.clone(), detached_error(sid, reason))),

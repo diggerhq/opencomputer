@@ -9,7 +9,7 @@ use super::{Ctx, resolve};
 use crate::cli::{AttachArgs, RunArgs};
 use crate::error::{Error, Result, exit};
 use crate::ui::app::{self, Create, Exit, Start};
-use crate::wire::Attach;
+use crate::wire::{Attach, From};
 
 /// `opc a [target]`.
 pub async fn run(ctx: &mut Ctx, a: AttachArgs) -> Result<i32> {
@@ -65,7 +65,7 @@ fn attach_start(id: &str, read_only: bool, history: Option<u32>, no_history: boo
     let base = Start {
         session_id: id.to_string(),
         read_only,
-        attach: Attach { session_id: id.to_string(), after: None, tail_turns: None, log_epoch: None },
+        attach: Attach { session_id: id.to_string(), from: From::Now },
         cached: Vec::new(),
         cached_shown_from: 0,
         cache_writes: false,
@@ -74,12 +74,12 @@ fn attach_start(id: &str, read_only: bool, history: Option<u32>, no_history: boo
         earlier: true,
         launched,
     };
-    match (history, no_history, cached.last_seq(), cached.log_epoch) {
-        (None, false, Some(last), Some(epoch)) => {
+    match (history, no_history, cached.last_seq(), cached.cursor.clone()) {
+        (None, false, Some(last), Some(cursor)) => {
             // The last turn in full, the earlier ones counted.
             let from = cached.events.iter().rposition(|e| e.kind() == "turn.started").unwrap_or(0);
             Start {
-                attach: Attach { session_id: id.to_string(), after: Some(last), tail_turns: None, log_epoch: Some(epoch) },
+                attach: Attach { session_id: id.to_string(), from: From::Cursor(cursor, Some(last)) },
                 cached: cached.events,
                 cached_shown_from: from,
                 cache_writes: true,
@@ -87,10 +87,10 @@ fn attach_start(id: &str, read_only: bool, history: Option<u32>, no_history: boo
                 ..base
             }
         }
-        (None, true, Some(last), Some(epoch)) => {
+        (None, true, Some(last), Some(cursor)) => {
             let n = cached.events.len();
             Start {
-                attach: Attach { session_id: id.to_string(), after: Some(last), tail_turns: None, log_epoch: Some(epoch) },
+                attach: Attach { session_id: id.to_string(), from: From::Cursor(cursor, Some(last)) },
                 cached: cached.events,
                 cached_shown_from: n,
                 cache_writes: true,
@@ -99,9 +99,9 @@ fn attach_start(id: &str, read_only: bool, history: Option<u32>, no_history: boo
             }
         }
         _ => {
-            let tail = if no_history { 0 } else { history.unwrap_or(1) };
+            let from = if no_history { From::Now } else { From::Tail(history.unwrap_or(1)) };
             Start {
-                attach: Attach { tail_turns: Some(tail), ..base.attach.clone() },
+                attach: Attach { from, ..base.attach.clone() },
                 // A tail is a sparse log: the cache takes it only when empty.
                 cache_writes: cached.events.is_empty(),
                 earlier: !no_history,
@@ -141,7 +141,7 @@ pub async fn run_new(ctx: &mut Ctx, run: RunArgs, message: Option<String>) -> Re
     let start = Start {
         session_id: id.clone(),
         read_only: false,
-        attach: Attach { session_id: id, after: Some(0), tail_turns: None, log_epoch: None },
+        attach: Attach { session_id: id, from: From::Start },
         cached: Vec::new(),
         cached_shown_from: 0,
         cache_writes: true,
@@ -175,10 +175,10 @@ mod tests {
     #[test]
     fn attaches_without_a_cache_ask_for_a_tail() {
         let s = attach_start("cs_aaaaaaaaaaaaaaaaaaaaaaaaaa", false, Some(3), false);
-        assert_eq!(s.attach.tail_turns, Some(3));
+        assert_eq!(s.attach.from, From::Tail(3));
         assert!(s.earlier);
         let s = attach_start("cs_aaaaaaaaaaaaaaaaaaaaaaaaaa", true, None, true);
-        assert_eq!(s.attach.tail_turns, Some(0));
+        assert_eq!(s.attach.from, From::Now);
         assert!(!s.earlier && s.read_only);
     }
 }

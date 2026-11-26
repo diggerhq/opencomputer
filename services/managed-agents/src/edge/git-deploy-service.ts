@@ -16,6 +16,8 @@ import type {
   ProjectResourceManifest,
   RegisterDeploymentInput,
 } from "../protocol.js";
+import { type ActorEnv, orgOf } from "../actors/addresses.js";
+import type { PullPub } from "../actors/org/contract.js";
 import type { RequestIdentity } from "./auth.js";
 import {
   createGitHubCheckRun,
@@ -1212,6 +1214,7 @@ export async function receiveGitHubWebhook(
   if (typeof installation !== "number" || !repository) {
     return json({ handled: false });
   }
+  await acceptPulls(env, installation, repository, event, payload);
   const sources = await sourcesForRepository(env, installation, repository.id);
   if (sources.length === 0) return json({ handled: false });
 
@@ -1335,6 +1338,78 @@ export async function receiveGitHubWebhook(
     return json({ handled: handled > 0 });
   }
   return json({ handled: false });
+}
+
+const PULL_ACTIONS = new Set(["opened", "closed", "reopened", "synchronize"]);
+
+type PullFields = { html_url?: unknown; number?: unknown; state?: unknown; merged?: unknown; merged_at?: unknown; title?: unknown };
+
+/** A pull request as Org takes it; null when GitHub's object lacks a field. */
+function pullPub(fullName: string, pr: PullFields, checks: string | null): PullPub | null {
+  if (typeof pr.number !== "number" || typeof pr.title !== "string") return null;
+  const merged = pr.merged === true || (typeof pr.merged_at === "string" && pr.merged_at !== "");
+  const state = merged ? "merged" : pr.state === "open" ? "open" : pr.state === "closed" ? "closed" : null;
+  if (!state) return null;
+  const url = typeof pr.html_url === "string" ? pr.html_url : `https://github.com/${fullName}/pull/${String(pr.number)}`;
+  return { url, state, checks, title: pr.title, at: Date.now() };
+}
+
+/**
+ * Spec 40.9: a `pull_request` event (`opened`, `closed`, `reopened`, `synchronize`) or a completed
+ * `check_suite`, for any repository of the installation, goes to `Org.acceptPull` of every
+ * organization that chose a Work repository through it (`github_installation_orgs`). A pull
+ * request event carries no checks (null); a check suite carries its conclusion, and each of its
+ * pull requests is read from GitHub for its state and title. Best effort: a failure is logged and
+ * the deploy handling below goes on.
+ */
+async function acceptPulls(
+  env: GitDeployEnv,
+  githubInstallationId: number,
+  repository: WebhookRepository,
+  event: string | null,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const pullEvent = event === "pull_request" && typeof payload.action === "string" && PULL_ACTIONS.has(payload.action) && isRecord(payload.pull_request);
+  const suite = event === "check_suite" && payload.action === "completed" && isRecord(payload.check_suite) ? payload.check_suite : null;
+  if (!pullEvent && !suite) return;
+  try {
+    const { results: orgs } = await env.SERVERLESS_AGENTS_DB.prepare(
+      "SELECT account_id, installation_id FROM github_installation_orgs WHERE github_installation_id = ?",
+    )
+      .bind(githubInstallationId)
+      .all<{ account_id: string; installation_id: string }>();
+    if (orgs.length === 0) return;
+    let pubs: PullPub[] = [];
+    if (pullEvent) {
+      const pub = pullPub(repository.full_name, payload.pull_request as PullFields, null);
+      if (pub) pubs = [pub];
+    } else {
+      const conclusion = typeof suite!.conclusion === "string" ? suite!.conclusion : null;
+      const numbers = (Array.isArray(suite!.pull_requests) ? suite!.pull_requests : [])
+        .map((pr: unknown) => (isRecord(pr) && typeof pr.number === "number" ? pr.number : null))
+        .filter((n): n is number => n !== null)
+        .slice(0, 10);
+      if (numbers.length === 0) return;
+      const minted = await env.ACCOUNTS.getByName(orgs[0]!.account_id).mintGitHubInstallationToken({
+        installationId: orgs[0]!.installation_id,
+        permissions: { pull_requests: "read" },
+      });
+      if (minted.outcome !== "minted") return;
+      for (const number of numbers) {
+        const response = await fetch(`https://api.github.com/repos/${repository.full_name}/pulls/${String(number)}`, {
+          headers: { authorization: `Bearer ${minted.token}`, accept: "application/vnd.github+json", "user-agent": "opencomputer-managed-agents", "x-github-api-version": "2022-11-28" },
+        });
+        if (!response.ok) continue;
+        const pub = pullPub(repository.full_name, (await response.json()) as PullFields, conclusion);
+        if (pub) pubs.push(pub);
+      }
+    }
+    for (const { account_id } of orgs) {
+      for (const pub of pubs) await orgOf(env as unknown as ActorEnv, account_id).acceptPull(pub);
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ level: "error", event: "git.accept_pull_failed", message: error instanceof Error ? error.message : String(error) }));
+  }
 }
 
 /**

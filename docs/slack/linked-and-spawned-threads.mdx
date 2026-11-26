@@ -1,6 +1,6 @@
 ---
 title: "Linked and spawned threads"
-description: "A pasted Slack permalink is read only if everyone involved can see it; `spawn_thread` starts a parallel session from a pushed brief"
+description: "A pasted Slack permalink is read only if everyone involved can see it; `start_thread` starts a parallel session, optionally from a pushed brief"
 ---
 
 <Frame>
@@ -33,44 +33,40 @@ The check also refuses when the session's conversation is shared with another or
 
 ## Reading and posting tools
 
-Gateway-and-host deployment only. Parameters: Agent tools.
+Not in one-machine mode. Parameters: Agent tools.
 
 | Tool | What it does | Limits |
 | --- | --- | --- |
-| `read_thread` | Reads a thread by link, or by channel id and message timestamp. Same content and access check as a pasted link, with the session's owner as the asker. | 40 calls per runner. Never asks for approval. |
-| `post_thread` | Posts a reply into another thread for the owner. | 20 calls per runner. 4,000 characters. Asks for approval unless the mode is `bypassPermissions`. |
+| `read_thread` | Reads another session by its id (`cs_…`) or the link of the Slack thread it runs on: what was sent to it and what its agent said, over its last 20 turns. | Only this session, sessions it started, and its track's agent and threads. 60,000 characters. Never asks for approval. |
+| `post_thread` | Posts a reply into another Slack thread for the owner. | Only from a session started in Slack, into a thread whose session `read_thread` could read. 4,000 characters. Asks for approval unless the mode is `bypassPermissions`. |
 
 `post_thread`:
 
 - replies in the thread, never at the channel's top level;
 - neutralizes `@channel`, `@here`, `@everyone` and user-group mentions;
-- appends a line: "Posted for @owner from this thread." with a link back.
-
-<Frame>
-  <img src="/images/slack/post-thread.png" alt="A reply by computer in another thread in #web, ending with the line Posted for @Sam from this thread" />
-</Frame>
+- reaches the session in that thread as a message from its owner, after a line saying it was posted for them by the session in another thread.
 
 ## Spawned threads
 
-`spawn_thread` starts a new session, in a new thread, that runs in parallel. Gateway-and-host deployment only. Parameters: Agent tools.
+`start_thread` starts a new session that runs in parallel. Not in one-machine mode. Parameters: Agent tools.
 
 | Stage | Who | What happens |
 | --- | --- | --- |
-| Brief | Agent | Writes a Markdown file in a workspace repository, commits it and pushes it to that repository's default branch. The tool refuses a brief that is not there. |
-| Call | Agent | Calls `spawn_thread` with a one-line `task`, the `brief` path and optionally a `model` tier. Outside `bypassPermissions` the call asks for approval. |
-| Post | Gateway | Posts a top-level message in the parent's channel: a mention of the owner, the task, a link to the brief and a link back to the parent thread. |
-| Start | New session | Runs on that message as if the owner had mentioned `@computer` there. It is told to read the brief first and report there. |
+| Brief | Agent | Optional. Writes a Markdown file in a workspace repository, commits it and pushes it to that repository's default branch. The tool refuses a brief that is not there. |
+| Call | Agent | Calls `start_thread` with a one-line `task`, optionally the `brief` path, and `track: true` to start it in this session's track. Outside `bypassPermissions` the call asks for approval. |
+| Post | Backend | When the parent has a Slack thread, posts the new session's first message at the top level of the parent's channel: the task and, with a brief, its path and link. |
+| Start | New session | Runs in that thread. With a brief, it is told to read the brief first and report there. |
 
 | The new session's | Value |
 | --- | --- |
-| Owner, permission mode | The parent's |
-| Model | The parent's, unless a `model` argument overrides it |
+| Owner, who may use it | The parent's |
+| Track | The parent's with `track: true`, else none |
 | Conversation | Its own |
 | Session directory | Its own, starting from each repository's default branch |
-| Context | The pushed brief only |
+| Context | The task and the pushed brief only |
 
-- 8 spawns per runner.
-- The parent is not told when the child finishes. The child reports in the brief and in its own thread; the parent can read that thread with `read_thread`.
+- 8 starts per runner, and at most 10 open threads started by one session.
+- `start_thread` returns the new session's id. The parent is not told when the child finishes; it can read the child with `read_thread`.
 - Steer or stop the child in its own thread. Stopping the parent does not stop it.
 
-{/* Sources: computer/src/links.ts; computer/src/gateway/routing.ts (LINKS_TIMEOUT_MS, threadAbove, spawn); computer/src/gateway/threads.ts (neutralizeBroadcasts); computer/src/runner/threads.ts; computer/src/runner/spawn.ts (MAX_SPAWNS, args); computer/src/runner/main.ts (hooks); computer/src/main.ts (no hooks, link owner) */}
+{/* Sources: computer/src/links.ts; services/managed-agents/src/slack-api/threads.ts (LINK_TIMEOUT_MS, neutralizeBroadcasts); services/managed-agents/src/actors/slack/durable-object.ts (post, wakeThread); services/managed-agents/src/actors/slack/announcements.ts; services/managed-agents/src/actors/org/sessions.ts (parent's owner and access, Slack.announce); services/managed-agents/src/actors/org/limits.ts (AGENT_THREADS_MAX); services/managed-agents/src/actors/org/who-may.ts (seesSession); computer/src/runner/threads.ts; computer/src/runner/spawn.ts (MAX_STARTS, args); computer/src/runner/main.ts (hooks); computer/src/main.ts (no hooks, link owner) */}

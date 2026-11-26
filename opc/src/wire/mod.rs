@@ -1,14 +1,20 @@
-//! The WebSocket to the computer: `wss://wire.opencomputer.dev/v1`, protocol
-//! `opc.v1`, JSON-RPC 2.0, the first attach in the upgrade URL.
+//! The two sockets: the live socket (`GET /live` on the API, protocol
+//! `oc.live.v1`) that watches sessions ([`Live`], `live.rs`), and the
+//! WebSocket to the computer (`wss://wire.opencomputer.dev/v1`, protocol
+//! `opc.v1`, JSON-RPC 2.0) for terminals and telemetry ([`Wire`],
+//! `reconnect.rs`). Watching never needs the wire: a command dials it only
+//! for what only the computer can do.
 //!
-//! [`Wire::open`] returns at once with a handle and a stream of
-//! [`WireEvent`]s; the dial runs in the background. The stream carries every
-//! recorded event exactly once and in `seq` order per session, across
-//! reconnects (`reconnect.rs` keeps the cursors, skips repeats, refills gaps
-//! and applies the `logEpoch` rule).
+//! Both open at once and report on a stream of [`WireEvent`]s; the dials run
+//! in the background. The stream carries every recorded event once and in
+//! `seq` order per session, across reconnects: `live.rs` holds each
+//! session's opaque cursor, reads over HTTP whenever a pushed range does not
+//! start at it, and applies `reset`.
 
 pub mod client;
+pub mod live;
 pub mod reconnect;
+pub mod redial;
 
 use crate::api::types::{Capabilities, Delta, Event, Session, Turn};
 use crate::error::Error;
@@ -16,6 +22,7 @@ use bytes::Bytes;
 use serde_json::Value;
 use std::time::Duration;
 
+pub use live::Live;
 pub use reconnect::{Wire, WireHandle};
 
 /// WebSocket subprotocol.
@@ -26,38 +33,39 @@ pub struct WireOptions {
     /// `wss://wire.opencomputer.dev/v1`
     pub url: String,
     pub key: String,
-    /// Ask for deltas on every session.
-    pub deltas: bool,
-    /// Resume suspended sessions when attaching (only the interactive screen).
-    pub resume: bool,
-    /// Attach read-only (`opc a --read-only`).
-    pub read_only: bool,
     /// Give up with `unreachable` after this long continuously disconnected
     /// (non-interactive commands); `None` keeps trying (the screen).
     pub give_up: Option<Duration>,
 }
 
-/// Where to start a session's events.
+/// Where a session's events start.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum From {
+    /// Only what is recorded from now on.
+    #[default]
+    Now,
+    /// The whole log.
+    Start,
+    /// The last `n` turns in full (1 to 50), earlier ones summarized.
+    Tail(u32),
+    /// After this cursor, an opaque string the server made. The `seq` is the
+    /// last event the caller holds, when it holds any.
+    Cursor(String, Option<u64>),
+}
+
+/// A session to watch.
 #[derive(Debug, Clone, Default)]
 pub struct Attach {
     pub session_id: String,
-    /// Recorded events after this `seq`, then live ones.
-    pub after: Option<u64>,
-    /// Without `after`: the last `n` turns in full, earlier ones summarized.
-    pub tail_turns: Option<u32>,
-    /// The `logEpoch` the caller's cache holds, for the epoch check.
-    pub log_epoch: Option<u64>,
+    pub from: From,
 }
 
-/// What `sessions.attach` returned, or `sessions.attached` carried.
+/// The session as it is when watching starts.
 #[derive(Debug, Clone)]
 pub struct AttachInfo {
     pub session: Session,
-    pub log_epoch: u64,
-    pub epoch_start_seq: u64,
     pub capabilities: Option<Capabilities>,
     pub earlier_turns: Option<Vec<Turn>>,
-    pub server: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,11 +78,15 @@ pub enum WireEvent {
     Event(Event),
     /// A streamed delta.
     Delta(Delta),
-    /// The log was rewritten from `epoch_start_seq` (a computer was lost
-    /// mid-turn): drop what you applied at or after it. The replacement
-    /// events follow.
-    EpochReset { session_id: String, epoch_start_seq: u64 },
-    /// The server stopped sending this session (`access_lost`).
+    /// The cursor after the events delivered so far: what to keep with them
+    /// to start from here another time. Compare for equality only. `head`:
+    /// it was the end of the log when it was read.
+    Cursor { session_id: String, cursor: String, head: bool },
+    /// The server answered `reset`: the position read from no longer exists.
+    /// Drop every event with a `seq` above `seq` (all of them when it is
+    /// `None`); the events after it follow, read from `cursor`.
+    Reset { session_id: String, seq: Option<u64>, cursor: Option<String> },
+    /// The server stopped sending this session (`forbidden`, `gone`).
     Detached { session_id: String, reason: String },
     /// A terminal ended: `{terminalId, exitCode, signal}`.
     TerminalExited(Value),

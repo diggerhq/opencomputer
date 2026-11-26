@@ -32,6 +32,7 @@ export type IfBusy = 'queue' | 'steer' | 'interrupt';
 /** A message that came through the API, as Session.send passes it on. */
 export interface SentFrom {
   actor: Actor;
+  /** The turn it starts; a steer: its own id (its `message.received`'s `messageId`). */
   turnId?: string;
   ifBusy?: IfBusy;
   /** Its `message.received` is in the log already (queued, or recorded by the host's writer). */
@@ -100,6 +101,13 @@ export class Tap implements SessionTap {
   private next?: string;
   private calls = new Map<string, Call>();
   private blocks = new Map<string, number>(); // thinking block → its start
+  /**
+   * A text or thinking block's `blockId` in the log, by the harness's id for it. Minted per block: the harness's id is
+   * only unique within one model message (Claude's is the block's index), and readers key a block by `blockId` across
+   * the session (the hub drops deltas of a completed key, the SDK and the surface hold text per `blockId`), so a later
+   * block reusing an index must not reuse its id.
+   */
+  private blockIds = new Map<string, string>();
   private lastBlock: { text?: string; thinking?: string } = {};
   private preparing: PreparingCalls;
   private costTotal = 0;
@@ -199,7 +207,8 @@ export class Tap implements SessionTap {
     this.asks.closeReadySecrets(actor);
     if (steer && this.cur) {
       if (from?.recorded) return;
-      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [] }, this.cur.id, actor);
+      const named = from?.turnId ? { messageId: from.turnId } : {};
+      const seq = this.append('message.received', { input: text, ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], ...named }, this.cur.id, actor);
       this.steers.push({ actor, seq });
       return;
     }
@@ -216,7 +225,8 @@ export class Tap implements SessionTap {
 
   replied(text: string, slackUser: string | undefined, declined: string[], from?: SentFrom): number {
     const actor = from?.actor ?? this.h.actorOf(slackUser);
-    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined };
+    const named = from?.turnId ? { messageId: from.turnId } : {};
+    const data = { input: text, ifBusy: from?.ifBusy ?? 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: declined, ...named };
     const seq = this.append('message.received', data, this.turnId(), actor);
     this.steers.push({ actor, seq });
     return seq;
@@ -294,6 +304,14 @@ export class Tap implements SessionTap {
     }
   }
 
+  /** The log's id of the harness's open text or thinking block `id`, minted at its first sight. */
+  private blockIdOf(kind: 'text' | 'thinking', id: string): string {
+    const k = `${kind}:${id}`;
+    let blockId = this.blockIds.get(k);
+    if (!blockId) this.blockIds.set(k, (blockId = mintId('ev')));
+    return blockId;
+  }
+
   private callData(c: Call) {
     return { subagentId: c.subagentId, toolName: c.toolName, callId: c.callId, parentCallId: c.parentCallId, title: c.title };
   }
@@ -311,27 +329,36 @@ export class Tap implements SessionTap {
         if (e.phase === 'start' && t) for (const s of this.steers.splice(0)) this.append('turn.steered', { messageSeq: s.seq }, t.id, s.actor);
         return;
       case 'block':
-        if (e.kind === 'thinking' && e.phase === 'start') this.blocks.set(e.id, this.now());
         if (e.kind === 'tool' && e.phase === 'start' && e.name) this.preparing.start(e.id, e.name);
-        if (e.phase === 'end' && (e.kind === 'text' || e.kind === 'thinking')) this.lastBlock[e.kind] = e.id;
+        if (e.kind !== 'text' && e.kind !== 'thinking') return;
+        if (e.phase === 'start') {
+          this.blockIds.delete(`${e.kind}:${e.id}`);
+          if (e.kind === 'thinking') this.blocks.set(this.blockIdOf(e.kind, e.id), this.now());
+        } else {
+          this.lastBlock[e.kind] = this.blockIdOf(e.kind, e.id);
+          this.blockIds.delete(`${e.kind}:${e.id}`);
+        }
         return;
       case 'live':
-        return this.log.delta({ type: e.kind === 'text' ? 'message.delta' : 'reasoning.delta', turnId, data: { blockId: e.id, parentCallId: null, text: e.delta } });
+        return this.log.delta({ type: e.kind === 'text' ? 'message.delta' : 'reasoning.delta', turnId, data: { blockId: this.blockIdOf(e.kind, e.id), parentCallId: null, text: e.delta } });
       case 'tool_input':
         return this.preparing.input(e.id, e.delta);
       case 'text': {
+        const blockId = this.lastBlock.text ?? mintId('ev');
+        this.lastBlock.text = undefined;
         const silent = e.delta.trimStart().startsWith(SILENT);
         const text = silent ? e.delta.trimStart().slice(SILENT.length).trimStart() : e.delta;
         if (t && silent && !t.texts.length) t.silent = true;
         if (!t || !text) return;
         t.silent = false;
         t.texts.push(text);
-        this.append('message.completed', { blockId: this.lastBlock.text ?? mintId('ev'), parentCallId: null, text }, turnId);
+        this.append('message.completed', { blockId, parentCallId: null, text }, turnId);
         return;
       }
       case 'thinking': {
-        if (!t) return;
         const id = this.lastBlock.thinking ?? mintId('ev');
+        this.lastBlock.thinking = undefined;
+        if (!t) return;
         const at = this.blocks.get(id);
         this.blocks.delete(id);
         this.append('reasoning.completed', { blockId: id, parentCallId: null, text: e.delta, redacted: !e.delta, durationMs: at === undefined ? null : count(this.now() - at) }, turnId);

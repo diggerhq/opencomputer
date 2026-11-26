@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Tracks and threads (spec sections 18.8 and 43): the fan-out actor in a script of its own, so
+  // a deploy of `managed-agents` does not drop every socket. No route: `managed-agents` binds
+  // LiveDurableObject by `script_name` and reaches it through `liveOf` (src/actors/live/contract.ts).
+  // Deployed before the `managed-agents` release that binds it.
+  "name": "opencomputer-live",
+  "main": "src/actors/live/worker.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIVE", "class_name": "LiveDurableObject" },
+      { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject", "script_name": "managed-agents" },
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
+    ]
+  },
+  // The credential check (LiveCredentials in src/actors/live/contract.ts) is api-edge's entrypoint of that name.
+  "services": [{ "binding": "EDGE", "service": "opencomputer-edge-prod", "entrypoint": "LiveCredentials" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LiveDurableObject"] }
+  ],
+  // Logs to Axiom through cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": { "enabled": true }
+}

@@ -1,12 +1,16 @@
 {
   "name": "@opencomputer/sdk",
-  "version": "3.0.0",
+  "version": "3.1.3",
   "description": "TypeScript client for the OpenComputer Serverless Agents management API (@opencomputer/sdk/agents)",
   "type": "module",
   "exports": {
     "./agents": {
       "types": "./dist/agents/index.d.ts",
       "import": "./dist/agents/index.js"
+    },
+    "./computer": {
+      "types": "./dist/computer/index.d.ts",
+      "import": "./dist/computer/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -17,7 +21,9 @@
     "build": "tsc",
     "test": "vitest run",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "schema": "tsx scripts/review-schema.ts",
+    "mutations": "cp ../../services/managed-agents/src/actors/org/mutations/table.ts src/computer/mutation-table.ts"
   },
   "keywords": [
     "opencomputer",
@@ -47,5 +53,8 @@
     "tsx": "^4.21.0",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }

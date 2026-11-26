@@ -91,23 +91,38 @@ fn create_turn_events_over_http() {
     assert!(fake.wait_turn(&sid, &tid, T));
     assert_eq!(completed_text(&fake, &sid, &tid), "hello world");
 
-    let ev = http(&fake, "GET", &format!("/sessions/{sid}/events?after=0"), None, None);
+    let ev = http(&fake, "GET", &format!("/sessions/{sid}/events"), None, None);
     assert_eq!(ev.status, 200);
     let ts = types(ev.body["events"].as_array().unwrap());
     for t in ["session.created", "message.received", "turn.started", "message.completed", "turn.completed"] {
         assert!(ts.contains(&t.to_string()), "{t} missing from {ts:?}");
     }
     assert_eq!(ev.body["lastSeq"], ts.len() as u64);
+    let cursor = ev.body["cursor"].as_str().unwrap().to_string();
     let mr = &fake.events_of(&sid, "message.received")[0];
     assert_eq!(mr["data"]["declinedAskIds"], json!([]));
 
-    // Long poll: waits for the next turn's events.
+    // Long poll from the cursor: waits for the next turn's events.
     let (t2, _) = fake.send(&sid, "slow 150", "queue").unwrap();
-    let after = ts.len();
-    let lp = http(&fake, "GET", &format!("/sessions/{sid}/events?after={after}&waitMs=5000"), None, None);
+    let lp = http(&fake, "GET", &format!("/sessions/{sid}/events?after={cursor}&waitMs=5000"), None, None);
     assert!(!lp.body["events"].as_array().unwrap().is_empty());
+    assert!(lp.body["cursor"].is_string());
     assert!(fake.wait_turn(&sid, &t2, T));
     assert_eq!(fake.requests_to("GET /sessions/*/events").len(), 2);
+
+    // A bare integer is not a cursor: `reset` with none to go on from.
+    let r = http(&fake, "GET", &format!("/sessions/{sid}/events?after=0"), None, None);
+    assert_eq!(r.status, 409);
+    assert_eq!(r.body["error"]["code"], "reset");
+    assert!(r.body["error"]["cursor"].is_null());
+    // A rewritten tail voids the cursor: `reset` with the seq to keep and the cursor for it.
+    fake.rewrite_above(&sid, 2);
+    let r = http(&fake, "GET", &format!("/sessions/{sid}/events?after={cursor}"), None, None);
+    assert_eq!((r.status, &r.body["error"]["code"], &r.body["error"]["seq"]), (409, &json!("reset"), &json!(2)), "{}", r.body);
+    let again = r.body["error"]["cursor"].as_str().unwrap();
+    assert_ne!(again, cursor);
+    let r = http(&fake, "GET", &format!("/sessions/{sid}/events?after={again}"), None, None);
+    assert_eq!(r.status, 200, "{}", r.body);
     fake.assert_no_panics();
 }
 
@@ -287,52 +302,104 @@ async fn until(ws: &mut Ws, mut f: impl FnMut(&Value) -> bool) -> Value {
     }
 }
 
+/// The live socket, with the key as the second subprotocol.
+async fn live_connect(fake: &Fake) -> Ws {
+    let mut req = format!("{}/live", fake.url.replacen("http", "ws", 1)).into_client_request().unwrap();
+    req.headers_mut().insert("sec-websocket-protocol", format!("oc.live.v1, oc.bearer.{TEST_KEY}").parse().unwrap());
+    let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws
+}
+
+async fn say(ws: &mut Ws, v: Value) {
+    ws.send(Message::text(v.to_string())).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn websocket_attach_send_and_drop() {
+async fn websocket_calls_and_errors() {
     let fake = Fake::start();
     let sid = fake.seed_session(Seed::new("ws").turn("reply first"));
-    let mut ws = ws_connect(&fake, &format!("?attach={sid}&after=0&deltas=1"), "opc.v1").await;
-    let ready = next(&mut ws).await.unwrap();
-    assert_eq!(ready["method"], "ready");
-    let att = until(&mut ws, |v| v["method"] == "sessions.attached").await;
-    assert_eq!(att["params"]["session"]["id"], sid.as_str());
-    let replayed = until(&mut ws, |v| v["method"] == "event" && v["params"]["type"] == "turn.completed").await;
-    let cursor = replayed["params"]["seq"].as_u64().unwrap();
-
-    ws.send(Message::text(json!({"jsonrpc": "2.0", "id": 1, "method": "turns.send", "params": {"sessionId": sid, "input": "tool", "ifBusy": "queue"}}).to_string())).await.unwrap();
+    let mut ws = ws_connect(&fake, "", "opc.v1").await;
+    assert_eq!(next(&mut ws).await.unwrap()["method"], "ready");
+    say(&mut ws, json!({"jsonrpc": "2.0", "id": 1, "method": "turns.send", "params": {"sessionId": sid, "input": "tool", "ifBusy": "queue"}})).await;
     let res = until(&mut ws, |v| v["id"] == 1).await;
     assert_eq!(res["result"]["delivery"], "started", "{res}");
-    let prep = until(&mut ws, |v| v["method"] == "delta" && v["params"]["type"] == "tool.preparing").await;
-    assert_eq!(prep["params"]["data"]["toolName"], "Bash");
-    until(&mut ws, |v| v["method"] == "event" && v["params"]["type"] == "tool.started").await;
-    until(&mut ws, |v| v["method"] == "event" && v["params"]["type"] == "turn.completed").await;
-
     // An error is -32000 with the HTTP error in data.
-    ws.send(Message::text(json!({"jsonrpc": "2.0", "id": 2, "method": "turns.get", "params": {"sessionId": sid, "turnId": "tu_nope"}}).to_string())).await.unwrap();
+    say(&mut ws, json!({"jsonrpc": "2.0", "id": 2, "method": "turns.get", "params": {"sessionId": sid, "turnId": "tu_nope"}})).await;
     let e = until(&mut ws, |v| v["id"] == 2).await;
     assert_eq!(e["error"]["code"], -32000);
     assert_eq!(e["error"]["data"]["status"], 404);
-
+    // Watching a session has left this socket.
+    say(&mut ws, json!({"jsonrpc": "2.0", "id": 3, "method": "sessions.attach", "params": {"sessionId": sid}})).await;
+    assert!(until(&mut ws, |v| v["id"] == 3).await["error"].is_object());
     // Dropped without a close frame: the stream just ends.
     fake.drop_ws_now(None);
     while next(&mut ws).await.is_some() {}
+    assert!(fake.ws_calls().iter().any(|(m, _)| m == "turns.send"));
+    fake.assert_no_panics();
+}
 
-    // Events recorded while away replay from the cursor on reconnect.
-    let (t2, _) = fake.send(&sid, "reply while away", "queue").unwrap();
-    assert!(fake.wait_turn(&sid, &t2, T));
-    let last = fake.events(&sid).len() as u64;
-    let mut ws = ws_connect(&fake, &format!("?attach={sid}&after={cursor}"), "opc.v1").await;
-    let mut seqs = vec![];
-    while seqs.last() != Some(&last) {
+#[tokio::test(flavor = "multi_thread")]
+async fn live_socket_pushes_ranges_deltas_blocks_and_reset() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("live").turn("reply first"));
+    let page = http(&fake, "GET", &format!("/sessions/{sid}/events"), None, None).body;
+    let (cursor, held) = (page["cursor"].as_str().unwrap().to_string(), page["lastSeq"].as_u64().unwrap());
+    let (events, deltas) = (format!("events:{sid}"), format!("deltas:{sid}"));
+
+    let mut ws = live_connect(&fake).await;
+    say(&mut ws, json!({"t": "hello", "protocol": 1})).await;
+    say(&mut ws, json!({"t": "sub", "stream": events, "after": cursor})).await;
+    say(&mut ws, json!({"t": "sub", "stream": deltas})).await;
+    assert_eq!(until(&mut ws, |v| v["t"] == "ready").await["protocol"], 1);
+    // Nothing new: the head is the cursor held.
+    assert_eq!(until(&mut ws, |v| v["t"] == "subd" && v["stream"] == events.as_str()).await["head"], cursor.as_str());
+
+    // Pushed ranges chain by cursor; deltas carry the block's length before them in UTF-16 code units.
+    let (t2, _) = fake.send(&sid, "reply caf\u{e9} \u{1F600} and on", "queue").unwrap();
+    let (mut at, mut seqs, mut text, mut block) = (cursor.clone(), vec![], String::new(), String::new());
+    loop {
         let v = next(&mut ws).await.unwrap();
-        if v["method"] == "event" {
-            seqs.push(v["params"]["seq"].as_u64().unwrap());
+        if v["t"] == "events" {
+            assert_eq!(v["from"], at.as_str(), "a range must start at the last one's end");
+            at = v["to"].as_str().unwrap().to_string();
+            seqs.extend(v["events"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()));
+            if v["events"].as_array().unwrap().iter().any(|e| e["type"] == "turn.completed") {
+                break;
+            }
+        } else if v["t"] == "delta" && v["type"] == "message.delta" {
+            assert_eq!(v["offset"].as_u64().unwrap(), text.encode_utf16().count() as u64, "offset after {text:?}");
+            assert!(v["whole"].is_null());
+            text.push_str(v["data"]["text"].as_str().unwrap());
+            block = v["data"]["blockId"].as_str().unwrap().to_string();
         }
     }
-    let expected: Vec<u64> = (cursor + 1..=last).collect();
-    assert_eq!(seqs, expected, "gap or duplicate in replay");
-    assert_eq!(fake.ws_connections(), 2);
-    assert!(fake.ws_calls().iter().any(|(m, _)| m == "turns.send"));
+    assert!(fake.wait_turn(&sid, &t2, T));
+    let last = fake.events(&sid).len() as u64;
+    while seqs.last() != Some(&last) {
+        let v = until(&mut ws, |v| v["t"] == "events").await;
+        assert_eq!(v["from"], at.as_str());
+        at = v["to"].as_str().unwrap().to_string();
+        seqs.extend(v["events"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()));
+    }
+    assert_eq!(seqs, (held + 1..=last).collect::<Vec<u64>>(), "gap or duplicate");
+    assert!(text.contains('\u{1F600}') && text.encode_utf16().count() != text.chars().count(), "{text:?}");
+
+    // `block`: the block so far, as one delta at offset 0 marked `whole`.
+    say(&mut ws, json!({"t": "block", "session": sid, "blockId": block})).await;
+    let whole = until(&mut ws, |v| v["t"] == "delta").await;
+    assert_eq!((&whole["offset"], &whole["whole"], whole["data"]["text"].as_str()), (&json!(0), &json!(true), Some(text.as_str())));
+
+    // A rewritten tail: `behind` to those subscribed, and `reset` to a `sub` from a void cursor.
+    fake.rewrite_above(&sid, held);
+    let behind = until(&mut ws, |v| v["t"] == "behind").await;
+    assert_ne!(behind["head"], at.as_str());
+    say(&mut ws, json!({"t": "sub", "stream": events, "after": at})).await;
+    let reset = until(&mut ws, |v| v["t"] == "reset").await;
+    assert_eq!((&reset["stream"], &reset["seq"], &reset["cursor"]), (&json!(events), &json!(held), &behind["head"]), "{reset}");
+    // Not a cursor at all: `reset` with none.
+    say(&mut ws, json!({"t": "sub", "stream": events, "after": "7"})).await;
+    assert!(until(&mut ws, |v| v["t"] == "reset").await["cursor"].is_null());
+    assert_eq!(fake.live_connections(), 1);
     fake.assert_no_panics();
 }
 

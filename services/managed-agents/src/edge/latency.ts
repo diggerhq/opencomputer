@@ -8,14 +8,14 @@
 // the work it measures; `time` returns or rethrows exactly what the work did.
 // Without TINYBIRD_API_URL and TINYBIRD_APPEND_TOKEN nothing leaves.
 
-import type { DataOf, EventName } from "../computer/telemetry/catalog.js";
-import type { Span } from "../computer/telemetry/emitter.js";
-import type { Dimensions } from "../computer/telemetry/envelope.js";
+import type { DataOf, EventName } from "../telemetry/catalog.js";
+import type { Span } from "../telemetry/emitter.js";
+import type { Dimensions } from "../telemetry/envelope.js";
 import {
   type GatewayTelemetry,
   gatewayTelemetry,
   type TelemetryEnv,
-} from "../computer/telemetry/gateway.js";
+} from "../telemetry/gateway.js";
 
 export type LatencyService = "edge" | "session" | "workerd";
 

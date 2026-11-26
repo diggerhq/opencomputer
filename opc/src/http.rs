@@ -132,6 +132,17 @@ impl Http {
         &self.inner.api_url
     }
 
+    /// The live socket: `GET /live` beside the session routes, as `ws(s)://`.
+    pub fn live_url(&self) -> String {
+        let t = &self.inner.target;
+        format!("{}://{}:{}{}/live", if t.tls { "wss" } else { "ws" }, t.host, t.port, self.inner.base_path)
+    }
+
+    /// The API key. Never logged or printed.
+    pub fn key(&self) -> Option<&str> {
+        self.inner.key.as_deref()
+    }
+
     pub fn has_key(&self) -> bool {
         self.inner.key.is_some()
     }

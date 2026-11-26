@@ -42,7 +42,7 @@ The response is `201`:
 
 With an `Idempotency-Key` that already created a session, the response is `200` with the same session and turn, as they are now, and `duplicate: true`. See [Idempotency](/api/reference/idempotency).
 
-**Choosing the id.** A client that sends `id` knows the session's id before the response arrives, so it can attach over the WebSocket at the same moment it creates the session, as `opc` does. An attach to an id that does not exist yet waits up to 2 seconds for the create. An `id` already taken by another create is refused with `409 id_conflict`; a repeat of the same create with the same `Idempotency-Key` returns the original.
+**Choosing the id.** A client that sends `id` knows the session's id before the response arrives, as `opc` does. An `id` already taken by another create is refused with `409 id_conflict`; a repeat of the same create with the same `Idempotency-Key` returns the original.
 
 <Tip>
 To give the agent files before its first message, create the session without `input`, [upload](/api/http/workspace#upload) the files, then [send](/api/http/turns#send-a-message) the message. `opc -p --push` does this. These are three requests in a row, but none waits for the agent: it starts while you upload.
@@ -95,7 +95,7 @@ Each session is the [Session](/api/reference/objects#session) object, identical 
 
 **Freshness.** A session in a list can be a few seconds behind its log. Read it by id for its state as of its `lastSeq`.
 
-**Visibility.** You see every session in your organization except those started in Slack, which only their owner sees here.
+**Visibility.** You see the sessions you own and those shared with you: shared with the whole organization, or with you by name (see the session's `access`). A session started in Slack is seen here only by its owner. Being an organization admin shows you no more. A session's own short-lived key sees only that session.
 
 ## Get a session
 
@@ -107,7 +107,7 @@ Returns `{ "session": … }`, the complete [object](/api/reference/objects#sessi
 
 | Query | Meaning |
 | --- | --- |
-| `minSeq` | Wait until the session includes this `seq`, up to 2 seconds. Pass the `seq` a write returned to read your own write. See [Consistency](/api/model#consistency). |
+| `minSeq` | Answer only once the session includes this `seq`: until then, `503 unavailable` with `retryAfterMs`. Pass the `seq` a write returned to read your own write. See [Consistency](/api/model#consistency). |
 
 `404 session_not_found` when the session does not exist or you cannot see it. The two cases are not distinguished. `503 unavailable` with `retryAfterMs` when `minSeq` is not reached in time.
 
@@ -117,7 +117,7 @@ Returns `{ "session": … }`, the complete [object](/api/reference/objects#sessi
 GET /sessions/{id}/capabilities
 ```
 
-Returns `{ "capabilities": Capabilities }`: the models, efforts, permission modes and features this session may use. See [Capabilities](/api/reference/objects#capabilities). They change only when your organization's settings change, so a client can read them once per session. The WebSocket's attach result includes them too.
+Returns `{ "capabilities": Capabilities }`: the models, efforts, permission modes and features this session may use. See [Capabilities](/api/reference/objects#capabilities). They change only when your organization's settings change, so a client can read them once per session.
 
 For what a new session would get, read `capabilities` on [`GET /me`](/api/authentication#who-am-i).
 
@@ -146,4 +146,4 @@ Fields you leave out are not changed. The response is `{ "session": …, "seq" }
 
 Changing `model` resets `effort` to the new model's default when the current effort is not one of its `efforts`. The response shows the result.
 
-Any member who can see the session can update it. Errors are those of [create](#create-a-session), and `400 invalid_request` for an empty body.
+Only the session's owner can update it. Someone it is shared with gets `403 forbidden` with `reason: "owner_only"`; they can still read it, send messages, answer asks and stop or interrupt it. Errors are otherwise those of [create](#create-a-session), and `400 invalid_request` for an empty body.

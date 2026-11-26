@@ -1,15 +1,8 @@
 import { env, runInDurableObject } from "cloudflare:test";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import { describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { noModelAccess } from "../src/computer/model-access.js";
-
-/**
- * Work 097, 6b, in the real ComputerDurableObject: with the public build's
- * ModelAccess (no `slack`), `!claude` is not a command; the text goes to
- * the session like any other. (The hosted one answers it in Slack:
- * computer-hosted-do.test.ts.)
- */
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
 
 type Stub = DurableObjectStub<ComputerDurableObject>;
 const computers = () => (env as unknown as { COMPUTERS: DurableObjectNamespace<ComputerDurableObject> }).COMPUTERS;
@@ -25,44 +18,6 @@ async function until<T>(read: () => T | Promise<T>, done: (value: T) => boolean,
   throw new Error(`${what} not reached`);
 }
 
-async function slackCalls(): Promise<Array<{ method: string; body: any }>> {
-  const response = await fetch("https://slack.test/__calls");
-  return ((await response.json()) as { calls: Array<{ method: string; body: any }> }).calls;
-}
-
-/** A linked organization whose deliveries are collected instead of sent to a host. */
-async function organization(org: string, team: string): Promise<Stub> {
-  await computers().getByName(`computer-slack-team:${team}`).claimTeam(team, org);
-  const stub = computers().getByName(org);
-  await stub.linkSlack(org, { teamId: team, teamName: "Seam", botUserId: "UBOTS", botToken: "xoxb-seam-token" });
-  await inside(stub, (instance, state) => {
-    state.storage.sql.exec(
-      "INSERT OR IGNORE INTO people (slack_user_id, dir, git_name, git_email, updated_at) VALUES (?, ?, ?, ?, ?)",
-      "U1",
-      "slack-u1",
-      "Person U1 via Computer",
-      "u1@example.com",
-      Date.now(),
-    );
-    instance.deliveries = [];
-    instance.deliver = async (dispatch: any) => instance.deliveries.push(dispatch.text);
-  });
-  return stub;
-}
-
-const job = (team: string, messageTs: string, text: string) => ({
-  eventId: `Ev-${team}-${messageTs}`,
-  teamId: team,
-  channelId: "CSEAMPUB",
-  threadTs: messageTs,
-  messageTs,
-  userId: "U1",
-  text,
-  mentioned: true,
-  receivedAt: Date.now(),
-});
-const deliveries = (stub: Stub) => inside(stub, (instance) => instance.deliveries as string[]);
-
 it("tracks web sessions on the linked subscription for refreshes and reconnects", async () => {
   const stub = computers().getByName("org_web_subscription_tracking");
   const tracked = await inside(stub, (instance, state) => {
@@ -70,30 +25,15 @@ it("tracks web sessions on the linked subscription for refreshes and reconnects"
     const key = "cs_0000000000000001";
     instance.access.agents.view = () => ({ linkedSlackUser: { id: "ULINKED" } });
     state.storage.sql.exec(
-      `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, created_at, updated_at,
-        session_id, origin_type, owner_user_id, api_status)
-       VALUES (?, '', '', '', 'Web session', 1, 2, ?, 'dashboard', ?, 'running')`,
+      `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at,
+        session_id, origin_type, owner_user_id)
+       VALUES (?, '', '', '', 'Web session', 'busy', 1, 2, ?, 'dashboard', ?)`,
       key, key, member,
     );
     return { session: instance.modelSession(key), live: instance.liveSessions() };
   });
   expect(tracked.session).toMatchObject({ key: "cs_0000000000000001", ownerId: "ULINKED" });
   expect(tracked.live).toEqual([{ ...tracked.session, status: "busy", activeAt: 2 }]);
-});
-// By channel, never by clearing the fake: other files' tests read its calls at the same time.
-const claudeAnswers = async () => (await slackCalls()).filter((c) => c.method === "chat.postEphemeral" && c.body.channel === "CSEAMPUB" && typeof c.body.text === "string" && c.body.text.includes("!claude"));
-
-describe("ModelAccess in the Durable Object", () => {
-  it("without `slack`, `!claude` is not intercepted: the text reaches the session", async () => {
-    const stub = await organization("org_seam_public", "T0SEAMPUB");
-    await inside(stub, (instance) => {
-      instance.access = noModelAccess({ harnesses: () => ["claude"] });
-    });
-    await stub.acceptSlackEvent("org_seam_public", job("T0SEAMPUB", "21.1", "<@UBOTS> !claude help"));
-    await until(() => deliveries(stub), (all) => all.length === 1, "delivery");
-    expect(await deliveries(stub)).toEqual(["!claude help"]);
-    expect(await claudeAnswers()).toEqual([]);
-  });
 });
 
 describe("vault secrets for API sessions", () => {
@@ -110,8 +50,8 @@ describe("vault secrets for API sessions", () => {
       instance.access.agents.view = (user: string) => (user === "user_01JABCDEFGHJKMNPQRSTVWXYZ0" ? { linkedSlackUser: { id: "U_LINKED" } } : {});
       for (const [key, member] of [[A, LINKED], [B, UNLINKED]]) {
         state.storage.sql.exec(
-          `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at, session_id, origin_type, owner_user_id, api_status)
-           VALUES (?, '', '', '', 'API session', 'idle', 1, 2, ?, 'opc', ?, 'idle')`,
+          `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at, session_id, origin_type, owner_user_id)
+           VALUES (?, '', '', '', 'API session', 'idle', 1, 2, ?, 'opc', ?)`,
           key, key, member,
         );
       }
@@ -120,6 +60,8 @@ describe("vault secrets for API sessions", () => {
       );
       instance.frames = [];
       instance.send = (frame: unknown) => (instance.frames.push(frame), true);
+      // A welcomed host, as far as the session API can tell.
+      instance.apiHost = () => ({ features: [] });
       await instance.secrets.put("workspace", "*", "ORG_TOKEN", "org-fixture", false, SYSTEM);
       await instance.secrets.put("workspace", "*", "SHARED", "from-workspace", false, SYSTEM);
       await instance.secrets.put("user", "U_LINKED", "USER_KEY", "linked-fixture", false, SYSTEM);
@@ -148,7 +90,13 @@ describe("vault secrets for API sessions", () => {
   it("a web form write preserves scope resolution for pushes and later starts", async () => {
     const org = "org_api_secret_form";
     const stub = await seeded(org);
-    const caller = { member: LINKED, userId: "user_01JABCDEFGHJKMNPQRSTVWXYZ0", name: "Owner", email: null, via: "dashboard", client: null, scopes: ["secrets:write"], requestId: "req_form" };
+    const caller: ApiRequest = {
+      principal: { org, subject: LINKED, kind: "member", via: "dashboard", scopes: ["secrets:write"], audiences: ["org", `member:${LINKED}`], admin: false, credential: { id: "ck_form", expiresAt: null } },
+      name: "Owner",
+      email: null,
+      client: null,
+      requestId: "req_form",
+    };
     const write = (sessionId: string) => inside(stub, (instance) => instance.computerApi(org, caller, {
       op: "secrets.session.put", sessionId, name: "FORM_TOKEN", body: { value: "form-fixture" },
     }));

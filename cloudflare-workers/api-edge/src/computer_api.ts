@@ -13,6 +13,7 @@
 
 import { computerEnabledFor } from "./computer";
 import type { ManagedAgentsEnv } from "./managed_agents";
+import type { ApiScope } from "./principal";
 import type { RouteFamily } from "./route_family";
 
 export const COMPUTER_API_PREFIX = "/api/managed-agents/computer";
@@ -27,10 +28,15 @@ const SEG = "[A-Za-z0-9_][A-Za-z0-9._~:-]{0,199}";
 
 const route = (pattern: string) => new RegExp(`^/computer${pattern}$`);
 
-/** The documented routes (opc docs/api/http/*.mdx), method by method. */
+/**
+ * The documented routes (opc docs/api/http/*.mdx), method by method. A route
+ * of tracks and threads (spec 37) names the scope it needs, which the edge
+ * checks against the principal; the others leave scopes to blue.
+ */
 const COMPUTER_API_ROUTES: ReadonlyArray<{
   methods: ReadonlySet<string>;
   pattern: RegExp;
+  scope?: ApiScope;
 }> = [
   { methods: new Set(["GET"]), pattern: route("/me") },
   { methods: new Set(["GET"]), pattern: route("/capabilities") },
@@ -80,11 +86,80 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   // The Work API (work tracking tech design 3.10).
   { methods: new Set(["GET", "PUT"]), pattern: route("/work/repository") },
   { methods: new Set(["GET"]), pattern: route("/work/repositories") },
-  { methods: new Set(["GET"]), pattern: route("/work/items") },
-  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}`) },
-  { methods: new Set(["GET"]), pattern: route(`/work/items/${SEG}/history`) },
-  { methods: new Set(["GET"]), pattern: route(`/work/sessions/${SEG}/items`) },
+
+  // Tracks and threads (spec 37.1): reads. `GET /live` is the socket.
+  { methods: new Set(["GET"]), pattern: route("/feed"), scope: "sessions:read" },
+  { methods: new Set(["POST"]), pattern: route("/feed/mismatch"), scope: "sessions:read" },
+  { methods: new Set(["GET"]), pattern: route("/occurrences"), scope: "sessions:read" },
+  { methods: new Set(["GET"]), pattern: route("/live"), scope: "sessions:read" },
+  { methods: new Set(["GET"]), pattern: route("/work/threads"), scope: "work:read" },
+  { methods: new Set(["GET"]), pattern: route("/work/overview"), scope: "work:read" },
+  {
+    methods: new Set(["GET"]),
+    pattern: route(`/work/tracks/${SEG}/doc(?:/revisions(?:/${SEG})?)?`),
+    scope: "work:read",
+  },
+  { methods: new Set(["GET"]), pattern: route(`/work/results/${SEG}/review`), scope: "work:read" },
+  { methods: new Set(["GET"]), pattern: route(`/work/results/${SEG}/diff`), scope: "work:read" },
+  { methods: new Set(["GET"]), pattern: route("/work/search"), scope: "work:read" },
+  // 37.2: the new turns and sessions routes.
+  { methods: new Set(["POST"]), pattern: route("/work/tell-track"), scope: "work:write" },
+  {
+    methods: new Set(["POST"]),
+    pattern: route(`/slack/threads/${SEG}/messages`),
+    scope: "sessions:write",
+  },
+  // 37.3: the mutations, each its own request, all `work:write`.
+  {
+    methods: new Set(["PUT"]),
+    pattern: route(`/work/threads/${SEG}/(?:title|track|keep|ready|attention|writers)`),
+    scope: "work:write",
+  },
+  { methods: new Set(["PUT", "DELETE"]), pattern: route(`/work/threads/${SEG}/done`), scope: "work:write" },
+  { methods: new Set(["DELETE"]), pattern: route(`/work/threads/${SEG}`), scope: "work:write" },
+  { methods: new Set(["POST"]), pattern: route("/work/tracks"), scope: "work:write" },
+  {
+    methods: new Set(["PUT"]),
+    pattern: route(`/work/tracks/${SEG}/(?:name|stand|keep|doc)`),
+    scope: "work:write",
+  },
+  { methods: new Set(["PUT", "DELETE"]), pattern: route(`/work/tracks/${SEG}/done`), scope: "work:write" },
+  { methods: new Set(["POST"]), pattern: route(`/work/tracks/${SEG}/dissolve`), scope: "work:write" },
+  { methods: new Set(["DELETE"]), pattern: route(`/work/tracks/${SEG}`), scope: "work:write" },
+  { methods: new Set(["PUT"]), pattern: route(`/work/reads/${SEG}`), scope: "work:write" },
+  { methods: new Set(["PUT"]), pattern: route(`/work/prefs/${SEG}`), scope: "work:write" },
+  { methods: new Set(["PUT"]), pattern: route(`/work/results/${SEG}`), scope: "work:write" },
+  { methods: new Set(["PUT"]), pattern: route(`/work/results/${SEG}/review`), scope: "work:write" },
+  { methods: new Set(["POST"]), pattern: route("/work/proposals"), scope: "work:write" },
+  {
+    methods: new Set(["POST"]),
+    pattern: route(`/work/proposals/${SEG}/(?:accept|dismiss)`),
+    scope: "work:write",
+  },
+  { methods: new Set(["POST"]), pattern: route(`/work/ops/${SEG}/undo`), scope: "work:write" },
 ];
+
+/** The socket of tracks and threads (spec 38), relative to the mount. */
+export const COMPUTER_LIVE_SUFFIX = "/computer/live";
+export const LIVE_SUBPROTOCOL = "oc.live.v1";
+const BEARER_SUBPROTOCOL = "oc.bearer.";
+
+/**
+ * What a `/live` upgrade offers (spec 18.7, 38): whether it asks for
+ * `oc.live.v1`, and the token of an `oc.bearer.<token>` subprotocol, the only
+ * place a browser can put one.
+ */
+export function liveOffer(request: Request): { live: boolean; token: string | null } {
+  const offered = (request.headers.get("sec-websocket-protocol") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const bearer = offered.find((value) => value.startsWith(BEARER_SUBPROTOCOL));
+  return {
+    live: offered.includes(LIVE_SUBPROTOCOL),
+    token: bearer ? bearer.slice(BEARER_SUBPROTOCOL.length) || null : null,
+  };
+}
 
 const WORKSPACE_ROUTE = new RegExp(
   `^/computer/sessions/(${SEG})/workspace/(archive|file|files)$`,
@@ -109,6 +184,14 @@ export function isComputerApiRoute(method: string, suffix: string): boolean {
   return COMPUTER_API_ROUTES.some(
     (entry) => entry.methods.has(method) && entry.pattern.test(suffix),
   );
+}
+
+/** The scope a listed route needs at the edge; null when blue alone decides. */
+export function computerApiRouteScope(method: string, suffix: string): ApiScope | null {
+  const entry = COMPUTER_API_ROUTES.find(
+    (candidate) => candidate.methods.has(method) && candidate.pattern.test(suffix),
+  );
+  return entry?.scope ?? null;
 }
 
 // ── errors and request ids ───────────────────────────────────────────────
@@ -161,7 +244,14 @@ export function computerApiError(
 // ── streaming pass-through ───────────────────────────────────────────────
 
 /** Request headers the computer API reads, beyond the proxy's own. */
-const API_REQUEST_HEADERS = ["user-agent", "if-none-match"];
+const API_REQUEST_HEADERS = [
+  "user-agent",
+  "if-none-match",
+  // Tracks and threads (spec 34.2): the trace and the principal the client is
+  // built for.
+  "x-oc-trace",
+  "x-oc-principal",
+];
 
 /** Response headers passed back from blue. */
 const API_RESPONSE_HEADERS = [
@@ -266,10 +356,19 @@ export const computerApiFamily: RouteFamily = {
     const requestID = clientRequestID(request);
     if (requestID) headers.set("x-request-id", requestID);
     else headers.delete("x-request-id");
+    // The Live upgrade: only `oc.live.v1` goes on, never the bearer token.
+    // Live answers 101 echoing it, and the socket is returned as it is.
+    const upgrade = target.pathname.endsWith(COMPUTER_LIVE_SUFFIX);
+    if (upgrade) {
+      headers.set("upgrade", "websocket");
+      headers.set("sec-websocket-protocol", LIVE_SUBPROTOCOL);
+    }
     const init: RequestInit = { method, headers, redirect: "manual" };
     if (hasBody(method)) init.body = request.body;
     try {
-      return streamBack(await fetch(target, init), API_RESPONSE_HEADERS);
+      const upstream = await fetch(target, init);
+      if (upgrade && upstream.status === 101) return upstream;
+      return streamBack(upstream, API_RESPONSE_HEADERS);
     } catch (error) {
       return upstreamUnavailable(request, "computer_api.upstream_failed", error);
     }
@@ -318,7 +417,7 @@ export async function proxyComputerWorkspace(
 // ── CORS ─────────────────────────────────────────────────────────────────
 
 const CORS_ALLOW_HEADERS =
-  "authorization, content-type, idempotency-key, x-request-id, if-none-match";
+  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
   "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";

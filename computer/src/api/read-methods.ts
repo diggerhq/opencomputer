@@ -1,8 +1,7 @@
 // The writer's side of `Writer.call` that both writers share (work 084): the
 // dispatch (decode strictly, check the session, route), every read answered
 // from the log (`sessions.get`, `turns.get`, `asks.list`, `asks.get`,
-// `subagents.list`, `subagents.get`, `events.list`, with `minSeq` and
-// long-polls), and idempotency for writes.
+// `subagents.list`, `subagents.get`, `events.list`, with `minSeq`), and idempotency for writes.
 //
 // Invariants:
 // - `call` never throws: a bad method or params is `invalid_request` naming
@@ -15,6 +14,10 @@
 //   current state) and `duplicate: true` where the result has that field; a
 //   different body is `409 idempotency_conflict`; a concurrent repeat waits for
 //   the first. Errors are not recorded: a retry of a failed write runs again.
+// - A `turns.send` naming a turn already in the log answers that turn,
+//   `duplicate: true`, with or without a key: the log, not the idempotency
+//   record, says a turn was taken, so a redelivery after a crash (or onto a
+//   disk rebuilt from SessionLog) is not a second message.
 
 import { createHash } from 'node:crypto';
 import type { JournalEvent } from '../protocol.js';
@@ -32,7 +35,6 @@ export type WriteHandler<M extends Method = Method> = (params: ParamsOf<M>, ctx:
 export type WriteHandlers = { [M in Method]?: WriteHandler<M> };
 
 const MIN_SEQ_WAIT_MS = 2000;
-const ENDED = ['completed', 'failed', 'cancelled'];
 
 const ok = (result: unknown): CallOutcome => ({ result });
 const fail = (code: string, message: string, status: number, extra: Record<string, unknown> = {}): CallOutcome => ({
@@ -55,13 +57,26 @@ export function dispatch(
       if (!WRITES.has(method)) return await readCall(log, method, v);
       const handler = writes[method] as WriteHandler | undefined;
       if (!handler) return fail('feature_unavailable', `${method} is not available on this writer`, 409, { feature: method });
-      const run = async () => handler(v, ctx);
+      const run = async () => repeat(log, method, v) ?? handler(v, ctx);
       const key = ctx.idempotencyKey ?? v.idempotencyKey;
       return key ? await idempotent(log, method, v, { ...ctx, idempotencyKey: key }, run) : await run();
     } catch (e) {
       return fail('internal', (e as Error).message ?? String(e), 500);
     }
   };
+}
+
+/**
+ * A `turns.send` naming a turn the log already has, or a steer it already took (the cloud redelivering an inbox entry
+ * after a crash lost the idempotency record, or a rebuilt disk never had it): that turn, as a duplicate, not a second message.
+ */
+function repeat(log: SessionLog, method: Method, v: ParamsOf<Method>): CallOutcome | undefined {
+  const id = method === 'turns.send' ? (v as ParamsOf<'turns.send'>).turnId : undefined;
+  if (!id) return undefined;
+  const steered = log.fold.steered(id);
+  if (steered) return ok({ turn: log.fold.turn(steered), delivery: 'steered', duplicate: true, seq: log.lastSeq });
+  const turn = log.fold.turn(id);
+  return turn && ok({ turn, delivery: turn.status === 'queued' ? 'queued' : 'started', duplicate: true, seq: log.lastSeq });
 }
 
 /** `host.record`: append one of RECORDABLE with its data decoded strictly, as `ctx.actor`; answers `{seq}`. */
@@ -122,9 +137,7 @@ export async function readCall(log: SessionLog, method: Method, params: Record<s
       if (late) return late;
       const first = fold.turn(p.turnId);
       if (!first) return fail('turn_not_found', `no turn ${p.turnId}`, 404);
-      const done = (t: Turn | undefined) => !t || (p.status ? t.status !== p.status : ENDED.includes(t.status));
-      if (p.waitMs && !done(first)) await log.waitFor(() => done(fold.turn(p.turnId)), p.waitMs);
-      return ok({ turn: fold.turn(p.turnId) ?? first });
+      return ok({ turn: first });
     }
     case 'asks.get': {
       const p = params as ParamsOf<'asks.get'>;
@@ -166,8 +179,6 @@ async function eventsList(log: SessionLog, p: ParamsOf<'events.list'>): Promise<
     after = log.journal.tailTurnsAfter(p.tailTurns);
     earlierTurns = log.earlierTurns(p.tailTurns);
   }
-  if (after > log.lastSeq) return fail('cursor_ahead', `after ${after} is past the log's last seq ${log.lastSeq}`, 409, { session: log.fold.session() });
-  if (p.waitMs && after >= log.lastSeq) await log.waitFor(() => log.lastSeq > after, p.waitMs);
   const want = typeFilter(p.types);
   const events: JournalEvent[] = [];
   let scanned = after;

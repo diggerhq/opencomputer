@@ -1,5 +1,5 @@
-// Requests the runner makes through its host (spawn_thread, read_thread,
-// post_thread, previews, checkout_repo, request_secret): each sends a frame
+// Requests the runner makes through its host (previews, checkout_repo,
+// request_secret): each sends a frame
 // with a fresh id and waits for the answer that carries the same id.
 //
 // Invariants: a request made with no host connected fails at once, unsent; a

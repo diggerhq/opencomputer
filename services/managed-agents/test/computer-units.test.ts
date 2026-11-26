@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, sizeFor } from "../src/computer/config.js";
-import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
-import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
-import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
-import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
-import { takeHarnessPrefix } from "../src/computer/harnesses.js";
+import { type ComputerEdgeEnv, gatewayUrl, sizeFor } from "../src/actors/computer/config.js";
+import { FAILURE_CODES, failureMessage, failureNotice } from "../src/actors/computer/machine/failure.js";
+import { bytesToBase64Url, seal, unseal } from "../src/crypto/seal.js";
+import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/actors/computer/held-for-org/github.js";
+import { constantTimeEqual, hostAuthorized, hostToken } from "../src/actors/computer/host-link/host-token.js";
+import { takeHarnessPrefix } from "../src/actors/computer/held-for-org/model-access/harnesses.js";
 import {
   IDLE_PARK_MS,
   UNPAID_PARK_MS,
@@ -17,9 +17,9 @@ import {
   unpaidStage,
   unpaidWarning,
   unpaidWarningGiven,
-} from "../src/computer/parking.js";
-import { resolvePlan, sizeTier } from "../src/computer/plan.js";
-import { decodeCalvinActionId, parseSessionKey } from "../src/computer/protocol.js";
+} from "../src/actors/computer/machine/parking.js";
+import { resolvePlan, sizeTier } from "../src/actors/computer/machine/plan.js";
+import { decodeCalvinActionId, parseSessionKey } from "../src/host-protocol/session-key.js";
 import {
   decodeInstallState,
   decodeSlack,
@@ -29,9 +29,10 @@ import {
   parseInteraction,
   parseSlackEnvelope,
   slackThreadUrl,
-} from "../src/computer/slack.js";
-import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/computer/team-cache.js";
-import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/computer/threads.js";
+} from "../src/slack-api/web-api.js";
+import { TEAM_ORG_TTL_MS, TeamOrgCache } from "../src/http/slack/team-orgs.js";
+import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/actors/slack/access.js";
+import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack-api/threads.js";
 
 describe("new-thread harness prefixes", () => {
   it.each([
@@ -45,6 +46,16 @@ describe("new-thread harness prefixes", () => {
     ["+claude-code go", { text: "+claude-code go" }],
     ["`+codex` go", { text: "`+codex` go" }],
   ])("%s", (input, expected) => expect(takeHarnessPrefix(input)).toEqual(expected));
+});
+
+describe("Slack access button ids", () => {
+  it("carry the session key base64url, UTF-8, as the runner's prompt ids do", () => {
+    const key = "T1:C2:1791495325.000001:é";
+    expect(encodeSlackAccessId(key, "allow", "U1")).toBe(`ac:${Buffer.from(key).toString("base64url")}:allow:U1`);
+    expect(decodeSlackAccessId(encodeSlackAccessId(key, "deny", "U1"))).toEqual({ sessionKey: key, verb: "deny", userId: "U1" });
+    expect(decodeSlackAccessId("ac:a:allow:U1")).toBeUndefined();
+    expect(decodeSlackAccessId(`ac:${Buffer.from([0xff]).toString("base64url")}:allow:U1`)).toBeUndefined();
+  });
 });
 
 describe("host tokens", () => {
@@ -69,7 +80,7 @@ describe("host tokens", () => {
 
 describe("computer config and vocabulary", () => {
   it("sizes by plan", () => {
-    const env = { ACCOUNTS: {} as DurableObjectNamespace };
+    const env = { ACCOUNTS: {} as DurableObjectNamespace } as ComputerEdgeEnv;
     expect(sizeFor(env, "default")).toBe("Standard_D2as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "default")).toBe("Standard_D2as_v7");
@@ -114,15 +125,14 @@ describe("computer config and vocabulary", () => {
 });
 
 describe("parking decision", () => {
-  const base = { plan: "free" as const, state: "ready", hostConnected: true, busySessions: 0, pendingDispatches: 0, lastActivityAt: 0, now: IDLE_PARK_MS };
+  const base = { plan: "free" as const, state: "ready", hostConnected: true, busySessions: 0, lastActivityAt: 0, now: IDLE_PARK_MS };
   it("parks a free, idle, ready computer after two hours", () => {
     expect(parkingDecision(base)).toEqual({ park: true, recheckAt: null });
     expect(parkingDecision({ ...base, now: IDLE_PARK_MS - 1 })).toEqual({ park: false, recheckAt: IDLE_PARK_MS });
   });
-  it("never parks paid, busy, queued or non-ready computers", () => {
+  it("never parks paid, busy or non-ready computers", () => {
     expect(parkingDecision({ ...base, plan: "paid" }).park).toBe(false);
     expect(parkingDecision({ ...base, busySessions: 1 }).park).toBe(false);
-    expect(parkingDecision({ ...base, pendingDispatches: 1 }).park).toBe(false);
     expect(parkingDecision({ ...base, state: "provisioning" })).toEqual({ park: false, recheckAt: null });
     // Free computers park after 30 idle minutes by default; configurable within bounds.
     expect(IDLE_PARK_MS).toBe(30 * 60_000);
@@ -158,7 +168,7 @@ describe("parking decision", () => {
   });
   it("parks an unpaid computer without waiting to be idle: preview traffic does not keep it", () => {
     expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now })).toEqual({ park: true, recheckAt: null });
-    expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now, pendingDispatches: 1 }).park).toBe(false);
+    expect(parkingDecision({ ...base, plan: "paid", unpaid: true, lastActivityAt: base.now, busySessions: 1 }).park).toBe(false);
   });
 });
 
@@ -376,6 +386,10 @@ describe("Slack", () => {
     const key = "T1:C1:1.1";
     const id = `p:${btoa(key).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}:prompt1:yes`;
     expect(decodeCalvinActionId(id)).toEqual({ sessionKey: key, promptId: "prompt1", value: "yes" });
+    // As the runner encodes it (computer/src/action-ids.ts): UTF-8, base64url.
+    const unicode = "T1:C1:1.1:é";
+    expect(decodeCalvinActionId(`p:${Buffer.from(unicode).toString("base64url")}:p2:no`)).toEqual({ sessionKey: unicode, promptId: "p2", value: "no" });
+    expect(decodeCalvinActionId("p:a:p2:no")).toBeNull();
     expect(parseSessionKey(key)).toEqual({ teamId: "T1", channelId: "C1", threadTs: "1.1" });
     expect(slackThreadUrl("T1", "C1", "1.1")).toBe("https://app.slack.com/client/T1/C1/thread/C1-1.1");
     expect(slackThreadUrl(null, "C1", "1.1")).toBeNull();
@@ -505,9 +519,9 @@ describe("idle park setting", () => {
 });
 
 describe("Slack workspace → organization cache", () => {
-  it("asks the link object once per minute per workspace in an isolate, and never remembers an unlinked one", async () => {
+  it("asks the team router once per minute per workspace in an isolate, and never remembers an unlinked one", async () => {
     let now = 1_000;
-    const cache = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, () => now);
+    const cache = new TeamOrgCache(TEAM_ORG_TTL_MS, () => now);
     const asked: string[] = [];
     const links: Record<string, string | null> = { T1: "org_a", T2: null };
     const lookup = (teamId: string) => () => {
@@ -515,29 +529,29 @@ describe("Slack workspace → organization cache", () => {
       return Promise.resolve(links[teamId] ?? null);
     };
 
-    expect(await cache.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: null });
-    now += TEAM_ACCOUNT_TTL_MS - 1;
-    expect(await cache.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "memory" });
+    expect(await cache.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: null });
+    now += TEAM_ORG_TTL_MS - 1;
+    expect(await cache.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "memory" });
     expect(asked).toEqual(["T1"]);
     // Past the minute: asked again, and a relink is seen.
     links.T1 = "org_b";
     now += 1;
-    expect((await cache.get("T1", lookup("T1"))).accountId).toBe("org_b");
+    expect((await cache.get("T1", lookup("T1"))).org).toBe("org_b");
     expect(asked).toEqual(["T1", "T1"]);
 
     // Unlinked: asked every time, so an install links at once.
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBeNull();
+    expect((await cache.get("T2", lookup("T2"))).org).toBeNull();
     links.T2 = "org_c";
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBe("org_c");
+    expect((await cache.get("T2", lookup("T2"))).org).toBe("org_c");
     expect(asked).toEqual(["T1", "T1", "T2", "T2"]);
 
     // Forgotten (a release here): the next event asks.
     await cache.forget("T2");
     links.T2 = null;
-    expect((await cache.get("T2", lookup("T2"))).accountId).toBeNull();
+    expect((await cache.get("T2", lookup("T2"))).org).toBeNull();
     // Remembered (an install here): no lookup.
     await cache.remember("T3", "org_d");
-    expect(await cache.get("T3", lookup("T3"))).toEqual({ accountId: "org_d", cached: "memory" });
+    expect(await cache.get("T3", lookup("T3"))).toEqual({ org: "org_d", cached: "memory" });
     expect(asked).toEqual(["T1", "T1", "T2", "T2", "T2"]);
   });
 
@@ -545,30 +559,30 @@ describe("Slack workspace → organization cache", () => {
     const colo = new Map<string, string>();
     const shared = {
       get: async (teamId: string) => colo.get(teamId) ?? null,
-      put: async (teamId: string, accountId: string) => void colo.set(teamId, accountId),
+      put: async (teamId: string, org: string) => void colo.set(teamId, org),
       delete: async (teamId: string) => void colo.delete(teamId),
     };
     const asked: string[] = [];
     const lookup = (teamId: string) => async () => (asked.push(teamId), "org_a");
-    const first = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => shared);
-    const second = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => shared);
+    const first = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => shared);
+    const second = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => shared);
 
-    expect(await first.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: null });
+    expect(await first.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: null });
     // Another isolate in the colo: no link-object call, then its own memory.
-    expect(await second.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "colo" });
-    expect(await second.get("T1", lookup("T1"))).toEqual({ accountId: "org_a", cached: "memory" });
+    expect(await second.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "colo" });
+    expect(await second.get("T1", lookup("T1"))).toEqual({ org: "org_a", cached: "memory" });
     expect(asked).toEqual(["T1"]);
     // A release forgets it in the colo too.
     await first.forget("T1");
     expect(colo.has("T1")).toBe(false);
 
     // A failing colo layer is a miss, never an error.
-    const broken = new TeamAccountCache(TEAM_ACCOUNT_TTL_MS, Date.now, () => ({
+    const broken = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () => ({
       get: () => Promise.reject(new Error("cache down")),
       put: () => Promise.reject(new Error("cache down")),
       delete: () => Promise.reject(new Error("cache down")),
     }));
-    expect(await broken.get("T9", lookup("T9"))).toEqual({ accountId: "org_a", cached: null });
+    expect(await broken.get("T9", lookup("T9"))).toEqual({ org: "org_a", cached: null });
     await broken.forget("T9");
   });
 });

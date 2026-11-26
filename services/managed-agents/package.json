@@ -33,7 +33,6 @@
     "@opencode-ai/sdk": "1.18.4",
     "@opencomputer/sdk": "^0.15.7",
     "@pierre/storage": "^1.16.2",
-    "@slack/web-api": "^8.0.0",
     "@trigger.dev/sdk": "^4.5.15",
     "@tursodatabase/api": "^2.0.5",
     "@xmldom/xmldom": "^0.9.12",

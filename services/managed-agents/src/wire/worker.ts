@@ -15,7 +15,7 @@
 // and closed at once with the code, because a browser sees only 1006 for a
 // failed one.
 
-import { gatewayTelemetry } from "../computer/telemetry/gateway.js";
+import { gatewayTelemetry } from "../telemetry/gateway.js";
 import { WIRE_CLIENT, WIRE_SIGNATURE_TTL_MS, type WireScope, computerKey, signWireAuth } from "./auth.js";
 import { sha256Hex } from "./crypto.js";
 import { type WireKeyRecord, type WireKeysKv, recordByHash, recordByKeyId } from "./keys.js";
@@ -107,6 +107,16 @@ const FILES_REQUEST_HEADERS = ["content-type", "content-encoding", "content-leng
 type Refusal = { status: 401 | 403; close: 4001 | 4003; code: "unauthenticated" | "forbidden"; reason?: string; scope?: string; message: string };
 
 const unauthenticated: Refusal = { status: 401, close: CLOSE.unauthenticated, code: "unauthenticated", message: "The credential is missing, unknown, expired or revoked." };
+
+/**
+ * The sessions a credential may name: a ticket's, within its key's own limit (a session's own key reaches only its
+ * session, ticket or not). Neither: no limit, `{}`.
+ */
+function sessionLimit(record: WireKeyRecord, ticketed?: string[]): { sessionIds?: string[] } {
+  const own = record.sessionIds;
+  if (!own) return ticketed ? { sessionIds: ticketed } : {};
+  return { sessionIds: ticketed ? ticketed.filter((id) => own.includes(id)) : own };
+}
 
 /** Why `record` may not do what needs `scope` at `at`, or null. */
 function refuseRecord(record: WireKeyRecord | null, at: number, scope: string): Refusal | null {
@@ -280,7 +290,7 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
       f.via = "key";
       record = await kv(f, recordByHash(env.WIRE_KEYS, await sha256Hex(key)));
       client = clientFromUserAgent(request.headers.get("user-agent"));
-      if (record) scope = { scopes: record.scopes, ...(record.expiresAt != null ? { until: record.expiresAt } : {}) };
+      if (record) scope = { scopes: record.scopes, ...sessionLimit(record), ...(record.expiresAt != null ? { until: record.expiresAt } : {}) };
     } else if (ticket && env.WIRE_TICKET_KEY) {
       via = "ticket";
       f.via = "ticket";
@@ -298,7 +308,7 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
         if (record) {
           scope = {
             scopes: record.scopes,
-            ...(claims.scope.sessionIds ? { sessionIds: claims.scope.sessionIds } : {}),
+            ...sessionLimit(record, claims.scope.sessionIds),
             ...(claims.scope.readOnly !== undefined ? { readOnly: claims.scope.readOnly } : {}),
             until: Math.min(at + TICKET_CONNECTION_TTL_MS, record.expiresAt ?? Infinity),
           };
@@ -409,7 +419,7 @@ export function createWireHandler(options: WireHandlerOptions = {}) {
       return errorResponse(404, requestId, { code: "session_not_found", message: "No such session." });
     }
 
-    const scope: WireScope = { scopes: record!.scopes, ...(record!.expiresAt != null ? { until: record!.expiresAt } : {}) };
+    const scope: WireScope = { scopes: record!.scopes, ...sessionLimit(record!), ...(record!.expiresAt != null ? { until: record!.expiresAt } : {}) };
     const target = await signed(env, record!, clientFromUserAgent(request.headers.get("user-agent")), scope, at);
     const headers = new Headers(target.headers);
     for (const name of FILES_REQUEST_HEADERS) {

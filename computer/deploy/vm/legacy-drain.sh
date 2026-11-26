@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ONE-TIME systemd->podman migration (work 103). Delete together with the systemd launch path in step 11
-# (with provision.sh's marked block and src/dev/sandbox-check-legacy.ts).
+# (with provision.sh's marked block).
 #
 # Drain-then-flip of slack-presence-host, for provision.sh, which sources this
 # and calls `legacy_drain_restart || systemctl restart slack-presence-host`.
@@ -9,7 +9,7 @@
 # every runner exits after its turn, and the host exits once none is left;
 # Restart= brings it back as a `podman` host.
 #
-#   legacy-drain.sh host-pid <pid>   the process running src/host/main.ts at or below <pid> (sandbox-check-legacy.ts)
+#   legacy-drain.sh host-pid <pid>   the process running src/host/main.ts at or below <pid>
 #
 # Invariants:
 # - SIGUSR2 goes to the process running src/host/main.ts, never to MainPID as

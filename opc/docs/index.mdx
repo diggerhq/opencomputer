@@ -25,7 +25,7 @@ Everything the agent does happens on the computer: a large VM with your organiza
     `opc -p`, `watch`, `wait` and `send`: Computer in a pipeline.
   </Card>
   <Card title="API" icon="code" href="/api/overview">
-    The same sessions over HTTP and a WebSocket.
+    The same sessions over HTTP, with Live to watch them.
   </Card>
 </CardGroup>
 
@@ -33,7 +33,7 @@ Everything the agent does happens on the computer: a large VM with your organiza
 
 `opc` is a single static binary. It shows a prompt line before the network answers, and you can start typing at once.
 
-- **One round trip to start.** `opc` names the new session itself, then creates it and opens the connection in parallel. The connection attaches to the session as it opens. The computer claims a pre-started agent while you type.
+- **One round trip to start.** `opc` names the new session itself, then creates it and opens the live socket in parallel. The socket subscribes to the session as it opens. The computer claims a pre-started agent while you type.
 - **No batching.** Every fragment of text is forwarded the moment the model emits it, and drawn on the next frame.
 - **Nothing on the laptop to wait for.** No runtime to boot, no framework between a token and your terminal.
 

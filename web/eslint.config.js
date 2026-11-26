@@ -46,6 +46,10 @@ export default tseslint.config(
     files: ['src/components/ui/**'],
     rules: {
       'react-refresh/only-export-components': 'off',
+      // InputGroupAddon (upstream shadcn) forwards a click on its padding to the
+      // input; keyboard users reach the input itself, so no key handler is needed.
+      'jsx-a11y/click-events-have-key-events': 'off',
+      'jsx-a11y/no-noninteractive-element-interactions': 'off',
     },
   },
   prettier,

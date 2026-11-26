@@ -309,32 +309,33 @@ import {
   routeGitDeployTaskRequest,
 } from "./git-deploy-service.js";
 import { projectRepositoryArchive } from "../templates/code-storage.js";
-import { ComputerDurableObject } from "../computer/durable-object.js";
+import { ComputerDurableObject } from "../actors/computer/durable-object.js";
 import {
   COMPUTER_GRANT_HINT,
   computerGrantedConnections,
   computerReachableConnections,
 } from "./computer-grants.js";
-import { SessionLogDurableObject } from "../computer/session-log.js";
-import { WorkIndexDurableObject } from "../computer/work/index-do.js";
-import { DeliveryDurableObject } from "../delivery/durable-object.js";
-import { OrgDurableObject } from "../org/durable-object.js";
-import { SlackDurableObject } from "../slack/durable-object.js";
-import type { ComputerEdgeEnv } from "../computer/config.js";
+import { SessionLogDurableObject } from "../actors/session-log/durable-object.js";
+// Kept for the class that exists in production; removed with a deleted_classes migration (org/work-index.ts).
+import { WorkIndexDurableObject } from "../actors/org/work-index.js";
+import { OrgDurableObject } from "../actors/org/durable-object.js";
+import { SlackDurableObject } from "../actors/slack/durable-object.js";
+import type { ComputerEdgeEnv } from "../actors/computer/config.js";
 import {
   type Latency,
   latencyTelemetry,
   requestRegion,
   upstreamTiming,
 } from "./latency.js";
-import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../computer/routes.js";
+import { computerModelKeyChanged, routeComputerDashboard } from "../http/dashboard/routes.js";
+import { routeComputerPublic } from "../http/public-routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
 import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
+import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../http/slack/webhooks.js";
 
 export {
   AccountDurableObject,
   ComputerDurableObject,
-  DeliveryDurableObject,
   DeploymentPoolDurableObject,
   MemoryDurableObject,
   OrgDurableObject,
@@ -10685,6 +10686,9 @@ export default {
           env as Env & PlatformEnv,
         );
       }
+      // Slack's webhooks and OAuth callback go to the Slack actor (tracks and threads).
+      const slackPublicResponse = await routeSlackPublic(request, env as Env & SlackRouteEnv, context);
+      if (slackPublicResponse) return withCors(slackPublicResponse);
       // The computer's Slack webhooks, OAuth callback and host WebSocket
       // (work 052) carry their own authentication, not the edge assertion.
       const computerPublicResponse = await routeComputerPublic(
@@ -11319,6 +11323,13 @@ export default {
 
       const computerGrants = await routeComputerServiceConnections(request, env, identity);
       if (computerGrants) return withCors(computerGrants);
+
+      const slackResponse = await routeSlackDashboard(
+        request,
+        env as Env & SlackRouteEnv,
+        async () => identity.ocPrincipal ?? null,
+      );
+      if (slackResponse) return withCors(slackResponse);
 
       const computerResponse = await routeComputerDashboard(
         request,

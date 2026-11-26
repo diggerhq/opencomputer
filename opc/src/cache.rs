@@ -5,8 +5,8 @@
 //!   tn_…`), the wire URL from `/me`;
 //! - `sessions.json`: the last session list, so `ls`, the picker and prefix
 //!   resolution answer before the network;
-//! - `sessions/<id>.jsonl`: a session's recorded events, `0600`; the first
-//!   line is a header with the `logEpoch` they belong to;
+//! - `sessions/<id>.jsonl`: a session's recorded events, `0600`, with the
+//!   opaque cursor after them, to read on from another time;
 //! - `history`: the prompt line's history.
 //!
 //! Every file is replaced atomically or appended under a file lock, so any
@@ -141,10 +141,14 @@ fn events_path(session_id: &str) -> Option<PathBuf> {
     crate::ids::is_session_id(session_id).then(|| dir().join("sessions").join(format!("{session_id}.jsonl")))
 }
 
-/// A session's cached events and the `logEpoch` they belong to.
+/// The first line of a cache file.
+const HEADER: &str = r#"{"type":"opc.cache","v":2}"#;
+
+/// A session's cached events and the cursor after the last of them: an
+/// opaque string the server made, kept to read on from there.
 #[derive(Debug, Clone, Default)]
 pub struct CachedLog {
-    pub log_epoch: Option<u64>,
+    pub cursor: Option<String>,
     pub events: Vec<Event>,
 }
 
@@ -154,18 +158,26 @@ impl CachedLog {
     }
 }
 
-/// Reads the cache. Lines that do not parse, or break the `seq` order, end it.
-pub fn load_events(session_id: &str) -> CachedLog {
-    let Some(path) = events_path(session_id) else { return CachedLog::default() };
-    let Ok(f) = File::open(&path) else { return CachedLog::default() };
-    let _ = f.lock_shared();
+/// Reads a cache file's lines: the events up to the last cursor line, and
+/// that cursor. Lines that do not parse, or break the `seq` order, end it; a
+/// file without this version's header holds nothing.
+fn read_log(f: &File) -> CachedLog {
     let mut out = CachedLog::default();
+    let mut pending = Vec::new();
     let mut last = 0u64;
-    for (i, line) in BufReader::new(&f).lines().enumerate() {
+    for (i, line) in BufReader::new(f).lines().enumerate() {
         let Ok(line) = line else { break };
+        if i == 0 {
+            if line != HEADER {
+                break;
+            }
+            continue;
+        }
         let Ok(v) = serde_json::from_str::<Value>(&line) else { break };
-        if i == 0 && v.get("type").and_then(Value::as_str) == Some("opc.cache") {
-            out.log_epoch = v.get("logEpoch").and_then(Value::as_u64);
+        if v.get("type").and_then(Value::as_str) == Some("opc.cursor") {
+            let Some(c) = v.get("cursor").and_then(Value::as_str) else { break };
+            out.cursor = Some(c.to_string());
+            out.events.append(&mut pending);
             continue;
         }
         let ev = Event(v);
@@ -174,18 +186,41 @@ pub fn load_events(session_id: &str) -> CachedLog {
             break;
         }
         last = seq;
-        out.events.push(ev);
+        pending.push(ev);
     }
+    out
+}
+
+/// Reads the cache: nothing unless it holds a cursor to read on from.
+pub fn load_events(session_id: &str) -> CachedLog {
+    let Some(path) = events_path(session_id) else { return CachedLog::default() };
+    let Ok(f) = File::open(&path) else { return CachedLog::default() };
+    let _ = f.lock_shared();
+    let out = read_log(&f);
     let _ = f.unlock();
     out
 }
 
-/// Appends events, in order, after what the file holds. An event at or below
-/// the file's last `seq` is skipped.
-pub fn append_events(session_id: &str, log_epoch: u64, events: &[Event]) {
-    if events.is_empty() {
-        return;
+fn log_bytes(events: &[Event], after_seq: u64, cursor: Option<&str>, buf: &mut Vec<u8>) {
+    let mut last = after_seq;
+    for e in events {
+        if e.seq() <= last {
+            continue;
+        }
+        last = e.seq();
+        if serde_json::to_writer(&mut *buf, &e.0).is_ok() {
+            buf.push(b'\n');
+        }
     }
+    if let Some(c) = cursor {
+        buf.extend_from_slice(json!({"type": "opc.cursor", "cursor": c}).to_string().as_bytes());
+        buf.push(b'\n');
+    }
+}
+
+/// Appends events, in order, after what the file holds, then the cursor
+/// after them. An event at or below the file's last `seq` is skipped.
+pub fn append_events(session_id: &str, events: &[Event], cursor: &str) {
     let Some(path) = events_path(session_id) else { return };
     let _ = (|| -> std::io::Result<()> {
         if let Some(d) = path.parent() {
@@ -200,68 +235,31 @@ pub fn append_events(session_id: &str, log_epoch: u64, events: &[Event]) {
         }
         let mut f = opts.open(&path)?;
         f.lock()?;
-        let existing = {
-            drop_lock_safe_read(&path)
-        };
+        // Read without locking again: this handle holds the lock.
+        let held = File::open(&path).map(|f| read_log(&f)).unwrap_or_default();
         let mut buf = Vec::new();
-        let (epoch_ok, last) = match &existing {
-            Some((epoch, last)) => (*epoch == Some(log_epoch), *last),
-            None => (false, 0),
-        };
-        if !epoch_ok {
-            // A new file, or another epoch: start over.
+        if held.cursor.is_none() {
+            // A new file, or one this version cannot read on from: start over.
             f.set_len(0)?;
-            buf.extend_from_slice(json!({"type": "opc.cache", "logEpoch": log_epoch}).to_string().as_bytes());
+            buf.extend_from_slice(HEADER.as_bytes());
             buf.push(b'\n');
         }
-        let mut last = if epoch_ok { last } else { 0 };
-        for e in events {
-            if e.seq() <= last {
-                continue;
-            }
-            last = e.seq();
-            serde_json::to_writer(&mut buf, &e.0)?;
-            buf.push(b'\n');
-        }
+        log_bytes(events, held.last_seq().unwrap_or(0), Some(cursor), &mut buf);
         f.write_all(&buf)?;
         f.unlock()
     })();
 }
 
-/// The header epoch and last `seq` of a cache file, read without locking
-/// (the caller holds the lock).
-fn drop_lock_safe_read(path: &Path) -> Option<(Option<u64>, u64)> {
-    let f = File::open(path).ok()?;
-    let mut epoch = None;
-    let mut last = 0;
-    let mut any = false;
-    for (i, line) in BufReader::new(f).lines().enumerate() {
-        let line = line.ok()?;
-        let v: Value = serde_json::from_str(&line).ok()?;
-        any = true;
-        if i == 0 && v.get("type").and_then(Value::as_str) == Some("opc.cache") {
-            epoch = v.get("logEpoch").and_then(Value::as_u64);
-            continue;
-        }
-        last = v.get("seq").and_then(Value::as_u64).unwrap_or(last);
-    }
-    any.then_some((epoch, last))
-}
-
-/// Drops cached events at or after `from_seq` (the log was rewritten), and
-/// records the new epoch.
-pub fn truncate_events(session_id: &str, log_epoch: u64, from_seq: u64) {
+/// The server answered `reset`: drops cached events above `seq` (all of
+/// them when it is `None`) and records the cursor to read on from.
+pub fn truncate_events(session_id: &str, seq: Option<u64>, cursor: Option<&str>) {
     let cached = load_events(session_id);
-    let keep: Vec<Event> = cached.events.into_iter().filter(|e| e.seq() < from_seq).collect();
+    let keep: Vec<Event> = cached.events.into_iter().filter(|e| seq.is_some_and(|s| e.seq() <= s)).collect();
     let Some(path) = events_path(session_id) else { return };
     let mut buf = Vec::new();
-    buf.extend_from_slice(json!({"type": "opc.cache", "logEpoch": log_epoch}).to_string().as_bytes());
+    buf.extend_from_slice(HEADER.as_bytes());
     buf.push(b'\n');
-    for e in &keep {
-        if serde_json::to_writer(&mut buf, &e.0).is_ok() {
-            buf.push(b'\n');
-        }
-    }
+    log_bytes(&keep, 0, cursor, &mut buf);
     let _lock = lock_file();
     let _ = write_private(&path, &buf);
 }
@@ -322,22 +320,44 @@ mod tests {
     }
 
     #[test]
-    fn events_append_in_order_and_reset_on_a_new_epoch() {
+    fn events_append_in_order_with_their_cursor_and_reset_drops_the_tail() {
         with_dir(|| {
             let id = "cs_0123456789abcdef";
-            append_events(id, 1, &[ev(1), ev(2)]);
-            append_events(id, 1, &[ev(2), ev(3)]);
+            append_events(id, &[ev(1), ev(2)], "c2");
+            append_events(id, &[ev(2), ev(3)], "c3");
             let c = load_events(id);
-            assert_eq!(c.log_epoch, Some(1));
+            assert_eq!(c.cursor.as_deref(), Some("c3"));
             assert_eq!(c.events.iter().map(Event::seq).collect::<Vec<_>>(), vec![1, 2, 3]);
-            truncate_events(id, 2, 3);
+            // A cursor alone moves the place to read on from.
+            append_events(id, &[], "c3b");
+            assert_eq!(load_events(id).cursor.as_deref(), Some("c3b"));
+            truncate_events(id, Some(2), Some("n2"));
             let c = load_events(id);
-            assert_eq!(c.log_epoch, Some(2));
+            assert_eq!(c.cursor.as_deref(), Some("n2"));
             assert_eq!(c.last_seq(), Some(2));
-            append_events(id, 3, &[ev(5)]);
+            append_events(id, &[ev(3), ev(4)], "n4");
+            assert_eq!(load_events(id).last_seq(), Some(4));
+            // A reset with no cursor leaves nothing to read on from.
+            truncate_events(id, None, None);
             let c = load_events(id);
-            assert_eq!(c.log_epoch, Some(3));
-            assert_eq!(c.events.iter().map(Event::seq).collect::<Vec<_>>(), vec![5]);
+            assert!(c.cursor.is_none() && c.events.is_empty());
+            append_events(id, &[ev(1)], "z1");
+            assert_eq!(load_events(id).events.len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_cache_of_another_format_is_ignored_and_replaced() {
+        with_dir(|| {
+            let id = "cs_0123456789abcdef";
+            let path = events_path(id).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{\"type\":\"opc.cache\",\"logEpoch\":1}\n{\"seq\":1}\n{\"seq\":2}\n").unwrap();
+            assert!(load_events(id).events.is_empty());
+            append_events(id, &[ev(7)], "c7");
+            let c = load_events(id);
+            assert_eq!(c.events.iter().map(Event::seq).collect::<Vec<_>>(), vec![7]);
+            assert_eq!(c.cursor.as_deref(), Some("c7"));
         });
     }
 

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ProbeOutcome, tokenFingerprint } from "../src/computer/model-access.js";
-import { ComputerPool } from "../src/computer/pool.js";
-import { PROBE_WINDOW_MS, PROBES_PER_TOKEN, PROBES_PER_USER } from "../src/computer/pool-probe-limits.js";
+import { type ProbeOutcome, tokenFingerprint } from "../src/actors/computer/held-for-org/model-access/model-access.js";
+import { ComputerPool } from "../src/actors/computer-pool/pool.js";
+import { PROBE_WINDOW_MS, PROBES_PER_TOKEN, PROBES_PER_USER } from "../src/actors/computer-pool/probe-limits.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /**

@@ -91,19 +91,21 @@ opc watch "$id" --follow --output-format stream-json \
 
 ## An agent that follows a long session
 
-An agent that reads a session for hours, and may itself be restarted, keeps the `seq` of the last event it handled and starts from there:
+An agent that reads a session for hours, and may itself be restarted, keeps the last cursor it was given and starts from there:
 
 ```bash
 id=cs_7f3a9k2m4q8r1t6v
 cursor=".cursor-$id"
-after=$(cat "$cursor" 2>/dev/null || echo 0)
+after=$(cat "$cursor" 2>/dev/null)
 
-opc watch "$id" --after "$after" --follow --output-format stream-json \
-  | while read -r event; do
-      handle "$event"
-      seq=$(jq -r '.seq // empty' <<<"$event")
-      [ -n "$seq" ] && echo "$seq" > "$cursor"
+opc watch "$id" ${after:+--after "$after"} ${after:---from-start} --follow --output-format stream-json \
+  | while read -r line; do
+      if [ "$(jq -r .type <<<"$line")" = cursor ]; then
+        jq -r .cursor <<<"$line" > "$cursor"
+      else
+        handle "$line"
+      fi
     done
 ```
 
-`--after` prints every recorded event after the cursor, then live ones, with no gap and no repeat. To catch up and exit instead of following, use `opc log "$id" --after "$after" --output-format stream-json`. Neither resumes a suspended session. Lines without a `seq` (deltas, the Result) are not cursors. In the rare case that a computer is lost mid-turn, the session's `logEpoch` changes and its last events are replaced: see [If a computer is lost](/api/model#if-a-computer-is-lost).
+`--after` prints every recorded event after the cursor, then live ones, with no gap and no repeat. To catch up and exit instead of following, use `opc log "$id" --after "$after" --output-format stream-json`. Neither resumes a suspended session. A cursor is an opaque string the server made: store it and pass it back unchanged, and do not read or compare it. `opc watch` prints `{"type": "cursor", "sessionId", "cursor"}` after the events it covers, and `opc log --json` returns `cursor`. In the rare case that a computer is lost mid-turn, the session's last events are replaced: a cursor that pointed into them is answered `reset` by the server, and opc reads on from the place the server names, so the replaced events arrive again with the same `seq`.

@@ -9,6 +9,8 @@ A self-hosted deployment runs the same stack as the hosted service, in your acco
 
 The Computer VM connects out to the gateway Worker; nothing connects in. You create one VM per organization in your cloud account, and the gateway shows it as `Online` while it is connected.
 
+On the VM every session runs in its own rootless Podman container. Sessions start in `bypassPermissions`, so the agent runs commands without asking; the container, not the permission mode, keeps it away from the host, the other sessions and the cloud metadata service. See [What a session can reach](/slack/permission-modes#what-a-session-can-reach).
+
 ## What you need
 
 | Account or tool | Used for |
@@ -31,4 +33,4 @@ The Computer VM connects out to the gateway Worker; nothing connects in. You cre
 
 The steps for Cloudflare, WorkOS, Slack and GitHub are the same for all three and are written out in full on the Azure page. You stop, start and resize the VMs with your cloud's tools; a Slack message that arrives while a VM is stopped waits until it is back.
 
-{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/src/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/computer/lifecycle.ts (createSelfManaged); services/managed-agents/src/computer/durable-object.ts (offline notice); services/managed-agents/src/computer/model-key.ts:95-103; cloudflare-workers/api-edge/src/index.ts (WorkOS); computer/deploy/vm/self-managed-user-data.sh */}
+{/* Sources: services/managed-agents/scripts/stack.mjs:82-84 (workers.dev subrequests); services/managed-agents/src/actors/computer/config.ts (COMPUTER_VMS); services/managed-agents/src/actors/computer/machine/lifecycle.ts (createSelfManaged); services/managed-agents/src/actors/computer/durable-object.ts (offline notice); services/managed-agents/src/actors/computer/held-for-org/model-access/model-key.ts; cloudflare-workers/api-edge/src/index.ts (WorkOS) */}

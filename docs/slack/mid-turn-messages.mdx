@@ -33,4 +33,4 @@ description: "A message sent during a turn steers it after the current tool call
   <img src="/images/slack/stop.png" alt="A stopped turn: the running step shows interrupted and the footer starts with the stop reason" />
 </Frame>
 
-{/* Sources: computer/src/runner/session.ts (send, steer, interrupt, footer); computer/src/runner/commands.ts (!stop, !esc, unknown command); computer/src/runner/help.ts; computer/src/runner/main.ts (deliver, `!` to command handler, eyes reaction); computer/src/main.ts; computer/src/gateway/routing.ts (stop); computer/src/gateway/hosts.ts (deliver is queued, stop is not); computer/src/runner/timeline.ts; computer/src/tiers.ts */}
+{/* Sources: computer/src/runner/session.ts (send, steer, interrupt, footer); computer/src/runner/commands.ts (!stop, !esc, unknown command); computer/src/runner/help.ts; computer/src/runner/main.ts (deliver, `!` to command handler, eyes reaction); computer/src/main.ts; services/managed-agents/src/actors/slack/durable-object.ts; computer/src/runner/timeline.ts; computer/src/tiers.ts */}

@@ -21,7 +21,7 @@ A session's permission mode decides which tool calls the agent makes without ask
 
 These are Claude Code's permission modes: Claude Code defines which calls each one lets through.
 
-Outside `bypassPermissions`, `spawn_thread` and `post_thread` ask for approval; `read_thread` never asks.
+Outside `bypassPermissions`, `start_thread` and `post_thread` ask for approval; `read_thread` never asks.
 
 <Note>Not in the open-source code yet (model proxy, which makes Codex sessions work in the public build).</Note>
 
@@ -29,9 +29,27 @@ The Codex harness supports `default` and `bypassPermissions` only.
 
 ## Default
 
-A new session starts in `bypassPermissions`. To change that for sessions created from then on, set `PERMISSION_MODE` in the gateway's environment (in one-machine mode, the process's). See Configuration.
+A new session starts in `bypassPermissions`. In one-machine mode, set `PERMISSION_MODE` in the process's environment to change that for sessions created from then on. See Configuration.
 
-<Note>Not in the open-source code yet (runner isolation). Until it lands, sessions on one computer share a Unix user and can read each other's files and secrets.</Note>
+## What a session can reach
+
+The permission mode decides only whether the agent asks first. What its commands can reach is set by where the session runs.
+
+On a computer with `SP_LAUNCH=podman`, which every newly provisioned computer is, each session runs in its own rootless Podman container:
+
+| | |
+| --- | --- |
+| Inside the container | Any command, as the user `agent`, with passwordless `sudo` to root in the container. It can install packages and run containers of its own (rootless Podman in Podman). |
+| Files | Its workspace (`/workspace`), the owner's clones it uses (`/clones`), its own home volume and run directory. Not the host's files, not other threads' workspaces, not other people's clones. |
+| Secrets | Its own session, owner and workspace secrets, and short-lived GitHub tokens through its token socket. Model credentials stay in the model proxy; the session gets its API socket only. Not the gateway's or the host agent's secrets, and not other sessions'. |
+| Network | Outbound internet through pasta. Not the host's loopback or its own addresses, and not the cloud metadata service or Azure's wireserver (blocked for `agent`). The gateway's public URL is reachable as from anywhere else. |
+| Resources | A memory cap per session (`SP_RUNNER_MEMORY_MAX`), at most 4,096 processes, and a cap on all sessions together. |
+
+Root in the container is an unprivileged user on the host, and every session container belongs to the same host user, `agent`. Containers share the host's kernel: they separate sessions from the host and from each other, but a kernel or Podman escape reaches every session on the computer. Anyone who can direct a session can have it read that session's secrets.
+
+The Codex harness turns Codex's own sandbox off (`danger-full-access`) in both of its modes; the container is the boundary.
+
+<Warning>On a computer with `SP_LAUNCH=systemd` (provisioned before containers and not yet switched) or `detached`, and in one-machine mode, sessions run as processes of one Unix user, outside any container: a session can read other sessions' files and secrets. In one-machine mode that user is yours, so the agent can do anything you can on that machine.</Warning>
 
 ## Changing a session's mode
 
@@ -43,10 +61,9 @@ A new session starts in `bypassPermissions`. To change that for sessions created
 | --- | --- |
 | `!mode <argument>` | The named mode. Applies at once, including to a running turn. |
 | "Approve · auto-accept edits" on a plan | `acceptEdits` |
-| `spawn_thread` | The new session starts in its parent's mode. |
 
 - The mode survives a runner restart and idle exit.
 - Anyone whose messages are delivered to the session can change it (see [Shared threads](/slack/shared-threads#who-can-steer)).
 - The turn footer and `!status` show the mode only when it is not `bypassPermissions`.
 
-{/* Sources: computer/src/runner/commands.ts (MODE_ALIASES, !mode); computer/src/main.ts (DEFAULT_MODE); computer/src/gateway/main.ts (PERMISSION_MODE); computer/src/runner/session.ts (setMode); computer/src/runner/format.ts; computer/src/runner/thread.ts; computer/src/runner/prompts.ts (plan approval); computer/src/gateway/routing.ts (spawn mode); computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/harness/codex/harness.ts (CODEX_CAPS.modes) */}
+{/* Sources: computer/src/runner/commands.ts (MODE_ALIASES, !mode); computer/src/main.ts (DEFAULT_MODE); services/managed-agents/src/api-objects/capabilities.ts (DEFAULT_MODE); computer/src/runner/session.ts (setMode); computer/src/runner/format.ts; computer/src/runner/thread.ts; computer/src/runner/prompts.ts (plan approval); computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/harness/codex/harness.ts (CODEX_CAPS.modes, sandbox); computer/src/host/sandbox/podman-args.ts (createArgs); computer/src/host/sandbox/mounts.ts; computer/src/host/host-config.ts (SP_LAUNCH); computer/src/host/runner-limits.ts; computer/deploy/image/sudoers; computer/deploy/vm/provision.sh (metadata block); computer/deploy/vm/sp-host.sh (new: podman); computer/deploy/vm/sandbox-gates.sh (G6: host loopback unreachable) */}

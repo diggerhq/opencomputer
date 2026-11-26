@@ -1,6 +1,6 @@
 ---
 title: "Shared threads"
-description: "Anyone on the people list can steer a session with its owner's secrets; replies not meant for the bot get no answer"
+description: "Who can drive a session, which runs with its owner's secrets; replies not meant for the bot get no answer"
 ---
 
 <Frame>
@@ -9,7 +9,7 @@ description: "Anyone on the people list can steer a session with its owner's sec
 
 ## Owner
 
-The person whose message started the session owns it. A session started by `spawn_thread` has its parent's owner.
+The person whose message started the session owns it. A session started by `start_thread` has its parent's owner and the same access.
 
 In a team install the session:
 
@@ -19,20 +19,19 @@ In a team install the session:
 
 ## Who can steer
 
+A new session starts open: everyone in its thread can drive it. An organization admin changes that default with `!access default owner`. The owner or an admin changes who drives one session with `!access` (see [Slack commands](/reference/slack-commands#access)).
+
 | Person | Message that mentions `@computer` | Reply without a mention | Buttons on approvals, questions, plans |
 | --- | --- | --- | --- |
-| On the people list | Delivered | Delivered | Accepted |
-| Not on the people list | Not delivered; ephemeral "not enabled for you yet" reply | Dropped silently | Refused with the same ephemeral reply |
+| Can drive | Delivered | Delivered | Accepted |
+| Cannot drive | Not delivered; the owner is asked once, with Allow and Not now buttons, and the message runs if they allow it | Kept, and given to the session as context with the next delivered message | Refused; ephemeral "This is waiting on someone else." |
+| Not a full member of the workspace | Not delivered; ephemeral "Only full members of this workspace can drive sessions." | Not delivered | Refused with the same reply |
 
-Anyone whose messages are delivered can send instructions, run `!` commands (including `!stop` and `!mode`) and answer prompts. They act with the owner's workspace and secrets.
+Anyone who can drive sends instructions, runs `!` commands (including `!stop` and `!mode`) and answers prompts. They act with the owner's workspace and secrets.
 
-One-machine mode has no people list: every reply in a session thread is delivered.
+One-machine mode has no access control: every reply in a session thread is delivered.
 
-<Frame>
-  <img src="/images/slack/not-enabled.png" alt="A person who is not on the people list mentions the bot and gets a reply only they can see: not enabled for you yet" />
-</Frame>
-
-<Note>Not in the open-source code yet (runner isolation). Until it lands, every session on a computer runs as one Unix user, so a session can read other sessions' files and secrets on the same computer.</Note>
+<Note>Each session runs in its own container on a computer with `SP_LAUNCH=podman`, the default for a new one. On a computer still on `SP_LAUNCH=systemd`, every session runs as one Unix user and can read other sessions' files and secrets. See [What a session can reach](/slack/permission-modes#what-a-session-can-reach).</Note>
 
 ## When the bot stays silent
 
@@ -42,4 +41,4 @@ The model decides whether each delivered reply is for it. If not, nothing is pos
 - A silent turn still runs the model and counts towards usage.
 - In a direct message, every message counts as addressed to `@computer`.
 
-{/* Sources: computer/src/gateway/routing.ts (people table, NOT_ENABLED, acknowledge, action, spawn owner); computer/src/gateway/secrets-ui.ts (scopes); computer/src/main.ts; computer/src/runner/names.ts; computer/src/runner/system-prompt.ts (no-reply); computer/src/runner/session.ts (silent turn); computer/src/runner/prompts.ts (first answer wins) */}
+{/* Sources: services/managed-agents/src/actors/slack/durable-object.ts (forbidden, heldContext, ONLY_MEMBERS_TEXT); services/managed-agents/src/actors/slack/access.ts; services/managed-agents/src/actors/org/sessions.ts (slack_access_default, parent's owner); services/managed-agents/src/actors/computer/held-for-org/secrets/secrets.ts (scopes); computer/src/main.ts; computer/src/runner/names.ts; computer/src/runner/system-prompt.ts (no-reply); computer/src/runner/session.ts (silent turn); computer/src/runner/prompts.ts (first answer wins) */}

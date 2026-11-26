@@ -177,13 +177,28 @@ describe('serveApi / dialApi', () => {
     expect(seen.slice(2)).toEqual(['result:w', `event:${e.seq}`, 'delta:b']);
   });
 
+  it('close writes the reply of a call being answered first (a suspend ends the runner that answers it)', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const { sid, sock, server } = await served({ 'sessions.suspend': async () => (await gate, { result: { suspended: true } }) });
+    const c = await dialApi(sock, TOKEN);
+    cleanups.push(() => c.close());
+    const answer = c.call('sessions.suspend', { sessionId: sid }, ANN_CTX);
+    await new Promise((r) => setTimeout(r, 20));
+    const closed = server.close();
+    release();
+    expect(await answer).toEqual({ result: { suspended: true } });
+    await closed;
+    await c.closed; // then the connection ends
+  });
+
   it('refuses a cursor ahead, forwards deltas and detached', async () => {
     const { log, sock } = await served();
     const c = await dialApi(sock, TOKEN);
     cleanups.push(() => c.close());
     const f = frames();
     const ahead = await c.subscribe(f.opts({ after: 50 }));
-    expect('error' in ahead && ahead.error.code).toBe('cursor_ahead');
+    expect('error' in ahead && ahead.error.code).toBe('internal');
     await c.subscribe(f.opts());
     const t = mintId('tn');
     log.delta({ type: 'message.delta', turnId: t, data: { blockId: 'b1', parentCallId: null, text: 'hey' } });
@@ -197,9 +212,8 @@ describe('serveApi / dialApi', () => {
   it('pending calls resolve unavailable when the server goes away', async () => {
     const { log, sid, sock, server } = await served();
     const c = await dialApi(sock, TOKEN);
-    const t = mintId('tn');
-    log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
-    const waiting = c.call('turns.get', { sessionId: sid, turnId: t, waitMs: 5000 }, ANN_CTX);
+    // A read for a seq the log has not reached waits (at most 2 s).
+    const waiting = c.call('sessions.get', { sessionId: sid, minSeq: 99 }, ANN_CTX);
     await new Promise((r) => setTimeout(r, 20));
     await server.close();
     expect((await waiting).error).toMatchObject({ code: 'unavailable', retryable: true });

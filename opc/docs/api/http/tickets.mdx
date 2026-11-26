@@ -17,7 +17,7 @@ curl -s -X POST "$API/tickets" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
 | Field | Meaning |
 | --- | --- |
 | `client` | Optional. Your client's name and version, up to 64 characters. It appears in `actor.client` on what the connection does. Default: the request's `User-Agent`. |
-| `sessionIds` | Optional. The only sessions the ticket's connections may attach to. Default: every session you can see. |
+| `sessionIds` | Optional. The only sessions the ticket's connections may reach. Default: every session you can see. |
 | `readOnly` | Optional. `true`: the ticket's connections can watch but not act. Every write fails with `403 forbidden`, `"reason": "read_only"`. Default `false`. |
 
 ```json

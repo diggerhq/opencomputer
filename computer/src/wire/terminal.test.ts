@@ -72,15 +72,22 @@ describe('terminals when access changes (CTO-37)', () => {
     expect(closed).toEqual(['tm_1']);
   });
 
-  it('an admin’s terminal in an organization-wide session goes when it becomes owner-only, or the session is gone', async () => {
-    const { host, closed } = fakeHost(['usr_admin']);
+  it('an admin gets no terminal by role, in an organization-wide session or any other (owner first)', async () => {
+    const { host } = fakeHost(['usr_admin']);
     const admin = terminals('usr_admin', host);
-    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ result: {} });
+    expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ error: { reason: 'terminal_owner_only' } });
     expect(await admin.open({ sessionId: 'cs_a', tty: false }, owner([]))).toMatchObject({ error: { reason: 'terminal_owner_only' } });
-    admin.recheck(() => owner(null));
-    expect(admin.size).toBe(1);
-    admin.recheck(() => undefined);
     expect(admin.size).toBe(0);
+  });
+
+  it('the owner’s terminal in an organization-wide session goes when the session is gone', async () => {
+    const { host, closed } = fakeHost();
+    const own = terminals('usr_owner', host);
+    expect(await own.open({ sessionId: 'cs_a', tty: false }, owner(null))).toMatchObject({ result: {} });
+    own.recheck(() => owner(null));
+    expect(own.size).toBe(1);
+    own.recheck(() => undefined);
+    expect(own.size).toBe(0);
     expect(closed).toEqual(['tm_1']);
   });
 });

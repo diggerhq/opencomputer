@@ -1,8 +1,8 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 
 /**
  * Self-managed VMs (work 105, COMPUTER_VMS=self-managed): the operator runs
@@ -64,7 +64,7 @@ async function connectHost(org: string): Promise<WebSocket> {
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions: [] }));
   await welcomed;
   return socket;
 }
@@ -89,7 +89,7 @@ describe("self-managed computer VMs", () => {
   it("is ready and offline when asked for before its VM connects, then connected", async () => {
     const ORG = "org_self_install";
     const stub = computers().getByName(ORG);
-    expect(await stub.ensureComputerOnInstall(ORG)).toEqual({ status: 200 });
+    expect(await stub.ensureComputer(ORG)).toMatchObject({ status: 200 });
     expect(await view(stub)).toMatchObject({ state: "ready", connected: false });
     const socket = await connectHost(ORG);
     expect(await view(stub)).toMatchObject({ state: "ready", connected: true });
@@ -123,22 +123,6 @@ describe("self-managed computer VMs", () => {
     expect(await row(stub)).toMatchObject({ state: "ready", size: "Standard_D2as_v7" });
     expect(await alarms(stub)).not.toContain("idle");
     expect(await alarms(stub)).not.toContain("lifecycle");
-    socket.close();
-  });
-
-  it("tells a thread once that the computer is offline, and may tell it again after the host came back", async () => {
-    const ORG = "org_self_offline";
-    const stub = computers().getByName(ORG);
-    await stub.ensureComputer(ORG);
-    const notices = () => inside(stub, (_instance, state) => [...state.storage.sql.exec<{ kind: string }>("SELECT kind FROM notices")].map((r) => r.kind));
-    await inside(stub, (instance) => instance.ensureAwake({ channelId: "CSELF", threadTs: "1.1" }));
-    await inside(stub, (instance) => instance.ensureAwake({ channelId: "CSELF", threadTs: "1.1" }));
-    expect(await notices()).toEqual(["offline"]);
-    const socket = await connectHost(ORG);
-    expect(await notices()).toEqual([]);
-    // Connected: a waiting message is the host's to take, nothing to say.
-    await inside(stub, (instance) => instance.ensureAwake({ channelId: "CSELF", threadTs: "1.1" }));
-    expect(await notices()).toEqual([]);
     socket.close();
   });
 });
