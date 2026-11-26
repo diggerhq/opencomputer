@@ -347,7 +347,7 @@ async fn live_socket_pushes_ranges_deltas_blocks_and_reset() {
     let (events, deltas) = (format!("events:{sid}"), format!("deltas:{sid}"));
 
     let mut ws = live_connect(&fake).await;
-    say(&mut ws, json!({"t": "hello", "protocol": 1, "clientId": "cl_0123456789abcdef"})).await;
+    say(&mut ws, json!({"t": "hello", "protocol": 1})).await;
     say(&mut ws, json!({"t": "sub", "stream": events, "after": cursor})).await;
     say(&mut ws, json!({"t": "sub", "stream": deltas})).await;
     assert_eq!(until(&mut ws, |v| v["t"] == "ready").await["protocol"], 1);

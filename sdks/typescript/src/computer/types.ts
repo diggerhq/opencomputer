@@ -259,28 +259,23 @@ export interface FeedFrame {
   more: boolean;
   rows: Row[];
   gone: { kind: string; id: string }[];
-  lastMutation?: number;
-  errors?: MutationError[];
+  /** The feed version `to` names: a mutation is confirmed once the feed reaches the `version` of its reply. */
+  version: number;
   counts?: { earlier: number; trackEarlier: Record<string, number> };
   sum?: string;
 }
 
-export interface MutationError {
-  n: number;
-  code: string;
-  reason: string;
-}
-
-export type ErrorCode = "refused" | "not_found" | "taken" | "conflict" | "out_of_order" | "principal_mismatch" | "reset" | (string & {});
+export type ErrorCode = "refused" | "not_found" | "taken" | "conflict" | "idempotency_conflict" | "principal_mismatch" | "reset" | (string & {});
 
 /** Every 4xx and 5xx body. A `reset` (409) carries `cursor`, and `seq` for a session's events. */
 export interface ErrorBody {
-  error: { code: ErrorCode; reason?: string; message?: string; lastMutation?: number; cursor?: string | null; seq?: number; [field: string]: unknown };
+  error: { code: ErrorCode; reason?: string; message?: string; cursor?: string | null; seq?: number; [field: string]: unknown };
 }
 
 export interface MutateOk {
   protocol: 1;
-  lastMutation?: number;
+  /** The feed version that holds the effect. */
+  version: number;
   value?: unknown;
 }
 
@@ -367,7 +362,7 @@ export type MutationName = keyof MutationArgs;
 export type StreamName = string;
 
 export type ClientFrame =
-  | { t: "hello"; protocol: 1; clientId: string }
+  | { t: "hello"; protocol: 1 }
   | { t: "sub"; stream: StreamName; after?: string; kinds?: string[] }
   | { t: "unsub"; stream: StreamName }
   | { t: "block"; session: string; blockId: string }
@@ -391,7 +386,7 @@ export interface Delta {
 export type ServerFrame =
   | { t: "ready"; connectionId: string; protocol: 1; org: string; subject: string; expiresAt: string; limits: Record<string, number> }
   | { t: "subd"; stream: StreamName; head: string | null }
-  | ({ t: "feed" } & Pick<FeedFrame, "from" | "to" | "rows" | "gone" | "lastMutation" | "errors">)
+  | ({ t: "feed" } & Pick<FeedFrame, "from" | "to" | "rows" | "gone" | "version">)
   | { t: "events"; session: string; from: string; to: string; events: ApiEvent[] }
   | ({ t: "delta" } & Delta)
   | { t: "behind"; stream: StreamName; head: string }
@@ -440,7 +435,7 @@ export interface Principal {
 }
 
 export type Pending =
-  | { key: string; kind: "mutation"; n: number; name: MutationName; args: Record<string, unknown>; at: number }
+  | { key: string; kind: "mutation"; name: MutationName; args: Record<string, unknown>; at: number }
   | { key: string; kind: "session"; sessionId: string; body: CreateSessionBody & { id: string; turnId: string }; at: number }
   | { key: string; kind: "turn"; sessionId: string; turnId: string; input: string; ifBusy?: IfBusy; at: number }
   | { key: string; kind: "answer"; sessionId: string; askId: string; answer: Answer; at: number }
@@ -503,7 +498,7 @@ export interface Client {
   feed(kinds: string[]): Stream<FeedFrame>;
   events(sessionId: string, o?: { tailTurns?: number }): Stream<EventsUpdate>;
   deltas(sessionId: string): Stream<Delta>;
-  mutate<N extends MutationName>(name: N, args: MutationArgs[N]): { n: number; settled: Promise<void> };
+  mutate<N extends MutationName>(name: N, args: MutationArgs[N]): { settled: Promise<void> };
   createSession(body: CreateSessionBody): { id: string; turnId: string; settled: Promise<void> };
   send(sessionId: string, input: string, o?: { ifBusy?: IfBusy }): { turnId: string; settled: Promise<void> };
   answer(sessionId: string, askId: string, answer: Answer): { settled: Promise<void> };

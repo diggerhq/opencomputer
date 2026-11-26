@@ -25,9 +25,9 @@ it("tracks web sessions on the linked subscription for refreshes and reconnects"
     const key = "cs_0000000000000001";
     instance.access.agents.view = () => ({ linkedSlackUser: { id: "ULINKED" } });
     state.storage.sql.exec(
-      `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, created_at, updated_at,
-        session_id, origin_type, owner_user_id, api_status)
-       VALUES (?, '', '', '', 'Web session', 1, 2, ?, 'dashboard', ?, 'running')`,
+      `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at,
+        session_id, origin_type, owner_user_id)
+       VALUES (?, '', '', '', 'Web session', 'busy', 1, 2, ?, 'dashboard', ?)`,
       key, key, member,
     );
     return { session: instance.modelSession(key), live: instance.liveSessions() };
@@ -50,8 +50,8 @@ describe("vault secrets for API sessions", () => {
       instance.access.agents.view = (user: string) => (user === "user_01JABCDEFGHJKMNPQRSTVWXYZ0" ? { linkedSlackUser: { id: "U_LINKED" } } : {});
       for (const [key, member] of [[A, LINKED], [B, UNLINKED]]) {
         state.storage.sql.exec(
-          `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at, session_id, origin_type, owner_user_id, api_status)
-           VALUES (?, '', '', '', 'API session', 'idle', 1, 2, ?, 'opc', ?, 'idle')`,
+          `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, title, status, created_at, updated_at, session_id, origin_type, owner_user_id)
+           VALUES (?, '', '', '', 'API session', 'idle', 1, 2, ?, 'opc', ?)`,
           key, key, member,
         );
       }

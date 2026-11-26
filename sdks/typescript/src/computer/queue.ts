@@ -1,27 +1,27 @@
-// The write queue (sections 19, 37.2, 37.3, 42.1): one ordered list in storage, `queue/<counter>`,
-// holding mutations and session writes. What is in the list is what `pending()` shows.
+// The write queue (sections 19, 37.2, 37.3, 42.1): one ordered list in storage, `queue/<ms>-<key>`,
+// holding mutations and session writes. What is in the list is what `pending()` shows. Every entry
+// is sent with its own `Idempotency-Key`, so sending it twice (a retry, another tab, a reload) is
+// harmless.
 //
-// Sending. One sender (under `lock('oc-queue')`) drains the list in lanes: the mutations in order of
-// `n`, each after the previous is answered; each session's writes (create, turns, answers, dismiss,
+// Sending. One sender (under `lock('oc-queue')`) drains the list in lanes: the mutations in order,
+// each after the previous is answered; each session's writes (create, turns, answers, dismiss,
 // interrupt, settings) in order the same way; the lanes in parallel. An entry that names a row an earlier
 // entry would create (a session by `createSession`; a track and its agent's session by
 // `track.create`; a result; a proposal) waits until that entry is answered 2xx.
 //
-// Replies. 2xx: answered. 409 `out_of_order`: every mutation above the reply's `lastMutation` is
-// sent again, in order (they are idempotent on `n`); if the one the server wants is no longer held,
-// the entry fails. 429, 5xx and a network error: again after 1 s doubling to 60 s, or at once when
-// the socket comes online. Any other 4xx: the entry fails.
+// Replies. 2xx: answered. 429, 5xx and a network error: again after 1 s doubling to 60 s, or at
+// once when the socket comes online. Any other 4xx: the entry fails.
 //
 // Failing. The entry leaves the list, `settled` rejects with `Refused`, and `failures` emits. The
 // session writes that name a row it would have made fail with it, without being sent. A mutation
-// that names such a row is still sent, so that `n` has no gap, and the server refuses it
-// (`not_found`), which fails it the same way.
+// that names such a row is still sent, and the server refuses it (`not_found`), which fails it the
+// same way.
 //
 // Leaving `pending`:
-// - a mutation, when a feed frame with `lastMutation >= n` is applied, in the step that emits the
-//   frame; a frame's `errors` entry for `n` fails it there too, whatever became of the HTTP reply.
-//   `settled` resolves then. If nobody reads the feed, the 2xx reply confirms it. If no frame has
-//   confirmed it 2 s after the reply, the feed is read over HTTP.
+// - a mutation, once its 2xx reply has arrived and the feed has applied a frame with `version` at
+//   least the reply's: at the reply if the feed is already there, else in the step that applies
+//   that frame. `settled` resolves then. If nobody reads the feed, the 2xx reply confirms it. If no
+//   frame has confirmed it 2 s after the reply, the feed is read over HTTP.
 // - `session`: when a feed frame carries the session's row (or names it in `gone`), or the row is
 //   already held when the reply arrives; on the 2xx reply if nobody reads the feed.
 // - `turn`: when `message.received` with its `turnId` arrives on the session's events; or when a
@@ -33,7 +33,7 @@
 // - `answer`, `dismiss`, `interrupt`, `settings`: on the 2xx reply.
 // `settled` of a session write resolves on its 2xx reply: from there the server holds it.
 //
-// `mutate` and the session writes throw before `ready`: the counters live in storage.
+// `mutate` and the session writes throw before `ready`: the list is read from storage first.
 
 import { refusal, transient, type Ctx, type Reply } from "./ctx.js";
 import { makeId } from "./ids.js";
@@ -73,24 +73,18 @@ const ROUTES: Record<MutationName, [method: string, path: string]> = {
 interface Stored {
   p: Pending;
   trace: string;
-  /** The `Idempotency-Key` of a session write. */
+  /** The entry's `Idempotency-Key`. */
   idem: string;
 }
 
 interface Entry extends Stored {
   answered: boolean;
+  /** mutation: the feed version its 2xx reply named. */
+  version: number;
   /** turn: a session row's `inbox` has held it. */
   inInbox: boolean;
   /** turn: the version of the session's row when the request was sent. */
   sentVersion: number | undefined;
-}
-
-export interface Meta {
-  clientId: string;
-  /** The last mutation number given out. */
-  n: number;
-  /** The last queue key given out. */
-  k: number;
 }
 
 type Body = Pending extends infer P ? (P extends Pending ? Omit<P, "key" | "at"> : never) : never;
@@ -98,8 +92,8 @@ type Body = Pending extends infer P ? (P extends Pending ? Omit<P, "key" | "at">
 export interface Queue {
   pending: WritableSignal<Pending[]>;
   failures: Emitter<Failure>;
-  load(meta: Meta, stored: Stored[]): void;
-  add(p: Body, idem?: string): { n: number; settled: Promise<void> };
+  load(stored: Stored[]): void;
+  add(p: Body, idem?: string): { settled: Promise<void> };
   /** Before a feed frame is emitted; what it answers runs after. */
   onFeed(frame: FeedFrame): () => void;
   onEvents(sessionId: string, events: ApiEvent[]): () => void;
@@ -109,11 +103,12 @@ export interface Queue {
 
 export interface FeedView {
   active(): boolean;
+  version(): number;
   row(kind: string, id: string): Row | undefined;
   catchUp(): void;
 }
 
-const pad = (k: number) => String(k).padStart(10, "0");
+const pad = (ms: number) => String(ms).padStart(15, "0");
 const lane = (p: Pending) => (p.kind === "mutation" ? "m" : `s:${p.sessionId}`);
 
 function creates(p: Pending): string[] {
@@ -133,10 +128,10 @@ function names(p: Pending): string[] {
   return Object.values(p.args).filter((v): v is string => typeof v === "string" && !made.includes(v));
 }
 
-function request(e: Stored, clientId: string): [path: string, init: RequestInit] {
+function request(e: Stored): [path: string, init: RequestInit] {
   const p = e.p;
-  const headers: Record<string, string> = { "content-type": "application/json", "x-oc-client": clientId, "x-oc-trace": e.trace };
-  const write = (method: string, path: string, body: unknown): [string, RequestInit] => [path, { method, headers: { ...headers, "Idempotency-Key": e.idem }, body: JSON.stringify(body) }];
+  const headers: Record<string, string> = { "content-type": "application/json", "x-oc-trace": e.trace, "Idempotency-Key": e.idem };
+  const write = (method: string, path: string, body: unknown): [string, RequestInit] => [path, { method, headers, body: JSON.stringify(body) }];
   const post = (path: string, body: unknown) => write("POST", path, body);
   switch (p.kind) {
     case "mutation": {
@@ -147,7 +142,7 @@ function request(e: Stored, clientId: string): [path: string, init: RequestInit]
         delete body[name];
         return encodeURIComponent(String(v));
       });
-      return [path, { method, headers: { ...headers, "x-oc-n": String(p.n) }, body: JSON.stringify(body) }];
+      return [path, { method, headers, body: JSON.stringify(body) }];
     }
     case "session":
       return post("/sessions", p.body);
@@ -170,14 +165,15 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
   const entries: Entry[] = [];
   const waiters = new Map<string, { resolve(): void; reject(e: Refused): void }>();
   const running = new Set<string>();
-  let meta: Meta | null = null;
+  let loaded = false;
+  /** The last key's time: keys are unique and in order within this client. */
+  let last = 0;
   let sender: "idle" | "waiting" | "holding" = "idle";
   let release = () => {};
   const lanes = () => [...new Set(entries.map((e) => lane(e.p)))];
   let nudging = false;
 
   const held = (e: Entry) => entries.includes(e);
-  const saveMeta = () => ({ put: "meta", value: meta });
 
   /**
    * Takes entries out of the list: `error` set, they failed. `pending` has its new value when this
@@ -227,7 +223,7 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
   }
 
   function pump(): void {
-    if (!meta || ctx.closed) return;
+    if (!loaded || ctx.closed) return;
     if (sender === "holding") return startLanes();
     if (sender === "waiting" || !lanes().some(next)) return;
     sender = "waiting";
@@ -263,7 +259,7 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
     const retry = ctx.backoff();
     for (let e = next(l); e && !ctx.closed; e = next(l)) {
       if (e.p.kind === "turn") e.sentVersion = feed.row("session", e.p.sessionId)?.version;
-      const reply = await ctx.request(...request(e, ctx.clientId)).catch(() => null);
+      const reply = await ctx.request(...request(e)).catch(() => null);
       if (ctx.closed) return;
       if (!held(e)) continue; // the feed confirmed or failed it meanwhile
       if (!reply || transient(reply.status)) await retry.wait();
@@ -277,21 +273,11 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
 
   function answer(e: Entry, reply: Reply): void {
     const p = e.p;
-    if (reply.status >= 300) {
-      const error = refusal(reply);
-      if (p.kind === "mutation" && error.code === "out_of_order") {
-        const last = Number(reply.body?.error?.lastMutation ?? reply.body?.lastMutation ?? 0);
-        const again = entries.filter((x) => x.p.kind === "mutation" && x.p.n > last);
-        if (again.some((x) => x.p.kind === "mutation" && x.p.n === last + 1)) {
-          for (const x of again) x.answered = false;
-          return;
-        }
-      }
-      return fail(e, error);
-    }
+    if (reply.status >= 300) return fail(e, refusal(reply));
     e.answered = true;
     if (p.kind === "mutation") {
-      if (!feed.active()) return done(e);
+      e.version = Number(reply.body?.version ?? 0);
+      if (!feed.active() || feed.version() >= e.version) return done(e);
       if (!nudging) {
         nudging = true;
         ctx.timer(() => {
@@ -315,38 +301,35 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
   return {
     pending,
     failures,
-    load(m, stored) {
-      meta = m;
-      for (const s of stored) entries.push({ ...s, answered: false, inInbox: false, sentVersion: undefined });
+    load(stored) {
+      loaded = true;
+      for (const s of stored) entries.push({ ...s, answered: false, version: 0, inInbox: false, sentVersion: undefined });
       pending.set(entries.map((e) => e.p));
     },
     add(body, idem) {
-      if (!meta) throw new Error("the client is not ready: await client.ready before writing");
-      const key = pad(++meta.k);
-      const n = body.kind === "mutation" ? ++meta.n : 0;
-      const p = { ...body, ...(body.kind === "mutation" ? { n } : {}), key, at: ctx.now() } as Pending;
-      const stored: Stored = { p, trace: makeId("tr", ctx.random), idem: idem ?? makeId("ib", ctx.random) };
-      entries.push({ ...stored, answered: false, inInbox: false, sentVersion: undefined });
-      // The entry before the counters: a write lost between the two cannot leave a gap in `n`.
-      ctx.write([{ put: `queue/${key}`, value: stored }, saveMeta()]);
+      if (!loaded) throw new Error("the client is not ready: await client.ready before writing");
+      const id = idem ?? makeId("ib", ctx.random);
+      last = Math.max(ctx.now(), last + 1);
+      const key = `${pad(last)}-${id}`;
+      const p = { ...body, key, at: ctx.now() } as Pending;
+      const stored: Stored = { p, trace: makeId("tr", ctx.random), idem: id };
+      entries.push({ ...stored, answered: false, version: 0, inInbox: false, sentVersion: undefined });
+      ctx.write([{ put: `queue/${key}`, value: stored }]);
       const settled = new Promise<void>((resolve, reject) => waiters.set(key, { resolve, reject }));
       settled.catch(() => {}); // `failures` tells of it too; a caller need not listen here
       pending.set(entries.map((e) => e.p));
       pump();
-      return { n, settled };
+      return { settled };
     },
     onFeed(frame) {
       const out = new Map<Entry, Refused | null>();
-      const errors = new Map((frame.errors ?? []).map((e) => [e.n, e]));
       const sessions = new Map<string, SessionRow>();
       for (const r of frame.rows) if (r.kind === "session") sessions.set(r.id, r);
       const gone = new Set(frame.gone.filter((g) => g.kind === "session").map((g) => g.id));
       for (const e of entries) {
         const p = e.p;
         if (p.kind === "mutation") {
-          const error = errors.get(p.n);
-          if (error) out.set(e, new Refused(error.code, error.reason, error));
-          else if (frame.lastMutation !== undefined && frame.lastMutation >= p.n) out.set(e, null);
+          if (e.answered && frame.version >= e.version) out.set(e, null);
         } else if (p.kind === "session") {
           if (sessions.has(p.sessionId) || (e.answered && gone.has(p.sessionId))) out.set(e, null);
         } else if (p.kind === "turn") {

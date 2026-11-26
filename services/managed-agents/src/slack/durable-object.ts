@@ -22,7 +22,6 @@ import {
   type SlackGrant,
   type SlackRpc,
   slackOf,
-  type ExportedSlackRow,
   sqlOf,
   unavailable,
   type Reply,
@@ -90,9 +89,6 @@ const DEDUP_TTL_MS = 24 * 60 * 60_000;
 
 const INSTALL_NONCE_TTL_MS = 10 * 60_000;
 const JOIN_REQUEST_INTERVAL_MS = 24 * 3600_000;
-const IMPORT_PAGE = 200;
-/** Computer's tables the import copies (spec 43.1); its queue's waiting rows become owed `process` calls. */
-const IMPORTED_TABLES = new Set(["people", "slack_messages", "install_nonces", "join_requests", "notices", "billing_warnings", "session_context", "access_requests"]);
 
 const MEMBER_SCOPES: Principal["scopes"] = ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"];
 const ONLY_MEMBERS_TEXT = "Only full members of this workspace can drive sessions.";
@@ -149,9 +145,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   /**
-   * Every entry imports Computer's Slack state first (spec 43.1, lazy on first touch): before
-   * it this object has no team, token or threads and would drop what it was given. Not in
-   * `forHost`, which Computer's export may call, nor in the team router's methods.
+   * Every entry, `forHost` included, imports Computer's Slack install first (spec 43.1, on first
+   * touch): before it this object has no team or token. Not in the team router's methods.
    */
   private async ready(): Promise<void> {
     const meta = this.sql.exec<{ imported: number }>("SELECT imported FROM meta WHERE k = 1")[0];
@@ -599,6 +594,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   // ------------------------------------------------------------------ people and credentials
 
   async forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }> {
+    await this.ready();
     const teamId = settings.get(this.sql, "slackTeamId");
     const botToken = await this.botToken();
     return { people: this.people(), slack: teamId && botToken ? { botToken, botUserId: settings.get(this.sql, "slackBotUserId") ?? "", teamId } : null };
@@ -951,37 +947,34 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   // ------------------------------------------------------------------ the import (spec 43.1)
 
   /**
-   * Computer's Slack state, once, in pages: its tables, settings, links and threads; a pending
-   * dispatch becomes a SessionLog entry. Each page's dispatches are accepted (idempotent on their
-   * ids) before the page's rows and the cursor are written, so a failed page is read again.
+   * The install Computer held before cutover, once: its Slack settings (team, sealed bot token),
+   * people and their member links, so nobody reinstalls Slack. Threads, queues and sessions are
+   * not carried; a thread from before starts a new session.
    */
-  async import(): Promise<void> {
+  private async import(): Promise<void> {
     const org = this.org();
     this.importing ??= (async () => {
       try {
-        for (;;) {
-          const meta = this.sql.exec<{ imported: number; after: string | null }>("SELECT imported, import_after AS after FROM meta WHERE k = 1")[0];
-          if (meta?.imported) return;
-          const page = await computerOf(this.env, org).exportSlack(meta?.after ?? null, IMPORT_PAGE);
-          for (const row of page.rows) {
-            if (row.type !== "dispatch") continue;
-            const r = await logOf(this.env, row.sessionId).accept(this.principalOfBy(row.entry.by), { id: row.entry.id, kind: row.entry.kind, body: row.entry.body });
-            if (!r.ok && r.code !== "idempotency_conflict") console.warn(JSON.stringify({ level: "warn", event: "slack.import_dispatch_refused", code: r.code }));
-          }
-          this.sql.transaction(() => {
-            for (const row of page.rows) this.importRow(row);
+        const done = this.sql.exec<{ imported: number }>("SELECT imported FROM meta WHERE k = 1")[0];
+        if (done?.imported) return;
+        const carry = await computerOf(this.env, org).slackCarry();
+        this.sql.transaction(() => {
+          for (const [k, v] of Object.entries(carry.settings)) settings.put(this.sql, k, v);
+          for (const p of carry.people) {
             this.sql.exec(
-              "INSERT INTO meta (k, imported, import_after) VALUES (1, ?, ?) ON CONFLICT(k) DO UPDATE SET imported = excluded.imported, import_after = excluded.import_after",
-              page.next === null ? 1 : 0,
-              page.next,
+              "INSERT OR IGNORE INTO people (slack_user_id, dir, git_name, git_email, updated_at) VALUES (?, ?, ?, ?, ?)",
+              p.slack_user_id,
+              p.dir,
+              p.git_name,
+              p.git_email,
+              p.updated_at,
             );
-          });
-          if (page.next === null) break;
-        }
+          }
+          for (const l of carry.links) links.put(this.sql, l.slackUser, l.member);
+          this.sql.exec("INSERT INTO meta (k, imported) VALUES (1, 1) ON CONFLICT(k) DO UPDATE SET imported = 1");
+        });
         this.token = undefined;
         this.access = undefined;
-        // Items Computer had queued are owed here now.
-        this.ctx.waitUntil(this.sendOwedNow());
         // The workspace's route moves to this namespace's router.
         const teamId = settings.get(this.sql, "slackTeamId");
         if (teamId) {
@@ -993,48 +986,5 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       }
     })();
     return this.importing;
-  }
-
-  private importRow(row: ExportedSlackRow): void {
-    if (row.type === "setting") return settings.put(this.sql, row.key, row.value);
-    if (row.type === "link") return links.put(this.sql, row.slackUser, row.member);
-    if (row.type === "thread") return threads.put(this.sql, row.key, row.sessionId);
-    if (row.type !== "row") return;
-    if (row.table === "slack_queue") return this.importQueued(row.row);
-    if (!IMPORTED_TABLES.has(row.table)) return console.warn(JSON.stringify({ level: "warn", event: "slack.import_table_unknown", table: row.table }));
-    const columns = Object.keys(row.row).filter((c) => /^[a-z_]+$/.test(c));
-    if (!columns.length) return;
-    this.sql.exec(
-      `INSERT OR IGNORE INTO ${row.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-      ...columns.map((c) => {
-        const v = row.row[c];
-        return v === null || typeof v === "number" || typeof v === "string" ? v : JSON.stringify(v);
-      }),
-    );
-  }
-
-  /** A row Computer's queue still held, owed here as a `process` call; a failed one stays behind. */
-  private importQueued(row: Record<string, unknown>): void {
-    if (row.state === "failed" || typeof row.payload !== "string") return;
-    const job = JSON.parse(row.payload) as Job;
-    oweProcess(this.sql, typeof row.thread_key === "string" ? row.thread_key : `seq:${String(row.sequence)}`, job);
-  }
-
-  /** An exported dispatch's author: a person's `user:` by as their principal, anything else the platform. */
-  private principalOfBy(by: string): Principal {
-    const org = this.org();
-    if (!by.startsWith("user:")) return platformPrincipal(org);
-    const subject = by.slice(5);
-    const member = subject.startsWith("usr_");
-    return {
-      org,
-      subject,
-      kind: "member",
-      via: "slack",
-      scopes: [...MEMBER_SCOPES],
-      audiences: member ? ["org", `member:${subject}`] : [],
-      admin: false,
-      credential: { id: subject.startsWith("slack:") ? subject : `import:${subject}`, expiresAt: null },
-    };
   }
 }

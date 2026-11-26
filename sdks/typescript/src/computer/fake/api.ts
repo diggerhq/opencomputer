@@ -63,8 +63,8 @@ export interface FakeServer {
   rows<K extends RowKind>(kind: K): RowOf<K>[];
   row(kind: RowKind, id: string): Row | undefined;
   events(sessionId: string): ApiEvent[];
-  /** Every request received, for assertions: method, path, the `x-oc-n` header. */
-  requests: { method: string; path: string; n: number | null; status: number }[];
+  /** Every request received, for assertions: method, path, the `Idempotency-Key` header. */
+  requests: { method: string; path: string; idem: string | null; status: number }[];
   chaos(c: Chaos): void;
   /** Closes every socket; while offline, `fetch` rejects and `connect()` channels close at once. */
   setOffline(offline: boolean): void;

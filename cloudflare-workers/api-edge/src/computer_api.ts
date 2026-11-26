@@ -250,12 +250,10 @@ export function computerApiError(
 const API_REQUEST_HEADERS = [
   "user-agent",
   "if-none-match",
-  // Tracks and threads (spec 34.2): the trace, the principal the client is
-  // built for, and a member client's mutation order.
+  // Tracks and threads (spec 34.2): the trace and the principal the client is
+  // built for.
   "x-oc-trace",
   "x-oc-principal",
-  "x-oc-client",
-  "x-oc-n",
 ];
 
 /** Response headers passed back from blue. */
@@ -422,7 +420,7 @@ export async function proxyComputerWorkspace(
 // ── CORS ─────────────────────────────────────────────────────────────────
 
 const CORS_ALLOW_HEADERS =
-  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, x-oc-client, x-oc-n";
+  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
   "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";

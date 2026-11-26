@@ -537,7 +537,6 @@ export default defineConfig({
             "test/computer-connect-codes.test.ts",
             "test/computer-units.test.ts",
             "test/computer-access.test.ts",
-            "test/computer-access-store.test.ts", 
             "test/session-fold.test.ts",
             "test/computer-calvin-contract.test.ts",
             "test/computer-telemetry.test.ts",

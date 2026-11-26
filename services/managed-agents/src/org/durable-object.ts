@@ -61,19 +61,19 @@ export type OrgEnv = ActorEnv & {
   SERVERLESS_AGENTS_DB?: D1Database;
   /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
   ACCOUNTS?: DurableObjectNamespace;
-  /** The retired Work board's object, read once while adopting (org/work-index.ts). */
+  /** The retired Work board's object: the knowledge repository it held, read once (org/work-index.ts). */
   WORK_INDEX?: DurableObjectNamespace;
 };
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
-  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "exportSessions">;
+  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed">;
   log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
-  /** The knowledge repository setting the retired Work board held, read once while adopting. */
+  /** The knowledge repository setting the retired Work board held, read once (the `board` alarm). */
   boardRepository(): Promise<StoredRepository | null>;
   /** The organization's Account object, or null where it is not bound. */
   account(): TokenMinter | null;
@@ -84,7 +84,6 @@ const AGE_EVERY_MS = 60 * 60 * 1_000;
 
 export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   private store: Sql | null = null;
-  private adopting: Promise<void> | null = null;
   private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }));
 
   /** The organization's id: the object's name, else what the first principal said. */
@@ -210,7 +209,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     const sql = this.sql;
     await alarms.run(sql, Date.now(), {
       owed: () => this.drain(),
-      adopt: () => this.adoptNow(),
+      // Armed once by a migration step (schema.ts): the knowledge repository the Work board held, carried over.
+      board: async () => {
+        const repository = await this.out.boardRepository();
+        if (repository && !repositories.storedRepository(sql)) repositories.storeRepository(sql, repository);
+        this.flush();
+      },
       age: () => {
         work.age(sql, Date.now());
         alarms.set(sql, "age", Date.now() + AGE_EVERY_MS);
@@ -219,73 +223,15 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     });
   }
 
-  // ------------------------------------------------------------------ adoption (spec 43.1)
-
-  /** Every method's first step: the organization's sessions are here, or are fetched now. Throws `adopting` when a page fails. */
-  private async ready(p?: Principal): Promise<void> {
-    const sql = this.sql;
-    if (p) sessions.seen(sql, p);
-    if (work.adopted(sql)) return;
-    await this.adoptNow();
-  }
-
-  /** `ready` for a method that answers refusals as values. */
-  private async gate(p?: Principal): Promise<{ ok: false; code: "adopting"; status: 503; message: string; retryAfterMs: number } | null> {
-    try {
-      await this.ready(p);
-      return null;
-    } catch {
-      return { ok: false, code: "adopting", status: 503, message: "The organization's sessions are being moved. Try again shortly.", retryAfterMs: 5_000 };
-    }
-  }
-
-  private adoptNow(): Promise<void> {
-    this.adopting ??= this.adoptPages().finally(() => {
-      this.adopting = null;
-    });
-    return this.adopting;
-  }
-
-  private async adoptPages(): Promise<void> {
-    const sql = this.sql;
-    const org = this.org;
-    try {
-      while (!work.adopted(sql)) {
-        const page = await this.out.computer(org).exportSessions(work.adoptAfter(sql), work.ADOPT_PAGE);
-        // The knowledge repository the Work board held, read before the last page marks the adoption done.
-        const repository = page.next === null ? await this.out.boardRepository() : null;
-        work.adoptPage(sql, Date.now(), org, page, repository ? JSON.stringify(repository) : null);
-      }
-      alarms.clear(sql, "adopt");
-      alarms.set(sql, "age", Date.now() + AGE_EVERY_MS);
-      this.flush();
-    } catch (error) {
-      alarms.set(sql, "adopt", Date.now() + 5_000);
-      throw new Error("adopting", { cause: error });
-    }
-  }
-
-  /** Sessions the previous version made after the adoption (spec 43.1): the export read again, rows Org holds passed over. */
-  private async adoptLate(): Promise<void> {
-    const org = this.org;
-    let after: string | null = null;
-    for (;;) {
-      const page = await this.out.computer(org).exportSessions(after, work.ADOPT_PAGE);
-      work.adoptPage(this.sql, Date.now(), org, page, null, true);
-      if (page.next === null) return;
-      after = page.next;
-    }
-  }
-
-  async adopt(): Promise<void> {
-    await this.ready();
+  /** Who called, recorded (sessions.ts `seen`) before what they asked. */
+  private seen(p: Principal): void {
+    sessions.seen(this.sql, p);
   }
 
   // ------------------------------------------------------------------ the directory
 
   async createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>> {
-    const busy = await this.gate(p);
-    if (busy) return busy;
+    this.seen(p);
     const { person: _person, ...hashed } = body;
     const hash = await hashOf(hashed);
     const out = sessions.createSession(this.sql, Date.now(), p, body, hash, this.org);
@@ -294,25 +240,26 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   }
 
   async getSession(p: Principal, id: string): Promise<Reply<{ session: SessionRow }>> {
-    return (await this.gate(p)) ?? sessions.getSession(this.sql, p, id);
+    this.seen(p);
+    return sessions.getSession(this.sql, p, id);
   }
 
   async patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>> {
-    const busy = await this.gate(p);
-    if (busy) return busy;
+    this.seen(p);
     const out = sessions.patchSession(this.sql, Date.now(), p, id, patch);
     this.flush();
     return out;
   }
 
   async listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>> {
-    return (await this.gate(p)) ?? sessions.listSessions(this.sql, p, q);
+    this.seen(p);
+    return sessions.listSessions(this.sql, p, q);
   }
 
   // ------------------------------------------------------------------ the feed and the work part
 
-  async feed(p: Principal, q: { after?: string; kinds?: string[]; clientId?: string; ack?: number; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }> {
-    await this.ready(p);
+  async feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }> {
+    this.seen(p);
     const read = feeds.feed(this.sql, Date.now(), p, q);
     if ("reset" in read) return read;
     if (read.sumOver) read.frame.sum = await feeds.checksum(read.sumOver);
@@ -320,7 +267,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   }
 
   async mutate(p: Principal, m: MutateRequest): Promise<MutateReply> {
-    await this.ready(p);
+    this.seen(p);
     const hash = await hashOf({ name: m.name, args: m.args });
     const out = feeds.mutate(this.sql, Date.now(), p, m, hash);
     this.flush();
@@ -328,42 +275,42 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   }
 
   async threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }> {
-    await this.ready(p);
+    this.seen(p);
     return work.threads(this.sql, p, q);
   }
 
   async search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }> {
-    await this.ready(p);
+    this.seen(p);
     return work.search(this.sql, p, q);
   }
 
   async result(p: Principal, id: string): Promise<ResultRow | null> {
-    await this.ready(p);
+    this.seen(p);
     return work.result(this.sql, p, id);
   }
 
   async overview(p: Principal): Promise<Overview> {
-    await this.ready(p);
+    this.seen(p);
     return work.overview(this.sql, p);
   }
 
   async trackAgent(p: Principal): Promise<string | null> {
-    await this.ready(p);
+    this.seen(p);
     return work.trackAgent(this.sql, p);
   }
 
   async doc(p: Principal, trackId: string): Promise<Row | null> {
-    await this.ready(p);
+    this.seen(p);
     return work.doc(this.sql, p, trackId);
   }
 
   async docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]> {
-    await this.ready(p);
+    this.seen(p);
     return work.docRevisions(this.sql, p, trackId, rev);
   }
 
   async review(p: Principal, resultId: string): Promise<ReviewRow | null> {
-    await this.ready(p);
+    this.seen(p);
     return work.review(this.sql, p, resultId);
   }
 
@@ -375,37 +322,30 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   // ------------------------------------------------------------------ the occurrence stream
 
   async occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }> {
-    await this.ready(p.kind === "platform" ? undefined : p);
+    if (p.kind !== "platform") this.seen(p);
     return feeds.occurrences(this.sql, p, q);
   }
 
   // ------------------------------------------------------------------ arrows in
 
   async acceptSummary(pub: SummaryPub): Promise<{ accepted: boolean; revision: number }> {
-    await this.ready();
     const out = feeds.acceptSummary(this.sql, Date.now(), pub);
     this.flush();
     return out;
   }
 
   async acceptMachine(pub: MachinePub): Promise<{ accepted: boolean }> {
-    await this.ready();
-    const sql = this.sql;
-    const out = work.acceptMachine(sql, Date.now(), pub);
-    // A failure leaves `adopted_at` where it was: the machine's next state tries again.
-    if (work.adoptedBefore(sql, pub.newestCreatedAt)) this.ctx.waitUntil(this.adoptLate().then(() => this.flush(), () => undefined));
+    const out = work.acceptMachine(this.sql, Date.now(), pub);
     this.flush();
     return out;
   }
 
   async acceptPull(pub: PullPub): Promise<void> {
-    await this.ready();
     work.acceptPull(this.sql, Date.now(), pub);
     this.flush();
   }
 
   async access(sessionId: string): Promise<Access | null> {
-    await this.ready();
     return sessions.access(this.sql, sessionId);
   }
 
@@ -414,20 +354,18 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   }
 
   async forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }> {
-    await this.ready();
     return sessions.forHost(this.sql, machine);
   }
 
   // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)
 
   async repository(p: Principal): Promise<Repository | null> {
-    await this.ready(p);
+    this.seen(p);
     return repositories.shown(repositories.storedRepository(this.sql));
   }
 
   async setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>> {
-    const busy = await this.gate(p);
-    if (busy) return busy;
+    this.seen(p);
     if (p.kind !== "member" && p.kind !== "key") return { ok: false, code: "forbidden", status: 403 };
     const account = this.out.account();
     if (!account) return { ok: false, code: "unavailable", status: 503, message: "GitHub is not configured." };
@@ -440,14 +378,13 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   /** What the organization's GitHub installations grant, for the picker. */
   async repositories(p: Principal, q: RepositoriesQuery): Promise<Reply<{ installations: GrantingInstallation[] }>> {
-    await this.ready(p);
+    this.seen(p);
     const account = this.out.account();
     if (!account) return { ok: false, code: "unavailable", status: 503, message: "GitHub is not configured.", retryAfterMs: 5_000 };
     return repositories.listGranted(account, this.out.fetch, q);
   }
 
   async linkPerson(from: string, to: string): Promise<void> {
-    await this.ready();
     work.linkPerson(this.sql, Date.now(), from, to);
     this.flush();
   }

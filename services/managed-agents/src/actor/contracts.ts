@@ -115,8 +115,8 @@ export type FeedFrame = {
   more: boolean;
   rows: Row[];
   gone: { kind: string; id: string }[];
-  lastMutation?: number;
-  errors?: { n: number; code: string; reason: string }[];
+  /** The feed version `to` names: a mutation's reply names the one that holds its effect. */
+  version: number;
   counts?: { earlier: number; trackEarlier: Record<string, number> };
   sum?: string;
 };
@@ -126,21 +126,21 @@ export type FeedPush = {
   to: string;
   rows: (Row & { audience: string })[];
   gone: { kind: string; id: string; audience: string }[];
-  mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[];
+  version: number;
 };
 export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string };
 export type MutateRequest = {
   name: string;
   args: unknown;
-  client?: { id: string; n: number };
   idem?: string;
   trace?: string;
   /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
   person?: { name: string | null; email: string | null };
 };
 export type MutateReply =
-  | { protocol: 1; lastMutation?: number; value?: unknown }
-  | { error: { code: "refused" | "not_found" | "taken" | "conflict" | "out_of_order" | "principal_mismatch" | "idempotency_conflict" | "invalid_request" | "forbidden"; message?: string; reason?: string; lastMutation?: number; [field: string]: unknown } };
+  /** `version`: the feed version that holds the effect; a client's feed that reached it shows it. */
+  | { protocol: 1; version: number; value?: unknown }
+  | { error: { code: "refused" | "not_found" | "taken" | "conflict" | "idempotency_conflict" | "invalid_request" | "forbidden"; message?: string; reason?: string; [field: string]: unknown } };
 export type Overview = { tracks: unknown[]; threads: unknown[] };
 export type SlackEcho =
   | { kind: "refused"; threadKey: string; person: string; code: string }
@@ -156,7 +156,6 @@ export type MachinePub = {
   revision: number;
   state: MachineState;
   previews: { sessionId: string; name: string; url: string }[];
-  newestCreatedAt: number;
 };
 export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number };
 
@@ -168,7 +167,7 @@ export interface OrgRpc {
   listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>>;
 
   // the feed and the work part
-  feed(p: Principal, q: { after?: string; kinds?: string[]; clientId?: string; ack?: number; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;
+  feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;
   mutate(p: Principal, m: MutateRequest): Promise<MutateReply>;
   threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
@@ -199,8 +198,6 @@ export interface OrgRpc {
   repositories(p: Principal, q: RepositoriesQuery): Promise<Reply<{ installations: GrantingInstallation[] }>>;
   /** The Slack actor only: `slack:` sessions now owned by a member. */
   linkPerson(from: string, to: string): Promise<void>;
-  /** Computer only, once: spec 43.1. */
-  adopt(): Promise<void>;
   /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
   dead(): Promise<Dead[]>;
 }
@@ -255,31 +252,15 @@ export type StartSpec = { session: SessionRow; settings: SessionSettings; role: 
 export type DrainResult =
   | { state: "delivered"; results: { id: string; result?: unknown; error?: ApiErrorBody["error"] }[] }
   | { state: "waking" };
-/** One row of the export Org adopts from (spec 43.1). */
-export interface ExportedSession {
-  id: string;
-  owner: string;
-  origin: Origin;
-  title: string;
-  archived: boolean;
-  metadata: Record<string, string>;
-  asideRef: string | null;
-  writers: "members" | string[];
-  slackThreadKey: string | null;
-  createdAt: number;
-  updatedAt: number;
-  lastActiveAt: number | null;
-  summary: LogSummary | null;
-  /** `sessions.create` idempotency rows younger than 24 h for this session: the body's hash. */
-  createHash: string | null;
+/**
+ * What the Slack actor carries over from Computer at cutover (spec 43.1): the install's settings (the bot token
+ * sealed, as stored), the people the machine knows and their links to members. Nothing of a thread or a session.
+ */
+export interface SlackCarry {
+  settings: Record<string, string>;
+  people: { slack_user_id: string; dir: string; git_name: string; git_email: string; updated_at: number }[];
+  links: { slackUser: string; member: string }[];
 }
-/** One row of the export the Slack actor imports (spec 43.1): a table's row, a setting, or a pending dispatch. */
-export type ExportedSlackRow =
-  | { type: "row"; table: string; row: Record<string, unknown> }
-  | { type: "setting"; key: string; value: string }
-  | { type: "link"; slackUser: string; member: string }
-  | { type: "thread"; key: string; sessionId: string }
-  | { type: "dispatch"; sessionId: string; entry: { id: string; kind: InboxKind; body: unknown; by: string } };
 
 export interface ComputerRpcAdded {
   start(spec: StartSpec): Promise<void>;
@@ -302,8 +283,8 @@ export interface ComputerRpcAdded {
   ): Promise<{ reply: string; member?: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
-  exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
-  exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }>;
+  /** The Slack actor only, once: spec 43.1. */
+  slackCarry(): Promise<SlackCarry>;
   /**
    * The Slack actor only: an interaction whose state is Computer's (secret, variable, connection and
    * subscription modals and their buttons: a `view_submission`, `s:`, `cn:`, `v:`, `mc:connect`,
@@ -368,8 +349,6 @@ export interface SlackRpc {
   notify(e: SlackEcho): Promise<void>;
   /** post_thread. */
   post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;
-  /** Computer only, once: spec 43.1. */
-  import(): Promise<void>;
 
   // The install's edges, moved from Computer with the install (the edge's Slack routes call them).
   /** A nonce for the install's OAuth state, bound to the person starting it; ten minutes. */

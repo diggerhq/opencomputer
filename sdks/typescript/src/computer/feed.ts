@@ -19,13 +19,15 @@ const HOUR = 3_600_000;
 export interface Feed {
   stream(kinds: string[]): Stream<FeedFrame>;
   /** Storage's copy, read at start. */
-  load(cursor: string | null, ack: number, rows: Row[]): void;
+  load(cursor: string | null, rows: Row[]): void;
   /** A new socket: subscribe again and catch up, with the checksum. */
   connected(): void;
   onSocket(f: ServerFrame): void;
   /** Read from the cursor now. */
   catchUp(): void;
   active(): boolean;
+  /** The feed version of the last frame applied in this run; 0 before one. */
+  version(): number;
   row(kind: string, id: string): Row | undefined;
 }
 
@@ -36,7 +38,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
   const subs = emitter<FeedFrame>();
   const retry = ctx.backoff();
   let cursor: string | null = null;
-  let ack = 0;
+  let version = 0;
   let kinds: string[] = [];
   let active = false;
   let reading = false;
@@ -44,7 +46,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
   let wantSum = false;
   let stopHourly = () => {};
 
-  const frameOf = (from: string | null, to: string, r: Row[]): FeedFrame => ({ protocol: 1, org, subject, from, to, more: false, rows: r, gone: [] });
+  const frameOf = (from: string | null, to: string, r: Row[]): FeedFrame => ({ protocol: 1, org, subject, from, to, more: false, rows: r, gone: [], version });
 
   function apply(frame: FeedFrame): void {
     const ops: Op[] = [];
@@ -61,9 +63,8 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
       ops.push({ delete: `feed/row/${g.kind}/${g.id}` });
     }
     cursor = frame.to;
+    version = frame.version;
     ops.push({ put: "feed/cursor", value: cursor });
-    for (const e of frame.errors ?? []) ack = Math.max(ack, e.n);
-    if (frame.errors?.length) ops.push({ put: "feed/ack", value: ack });
     ctx.write(ops);
     const after = onFrame(frame);
     subs.emit(frame);
@@ -75,6 +76,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     const ops: Op[] = [...rows.keys()].map((k) => ({ delete: `feed/row/${k}` }));
     rows.clear();
     cursor = to;
+    version = 0;
     ctx.write([...ops, { put: "feed/cursor", value: cursor }]);
     if (to !== null) subs.emit(frameOf(null, to, []));
   }
@@ -105,8 +107,6 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
       const q = new URLSearchParams();
       if (sent !== null) q.set("after", sent);
       q.set("kinds", kinds.join(","));
-      q.set("client", ctx.clientId);
-      q.set("ack", String(ack));
       if (sum) q.set("sum", "1");
       const reply = await ctx.request(`/feed?${q}`).catch(() => null);
       if (!live()) return;
@@ -174,9 +174,8 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
         },
       };
     },
-    load(c, a, held) {
+    load(c, held) {
       cursor = c;
-      ack = a;
       for (const r of held) rows.set(`${r.kind}/${r.id}`, r);
     },
     connected() {
@@ -188,7 +187,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
       if (!active) return;
       if (f.t === "feed") {
         if (reading) again = true;
-        else if (f.from === cursor) apply({ protocol: 1, org, subject, more: false, from: f.from, to: f.to, rows: f.rows, gone: f.gone, lastMutation: f.lastMutation, errors: f.errors });
+        else if (f.from === cursor) apply({ protocol: 1, org, subject, more: false, from: f.from, to: f.to, rows: f.rows, gone: f.gone, version: f.version });
         else if (f.to !== cursor) catchUp();
       } else if (f.t === "subd" || f.t === "behind") {
         if (f.head !== cursor) catchUp();
@@ -201,6 +200,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     },
     catchUp: () => catchUp(),
     active: () => active,
+    version: () => version,
     row: (kind, id) => rows.get(`${kind}/${id}`),
   };
 }

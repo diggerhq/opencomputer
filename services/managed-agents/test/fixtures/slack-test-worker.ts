@@ -3,7 +3,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import type { AcceptResult, ExportedSlackRow, MutateReply, Principal } from "../../src/actor/contracts.js";
+import type { AcceptResult, MutateReply, Principal, SlackCarry } from "../../src/actor/contracts.js";
 
 export { SlackDurableObject } from "../../src/slack/durable-object.js";
 
@@ -47,7 +47,7 @@ export class FakeOrg extends Recorder {
 
   async mutate(p: Principal, m: unknown): Promise<MutateReply> {
     this.record("mutate", p, m);
-    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1 };
+    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1, version: 1 };
   }
 
   async linkPerson(from: string, to: string): Promise<void> {
@@ -79,12 +79,12 @@ export class FakeSessionLog extends Recorder {
 }
 
 export class FakeComputer extends Recorder {
-  private rows: ExportedSlackRow[] = [];
+  private carry: SlackCarry = { settings: {}, people: [], links: [] };
   /** As the old team router (`computer-slack-team:<T>`): the organization it names. */
   private account: string | null = null;
 
-  async set(next: { rows?: ExportedSlackRow[]; teamAccount?: string }): Promise<void> {
-    if (next.rows) this.rows = next.rows;
+  async set(next: { carry?: SlackCarry; teamAccount?: string }): Promise<void> {
+    if (next.carry) this.carry = next.carry;
     if (next.teamAccount) this.account = next.teamAccount;
   }
 
@@ -111,11 +111,9 @@ export class FakeComputer extends Recorder {
     this.record("memberLeft", slackUserId);
   }
 
-  async exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }> {
-    this.record("exportSlack", after, limit);
-    const start = after === null ? 0 : Number(after);
-    const end = Math.min(start + limit, this.rows.length);
-    return { rows: this.rows.slice(start, end), next: end < this.rows.length ? String(end) : null };
+  async slackCarry(): Promise<SlackCarry> {
+    this.record("slackCarry");
+    return this.carry;
   }
 }
 

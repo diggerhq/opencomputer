@@ -237,7 +237,7 @@ describe("the allowlist of tracks and threads", () => {
     expect(isComputerApiRoute(method, `/computer${path}`)).toBe(false);
   });
 
-  it("forwards trace, principal, client, n and Idempotency-Key", async () => {
+  it("forwards trace, principal and Idempotency-Key, and no longer x-oc-client or x-oc-n", async () => {
     const { db, env } = seeded();
     const { key } = await addKey(db, { scopes: "sessions:read,work:read,work:write" });
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ protocol: 1 }));
@@ -265,8 +265,8 @@ describe("the allowlist of tracks and threads", () => {
     const headers = new Headers(init.headers);
     expect(headers.get("x-oc-trace")).toBe("tr_0123456789abcdef");
     expect(headers.get("x-oc-principal")).toBe(`${ORG}/${SUBJECT}`);
-    expect(headers.get("x-oc-client")).toBe("cl_0123456789abcdef");
-    expect(headers.get("x-oc-n")).toBe("7");
+    expect(headers.get("x-oc-client")).toBeNull();
+    expect(headers.get("x-oc-n")).toBeNull();
     expect(headers.get("idempotency-key")).toBe("idem-7");
   });
 
