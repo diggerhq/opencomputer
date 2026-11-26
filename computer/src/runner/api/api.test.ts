@@ -353,6 +353,22 @@ describe('SessionApi', () => {
     expect(w.of('turn.steered')).toHaveLength(1);
   });
 
+  it('a steer the cloud redelivers (its idempotency record gone) is answered from the log, not steered twice', async () => {
+    const w = await world();
+    const a = result(await w.call('turns.send', { input: 'go' }));
+    await w.t.feed(w.T.first(), ...w.T.tool('tu_1', 'Bash', { command: 'sleep 20' }));
+    const messageId = 'tn_0000000000s1';
+    const s = result(await w.call('turns.send', { input: 'use pnpm', ifBusy: 'steer', turnId: messageId }, { ...BOB, idempotencyKey: messageId }));
+    expect(s).toMatchObject({ delivery: 'steered', duplicate: false, turn: { id: a.turn.id } });
+    expect(w.of('message.received').at(-1)!.data).toMatchObject({ delivery: 'steered', messageId });
+    // A redelivery whose idempotency line was lost: another key, the same message id.
+    const again = result(await w.call('turns.send', { input: 'use pnpm', ifBusy: 'steer', turnId: messageId }, { ...BOB, idempotencyKey: 'k-lost' }));
+    expect(again).toMatchObject({ delivery: 'steered', duplicate: true, turn: { id: a.turn.id } });
+    expect(w.sends()).toHaveLength(2);
+    expect(w.of('message.received').filter((e) => (e.data as { delivery: string }).delivery === 'steered')).toHaveLength(1);
+    for (const e of w.events()) assertEvent(e);
+  });
+
   it('a plan approval may name the mode the session continues in', async () => {
     const w = await world();
     await w.call('turns.send', { input: 'plan it' });

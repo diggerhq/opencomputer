@@ -44,7 +44,7 @@ type TurnState = Mutable<Turn>;
 type Steer = { input: string; author: Actor | null; createdAt: string };
 
 /** The version of `snapshot`'s shape and of `apply`'s semantics it was built with. */
-const FOLD_STATE = 1;
+const FOLD_STATE = 2;
 
 /** Session.lastText is the first this many characters (the docs; blue's fold cuts the same). */
 const LAST_TEXT_CHARS = 200;
@@ -90,6 +90,8 @@ export class Fold {
   private subagentMap = new Map<string, Mutable<Subagent>>();
   /** Each ask's and subagent's first event's seq (list cursors, list-cursor.ts). */
   private firstSeq = new Map<string, number>();
+  /** Each named steer's message id to the turn it steered. */
+  private steers = new Map<string, string>();
 
   constructor(readonly seed: SessionSeed) {}
 
@@ -99,14 +101,14 @@ export class Fold {
       v: FOLD_STATE, title: this.title, origin: this.origin, settings: this.settings, archived: this.archived, metadata: this.metadata,
       status: this.sessionStatus, createdAt: this.createdAt, lastActiveAt: this.lastActiveAt, lastText: this.lastText, context: this.context,
       turns: [...this.turnMap.values()], live: [...this.live], lastTurnId: this.lastTurnId, asks: [...this.askMap.values()],
-      calls: [...this.calls].map(([t, m]) => [t, [...m.values()]] as [string, OpenCall[]]), subagents: [...this.subagentMap.values()], firstSeq: [...this.firstSeq],
+      calls: [...this.calls].map(([t, m]) => [t, [...m.values()]] as [string, OpenCall[]]), subagents: [...this.subagentMap.values()], firstSeq: [...this.firstSeq], steers: [...this.steers],
     };
   }
 
   /** A fold from a `snapshot` (parsed from JSON); undefined when it is not one this build wrote. */
   static restore(seed: SessionSeed, s: unknown): Fold | undefined {
     const x = s as FoldState | null;
-    const arrays = x && [x.turns, x.live, x.asks, x.calls, x.subagents, x.firstSeq].every(Array.isArray);
+    const arrays = x && [x.turns, x.live, x.asks, x.calls, x.subagents, x.firstSeq, x.steers].every(Array.isArray);
     if (!arrays || x.v !== FOLD_STATE || !x.settings || !x.origin || !x.context || !x.metadata) return undefined;
     const f = new Fold(seed);
     f.title = x.title;
@@ -126,6 +128,7 @@ export class Fold {
     f.calls = new Map(x.calls.map(([t, cs]) => [t, new Map(cs.map((c) => [c.callId, c]))]));
     f.subagentMap = new Map(x.subagents.map((a) => [a.id, a]));
     f.firstSeq = new Map(x.firstSeq);
+    f.steers = new Map(x.steers);
     return f;
   }
 
@@ -239,6 +242,7 @@ export class Fold {
     const existing = this.turnMap.get(e.turnId);
     if (d.delivery === 'steered' && existing) {
       if (steer.author) existing.steering.push({ ...steer, author: steer.author });
+      if (d.messageId) this.steers.set(d.messageId, e.turnId);
     }
     else if (!existing) this.newTurn(e.turnId, e, steer, d.ifBusy);
   }
@@ -291,6 +295,11 @@ export class Fold {
   turn(id: string): Turn | undefined {
     const t = this.turnMap.get(id);
     return t && copyTurn(t);
+  }
+
+  /** The turn the steer `messageId` named steered, if the log has it. */
+  steered(messageId: string): string | undefined {
+    return this.steers.get(messageId);
   }
 
   turns(): Turn[] {
@@ -403,7 +412,7 @@ interface FoldState {
   v: number; title: string; origin: Session['origin']; settings: Mutable<Session['settings']>; archived: boolean; metadata: Record<string, string>;
   status: string; createdAt: string | null; lastActiveAt: string | null; lastText: string | null; context: { usedTokens: number | null; windowTokens: number | null };
   turns: TurnState[]; live: string[]; lastTurnId: string | null; asks: Ask[]; calls: Array<[string, OpenCall[]]>; subagents: Mutable<Subagent>[];
-  firstSeq: Array<[string, number]>;
+  firstSeq: Array<[string, number]>; steers: Array<[string, string]>;
 }
 
 function copyTurn(t: TurnState): Turn {

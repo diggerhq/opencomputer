@@ -172,6 +172,44 @@ describe("owed", () => {
       expect(sql.exec("SELECT n FROM _owed")).toEqual([]);
     });
   });
+  it("one run per group: a held group holds no other, and a call during its run waits for the round it asked for", async () => {
+    await withSql("owed-groups", async (sql) => {
+      owed.add(sql, { group: "slow", key: "slow", call: "slow", at: 0 });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const sent: string[] = [];
+      const send = async (call: string) => {
+        sent.push(call);
+        if (call === "slow" && sent.filter((c) => c === "slow").length === 1) await held;
+      };
+      const first = owed.run(sql, send, Date.now(), quiet);
+      owed.add(sql, { group: "fast", call: "fast", at: 0 });
+      await owed.run(sql, send, Date.now(), quiet, "fast");
+      expect(sent).toEqual(["slow", "fast"]);
+      owed.add(sql, { group: "slow", key: "slow", call: "slow", at: 0 });
+      const again = owed.run(sql, send, Date.now(), quiet, "slow");
+      release();
+      await Promise.all([first, again]);
+      expect(sent).toEqual(["slow", "fast", "slow"]);
+      expect(owed.groups(sql)).toEqual([]);
+    });
+  });
+  it("due: a call that waited for an event goes now", async () => {
+    await withSql("owed-due", async (sql) => {
+      const later = Date.now() + 3_600_000;
+      owed.add(sql, { group: "a", call: "a", at: later });
+      owed.add(sql, { group: "b", call: "b", at: later });
+      const sent: string[] = [];
+      const send = async (call: string) => void sent.push(call);
+      owed.due(sql, "a");
+      await owed.run(sql, send, Date.now(), quiet);
+      expect(sent).toEqual(["a"]);
+      expect(owed.groups(sql)).toEqual(["b"]);
+      owed.due(sql);
+      await owed.run(sql, send, Date.now(), quiet);
+      expect(sent).toEqual(["a", "b"]);
+    });
+  });
 });
 
 describe("idem", () => {
