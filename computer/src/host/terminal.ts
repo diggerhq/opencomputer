@@ -30,6 +30,10 @@
 //   the computer pulls an image is refused within seconds with words for the
 //   person, and one whose container is not running then is refused
 //   (`session_not_running`), whatever its caller knew a moment before.
+// - A browser (`app: browser`, docs/design/session-browser-desktop.md) is a
+//   terminal without a tty whose command is browser-cdp.py, chosen here and
+//   never by the caller: only where the host allows it (SP_SESSION_BROWSER),
+//   at most one per session, besides the 8 terminals; its id is `br_…`.
 
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -46,9 +50,13 @@ import { terminalArgs } from './sandbox/podman-args.js';
 import { unavailable } from './unavailable.js';
 
 export const TERMINALS_PER_SESSION = 8;
+export const BROWSERS_PER_SESSION = 1;
 const PENDING_MAX = 1 << 20;
 const STOP_AFTER_MS = 6000;
 const HELPER = path.join(import.meta.dirname, 'terminal-pty.py');
+const BROWSER = path.join(import.meta.dirname, 'browser-cdp.py');
+/** The browser's command line in the terminal helper: -I, so no PYTHON* variable or user site changes what runs. */
+export const browserCommand = (helper = BROWSER) => `exec python3 -I '${helper.replaceAll("'", "'\\''")}'`;
 
 export interface TerminalOpen {
   sessionId: string;
@@ -60,6 +68,8 @@ export interface TerminalOpen {
   term?: string;
   /** The session's sandbox id, on a `podman` host: the terminal opens inside its container, which the caller knows to be running. */
   sandbox?: string;
+  /** The session's browser instead of `command` (header). */
+  app?: 'browser';
 }
 
 export type TerminalExit = (terminalId: string, exitCode: number | null, signal: string | null) => void;
@@ -88,6 +98,8 @@ export interface TerminalsOptions {
   /** gid that may connect to the sockets (sp-wire). */
   group?: number;
   python?: string;
+  /** Whether a session may open its browser (SP_SESSION_BROWSER); default no. */
+  browser?: boolean;
   /** On a `podman` host (sandbox/host.ts `terminal`); without it no terminal opens there. */
   inside?: {
     /** Before a terminal starts in this sandbox: waits as long as a person may be kept waiting, rejects with Unavailable; `leave` once the terminal is over. */
@@ -98,6 +110,8 @@ export interface TerminalsOptions {
 }
 
 /** A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (work 103, C13). */
+export const browserUnavailable = () => apiError('browser_unavailable', 'This computer does not run browsers for its sessions.', 409, { retryable: false });
+
 export const sessionNotRunning = () => apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' });
 
 interface Helper {
@@ -111,6 +125,7 @@ interface Helper {
 interface Term {
   id: string;
   sessionId: string;
+  app?: 'browser';
   helper: Helper;
   servers: net.Server[];
   out: Stream;
@@ -275,8 +290,13 @@ export function createTerminals(o: TerminalsOptions): Terminals {
   }
 
   const self: Terminals = {
-    async open(req, onExit) {
-      const full = () => self.count(req.sessionId) >= TERMINALS_PER_SESSION && { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
+    async open(asked, onExit) {
+      if (asked.app === 'browser' && !o.browser) return { error: browserUnavailable() };
+      const req = asked.app === 'browser' ? { ...asked, command: browserCommand(), tty: false } : asked;
+      const mine = () => [...terms.values()].filter((t) => t.sessionId === req.sessionId && t.app === req.app).length;
+      const full = () => req.app === 'browser'
+        ? mine() >= BROWSERS_PER_SESSION && { error: apiError('too_many_browsers', 'The browser is already open in this session, in another tab or by someone else.', 409, { retryable: false }) }
+        : mine() >= TERMINALS_PER_SESSION && { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
       const many = full();
       if (many) return many;
       if (o.launch === 'podman' && !(req.sandbox && o.inside)) {
@@ -297,11 +317,11 @@ export function createTerminals(o: TerminalsOptions): Terminals {
         const refused = full() || (!use?.running && { error: sessionNotRunning() });
         if (refused) return use?.leave(), refused;
       }
-      const id = mintId('tm');
+      const id = mintId(req.app === 'browser' ? 'br' : 'tm');
       const helper = takeHelper(inside);
       if (use) void helper.exited.then(use.leave);
       const t: Term = {
-        id, sessionId: req.sessionId, helper, servers: [], onExit, done: false,
+        id, sessionId: req.sessionId, app: req.app, helper, servers: [], onExit, done: false,
         out: { pending: [], pendingBytes: 0, ended: false },
         err: req.tty ? undefined : { pending: [], pendingBytes: 0, ended: false },
       };

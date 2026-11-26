@@ -77,6 +77,7 @@ export const errors = {
   tooManyAttached: () => err('too_many_attached', 'This connection already has 20 sessions attached.', 409),
   tooManyTerminals: () => err('too_many_terminals', '8 terminals are already open in this session.', 409),
   terminalNotFound: () => err('terminal_not_found', 'The terminal is not open on this connection.', 404),
+  browserNotFound: () => err('browser_not_found', 'The browser is not open on this connection.', 404),
   unavailable: (retryAfterMs = 1000) => err('unavailable', 'The session is not reachable right now.', 503, { retryAfterMs }),
   internal: () => err('internal', 'Server error.', 500),
 };

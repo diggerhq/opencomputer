@@ -127,7 +127,11 @@ const CapabilitiesSchema = z.looseObject({
     }),
   ),
   modes: z.array(z.string()),
-  features: z.looseObject({ steer: z.boolean() }),
+  features: z.looseObject({
+    steer: z.boolean(),
+    // The Browser tab: absent on computers that do not run browsers.
+    browser: z.boolean().optional(),
+  }),
 })
 export type Capabilities = z.infer<typeof CapabilitiesSchema>
 

@@ -37,7 +37,7 @@ import { LIMITS, TokenBucket } from './limits.js';
 import { Outbox } from './outbox.js';
 import { encodeError, encodeNotification, encodeResult, encodeRpcError, errors, parseFrame, type RpcId } from './rpc.js';
 import { FlushWindow, type WireEmit } from './telemetry.js';
-import { type OpenParams, WireTerminals } from './terminal.js';
+import { type BrowserParams, type OpenParams, WireTerminals } from './terminal.js';
 import type { DialWriter } from './writer-client.js';
 
 export interface ConnectionDeps {
@@ -298,6 +298,7 @@ export class Connection {
     if (method === 'terminals.resize') return this.terminals.resize(params.terminalId as string, params.cols as number, params.rows as number);
     if (method === 'terminals.eof') return this.terminals.eof(params.terminalId as string);
     if (method === 'terminals.close') return this.terminals.close(params.terminalId as string);
+    if (method === 'browsers.close') return this.terminals.closeBrowser(params.browserId as string);
 
     const sessionId = params.sessionId as string;
     const access = await this.access(sessionId, true);
@@ -315,6 +316,8 @@ export class Connection {
         return { result: {} };
       case 'terminals.open':
         return this.terminals.open(params as unknown as OpenParams, access.access);
+      case 'browsers.open':
+        return this.terminals.openBrowser(params as unknown as BrowserParams, access.access);
     }
     const link = a?.link && !a.link.closed ? a.link : await this.links.get(sessionId);
     if ('error' in link) return { error: link.error };

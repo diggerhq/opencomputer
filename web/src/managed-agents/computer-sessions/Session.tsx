@@ -47,6 +47,7 @@ import {
 } from './state'
 import { buildTranscript, mergeEvents } from './transcript'
 import { SessionSidebar } from './SessionSidebar'
+import { tabsFor } from './sidebar-tabs'
 import { useSidebarPrefs } from './sidebar-prefs'
 
 // Events that change what the session row says (status, asks, title).
@@ -129,6 +130,8 @@ function SessionPage({ id }: { id: string }) {
   const items = useMemo(() => buildTranscript(events), [events])
   const userId = useContext(AuthContext)?.user?.id ?? 'anonymous'
   const [sidebar, setSidebar] = useSidebarPrefs(userId)
+  const { data: caps } = useCapabilities()
+  const tabs = useMemo(() => tabsFor(caps), [caps])
   const s = session.data
   const emails = useMemberEmails()
 
@@ -212,7 +215,12 @@ function SessionPage({ id }: { id: string }) {
           </div>
           <Composer id={id} />
         </div>
-        <SessionSidebar sessionId={id} prefs={sidebar} onChange={setSidebar} />
+        <SessionSidebar
+          sessionId={id}
+          prefs={sidebar}
+          onChange={setSidebar}
+          tabs={tabs}
+        />
       </div>
     </div>
   )

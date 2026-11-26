@@ -58,6 +58,8 @@
     "terminals.resize": "-",
     "terminals.eof": "-",
     "terminals.close": "-",
+    "browsers.open": "-",
+    "browsers.close": "-",
     "ping": "-"
   },
   "type": "object",
@@ -1186,6 +1188,86 @@
           ],
           "additionalProperties": true
         },
+        "browsers.open": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                }
+              },
+              "required": [
+                "sessionId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "browser": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^br_[0-9a-hjkmnp-tv-z]{12}$",
+                      "description": "`br_` + 12 lowercase Crockford base32"
+                    },
+                    "channel": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "channel"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "browser"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
+        "browsers.close": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "browserId": {
+                  "type": "string",
+                  "pattern": "^br_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`br_` + 12 lowercase Crockford base32"
+                }
+              },
+              "required": [
+                "browserId"
+              ],
+              "additionalProperties": true
+            },
+            "result": {
+              "not": {
+                "type": "null"
+              }
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "additionalProperties": true
+        },
         "ping": {
           "type": "object",
           "properties": {
@@ -1249,6 +1331,8 @@
         "terminals.resize",
         "terminals.eof",
         "terminals.close",
+        "browsers.open",
+        "browsers.close",
         "ping"
       ],
       "additionalProperties": true
@@ -1545,6 +1629,27 @@
             "signal"
           ],
           "additionalProperties": true
+        },
+        "browser.exited": {
+          "type": "object",
+          "properties": {
+            "browserId": {
+              "type": "string",
+              "pattern": "^br_[0-9a-hjkmnp-tv-z]{12}$",
+              "description": "`br_` + 12 lowercase Crockford base32"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "idle",
+                "access_lost"
+              ]
+            }
+          },
+          "required": [
+            "browserId"
+          ],
+          "additionalProperties": true
         }
       },
       "required": [
@@ -1553,7 +1658,8 @@
         "event",
         "delta",
         "session.detached",
-        "terminal.exited"
+        "terminal.exited",
+        "browser.exited"
       ],
       "additionalProperties": true
     },
@@ -2957,6 +3063,9 @@
               "type": "boolean"
             },
             "subagents": {
+              "type": "boolean"
+            },
+            "browser": {
               "type": "boolean"
             }
           },

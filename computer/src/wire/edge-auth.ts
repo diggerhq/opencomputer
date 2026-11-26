@@ -44,6 +44,8 @@ export function scopeFor(method: Method | 'files.get' | 'files.put'): string | u
     case 'terminals.resize':
     case 'terminals.eof':
     case 'terminals.close':
+    case 'browsers.open': // a browser is a terminal whose command the host fixes (wire/terminal.ts)
+    case 'browsers.close':
       return 'terminals';
     case 'asks.answer':
     case 'asks.dismiss':

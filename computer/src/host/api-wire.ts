@@ -42,6 +42,8 @@ export interface WireOptions {
   files?(sandbox: SandboxPlace): Place;
   /** On a `podman` host: how a terminal enters a session's sandbox and hangs up in it (sandbox/host.ts `terminal`). */
   terminal?: TerminalsOptions['inside'];
+  /** SP_SESSION_BROWSER: a session may open its browser (terminal.ts `app: browser`). */
+  browser?: boolean;
 }
 
 /** The gid of `name`, or undefined where it does not exist. */
@@ -71,6 +73,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       path: o.path,
       group,
       inside: podman ? o.terminal : undefined,
+      browser: o.browser,
     });
     const inSandbox = podman ? o.files : undefined;
     const files = createWorkspaceFiles({
