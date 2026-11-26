@@ -1,7 +1,7 @@
 // The two small primitives the client is made of: a value that tells its readers when it changes,
 // and a list of listeners.
 
-import type { Signal } from "./types.js";
+import type { Signal } from "./client-interface.js";
 
 export interface WritableSignal<T> extends Signal<T> {
   set(value: T): void;

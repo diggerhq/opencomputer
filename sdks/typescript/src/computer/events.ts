@@ -5,7 +5,10 @@
 
 import { transient, type Ctx, type Op } from "./ctx.js";
 import { emitter, type Emitter } from "./signal.js";
-import type { ApiEvent, EventPage, EventsUpdate, ServerFrame, Stream } from "./types.js";
+import type { EventsUpdate, Stream } from "./client-interface.js";
+import type { EventPage } from "./http-bodies.js";
+import type { ApiEvent } from "./session-objects.js";
+import type { ServerFrame } from "./socket-frames.js";
 
 interface Log {
   id: string;

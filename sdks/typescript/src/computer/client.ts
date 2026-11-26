@@ -12,7 +12,9 @@ import { createFeed } from "./feed.js";
 import { makeId } from "./ids.js";
 import { createQueue } from "./queue.js";
 import { emitter, signal, type Emitter } from "./signal.js";
-import type { Channel, Client, ClientOptions, Delta, Row, ServerFrame, Stream } from "./types.js";
+import type { Channel, Client, ClientOptions, Stream } from "./client-interface.js";
+import type { Row } from "./feed-rows.js";
+import type { Delta, ServerFrame } from "./socket-frames.js";
 
 interface Watch {
   subs: Emitter<Delta>;
