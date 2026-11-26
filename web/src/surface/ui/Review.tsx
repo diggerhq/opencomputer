@@ -1,38 +1,40 @@
 import {
-  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { parsePatchFiles, type FileDiffMetadata } from '@pierre/diffs'
+import { FileDiff, Virtualizer } from '@pierre/diffs/react'
 import type { ResultRow, Review as Written } from '@opencomputer/sdk/computer'
 import { useS, useSurface, useThread } from '../hooks'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 import { HD, I, LEFT, Mk, Rich, resultTitle } from './bits'
 
-// ---- the diff as GitHub sends it ----
-
-interface Line {
-  // '~' is the gap before a hunk.
-  t: ' ' | '+' | '-' | '~'
-  old: number | null
-  new: number | null
-  s: string
-}
+// ---- the diff as GitHub sends it, parsed and drawn by @pierre/diffs ----
 
 interface DiffFile {
   path: string
   tag: string
   add: number
   del: number
-  lines: Line[]
-  // Exact, as rows have a fixed height: nothing moves when a file draws late.
-  height: number
+  meta: FileDiffMetadata
+}
+
+const TAG: Record<FileDiffMetadata['type'], string> = {
+  change: '',
+  new: 'new file',
+  deleted: 'deleted',
+  'rename-pure': 'renamed',
+  'rename-changed': 'renamed',
 }
 
 function parseDiff(text: string): {
@@ -40,112 +42,74 @@ function parseDiff(text: string): {
   add: number
   del: number
 } {
-  const files: DiffFile[] = []
-  let f: DiffFile | null = null
-  let o = 0
-  let n = 0
-  // Lines the open hunk still owes, so a removed line "-- x" is not read as a header.
-  let left = 0
-  let right = 0
-  for (const raw of text.split('\n')) {
-    if (f && (left > 0 || right > 0)) {
-      const c = raw[0] ?? ' '
-      if (c === '\\') continue
-      if (c === '+') {
-        f.lines.push({ t: '+', old: null, new: n++, s: raw.slice(1) })
-        f.add++
-        right--
-        continue
+  const files = parsePatchFiles(text)
+    .flatMap((p) => p.files)
+    .map((meta): DiffFile => {
+      let add = 0
+      let del = 0
+      for (const h of meta.hunks) {
+        add += h.additionLines
+        del += h.deletionLines
       }
-      if (c === '-') {
-        f.lines.push({ t: '-', old: o++, new: null, s: raw.slice(1) })
-        f.del++
-        left--
-        continue
-      }
-      if (c === ' ') {
-        f.lines.push({ t: ' ', old: o++, new: n++, s: raw.slice(1) })
-        left--
-        right--
-        continue
-      }
-      left = right = 0
-    }
-    const head = /^diff --git a\/(.*) b\/(.*)$/.exec(raw)
-    if (head) {
-      f = { path: head[2], tag: '', add: 0, del: 0, lines: [], height: 0 }
-      files.push(f)
-      continue
-    }
-    if (!f) continue
-    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/.exec(raw)
-    if (hunk) {
-      o = +hunk[1]
-      n = +hunk[3]
-      left = hunk[2] === undefined ? 1 : +hunk[2]
-      right = hunk[4] === undefined ? 1 : +hunk[4]
-      f.lines.push({ t: '~', old: null, new: null, s: hunk[5] })
-    } else if (raw.startsWith('new file mode')) f.tag = 'new file'
-    else if (raw.startsWith('deleted file mode')) f.tag = 'deleted'
-    else if (raw.startsWith('rename to ')) {
-      f.path = raw.slice(10)
-      f.tag = 'renamed'
-    } else if (
-      raw.startsWith('Binary files') ||
-      raw.startsWith('GIT binary patch')
-    )
-      f.tag ||= 'binary'
-    else if (raw.startsWith('+++ b/')) f.path = raw.slice(6)
+      return { path: meta.name, tag: TAG[meta.type], add, del, meta }
+    })
+  return {
+    files,
+    add: files.reduce((k, f) => k + f.add, 0),
+    del: files.reduce((k, f) => k + f.del, 0),
   }
-  let add = 0
-  let del = 0
-  for (const x of files) {
-    const gaps = x.lines.reduce((k, l) => k + (l.t === '~' ? 1 : 0), 0)
-    x.height = (x.lines.length - gaps) * 22 + gaps * 32 + 8
-    add += x.add
-    del += x.del
+}
+
+// The opening of a file's change: its first hunks, up to about a screenful.
+// Not a judgement of what matters (the agent's summary does not yet name
+// excerpts), only the start of the diff, with the rest one click away.
+const SNIP = 16
+function opening(meta: FileDiffMetadata): FileDiffMetadata | null {
+  const hunks: FileDiffMetadata['hunks'] = []
+  let rows = 0
+  for (const h of meta.hunks) {
+    if (hunks.length && rows + h.unifiedLineCount > SNIP) break
+    hunks.push(h)
+    rows += h.unifiedLineCount
   }
-  return { files, add, del }
+  if (hunks.length === meta.hunks.length) return null
+  const last = hunks[hunks.length - 1]
+  return {
+    ...meta,
+    hunks,
+    unifiedLineCount: last.unifiedLineStart + last.unifiedLineCount,
+    splitLineCount: last.splitLineStart + last.splitLineCount,
+  }
+}
+
+// A summary the agent wrote, if it is one this view can read: `parts` an array
+// of parts that each name their files. Anything else reads as none written.
+function readable(r: Written | null | undefined): Written | null {
+  if (!r || !Array.isArray(r.parts)) return null
+  const parts = r.parts.filter(
+    (p) => p && typeof p.title === 'string' && Array.isArray(p.files),
+  )
+  return parts.length ? { ...r, parts } : null
 }
 
 // ---- what is held, so reopening is instant ----
 
-interface Held {
-  // null: the agent has not written one.
-  review?: Written | null
-  text?: string
-  diff?: ReturnType<typeof parseDiff>
-}
-const held = new Map<string, Held>()
-
-function useHeld(resultId: string): Held {
+function useChange(resultId: string) {
   const surface = useSurface()
-  const [h, setH] = useState<Held>(() => held.get(resultId) ?? {})
-  useEffect(() => {
-    let live = true
-    const put = (p: Partial<Held>) => {
-      const next = { ...held.get(resultId), ...p }
-      held.set(resultId, next)
-      if (live) setH(next)
-    }
-    surface.review(resultId).then(
-      (review) => put({ review }),
-      () => {
-        if (held.get(resultId)?.review === undefined) put({ review: null })
-      },
-    )
-    surface.diff(resultId).then(
-      (text) => {
-        if (held.get(resultId)?.text !== text)
-          put({ text, diff: parseDiff(text) })
-      },
-      () => {},
-    )
-    return () => {
-      live = false
-    }
-  }, [surface, resultId])
-  return h
+  const review = useQuery({
+    queryKey: ['surface', 'review', resultId],
+    // null: the agent has not written one (or wrote one this cannot read).
+    queryFn: () => surface.review(resultId).then(readable, () => null),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const diff = useQuery({
+    queryKey: ['surface', 'diff', resultId],
+    queryFn: async () => parseDiff(await surface.diff(resultId)),
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  return { review: review.data, diff: diff.data, failed: diff.isError }
 }
 
 // ---- parts: the agent's reading order over the files of the diff ----
@@ -260,70 +224,81 @@ const ON_N =
 const PATH =
   'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]'
 
-// Heights are fixed (22px a row, 24px + 8px margin a gap): DiffFile.height counts on them.
-const row = (l: Line, i: number) =>
-  l.t === '~' ? (
-    <div
-      className="bg-sidebar text-muted-foreground/70 border-border/60 my-1 h-6 border-y pr-3 pl-[62px] text-[11.5px] leading-[22px] whitespace-nowrap select-none"
-      key={i}
-    >
-      <span className="sticky left-[62px]">⋯ {l.s}</span>
-    </div>
-  ) : (
-    <div
-      className={cn(
-        'flex h-[22px] pr-4 leading-[22px] whitespace-pre',
-        l.t === '+'
-          ? 'bg-status-running-bg'
-          : l.t === '-'
-            ? 'bg-status-error-bg'
-            : 'bg-card',
-      )}
-      key={i}
-    >
-      <i className="text-muted-foreground/70 sticky left-0 w-11 flex-none bg-inherit pr-2.5 text-right not-italic select-none">
-        {l.new ?? l.old}
-      </i>
-      <u
-        className={cn(
-          'sticky left-11 w-[18px] flex-none bg-inherit no-underline select-none',
-          l.t === '+'
-            ? 'text-status-running'
-            : l.t === '-'
-              ? 'text-status-error'
-              : 'text-muted-foreground',
-        )}
-      >
-        {l.t}
-      </u>
-      {l.s}
-    </div>
+// One file's diff, drawn by the library, in the dashboard's light or dark.
+function Diff({ meta, header }: { meta: FileDiffMetadata; header?: boolean }) {
+  const { dark } = useTheme()
+  const options = useMemo(
+    () => ({
+      themeType: dark ? ('dark' as const) : ('light' as const),
+      diffStyle: 'unified' as const,
+      // Long lines scroll sideways rather than wrap (S9).
+      overflow: 'scroll' as const,
+      disableFileHeader: !header,
+      stickyHeader: header,
+    }),
+    [dark, header],
   )
+  return <FileDiff fileDiff={meta} options={options} />
+}
 
-// A file's rows exist only while it is near the viewport (R41).
-const FileCard = memo(function FileCard({ file }: { file: DiffFile }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [near, setNear] = useState(false)
-  useEffect(() => {
-    const el = ref.current!
-    const io = new IntersectionObserver(
-      (es) => setNear(es[es.length - 1].isIntersecting),
-      {
-        root: el.closest('[data-scroller]'),
-        rootMargin: '1200px 0px',
-      },
-    )
-    io.observe(el)
-    return () => io.disconnect()
-  }, [])
+// A scrolling pane whose diffs the library virtualises (R41): only what is
+// near the viewport is drawn. The library owns the scrolling element; this
+// hands it to the caller, with its scroll events.
+function Pane({
+  scrollerRef,
+  onScroll,
+  className,
+  children,
+}: {
+  scrollerRef: RefObject<HTMLDivElement | null>
+  onScroll: () => void
+  className?: string
+  children: ReactNode
+}) {
+  const inner = useRef<HTMLDivElement>(null)
+  const on = useRef(onScroll)
+  useLayoutEffect(() => {
+    on.current = onScroll
+  })
+  useLayoutEffect(() => {
+    const el = inner.current!.parentElement!.parentElement as HTMLDivElement
+    scrollerRef.current = el
+    const f = () => on.current()
+    el.addEventListener('scroll', f, { passive: true })
+    return () => el.removeEventListener('scroll', f)
+  }, [scrollerRef])
+  return (
+    <Virtualizer
+      className={cn('relative min-w-0 flex-1 overflow-y-auto', className)}
+    >
+      <div ref={inner}>{children}</div>
+    </Virtualizer>
+  )
+}
+
+// A file in the summary: what it is, its counts, and the opening of its
+// change; the rest of it, or the file in the full diff, one click away.
+function FileSnip({
+  file,
+  toFull,
+}: {
+  file: DiffFile
+  toFull: (file?: string) => void
+}) {
+  const [all, setAll] = useState(false)
+  const head = useMemo(() => opening(file.meta), [file.meta])
+  const shown = all || !head ? file.meta : head
+  const more = head ? file.meta.unifiedLineCount - head.unifiedLineCount : 0
   return (
     <div
-      className="bg-card ring-border mb-4 overflow-clip rounded-[10px] ring-1"
+      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
       data-path={file.path}
-      ref={ref}
     >
-      {/* Sticks at the scroller's edge: the code pane has 16px of top padding, a part's diff none. */}
-      <div className="bg-sidebar text-muted-foreground border-border/60 sticky top-[-16px] z-2 flex gap-2.5 border-b px-3 py-2 font-mono text-xs tabular-nums in-data-[exp]:top-0">
+      <button
+        className="bg-sidebar text-muted-foreground hover:text-foreground border-border/60 flex w-full gap-2.5 border-b px-3 py-2 text-left font-mono text-xs tabular-nums transition-colors"
+        title="Open in the full diff"
+        onClick={() => toFull(file.path)}
+      >
         <span className={PATH}>
           {'‎'}
           {file.path}
@@ -332,36 +307,85 @@ const FileCard = memo(function FileCard({ file }: { file: DiffFile }) {
           <span className="text-muted-foreground/70 flex-none">{file.tag}</span>
         )}
         <Pm add={file.add} del={file.del} a="ml-auto" />
-      </div>
-      <div
-        className="bg-card grid [scrollbar-width:thin] grid-cols-[minmax(max-content,1fr)] overflow-x-auto py-1 font-mono text-xs leading-[1.75]"
-        style={{ height: file.height }}
-      >
-        {near && file.lines.map(row)}
-      </div>
+      </button>
+      {file.meta.hunks.length > 0 ? (
+        <Diff meta={shown} />
+      ) : (
+        <p className="text-muted-foreground px-3 py-2 text-xs">
+          {file.tag || 'No lines to show'}
+        </p>
+      )}
+      {head && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            'text-muted-foreground w-full justify-start gap-2 rounded-none border-t px-3 text-[12.5px] font-normal [&_svg]:transition-transform',
+            !all && '[&_svg]:-rotate-90',
+          )}
+          onClick={() => setAll(!all)}
+        >
+          {I.chev}
+          {all
+            ? 'Show the opening only'
+            : `Show the rest of this file · ${nf(more)} more ${more === 1 ? 'line' : 'lines'}`}
+        </Button>
+      )}
     </div>
   )
-})
+}
+
+// A part's files: the first few at once, the rest on asking.
+const FEW = 8
+function PartFiles({
+  files,
+  toFull,
+}: {
+  files: DiffFile[]
+  toFull: (file?: string) => void
+}) {
+  const [all, setAll] = useState(false)
+  const shown = all ? files : files.slice(0, FEW)
+  return (
+    <>
+      {shown.map((f) => (
+        <FileSnip file={f} key={f.path} toFull={toFull} />
+      ))}
+      {files.length > shown.length && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground gap-2 px-2 text-[12.5px] font-normal [&_svg]:-rotate-90"
+          onClick={() => setAll(true)}
+        >
+          {I.chev}
+          Show {filesWord(files.length - shown.length)} more
+        </Button>
+      )}
+    </>
+  )
+}
 
 // ---- Summary ----
 
 function Summary({
   review,
   parts,
+  loading,
+  failed,
   title,
   heading,
   resultId,
-  open,
-  toggle,
   toFull,
 }: {
   review: Written | null
   parts: Part[]
+  // The diff has not arrived yet, or could not be had.
+  loading: boolean
+  failed: boolean
   title: string
   heading: string
   resultId: string
-  open: ReadonlySet<number>
-  toggle: (i: number) => void
   toFull: (file?: string) => void
 }) {
   const scroller = useRef<HTMLDivElement>(null)
@@ -442,21 +466,17 @@ function Summary({
           ))}
         </div>
       )}
-      <div
-        className="relative min-w-0 flex-1 overflow-y-auto"
-        data-scroller
-        ref={scroller}
-        onScroll={act}
-      >
-        <article className="mx-auto max-w-[760px] px-8 pt-10 pb-[40vh] max-[700px]:px-4 max-[700px]:pt-6">
+      <Pane scrollerRef={scroller} onScroll={act}>
+        <article className="mx-auto max-w-[860px] px-8 pt-10 pb-[40vh] max-[700px]:px-4 max-[700px]:pt-6">
           {review ? (
             <h2 className="mb-3 text-[22px] leading-[1.35] font-[650] tracking-[-0.015em] text-balance">
               <Rich text={heading} />
             </h2>
           ) : (
             <p className="text-muted-foreground mb-4">
-              The agent has not written a summary of this change. These are the
-              files it touches.
+              The agent has not written a summary of this change.
+              {!failed &&
+                ' These are the files it touches, each with the start of its change.'}
             </p>
           )}
           {eyes.length > 0 && (
@@ -477,16 +497,17 @@ function Summary({
               ))}
             </div>
           )}
-          {named
-            ? parts.map((p, i) => (
-                <section
-                  className={cn(
-                    'pt-10',
-                    i > 0 && 'border-border/60 mt-10 border-t pt-8',
-                  )}
-                  data-pt
-                  key={i}
-                >
+          {parts.map((p, i) => (
+            <section
+              className={cn(
+                named && 'pt-10',
+                named && i > 0 && 'border-border/60 mt-10 border-t pt-8',
+              )}
+              data-pt
+              key={i}
+            >
+              {named && (
+                <>
                   <div className="flex items-baseline gap-2">
                     <span className={cn(ON_N, 'text-xs')}>{i + 1}</span>
                     <h3 className="text-[17px] font-[650] tracking-[-0.01em]">
@@ -511,49 +532,24 @@ function Summary({
                     )}
                   </div>
                   {p.note && (
-                    <div className="ml-6 max-w-[620px] leading-[1.6] text-pretty">
+                    <div className="mb-4 ml-6 max-w-[620px] leading-[1.6] text-pretty">
                       <Rich text={p.note} />
                     </div>
                   )}
-                  {p.files.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className={cn(
-                        'text-muted-foreground mt-3 ml-4 gap-2 px-2 text-[12.5px] font-normal [&_svg]:transition-transform',
-                        !open.has(i) && '[&_svg]:-rotate-90',
-                      )}
-                      onClick={() => toggle(i)}
-                    >
-                      {I.chev}
-                      {open.has(i) ? 'Hide' : 'Show'} the full diff of this part
-                      · {filesWord(p.files.length)}
-                    </Button>
-                  )}
-                  {open.has(i) && (
-                    <div className="mt-3 ml-6" data-exp>
-                      {p.files.map((f) => (
-                        <FileCard file={f} key={f.path} />
-                      ))}
-                    </div>
-                  )}
-                </section>
-              ))
-            : parts.map((p) =>
-                p.files.map((f) => (
-                  <button
-                    className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:bg-accent -mx-2 flex w-full cursor-default gap-2 rounded-md px-2 py-1 text-left font-mono text-xs tabular-nums outline-none"
-                    key={f.path}
-                    onClick={() => toFull(f.path)}
-                  >
-                    <span className={cn(PATH, 'flex-1')}>
-                      {'‎'}
-                      {f.path}
-                    </span>
-                    <Pm add={f.add} del={f.del} />
-                  </button>
-                )),
+                </>
               )}
+              <div className={cn(named && 'ml-6')}>
+                <PartFiles files={p.files} toFull={toFull} />
+              </div>
+            </section>
+          ))}
+          {(loading || failed) && (
+            <p className="text-muted-foreground mt-6">
+              {loading
+                ? 'Fetching the diff…'
+                : 'The diff could not be fetched.'}
+            </p>
+          )}
           {parts.some((p) => p.files.length > 0) && (
             <p className="text-muted-foreground mt-14 ml-6">
               That is everything in {title}.{' '}
@@ -567,7 +563,7 @@ function Summary({
             </p>
           )}
         </article>
-      </div>
+      </Pane>
     </div>
   )
 }
@@ -679,33 +675,38 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
           </div>
         ))}
       </div>
-      <div
-        className="relative min-w-0 flex-1 overflow-y-auto px-6 pt-4 pb-[60vh] max-[700px]:px-4"
-        data-scroller
-        ref={code}
-        onScroll={act}
-      >
-        {parts.map((p, i) => [
-          p.title && (
-            <div
-              className="mt-6 mb-1 text-[15px] font-[650] first:mt-0"
-              data-part={i}
-              key={`h${i}`}
-            >
-              {i + 1} · {p.title}
-            </div>
-          ),
-          p.title && p.note && (
-            <div
-              className="text-muted-foreground mb-3 max-w-[720px]"
-              key={`n${i}`}
-            >
-              <Rich text={p.note} />
-            </div>
-          ),
-          p.files.map((f) => <FileCard file={f} key={f.path} />),
-        ])}
-      </div>
+      <Pane scrollerRef={code} onScroll={act}>
+        <div className="px-6 pt-4 pb-[60vh] max-[700px]:px-4">
+          {parts.map((p, i) => [
+            p.title && (
+              <div
+                className="mt-6 mb-1 text-[15px] font-[650] first:mt-0"
+                data-part={i}
+                key={`h${i}`}
+              >
+                {i + 1} · {p.title}
+              </div>
+            ),
+            p.title && p.note && (
+              <div
+                className="text-muted-foreground mb-3 max-w-[720px]"
+                key={`n${i}`}
+              >
+                <Rich text={p.note} />
+              </div>
+            ),
+            p.files.map((f) => (
+              <div
+                className="ring-border mb-4 overflow-clip rounded-[10px] ring-1"
+                data-path={f.path}
+                key={f.path}
+              >
+                <Diff meta={f.meta} header />
+              </div>
+            )),
+          ])}
+        </div>
+      </Pane>
     </div>
   )
 }
@@ -763,10 +764,9 @@ function Changes({ result }: { result: ResultRow }) {
   const surface = useSurface()
   const thread = useThread(result.sessionId)
   const mode = useS((s) => s.reviewMode)
-  const h = useHeld(result.id)
+  const h = useChange(result.id)
   const files = h.diff?.files
   const parts = useMemo(() => group(h.review, files), [h.review, files])
-  const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set())
   const title = resultTitle(result)
 
   return (
@@ -840,6 +840,8 @@ function Changes({ result }: { result: ResultRow }) {
             <Summary
               review={h.review}
               parts={parts}
+              loading={!h.diff && !h.failed}
+              failed={h.failed}
               title={title}
               heading={
                 typeof result.meta?.title === 'string'
@@ -847,12 +849,6 @@ function Changes({ result }: { result: ResultRow }) {
                   : title
               }
               resultId={result.id}
-              open={open}
-              toggle={(i) => {
-                const next = new Set(open)
-                if (!next.delete(i)) next.add(i)
-                setOpen(next)
-              }}
               toFull={(file) => {
                 if (file) placeOf(result.id).file = file
                 surface.setReviewMode('full')
