@@ -2,8 +2,8 @@
 //
 // This module graph is portable: fetch, URL, Headers and Web Crypto only, no
 // Node built-ins, nothing run at import. It loads the same in a Cloudflare
-// Worker without Node compatibility, on Vercel, on Deno and on Node. The
-// sandbox client at the package root is Node-only and lives apart on purpose.
+// Worker without Node compatibility, on Vercel, on Deno and on Node. Since
+// 3.0.0 it is the package's only entry: the sandbox client is gone.
 
 export {
   OpenComputer,

@@ -1,0 +1,70 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "method": "ready",
+    "params": {
+      "connectionId": "wc_C",
+      "server": {
+        "version": "test",
+        "region": "test-1"
+      },
+      "protocol": {
+        "features": []
+      },
+      "limits": {
+        "maxAttached": 20,
+        "maxMessageBytes": 1048576,
+        "maxRequestsPerSecond": 100
+      },
+      "expiresAt": null,
+      "expiresInMs": null
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "sessions.attached",
+    "params": {
+      "sessionId": "cs_S",
+      "error": null,
+      "session": {
+        "id": "cs_S",
+        "lastSeq": 2
+      },
+      "logEpoch": 1,
+      "epochStartSeq": null,
+      "capabilities": null,
+      "earlierTurns": null,
+      "timing": {
+        "serverUs": 0
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+      "id": "ev_0000000000000002",
+      "seq": 2,
+      "createdAt": "2026-10-26T00:00:00.000Z",
+      "sessionId": "cs_S",
+      "turnId": null,
+      "type": "turn.started",
+      "actor": null,
+      "data": {}
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+      "id": "ev_0000000000000003",
+      "seq": 3,
+      "createdAt": "2026-10-26T00:00:00.000Z",
+      "sessionId": "cs_S",
+      "turnId": null,
+      "type": "turn.started",
+      "actor": null,
+      "data": {}
+    }
+  }
+]

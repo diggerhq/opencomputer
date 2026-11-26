@@ -1,0 +1,55 @@
+DESCRIPTION >
+    Work 084 Q8, "interactive latency through the API", over `[since, until)`: one row per layer, surface, method and delivery with n, failed, replayed and latency p50/p95/p99/max. `runner`: `api.write`, the call reached the runner → applied (`turns.send` steered: handed to the harness; started: the harness took it; `asks.answer`: the prompt resolved; others, interrupt included, the call returned). `blue`: `computer.write`, the Computer DO sent the write → the host answered (holds included; `failed` counts timeouts). `opc`: `cli.control` applied_ms, the key press → the change seen on the stream, by kind. `slack`: K6 from the `steers` pipe for comparison. Synthetic traffic is excluded unless `include_synthetic`.
+
+TOKEN "calvin_read" READ
+
+NODE il_units
+SQL >
+    %
+    SELECT
+        multiIf(event_name = 'api.write', 'runner', event_name = 'computer.write', 'blue', 'opc') AS layer,
+        surface,
+        if(event_name = 'cli.control', JSONExtractString(data, 'kind'), JSONExtractString(data, 'method')) AS method,
+        JSONExtractString(data, 'delivery') AS delivery,
+        if(event_name = 'cli.control', JSONExtract(data, 'applied_ms', 'Nullable(Int64)'), toNullable(toInt64(duration_ms))) AS latency_ms,
+        multiIf(event_name = 'cli.control', NOT JSONExtractBool(data, 'ok'), event_name = 'computer.write', JSONExtractBool(data, 'timed_out') OR outcome = 'failed', outcome = 'failed') AS failed,
+        JSONExtractBool(data, 'replayed') AS replayed
+    FROM calvin_events
+    WHERE
+        event_name IN ('api.write', 'computer.write', 'cli.control')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE il_slack
+SQL >
+    %
+    SELECT 'slack' AS layer, 'slack' AS surface, 'steer (K6)' AS method, '' AS delivery, toNullable(latency_ms) AS latency_ms, false AS failed, false AS replayed
+    FROM steers
+    WHERE
+        occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+
+NODE endpoint
+SQL >
+    SELECT
+        layer,
+        surface,
+        method,
+        delivery,
+        count() AS n,
+        countIf(failed) AS failed,
+        countIf(replayed) AS replayed,
+        round(quantile(0.5)(latency_ms)) AS p50,
+        round(quantile(0.95)(latency_ms)) AS p95,
+        round(quantile(0.99)(latency_ms)) AS p99,
+        max(latency_ms) AS max
+    FROM (SELECT * FROM il_units UNION ALL SELECT * FROM il_slack)
+    GROUP BY layer, surface, method, delivery
+    ORDER BY layer, surface, method, delivery
+
+TYPE ENDPOINT

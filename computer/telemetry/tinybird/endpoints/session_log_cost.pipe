@@ -1,0 +1,111 @@
+DESCRIPTION >
+    Work 084 Q2, "what does the session log cost?", over `[since, until)`, one row per `by` (`org_id`, the default, `session_key` or `surface`). From the host: journal batches and events shipped (`mirror.batch`). From blue: SessionLog appends (`sessionlog.append`), their latency p50/p95/max, events per append, rows, bytes, duplicates, refused batches, refolds, the largest DO storage size seen, and R2 spills, both inline (`spills_sync`) and after the commit (`sessionlog.spill`). Synthetic traffic is included: it costs the same.
+
+TOKEN "calvin_read" READ
+
+NODE slc_batches
+SQL >
+    %
+    {% if defined(by) and by not in ('org_id', 'session_key', 'surface') %}
+        {{ error('by must be one of org_id, session_key, surface', 400) }}
+    {% end %}
+    SELECT {{ column(by, 'org_id') }} AS dimension, count() AS batches, sum(JSONExtractUInt(data, 'events')) AS events
+    FROM
+        (
+            SELECT *
+            FROM calvin_events
+            WHERE
+                event_name = 'mirror.batch'
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+            LIMIT 1 BY event_id
+        )
+    GROUP BY dimension
+
+NODE slc_appends
+SQL >
+    %
+    SELECT
+        {{ column(by, 'org_id') }} AS dimension,
+        count() AS appends,
+        round(quantile(0.5)(JSONExtractUInt(data, 'append_ms'))) AS append_p50,
+        round(quantile(0.95)(JSONExtractUInt(data, 'append_ms'))) AS append_p95,
+        max(JSONExtractUInt(data, 'append_ms')) AS append_max,
+        round(avg(JSONExtractUInt(data, 'events')), 1) AS events_per_append,
+        sum(JSONExtractUInt(data, 'events')) AS appended_events,
+        sum(JSONExtractUInt(data, 'rows')) AS rows,
+        sum(JSONExtractUInt(data, 'bytes')) AS bytes,
+        sum(JSONExtractUInt(data, 'dupes')) AS dupes,
+        countIf(JSONExtractString(data, 'refused') != '') AS refused,
+        sum(JSONExtractUInt(data, 'spills_sync')) AS spills_sync,
+        sum(JSONExtractUInt(data, 'spill_sync_bytes')) AS spill_sync_bytes,
+        max(JSONExtractUInt(data, 'spill_sync_ms')) AS spill_sync_ms_max,
+        countIf(JSONExtractBool(data, 'refolded')) AS refolds,
+        max(JSONExtractUInt(data, 'refold_ms')) AS refold_ms_max,
+        max(JSONExtractUInt(data, 'storage_bytes')) AS storage_bytes_max
+    FROM
+        (
+            SELECT *
+            FROM calvin_events
+            WHERE
+                event_name = 'sessionlog.append'
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+            LIMIT 1 BY event_id
+        )
+    GROUP BY dimension
+
+NODE slc_spills
+SQL >
+    %
+    SELECT
+        {{ column(by, 'org_id') }} AS dimension,
+        sum(JSONExtractUInt(data, 'spills')) AS spills_after,
+        sum(JSONExtractUInt(data, 'spill_bytes')) AS spill_after_bytes,
+        max(JSONExtractUInt(data, 'spill_ms_max')) AS spill_after_ms_max,
+        sum(JSONExtractUInt(data, 'failed')) AS spills_failed
+    FROM
+        (
+            SELECT *
+            FROM calvin_events
+            WHERE
+                event_name = 'sessionlog.spill'
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+            LIMIT 1 BY event_id
+        )
+    GROUP BY dimension
+
+NODE endpoint
+SQL >
+    SELECT
+        d.dimension AS dimension,
+        b.batches AS journal_batches,
+        b.events AS journal_events,
+        a.appends AS appends,
+        a.append_p50 AS append_p50,
+        a.append_p95 AS append_p95,
+        a.append_max AS append_max,
+        a.events_per_append AS events_per_append,
+        a.appended_events AS appended_events,
+        a.rows AS rows,
+        a.bytes AS bytes,
+        a.dupes AS dupes,
+        a.refused AS refused,
+        a.spills_sync + s.spills_after AS spills,
+        a.spill_sync_bytes + s.spill_after_bytes AS spill_bytes,
+        greatest(a.spill_sync_ms_max, s.spill_after_ms_max) AS spill_ms_max,
+        s.spills_failed AS spills_failed,
+        a.refolds AS refolds,
+        a.refold_ms_max AS refold_ms_max,
+        a.storage_bytes_max AS storage_bytes_max
+    FROM (SELECT dimension FROM slc_batches UNION DISTINCT SELECT dimension FROM slc_appends UNION DISTINCT SELECT dimension FROM slc_spills) AS d
+    LEFT JOIN slc_batches AS b ON b.dimension = d.dimension
+    LEFT JOIN slc_appends AS a ON a.dimension = d.dimension
+    LEFT JOIN slc_spills AS s ON s.dimension = d.dimension
+    ORDER BY bytes DESC, dimension
+
+TYPE ENDPOINT

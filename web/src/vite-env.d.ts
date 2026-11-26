@@ -6,7 +6,6 @@ interface ImportMetaEnv {
   /** Opt-in dev-only flag: serve mock data with no backend/auth (see api/mock.ts). */
   readonly VITE_PREVIEW?: string
   /** "0" restores the legacy dashboard and navigation for experiment rollback. */
-  readonly VITE_MANAGED_AGENTS_EXPERIMENT?: string
 }
 
 interface ImportMeta {

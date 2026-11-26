@@ -331,7 +331,6 @@ describe("billing funnel events from Autumn", () => {
   function fakeDb(usagePlan: string, pastDueAt: number | null = null) {
     const org: Record<string, unknown> = {
       is_halted: 0,
-      autumn_concurrency_override: null,
       usage_plan: usagePlan,
       payment_past_due_at: pastDueAt,
     };
@@ -342,7 +341,7 @@ describe("billing funnel events from Autumn", () => {
         return {
           bind(...args: unknown[]) {
             return {
-              first: async () => (sql.includes("FROM sandboxes_index") ? null : { ...org }),
+              first: async () => ({ ...org }),
               run: async () => {
                 if (sql.includes("INSERT OR IGNORE INTO autumn_webhook_deliveries")) {
                   if (deliveries.has(args[0] as string)) return { meta: { changes: 0 } };
@@ -356,8 +355,8 @@ describe("billing funnel events from Autumn", () => {
                 } else if (sql.includes("SET is_halted")) {
                   org.is_halted = args[0];
                   org.halted_at = args[1];
-                  org.usage_plan = args[3];
-                  org.billing_warning = args[7];
+                  org.usage_plan = args[2];
+                  org.billing_warning = args[6];
                 }
                 return { meta: { changes: 1 } };
               },

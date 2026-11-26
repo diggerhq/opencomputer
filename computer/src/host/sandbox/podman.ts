@@ -1,0 +1,147 @@
+// Running Podman, and the few other commands a sandbox needs, as the runners'
+// user (work 103): `[...runnerUser.sudo, '--', '/usr/bin/timeout', ..., '/usr/bin/podman', ...args]`.
+// The host itself never holds Podman's state; every call is one process that
+// ends, bounded by the caller's timeout.
+//
+// A timeout must end the command, not only sudo: SIGKILL to sudo leaves the
+// command running (measured: sudo cannot relay it). So every command runs
+// under timeout(1) as the runners' user, which ends it by itself; the host's
+// own timer sends sudo SIGTERM, which it relays, and decides `timedOut`.
+//
+// Invariants:
+// - Commands are absolute paths and argv arrays: no shell, and the host's PATH
+//   never decides what runs as the runners' user.
+// - Every command runs in `/`: Podman refuses to start in a directory its
+//   user cannot enter, and the host's own may be one.
+// - A call that fails or runs out of time rejects with PodmanError, which
+//   carries the exit code and stderr. Nothing is retried here but a Podman
+//   call its caller called `repeatable` that ran out of time while
+//   provisioning holds the image lock: it was waiting inside Podman for the
+//   storage, so it is made once more after the wait (image-lock.ts).
+// - `repeatable` is said where the call is made, never worked out from its
+//   words, and only of a call that leaves the same behind when it ran twice,
+//   or half and then whole: a stop, an `rm --force`, a list. Never of a
+//   script's `exec`, a `create`, the mount helper or an `unshare`: those may
+//   have got as far as they did, and a timeout while the lock is held fails
+//   them as any timeout does.
+// - `timedOut` is true only when the caller's time ran out: never for output
+//   past the limit or a command something else killed.
+// - A call that timed out rejects once its command is gone (SIGTERM, SIGKILL
+//   2 s later), or 3 s after the timeout at the latest.
+// - Whatever of the host runs Podman waits for the image lock first, by
+//   `settled` here and nowhere else: `podman()` by itself, and before their
+//   own command a container's Start (containers.ts `up`), its diagnosis
+//   (`diagnose`), a helper container (scripts.ts), a `/files` script and a
+//   terminal's `podman exec` (use.ts). The last two name a bound, since a
+//   person waits for them, and are refused with Unavailable past it.
+// - `env` goes into the sudo prefix, the only way a variable reaches the
+//   command: sudo resets the rest. Only the mount helper is given one.
+
+import { execFile as nodeExecFile } from 'node:child_process';
+import { log } from '../../log.js';
+import { Unavailable, UPDATING } from '../unavailable.js';
+import { imageBusy, imageSettled } from './image-lock.js';
+
+export const PODMAN = '/usr/bin/podman';
+
+export class PodmanError extends Error {
+  constructor(
+    message: string,
+    /** The exit code; undefined when the command was killed or never ran. */
+    readonly code: number | undefined,
+    readonly stderr: string,
+    /** It ran past its timeout and was killed. */
+    readonly timedOut: boolean,
+  ) {
+    super(message);
+    this.name = 'PodmanError';
+  }
+}
+
+export interface RunOptions {
+  timeoutMs: number;
+  stdin?: string | Buffer;
+  /** Variables for the command, added to the sudo prefix. */
+  env?: Record<string, string>;
+  /** `podman()` only: making this call twice leaves what making it once does, so one that ran out of time behind the image lock is made once more. Absent: never. */
+  repeatable?: boolean;
+}
+
+/** `execFile` as this file uses it; tests pass their own. No `timeout` of its: its signal would stop at sudo. */
+export type Exec = (
+  cmd: string,
+  args: string[],
+  o: { cwd: string; maxBuffer: number; encoding: 'utf8' },
+  done: (err: (Error & { code?: number | string | null }) | null, stdout: string, stderr: string) => void,
+) => { stdin?: { end(data?: string | Buffer): void } | null; kill?(signal: 'SIGTERM' | 'SIGKILL'): unknown };
+
+export interface AsRunner {
+  /** `podman <args>` as the runners' user: its stdout. */
+  podman(args: string[], o: RunOptions): Promise<string>;
+  /** Any other command, by absolute path, as the runners' user. */
+  run(argv: string[], o: RunOptions): Promise<string>;
+  /**
+   * Wait until provisioning is not holding Podman's storage (image-lock.ts): before a command that runs Podman and is
+   * not `podman()`'s. Without `withinMs` it waits as `podman()` does and never rejects; with it, it rejects with
+   * Unavailable when the storage is still held then.
+   */
+  settled(withinMs?: number): Promise<void>;
+}
+
+const words = (argv: string[]) => argv.slice(0, 3).join(' ');
+
+export const TIMEOUT = '/usr/bin/timeout';
+/** Seconds between a command's SIGTERM and its SIGKILL once its time is up. */
+export const KILL_AFTER_S = 2;
+
+/** `argv` under timeout(1): SIGTERM after `timeoutMs`, SIGKILL to its whole process group `KILL_AFTER_S` later; also when timeout(1) itself gets SIGTERM. */
+export const bounded = (argv: string[], timeoutMs: number) => [TIMEOUT, `--kill-after=${KILL_AFTER_S}`, Math.max(0.001, timeoutMs / 1000).toFixed(3), ...argv];
+
+/** `argv` as the runners' user, bounded as above: its stdout. `asRunner` for a command that is not Podman's and may be found on sudo's PATH (launch.ts). */
+export function runBounded(sudo: string[], argv: string[], o: RunOptions, exec: Exec = nodeExecFile as unknown as Exec): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const [cmd, ...args] = [...sudo, ...Object.entries(o.env ?? {}).map(([k, v]) => `${k}=${v}`), '--', ...bounded(argv, o.timeoutMs)];
+    // Only this timer says "timed out": a command killed for its output, or by anyone else, did not.
+    let timedOut = false;
+    const late = () => new PodmanError(`${words(argv)}: timed out after ${o.timeoutMs} ms`, undefined, '', true);
+    const child = exec(cmd, args, { cwd: '/', maxBuffer: 16 * 2 ** 20, encoding: 'utf8' }, (err, stdout, stderr) => {
+      clearTimeout(term);
+      clearTimeout(kill);
+      if (timedOut) return reject(late());
+      if (!err) return resolve(stdout);
+      const code = typeof err.code === 'number' ? err.code : undefined;
+      reject(new PodmanError(`${words(argv)}: ${stderr.trim().split('\n').pop() || err.message}`, code, stderr, false));
+    });
+    // sudo relays SIGTERM and timeout(1) turns it into SIGTERM, then SIGKILL, for the command's process group.
+    const term = setTimeout(() => {
+      timedOut = true;
+      child.kill?.('SIGTERM');
+    }, o.timeoutMs);
+    // Past that, something still holds the output: the caller waits no longer. sudo cannot relay this one.
+    const kill = setTimeout(() => {
+      child.kill?.('SIGKILL');
+      reject(late());
+    }, o.timeoutMs + (KILL_AFTER_S + 1) * 1000);
+    child.stdin?.end(o.stdin);
+  });
+}
+
+/** `sudo`: `runnerUser(env).sudo`, the prefix that makes a command the runners' user's. */
+export function asRunner(sudo: string[], exec?: Exec, settled: (d?: { waitS?: number }) => Promise<boolean | void> = imageSettled, busy: () => Promise<boolean> = imageBusy): AsRunner {
+  const run = (argv: string[], o: RunOptions) =>
+    argv[0]?.startsWith('/') ? runBounded(sudo, argv, o, exec) : Promise.reject(new PodmanError(`not an absolute command: ${argv[0]}`, undefined, '', false));
+  // A Podman call's time starts once provisioning is not holding the storage (image-lock.ts).
+  const podman = (args: string[], o: RunOptions) => settled().then(() => run([PODMAN, ...args], o));
+  return {
+    run,
+    async settled(withinMs) {
+      const free = await settled(withinMs === undefined ? undefined : { waitS: withinMs / 1000 });
+      if (withinMs !== undefined && free === false) throw new Unavailable(UPDATING);
+    },
+    podman: (args, o) => podman(args, o).catch(async (e) => {
+      if (!o.repeatable || !(e instanceof PodmanError && e.timedOut) || !(await busy())) throw e;
+      log.info(`podman ${words(args)}: ran out of time while provisioning holds the storage; once more after it`);
+      return podman(args, o);
+    }),
+  };
+}

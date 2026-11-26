@@ -1,0 +1,145 @@
+DESCRIPTION >
+    Work 084, "do we need to optimize?" (decided 2026-10-26): the four decision checks over `[since, until)`, one row per measure with n, value, threshold and `verdict` (`optimize` when value > threshold, `ok`, or `not enough data` below `min_n`). The thresholds default to `telemetry/thresholds.json` (`computer_api`, kind `decision`) and can be overridden per call (`t_<id>`). Checks: 1 Computer DO contention (DO time per journal batch and per API write, DO busy ms per org-minute, Slack dispatch wait and K1 in org-minutes with journal batches minus quiet ones), 2 SessionLog append and commit lag, 3 Slack K2/K3 p95 on v4 runners ÷ v3 (warm turns), 4 the runner's journaling on the hot path (runner → host send age of urgent batches, which skip the flush window). The reasoning for each threshold is in the 084 instrumentation answers and the `Do we need to optimize?` row of the Computer API dashboard. Synthetic traffic is excluded unless `include_synthetic`.
+
+TOKEN "calvin_read" READ
+
+NODE oc_events
+SQL >
+    %
+    SELECT event_name, occurred_at, org_id, trace_id, turn_id, sent_at, duration_ms, data
+    FROM calvin_events
+    WHERE
+        event_name IN ('sessionlog.append', 'computer.write', 'dispatch.sent', 'ack.done', 'mirror.ack', 'mirror.batch')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE oc_org_minutes
+DESCRIPTION >
+    Per org and minute: did journal batches reach its Computer DO, and how long did the DO spend on them and on API writes (the chain wait excluded, since that is waiting, not work).
+
+SQL >
+    SELECT
+        org_id,
+        toStartOfMinute(occurred_at) AS minute,
+        countIf(event_name = 'sessionlog.append') > 0 AS busy,
+        sumIf(greatest(JSONExtractInt(data, 'do_ack_ms') - JSONExtractInt(data, 'do_chain_wait_ms'), 0), event_name = 'sessionlog.append')
+            + sumIf(JSONExtractInt(data, 'do_ms'), event_name = 'computer.write') AS busy_ms
+    FROM oc_events
+    WHERE event_name IN ('sessionlog.append', 'computer.write') AND org_id != ''
+    GROUP BY org_id, minute
+
+NODE oc_slack
+SQL >
+    SELECT
+        e.event_name AS event_name,
+        if(e.event_name = 'dispatch.sent', JSONExtract(e.data, 'wait_ms', 'Nullable(Int64)'), toNullable(toInt64(e.duration_ms))) AS ms,
+        m.busy AS busy
+    FROM oc_events AS e
+    LEFT JOIN oc_org_minutes AS m ON m.org_id = e.org_id AND m.minute = toStartOfMinute(e.occurred_at)
+    WHERE e.event_name IN ('dispatch.sent', 'ack.done')
+
+NODE oc_turns
+SQL >
+    %
+    SELECT
+        t.first_visible_ms AS k2,
+        t.overhead_ms AS k3,
+        JSONExtractUInt(p.data, 'host_protocol') = 4 AS v4
+    FROM
+        (
+            SELECT turn_id, first_visible_ms, overhead_ms
+            FROM turns
+            WHERE
+                sent_at >= {{ DateTime(since, required=True) }}
+                AND sent_at < {{ DateTime(until, required=True) }}
+                AND surface = 'slack'
+                AND path = 'warm'
+                AND outcome != 'silent'
+                {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+            LIMIT 1 BY turn_id
+        ) AS t
+    LEFT JOIN
+        (
+            SELECT turn_id, data
+            FROM calvin_events
+            WHERE
+                event_name = 'turn.started'
+                AND occurred_at >= {{ DateTime(since, required=True) }} - INTERVAL 1 DAY
+                AND occurred_at < {{ DateTime(until, required=True) }} + INTERVAL 1 HOUR
+            LIMIT 1 BY turn_id
+        ) AS p ON p.turn_id = t.turn_id
+
+NODE oc_measures
+SQL >
+    SELECT 1 AS check, 'do_batch_p95' AS id, 'Computer DO time per journal batch p95 (do_ack_ms)' AS measure, 'ms' AS unit,
+        countIf(JSONHas(data, 'do_ack_ms')) AS n, quantileIf(0.95)(JSONExtractInt(data, 'do_ack_ms'), JSONHas(data, 'do_ack_ms')) AS value
+    FROM oc_events WHERE event_name = 'sessionlog.append'
+    UNION ALL
+    SELECT 1, 'do_write_p95', 'Computer DO time per API write p95 (do_ms)', 'ms',
+        countIf(JSONHas(data, 'do_ms')), quantileIf(0.95)(JSONExtractInt(data, 'do_ms'), JSONHas(data, 'do_ms'))
+    FROM oc_events WHERE event_name = 'computer.write'
+    UNION ALL
+    SELECT 1, 'do_busy_ms_per_min_p95', 'Computer DO busy ms per org-minute p95 (batches + writes)', 'ms', count(), quantile(0.95)(busy_ms)
+    FROM oc_org_minutes
+    UNION ALL
+    SELECT 1, 'dispatch_wait_busy_delta_p95', 'Slack dispatch wait p95: minutes with journal batches − without', 'ms',
+        least(countIf(event_name = 'dispatch.sent' AND busy), countIf(event_name = 'dispatch.sent' AND NOT busy)),
+        quantileIf(0.95)(ms, event_name = 'dispatch.sent' AND busy) - quantileIf(0.95)(ms, event_name = 'dispatch.sent' AND NOT busy)
+    FROM oc_slack
+    UNION ALL
+    SELECT 1, 'k1_busy_delta_p95', 'K1 acknowledgement p95: minutes with journal batches − without', 'ms',
+        least(countIf(event_name = 'ack.done' AND busy), countIf(event_name = 'ack.done' AND NOT busy)),
+        quantileIf(0.95)(ms, event_name = 'ack.done' AND busy) - quantileIf(0.95)(ms, event_name = 'ack.done' AND NOT busy)
+    FROM oc_slack
+    UNION ALL
+    SELECT 2, 'sessionlog_append_p95', 'SessionLog append p95 (append_ms)', 'ms', count(), quantile(0.95)(JSONExtractInt(data, 'append_ms'))
+    FROM oc_events WHERE event_name = 'sessionlog.append'
+    UNION ALL
+    SELECT 2, 'commit_p95', 'Commit lag p95: host sent → journal-ack (mirror.ack commit_ms)', 'ms', count(), quantile(0.95)(JSONExtractInt(data, 'commit_ms'))
+    FROM oc_events WHERE event_name = 'mirror.ack'
+    UNION ALL
+    SELECT 3, 'slack_k2_v4_ratio', 'Slack K2 p95 warm: v4 ÷ v3', 'ratio', least(countIf(v4 AND k2 IS NOT NULL), countIf(NOT v4 AND k2 IS NOT NULL)),
+        quantileIf(0.95)(k2, v4) / greatest(quantileIf(0.95)(k2, NOT v4), 1)
+    FROM oc_turns
+    UNION ALL
+    SELECT 3, 'slack_k3_v4_ratio', 'Slack K3 p95 warm: v4 ÷ v3', 'ratio', least(countIf(v4 AND k3 IS NOT NULL), countIf(NOT v4 AND k3 IS NOT NULL)),
+        quantileIf(0.95)(k3, v4) / greatest(quantileIf(0.95)(k3, NOT v4), 1)
+    FROM oc_turns
+    UNION ALL
+    SELECT 4, 'journal_hop_p95', 'Runner wrote → host sent p95, urgent batches (mirror.batch newest_age_ms)', 'ms',
+        countIf(JSONExtractBool(data, 'urgent')), quantileIf(0.95)(JSONExtractInt(data, 'newest_age_ms'), JSONExtractBool(data, 'urgent'))
+    FROM oc_events WHERE event_name = 'mirror.batch'
+
+NODE endpoint
+SQL >
+    %
+    SELECT
+        check,
+        id,
+        measure,
+        unit,
+        n,
+        if(isNaN(value) OR isInfinite(value), NULL, round(value, 2)) AS value,
+        t.2 AS threshold,
+        t.3 AS min_n,
+        multiIf(n < t.3 OR value IS NULL OR isNaN(value), 'not enough data', value > t.2, 'optimize', 'ok') AS verdict
+    FROM oc_measures
+    ARRAY JOIN
+        [
+            ('do_batch_p95', {{ Float64(t_do_batch_p95, 100) }}, {{ Int32(n_do_batch_p95, 50) }}),
+            ('do_write_p95', {{ Float64(t_do_write_p95, 100) }}, {{ Int32(n_do_write_p95, 20) }}),
+            ('do_busy_ms_per_min_p95', {{ Float64(t_do_busy_ms_per_min_p95, 30000) }}, {{ Int32(n_do_busy_ms_per_min_p95, 20) }}),
+            ('dispatch_wait_busy_delta_p95', {{ Float64(t_dispatch_wait_busy_delta_p95, 100) }}, {{ Int32(n_dispatch_wait_busy_delta_p95, 20) }}),
+            ('k1_busy_delta_p95', {{ Float64(t_k1_busy_delta_p95, 100) }}, {{ Int32(n_k1_busy_delta_p95, 20) }}),
+            ('sessionlog_append_p95', {{ Float64(t_sessionlog_append_p95, 200) }}, {{ Int32(n_sessionlog_append_p95, 50) }}),
+            ('commit_p95', {{ Float64(t_commit_p95, 200) }}, {{ Int32(n_commit_p95, 50) }}),
+            ('slack_k2_v4_ratio', {{ Float64(t_slack_k2_v4_ratio, 1.2) }}, {{ Int32(n_slack_k2_v4_ratio, 30) }}),
+            ('slack_k3_v4_ratio', {{ Float64(t_slack_k3_v4_ratio, 1.2) }}, {{ Int32(n_slack_k3_v4_ratio, 30) }}),
+            ('journal_hop_p95', {{ Float64(t_journal_hop_p95, 50) }}, {{ Int32(n_journal_hop_p95, 50) }})
+        ] AS t
+    WHERE t.1 = id
+    ORDER BY check, id
+
+TYPE ENDPOINT

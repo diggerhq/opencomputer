@@ -234,6 +234,18 @@ describe("browser signup records attribution", () => {
     expect(posthog).toHaveLength(1);
   });
 
+  it("creates the workspace with no home cell against the real schema", async () => {
+    // 097 step 7.2: signup no longer picks a cell. The cells table is empty
+    // here, so any lookup that required a row would fail the signup.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM cells").get()).toEqual({ n: 0 });
+    const res = await callback();
+    expect(res.status).toBe(302);
+    const orgs = db.prepare("SELECT home_cell, is_personal, max_concurrent_sandboxes FROM orgs").all();
+    // max_concurrent_sandboxes is no longer written; it keeps the column default.
+    expect(orgs).toEqual([{ home_cell: "", is_personal: 1, max_concurrent_sandboxes: 50 }]);
+    expect(db.prepare("SELECT role FROM org_memberships").all()).toEqual([{ role: "owner" }]);
+  });
+
   it("records a signup retried after a partial first callback, once", async () => {
     // The first callback inserted the user, then failed before the workspace existed.
     const nowSec = Math.floor(Date.now() / 1000);

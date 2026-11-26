@@ -1,0 +1,19 @@
+// The telemetry collector (work 054). Deliberately bare:
+// no Durable Objects, storage or service bindings, only the rate limiter.
+// Secrets (`wrangler secret put`): TINYBIRD_APPEND_TOKEN, REPO_DIGEST_KEY,
+// CREDENTIAL_PUBLIC_KEY. TINYBIRD_API_URL and CREDENTIAL_DENYLIST are vars,
+// set below (a deploy replaces vars not listed here). See README.md.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "calvin-telemetry-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-08",
+  "workers_dev": true,
+  "ratelimits": [
+    // Per host_id. A host sends every 2 s; draining a spool after an outage
+    // sends back to back and is slowed by 429s, never dropped.
+    { "name": "RATE_LIMITER", "namespace_id": "5401", "simple": { "limit": 120, "period": 60 } }
+  ],
+  "observability": { "enabled": true },
+  "vars": { "TINYBIRD_API_URL": "https://api.us-east.tinybird.co", "CREDENTIAL_DENYLIST": "" }
+}

@@ -1,0 +1,33 @@
+{
+  "$comment": "Alert thresholds per KPI, path and harness (work 054, 'KPIs'). threshold_ms = min(budget_ms, trailing-7-day p95 x 1.25); until a week of data exists it equals the proposed budget. Ratchet: a threshold only moves down; raising one is a reviewed diff with the reason in the commit. After editing, run `node telemetry/grafana/render.mjs` to regenerate the Grafana rules. K8 has no latency threshold: surface.call is emitted only for slow, failed or rate-limited calls, so its error ratio and rate limiting are alerted on instead (fixed rules in grafana/rules.mjs).",
+  "$comment_computer_api": "Work 084 computer API: `decision` rows are the four 'do we need to optimize?' checks (check 1 Computer DO contention, 2 SessionLog append and commit lag, 3 Slack K2/K3 v4 vs v3, 4 the runner's journaling on the hot path), `alert` rows the failure signals. A value above `threshold` (with at least `min_n` samples over `window_h`) fires its rule in grafana/computer-api.mjs; the decision rows are also the defaults of the Tinybird endpoint optimize_checks. Same ratchet: threshold <= budget, and a threshold only moves down (to min(budget, 7-day p95 x 1.25) once a week of data exists); raising one is a reviewed diff with the reason in the commit.",
+  "thresholds": [
+    { "kpi": "K1", "path": "*", "harness": "*", "budget_ms": 1000, "threshold_ms": 1000, "window_h": 1, "min_n": 20, "for": "30m", "basis": "budget" },
+    { "kpi": "K2", "path": "warm", "harness": "*", "budget_ms": 4000, "threshold_ms": 4000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K2", "path": "new", "harness": "*", "budget_ms": 8000, "threshold_ms": 8000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K2", "path": "resume", "harness": "*", "budget_ms": 8000, "threshold_ms": 8000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K3", "path": "warm", "harness": "*", "budget_ms": 400, "threshold_ms": 400, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K3", "path": "new", "harness": "*", "budget_ms": 4000, "threshold_ms": 4000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K3", "path": "resume", "harness": "*", "budget_ms": 4000, "threshold_ms": 4000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K5", "path": "*", "harness": "*", "budget_ms": 8000, "threshold_ms": 8000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "kpi": "K6", "path": "*", "harness": "*", "budget_ms": 500, "threshold_ms": 500, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" }
+  ],
+  "computer_api": [
+    { "id": "do_batch_p95", "kind": "decision", "check": 1, "unit": "ms", "budget": 100, "threshold": 100, "window_h": 3, "min_n": 50, "for": "1h", "basis": "budget" },
+    { "id": "do_write_p95", "kind": "decision", "check": 1, "unit": "ms", "budget": 100, "threshold": 100, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "id": "do_busy_ms_per_min_p95", "kind": "decision", "check": 1, "unit": "ms", "budget": 30000, "threshold": 30000, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "id": "dispatch_wait_busy_delta_p95", "kind": "decision", "check": 1, "unit": "ms", "budget": 100, "threshold": 100, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "id": "k1_busy_delta_p95", "kind": "decision", "check": 1, "unit": "ms", "budget": 100, "threshold": 100, "window_h": 3, "min_n": 20, "for": "1h", "basis": "budget" },
+    { "id": "sessionlog_append_p95", "kind": "decision", "check": 2, "unit": "ms", "budget": 200, "threshold": 200, "window_h": 3, "min_n": 50, "for": "1h", "basis": "budget" },
+    { "id": "commit_p95", "kind": "decision", "check": 2, "unit": "ms", "budget": 200, "threshold": 200, "window_h": 3, "min_n": 50, "for": "1h", "basis": "budget" },
+    { "id": "slack_k2_v4_ratio", "kind": "decision", "check": 3, "unit": "ratio", "budget": 1.2, "threshold": 1.2, "window_h": 24, "min_n": 30, "for": "0s", "basis": "budget" },
+    { "id": "slack_k3_v4_ratio", "kind": "decision", "check": 3, "unit": "ratio", "budget": 1.2, "threshold": 1.2, "window_h": 24, "min_n": 30, "for": "0s", "basis": "budget" },
+    { "id": "journal_hop_p95", "kind": "decision", "check": 4, "unit": "ms", "budget": 50, "threshold": 50, "window_h": 3, "min_n": 50, "for": "1h", "basis": "budget" },
+    { "id": "freshness_p95", "kind": "alert", "unit": "ms", "budget": 2000, "threshold": 2000, "window_h": 0.25, "min_n": 50, "for": "15m", "basis": "budget" },
+    { "id": "api_503_ratio", "kind": "alert", "unit": "ratio", "budget": 0.05, "threshold": 0.05, "window_h": 0.25, "min_n": 20, "for": "15m", "basis": "budget" },
+    { "id": "api_gaps_1h", "kind": "alert", "unit": "count", "budget": 3, "threshold": 3, "window_h": 1, "min_n": 0, "for": "0s", "basis": "budget" },
+    { "id": "recover_alarms_1h", "kind": "alert", "unit": "count", "budget": 0, "threshold": 0, "window_h": 1, "min_n": 0, "for": "0s", "basis": "budget" },
+    { "id": "held_write_timeouts_15m", "kind": "alert", "unit": "count", "budget": 0, "threshold": 0, "window_h": 0.25, "min_n": 0, "for": "0s", "basis": "budget" },
+    { "id": "wire_refused_5m", "kind": "alert", "unit": "count", "budget": 100, "threshold": 100, "window_h": 0.0834, "min_n": 0, "for": "5m", "basis": "budget" }
+  ]
+}

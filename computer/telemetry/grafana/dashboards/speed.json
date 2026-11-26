@@ -1,0 +1,824 @@
+{
+  "uid": "calvin-speed",
+  "title": "Calvin · Speed",
+  "tags": [
+    "calvin",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Tinybird",
+        "query": "grafana-clickhouse-datasource",
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Deploys",
+        "enable": true,
+        "iconColor": "blue",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "${datasource}"
+        },
+        "target": {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT min(sent_at) AS time, concat('runner ', runner_version) AS text FROM turns WHERE $__timeFilter(sent_at) GROUP BY runner_version\nUNION ALL SELECT min(sent_at) AS time, concat('gateway ', gateway_version) AS text FROM turns WHERE $__timeFilter(sent_at) GROUP BY gateway_version"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "title": "Calvin",
+      "type": "dashboards",
+      "tags": [
+        "calvin"
+      ],
+      "asDropdown": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "K2 first visible output p95 · warm",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(first_visible_ms, outcome != 'silent') AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path IN ('warm') GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 4000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "K2 first visible output p95 · new, resume",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(first_visible_ms, outcome != 'silent') AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path IN ('new', 'resume') GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 8000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "K3 Calvin overhead p95 · warm",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(overhead_ms, outcome != 'silent') AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path IN ('warm') GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 400
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "K3 Calvin overhead p95 · new, resume",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(overhead_ms, outcome != 'silent') AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path IN ('new', 'resume') GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 4000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "K1 time to acknowledgement p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, quantile(0.95)(duration_ms) AS p95, count() AS n FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('ack.done') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "K4 model time to first token p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(ttft_ms, 1) AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "K5 longest silence p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, quantileIf(0.95)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL) AS p95 FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 8000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "K6 steer latency p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, quantile(0.95)(latency_ms) AS p95, count() AS n FROM (SELECT * FROM steers WHERE $__timeFilter(occurred_at) AND NOT synthetic) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Turns by path",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, path, count() AS turns FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time, path ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Slowest turns (K2)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sent_at, trace_id, session_key, path, harness, model, first_visible_ms, overhead_ms, ttft_ms, max_silence_ms, outcome\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE outcome != 'silent' ORDER BY first_visible_ms DESC NULLS LAST LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trace_id"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open trace",
+                    "url": "/d/calvin-traces?var-trace_id=${__data.fields.trace_id}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Q1 · K2 first visible output p95 by runner protocol · warm Slack",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 60
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(t.sent_at) AS time, if(p.protocol = '', 'v3', p.protocol) AS protocol, quantileIf(0.95)(t.first_visible_ms, t.outcome != 'silent') AS p95\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND path = 'warm' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at >= $__fromTime - INTERVAL 1 DAY AND occurred_at < $__toTime + INTERVAL 1 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id GROUP BY time, protocol ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 4000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Work 084 Q1: v3 = no journal (or a runner from before 084), v4 = the runner journals the session, v4+client = an API client (opc) was attached at turn start. Slack turns only. Table form, with K4-K6 and the journal per turn: the Tinybird endpoint `slack_by_protocol`; the verdict: `optimize_checks`."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Q1 · K3 Calvin overhead p95 by runner protocol · warm Slack",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 60
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(t.sent_at) AS time, if(p.protocol = '', 'v3', p.protocol) AS protocol, quantileIf(0.95)(t.overhead_ms, t.outcome != 'silent') AS p95\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND path = 'warm' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at >= $__fromTime - INTERVAL 1 DAY AND occurred_at < $__toTime + INTERVAL 1 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id GROUP BY time, protocol ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 400
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Work 084 Q1: v3 = no journal (or a runner from before 084), v4 = the runner journals the session, v4+client = an API client (opc) was attached at turn start. Slack turns only. Table form, with K4-K6 and the journal per turn: the Tinybird endpoint `slack_by_protocol`; the verdict: `optimize_checks`."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Q1 · K1 time to acknowledgement p95 by runner protocol",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 70
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(a.occurred_at) AS time, if(p.protocol = '', 'v3', p.protocol) AS protocol, quantile(0.95)(a.duration_ms) AS p95\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('ack.done') AND NOT synthetic LIMIT 1 BY event_id) AS a LEFT JOIN (SELECT trace_id, any(protocol) AS protocol FROM (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at >= $__fromTime - INTERVAL 1 DAY AND occurred_at < $__toTime + INTERVAL 1 HOUR LIMIT 1 BY turn_id) GROUP BY trace_id) AS p ON p.trace_id = a.trace_id\nGROUP BY time, protocol ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Work 084 Q1: v3 = no journal (or a runner from before 084), v4 = the runner journals the session, v4+client = an API client (opc) was attached at turn start. Slack turns only. Table form, with K4-K6 and the journal per turn: the Tinybird endpoint `slack_by_protocol`; the verdict: `optimize_checks`."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Q1 · Slack turns by runner protocol",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 70
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(t.sent_at) AS time, if(p.protocol = '', 'v3', p.protocol) AS protocol, count() AS turns\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at >= $__fromTime - INTERVAL 1 DAY AND occurred_at < $__toTime + INTERVAL 1 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id GROUP BY time, protocol ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "description": "Work 084 Q1: v3 = no journal (or a runner from before 084), v4 = the runner journals the session, v4+client = an API client (opc) was attached at turn start. Slack turns only. Table form, with K4-K6 and the journal per turn: the Tinybird endpoint `slack_by_protocol`; the verdict: `optimize_checks`."
+    }
+  ]
+}

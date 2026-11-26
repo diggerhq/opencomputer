@@ -1,0 +1,49 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-platform",
+  "main": "src/platform/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RUN_MICROVM_ADMISSION",
+        "class_name": "RunMicrovmAdmission"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-run-microvm-admission",
+      "new_sqlite_classes": ["RunMicrovmAdmission"]
+    }
+  ],
+  "vars": {
+    "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
+    "AZURE_COMPUTER_RESOURCE_GROUP": "computers-eastus",
+    "AZURE_COMPUTER_REGION": "eastus",
+    "AZURE_COMPUTER_SUBNET_ID": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/computers-eastus/providers/Microsoft.Network/virtualNetworks/computers/subnets/computers",
+    "AZURE_COMPUTER_IDENTITY_ID": "/subscriptions/00000000-0000-0000-0000-000000000000/resourcegroups/computers-eastus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/computer-bootstrap",
+    "AZURE_COMPUTER_IDENTITY_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+    "COMPUTER_BOOTSTRAP_URL": "https://example.blob.core.windows.net/bootstrap/calvin-latest.bundle",
+    "COMPUTER_TELEMETRY_URL": "https://telemetry.example.com",
+    "BLUE_AWS_REGION": "us-east-1",
+    "BLUE_ARTIFACT_BUCKET": "managed-agents-artifacts",
+    "WORKSPACE_DOWNLOAD_BASE_URL": "https://downloads.example.com",
+    "BLUE_SANDBOX_PROVIDER": "modal",
+    "BLUE_SESSION_RUNTIME_PROVIDER": "modal",
+    "MODAL_SHIM_URL": "https://example--blue-modal-shim-api.modal.run",
+    "MODAL_SANDBOX_IMAGE": "oc-blue-runtime",
+    "MODAL_SANDBOX_APP": "opencomputer-sandboxes",
+    "MODAL_VOLUME_PREFIX": "oc-ws-",
+    "MODAL_DOWNLOAD_BASE_URL": "https://dl.example.com",
+    "MODAL_ACCOUNT_ALLOWLIST": "*",
+    "MODAL_ROLLOUT_PERCENT": "100"
+  },
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

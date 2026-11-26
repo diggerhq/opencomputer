@@ -1,0 +1,600 @@
+[
+ {
+  "step": "send pick a color"
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\npick a color",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Question",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate AskUserQuestion"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Which color?",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Color* — Which color?"
+     }
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Red"
+       },
+       "action_id": "p:QzEtMS4w:00000002:0.0",
+       "value": "0.0"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Blue"
+       },
+       "action_id": "p:QzEtMS4w:00000002:0.1",
+       "value": "0.1"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "*Red*: warm  ·  *Blue*: cool"
+      }
+     ]
+    },
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Shade* — Which shade?"
+     }
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Light"
+       },
+       "action_id": "p:QzEtMS4w:00000002:1.0",
+       "value": "1.0"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Dark"
+       },
+       "action_id": "p:QzEtMS4w:00000002:1.1",
+       "value": "1.1"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here with your own answer"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Question · waiting for your answer ↓",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "press 0.1"
+ },
+ {
+  "slack": "chat.update",
+  "args": {
+   "channel": "C1",
+   "ts": "1.4",
+   "text": "Question",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Color* — Which color?\n→ *Blue*"
+     }
+    },
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Shade* — Which shade?"
+     }
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Light"
+       },
+       "action_id": "p:QzEtMS4w:00000002:1.0",
+       "value": "1.0"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Dark"
+       },
+       "action_id": "p:QzEtMS4w:00000002:1.1",
+       "value": "1.1"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "step": "send a deep navy"
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.4"
+  }
+ },
+ {
+  "decision": "tu_1",
+  "d": {
+   "behavior": "allow",
+   "updatedInput": {
+    "questions": [
+     {
+      "question": "Which color?",
+      "header": "Color",
+      "multiSelect": false,
+      "options": [
+       {
+        "label": "Red",
+        "description": "warm"
+       },
+       {
+        "label": "Blue",
+        "description": "cool"
+       }
+      ]
+     },
+     {
+      "question": "Which shade?",
+      "header": "Shade",
+      "multiSelect": false,
+      "options": [
+       {
+        "label": "Light"
+       },
+       {
+        "label": "Dark"
+       }
+      ]
+     }
+    ],
+    "answers": {
+     "Which color?": "Blue",
+     "Which shade?": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\na deep navy"
+    }
+   }
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Question · continues below ↓",
+     "status": "pending"
+    }
+   ],
+   "session_status": "processing"
+  }
+ },
+ {
+  "step": "feed tool_result,request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000003",
+     "title": "Question",
+     "status": "complete",
+     "details": "→ Blue · [Slack: from name-U1 (<@U1>) in #eng, mentions you]\na deep navy",
+     "output": "answered"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Navy it is."
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.9",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · default · 5s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ },
+ {
+  "step": "send again"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nagain",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.12",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Question",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate AskUserQuestion"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Which color?",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Color* — Which color?"
+     }
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Red"
+       },
+       "action_id": "p:QzEtMS4w:00000005:0.0",
+       "value": "0.0"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Blue"
+       },
+       "action_id": "p:QzEtMS4w:00000005:0.1",
+       "value": "0.1"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "*Red*: warm  ·  *Blue*: cool"
+      }
+     ]
+    },
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Shade* — Which shade?"
+     }
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Light"
+       },
+       "action_id": "p:QzEtMS4w:00000005:1.0",
+       "value": "1.0"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Dark"
+       },
+       "action_id": "p:QzEtMS4w:00000005:1.1",
+       "value": "1.1"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here with your own answer"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.12",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Question · waiting for your answer ↓",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "send what's the status?"
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14"
+  }
+ },
+ {
+  "decision": "tu_2",
+  "d": {
+   "behavior": "deny",
+   "message": "The user replied in text instead of answering the questions: [Slack: from name-U1 (<@U1>) in #eng, mentions you]\nwhat's the status?"
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.12",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Question · continues below ↓",
+     "status": "pending"
+    }
+   ],
+   "session_status": "processing"
+  }
+ },
+ {
+  "step": "feed tool_result,request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000006",
+     "title": "Question · failed",
+     "status": "complete",
+     "details": "replied in text",
+     "output": "replied"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Working on it."
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.18",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · default · 4s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]

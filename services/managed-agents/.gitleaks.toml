@@ -1,0 +1,23 @@
+# gitleaks configuration for services/managed-agents: the default rules, minus
+# the fake values tests use and one download checksum. Add an entry only for a
+# value that is not a secret, as narrowly as it can be matched.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "signed-header test vectors shared with the computer host (generated, no live key)"
+paths = ['''test/fixtures/calvin/wire-auth-vectors\.json$''']
+
+# Matched on the whole line, with no path condition: gitleaks skips a file
+# outright when an allowlist names its path.
+[[allowlists]]
+description = "fake keys, tokens and signing secrets in tests; the sha256 of the Xray release the exit image downloads"
+regexTarget = "line"
+regexes = [
+  '''"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=?"''',
+  '''"(p\d-signing-secret-)?0123456789abcdef(0123456789abcdef)?"''',
+  '''Bearer sk_fixture''',
+  '''"sk_live_abcdefghijkl", `ghp_\$\{"a"\.repeat\(36\)\}`''',
+  '''idempotencyKey: "countability-\d"''',
+  '''ARG XRAY_SHA256=[0-9a-f]{64}''',
+]

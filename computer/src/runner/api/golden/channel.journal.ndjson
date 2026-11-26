@@ -1,0 +1,17 @@
+{"seq":1,"type":"message.received","turnId":"tn#1","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, does not mention you]\nrefactor","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":2,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":null,"to":"claude-opus-5-5"}}}}
+{"seq":3,"type":"turn.started","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
+{"seq":5,"type":"tool.started","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Edit","callId":"tu_1","parentCallId":null,"title":"Update(a.ts)","input":{"file_path":"/tmp/calvin-golden/work/a.ts","old_string":"x","new_string":"y"},"inputTruncated":false}}
+{"seq":6,"type":"tool.completed","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Edit","callId":"tu_1","parentCallId":null,"title":"Update(a.ts)","output":"ok","outputTruncated":false,"fileChanges":null,"durationMs":0}}
+{"seq":7,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"Refactored."}}
+{"seq":8,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-sonnet-4-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.2","firstTokenMs":2000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":9,"type":"turn.completed","turnId":"tn#1","actor":null,"data":{"text":"Refactored.","durationMs":3000,"silent":false}}
+{"seq":10,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}
+{"seq":11,"type":"message.received","turnId":"tn#3","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, does not mention you]\nquiet check","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":12,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":"claude-opus-5-5","to":"claude-sonnet-4-5"},"mode":{"from":"default","to":"plan"}}}}
+{"seq":13,"type":"turn.started","turnId":"tn#3","actor":null,"data":{"model":"claude-sonnet-4-5","effort":null,"mode":"plan","trigger":"message","subagentId":null}}
+{"seq":14,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"idle","to":"running"}}
+{"seq":15,"type":"usage.recorded","turnId":"tn#3","actor":null,"data":{"model":"claude-sonnet-4-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.01","firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":16,"type":"turn.completed","turnId":"tn#3","actor":null,"data":{"text":null,"durationMs":1000,"silent":true}}
+{"seq":17,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

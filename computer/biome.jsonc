@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": ["src/**", "scripts/**", "telemetry/collector/src/**", "telemetry/grafana/*.mjs", "*.json", "*.jsonc", "*.ts"]
+  },
+  // Formatting matches the style the code already has, so enforcing it is a
+  // small diff. `npm run format` applies it; `biome format` is not part of
+  // `npm run check` until the PRs open at the time this landed have merged.
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 150
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "all",
+      "semicolons": "always"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        // 157 when this landed, mostly untyped Agent SDK events and Slack
+        // payloads. Ratchet: once the SDK event handling sits in one adapter
+        // module, this becomes an error with an override for that module.
+        "noExplicitAny": "warn",
+        // `(this.x ??= …)` and `while ((i = …) >= 0)` are idioms here.
+        "noAssignInExpressions": "off"
+      },
+      "style": {
+        // Deliberate `!` on Slack response fields the API guarantees.
+        "noNonNullAssertion": "off",
+        "useTemplate": "off"
+      },
+      "complexity": {
+        // `return a(), b` for "do, then answer" is used on purpose.
+        "noCommaOperator": "off"
+      }
+    }
+  },
+  "assist": {
+    "enabled": false
+  }
+}

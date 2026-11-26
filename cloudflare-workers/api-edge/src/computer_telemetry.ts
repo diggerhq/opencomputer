@@ -26,7 +26,6 @@ export type EdgeAuth =
   | "missing"
   | "invalid"
   | "conflicting"
-  | "project_key"
   | "not_member"
   | "origin"
   | "key_required"
@@ -64,10 +63,12 @@ export function computerApiRouteFamily(suffix: string): string {
   if (first === "me") return parts.length === 2 ? "me" : "secrets";
   if (first === "tickets") return "tickets";
   if (first === "secrets" || first === "organization") return "secrets";
+  if (first === "work") return "work";
   if (first !== "sessions") return "other";
   if (parts.length <= 3) return "sessions";
   switch (third) {
     case "capabilities":
+    case "aside":
       return "sessions";
     case "interrupt":
     case "compact":

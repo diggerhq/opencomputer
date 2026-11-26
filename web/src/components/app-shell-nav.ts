@@ -2,17 +2,14 @@ import {
   ArrowLeft,
   BookOpen,
   Bot,
-  Boxes,
   BrainCircuit,
   CalendarClock,
   Computer,
   Database,
   FolderKanban,
+  KeyRound,
   KeySquare,
-  Layers,
   MessagesSquare,
-  Monitor,
-  Package,
   Plug,
   Radar,
   Rocket,
@@ -38,8 +35,6 @@ export type NavGroup = {
 
 export function managedAgentsNav(options: {
   projectId?: string
-  durableSessionsEnabled: boolean
-  infrastructureEnabled: boolean
   computerEnabled?: boolean
   swarmEnabled?: boolean
 }): NavGroup[] {
@@ -134,7 +129,16 @@ export function managedAgentsNav(options: {
     groups.push({
       items: [
         ...(options.computerEnabled
-          ? [{ to: '/computer', label: 'Computer', icon: Computer }]
+          ? [
+              { to: '/computer', label: 'Computer', icon: Computer, end: true },
+              {
+                to: '/computer/sessions',
+                label: 'Sessions',
+                icon: MessagesSquare,
+                preview: true,
+              },
+              { to: '/computer/secrets', label: 'Secrets', icon: KeyRound },
+            ]
           : []),
         { to: '/automations', label: 'Automations', icon: FolderKanban },
       ],
@@ -151,44 +155,6 @@ export function managedAgentsNav(options: {
       },
     ],
   })
-
-  if (options.durableSessionsEnabled) {
-    groups.push({
-      label: 'Durable sessions',
-      collapsible: true,
-      landingTo: '/agents',
-      items: [
-        { to: '/agents', label: 'Agents', icon: Bot, preview: true },
-        {
-          to: '/sessions',
-          label: 'Sessions',
-          icon: MessagesSquare,
-          preview: true,
-        },
-        {
-          to: '/credentials',
-          label: 'Credentials',
-          icon: KeySquare,
-          preview: true,
-        },
-      ],
-    })
-  }
-
-  if (options.infrastructureEnabled) {
-    groups.push({
-      label: 'Infrastructure',
-      collapsible: true,
-      landingTo: '/sandboxes',
-      items: [
-        { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-        { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-        { to: '/templates', label: 'Sandbox templates', icon: Package },
-        { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-        { to: '/browsers', label: 'Browsers', icon: Monitor },
-      ],
-    })
-  }
 
   return groups
 }

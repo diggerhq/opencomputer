@@ -1,21 +1,16 @@
 // dashboard.ts — edge-native dashboard backend.
 //
-// The new architecture (see docs/dev-cutover-runbook.md + the dev-cutover diagram)
-// makes the CF edge authoritative for identity, billing, sandbox routing index,
-// and audit log. The dashboard accordingly lives here: D1 is the source of
-// truth for org/user/api-key/checkpoint data, and only sandbox-RUNTIME ops
-// (exec, PTY, logs) proxy to the cell where the sandbox actually runs.
+// The CF edge is authoritative for identity and billing, and the dashboard
+// backend lives here: D1 is the source of truth for org/user/api-key data.
 //
 // Auth: session JWT cookie `oc_session` minted by /auth/callback. Browser
 // hits /api/dashboard/...; we validate the cookie and execute the handler.
 //
-// Proxy pattern for sandbox-runtime ops:
-//   1. Look up the sandbox's cell_id in D1 sandboxes_index (or org.home_cell
-//      for non-sandbox-scoped proxies like /agents).
-//   2. Mint a short-lived capability JWT for that cell with claims.OrgID +
-//      claims.Plan (the same cap-token shape /api/sandboxes POST uses).
-//   3. Fetch the cell's /internal/dashboard/{path} with Authorization: Bearer.
-//   4. Stream the response (or WebSocket pair) back to the browser.
+// The sandbox-runtime proxy to the cells (/internal/dashboard/* for sessions,
+// PTY, agents, sandbox create, previews and snapshot deletes) was removed in
+// 097 step 7.2, followed by the D1-only sandbox reads (sessions, checkpoints,
+// images, per-sandbox usage), sandbox webhooks and org custom domains. The
+// sandbox D1 tables and org columns stay until a later migration.
 
 import {
   autumnPurchase,
@@ -31,12 +26,7 @@ import {
 } from "./autumn_webhook";
 import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_summary";
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
-import { handleWebhooksAPI, type WebhookEnv } from "./webhooks";
-import {
-  acknowledgeAgentSecurityNotification,
-  listAgentSecurityNotifications,
-} from "./agent_security_notifications";
-import { createAPIKeyWithHash } from "./api_keys";
+import { KEY_SCOPES, createAPIKeyWithHash } from "./api_keys";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
 import {
   proxyManagedAgents,
@@ -47,6 +37,7 @@ import { enableManagedBilling } from "./model_billing";
 import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 import { sendSlackAlert, teammateInvitedAlert } from "./slack_alerts";
+import { handleGitHubStarClaim, handleGitHubStarStart, handleGitHubStarState } from "./github_star";
 
 export interface DashboardEnv extends BillingEventsEnv {
   /** Computer rollout (work 052): see computerEnabledFor in computer.ts. */
@@ -67,22 +58,6 @@ export interface DashboardEnv extends BillingEventsEnv {
   // "true" → new signups are provisioned on Autumn (Stage 2 switch). Default
   // off keeps merge dormant; existing orgs are never auto-migrated by this.
   AUTUMN_NEW_ORGS?: string;
-  // CF Custom Hostnames API token + zone (for /org/custom-domain). Optional —
-  // if unset the custom-domain endpoints return 503 (feature disabled).
-  CF_API_TOKEN?: string;
-  CF_ZONE_ID?: string;
-  // Durable Agent Sessions (/v3) — the dashboard proxies /api/dashboard/v3/* to
-  // this sessions-api host, asserting the logged-in OC org via a short-lived
-  // signed OC org token (OC_ORG_TOKEN_SECRET, shared with sessions-api). No osb_
-  // key in the browser, no key custody. Both optional — if OC_ORG_TOKEN_SECRET is
-  // unset the proxy 503s.
-  SESSIONS_API_URL?: string;
-  OC_ORG_TOKEN_SECRET?: string;
-  // Browser Sessions dashboard proxy. The browser API remains a separate
-  // Worker; this edge Worker only translates dashboard cookie auth into the
-  // internal service token plus org/user headers.
-  BROWSER_API_URL?: string;
-  BROWSER_API_SECRET?: string;
   // Private managed-agent backend. The browser only calls this Worker; it
   // never receives the backend URL or assertion secret.
   MANAGED_AGENTS_API_URL?: string;
@@ -91,6 +66,8 @@ export interface DashboardEnv extends BillingEventsEnv {
   OPENROUTER_BASE_URL?: string;
   OPENROUTER_MARKUP_BPS?: string;
   OC_MANAGED_CRED_HMAC_SECRET: string;
+  // Optional read-only token for the onboarding star bonus (github_star.ts).
+  GITHUB_TOKEN?: string;
 }
 
 const SESSION_COOKIE = "oc_session";
@@ -161,44 +138,6 @@ function setSessionCookie(jwt: string): string {
   return `${SESSION_COOKIE}=${jwt}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SEC}`;
 }
 
-// Same shape as the cap-token /api/sandboxes mints for /internal/sandboxes/create.
-// Cells' capTokenMiddleware validates this same format on /internal/dashboard/*.
-async function mintCellCapToken(secret: string, orgID: string, cellID: string, plan: string, userID: string | null): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opensandbox-edge", iat: now, exp: now + 120,
-    org_id: orgID, cell_id: cellID, plan,
-  };
-  if (userID) payload.user_id = userID;
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
-// OC org token: a short-lived HS256 token carrying the OC org id, signed with
-// OC_ORG_TOKEN_SECRET (shared with sessions-api). /v3 trusts it and sets owner =
-// the asserted org — same "act for org X" shape as the cell cap-token, so no
-// osb_ key reaches the browser and /v3 never custodies a customer key.
-async function mintOrgToken(secret: string, orgID: string, userID: string | null): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload: Record<string, unknown> = {
-    sub: orgID, iss: "opencomputer", aud: "sessions-api-v3", iat: now, exp: now + 120,
-    org_id: orgID,
-  };
-  if (userID) payload.user_id = userID;
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
 function b64url(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = "";
@@ -226,16 +165,6 @@ function epochToISO(s: number | null | undefined): string | undefined {
 // treats as non-nullable.
 function epochToISORequired(s: number | null | undefined): string {
   return new Date(((s ?? 0) || 0) * 1000).toISOString();
-}
-
-// Cell ID → region. Reverse of api-edge's pickCell convention:
-// cells follow {cloud}-{region-with-hyphens}-{slot}, e.g.
-// "azure-us-west-2-b" → region "us-west-2".
-function cellToRegion(cellID: string): string {
-  // Strip first segment (cloud) and last segment (slot).
-  const parts = cellID.split("-");
-  if (parts.length < 3) return "";
-  return parts.slice(1, -1).join("-");
 }
 
 // shapeOrg maps a D1 orgs row to the frontend's Org interface (camelCase,
@@ -278,103 +207,6 @@ function shapeOrg(r: OrgRow): Record<string, unknown> {
     isHalted: !!r.is_halted,
     haltedAt: epochToISO(r.halted_at),
   };
-}
-
-// ── cell lookup helpers ──────────────────────────────────────────────────
-
-interface CellRow {
-  cell_id: string;
-  base_url: string;
-}
-
-async function homeCell(env: DashboardEnv, orgID: string): Promise<CellRow | null> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT c.cell_id, c.base_url FROM orgs o JOIN cells c ON c.cell_id = o.home_cell WHERE o.id = ?1`,
-  ).bind(orgID).first<CellRow>();
-  return row ?? null;
-}
-
-async function sandboxCell(env: DashboardEnv, sandboxID: string): Promise<{ cell_id: string; base_url: string; org_id: string } | null> {
-  return env.OPENCOMPUTER_DB.prepare(
-    `SELECT s.cell_id, s.org_id, c.base_url FROM sandboxes_index s JOIN cells c ON c.cell_id = s.cell_id WHERE s.id = ?1`,
-  ).bind(sandboxID).first<{ cell_id: string; base_url: string; org_id: string }>();
-}
-
-// proxyToCell handles non-WebSocket dashboard requests. Looks up the
-// destination URL (caller-supplied), mints a cap-token for that cell, and
-// streams the response back. Pass-through for status, body, content-type.
-async function proxyToCell(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  cell: CellRow,
-  path: string,
-): Promise<Response> {
-  const url = new URL(req.url);
-  const target = cell.base_url.replace(/\/$/, "") + path + url.search;
-  const token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
-
-  // Forward only the headers the cell actually needs. CF Workers forbids
-  // some headers (Host, Connection, Content-Length) and stripping cookies
-  // avoids sending the browser's session JWT to the cell. The Authorization
-  // header is the auth signal the cell needs; content-type matters for body
-  // parsing on POST/PUT.
-  const headers = new Headers();
-  headers.set("authorization", "Bearer " + token);
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
-  const accept = req.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-  const ua = req.headers.get("user-agent");
-  if (ua) headers.set("user-agent", ua);
-
-  const init: RequestInit = { method: req.method, headers };
-  if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
-  return fetch(target, init);
-}
-
-// ── WebSocket proxy (PTY) ────────────────────────────────────────────────
-
-async function proxyWebSocket(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  cell: CellRow,
-  cellPath: string,
-): Promise<Response> {
-  if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-    return json({ error: "expected websocket upgrade" }, 400);
-  }
-
-  // Mint the cell-bound cap-token the cell-CP expects in Authorization,
-  // then transparently forward the upgrade to the cell-CP. With the
-  // OPENSANDBOX_WS_BROKER=1 cell-CP path active, the cell-CP's
-  // wsgateway terminates the browser's WS and brokers it against the
-  // worker — redial on upstream close, keepalive, exec-exit suppression,
-  // multi-session per sandbox, etc. live in Go, not here.
-  //
-  // Previously this function did an edge-side WebSocketPair + manual
-  // Blob-aware bridge. That made the cell-CP see the EDGE as the client,
-  // which short-circuited the broker's redial/keepalive — a worker
-  // restart killed the browser's terminal. Replacing the bridge with
-  // a transparent forward puts the broker actually in the middle.
-  let token: string;
-  try {
-    token = await mintCellCapToken(env.SESSION_JWT_SECRET, caller.orgID, cell.cell_id, caller.plan, caller.userID);
-  } catch (e) {
-    console.error("proxyWebSocket: mint failed:", e);
-    return new Response("token mint failed", { status: 500 });
-  }
-  const upstreamURL = cell.base_url.replace(/\/$/, "") + cellPath;
-  console.log(`proxyWebSocket: forwarding upgrade to ${upstreamURL}`);
-
-  const fwd = new Request(upstreamURL, req);
-  fwd.headers.set("authorization", "Bearer " + token);
-  // Strip browser cookies — cell-CP authenticates the cap-token, not
-  // dashboard session cookies, and the cookies would only bloat the
-  // upstream request.
-  fwd.headers.delete("cookie");
-  return await fetch(fwd);
 }
 
 // ── identity (/me, /orgs, /org, /org/switch) ─────────────────────────────
@@ -673,6 +505,7 @@ async function handleCreateAPIKey(
     orgID: caller.orgID,
     userID: caller.userID,
     name,
+    scopes: KEY_SCOPES,
     expiresAt,
   });
   // Tell the computer API about the key (work 084); never the key itself.
@@ -723,201 +556,6 @@ async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: Calle
     expiresAt: epochToISO(row.expires_at),
     createdAt: epochToISORequired(row.created_at),
   });
-}
-
-// ── sessions list (cross-cell) ───────────────────────────────────────────
-
-async function handleListSessions(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  const url = new URL(req.url);
-  const status = url.searchParams.get("status") ?? "";
-  let stmt;
-  if (status) {
-    stmt = env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, cell_id, worker_id, status, template_id, created_at, last_event_at, stopped_at
-         FROM sandboxes_index WHERE org_id = ?1 AND status = ?2 ORDER BY created_at DESC LIMIT 200`,
-    ).bind(caller.orgID, status);
-  } else {
-    stmt = env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, cell_id, worker_id, status, template_id, created_at, last_event_at, stopped_at
-         FROM sandboxes_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
-    ).bind(caller.orgID);
-  }
-  const { results } = await stmt.all<{
-    id: string; cell_id: string; worker_id: string | null; status: string;
-    template_id: string | null; created_at: number; last_event_at: number | null; stopped_at: number | null;
-  }>();
-  // Reshape to match the frontend's Session interface (camelCase, ISO timestamps).
-  const sessions = (results ?? []).map((r) => ({
-    id: r.id,
-    sandboxId: r.id,
-    orgId: caller.orgID,
-    template: r.template_id ?? "default",
-    region: cellToRegion(r.cell_id),
-    workerId: r.worker_id ?? "",
-    status: r.status,
-    startedAt: epochToISORequired(r.created_at),
-    stoppedAt: epochToISO(r.stopped_at),
-    cellId: r.cell_id, // bonus: surface the cell for cross-cell aware UI
-  }));
-  return json(sessions);
-}
-
-// ── checkpoints (cross-cell) ─────────────────────────────────────────────
-
-async function handleListCheckpoints(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  try {
-    const url = new URL(req.url);
-    const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-    const perPage = Math.min(100, Math.max(1, parseInt(url.searchParams.get("per_page") ?? "20", 10) || 20));
-    const offset = (page - 1) * perPage;
-
-    const { results } = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT id, sandbox_id, owner_cell_id, s3_url, size_bytes, golden_hash, workspace_size, created_at, expires_at, name, status, error_msg, failed_at, kind
-         FROM checkpoints_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3`,
-    ).bind(caller.orgID, perPage, offset).all<{
-      id: string; sandbox_id: string; owner_cell_id: string; s3_url: string | null;
-      size_bytes: number | null; golden_hash: string | null; workspace_size: number | null;
-      created_at: number; expires_at: number | null;
-      name: string | null;
-      status: string | null; error_msg: string | null; failed_at: number | null;
-      kind: string | null;
-    }>();
-    const totalRow = await env.OPENCOMPUTER_DB.prepare(`SELECT COUNT(*) AS c FROM checkpoints_index WHERE org_id = ?1`).bind(caller.orgID).first<{ c: number }>();
-    return json({
-      checkpoints: (results ?? []).map((r) => ({
-        id: r.id,
-        sandboxId: r.sandbox_id ?? "",
-        orgId: caller.orgID,
-        // Prefer the user-set name. Pre-fix this derived from s3_url which
-        // always ended in "rootfs.tar.zst" (every row showed the same name);
-        // the column was added + backfilled from cell PG sandbox_checkpoints
-        // so this now surfaces what customers actually called the checkpoint.
-        name: r.name && r.name.length > 0 ? r.name : r.id.slice(0, 8),
-        status: r.status ?? "ready",
-        sizeBytes: r.size_bytes ?? 0,
-        activeForks: 0,
-        totalForks: 0,
-        createdAt: epochToISORequired(r.created_at),
-        errorMsg: r.error_msg ?? undefined,
-        failedAt: r.failed_at ? epochToISORequired(r.failed_at) : undefined,
-        kind: r.kind === "disk_only" ? "disk_only" : "full",
-        cellId: r.owner_cell_id ?? "",
-        goldenHash: r.golden_hash ?? "",
-      })),
-      total: totalRow?.c ?? 0,
-      page, perPage,
-    });
-  } catch (err) {
-    console.error("handleListCheckpoints failed:", err);
-    return json({ error: `checkpoints failed: ${(err as Error).message}` }, 500);
-  }
-}
-
-async function handleDeleteCheckpoint(_req: Request, env: DashboardEnv, caller: Caller, cpID: string): Promise<Response> {
-  // Verify ownership before delete.
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`,
-  ).bind(cpID, caller.orgID).first<{ owner_cell_id: string }>();
-  if (!row) return json({ error: "checkpoint not found" }, 404);
-  // Delete D1 row first (source of truth). Owning-cell blob cleanup is async
-  // via the cell's existing GC; we don't try to coordinate here.
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM checkpoints_index WHERE id = ?1 AND org_id = ?2`).bind(cpID, caller.orgID).run();
-  return new Response(null, { status: 204 });
-}
-
-// ── custom domain (CF Custom Hostnames API) ──────────────────────────────
-
-interface CFCustomHostname {
-  id: string;
-  status: string;
-  ssl: { status: string; txt_name?: string; txt_value?: string; validation_records?: { name: string; value: string }[] };
-  ownership_verification?: { name: string; value: string };
-}
-
-async function cfAPI(env: DashboardEnv, method: string, path: string, body?: any): Promise<Response> {
-  return fetch(`https://api.cloudflare.com/client/v4${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${env.CF_API_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-}
-
-async function handleSetCustomDomain(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const body = await req.json<{ domain?: string }>().catch(() => ({} as { domain?: string }));
-  const domain = (body.domain ?? "").trim().toLowerCase();
-  if (!domain) return json({ error: "domain required" }, 400);
-
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
-  }
-  const r = await cfAPI(env, "POST", `/zones/${env.CF_ZONE_ID}/custom_hostnames`, {
-    hostname: domain,
-    ssl: { method: "txt", type: "dv" },
-  });
-  if (!r.ok) return json({ error: `Cloudflare API: ${r.status} ${await r.text()}` }, 502);
-  const data = (await r.json<{ result: CFCustomHostname }>()).result;
-
-  const verifyName = data.ownership_verification?.name ?? null;
-  const verifyValue = data.ownership_verification?.value ?? null;
-  let sslName: string | null = null;
-  let sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
-
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET custom_domain = ?1, cf_hostname_id = ?2, domain_verification_status = ?3, domain_ssl_status = ?4,
-                     verification_txt_name = ?5, verification_txt_value = ?6, ssl_txt_name = ?7, ssl_txt_value = ?8,
-                     updated_at = ?9
-       WHERE id = ?10`,
-  ).bind(domain, data.id, data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
-}
-
-async function handleDeleteCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (org?.cf_hostname_id) {
-    await cfAPI(env, "DELETE", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`).catch(() => {});
-  }
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET custom_domain = NULL, cf_hostname_id = NULL,
-                     domain_verification_status = 'none', domain_ssl_status = 'none',
-                     verification_txt_name = NULL, verification_txt_value = NULL,
-                     ssl_txt_name = NULL, ssl_txt_value = NULL, updated_at = ?1
-       WHERE id = ?2`,
-  ).bind(Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
-}
-
-async function handleRefreshCustomDomain(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
-  if (!env.CF_API_TOKEN || !env.CF_ZONE_ID) return json({ error: "Cloudflare not configured" }, 503);
-  const org = await env.OPENCOMPUTER_DB.prepare(`SELECT cf_hostname_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ cf_hostname_id: string | null }>();
-  if (!org?.cf_hostname_id) return json({ error: "no custom domain configured" }, 400);
-  const r = await cfAPI(env, "GET", `/zones/${env.CF_ZONE_ID}/custom_hostnames/${org.cf_hostname_id}`);
-  if (!r.ok) return json({ error: `Cloudflare API: ${r.status}` }, 502);
-  const data = (await r.json<{ result: CFCustomHostname }>()).result;
-
-  const verifyName = data.ownership_verification?.name ?? null;
-  const verifyValue = data.ownership_verification?.value ?? null;
-  let sslName: string | null = null, sslValue: string | null = null;
-  if (data.ssl.txt_name) { sslName = data.ssl.txt_name; sslValue = data.ssl.txt_value ?? null; }
-  else if (data.ssl.validation_records?.[0]) { sslName = data.ssl.validation_records[0].name; sslValue = data.ssl.validation_records[0].value; }
-
-  await env.OPENCOMPUTER_DB.prepare(
-    `UPDATE orgs SET domain_verification_status = ?1, domain_ssl_status = ?2,
-                     verification_txt_name = ?3, verification_txt_value = ?4,
-                     ssl_txt_name = ?5, ssl_txt_value = ?6, updated_at = ?7
-       WHERE id = ?8`,
-  ).bind(data.status, data.ssl.status, verifyName, verifyValue, sslName, sslValue, Math.floor(Date.now() / 1000), caller.orgID).run();
-  const updated = await env.OPENCOMPUTER_DB.prepare(`SELECT * FROM orgs WHERE id = ?1`).bind(caller.orgID).first<OrgRow>();
-  return json(updated ? shapeOrg(updated) : null);
 }
 
 // ── credits + billing ────────────────────────────────────────────────────
@@ -982,80 +620,6 @@ async function workosUpdateOrg(env: DashboardEnv, workosOrgID: string, name: str
   });
 }
 
-// Proxy /api/dashboard/v3/* → sessions-api /v3/*, asserting the logged-in OC org
-// via a signed org-token in X-OC-Org-Token (a distinct header so /v3 doesn't
-// mistake it for a bearer client token). Forwards only what /v3 needs (never the
-// dashboard cookie); streams the response through unchanged so SSE passes back.
-async function proxyToV3(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  sub: string,
-): Promise<Response> {
-  if (!env.OC_ORG_TOKEN_SECRET) {
-    return json({ error: "agent sessions not configured" }, 503);
-  }
-  const base = (env.SESSIONS_API_URL ?? "https://api.opencomputer.dev").replace(
-    /\/$/,
-    "",
-  );
-  const url = new URL(req.url);
-  const target = base + sub + url.search;
-  const orgToken = await mintOrgToken(env.OC_ORG_TOKEN_SECRET, caller.orgID, caller.userID);
-
-  const headers = new Headers();
-  headers.set("x-oc-org-token", orgToken);
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
-  const accept = req.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-  const lastEventID = req.headers.get("last-event-id");
-  if (lastEventID) headers.set("last-event-id", lastEventID);
-  // Forward client idempotency keys so dashboard create-session / steer are safe
-  // to retry end-to-end (sessions-api dedups on this header).
-  const idem = req.headers.get("idempotency-key");
-  if (idem) headers.set("idempotency-key", idem);
-
-  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.arrayBuffer(); // binary-safe — req.text() UTF-8-mangles zip/binary uploads
-  }
-  return fetch(target, init);
-}
-
-async function proxyToBrowserAPI(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  upstreamPath: string,
-): Promise<Response> {
-  if (!env.BROWSER_API_SECRET) {
-    return json({ error: "browser sessions proxy unavailable: browser API secret not configured" }, 503);
-  }
-
-  const base = (env.BROWSER_API_URL ?? "https://browser.opencomputer.dev").replace(/\/+$/, "");
-  const url = new URL(req.url);
-  const target = `${base}${upstreamPath}${url.search}`;
-
-  const headers = new Headers();
-  headers.set("authorization", `Bearer ${env.BROWSER_API_SECRET}`);
-  headers.set("x-opencomputer-org-id", caller.orgID);
-  headers.set("x-opencomputer-user-id", caller.userID);
-  const ct = req.headers.get("content-type");
-  if (ct) headers.set("content-type", ct);
-  const accept = req.headers.get("accept");
-  if (accept) headers.set("accept", accept);
-  const range = req.headers.get("range");
-  if (range) headers.set("range", range);
-
-  const init: RequestInit = { method: req.method, headers, redirect: "manual" };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.arrayBuffer(); // binary-safe — req.text() UTF-8-mangles zip/binary uploads
-  }
-
-  return fetch(target, init);
-}
-
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 export async function handleDashboard(
@@ -1082,8 +646,8 @@ export async function handleDashboard(
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
     if (sub === "/managed-agents/sessions" && method === "POST") {
       try {
-        // Dispatch-free re-check (DashboardEnv has no cell secrets): a fresh
-        // halt is still hibernated by the webhook/reconciler.
+        // Re-check Autumn and re-project D1 (the same projection projectOrg
+        // writes; it no longer dispatches anywhere since 097 step 7.2).
         const billing = await enableManagedBilling(
           env,
           caller.orgID,
@@ -1122,47 +686,6 @@ export async function handleDashboard(
     );
   }
 
-  // ── Durable Agent Sessions (/v3) — proxy to sessions-api ────────────────
-  // Cookie-gated above. We inject OC_V3_KEY downstream so the osb_ key never
-  // reaches the browser. (/v3 is per-key today, so this is that key's
-  // workspace; org-scoping is a later refinement.)
-  if (sub === "/v3" || sub.startsWith("/v3/")) {
-    return proxyToV3(req, env, caller, sub);
-  }
-
-  // ── Browser Sessions — proxy to the dedicated browser Worker ───────────
-  if (sub === "/browsers" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browsers");
-  if (sub === "/browser-usage" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/browser-usage");
-  {
-    const m = sub.match(/^\/browsers\/([^/]+)\/replays\/([^/]+)$/);
-    if (m && method === "GET") {
-      return proxyToBrowserAPI(
-        req,
-        env,
-        caller,
-        `/v1/browsers/${encodeURIComponent(m[1])}/replays/${encodeURIComponent(m[2])}`,
-      );
-    }
-  }
-  {
-    const m = sub.match(/^\/browsers\/([^/]+)$/);
-    if (m && (method === "GET" || method === "DELETE")) {
-      return proxyToBrowserAPI(req, env, caller, `/v1/browsers/${encodeURIComponent(m[1])}`);
-    }
-  }
-  if (sub === "/browser-profiles" && method === "GET") return proxyToBrowserAPI(req, env, caller, "/v1/profiles");
-
-  // ── Sandbox lifecycle webhooks ─────────────────────────────────────────
-  // Reuse the public /api/webhooks handler with the cookie-derived org, so the
-  // dashboard manages destinations/deliveries org-scoped without an osb_ key in
-  // the browser. The handler parses the path from the url arg; rewrite it back
-  // to /api/webhooks/*. env carries the Svix bindings at runtime.
-  if (sub === "/webhooks" || sub.startsWith("/webhooks/")) {
-    const whUrl = new URL(req.url);
-    whUrl.pathname = "/api" + sub;
-    return handleWebhooksAPI(req, env as unknown as WebhookEnv, caller, whUrl);
-  }
-
   // ── identity / org ─────────────────────────────────────────────────────
   if (sub === "/me" && method === "GET") return handleMe(req, env, caller);
   if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, caller);
@@ -1182,20 +705,9 @@ export async function handleDashboard(
     if (m && method === "DELETE") return handleRevokeInvitation(req, env, caller, m[1]);
   }
   if (sub === "/org/credits" && method === "GET") return handleGetCredits(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "PUT") return handleSetCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain" && method === "DELETE") return handleDeleteCustomDomain(req, env, caller);
-  if (sub === "/org/custom-domain/refresh" && method === "POST") return handleRefreshCustomDomain(req, env, caller);
-
-  // ── Agent Hook exposure alerts ──────────────────────────────────────────
-  if (sub === "/agent-security-notifications" && method === "GET") {
-    return listAgentSecurityNotifications(req, env, caller);
-  }
-  {
-    const m = sub.match(/^\/agent-security-notifications\/(hse_[0-9a-f]{24})\/acknowledge$/);
-    if (m && method === "POST") {
-      return acknowledgeAgentSecurityNotification(env, caller, m[1]);
-    }
-  }
+  if (sub === "/github-star" && method === "GET") return handleGitHubStarState(env, caller.orgID);
+  if (sub === "/github-star/start" && method === "POST") return handleGitHubStarStart(env, caller.orgID);
+  if (sub === "/github-star/claim" && method === "POST") return handleGitHubStarClaim(env, caller.orgID);
 
   // ── api keys ───────────────────────────────────────────────────────────
   if (sub === "/api-keys" && method === "GET") return handleListAPIKeys(req, env, caller);
@@ -1206,91 +718,6 @@ export async function handleDashboard(
     if (m && method === "PATCH") return handleRenameAPIKey(req, env, caller, m[1]);
   }
 
-  // ── sessions: cross-cell list, then per-cell proxy ─────────────────────
-  if (sub === "/sessions" && method === "GET") return handleListSessions(req, env, caller);
-  {
-    const m = sub.match(/^\/sessions\/([^/]+)(\/.*)?$/);
-    if (m) {
-      const sandboxID = m[1];
-      const rest = m[2] ?? ""; // "" means /sessions/:id only
-      const target = await sandboxCell(env, sandboxID);
-      if (!target) return json({ error: "sandbox not found" }, 404);
-      if (target.org_id !== caller.orgID) return json({ error: "sandbox not in your org" }, 403);
-      const cell = { cell_id: target.cell_id, base_url: target.base_url };
-      const cellPath = `/internal/dashboard/sessions/${sandboxID}${rest}`;
-      // WebSocket on PTY GET — anything else is a regular HTTP proxy.
-      if (req.headers.get("upgrade")?.toLowerCase() === "websocket" && /^\/pty\/[^/]+$/.test(rest)) {
-        return proxyWebSocket(req, env, caller, cell, cellPath);
-      }
-      return proxyToCell(req, env, caller, cell, cellPath);
-    }
-  }
-
-  // ── checkpoints ───────────────────────────────────────────────────────
-  if (sub === "/checkpoints" && method === "GET") return handleListCheckpoints(req, env, caller);
-  {
-    const m = sub.match(/^\/checkpoints\/([^/]+)$/);
-    if (m && method === "DELETE") return handleDeleteCheckpoint(req, env, caller, m[1]);
-  }
-
-  // ── images: cross-cell list from D1 images_index ───────────────────────
-  // CP emits image_cache_ready / image_cache_deleted events; events-ingest
-  // upserts/deletes this table. The dashboard's Images page used to proxy
-  // to the user's home_cell, which broke cross-cell visibility — building
-  // a snapshot on cell A wouldn't show in the dashboard if the user later
-  // moved to cell B. D1 is now authoritative.
-  //
-  // Mutations (DELETE) still need to land on the owning cell — only that
-  // cell has the underlying bytes/checkpoint to clean up — so DELETE is
-  // routed to the cell that owns the row.
-  if (sub === "/images" && method === "GET") {
-    return handleListImages(env, caller);
-  }
-  {
-    const m = sub.match(/^\/images\/([^/]+)$/);
-    if (m && method === "DELETE") {
-      return handleDeleteImage(req, env, caller, m[1]);
-    }
-  }
-  {
-    const m = sub.match(/^\/snapshots\/([^/]+)$/);
-    if (m && method === "DELETE") {
-      return handleDeleteSnapshot(req, env, caller, decodeURIComponent(m[1]));
-    }
-  }
-
-  // ── agents: proxy to home cell (cell-side hits external agents service) ─
-  if (sub === "/agents" || sub.startsWith("/agents/")) {
-    if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
-    const cell = await homeCell(env, caller.orgID);
-    if (!cell) return json({ error: "home cell unavailable" }, 503);
-    return proxyToCell(req, env, caller, cell, `/internal/dashboard${sub}`);
-  }
-
-  // ── sandboxes: one-click create from the dashboard → the org's home cell.
-  // Reuses the cap-token /internal/sandboxes/create path (same token shape the
-  // /api/sandboxes create mints); the cell stamps ownership from the token's org.
-  if (sub === "/sandboxes" && method === "POST") {
-    const cell = await homeCell(env, caller.orgID);
-    if (!cell) return json({ error: "home cell unavailable" }, 503);
-    return proxyToCell(req, env, caller, cell, "/internal/sandboxes/create");
-  }
-
-  // ── sandbox preview URLs: expose/list/unexpose a port on a running sandbox.
-  // Proxies to the public /api/sandboxes/:id/preview, which accepts this same
-  // edge cap-token (PGAPIKeyMiddleware validates it and sets the org), so no
-  // cell-side handler is needed. POST create, GET list, DELETE /:port unexpose.
-  {
-    const pv = sub.match(/^\/sandboxes\/([^/]+)\/preview(?:\/(\d+))?$/);
-    if (pv) {
-      const cell = await homeCell(env, caller.orgID);
-      if (!cell) return json({ error: "home cell unavailable" }, 503);
-      const cellPath = pv[2]
-        ? `/api/sandboxes/${pv[1]}/preview/${pv[2]}`
-        : `/api/sandboxes/${pv[1]}/preview`;
-      return proxyToCell(req, env, caller, cell, cellPath);
-    }
-  }
   if (sub === "/billing/agent-subscriptions" && method === "GET") return handleListAgentSubscriptions(req, env, caller);
 
   // /billing — basic billing read used by the dashboard billing page.
@@ -1389,9 +816,6 @@ export async function handleDashboard(
   if (sub === "/billing/invoices" && method === "GET") {
     return handleBillingInvoices(req, env, caller);
   }
-  if (sub === "/usage/sandboxes" && method === "GET") {
-    return handleSandboxUsage(req, env, caller);
-  }
   if (sub === "/billing/autumn" && method === "GET") {
     return handleAutumnBilling(req, env, caller);
   }
@@ -1418,96 +842,6 @@ export async function handleDashboard(
   }
 
   return json({ error: `not found: ${method} ${sub}` }, 404);
-}
-
-// ── Images (cross-cell via D1 images_index) ────────────────────────────
-
-interface ImagesRow {
-  id: string;
-  org_id: string;
-  owner_cell_id: string;
-  content_hash: string;
-  checkpoint_id: string | null;
-  name: string | null;
-  manifest: string;
-  status: string;
-  created_at: number;
-  last_used_at: number;
-}
-
-async function handleListImages(env: DashboardEnv, caller: Caller): Promise<Response> {
-  const { results } = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT id, org_id, owner_cell_id, content_hash, checkpoint_id, name, manifest, status, created_at, last_used_at
-       FROM images_index WHERE org_id = ?1 ORDER BY created_at DESC LIMIT 200`,
-  )
-    .bind(caller.orgID)
-    .all<ImagesRow>();
-  const out = (results ?? []).map((r) => {
-    let manifest: unknown = {};
-    try { manifest = JSON.parse(r.manifest); } catch { /* keep empty */ }
-    return {
-      id: r.id,
-      orgId: r.org_id,
-      cellId: r.owner_cell_id,
-      contentHash: r.content_hash,
-      checkpointId: r.checkpoint_id,
-      name: r.name,
-      manifest,
-      status: r.status,
-      createdAt: new Date(r.created_at * 1000).toISOString(),
-      lastUsedAt: new Date(r.last_used_at * 1000).toISOString(),
-    };
-  });
-  return json(out);
-}
-
-async function handleDeleteImage(req: Request, env: DashboardEnv, caller: Caller, imageID: string): Promise<Response> {
-  // Look up owning cell to forward the DELETE to (bytes + checkpoint live there).
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id, name FROM images_index WHERE id = ?1 AND org_id = ?2`,
-  )
-    .bind(imageID, caller.orgID)
-    .first<{ owner_cell_id: string; name: string | null }>();
-  if (!row) return json({ error: "image not found" }, 404);
-  if (!row.name) return json({ error: "auto-cached images are managed by the cell — only named snapshots can be deleted via dashboard" }, 400);
-
-  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, row.name);
-}
-
-async function handleDeleteSnapshot(req: Request, env: DashboardEnv, caller: Caller, name: string): Promise<Response> {
-  const row = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT owner_cell_id FROM images_index WHERE name = ?1 AND org_id = ?2`,
-  )
-    .bind(name, caller.orgID)
-    .first<{ owner_cell_id: string }>();
-  if (!row) return json({ error: "snapshot not found" }, 404);
-
-  return deleteSnapshotOnCell(req, env, caller, row.owner_cell_id, name);
-}
-
-async function deleteSnapshotOnCell(
-  req: Request,
-  env: DashboardEnv,
-  caller: Caller,
-  ownerCellID: string,
-  name: string,
-): Promise<Response> {
-  // Find the cell's base_url and forward via tunnel.
-  const cell = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT base_url FROM cells WHERE cell_id = ?1`,
-  )
-    .bind(ownerCellID)
-    .first<{ base_url: string }>();
-  if (!cell) return json({ error: "owning cell not registered" }, 503);
-
-  // Reuse proxyToCell so the cap-token / cookie auth chain handles auth.
-  return proxyToCell(
-    req,
-    env,
-    caller,
-    { cell_id: ownerCellID, base_url: cell.base_url },
-    `/internal/dashboard/snapshots/${encodeURIComponent(name)}`,
-  );
 }
 
 // ── Stripe helpers ─────────────────────────────────────────────────────
@@ -1588,79 +922,6 @@ async function handleAutumnPortal(req: Request, env: DashboardEnv, caller: { org
   }
 }
 
-// ── Per-sandbox usage breakdown ──────────────────────────────────────────
-
-// Per-sandbox DISPLAY rate for PREPAID (autumn) orgs only — this breakdown is
-// rendered solely in the autumn billing view, and this constant has exactly one
-// consumer (handleSandboxUsage below). It is intentionally decoupled from
-// internal/billing/pricing.go (legacy billing): the source of truth for prepaid
-// charges is the Autumn `credits` credit-schema (credit_cost per compute
-// feature), and these values MUST mirror it exactly or the breakdown won't
-// reconcile with what's actually deducted. Current basis: $0.06/GB-hour
-// (0.00001666666666 per GB-second × the tier's GB). Change the Autumn schema →
-// change these too.
-const AUTUMN_TIER_RATE_PER_SEC: Record<number, number> = {
-  1024: 0.00001666666666,
-  4096: 0.00006666666664,
-  8192: 0.00013333333328,
-  16384: 0.00026666666656,
-  32768: 0.00053333333312,
-  65536: 0.00106666666624,
-};
-
-// GET /api/dashboard/usage/sandboxes?days=N — per-sandbox compute cost over a
-// recent window, for billing transparency. Sourced from D1 usage_samples
-// (global across cells); disk overage is excluded (samples carry no disk size),
-// so this is compute cost only. usage_samples is short-lived, hence the window.
-async function handleSandboxUsage(req: Request, env: DashboardEnv, caller: { orgID: string }): Promise<Response> {
-  const url = new URL(req.url);
-  let days = Number.parseInt(url.searchParams.get("days") ?? "30", 10);
-  if (!Number.isFinite(days) || days < 1) days = 30;
-  if (days > 90) days = 90;
-  const cutoffMs = (Math.floor(Date.now() / 1000) - days * 86400) * 1000;
-
-  const rows = await env.OPENCOMPUTER_DB.prepare(
-    `SELECT u.sandbox_id AS sandbox_id, u.memory_mb AS memory_mb, SUM(u.interval_s) AS secs,
-            MAX(si.status) AS status, MAX(si.created_at) AS created_at
-       FROM usage_samples u
-       LEFT JOIN sandboxes_index si ON si.id = u.sandbox_id
-      WHERE u.org_id = ?1 AND u.ts >= ?2
-      GROUP BY u.sandbox_id, u.memory_mb`,
-  )
-    .bind(caller.orgID, cutoffMs)
-    .all<{ sandbox_id: string; memory_mb: number; secs: number; status: string | null; created_at: number | null }>();
-
-  // Fold per-(sandbox, tier) rows into per-sandbox totals.
-  const bySandbox = new Map<string, { costCents: number; seconds: number; status: string | null; createdAt: number | null }>();
-  for (const r of rows.results ?? []) {
-    const rate = AUTUMN_TIER_RATE_PER_SEC[r.memory_mb] ?? 0;
-    const secs = r.secs ?? 0;
-    const cur = bySandbox.get(r.sandbox_id) ?? { costCents: 0, seconds: 0, status: r.status, createdAt: r.created_at };
-    cur.costCents += secs * rate * 100;
-    cur.seconds += secs;
-    if (cur.status == null) cur.status = r.status;
-    if (cur.createdAt == null) cur.createdAt = r.created_at;
-    bySandbox.set(r.sandbox_id, cur);
-  }
-
-  const sandboxes = [...bySandbox.entries()]
-    .map(([sandboxId, v]) => ({
-      sandboxId,
-      status: v.status ?? "deleted",
-      createdAt: v.createdAt ?? undefined,
-      seconds: Math.round(v.seconds),
-      // Keep FRACTIONAL cents. Rounding each sandbox to whole cents here meant a
-      // cheap/short sandbox (e.g. 4GB for ~15 min ≈ 0.5¢) showed $0.00, and the
-      // total summed already-zeroed rows — so a page of real usage read $0.00.
-      // The frontend formats the precision for display.
-      costCents: v.costCents,
-    }))
-    .sort((a, b) => b.costCents - a.costCents);
-
-  const totalCents = sandboxes.reduce((s, x) => s + x.costCents, 0);
-  return json({ windowDays: days, totalCents, sandboxes });
-}
-
 // ── Autumn prepaid billing ───────────────────────────────────────────────
 
 // Concurrency plans the user can self-serve subscribe to. Mirrors
@@ -1720,8 +981,9 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
   const creditBreakdown = summarizeAutumnCreditBalance(r.customer, usagePlan);
   const plan = summarizeWorkMinutePlan(r.customer);
   const billingState = await env.OPENCOMPUTER_DB.prepare(
-    "SELECT halt_reason, payment_past_due_at, trial_started_at FROM orgs WHERE id = ?1",
+    "SELECT halt_reason, payment_past_due_at, trial_started_at, max_concurrent_sandboxes FROM orgs WHERE id = ?1",
   ).bind(caller.orgID).first<{
+    max_concurrent_sandboxes: number | null;
     halt_reason: string | null;
     payment_past_due_at: number | null;
     trial_started_at: number | null;
@@ -1774,7 +1036,7 @@ async function handleAutumnBilling(_req: Request, env: DashboardEnv, caller: { o
         ? null
         : new Date(creditBreakdown.planResetsAt).toISOString(),
     },
-    maxConcurrentSandboxes: r.maxConcurrent,
+    maxConcurrentSandboxes: billingState?.max_concurrent_sandboxes ?? 0,
     concurrencyPlan,
     usagePlan: plan.usagePlan,
     isHalted: r.halted,

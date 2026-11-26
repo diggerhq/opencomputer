@@ -8,8 +8,6 @@
 //
 // Design + rationale: opencomputer .agents/work/deferred-actions.md
 import { z } from 'zod'
-import { createAgent } from '@/api/client'
-import { DEFAULT_RUNTIME, defaultModelFor } from '@/lib/runtimes'
 
 export const ActionEnvelopeSchema = z.object({
   v: z.literal(1),
@@ -56,51 +54,7 @@ export type ActionResult = {
 }
 export type ActionHandler = (params: unknown) => Promise<ActionResult>
 
-// Cap kept in sync with the edge safeReturnTo length limit — a longer prompt
-// would make the /do?action= URL exceed what round-trips through WorkOS `state`
-// on the anonymous signup path (see cloudflare-workers/api-edge/src/index.ts).
-export const AgentPrefillParamsSchema = z.object({
-  prompt: z.string().trim().min(1).max(1000),
-})
-
-// Deterministic agent name from the prompt so a retry — or the same link
-// clicked twice — resolves to the SAME (owner, name) and the create-or-get
-// endpoint returns the existing agent instead of spawning a duplicate.
-// /v3/agents dedupes on (owner, name); it has no idempotency-key path.
-function deriveAgentName(prompt: string): string {
-  const slug = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32)
-    .replace(/-+$/g, '')
-  let h = 0
-  for (let i = 0; i < prompt.length; i++) h = (Math.imul(h, 31) + prompt.charCodeAt(i)) | 0
-  const suffix = (h >>> 0).toString(36)
-  return `${slug || 'agent'}-${suffix}`
-}
-
-// agent_prefill: create the agent (managed billing — free, zero-config for a
-// fresh org) and land on its sessions tab with the composer prefilled. It does
-// NOT start a session — the first turn spends credits, so it waits for an
-// explicit keypress. This also makes drive-by links harmless (a hostile link
-// can create a free agent at worst, never spend money).
-const agentPrefill: ActionHandler = async (params) => {
-  const { prompt } = AgentPrefillParamsSchema.parse(params)
-  const agent = await createAgent({
-    name: deriveAgentName(prompt),
-    prompt,
-    model: defaultModelFor(DEFAULT_RUNTIME),
-    runtime: DEFAULT_RUNTIME,
-    credential: 'managed',
-  })
-  return {
-    navigateTo: `/agents/${agent.id}/sessions`,
-    navigateState: { composerPrefill: prompt },
-    analytics: { agent_id: agent.id },
-  }
-}
-
-export const actionHandlers: Record<string, ActionHandler> = {
-  agent_prefill: agentPrefill,
-}
+// No action types are registered: the only one (agent_prefill) created a
+// Durable Agent Sessions agent, which has been removed. Unknown types render the
+// neutral "unsupported link" state.
+export const actionHandlers: Record<string, ActionHandler> = {}

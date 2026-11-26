@@ -1,0 +1,21 @@
+{"seq":1,"type":"message.received","turnId":"tn#1","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ndo the thing","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":2,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":null,"to":"claude-opus-5-5"}}}}
+{"seq":3,"type":"turn.started","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
+{"seq":5,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"ev#3","parentCallId":null,"text":"API Error: no such model"}}
+{"seq":6,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":10,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":null,"firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":7,"type":"turn.failed","turnId":"tn#1","actor":null,"data":{"error":{"code":"model_unavailable","message":"no such model"}}}
+{"seq":8,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}
+{"seq":9,"type":"message.received","turnId":"tn#4","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nagain","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":10,"type":"turn.started","turnId":"tn#4","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":11,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"idle","to":"running"}}
+{"seq":12,"type":"message.completed","turnId":"tn#4","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"Part"}}
+{"seq":13,"type":"turn.failed","turnId":"tn#4","actor":null,"data":{"error":{"code":"runtime_failed","message":"the agent process ended during the turn"}}}
+{"seq":14,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}
+{"seq":15,"type":"message.received","turnId":"tn#5","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nonce more","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":16,"type":"turn.started","turnId":"tn#5","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":17,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"idle","to":"running"}}
+{"seq":18,"type":"message.completed","turnId":"tn#5","actor":null,"data":{"blockId":"1","parentCallId":null,"text":"Back."}}
+{"seq":19,"type":"usage.recorded","turnId":"tn#5","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.0123","firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":20,"type":"turn.completed","turnId":"tn#5","actor":null,"data":{"text":"Back.","durationMs":1000,"silent":false}}
+{"seq":21,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

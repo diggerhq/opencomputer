@@ -1,0 +1,52 @@
+DESCRIPTION >
+    Calvin telemetry events (work 054): one row per event in the shared envelope, from the gateway (direct) and from hosts and runners (through the collector). `data` is the JSON string of the event's allowlisted scalars. Delivery is at least once: deduplicate with `LIMIT 1 BY event_id`.
+
+TOKEN "calvin_append_gateway" APPEND
+TOKEN "calvin_append_collector" APPEND
+TOKEN "calvin_read" READ
+
+SCHEMA >
+    `schema_version` UInt8 `json:$.schema_version`,
+    `event_id` String `json:$.event_id`,
+    `event_name` LowCardinality(String) `json:$.event_name`,
+    `occurred_at` DateTime64(3) `json:$.occurred_at`,
+    `service_name` LowCardinality(String) `json:$.service_name`,
+    `service_version` LowCardinality(String) `json:$.service_version`,
+    `region` LowCardinality(String) `json:$.region`,
+    `synthetic` Bool `json:$.synthetic`,
+    `trace_id` String `json:$.trace_id` DEFAULT '',
+    `span_id` String `json:$.span_id` DEFAULT '',
+    `parent_span_id` String `json:$.parent_span_id` DEFAULT '',
+    `turn_id` String `json:$.turn_id` DEFAULT '',
+    `session_key` String `json:$.session_key` DEFAULT '',
+    `gateway_session_id` String `json:$.gateway_session_id` DEFAULT '',
+    `dispatch_id` String `json:$.dispatch_id` DEFAULT '',
+    `host_id` String `json:$.host_id` DEFAULT '',
+    `org_id` String `json:$.org_id` DEFAULT '',
+    `surface` LowCardinality(String) `json:$.surface` DEFAULT '',
+    `surface_workspace_id` String `json:$.surface_workspace_id` DEFAULT '',
+    `conversation_id` String `json:$.conversation_id` DEFAULT '',
+    `person_id` String `json:$.person_id` DEFAULT '',
+    `sent_at` Nullable(DateTime64(3)) `json:$.sent_at`,
+    `harness` LowCardinality(String) `json:$.harness` DEFAULT '',
+    `provider` LowCardinality(String) `json:$.provider` DEFAULT '',
+    `model` LowCardinality(String) `json:$.model` DEFAULT '',
+    `tier` LowCardinality(String) `json:$.tier` DEFAULT '',
+    `substrate` LowCardinality(String) `json:$.substrate` DEFAULT '',
+    `path` LowCardinality(String) `json:$.path` DEFAULT '',
+    `tool_call_id` String `json:$.tool_call_id` DEFAULT '',
+    `tool_name` LowCardinality(String) `json:$.tool_name` DEFAULT '',
+    `capability` LowCardinality(String) `json:$.capability` DEFAULT '',
+    `outcome` LowCardinality(String) `json:$.outcome` DEFAULT '',
+    `duration_ms` Nullable(UInt32) `json:$.duration_ms`,
+    `error_type` LowCardinality(String) `json:$.error_type` DEFAULT '',
+    `error_code` String `json:$.error_code` DEFAULT '',
+    `data` String `json:$.data` DEFAULT '{}'
+
+INDEXES >
+    trace_id_bf trace_id TYPE bloom_filter GRANULARITY 4
+
+ENGINE MergeTree
+ENGINE_PARTITION_KEY toYYYYMM(occurred_at)
+ENGINE_SORTING_KEY session_key, occurred_at, event_id
+ENGINE_TTL toDateTime(occurred_at) + toIntervalDay(90)

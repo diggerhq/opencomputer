@@ -8,17 +8,7 @@ import {
 } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutGrid,
-  Rocket,
-  Bot,
-  MessagesSquare,
-  Monitor,
-  Boxes,
-  Layers,
-  Package,
-  Webhook,
   KeyRound,
-  KeySquare,
   CreditCard,
   Settings,
   LogOut,
@@ -27,7 +17,6 @@ import {
   Menu,
   Loader2,
   ChevronRight,
-  type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { logout } from '@/api/client'
@@ -48,9 +37,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { ThemeToggle } from '@/components/theme-toggle'
-import { AgentSecurityAlertBanner } from '@/components/agent-security-alert'
 import { cn } from '@/lib/utils'
-import { managedAgentsExperimentEnabled } from '@/managed-agents/feature'
 import {
   BillingPill,
   BillingWarningBanner,
@@ -68,74 +55,7 @@ import {
   type ProjectEnvironment,
   type ProjectEnvironmentMode,
 } from '@/managed-agents/project-context'
-import { managedAgentsNav, type NavGroup } from './app-shell-nav'
-
-type NavItem = {
-  to: string
-  label: string
-  icon: LucideIcon
-  end?: boolean
-  preview?: boolean
-}
-type LegacyNavGroup = Omit<NavGroup, 'items'> & { items: NavItem[] }
-
-// Two planes, subtly separated: the durable-agent plane and the raw-compute
-// (sandbox) plane, plus account/org. Groups render with spacing + a small muted
-// label rather than hard dividers.
-const LEGACY_NAV: LegacyNavGroup[] = [
-  {
-    items: [
-      { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
-      { to: '/getting-started', label: 'Getting started', icon: Rocket },
-    ],
-  },
-  {
-    label: 'Agents',
-    items: [
-      { to: '/agents', label: 'Agents', icon: Bot, preview: true },
-      {
-        to: '/sessions',
-        label: 'Sessions',
-        icon: MessagesSquare,
-        preview: true,
-      },
-      {
-        to: '/credentials',
-        label: 'Credentials',
-        icon: KeySquare,
-        preview: true,
-      },
-    ],
-  },
-  {
-    label: 'Browser Sessions',
-    items: [
-      {
-        to: '/browsers',
-        label: 'Browsers',
-        icon: Monitor,
-        preview: true,
-      },
-    ],
-  },
-  {
-    label: 'Sandboxes',
-    items: [
-      { to: '/sandboxes', label: 'Sandboxes', icon: Boxes },
-      { to: '/checkpoints', label: 'Checkpoints', icon: Layers },
-      { to: '/templates', label: 'Templates', icon: Package },
-      { to: '/sandbox-webhooks', label: 'Webhooks', icon: Webhook },
-    ],
-  },
-  {
-    label: 'Account',
-    items: [
-      { to: '/api-keys', label: 'API Keys', icon: KeyRound },
-      { to: '/billing', label: 'Billing', icon: CreditCard },
-      { to: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
-]
+import { managedAgentsNav } from './app-shell-nav'
 
 function Brand() {
   return (
@@ -336,22 +256,21 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const swarmResources = useQuery({
     queryKey: ['managed-memory-resources', projectId],
     queryFn: () =>
-      getManagedMemoryResources({ projectId: projectId!, environment: 'default' }),
-    enabled: Boolean(managedAgentsExperimentEnabled && projectId),
+      getManagedMemoryResources({
+        projectId: projectId!,
+        environment: 'default',
+      }),
+    enabled: Boolean(projectId),
     staleTime: 60_000,
   })
   const swarmEnabled = (swarmResources.data?.resources ?? []).some(
     (resource) => resource.id === SECURITY_FINDINGS_RESOURCE,
   )
-  const nav = managedAgentsExperimentEnabled
-    ? managedAgentsNav({
-        projectId,
-        durableSessionsEnabled: user?.durableSessionsEnabled ?? false,
-        infrastructureEnabled: user?.infrastructureEnabled ?? false,
-        computerEnabled,
-        swarmEnabled,
-      })
-    : LEGACY_NAV
+  const nav = managedAgentsNav({
+    projectId,
+    computerEnabled,
+    swarmEnabled,
+  })
   const activeCollapsibleGroup = nav.find(
     (group) =>
       group.collapsible &&
@@ -443,30 +362,8 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-
       <div className="border-t p-3">
-        {managedAgentsExperimentEnabled ? (
-          <ManagedProfileMenu onNavigate={onNavigate} />
-        ) : (
-          <div className="flex items-center gap-2.5">
-            <span className="bg-secondary text-muted-foreground flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium">
-              {user?.email?.charAt(0).toUpperCase() || '?'}
-            </span>
-            <span className="text-foreground min-w-0 flex-1 truncate text-xs">
-              {user?.email}
-            </span>
-            {user?.capabilities?.signOut !== false ? (
-              <button
-                onClick={() => void logout()}
-                aria-label="Sign out"
-                title="Sign out"
-                className="text-muted-foreground/40 hover:text-foreground flex size-7 shrink-0 items-center justify-center transition-colors"
-              >
-                <LogOut className="size-4" strokeWidth={1.5} aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        )}
+        <ManagedProfileMenu onNavigate={onNavigate} />
       </div>
     </div>
   )
@@ -477,9 +374,7 @@ export default function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
-  const projectId = managedAgentsExperimentEnabled
-    ? projectIdFromPath(location.pathname)
-    : undefined
+  const projectId = projectIdFromPath(location.pathname)
   const project = useQuery({
     queryKey: ['managed-project', projectId],
     queryFn: () => getManagedProject(projectId!),
@@ -580,7 +475,6 @@ export default function AppShell() {
       <div className="flex flex-1 flex-col md:pt-16 md:pl-60">
         <div className="sticky top-14 z-20 md:top-16">
           <BillingWarningBanner />
-          <AgentSecurityAlertBanner />
         </div>
         <HaltModal />
         <main

@@ -1,0 +1,48 @@
+name: Computer Tinybird
+
+# The Tinybird project of computer's telemetry, built and tested against
+# Tinybird Local. Its own workflow because pulling tinybird-local takes a few
+# minutes, which other changes shouldn't wait on. Nothing here deploys, and no
+# job has a secret.
+
+on:
+  pull_request:
+    paths:
+      - computer/telemetry/tinybird/**
+      - .github/workflows/computer-tinybird.yml
+  push:
+    branches: [main]
+    paths:
+      - computer/telemetry/tinybird/**
+      - .github/workflows/computer-tinybird.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: computer-tinybird-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tinybird:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      tinybird:
+        image: tinybirdco/tinybird-local:latest
+        ports:
+          - 7181:7181
+    defaults:
+      run:
+        working-directory: computer/telemetry/tinybird
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install the Tinybird CLI
+        run: curl -sSf https://tinybird.co | sh && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Wait for Tinybird Local
+        run: for _ in $(seq 1 60); do curl -sf http://localhost:7181/tokens >/dev/null && exit 0; sleep 2; done; exit 1
+      - run: tb --local build
+      - run: tb --local test run

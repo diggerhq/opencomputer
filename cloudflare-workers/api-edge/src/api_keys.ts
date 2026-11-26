@@ -30,10 +30,36 @@ export async function createAPIKey(
   return (await createAPIKeyWithHash(env, input)).created;
 }
 
+/**
+ * The scopes a new key names (work 095). The computer API reads them; a key
+ * made before scopes carries `sandbox:*`, which it reads as all of these.
+ * `secrets:write` is deliberately absent: no key gets it without naming it,
+ * and nothing here mints one that does.
+ */
+export const KEY_SCOPES: readonly string[] = [
+  "sessions:read",
+  "sessions:write",
+  "asks:answer",
+  "terminals",
+];
+
+/**
+ * The scopes of the one-hour key a computer session mints. Listed apart from
+ * KEY_SCOPES so that widening people's keys never widens a session's.
+ */
+export const COMPUTER_SESSION_KEY_SCOPES: readonly string[] = [
+  "sessions:read",
+  "sessions:write",
+  "asks:answer",
+  "terminals",
+];
+
 export interface CreateAPIKeyInput {
   orgID: string;
   userID: string;
   name: string;
+  /** Every minter names its scopes; there is no default. */
+  scopes: readonly string[];
   expiresAt?: number;
   sessionKey?: string;
 }
@@ -54,12 +80,17 @@ export async function createAPIKeyWithHash(
   const prefix = plainKey.slice(0, 8);
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
+  const scopes = [...new Set(input.scopes)];
+  if (scopes.length === 0 || scopes.some((scope) => !/^[a-z]+(:[a-z]+)?$/.test(scope))) {
+    // An empty list or a wildcard would read as "everything" downstream.
+    throw new Error("api key scopes must be an explicit list");
+  }
 
   await env.OPENCOMPUTER_DB.prepare(
     `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at, expires_at, session_key)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'sandbox:*', ?7, ?8, ?9)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?10, ?7, ?8, ?9)`,
   )
-    .bind(id, input.orgID, input.userID, hash, prefix, input.name, now, input.expiresAt ?? null, input.sessionKey ?? null)
+    .bind(id, input.orgID, input.userID, hash, prefix, input.name, now, input.expiresAt ?? null, input.sessionKey ?? null, scopes.join(","))
     .run();
 
   const created: CreatedAPIKey = {
@@ -68,7 +99,7 @@ export async function createAPIKeyWithHash(
     name: input.name,
     key: plainKey,
     keyPrefix: prefix,
-    scopes: ["sandbox:*"],
+    scopes,
     createdAt: new Date(now * 1000).toISOString(),
     ...(input.expiresAt !== undefined
       ? { expiresAt: new Date(input.expiresAt * 1000).toISOString() }

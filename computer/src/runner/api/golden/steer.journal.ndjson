@@ -1,0 +1,17 @@
+{"seq":1,"type":"message.received","turnId":"tn#1","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nwrite the docs","ifBusy":"steer","delivery":"started","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":2,"type":"session.updated","turnId":null,"actor":null,"data":{"changes":{"model":{"from":null,"to":"claude-opus-5-5"}}}}
+{"seq":3,"type":"turn.started","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
+{"seq":5,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"Starting on the docs."}}
+{"seq":6,"type":"tool.started","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Bash","callId":"tu_1","parentCallId":null,"title":"Bash(ls docs)","input":{"command":"ls docs"},"inputTruncated":false}}
+{"seq":7,"type":"message.received","turnId":"tn#1","actor":"U2","data":{"input":"[Slack: from name-U2 (<@U2>) in #eng, mentions you]\nalso the changelog","ifBusy":"steer","delivery":"steered","interruptedTurnIds":[],"declinedAskIds":[]}}
+{"seq":8,"type":"tool.completed","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Bash","callId":"tu_1","parentCallId":null,"title":"Bash(ls docs)","output":"index.md","outputTruncated":false,"fileChanges":null,"durationMs":2000}}
+{"seq":9,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"1","parentCallId":null,"text":"And the changelog."}}
+{"seq":10,"type":"message.received","turnId":"tn#3","actor":"usr#2","data":{"input":"[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nstop, do the readme instead","ifBusy":"interrupt","delivery":"started","interruptedTurnIds":["tn#1"],"declinedAskIds":[]}}
+{"seq":11,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":1,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":null,"firstTokenMs":1000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":12,"type":"turn.cancelled","turnId":"tn#1","actor":null,"data":{"reason":"interrupted","forced":false,"input":null}}
+{"seq":13,"type":"turn.started","turnId":"tn#3","actor":null,"data":{"model":"claude-opus-5-5","effort":null,"mode":"default","trigger":"message","subagentId":null}}
+{"seq":14,"type":"message.completed","turnId":"tn#3","actor":null,"data":{"blockId":"2","parentCallId":null,"text":"Readme then."}}
+{"seq":15,"type":"usage.recorded","turnId":"tn#3","actor":null,"data":{"model":"claude-opus-5-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.0123","firstTokenMs":0,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
+{"seq":16,"type":"turn.completed","turnId":"tn#3","actor":null,"data":{"text":"Readme then.","durationMs":0,"silent":false}}
+{"seq":17,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

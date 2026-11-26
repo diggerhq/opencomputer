@@ -117,9 +117,8 @@ export async function getManagedAgentBillingAdmission(
       .first<ManagedAgentCreditRow>();
   let row = await readRow();
   let isHalted = row?.is_halted === 1;
-  // Like the sandbox create/wake gates: a halted Autumn org re-checks the
-  // authoritative balance, so a user who just topped up isn't denied until
-  // the webhook/reconciler catches up.
+  // A halted Autumn org re-checks the authoritative balance, so a user who
+  // just topped up isn't denied until the webhook/reconciler catches up.
   if (isHalted && row?.billing_provider === "autumn" && selfHeal) {
     isHalted = await selfHeal(orgID);
     // The re-check re-projects halt_reason/usage_plan; a still-halted org's

@@ -1,0 +1,84 @@
+DESCRIPTION >
+    Work 084 Q4, "how is the HTTP API doing?", over `[since, until)`. One row per layer (`edge`: api-edge's `edge.request`, the total a caller sees; `blue`: `httpapi.request`, blue's share), route family, method, status class and, at the edge, auth class: n, latency p50/p95/p99, blue's DO time p95 (`do_ms`) and SessionLog time p95 (`log_ms`), 503s, idempotent replays, 429s, long-polls (a `wait_ms` was asked), how many came back empty and their hold time p95. Plus one row per layer `outage` (`computer.unavailable`): outages and the time until the host came back. With `by_key` set, edge rows are also split by API key id (429s by key). Synthetic traffic is excluded unless `include_synthetic`.
+
+TOKEN "calvin_read" READ
+
+NODE ha_requests
+SQL >
+    %
+    SELECT
+        if(event_name = 'edge.request', 'edge', 'blue') AS layer,
+        JSONExtractString(data, 'route') AS route,
+        JSONExtractString(data, 'method') AS method,
+        JSONExtractUInt(data, 'status') AS status,
+        concat(toString(intDiv(JSONExtractUInt(data, 'status'), 100)), 'xx') AS status_class,
+        JSONExtractString(data, 'auth') AS auth,
+        {% if defined(by_key) %} JSONExtractString(data, 'key_id') {% else %} '' {% end %} AS key_id,
+        duration_ms,
+        JSONExtract(data, 'do_ms', 'Nullable(UInt32)') AS do_ms,
+        JSONExtract(data, 'log_ms', 'Nullable(UInt32)') AS log_ms,
+        JSONExtractUInt(data, 'wait_ms') AS wait_ms,
+        JSONExtractBool(data, 'empty') AS empty,
+        JSONExtractBool(data, 'replayed') AS replayed,
+        JSONExtractBool(data, 'rate_limited') OR JSONExtractUInt(data, 'status') = 429 AS rate_limited
+    FROM calvin_events
+    WHERE
+        event_name IN ('edge.request', 'httpapi.request')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+        {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+    LIMIT 1 BY event_id
+
+NODE ha_outages
+SQL >
+    %
+    SELECT count() AS n, round(quantile(0.5)(JSONExtractUInt(data, 'wait_ms'))) AS p50, round(quantile(0.95)(JSONExtractUInt(data, 'wait_ms'))) AS p95,
+        round(quantile(0.99)(JSONExtractUInt(data, 'wait_ms'))) AS p99
+    FROM
+        (
+            SELECT data
+            FROM calvin_events
+            WHERE
+                event_name = 'computer.unavailable'
+                AND occurred_at >= {{ DateTime(since, required=True) }}
+                AND occurred_at < {{ DateTime(until, required=True) }}
+                {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+            LIMIT 1 BY event_id
+        )
+
+NODE endpoint
+SQL >
+    SELECT *
+    FROM
+    (
+    SELECT
+        layer,
+        route,
+        method,
+        status_class,
+        auth,
+        key_id,
+        count() AS n,
+        round(quantile(0.5)(duration_ms)) AS p50,
+        round(quantile(0.95)(duration_ms)) AS p95,
+        round(quantile(0.99)(duration_ms)) AS p99,
+        round(quantile(0.95)(do_ms)) AS do_p95,
+        round(quantile(0.95)(log_ms)) AS log_p95,
+        countIf(status = 503) AS unavailable_503,
+        countIf(replayed) AS replayed,
+        countIf(rate_limited) AS rate_limited,
+        countIf(wait_ms > 0) AS long_polls,
+        countIf(wait_ms > 0 AND empty) AS long_polls_empty,
+        round(quantileIf(0.95)(duration_ms, wait_ms > 0)) AS long_poll_hold_p95
+    FROM ha_requests
+    GROUP BY layer, route, method, status_class, auth, key_id
+    UNION ALL
+    SELECT 'outage' AS layer, '' AS route, '' AS method, '503' AS status_class, '' AS auth, '' AS key_id, n, p50, p95, p99,
+        NULL AS do_p95, NULL AS log_p95, n AS unavailable_503, 0 AS replayed, 0 AS rate_limited, 0 AS long_polls, 0 AS long_polls_empty, NULL AS long_poll_hold_p95
+    FROM ha_outages
+    WHERE n > 0
+    )
+    ORDER BY layer, route, method, status_class, auth, key_id
+
+TYPE ENDPOINT

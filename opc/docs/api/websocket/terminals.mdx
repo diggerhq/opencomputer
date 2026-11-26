@@ -1,0 +1,102 @@
+---
+title: "Terminals"
+description: "Open a shell or run a command in a session's workspace, over the WebSocket."
+---
+
+A terminal is a shell in the session's own container, in its workspace, run as user `agent` (uid 1500), the same user as the session's agent. It is what `opc shell` and `/shell` use. See [Shell](/cli/shell) for a person's view.
+
+- It starts in the workspace's root, with the agent's tools on the `PATH`.
+- It needs the session to be running: its container runs only while the agent does. On a suspended or idle session, `terminals.open` returns `409 conflict` with `reason: "session_not_running"`. [Resume](/api/http/control#resume) the session (`sessions.resume`), or send it a message, then open the terminal again once it is running. `opc shell` does this for you.
+- While it is open, the session does not suspend for being idle. An explicit [suspend](/api/http/control#suspend) closes it.
+- It ends when you close it, when its process exits, or when its connection closes: the shell gets `SIGHUP`, and after 5 seconds `SIGKILL`. It does not survive a reconnect.
+
+## Who can open one
+
+Only the session's owner, or an admin of your organization, can open a terminal in a session. Anyone else gets `403 forbidden` with `reason: "terminal_owner_only"`. An API key needs the `terminals` [scope](/api/authentication#scopes).
+
+A terminal runs inside the session's container, as the session's agent user. It sees this session's workspace and the repositories the session uses, not other sessions' workspaces. Treat opening a terminal like logging in to the session's container.
+
+A terminal's environment is the container's own, plus `TERM`: no session secret is set in it. Because it runs as the agent's user in the agent's container, it can reach whatever this session's agent can.
+
+## terminals.open
+
+```json
+{ "jsonrpc": "2.0", "id": 3, "method": "terminals.open", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "cols": 120, "rows": 40 } }
+```
+
+| Param | Meaning |
+| --- | --- |
+| `sessionId` | |
+| `cols`, `rows` | The terminal's size. Required with `tty`. |
+| `command` | Optional. A command to run with `bash -lc` instead of an interactive shell |
+| `tty` | Optional, default `true`. `false` runs without a pseudo-terminal, for scripts: no echo, no colors, and standard error kept apart from standard output. |
+| `term` | Optional. The `TERM` value. Default `xterm-256color`. |
+
+```json
+{ "jsonrpc": "2.0", "id": 3, "result": { "terminal": { "id": "tm_2m7q9x4c1v8b", "channel": 1, "stderrChannel": null } } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `tm_…`. The `terminalId` the other methods take. |
+| `channel` | Numbers the binary frames of this terminal |
+| `stderrChannel` | A second channel for standard error when `tty` is `false`, else `null` |
+
+A `terminal.opened` event is recorded in the session with who opened it, and `terminal.closed` when it ends. What is typed and printed is not.
+
+## Data
+
+Terminal data travels in binary WebSocket frames, both ways, never in JSON:
+
+| Bytes | Content |
+| --- | --- |
+| 0 to 3 | The channel, an unsigned 32-bit integer, big-endian |
+| 4 onwards | The data, exactly as the terminal produced it |
+
+- From the server: output on `channel`, and standard error on `stderrChannel`.
+- From you: input on `channel`, exactly the bytes a terminal would send, such as `\r` for `Enter` and `\x03` for `Ctrl+C`.
+- Output is sent as it is produced, without buffering for size, and ahead of events, so a keystroke's echo comes back in one round trip.
+- At most 64 KiB per frame, the 4-byte header included.
+
+## terminals.resize
+
+`{ terminalId, cols, rows }`. Send it when the terminal's size changes. The result is `{}`.
+
+## terminals.eof
+
+`{ terminalId }`. Closes the command's standard input, for `tty: false`. With a tty, send `\x04` instead.
+
+## terminals.close
+
+`{ terminalId }`. Hangs up: the shell gets `SIGHUP`, and after 5 seconds `SIGKILL`. The result is `{}`, and `terminal.exited` follows.
+
+## terminal.exited
+
+A notification when the terminal ends, for any reason:
+
+```json
+{ "jsonrpc": "2.0", "method": "terminal.exited", "params": { "terminalId": "tm_2m7q9x4c1v8b", "exitCode": 0, "signal": null } }
+```
+
+All output is sent before `terminal.exited`. `exitCode` is `null` when a signal ended it.
+
+## Speed
+
+| | Target |
+| --- | --- |
+| `opc shell` to a remote prompt | One round trip, plus starting the shell in the session's container. Nothing is started ahead. |
+| A keystroke to its echo | One round trip, and under 1 ms on our side |
+
+## Limits
+
+| | |
+| --- | --- |
+| Open terminals per session, across all connections | 8 |
+| Input | 1 MiB a second per terminal. More is dropped with a `-32000` `rate_limited` error on the next request. |
+
+| Error `data.code` | When |
+| --- | --- |
+| `forbidden` | You are not the session's owner or an admin (`reason: "terminal_owner_only"`), or your key lacks the `terminals` scope (`reason: "missing_scope"`) |
+| `too_many_terminals` | 8 are already open in this session |
+| `conflict` | The session is not running (`reason: "session_not_running"`). Resume it, then open the terminal again. |
+| `terminal_not_found` | The `terminalId` is not open on this connection |

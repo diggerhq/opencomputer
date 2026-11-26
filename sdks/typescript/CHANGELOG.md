@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0
+
+Breaking. The sandbox client is removed; the package keeps only the
+Serverless Agents management client at `@opencomputer/sdk/agents`, which is
+unchanged from 2.3.1.
+
+- The package root (`@opencomputer/sdk`) and `@opencomputer/sdk/node` are no
+  longer exports; importing either fails to resolve. Removed with them:
+  `Sandbox`, `ScalingLockedError`, `PlanLimitError`,
+  `SandboxFamilyLimitError`, `Browser`, `BrowserProfile`,
+  `BrowserProfileAuthCheck`, `SandboxAgent`, `Filesystem`, `Exec`,
+  `ExecTimeoutError`, `Mounts`, `Shell` (`ShellBusyError`,
+  `ShellClosedError`), `Pty`, `Templates`, `Image`, `Snapshots`, the sandbox
+  `Webhooks` and `WebhookDeliveries`, `verifyWebhook` and
+  `WebhookVerificationError`, `SecretStore`, `Usage`, `Tags`,
+  `prewarmConnections`, `SDK_VERSION`, `SDK_VERSION_HEADER`, and their types.
+- The `undici` dependency is dropped; the package has no runtime
+  dependencies.
+- Code that still uses the sandbox client pins `@opencomputer/sdk@2`.
+
 ## 2.3.0
 
 - `@opencomputer/sdk/agents`: questions. `Session.question` is the question

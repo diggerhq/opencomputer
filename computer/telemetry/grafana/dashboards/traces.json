@@ -1,0 +1,194 @@
+{
+  "uid": "calvin-traces",
+  "title": "Calvin · Trace explorer",
+  "tags": [
+    "calvin",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Tinybird",
+        "query": "grafana-clickhouse-datasource",
+        "current": {}
+      },
+      {
+        "type": "textbox",
+        "name": "trace_id",
+        "label": "trace_id",
+        "query": ""
+      },
+      {
+        "type": "textbox",
+        "name": "session_key",
+        "label": "session_key",
+        "query": ""
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Calvin",
+      "type": "dashboards",
+      "tags": [
+        "calvin"
+      ],
+      "asDropdown": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Trace waterfall",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "WITH (SELECT min(sent_at) FROM calvin_events WHERE trace_id = '${trace_id}') AS t0\nSELECT event_name AS name, service_name AS service,\n  toInt64(dateDiff('millisecond', t0, occurred_at)) - toInt64(ifNull(duration_ms, 0)) AS start_ms,\n  toInt64(dateDiff('millisecond', t0, occurred_at)) AS end_ms, duration_ms, outcome, error_type, tool_name, data,\n  occurred_at - toIntervalMillisecond(ifNull(duration_ms, 0)) AS started_at, occurred_at AS ended_at\nFROM (SELECT * FROM calvin_events WHERE trace_id = '${trace_id}' LIMIT 1 BY event_id)\nORDER BY end_ms, start_ms, name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "end_ms"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "marcusolsson-gantt-panel",
+      "title": "Trace gantt (needs the marcusolsson-gantt-panel plugin)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "WITH (SELECT min(sent_at) FROM calvin_events WHERE trace_id = '${trace_id}') AS t0\nSELECT event_name AS name, service_name AS service,\n  toInt64(dateDiff('millisecond', t0, occurred_at)) - toInt64(ifNull(duration_ms, 0)) AS start_ms,\n  toInt64(dateDiff('millisecond', t0, occurred_at)) AS end_ms, duration_ms, outcome, error_type, tool_name, data,\n  occurred_at - toIntervalMillisecond(ifNull(duration_ms, 0)) AS started_at, occurred_at AS ended_at\nFROM (SELECT * FROM calvin_events WHERE trace_id = '${trace_id}' LIMIT 1 BY event_id)\nORDER BY end_ms, start_ms, name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "textField": "name",
+        "startField": "started_at",
+        "endField": "ended_at"
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Turns in session",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sent_at, trace_id, path, outcome, first_visible_ms, overhead_ms, ttft_ms, max_silence_ms\nFROM turns WHERE session_key = '${session_key}' ORDER BY sent_at LIMIT 1 BY turn_id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trace_id"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open trace",
+                    "url": "/d/calvin-traces?var-trace_id=${__data.fields.trace_id}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,290 @@
+[
+ {
+  "step": "send do the thing"
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\ndo the thing",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,error,message,text"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "API Error: no such model"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "⏹ error_max_turns · default · default · 2s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ },
+ {
+  "step": "send again"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nagain",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.6",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Part"
+    }
+   ]
+  }
+ },
+ {
+  "step": "harness dies"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": ":warning: agent process ended: boom"
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.6",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "⏹ crashed · default · default · 2s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ },
+ {
+  "step": "send once more"
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nonce more",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000003",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.11",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000003",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Back."
+    }
+   ],
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · default · 1s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]

@@ -3067,7 +3067,7 @@ test("opencomputer.toml region is optional, accepts Modal regions, and rejects a
   const manifest = (extra: string) =>
     writeFile(
       resolve(root, "opencomputer.toml"),
-      `schema = 1\nid = "cypen"\nname = "Cypen"\n${extra}`,
+      `schema = 1\nid = "acme"\nname = "Acme"\n${extra}`,
     );
   try {
     await manifest("");
@@ -3090,7 +3090,7 @@ test("opencomputer.toml [egress] allow is split into domains and CIDRs and valid
   const manifest = (extra: string) =>
     writeFile(
       resolve(root, "opencomputer.toml"),
-      `schema = 1\nid = "cypen"\nname = "Cypen"\n${extra}`,
+      `schema = 1\nid = "acme"\nname = "Acme"\n${extra}`,
     );
   try {
     await manifest("");
@@ -3100,7 +3100,7 @@ test("opencomputer.toml [egress] allow is split into domains and CIDRs and valid
         'region = "au"',
         "[egress]",
         "allow = [",
-        '  "*.Cypen.io",',
+        '  "*.Acme.example",',
         '  "api.github.com.",',
         '  "203.0.113.10",',
         '  "10.20.0.0/16",',
@@ -3113,7 +3113,7 @@ test("opencomputer.toml [egress] allow is split into domains and CIDRs and valid
     let read = await readManifest(root);
     assert.equal(read.region, "au");
     assert.deepEqual(read.egress, {
-      domains: ["*.cypen.io", "api.github.com"],
+      domains: ["*.acme.example", "api.github.com"],
       cidrs: ["10.20.0.0/16", "2001:db8::/32", "203.0.113.10/32"],
     });
     await manifest('[egress]\nallow = []\n');
@@ -3131,7 +3131,7 @@ test("opencomputer.toml [egress] allow is split into domains and CIDRs and valid
     await manifest('[egress]\nallow = "api.github.com"\n');
     await assert.rejects(readManifest(root), /allow must be a list/);
     await manifest('[egress]\nfixed_ips = "au"\n');
-    assert.deepEqual(await readManifest(root), { schema: 1, id: "cypen", name: "Cypen", fixedIps: "au" });
+    assert.deepEqual(await readManifest(root), { schema: 1, id: "acme", name: "Acme", fixedIps: "au" });
     await manifest('[egress]\nfixed_ips = "au"\nallow = ["api.github.com"]\n');
     read = await readManifest(root);
     assert.equal(read.fixedIps, "au");

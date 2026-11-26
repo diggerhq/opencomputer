@@ -3,8 +3,8 @@
 // API call with it: mint per-org inference keys, read their cumulative spend, push
 // caps, delete on offboard, and read account analytics. The minted inference keys
 // are the per-org billing keys; their plaintext is returned by `POST /keys` exactly
-// ONCE and is never re-fetchable — the edge hands it straight to sessions-api to seal
-// (it is never persisted on the edge). This keeps the "Autumn/OR are edge-native"
+// ONCE and is never re-fetchable — the edge hands it straight to the managed agents
+// backend (blue) to seal (it is never persisted on the edge). This keeps the "Autumn/OR are edge-native"
 // invariant: one OR secret, in one place.
 //
 // Surfaces + behaviours verified live 2026-06-29 (§9.7 spike, token-billing.md):
@@ -40,7 +40,7 @@ export interface OpenRouterKey {
 
 // POST /keys response: the plaintext key (returned ONCE) + the key metadata.
 export interface OpenRouterCreatedKey {
-  key: string; // plaintext inference key — hand to sessions-api, never persist on edge
+  key: string; // plaintext inference key — hand to the managed agents backend, never persist on edge
   data: OpenRouterKey;
 }
 

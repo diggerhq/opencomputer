@@ -1,0 +1,40 @@
+---
+title: "Shell"
+description: "A terminal in the session's workspace, on the computer."
+---
+
+```bash
+opc shell 7f3a
+```
+
+`opc shell [id] [-c <command>] [--no-tty]` opens an interactive shell on the computer, in the session's workspace. It runs inside the session's own container, as user `agent` (uid 1500), the same user the agent runs as. It behaves like `ssh`: your terminal talks straight to the remote shell, with colors, full-screen programs and resizing. `exit` or `Ctrl+D` closes it.
+
+Inside a session, `/shell` does the same and returns to the session screen when the shell exits.
+
+- **Which session.** The id, given in place or with `-s`. Without one, the last session on this machine, but only when standard input is a terminal; a script must pass `-s <id>`.
+- **A session that is not running.** The shell runs in the session's container, which runs only while the agent does. If the session is suspended or has gone idle, `opc shell` wakes it first, as sending a message would, prints `opc: waking session…` on standard error, and opens the shell once it is running, usually within seconds. If it cannot wake the session, it says why and exits, with the exit code of that error; if the session is not running 2 minutes later, it exits with `124`.
+- **How fast.** The shell starts when you open it, so the prompt appears a moment after you press `Enter`. Each keystroke echoes one round trip later.
+- **What you see.** The same files the agent sees, live. Changes you make are visible to the agent at once, and the other way round.
+- **While the agent works.** Allowed. You and the agent share one filesystem, so avoid editing a file the agent is editing.
+- **Its connection.** `opc shell` opens a connection of its own, so a shell never slows the session's stream, and the other way round. `/shell` does the same.
+- **How long it lasts.** Until you exit or the connection ends. A dropped connection ends the shell as with `ssh`: its programs get `SIGHUP`, and whatever is still running 5 seconds later is killed. Use `tmux` on the computer for anything that must survive.
+- **Suspending.** A session with an open shell is not suspended for being idle.
+
+## Who can open one
+
+Only the session's owner, or an admin of the organization. Anyone else gets `opc: only the owner of this session can open a shell in it` and exit code `3`.
+
+A shell runs inside the session's own container, as user `agent` (uid 1500), the same user as the session's agent. It sees what that container holds: this session's workspace and the repositories it uses, not other sessions' workspaces. Its environment is the container's own, plus `TERM`; no session secret is set in it. Because it runs as the agent's user in the agent's container, it can reach whatever this session's agent can.
+
+## Options
+
+| Option | Does |
+| --- | --- |
+| `-s`, `--session <id>` | The session, when not given in place |
+| `-c`, `--command <command>` | Runs one command instead of an interactive shell, prints its output and exits with its exit code |
+| `--no-tty` | No terminal on the remote side, for piping binary output |
+
+```bash
+opc shell 7f3a -c 'git -C billing log --oneline -5'
+opc shell 7f3a -c 'tar -C reports -c q3' --no-tty | tar -x
+```

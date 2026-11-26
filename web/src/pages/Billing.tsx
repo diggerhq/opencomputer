@@ -145,10 +145,6 @@ function PlanTab() {
         <div className="text-foreground text-2xl font-semibold tracking-tight">
           {isPro ? 'Pro' : 'Free'}
         </div>
-        <p className="text-muted-foreground mt-1 text-sm">
-          {billing?.maxConcurrentSandboxes ?? 50} concurrent sandboxes ·{' '}
-          {isPro ? 'all tiers' : 'up to 4 GB / 1 vCPU'}
-        </p>
 
         {isPro &&
         billing?.stripeCreditCents != null &&
@@ -171,13 +167,11 @@ function PlanTab() {
             ) : (
               <p className="text-status-error flex items-center gap-1.5 text-sm">
                 <CircleAlert className="size-4 shrink-0" />
-                Free trial credits exhausted — upgrade to continue using
-                sandboxes
+                Free trial credits exhausted — upgrade to continue
               </p>
             )}
             <p className="text-muted-foreground text-sm">
-              Upgrade to Pro for an additional $30 free credit and larger
-              machine sizes.
+              Upgrade to Pro for an additional $30 free credit.
             </p>
             <Button
               onClick={() => setupMutation.mutate()}
@@ -194,18 +188,6 @@ function PlanTab() {
             Payment method on file — billed monthly via Stripe
           </p>
         ) : null}
-
-        <p className="text-muted-foreground mt-3 text-xs">
-          Need more concurrency?{' '}
-          <a
-            href="https://cal.com/team/digger/opencomputer-founder-chat"
-            target="_blank"
-            rel="noreferrer"
-            className="text-foreground font-medium underline underline-offset-4"
-          >
-            Talk to us
-          </a>
-        </p>
       </Panel>
 
       {isPro || billing?.hasPaymentMethod ? (
@@ -829,7 +811,7 @@ function ModelUsageCard({
       </div>
       <p className="text-muted-foreground mt-2 text-sm">
         Serverless-agent models draw from the same prepaid credits balance as
-        agent runtime and sandboxes.
+        agent runtime.
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div>

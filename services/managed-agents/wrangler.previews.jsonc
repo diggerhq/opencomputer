@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Work 074: the preview URLs' front door. Owns the PreviewDurableObject
+  // namespace; reads computers from `managed-agents` for the asleep path.
+  // Zone setup (wildcard record, certificate, rate-limiting rule) is by hand,
+  // see the work doc's build plan, step 1. Secret: PREVIEW_PLATFORM_KEY, the
+  // same value as in `managed-agents`.
+  "name": "previews",
+  "main": "src/previews/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  // The wildcard does not match the apex, hence two. Tunnel hostnames
+  // (`*.t.example.app`) match the wildcard too; the Worker's own
+  // subrequests to them go to the origin, not back into the Worker.
+  "routes": [
+    { "pattern": "*.example.app/*", "zone_name": "example.app" },
+    { "pattern": "example.app/*", "zone_name": "example.app" }
+  ],
+  "vars": {
+    "PREVIEW_DOMAIN": "example.app"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PREVIEWS", "class_name": "PreviewDurableObject" },
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PreviewDurableObject"] }
+  ],
+  // Logs to Axiom through cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": { "enabled": true }
+}

@@ -11,8 +11,9 @@ use [`@opencomputer/react`](/agents/react) in the browser and
 [`@opencomputer/agent`](/agents/hooks) to define agent behavior.
 
 The client uses web-standard APIs and runs on Cloudflare Workers without
-Node compatibility, Vercel functions, Deno and Node. The package root,
-`@opencomputer/sdk`, provides the separate sandbox client.
+Node compatibility, Vercel functions, Deno and Node. It is the package's
+only entry point: SDK 3.0 removed the sandbox client from the package root,
+`@opencomputer/sdk`.
 
 ```bash
 npm install @opencomputer/sdk

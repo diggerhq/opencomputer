@@ -1,0 +1,34 @@
+#!/bin/sh
+# gh shim for a slack-presence host (work 045): runs the real gh with GH_TOKEN set
+# to a fresh GitHub App installation token from the host agent's token socket
+# (see git-credential-slack-presence). Put this directory first on the runner's PATH.
+# The real gh is $SP_REAL_GH, or the first gh on PATH that is not a slack-presence
+# shim, always run by absolute path. Every shim directory is skipped, not just this
+# one: a runner's PATH can hold the bin/ of two releases (its own, and `current`),
+# and two shims must never exec each other.
+
+self=$(cd "$(dirname "$0")" && pwd -P)
+real=${SP_REAL_GH:-}
+if [ -z "$real" ]; then
+  old_ifs=$IFS; IFS=:
+  for d in $PATH; do
+    case $d in /*) ;; *) continue ;; esac
+    [ -x "$d/gh" ] || continue
+    [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self" ] && continue
+    [ -e "$d/git-credential-slack-presence" ] && continue
+    real=$d/gh; break
+  done
+  IFS=$old_ifs
+fi
+if [ -z "$real" ]; then
+  for c in /usr/bin/gh /usr/local/bin/gh /opt/homebrew/bin/gh; do
+    [ -x "$c" ] && { real=$c; break; }
+  done
+fi
+[ -n "$real" ] || { echo "gh (slack-presence shim): no real gh found; set SP_REAL_GH" >&2; exit 127; }
+
+if token=$("$self/git-credential-slack-presence" token) && [ -n "$token" ]; then
+  GH_TOKEN=$token exec "$real" "$@"
+fi
+echo "gh (slack-presence shim): no token from the host; running gh without one" >&2
+exec "$real" "$@"

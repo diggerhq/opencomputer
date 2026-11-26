@@ -1,0 +1,243 @@
+{
+  "uid": "calvin-cold-path",
+  "title": "Calvin · Cold path",
+  "tags": [
+    "calvin",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Tinybird",
+        "query": "grafana-clickhouse-datasource",
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Calvin",
+      "type": "dashboards",
+      "tags": [
+        "calvin"
+      ],
+      "asDropdown": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Where a new turn's time goes (avg)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, avg(fork_ms) AS fork, avg(launch_ms) AS launch, avg(harness_init_ms) AS harness_init,\n  avg(intro_ms) AS intro, avg(names_ms) AS names, avg(ttft_ms) AS ttft FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path = 'new' GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Where a resume turn's time goes (avg)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(sent_at) AS time, avg(fork_ms) AS fork, avg(launch_ms) AS launch, avg(harness_init_ms) AS harness_init,\n  avg(intro_ms) AS intro, avg(names_ms) AS names, avg(ttft_ms) AS ttft FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND NOT synthetic LIMIT 1 BY turn_id) WHERE path = 'resume' GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Per repository (digest): fork p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT JSONExtractString(data, 'repo') AS repo, count() AS forks, quantile(0.95)(duration_ms) AS p95_ms, quantile(0.95)(JSONExtractFloat(data, 'fetch_ms')) AS fetch_p95_ms,\n  quantile(0.95)(JSONExtractFloat(data, 'worktree_ms')) AS worktree_p95_ms, quantile(0.95)(JSONExtractFloat(data, 'lock_wait_ms')) AS lock_wait_p95_ms\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('fork.repo') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY repo ORDER BY p95_ms DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Name lookups before the prompt p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, quantile(0.95)(duration_ms) AS p95 FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('names.resolved') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Token minting p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, quantile(0.95)(duration_ms) AS p95 FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('token.minted') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

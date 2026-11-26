@@ -1,0 +1,346 @@
+[
+ {
+  "step": "send fix the build"
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nfix the build",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,block,text,message,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "complete"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Looking."
+    },
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "List the sources · $ ls src",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool_result"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "List the sources · $ ls src · a.ts b.ts",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Update(a.ts) · +1 −1 · 1 earlier: ✓ Bash",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool_result"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Update(a.ts) · +1 −1 · 1 earlier: ✓ Bash",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Agent(check tests) · 2 earlier: ✓ Bash · ✓ Edit",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed task"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000002",
+     "title": "Agent(check tests) · continues below ↓",
+     "status": "pending"
+    }
+   ],
+   "session_status": "processing"
+  }
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "1 subagent · 1 running",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "*Subagents* · 1 subagent · 1 running"
+      }
+     ]
+    },
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "⏳ *check tests*  _general_\n0s"
+     },
+     "accessory": {
+      "type": "button",
+      "text": {
+       "type": "plain_text",
+       "text": "Stop"
+      },
+      "action_id": "a:00000003:stop:tk_1",
+      "style": "danger"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool,task"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Agent(check tests) · ↳ Read(b.ts)",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed task,tool_result"
+ },
+ {
+  "slack": "chat.update",
+  "args": {
+   "channel": "C1",
+   "ts": "1.9",
+   "text": "1 subagent · 1 done",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "*Subagents* · 1 subagent · 1 done"
+      }
+     ]
+    },
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "✅ *check tests*  _general_\nall green · 1 tool · 4s"
+     },
+     "accessory": {
+      "type": "button",
+      "text": {
+       "type": "plain_text",
+       "text": "Result"
+      },
+      "action_id": "a:00000003:result:tk_1"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.10",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Agent(check tests) · ↳ Read(b.ts) · all green",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool_result,tool_result"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.10",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Update(a.ts) · +1 −1 · 1 earlier: ✓ Task · late failure",
+     "status": "error"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,live,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.10",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Ran 2 steps · 1 failed",
+     "status": "complete",
+     "details": "✓ Agent(check tests) · ✗ Update(a.ts)",
+     "output": "late failure"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Fixed: a.ts now builds."
+    }
+   ],
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · default · 10s · ctx 1.9k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]

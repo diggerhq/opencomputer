@@ -63,8 +63,8 @@ describe("managed agents proxy", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
         customized: true,
-        displayName: "Cypen pentesting",
-        profileId: "cypen-jxscout",
+        displayName: "Acme scanning",
+        profileId: "acme-scanner",
         imageArn: "private-image-identifier",
         imageVersion: "9.0",
       }),
@@ -86,7 +86,7 @@ describe("managed agents proxy", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       customized: true,
-      displayName: "Cypen pentesting",
+      displayName: "Acme scanning",
     });
     expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
       "https://managedagents.test/v1/account/runtime-profile",
@@ -3171,7 +3171,7 @@ describe("managed agents proxy", () => {
             ],
             createdAt: "2026-07-30T00:00:00.000Z",
             region: "au",
-            egress: { domains: ["*.cypen.io"], cidrs: ["10.0.0.0/8"] },
+            egress: { domains: ["*.acme.example"], cidrs: ["10.0.0.0/8"] },
             fixedIps: "au",
             artifact: { bucket: "private-bucket" },
             imageArn: "arn:aws:private",
@@ -3232,7 +3232,7 @@ describe("managed agents proxy", () => {
               },
             ],
             region: "au",
-            egress: { domains: ["*.cypen.io"], cidrs: ["10.0.0.0/8"] },
+            egress: { domains: ["*.acme.example"], cidrs: ["10.0.0.0/8"] },
             fixedIps: "au",
             source: {
               digest,
@@ -3300,9 +3300,9 @@ describe("managed agents proxy", () => {
     });
     expect(
       JSON.parse(String((fetchSpy.mock.calls[2]?.[1] as RequestInit).body)),
-    ).toMatchObject({ region: "au", egress: { domains: ["*.cypen.io"], cidrs: ["10.0.0.0/8"] }, fixedIps: "au" });
+    ).toMatchObject({ region: "au", egress: { domains: ["*.acme.example"], cidrs: ["10.0.0.0/8"] }, fixedIps: "au" });
     const published = await response.json();
-    expect(published).toMatchObject({ region: "au", egress: { domains: ["*.cypen.io"], cidrs: ["10.0.0.0/8"] }, fixedIps: "au" });
+    expect(published).toMatchObject({ region: "au", egress: { domains: ["*.acme.example"], cidrs: ["10.0.0.0/8"] }, fixedIps: "au" });
     expect(JSON.stringify(published)).not.toMatch(
       /bucket|imageArn|arn:aws|uploads\.test/i,
     );
@@ -3710,7 +3710,7 @@ describe("managed agents proxy", () => {
               executionMode: "workerd",
               status: "connecting",
               createdAt: "2026-09-15T00:00:00.000Z",
-              externalReference: "cypen/order/42",
+              externalReference: "acme/order/42",
               accountId: "org_test",
             },
           },
@@ -3727,7 +3727,7 @@ describe("managed agents proxy", () => {
               sessionId: "session-1",
               turnId: null,
               type: "session.created",
-              data: { externalReference: "cypen/order/42", accountId: "org_test" },
+              data: { externalReference: "acme/order/42", accountId: "org_test" },
             },
             {
               id: "evt-2",
@@ -3739,7 +3739,7 @@ describe("managed agents proxy", () => {
               data: {
                 reason: "runtime_lost",
                 error: "internal stack trace org_test",
-                externalReference: "cypen/order/42",
+                externalReference: "acme/order/42",
               },
             },
           ],
@@ -3749,7 +3749,7 @@ describe("managed agents proxy", () => {
         return Response.json({
           id: "session-1",
           status: "idle",
-          externalReference: "cypen/order/42",
+          externalReference: "acme/order/42",
           labels: {},
           revision: 1,
           result: null,
@@ -3768,7 +3768,7 @@ describe("managed agents proxy", () => {
             source: "api",
             status: "idle",
             labels: {},
-            externalReference: "cypen/order/42",
+            externalReference: "acme/order/42",
             createdAt: "2026-09-15T00:00:00.000Z",
             updatedAt: "2026-09-15T00:00:00.000Z",
             revision: 1,
@@ -3811,7 +3811,7 @@ describe("managed agents proxy", () => {
         },
         body: JSON.stringify({
           agentId: "reviewer",
-          externalReference: "cypen/order/42",
+          externalReference: "acme/order/42",
         }),
       }),
       env,
@@ -3821,7 +3821,7 @@ describe("managed agents proxy", () => {
     expect(created.status).toBe(201);
     const [, createInit] = fetchSpy.mock.calls[0] as unknown as [URL, RequestInit];
     expect(await new Response(createInit.body).json()).toMatchObject({
-      externalReference: "cypen/order/42",
+      externalReference: "acme/order/42",
     });
     expect(new Headers(createInit.headers).get("idempotency-key")).toBe("order-42");
     expect(await created.json()).toEqual({
@@ -3830,12 +3830,12 @@ describe("managed agents proxy", () => {
         executionMode: "workerd",
         status: "connecting",
         createdAt: "2026-09-15T00:00:00.000Z",
-        externalReference: "cypen/order/42",
+        externalReference: "acme/order/42",
       },
     });
 
     const query =
-      "projectId=prj_test&environment=development&agentId=reviewer&status=idle&deploymentId=reviewer%3Adigest&externalReference=cypen%2Forder%2F42&createdAfter=2026-09-14T00%3A00%3A00Z&createdBefore=2026-09-16T00%3A00%3A00Z&updatedAfter=2026-09-14T00%3A00%3A00Z&limit=2&cursor=abc";
+      "projectId=prj_test&environment=development&agentId=reviewer&status=idle&deploymentId=reviewer%3Adigest&externalReference=acme%2Forder%2F42&createdAfter=2026-09-14T00%3A00%3A00Z&createdBefore=2026-09-16T00%3A00%3A00Z&updatedAfter=2026-09-14T00%3A00%3A00Z&limit=2&cursor=abc";
     const listed = await proxyManagedAgents(
       new Request(
         `https://app.opencomputer.dev/api/managed-agents/sessions?${query}`,
@@ -3856,7 +3856,7 @@ describe("managed agents proxy", () => {
     expect(page.nextCursor).toBeNull();
     expect(page.sessions[0]).toMatchObject({
       id: "session-1",
-      externalReference: "cypen/order/42",
+      externalReference: "acme/order/42",
     });
     expect(page.sessions[1]).not.toHaveProperty("externalReference");
     expect(JSON.stringify(page)).not.toContain("org_test");
@@ -3871,7 +3871,7 @@ describe("managed agents proxy", () => {
     );
     expect(await inspected.json()).toMatchObject({
       id: "session-1",
-      externalReference: "cypen/order/42",
+      externalReference: "acme/order/42",
     });
 
     const events = await proxyManagedAgents(
@@ -3887,10 +3887,10 @@ describe("managed agents proxy", () => {
     };
     expect(eventBody.events[0]).toMatchObject({
       type: "session.created",
-      data: { externalReference: "cypen/order/42" },
+      data: { externalReference: "acme/order/42" },
     });
     expect(eventBody.events[1]?.type).toBe("session.failed");
-    expect(eventBody.events[1]?.data.externalReference).toBe("cypen/order/42");
+    expect(eventBody.events[1]?.data.externalReference).toBe("acme/order/42");
     expect(eventBody.events[1]?.data).not.toHaveProperty("error");
     expect(eventBody.events[1]?.data).not.toHaveProperty("reason");
     expect(JSON.stringify(eventBody)).not.toContain("org_test");

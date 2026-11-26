@@ -1,0 +1,15 @@
+node_modules
+.env
+state.json
+/workspaces/
+gateway.db*
+*.db-*
+.wrangler
+telemetry/collector/dist
+
+# Tinybird CLI session (holds a workspace token)
+.tinyb
+/modelproxy/modelproxy
+
+# The runner bundle (scripts/bundle-runner.mjs), built per release
+/dist/

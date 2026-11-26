@@ -1,0 +1,40 @@
+---
+title: "Subagents"
+description: "A subagent is an agent the session's harness launches for part of a task; one with `background: true` can outlive its turn"
+---
+
+The Slack side is in [Subagents](/slack/subagents). A subagent's id is `sa_` followed by 12 characters. Fields of the `Subagent` object: [API schema](/reference/api-schema#objects).
+
+## Events
+
+| Source | What it gives |
+| --- | --- |
+| `subagent.started`, `subagent.ended` | The whole object. In events and lists a long `result` is cut and `resultTruncated` is true |
+| `tool.started`, `tool.completed`, `tool.failed` with `subagentId` set | Tool calls made inside the subagent |
+| `subagent.progress` [deltas](/api/events#deltas) | `activity`, `toolCalls` and `tokens`, on a WebSocket attached with `deltas: true` |
+| `Session` object | Running subagents in its `subagents` list |
+
+A subagent with `background: true` can outlive the turn that launched it. When it ends after its turn did, the harness starts a new turn for the result, with `trigger: "subagent"`, the `subagentId`, and no `author`.
+
+## List and read
+
+| Method | Returns |
+| --- | --- |
+| `subagents.list` (`GET /sessions/{id}/subagents`) | Running subagents, newest first. `status=all` includes ended ones. `limit` is 1 to 100, default 20; pass `nextCursor` back as `cursor` |
+| `subagents.get` (`GET /sessions/{id}/subagents/{subagentId}`) | One subagent with its whole `result` |
+
+## Stop
+
+`subagents.stop` (`POST /sessions/{id}/subagents/{subagentId}/stop`) stops a running subagent, as the Stop button on the Slack agents panel does. Suspending a session also stops its running subagents.
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"subagents.stop","params":{"sessionId":"cs_0123456789abcdef","subagentId":"sa_0123456789ab"}}
+```
+
+The result is the subagent and a `seq`. A `subagent.ended` event follows with `status: "stopped"` and `stoppedBy`.
+
+| Error | Cause |
+| --- | --- |
+| `409 subagent_ended` | The subagent has already ended. The error carries the subagent. A repeat by the actor who stopped it returns the subagent instead |
+
+{/* Sources: computer/schema/computer-api.v1.json (Subagent, subagents.*, subagent events, Delta.subagent.progress, Turn.trigger); computer/src/api/read-methods.ts (list paging, loadResult in subagents.get); computer/src/runner/api/api.ts (subagents.stop, stopSubagent, suspend, harness-started turns); computer/src/host/session-writer.ts; computer/src/protocol-api.ts (progress rate) */}

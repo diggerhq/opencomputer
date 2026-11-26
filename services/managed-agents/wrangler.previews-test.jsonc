@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Work 074 tests: the previews Worker alone, without `managed-agents`.
+  "name": "previews-test",
+  "main": "src/previews/index.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "PREVIEW_DOMAIN": "opencomputer.app",
+    "PREVIEW_PLATFORM_KEY": "test-preview-platform-key"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "PREVIEWS", "class_name": "PreviewDurableObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PreviewDurableObject"] }]
+}

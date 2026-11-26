@@ -22,9 +22,6 @@ Thumbs.db
 .dev.vars
 .dev.vars.*
 
-# Per-developer dev-box lifecycle state (written by deploy/*/deploy-qemu-dev.sh)
-deploy/**/.qemu-dev-state-*
-
 # Python
 __pycache__/
 *.pyc
@@ -44,43 +41,18 @@ dist/
 # `vite build` in web/, copied here by the deploy script. Never check in.
 cloudflare-workers/api-edge/assets/
 
-# Compiled binaries
-bin/
-opensandbox-worker
-/worker
-
-# Worker env (secrets)
-worker.env
-caddy.env
-
 # Loom demo (private)
 sdks/typescript/examples/loom/
 
 # Media files
 *.mp4
 *.gif
-
-# Terraform
-deploy/terraform/.terraform/
-deploy/terraform/.terraform.lock.hcl
-deploy/terraform/terraform.tfstate*
-deploy/terraform/terraform.tfvars
-
-# Dev environment state
-deploy/ec2/.dev-env-state*
-deploy/ec2/*.pem
+!docs/images/readme-*.gif
 
 # Temp files
 *.tmp
 *.log
 delme
-deploy/azure/.dev-env-state-*
-deploy/azure/.dev-env-secrets*
-!deploy/azure/.dev-env-secrets.example
-deploy/azure/.dev-vector-token-*
-/server
-/seed-dev-secrets
-/backfill
 
 # Claude Code agent memory (session-local, not source)
 /memory/
@@ -90,10 +62,6 @@ cloudflare-workers/api-edge/wrangler.ci.toml
 
 # Wrangler local build/cache/state (never source)
 .wrangler/
-
-# stray binaries from `go build ./cmd/...` without -o
-/microvm-hooks
-/microvm-harness
 
 .dev.vars*
 !.dev.vars.example

@@ -1,0 +1,256 @@
+name: Managed agents
+
+# CI for services/managed-agents: its tests, typecheck, build, a dry-run
+# bundle of each Worker, and a secret scan. Nothing here deploys, and no job
+# has a secret.
+
+on:
+  pull_request:
+    paths:
+      - services/managed-agents/**
+      - .github/workflows/managed-agents.yml
+      - .github/actions/managed-agents-setup/**
+  push:
+    branches: [main]
+    paths:
+      - services/managed-agents/**
+      - .github/workflows/managed-agents.yml
+      - .github/actions/managed-agents-setup/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-agents-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: services/managed-agents
+
+jobs:
+  # On a push to main, skip the heavy jobs when the exact same tree already
+  # passed on the PR that was merged (see the record-green job). The run
+  # itself always happens and reports a conclusion, since deploys gate on it.
+  # Any mismatch or error means a full run.
+  fast-track:
+    name: Fast-track
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          fingerprint=$(
+          {
+            for path in services/managed-agents .github/workflows/managed-agents.yml .github/actions/managed-agents-setup; do
+              printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path" 2>/dev/null || echo missing)"
+            done
+          } | sha256sum | cut -d' ' -f1
+          )
+          echo "Tree fingerprint: $fingerprint"
+          if ! prs=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[] | "\(.number) \(.head.sha)"'); then
+            echo "full run: could not list the PRs for $SHA"; exit 0
+          fi
+          if [ -z "$prs" ]; then
+            echo "full run: $SHA is not from a PR"; exit 0
+          fi
+          while read -r number head; do
+            if ! match=$(gh api --paginate "repos/$REPO/commits/$head/statuses" \
+              | jq -r --arg fp "$fingerprint" '.[] | select(.context == "managed-agents/green-tree" and .state == "success" and .creator.login == "github-actions[bot]" and .description == $fp) | .id'); then
+              echo "PR #$number: could not read the statuses of $head"; continue
+            fi
+            if [ -n "$match" ]; then
+              echo "fast-tracked: identical tree passed on PR #$number"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "PR #$number: no green-tree status matching this tree on $head"
+          done <<< "$prs"
+          echo "full run: no PR passed with this exact tree"
+
+  test:
+    name: Test (${{ matrix.name }})
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Node
+            projects: --project node
+          # The Edge suites are split by file so no group sets the pace of the
+          # whole workflow.
+          - name: Edge sessions
+            projects: >-
+              --project managed-session-workerd
+              test/managed-session-workerd.test.ts
+          - name: Edge channel sessions
+            projects: >-
+              --project managed-session-workerd
+              test/managed-session-workerd-channel.test.ts
+          - name: Edge questions
+            projects: >-
+              --project managed-session-workerd
+              test/questions.test.ts
+              test/consult.test.ts
+          - name: Edge session intent
+            projects: >-
+              --project managed-session-workerd
+              test/session-creation-intent.test.ts
+              test/template-runtime-parity.test.ts
+          - name: Edge worker
+            projects: --project worker
+          - name: Edge first session
+            projects: >-
+              --project memory
+              --project do-first-session-full-example
+              --project do-first-session-spike
+          # The computer suite runs on its own: alongside the session suites
+          # its WebSockets and alarms added enough load to time out unrelated,
+          # timing-sensitive Edge tests.
+          - name: Computer
+            projects: >-
+              --project computer
+              --project computer-pool
+              --project platform-admission
+          - name: Computer API
+            projects: >-
+              --project session-log
+              --project wire
+          # Its own process: it shares fakeComputerOutbound's recorded Tinybird
+          # posts with the computer project, whose routes test expects none.
+          - name: Computer telemetry
+            projects: --project computer-telemetry
+          - name: Workerd memory
+            projects: --project workerd-memory
+          - name: Memory integrated
+            projects: --project memory-integrated
+          - name: Command integration
+            projects: >-
+              --project commands-integrated
+          - name: Linear
+            projects: >-
+              --project linear-fault-matrix
+              --project linear-ask-integrated
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/managed-agents-setup
+      - run: npm test -- ${{ matrix.projects }}
+
+  static:
+    name: Check, build and dry-run
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
+    # Fork PRs run on a standard runner so they cannot spend the org's
+    # larger-runner minutes.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'ubuntu-16-64-20' }}
+    # Tight on purpose: a slowdown should fail loudly, not creep in.
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/managed-agents-setup
+      - run: npm run check
+      - run: npm run build
+      - name: Dry-run each Worker
+        run: |
+          for config in wrangler.platform.jsonc wrangler.production.jsonc wrangler.workerd.jsonc wrangler.wire.jsonc wrangler.previews.jsonc; do
+            npx wrangler deploy --config "$config" --dry-run --outdir "$RUNNER_TEMP/$config"
+          done
+      - name: Profile Workerd runtime startup
+        run: npx wrangler check startup --config wrangler.workerd.jsonc --outfile "$RUNNER_TEMP/workerd-startup.cpuprofile"
+
+  secrets:
+    name: Secret scan
+    needs: fast-track
+    # Runs when fast-track is skipped (pull_request) or failed: only a
+    # positive match skips the work.
+    if: ${{ !cancelled() && needs.fast-track.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: gitleaks
+        run: |
+          version=8.30.1
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${version}/$archive"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --redact --no-banner
+
+  # On a PR whose jobs all passed, record the fingerprint of the tested tree
+  # (the PR merge ref) as a commit status on the PR head, for fast-track to
+  # find after the merge. Fork PRs get a read-only token, so they skip this
+  # and their merge gets a full run.
+  record-green:
+    name: Record green tree
+    needs: [test, static, secrets]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && needs.test.result == 'success' && needs.static.result == 'success'
+      && needs.secrets.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      statuses: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          fingerprint=$(
+          {
+            for path in services/managed-agents .github/workflows/managed-agents.yml .github/actions/managed-agents-setup; do
+              printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path" 2>/dev/null || echo missing)"
+            done
+          } | sha256sum | cut -d' ' -f1
+          )
+          echo "Recording tree fingerprint $fingerprint on $HEAD_SHA"
+          gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=success \
+            -f context=managed-agents/green-tree -f description="$fingerprint" -f target_url="$RUN_URL" > /dev/null

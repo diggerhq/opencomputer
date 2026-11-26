@@ -1,0 +1,52 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-opencode-workerd",
+  "main": "src/workerd-runtime/index.ts",
+  "compatibility_date": "2026-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "SANDBOX_IDLE_GRACE_MS": "180000",
+    "TINYBIRD_API_URL": "https://api.us-east.tinybird.co"
+  },
+  "worker_loaders": [{ "binding": "AGENT_LOADER" }],
+  "services": [
+    {
+      "binding": "ARTIFACTS",
+      "service": "managed-agents-platform"
+    },
+    {
+      "binding": "SANDBOX",
+      "service": "managed-agents-platform"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OPENCODE_SESSIONS",
+        "class_name": "OpenCodeSessionDurableObject"
+      },
+      {
+        // Cross-script binding: the class lives on the managed-agents edge
+        // worker, which must already export it when this worker is uploaded.
+        "name": "MEMORY",
+        "class_name": "MemoryDurableObject",
+        "script_name": "managed-agents"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["OpenCodeSessionDurableObject"]
+    }
+  ],
+  // Console output and exceptions go to Axiom (dataset oc-platform-edge)
+  // through the tail Worker cloudflare-workers/log-tail.
+  "tail_consumers": [{ "service": "opencomputer-log-tail-prod" }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

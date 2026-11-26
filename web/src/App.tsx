@@ -1,35 +1,32 @@
-import { lazy } from 'react'
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
 import ProtectedRoute from './components/ProtectedRoute'
 import AppShell from './components/app-shell'
 import PublicTemplateRoute from './components/PublicTemplateRoute'
-import { managedAgentsExperimentEnabled } from './managed-agents/feature'
 import { templateDeployPathFromSearch } from './managed-agents/templates'
 
-// Route pages are code-split so the initial bundle stays small; the heaviest
-// deps (xterm, in Terminal/LogsPanel) only load on SandboxDetail when opened.
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Agents = lazy(() => import('./pages/Agents'))
-const AgentNew = lazy(() => import('./pages/AgentNew'))
-const AgentDetail = lazy(() => import('./pages/AgentDetail'))
-const AgentDeployment = lazy(() => import('./pages/AgentDeployment'))
-const AgentSetup = lazy(() => import('./pages/AgentSetup'))
-const Credentials = lazy(() => import('./pages/Credentials'))
-const Sessions = lazy(() => import('./pages/Sessions'))
-const SessionDetail = lazy(() => import('./pages/SessionDetail'))
-const Browsers = lazy(() => import('./pages/Browsers'))
-const Sandboxes = lazy(() => import('./pages/Sandboxes'))
+// Route pages are code-split so the initial bundle stays small.
 const APIKeys = lazy(() => import('./pages/APIKeys'))
-const Checkpoints = lazy(() => import('./pages/Checkpoints'))
-const Templates = lazy(() => import('./pages/Templates'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Billing = lazy(() => import('./pages/Billing'))
-const SandboxDetail = lazy(() => import('./pages/SandboxDetail'))
-const SandboxWebhooks = lazy(() => import('./pages/SandboxWebhooks'))
 const DeferredAction = lazy(() => import('./pages/DeferredAction'))
 const ManagedAgentsHome = lazy(() => import('./managed-agents/Home'))
 const ManagedComputer = lazy(() => import('./managed-agents/Computer'))
+const ManagedComputerSecrets = lazy(
+  () => import('./managed-agents/ComputerSecrets'),
+)
+const ComputerSessionsLayout = lazy(
+  () => import('./managed-agents/computer-sessions/Layout'),
+)
+const ComputerSessionsHome = lazy(
+  () => import('./managed-agents/computer-sessions/Home'),
+)
+const ComputerSession = lazy(
+  () => import('./managed-agents/computer-sessions/Session'),
+)
+const WorkBoard = lazy(() => import('./managed-agents/work/Board'))
+const WorkItem = lazy(() => import('./managed-agents/work/Item'))
 const ManagedAgentDetail = lazy(() => import('./managed-agents/Detail'))
 const ManagedProjectDetail = lazy(() => import('./managed-agents/Project'))
 const ManagedSessionDetail = lazy(() => import('./managed-agents/Session'))
@@ -66,7 +63,7 @@ function HomeRoute() {
   const [searchParams] = useSearchParams()
   if (searchParams.get('security') === '1')
     return <Navigate to="/security" replace />
-  return managedAgentsExperimentEnabled ? <ManagedAgentsHome /> : <Dashboard />
+  return <ManagedAgentsHome />
 }
 
 export default function App() {
@@ -85,33 +82,10 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route index element={<HomeRoute />} />
             <Route path="security" element={<ManagedSecurityOnboarding />} />
-            <Route
-              path="getting-started"
-              element={
-                managedAgentsExperimentEnabled ? (
-                  <ManagedAgentsHome />
-                ) : (
-                  <Dashboard />
-                )
-              }
-            />
+            <Route path="getting-started" element={<ManagedAgentsHome />} />
             <Route path="computer" element={<ManagedComputer />} />
-            {managedAgentsExperimentEnabled ? (
-              <Route path="automations" element={<ManagedAgentsHome list />} />
-            ) : null}
-            <Route
-              path="model-access/callback"
-              element={<ModelAccessCallback />}
-            />
-            <Route
-              path="managed-agents/connections"
-              element={<ManagedAgentConnections />}
-            />
-            <Route
-              path="managed-agents/new"
-              element={<Navigate to="/new" replace />}
-            />
-            <Route path="new" element={<NewProject />} />
+            {/* Projects keep the old shell for now: their pages lean on its
+                sidebar and environment switcher. */}
             <Route
               path="projects/:projectId"
               element={<ManagedProjectDetail />}
@@ -140,26 +114,43 @@ export default function App() {
               path="managed-agents/:agentId"
               element={<ManagedAgentDetail />}
             />
-            {/* Agent plane */}
-            <Route path="agents" element={<Agents />} />
-            <Route path="agents/new" element={<AgentNew />} />
-            <Route path="agents/:agentId/setup" element={<AgentSetup />} />
+          </Route>
+          {/* The computer's sessions are their own full-screen view, with
+              their own rail and sidebar (work 107); every other page opens in
+              the same rail, without the sessions sidebar. */}
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <ComputerSessionsLayout />
+              </Suspense>
+            }
+          >
+            <Route path="computer/sessions">
+              <Route index element={<ComputerSessionsHome />} />
+              {/* The same home, for a phone, where the index is the list. */}
+              <Route path="new" element={<ComputerSessionsHome />} />
+              <Route path=":id" element={<ComputerSession />} />
+            </Route>
             <Route
-              path="agents/:agentId/deployments/:deploymentId"
-              element={<AgentDeployment />}
+              path="computer/secrets"
+              element={<ManagedComputerSecrets />}
             />
-            <Route path="agents/:agentId" element={<AgentDetail />} />
-            <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
-            <Route path="credentials" element={<Credentials />} />
-            <Route path="sessions" element={<Sessions />} />
-            <Route path="sessions/:sessionId" element={<SessionDetail />} />
-            <Route path="browsers" element={<Browsers />} />
-            {/* Sandbox plane */}
-            <Route path="sandboxes" element={<Sandboxes />} />
-            <Route path="sandboxes/:sandboxId" element={<SandboxDetail />} />
-            <Route path="checkpoints" element={<Checkpoints />} />
-            <Route path="templates" element={<Templates />} />
-            <Route path="sandbox-webhooks" element={<SandboxWebhooks />} />
+            <Route path="computer/work" element={<WorkBoard />} />
+            <Route path="computer/work/:number" element={<WorkItem />} />
+            <Route path="automations" element={<ManagedAgentsHome list />} />
+            <Route
+              path="model-access/callback"
+              element={<ModelAccessCallback />}
+            />
+            <Route
+              path="managed-agents/connections"
+              element={<ManagedAgentConnections />}
+            />
+            <Route
+              path="managed-agents/new"
+              element={<Navigate to="/new" replace />}
+            />
+            <Route path="new" element={<NewProject />} />
             <Route path="api-keys" element={<APIKeys />} />
             <Route path="billing" element={<Billing />} />
             <Route path="settings" element={<Settings />} />

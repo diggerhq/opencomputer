@@ -1,0 +1,74 @@
+{
+  "org": "your-fly-org",
+  "decoy": "addons.mozilla.org",
+  "regions": {
+    "au": {
+      "fly_region": "syd",
+      "exits": 2
+    },
+    "jnb": {
+      "fly_region": "jnb",
+      "exits": 1
+    },
+    "sin": {
+      "fly_region": "sin",
+      "exits": 1
+    },
+    "nrt": {
+      "fly_region": "nrt",
+      "exits": 1
+    },
+    "ams": {
+      "fly_region": "ams",
+      "exits": 1
+    },
+    "fra": {
+      "fly_region": "fra",
+      "exits": 1
+    },
+    "lhr": {
+      "fly_region": "lhr",
+      "exits": 1
+    },
+    "cdg": {
+      "fly_region": "cdg",
+      "exits": 1
+    },
+    "arn": {
+      "fly_region": "arn",
+      "exits": 1
+    },
+    "iad": {
+      "fly_region": "iad",
+      "exits": 1
+    },
+    "ord": {
+      "fly_region": "ord",
+      "exits": 1
+    },
+    "dfw": {
+      "fly_region": "dfw",
+      "exits": 1
+    },
+    "lax": {
+      "fly_region": "lax",
+      "exits": 1
+    },
+    "sjc": {
+      "fly_region": "sjc",
+      "exits": 1
+    },
+    "ewr": {
+      "fly_region": "ewr",
+      "exits": 1
+    },
+    "yyz": {
+      "fly_region": "yyz",
+      "exits": 1
+    },
+    "gru": {
+      "fly_region": "gru",
+      "exits": 1
+    }
+  }
+}

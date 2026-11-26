@@ -1,0 +1,9 @@
+OpenComputer: computer
+
+Licensed under the Apache License, Version 2.0; see LICENSE at the root of
+this repository.
+
+This software runs Claude Code through the Claude Agent SDK
+(@anthropic-ai/claude-agent-sdk). It installs the SDK from npm and does not
+include it. Claude Code and the Claude Agent SDK are Anthropic's and are used
+under Anthropic's terms, not under this license.

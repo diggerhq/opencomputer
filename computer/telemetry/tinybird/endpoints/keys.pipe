@@ -1,0 +1,61 @@
+DESCRIPTION >
+    Work 084 Q9, "keys and revocation", over `[since, until)`. One row per `what`: `synced <trigger>` (`keys.synced`: KV writes per trigger, failures, latency p50/p95/max), `revoked` (`keys.revoked`: revokes, how many the computer knew and how many reached a v4 host, latency), and `refused after revoke` (`edge.request` and `wireworker.request` carrying a key id revoked earlier in the window: requests that still arrived with a revoked key, by layer, and the last one's delay after the revoke in `max`). The time from a revoke to that key's last socket closing has no event (`wire.close` carries no key id; see the 084 instrumentation answers).
+
+TOKEN "calvin_read" READ
+
+NODE ky_events
+SQL >
+    %
+    SELECT event_name, occurred_at, outcome, duration_ms, data, JSONExtractString(data, 'key_id') AS key_id
+    FROM calvin_events
+    WHERE
+        event_name IN ('keys.synced', 'keys.revoked', 'edge.request', 'wireworker.request')
+        AND occurred_at >= {{ DateTime(since, required=True) }}
+        AND occurred_at < {{ DateTime(until, required=True) }}
+        {% if defined(org_id) %} AND org_id = {{ String(org_id) }} {% end %}
+    LIMIT 1 BY event_id
+
+NODE ky_revokes
+SQL >
+    SELECT key_id, min(occurred_at) AS revoked_at FROM ky_events WHERE event_name = 'keys.revoked' AND key_id != '' GROUP BY key_id
+
+NODE endpoint
+SQL >
+    SELECT *
+    FROM
+        (
+            SELECT
+                if(event_name = 'keys.synced', concat('synced ', JSONExtractString(data, 'trigger')), 'revoked') AS what,
+                count() AS n,
+                countIf(outcome = 'failed' OR (JSONHas(data, 'ok') AND NOT JSONExtractBool(data, 'ok'))) AS failed,
+                countIf(JSONExtractBool(data, 'known')) AS known,
+                countIf(JSONExtractBool(data, 'host_told')) AS host_told,
+                sum(JSONExtractUInt(data, 'kv_writes')) AS kv_writes,
+                round(quantile(0.5)(duration_ms)) AS p50,
+                round(quantile(0.95)(duration_ms)) AS p95,
+                toInt64(max(duration_ms)) AS max
+            FROM ky_events
+            WHERE event_name IN ('keys.synced', 'keys.revoked')
+            GROUP BY what
+            UNION ALL
+            SELECT
+                concat('refused after revoke (', if(e.event_name = 'edge.request', 'edge', 'wire'), ')') AS what,
+                count() AS n,
+                countIf(
+                    (e.event_name = 'edge.request' AND JSONExtractUInt(e.data, 'status') IN (401, 403))
+                    OR (e.event_name = 'wireworker.request' AND JSONExtractString(e.data, 'result') = 'refused')
+                ) AS failed,
+                0 AS known,
+                0 AS host_told,
+                0 AS kv_writes,
+                NULL AS p50,
+                NULL AS p95,
+                max(toInt64(dateDiff('millisecond', r.revoked_at, e.occurred_at))) AS max
+            FROM ky_events AS e
+            INNER JOIN ky_revokes AS r ON r.key_id = e.key_id
+            WHERE e.event_name IN ('edge.request', 'wireworker.request') AND e.occurred_at > r.revoked_at
+            GROUP BY what
+        )
+    ORDER BY what
+
+TYPE ENDPOINT

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Start the runner the host described in boot.env (work 103). Exit 71: no boot file.
+set -eu
+[ -r "$SP_RUN/boot.env" ] || exit 71
+set -a; . "$SP_RUN/boot.env"; set +a
+exec node "$SP_ROOT/dist/runner-boot.mjs"

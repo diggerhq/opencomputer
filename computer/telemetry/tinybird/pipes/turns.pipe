@@ -1,0 +1,515 @@
+DESCRIPTION >
+    One row per turn (work 054, "The turn row"), derived from the facts in `calvin_events`: the runner reports what happened and to which turn and trace (runner/turn-events.ts), and every interval, offset and KPI input is computed here. The gateway and host join on `trace_id`. `*_ms` offsets are from `sent_at` and null when the milestone did not happen. Read it like a table: `SELECT … FROM turns WHERE sent_at …`. A dead runner never ends its turn; `turn.abandoned` covers that turn.
+
+TOKEN "calvin_read" READ
+
+NODE runner_events
+DESCRIPTION >
+    Runner facts that belong to a turn, deduplicated (delivery is at least once).
+
+SQL >
+    SELECT *
+    FROM calvin_events
+    WHERE service_name = 'runner' AND turn_id != ''
+    LIMIT 1 BY event_id
+
+NODE blocks
+DESCRIPTION >
+    Content blocks of the model's responses, start paired with stop. The index restarts with every response, so within a turn the starts and stops of one index alternate.
+
+SQL >
+    SELECT
+        turn_id,
+        starts[i].1 AS started_at,
+        starts[i].2 AS kind,
+        starts[i].3 AS hidden,
+        starts[i].4 AS tool_call_id,
+        if(i <= length(stops), toNullable(stops[i]), NULL) AS stopped_at
+    FROM
+        (
+            SELECT
+                turn_id,
+                JSONExtractInt(data, 'index') AS idx,
+                arraySort(
+                    x -> x.1,
+                    groupArrayIf(
+                        (
+                            occurred_at,
+                            JSONExtractString(data, 'kind'),
+                            JSONExtractBool(data, 'hidden'),
+                            tool_call_id
+                        ),
+                        event_name = 'model.block_started'
+                    )
+                ) AS starts,
+                arraySort(groupArrayIf(occurred_at, event_name = 'model.block_stopped')) AS stops
+            FROM runner_events
+            WHERE event_name IN ('model.block_started', 'model.block_stopped')
+            GROUP BY turn_id, idx
+        )
+    ARRAY JOIN arrayEnumerate(starts) AS i
+
+NODE activities
+DESCRIPTION >
+    What the turn was doing, as intervals: the model thinking, writing text, writing a tool's input, and the tool running (its input done → its result).
+
+SQL >
+    SELECT
+        turn_id,
+        multiIf(kind = 'tool', 'tool_input', kind) AS activity,
+        started_at AS from_at,
+        stopped_at AS to_at,
+        hidden
+    FROM blocks
+    WHERE stopped_at IS NOT NULL
+    UNION ALL
+    SELECT bl.turn_id, 'tool_run' AS activity, bl.stopped_at AS from_at, toNullable(r.occurred_at) AS to_at, bl.hidden
+    FROM blocks AS bl
+    INNER JOIN
+        (SELECT turn_id, tool_call_id, occurred_at FROM runner_events WHERE event_name = 'tool.completed') AS r
+        ON r.turn_id = bl.turn_id AND r.tool_call_id = bl.tool_call_id
+    WHERE bl.kind = 'tool' AND bl.stopped_at IS NOT NULL
+
+NODE turn_activity
+SQL >
+    SELECT
+        turn_id,
+        groupArray((activity, toUnixTimestamp64Milli(assumeNotNull(from_at)), toUnixTimestamp64Milli(assumeNotNull(to_at)))) AS spans,
+        sumIf(dateDiff('millisecond', from_at, assumeNotNull(to_at)), activity = 'thinking') AS thinking_ms,
+        sumIf(dateDiff('millisecond', from_at, assumeNotNull(to_at)), activity = 'tool_input') AS tool_input_ms,
+        sumIf(dateDiff('millisecond', from_at, assumeNotNull(to_at)), activity = 'tool_run') AS tool_run_ms,
+        -- Runners before `thinking.shown` showed a "Thinking…" card 1.5 s into a thinking block: that is when it became renderable.
+        -- Newer runners report the card (sooner when nothing else shows yet, runner/thinking.ts); turn_facts.thinking_shown_at.
+        minIf(toNullable(from_at) + toIntervalMillisecond(1500), activity = 'thinking' AND dateDiff('millisecond', from_at, assumeNotNull(to_at)) >= 1500) AS thinking_card_at
+    FROM activities
+    GROUP BY turn_id
+
+NODE turn_facts
+SQL >
+    SELECT
+        turn_id,
+        anyIf(trace_id, event_name = 'turn.started') AS trace_id,
+        any(session_key) AS session_key,
+        JSONExtractUInt(anyIf(data, event_name = 'turn.started'), 'turn_seq') AS turn_seq,
+        any(org_id) AS org_id,
+        any(surface) AS surface,
+        any(surface_workspace_id) AS surface_workspace_id,
+        any(conversation_id) AS conversation_id,
+        any(person_id) AS person_id,
+        any(host_id) AS host_id,
+        any(region) AS region,
+        anyIf(service_version, event_name = 'turn.started') AS runner_version,
+        anyIf(path, event_name = 'turn.started') AS path,
+        any(harness) AS harness,
+        anyLast(provider) AS provider,
+        anyLast(model) AS model,
+        anyLast(tier) AS tier,
+        any(substrate) AS substrate,
+        max(synthetic) AS synthetic,
+        minIf(toNullable(occurred_at), event_name = 'turn.started') AS started_at,
+        anyIf(sent_at, event_name = 'turn.started') AS trace_sent_at,
+        minIf(toNullable(occurred_at), event_name = 'harness.started') AS harness_at,
+        minIf(toNullable(occurred_at), event_name = 'model.response_started') AS first_token_at,
+        minIf(toNullable(occurred_at), event_name = 'thinking.shown') AS thinking_shown_at,
+        minIf(toNullable(occurred_at), event_name = 'model.block_started' AND JSONExtractString(data, 'kind') = 'text') AS text_at,
+        minIf(
+            toNullable(occurred_at),
+            event_name = 'model.block_started' AND JSONExtractString(data, 'kind') = 'tool' AND NOT JSONExtractBool(data, 'hidden')
+        ) AS tool_shown_at,
+        minIf(toNullable(occurred_at), event_name = 'turn.ended') AS ended_at,
+        minIf(toNullable(occurred_at), event_name = 'turn.closed') AS closed_at,
+        anyIf(outcome, event_name = 'turn.ended') AS outcome,
+        anyIf(error_type, event_name = 'turn.ended') AS error_type,
+        anyIf(data, event_name = 'turn.ended') AS ended_data,
+        countIf(event_name = 'model.response_started') AS model_calls,
+        -- The context the turn started with: its first request's usage (work 068).
+        argMinIf(data, occurred_at, event_name = 'model.response_started') AS first_call_data,
+        -- Where usage comes only at a response's end (Codex), the first end's.
+        argMinIf(data, occurred_at, event_name = 'model.response_ended') AS first_end_data,
+        -- Tool results and the requests after them, in order; a result sorts before a request in the same millisecond.
+        arraySort(
+            groupArrayIf(
+                (toUnixTimestamp64Milli(occurred_at), event_name = 'model.response_started'),
+                event_name IN ('tool.completed', 'model.response_started')
+            )
+        ) AS call_steps,
+        countIf(event_name = 'model.block_started' AND tool_call_id != '') AS tool_calls,
+        countIf(event_name = 'prompt.pushed' AND JSONExtractBool(data, 'steer')) AS steers,
+        countIf(event_name = 'surface.call') AS surface_calls,
+        countIf(event_name = 'surface.call' AND JSONExtractString(data, 'status') = 'error') AS surface_errors,
+        countIf(event_name = 'surface.call' AND JSONExtractBool(data, 'rate_limited')) AS surface_rate_limited,
+        sumIf(duration_ms, event_name = 'surface.call') AS surface_ms,
+        -- Client lag (work 082): from the oldest change a write carried to Slack acknowledging it, content writes only.
+        maxIf(
+            toNullable(JSONExtractUInt(data, 'queued_ms') + duration_ms),
+            event_name = 'surface.call' AND JSONHas(data, 'queued_ms') AND NOT JSONExtractBool(data, 'placeholder')
+        ) AS client_lag_max_ms,
+        -- The runner's worst event-loop delay in any window the turn was open (work 082).
+        maxIf(toNullable(JSONExtractUInt(data, 'max_ms')), event_name = 'loop.lag') AS loop_lag_max_ms,
+        -- Every write the person saw, by when it landed; only those before the turn ended count toward silence.
+        arraySort(
+            groupArrayIf(
+                toUnixTimestamp64Milli(occurred_at),
+                event_name = 'surface.call'
+                AND JSONExtractString(data, 'status') = 'ok'
+                AND JSONExtractString(data, 'method') IN (
+                    'chat.postMessage', 'chat.update', 'chat.startStream', 'chat.appendStream',
+                    'chat.stopStream', 'files.uploadV2', 'files.completeUploadExternal'
+                )
+            )
+        ) AS visible_all,
+        -- The same without writes that showed only the turn's opening `Started` card (work 068): first content.
+        arraySort(
+            groupArrayIf(
+                toUnixTimestamp64Milli(occurred_at),
+                event_name = 'surface.call'
+                AND JSONExtractString(data, 'status') = 'ok'
+                AND NOT JSONExtractBool(data, 'placeholder')
+                AND JSONExtractString(data, 'method') IN (
+                    'chat.postMessage', 'chat.update', 'chat.startStream', 'chat.appendStream',
+                    'chat.stopStream', 'files.uploadV2', 'files.completeUploadExternal'
+                )
+            )
+        ) AS content_all
+    FROM runner_events
+    GROUP BY turn_id
+    HAVING started_at IS NOT NULL
+
+NODE trace_facts
+DESCRIPTION >
+    The gateway's and host's part of each turn's trace, and the runner's work before the push.
+
+SQL >
+    SELECT
+        trace_id,
+        anyIf(gateway_version, gateway_version != '') AS gateway_version,
+        anyIf(host_version, host_version != '') AS host_version,
+        -- The gateway stamps receipt before its own lookups and emits the event after them: the span is from `sent_at`.
+        anyIf(duration_ms, event_name = 'message.received') AS received_ms,
+        minIf(toNullable(occurred_at), event_name = 'dispatch.sent') AS dispatched_at,
+        minIf(toNullable(occurred_at), event_name = 'deliver.received') AS host_received_at,
+        minIf(toNullable(occurred_at), event_name = 'runner.ready' AND outcome != 'timed_out') AS runner_ready_at,
+        minIf(toNullable(occurred_at), event_name = 'delivery.received') AS delivered_at,
+        anyIf(duration_ms, event_name = 'fork.done') AS fork_ms,
+        anyIf(duration_ms, event_name = 'runner.ready' AND outcome != 'timed_out') AS launch_ms,
+        sumIf(duration_ms, event_name = 'names.resolved') AS names_sum,
+        countIf(event_name = 'names.resolved') AS names_n,
+        anyIf(duration_ms, event_name = 'intro.posted') AS intro_ms,
+        anyIf(duration_ms, event_name = 'attachments.fetched') AS attachments_ms
+    FROM
+        (
+            SELECT
+                trace_id,
+                event_name,
+                occurred_at,
+                outcome,
+                duration_ms,
+                if(service_name = 'gateway', service_version, '') AS gateway_version,
+                if(service_name = 'host', service_version, '') AS host_version
+            FROM calvin_events
+            WHERE
+                trace_id != ''
+                AND event_name IN (
+                    'message.received', 'dispatch.sent', 'deliver.received', 'runner.ready', 'delivery.received',
+                    'fork.done', 'names.resolved', 'intro.posted', 'attachments.fetched'
+                )
+            LIMIT 1 BY event_id
+        )
+    GROUP BY trace_id
+
+NODE derived
+SQL >
+    SELECT
+        tf.turn_id AS turn_id,
+        tf.trace_id AS trace_id,
+        tf.session_key AS session_key,
+        tf.turn_seq AS turn_seq,
+        tf.org_id AS org_id,
+        tf.surface AS surface,
+        tf.surface_workspace_id AS surface_workspace_id,
+        tf.conversation_id AS conversation_id,
+        tf.person_id AS person_id,
+        tf.host_id AS host_id,
+        tf.region AS region,
+        tr.gateway_version AS gateway_version,
+        tr.host_version AS host_version,
+        tf.runner_version AS runner_version,
+        tf.path AS path,
+        tf.harness AS harness,
+        tf.provider AS provider,
+        tf.model AS model,
+        tf.tier AS tier,
+        tf.substrate AS substrate,
+        tf.synthetic AS synthetic,
+        coalesce(tf.trace_sent_at, tf.started_at) AS sent_at,
+        -- The first request goes out once the turn has started and the harness is up.
+        if(tf.harness_at > tf.started_at, tf.harness_at, tf.started_at) AS requested_at,
+        least(
+            ifNull(tf.text_at, toDateTime64('2200-01-01', 3)),
+            ifNull(tf.tool_shown_at, toDateTime64('2200-01-01', 3)),
+            ifNull(ta.thinking_card_at, toDateTime64('2200-01-01', 3)),
+            ifNull(tf.thinking_shown_at, toDateTime64('2200-01-01', 3))
+        ) AS renderable_raw,
+        if(renderable_raw = toDateTime64('2200-01-01', 3), NULL, renderable_raw) AS renderable_at,
+        arrayFilter(v -> v <= toUnixTimestamp64Milli(assumeNotNull(coalesce(tf.ended_at, tf.closed_at))), tf.visible_all) AS visible,
+        if(length(visible) > 0, fromUnixTimestamp64Milli(visible[1]), NULL) AS first_visible_at,
+        arrayFilter(v -> v <= toUnixTimestamp64Milli(assumeNotNull(coalesce(tf.ended_at, tf.closed_at))), tf.content_all) AS content,
+        if(length(content) > 0, fromUnixTimestamp64Milli(content[1]), NULL) AS first_content_at,
+        arrayDifference(visible) AS gaps,
+        if(length(visible) > 1, arrayMax(gaps), 0) AS max_silence_ms,
+        -- The longest silence and what filled most of it.
+        if(length(visible) > 1, indexOf(gaps, max_silence_ms), 0) AS gap_i,
+        if(gap_i > 1, visible[gap_i - 1], 0) AS gap_from,
+        if(gap_i > 1, visible[gap_i], 0) AS gap_to,
+        arrayMap(
+            act -> (
+                act,
+                arraySum(arrayMap(s -> if(s.1 = act, greatest(0, least(s.3, gap_to) - greatest(s.2, gap_from)), 0), ta.spans))
+            ),
+            ['thinking', 'text', 'tool_input', 'tool_run']
+        ) AS gap_parts,
+        if(
+            gap_i > 1,
+            if(
+                arrayMax(arrayMap(p -> p.2, gap_parts)) * 2 >= max_silence_ms,
+                arraySort(p -> -p.2, gap_parts)[1].1,
+                'model'
+            ),
+            ''
+        ) AS silence_cause,
+        tr.received_ms AS received_ms,
+        dateDiff('millisecond', sent_at, tr.dispatched_at) AS dispatched_ms,
+        dateDiff('millisecond', sent_at, tr.host_received_at) AS host_received_ms,
+        dateDiff('millisecond', sent_at, coalesce(tr.runner_ready_at, tr.delivered_at)) AS runner_ready_ms,
+        if(tf.harness_at > tf.started_at, dateDiff('millisecond', sent_at, tf.harness_at), NULL) AS harness_ready_ms,
+        dateDiff('millisecond', sent_at, requested_at) AS model_requested_ms,
+        dateDiff('millisecond', sent_at, tf.first_token_at) AS first_token_ms,
+        dateDiff('millisecond', sent_at, renderable_at) AS renderable_ms,
+        dateDiff('millisecond', sent_at, first_visible_at) AS first_visible_ms,
+        dateDiff('millisecond', sent_at, first_content_at) AS first_content_ms,
+        dateDiff('millisecond', sent_at, tf.ended_at) AS ended_ms,
+        dateDiff('millisecond', sent_at, tf.closed_at) AS closed_ms,
+        tr.fork_ms AS fork_ms,
+        tr.launch_ms AS launch_ms,
+        if(tf.harness_at > tf.started_at, dateDiff('millisecond', tf.started_at, tf.harness_at), NULL) AS harness_init_ms,
+        tr.intro_ms AS intro_ms,
+        if(tr.names_n > 0, tr.names_sum, NULL) AS names_ms,
+        tr.attachments_ms AS attachments_ms,
+        dateDiff('millisecond', requested_at, tf.first_token_at) AS ttft_ms,
+        -- Each later request's first token after the tool result before it (work 068, 059 §8): the model's wait between steps.
+        arrayFilter(
+            g -> g >= 0,
+            arrayMap(
+                i -> if(i > 1 AND tf.call_steps[i].2 AND NOT tf.call_steps[i - 1].2, tf.call_steps[i].1 - tf.call_steps[i - 1].1, -1),
+                arrayEnumerate(tf.call_steps)
+            )
+        ) AS inter_call_gaps,
+        if(length(inter_call_gaps) > 0, arraySum(inter_call_gaps), NULL) AS inter_call_ttft_ms,
+        if(length(inter_call_gaps) > 0, arrayMax(inter_call_gaps), NULL) AS inter_call_ttft_max_ms,
+        if(
+            tf.model_calls > 0,
+            if(
+                JSONExtractUInt(tf.first_call_data, 'input_tokens')
+                + JSONExtractUInt(tf.first_call_data, 'cache_read_tokens')
+                + JSONExtractUInt(tf.first_call_data, 'cache_creation_tokens') > 0,
+                JSONExtractUInt(tf.first_call_data, 'input_tokens')
+                + JSONExtractUInt(tf.first_call_data, 'cache_read_tokens')
+                + JSONExtractUInt(tf.first_call_data, 'cache_creation_tokens'),
+                JSONExtractUInt(tf.first_end_data, 'input_tokens')
+                + JSONExtractUInt(tf.first_end_data, 'cache_read_tokens')
+                + JSONExtractUInt(tf.first_end_data, 'cache_creation_tokens')
+            ),
+            NULL
+        ) AS ctx_tokens,
+        JSONExtract(tf.ended_data, 'api_ms', 'Nullable(UInt32)') AS api_ms,
+        if(tf.tool_calls > 0, tool_input_ms + tool_run_ms, NULL) AS tool_ms,
+        coalesce(ta.tool_input_ms, 0) AS tool_input_ms,
+        coalesce(ta.tool_run_ms, 0) AS tool_run_ms,
+        coalesce(ta.thinking_ms, 0) AS thinking_ms,
+        -- K3: ours before the request, plus ours between renderable and its content showing; the model's thinking is not ours.
+        -- First content, not first visible: the opening card (work 068) shows before anything is renderable.
+        if(
+            tf.outcome != 'silent' AND renderable_at IS NOT NULL AND first_content_at IS NOT NULL,
+            model_requested_ms + greatest(0, dateDiff('millisecond', renderable_at, first_content_at)),
+            NULL
+        ) AS overhead_ms,
+        tf.model_calls AS model_calls,
+        tf.tool_calls AS tool_calls,
+        length(visible) AS stream_flushes,
+        tf.steers AS steers,
+        tf.surface_calls AS surface_calls,
+        tf.surface_errors AS surface_errors,
+        tf.surface_rate_limited AS surface_rate_limited,
+        tf.surface_ms AS surface_ms,
+        tf.client_lag_max_ms AS client_lag_max_ms,
+        tf.loop_lag_max_ms AS loop_lag_max_ms,
+        JSONExtractUInt(tf.ended_data, 'input_tokens') AS input_tokens,
+        JSONExtractUInt(tf.ended_data, 'output_tokens') AS output_tokens,
+        JSONExtractUInt(tf.ended_data, 'cache_read_tokens') AS cache_read_tokens,
+        JSONExtractUInt(tf.ended_data, 'cache_creation_tokens') AS cache_creation_tokens,
+        -- The harness reports a running total per process; a process's first turn (turn_seq 1) starts it.
+        JSONExtractFloat(tf.ended_data, 'cost_total_usd') AS cost_total_usd,
+        if(
+            tf.turn_seq <= 1,
+            cost_total_usd,
+            greatest(0, cost_total_usd - lagInFrame(cost_total_usd) OVER (PARTITION BY tf.session_key ORDER BY tf.started_at))
+        ) AS cost_raw,
+        round(cost_raw, 6) AS cost_usd,
+        if(tf.ended_at IS NULL, '', tf.outcome) AS outcome,
+        tf.error_type AS error_type
+    FROM turn_facts AS tf
+    LEFT JOIN trace_facts AS tr ON tr.trace_id = tf.trace_id
+    LEFT JOIN turn_activity AS ta ON ta.turn_id = tf.turn_id
+
+NODE turns_all
+DESCRIPTION >
+    Derived turns, then rows written by runners before calvin#49 (the legacy `calvin_turns` datasource). Remove the legacy half with the datasource.
+
+SQL >
+    SELECT
+        turn_id,
+        trace_id,
+        session_key,
+        turn_seq,
+        org_id,
+        surface,
+        surface_workspace_id,
+        conversation_id,
+        person_id,
+        host_id,
+        region,
+        gateway_version,
+        host_version,
+        runner_version,
+        path,
+        harness,
+        provider,
+        model,
+        tier,
+        substrate,
+        synthetic,
+        sent_at,
+        received_ms,
+        dispatched_ms,
+        host_received_ms,
+        runner_ready_ms,
+        harness_ready_ms,
+        model_requested_ms,
+        first_token_ms,
+        renderable_ms,
+        first_visible_ms,
+        ended_ms,
+        fork_ms,
+        launch_ms,
+        harness_init_ms,
+        intro_ms,
+        names_ms,
+        attachments_ms,
+        ttft_ms,
+        api_ms,
+        tool_ms,
+        overhead_ms,
+        model_calls,
+        tool_calls,
+        stream_flushes,
+        steers,
+        surface_calls,
+        surface_errors,
+        surface_rate_limited,
+        max_silence_ms,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        cost_usd,
+        outcome,
+        error_type,
+        closed_ms,
+        tool_input_ms,
+        tool_run_ms,
+        thinking_ms,
+        surface_ms,
+        silence_cause,
+        ctx_tokens,
+        inter_call_ttft_ms,
+        inter_call_ttft_max_ms,
+        first_content_ms,
+        client_lag_max_ms,
+        loop_lag_max_ms
+    FROM derived
+    UNION ALL
+    SELECT
+        turn_id,
+        trace_id,
+        session_key,
+        turn_seq,
+        org_id,
+        surface,
+        surface_workspace_id,
+        conversation_id,
+        person_id,
+        host_id,
+        region,
+        gateway_version,
+        host_version,
+        runner_version,
+        path,
+        harness,
+        provider,
+        model,
+        tier,
+        substrate,
+        synthetic,
+        sent_at,
+        received_ms,
+        dispatched_ms,
+        host_received_ms,
+        runner_ready_ms,
+        harness_ready_ms,
+        model_requested_ms,
+        first_token_ms,
+        renderable_ms,
+        first_visible_ms,
+        ended_ms,
+        fork_ms,
+        launch_ms,
+        harness_init_ms,
+        intro_ms,
+        names_ms,
+        attachments_ms,
+        ttft_ms,
+        api_ms,
+        tool_ms,
+        overhead_ms,
+        model_calls,
+        tool_calls,
+        stream_flushes,
+        steers,
+        surface_calls,
+        surface_errors,
+        surface_rate_limited,
+        max_silence_ms,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        cost_usd,
+        outcome,
+        error_type,
+        CAST(NULL, 'Nullable(Int64)') AS closed_ms,
+        CAST(NULL, 'Nullable(Int64)') AS tool_input_ms,
+        CAST(NULL, 'Nullable(Int64)') AS tool_run_ms,
+        CAST(NULL, 'Nullable(Int64)') AS thinking_ms,
+        CAST(NULL, 'Nullable(UInt64)') AS surface_ms,
+        '' AS silence_cause,
+        CAST(NULL, 'Nullable(UInt64)') AS ctx_tokens,
+        CAST(NULL, 'Nullable(Int64)') AS inter_call_ttft_ms,
+        CAST(NULL, 'Nullable(Int64)') AS inter_call_ttft_max_ms,
+        first_visible_ms AS first_content_ms,
+        CAST(NULL, 'Nullable(UInt64)') AS client_lag_max_ms,
+        CAST(NULL, 'Nullable(UInt64)') AS loop_lag_max_ms
+    FROM calvin_turns
+    -- No anti-join: a turn is either derived or legacy, never both. Runners from
+    -- calvin#49 on write no row, and older ones report no `turn.started`.
+    -- (`NOT IN (SELECT … FROM derived)` rebuilt the whole derivation a second time.)
+    LIMIT 1 BY turn_id

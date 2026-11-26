@@ -1,0 +1,80 @@
+DESCRIPTION >
+    Time to a visual (work 063), one row per episode. An episode ends at a fact: `file.posted` with kind image or video (send_file or a script's `calvin-send-file`); the Bash call it was posted from is a render by that fact. It starts at the first render since the turn's previous visual: a Bash call whose `command_kinds` say browser or media (Playwright, ffmpeg, mermaid…), or the posting call itself when nothing earlier was recognised. The start is a heuristic from the command's head word (`node shot.mjs` says nothing); the end is exact. Failed launches, installs and retries after the start count; the model's planning before it does not. Renders with no visual after them in the turn are `abandoned`. Runners before calvin#60 report neither fact, so their turns have no rows.
+
+TOKEN "calvin_read" READ
+
+NODE visual_turns
+DESCRIPTION >
+    Per turn: when visuals landed (and from which call), when each render and install call started.
+
+SQL >
+    SELECT
+        turn_id,
+        anyIf(trace_id, event_name = 'turn.started') AS trace_id,
+        any(session_key) AS session_key,
+        any(org_id) AS org_id,
+        anyIf(path, event_name = 'turn.started') AS path,
+        max(synthetic) AS synthetic,
+        arraySort(groupArrayIf(occurred_at, event_name = 'file.posted' AND JSONExtractString(data, 'kind') IN ('image', 'video'))) AS files,
+        groupArrayIf(tool_call_id, event_name = 'file.posted' AND JSONExtractString(data, 'kind') IN ('image', 'video') AND tool_call_id != '') AS posting_calls,
+        groupArrayIf((tool_call_id, occurred_at), event_name = 'model.block_started' AND tool_call_id != '') AS calls,
+        groupArrayIf(
+            (tool_call_id, splitByChar(',', JSONExtractString(data, 'command_kinds'))),
+            event_name = 'tool.completed' AND JSONHas(data, 'command_kinds')
+        ) AS kinds,
+        arrayFilter(
+            r -> r > toDateTime64(0, 3),
+            arrayMap(k -> arrayFirst(c -> c.1 = k.1, calls).2, arrayFilter(k -> hasAny(k.2, ['browser', 'media']), kinds))
+        ) AS tagged,
+        arrayFilter(r -> r > toDateTime64(0, 3), arrayMap(id -> arrayFirst(c -> c.1 = id, calls).2, posting_calls)) AS posting,
+        arraySort(arrayDistinct(arrayConcat(tagged, posting))) AS renders,
+        arraySort(arrayFilter(
+            r -> r > toDateTime64(0, 3),
+            arrayMap(k -> arrayFirst(c -> c.1 = k.1, calls).2, arrayFilter(k -> has(k.2, 'install'), kinds))
+        )) AS installs
+    FROM
+        (
+            SELECT turn_id, trace_id, session_key, org_id, path, synthetic, event_name, occurred_at, tool_call_id, data
+            FROM calvin_events
+            WHERE service_name = 'runner' AND turn_id != ''
+              AND event_name IN ('turn.started', 'model.block_started', 'tool.completed', 'file.posted')
+            LIMIT 1 BY event_id
+        )
+    GROUP BY turn_id
+    HAVING length(renders) > 0
+
+NODE episodes
+DESCRIPTION >
+    One row per episode: the turn's visuals cut it into windows (previous visual, this visual]; the last window, after the last visual, ends with none.
+
+SQL >
+    SELECT
+        turn_id,
+        trace_id,
+        session_key,
+        org_id,
+        path,
+        synthetic,
+        rs[1] AS started_at,
+        posted_at,
+        if(posted_at IS NULL, 'abandoned', 'posted') AS outcome,
+        if(posted_at IS NULL, NULL, dateDiff('millisecond', rs[1], assumeNotNull(posted_at))) AS visual_ms,
+        length(rs) AS renders,
+        length(arrayFilter(x -> x >= rs[1] AND (posted_at IS NULL OR x <= assumeNotNull(posted_at)), installs)) AS installs
+    FROM
+        (
+            SELECT
+                turn_id, trace_id, session_key, org_id, path, synthetic, installs,
+                arrayFilter(r -> r > w.1 AND (w.2 IS NULL OR r <= assumeNotNull(w.2)), renders) AS rs,
+                w.2 AS posted_at
+            FROM visual_turns
+            ARRAY JOIN
+                arrayMap(
+                    i -> (
+                        if(i = 1, toDateTime64(0, 3), files[i - 1]),
+                        if(i <= length(files), toNullable(files[i]), CAST(NULL, 'Nullable(DateTime64(3))'))
+                    ),
+                    range(1, length(files) + 2)
+                ) AS w
+        )
+    WHERE length(rs) > 0

@@ -7,8 +7,9 @@
 //       --org <org_id> [--disable]
 //
 // Prereqs on the edge: OPENROUTER_PROVISIONING_KEY + OC_MANAGED_CRED_HMAC_SECRET set;
-// the matching OC_MANAGED_CRED_HMAC_SECRET set on sessions-api. The edge mints the
-// org's OpenRouter key and binds it to sessions-api as a managed credential, then
+// the matching OC_MANAGED_CRED_HMAC_SECRET set on the managed agents backend (blue),
+// and MANAGED_AGENTS_API_URL set on the edge. The edge mints the org's OpenRouter
+// key and binds it to the managed agents backend as a managed credential, then
 // flips orgs.model_billing_status='active' (→ /billing.managedAvailable=true).
 
 import { createHmac } from "node:crypto";

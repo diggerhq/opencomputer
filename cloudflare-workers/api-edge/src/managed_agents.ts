@@ -50,7 +50,7 @@ export interface ManagedAgentsCaller {
   sessionKey?: string;
   /** Set only when the caller authenticated with an API key (work 084). */
   key?: AssertedAPIKey;
-  /** The key creator's name and email, when the auth read loaded them. */
+  /** The key creator's (or the dashboard member's) name and email, when the auth read loaded them. */
   userName?: string | null;
   userEmail?: string | null;
 }
@@ -143,9 +143,10 @@ export async function mintManagedAgentsAssertion(
     payload.key_scopes = caller.key.scopes;
     payload.key_expires_at = caller.key.expiresAt;
     payload.key_created_at = caller.key.createdAt;
-    if (caller.userName) payload.user_name = caller.userName;
-    if (caller.userEmail) payload.user_email = caller.userEmail;
   }
+  // A key's creator, or a dashboard session's member (work tracking 3.10).
+  if (caller.userName) payload.user_name = caller.userName;
+  if (caller.userEmail) payload.user_email = caller.userEmail;
   const encoder = new TextEncoder();
   const signingInput =
     `${b64url(encoder.encode(JSON.stringify(header)))}.` +

@@ -1,0 +1,12 @@
+- name: silent_thread
+  description: a thread with one silent turn
+  parameters: session_key=T1:C1:1893492300.000200
+  expected_result: |
+    {"kind":"turn","at":"2030-01-01 10:20:00.000","trace_id":"01930003-0000-7000-8000-000000000004","turn_id":"01930002-0000-7000-8000-000000000004","name":"turn:warm","service":"runner","outcome":"silent","duration_ms":1900}
+
+- name: abandoned_and_canary
+  description: the host-reported abandoned turn, then the canary turn row
+  parameters: session_key=T1:C2:1893492600.000300&since=2030-01-01%2010:20:00
+  expected_result: |
+    {"kind":"event","at":"2030-01-01 10:25:30.000","trace_id":"01930003-0000-7000-8000-000000000005","turn_id":"","name":"turn.abandoned","service":"host","outcome":"","duration_ms":30000}
+    {"kind":"turn","at":"2030-01-01 10:30:00.000","trace_id":"01930003-0000-7000-8000-000000000006","turn_id":"01930002-0000-7000-8000-000000000006","name":"turn:warm","service":"runner","outcome":"completed","duration_ms":9000}

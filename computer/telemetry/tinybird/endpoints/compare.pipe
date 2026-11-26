@@ -1,0 +1,58 @@
+DESCRIPTION >
+    K2 to K5, client and loop lag (work 082), tokens, cost and failure ratio split by one dimension (`by`: harness, provider, model, surface, substrate, path, or ctx: the context a turn started with, bucketed at the 200k and 300k cliffs of work 068) over `[since, until)`: "is the new harness or model faster?". Non-synthetic, non-silent turns only for the latency columns.
+
+TOKEN "calvin_read" READ
+
+NODE endpoint
+SQL >
+    %
+    {% if defined(by) and by not in ('harness', 'provider', 'model', 'surface', 'substrate', 'path', 'ctx') %}
+        {{ error('by must be one of harness, provider, model, surface, substrate, path, ctx', 400) }}
+    {% end %}
+    SELECT
+        {% if defined(by) and by == 'ctx' %}
+            multiIf(
+                ctx_tokens IS NULL, 'unknown',
+                ctx_tokens < 100000, '0-100k',
+                ctx_tokens < 150000, '100-150k',
+                ctx_tokens < 200000, '150-200k',
+                ctx_tokens < 300000, '200-300k',
+                '300k+'
+            )
+        {% else %} {{ column(by, 'harness') }}
+        {% end %} AS dimension,
+        count() AS turns,
+        round(quantileIf(0.5)(first_visible_ms, outcome != 'silent')) AS k2_p50,
+        round(quantileIf(0.95)(first_visible_ms, outcome != 'silent')) AS k2_p95,
+        round(quantileIf(0.5)(overhead_ms, outcome != 'silent')) AS k3_p50,
+        round(quantileIf(0.95)(overhead_ms, outcome != 'silent')) AS k3_p95,
+        round(quantile(0.5)(ttft_ms)) AS k4_p50,
+        round(quantile(0.95)(ttft_ms)) AS k4_p95,
+        round(quantileIf(0.95)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL)) AS k5_p95,
+        -- Work 082's regression guards: each turn's worst write lag and loop delay, at p95 over turns (null before runners report them).
+        round(quantile(0.95)(client_lag_max_ms)) AS client_lag_p95,
+        round(quantile(0.95)(loop_lag_max_ms)) AS loop_lag_p95,
+        round(
+            sum(cache_read_tokens)
+            / greatest(sum(input_tokens + cache_read_tokens + cache_creation_tokens), 1),
+            4
+        ) AS cache_hit_ratio,
+        round(
+            avg(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)
+        ) AS tokens_per_turn,
+        round(avg(cost_usd), 6) AS cost_per_turn_usd,
+        round(countIf(outcome = 'failed') / count(), 4) AS failed_ratio
+    FROM
+        (
+            SELECT *
+            FROM turns
+            WHERE
+                sent_at >= {{ DateTime(since, required=True) }}
+                AND sent_at < {{ DateTime(until, required=True) }}
+                {% if not defined(include_synthetic) %} AND synthetic = false {% end %}
+            LIMIT 1 BY turn_id
+        )
+    GROUP BY dimension
+    ORDER BY dimension
+
+TYPE ENDPOINT

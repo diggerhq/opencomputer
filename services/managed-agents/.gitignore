@@ -1,0 +1,16 @@
+node_modules
+dist/
+.wrangler/
+.trigger/
+.blue/
+.dev.vars
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+*.tgz
+.DS_Store
+examples/
+*.generated.jsonc
+__pycache__/

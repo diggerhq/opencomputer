@@ -1,0 +1,24 @@
+- name: one_day
+  description: K1 to K8 per path; dedups the twice-delivered turn, keeps the silent turn out of K2, K3 and K5, counts the abandoned turn in K7, excludes the canary
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00
+  expected_result: |
+    {"path":"new","turns":1,"k2_n":1,"k2_p50":5200,"k2_p95":5200,"k2_p99":5200,"k3_p50":3500,"k3_p95":3500,"k3_p99":3500,"k4_p50":1500,"k4_p95":1500,"k4_p99":1500,"k5_p50":2000,"k5_p95":2000,"k5_p99":2000,"failed":0,"abandoned":0,"k7_failure_ratio":0,"k8_calls":0,"k8_errors":0,"k8_rate_limited":0,"k1_n":3,"k1_p50":600,"k1_p95":690,"k1_p99":698,"k6_n":1,"k6_p95":250,"queue_failed":0}
+    {"path":"warm","turns":3,"k2_n":2,"k2_p50":2550,"k2_p95":2955,"k2_p99":2991,"k3_p50":375,"k3_p95":442,"k3_p99":448,"k4_p50":1000,"k4_p95":1180,"k4_p99":1196,"k5_p50":4000,"k5_p95":4900,"k5_p99":4980,"failed":0,"abandoned":1,"k7_failure_ratio":0.25,"k8_calls":0,"k8_errors":0,"k8_rate_limited":0,"k1_n":3,"k1_p50":600,"k1_p95":690,"k1_p99":698,"k6_n":1,"k6_p95":250,"queue_failed":0}
+
+- name: with_synthetic
+  description: include_synthetic adds the canary turn to warm
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&include_synthetic=1
+  expected_result: |
+    {"path":"new","turns":1,"k2_n":1,"k2_p50":5200,"k2_p95":5200,"k2_p99":5200,"k3_p50":3500,"k3_p95":3500,"k3_p99":3500,"k4_p50":1500,"k4_p95":1500,"k4_p99":1500,"k5_p50":2000,"k5_p95":2000,"k5_p99":2000,"failed":0,"abandoned":0,"k7_failure_ratio":0,"k8_calls":0,"k8_errors":0,"k8_rate_limited":0,"k1_n":3,"k1_p50":600,"k1_p95":690,"k1_p99":698,"k6_n":1,"k6_p95":250,"queue_failed":0}
+    {"path":"warm","turns":4,"k2_n":3,"k2_p50":3000,"k2_p95":8400,"k2_p99":8880,"k3_p50":450,"k3_p95":765,"k3_p99":793,"k4_p50":1100,"k4_p95":6725,"k4_p99":7505,"k5_p50":3000,"k5_p95":4800,"k5_p99":4960,"failed":0,"abandoned":1,"k7_failure_ratio":0.2,"k8_calls":0,"k8_errors":0,"k8_rate_limited":0,"k1_n":3,"k1_p50":600,"k1_p95":690,"k1_p99":698,"k6_n":1,"k6_p95":250,"queue_failed":0}
+
+- name: path_filter
+  description: path=new returns only the new row
+  parameters: since=2030-01-01%2000:00:00&until=2030-01-02%2000:00:00&path=new
+  expected_result: |
+    {"path":"new","turns":1,"k2_n":1,"k2_p50":5200,"k2_p95":5200,"k2_p99":5200,"k3_p50":3500,"k3_p95":3500,"k3_p99":3500,"k4_p50":1500,"k4_p95":1500,"k4_p99":1500,"k5_p50":2000,"k5_p95":2000,"k5_p99":2000,"failed":0,"abandoned":0,"k7_failure_ratio":0,"k8_calls":0,"k8_errors":0,"k8_rate_limited":0,"k1_n":3,"k1_p50":600,"k1_p95":690,"k1_p99":698,"k6_n":1,"k6_p95":250,"queue_failed":0}
+
+- name: empty_window
+  description: a window with no turns returns no rows
+  parameters: since=2029-01-01%2000:00:00&until=2029-01-02%2000:00:00
+  expected_result: |

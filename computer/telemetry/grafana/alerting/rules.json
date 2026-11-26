@@ -1,0 +1,2018 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "calvin-kpis",
+      "folder": "Calvin",
+      "interval": "5m",
+      "rules": [
+        {
+          "uid": "calvin-k1-all",
+          "title": "K1 Time to acknowledgement p95 > 1000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(duration_ms IS NOT NULL AND 1) >= 20, quantileIf(0.95)(duration_ms, 1), 0) AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 1 HOUR AND event_name IN ('ack.done') AND NOT synthetic LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "30m",
+          "annotations": {
+            "summary": "Time to acknowledgement p95 over 1 h is above 1000 ms (budget 1000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k2-warm",
+          "title": "K2 Time to first visible output p95 (warm) > 4000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(first_visible_ms IS NOT NULL AND path = 'warm' AND outcome != 'silent') >= 20, quantileIf(0.95)(first_visible_ms, path = 'warm' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        4000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Time to first visible output p95 over 3 h is above 4000 ms (budget 4000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k2-new",
+          "title": "K2 Time to first visible output p95 (new) > 8000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(first_visible_ms IS NOT NULL AND path = 'new' AND outcome != 'silent') >= 20, quantileIf(0.95)(first_visible_ms, path = 'new' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        8000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Time to first visible output p95 over 3 h is above 8000 ms (budget 8000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k2-resume",
+          "title": "K2 Time to first visible output p95 (resume) > 8000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(first_visible_ms IS NOT NULL AND path = 'resume' AND outcome != 'silent') >= 20, quantileIf(0.95)(first_visible_ms, path = 'resume' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        8000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Time to first visible output p95 over 3 h is above 8000 ms (budget 8000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k3-warm",
+          "title": "K3 Calvin overhead p95 (warm) > 400 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(overhead_ms IS NOT NULL AND path = 'warm' AND outcome != 'silent') >= 20, quantileIf(0.95)(overhead_ms, path = 'warm' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        400
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Calvin overhead p95 over 3 h is above 400 ms (budget 400 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k3-new",
+          "title": "K3 Calvin overhead p95 (new) > 4000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(overhead_ms IS NOT NULL AND path = 'new' AND outcome != 'silent') >= 20, quantileIf(0.95)(overhead_ms, path = 'new' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        4000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Calvin overhead p95 over 3 h is above 4000 ms (budget 4000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k3-resume",
+          "title": "K3 Calvin overhead p95 (resume) > 4000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(overhead_ms IS NOT NULL AND path = 'resume' AND outcome != 'silent') >= 20, quantileIf(0.95)(overhead_ms, path = 'resume' AND outcome != 'silent'), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        4000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Calvin overhead p95 over 3 h is above 4000 ms (budget 4000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k5-all",
+          "title": "K5 Longest silence p95 > 8000 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(max_silence_ms IS NOT NULL AND outcome != 'silent' AND first_visible_ms IS NOT NULL) >= 20, quantileIf(0.95)(max_silence_ms, outcome != 'silent' AND first_visible_ms IS NOT NULL), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 3 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        8000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Longest silence p95 over 3 h is above 8000 ms (budget 8000 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k6-all",
+          "title": "K6 Steer latency p95 > 500 ms",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(latency_ms IS NOT NULL AND 1) >= 20, quantileIf(0.95)(latency_ms, 1), 0) AS value FROM (SELECT * FROM steers WHERE occurred_at > now() - INTERVAL 3 HOUR AND NOT synthetic)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        500
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Steer latency p95 over 3 h is above 500 ms (budget 500 ms, n >= 20).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k7-failures",
+          "title": "K7 turn failures > 1%",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(t.n + a.n >= 20, (t.failed + a.n) / (t.n + a.n), 0) AS value FROM\n  (SELECT count() AS n, countIf(outcome = 'failed') AS failed FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 1 HOUR AND NOT synthetic LIMIT 1 BY turn_id)) AS t,\n  (SELECT count() AS n FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 60 MINUTE AND event_name IN ('turn.abandoned') AND NOT synthetic LIMIT 1 BY event_id)) AS a"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.01
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "More than 1% of turns failed or were abandoned in the last hour.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k8-errors",
+          "title": "K8 frontend API errors > 1%",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(sum(surface_calls) >= 100, sum(surface_errors) / sum(surface_calls), 0) AS value FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 1 HOUR AND NOT synthetic LIMIT 1 BY turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.01
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "30m",
+          "annotations": {
+            "summary": "More than 1% of frontend API calls failed in the last hour.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-telemetry-drops",
+          "title": "Telemetry loss > 1% of events",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(count() >= 100, sumIf(JSONExtractUInt(data, 'count'), event_name = 'telemetry.dropped' AND JSONExtractString(data, 'reason') != 'duplicate_delivery') / count(), 0) AS value\nFROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 60 MINUTE LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.01
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "annotations": {
+            "summary": "Emitters, hosts or the collector dropped more than 1% of telemetry in the last hour (see telemetry.dropped by reason).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-reliability"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-telemetry-gaps",
+          "title": "Telemetry: host batches missing",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT sum(missing) AS value FROM (\n  SELECT host_id, JSONExtractString(data, 'host_boot_id') AS boot, max(JSONExtractUInt(data, 'batch_seq')) - min(JSONExtractUInt(data, 'batch_seq')) + 1 - uniqExact(JSONExtractUInt(data, 'batch_seq')) AS missing\n  FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 60 MINUTE AND event_name IN ('telemetry.batch') LIMIT 1 BY event_id) GROUP BY host_id, boot)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "annotations": {
+            "summary": "A host's batch sequence has gaps: batches were lost between the host and Tinybird.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-reliability"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-telemetry-dark-dispatch",
+          "title": "Telemetry: dispatches with no runner events",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (\n  SELECT trace_id FROM (SELECT * FROM calvin_events WHERE occurred_at BETWEEN now() - INTERVAL 60 MINUTE AND now() - INTERVAL 5 MINUTE AND event_name IN ('dispatch.sent') LIMIT 1 BY event_id)\n  WHERE trace_id NOT IN (SELECT trace_id FROM calvin_events WHERE occurred_at > now() - INTERVAL 70 MINUTE AND service_name = 'runner'))"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "annotations": {
+            "summary": "Messages reached a host (dispatch.sent) but no runner telemetry arrived for them.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-reliability"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-deploy-regression-runner",
+          "title": "Deploy regression: K3 on the newest runner_version > 1.3x the previous",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 1209600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(count() = 2 AND argMax(n, first_seen) >= 30, argMax(p95, first_seen) / greatest(argMin(p95, first_seen), 1), 0) AS value FROM (\n  SELECT runner_version AS version, min(sent_at) AS first_seen, count() AS n, quantile(0.95)(overhead_ms) AS p95\n  FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 14 DAY AND outcome != 'silent' LIMIT 1 BY turn_id)\n  GROUP BY version ORDER BY first_seen DESC LIMIT 2)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1.3
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Calvin overhead p95 on the newest runner_version is more than 1.3x the previous version's.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-deploy-regression-gateway",
+          "title": "Deploy regression: K3 on the newest gateway_version > 1.3x the previous",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 1209600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(count() = 2 AND argMax(n, first_seen) >= 30, argMax(p95, first_seen) / greatest(argMin(p95, first_seen), 1), 0) AS value FROM (\n  SELECT gateway_version AS version, min(sent_at) AS first_seen, count() AS n, quantile(0.95)(overhead_ms) AS p95\n  FROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 14 DAY AND outcome != 'silent' LIMIT 1 BY turn_id)\n  GROUP BY version ORDER BY first_seen DESC LIMIT 2)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1.3
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Calvin overhead p95 on the newest gateway_version is more than 1.3x the previous version's.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        }
+      ]
+    },
+    {
+      "orgId": 1,
+      "name": "calvin-absence",
+      "folder": "Calvin",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "calvin-k7-lost",
+          "title": "K7 a queued job failed or a turn was abandoned",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 15 MINUTE AND event_name IN ('queue.failed', 'turn.abandoned') AND NOT synthetic LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "A gateway job gave up, or a runner died mid-turn (turn.abandoned).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-no-host",
+          "title": "Dispatch parked with no host",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (\n  SELECT dispatch_id, maxIf(occurred_at, event_name = 'dispatch.parked') AS parked, maxIf(occurred_at, event_name = 'dispatch.sent') AS sent\n  FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 15 MINUTE AND event_name IN ('dispatch.parked', 'dispatch.sent') LIMIT 1 BY event_id) GROUP BY dispatch_id)\nWHERE parked > toDateTime64(0, 3) AND sent < parked AND parked < now() - INTERVAL 60 SECOND"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "A message is waiting for a host that is not connected (dispatch.parked without a later dispatch.sent within 60 s).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-k8-rate-limited",
+          "title": "K8 frontend rate limiting",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT countIf(JSONExtractBool(data, 'rate_limited')) AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 5 MINUTE AND event_name IN ('surface.call') LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "The frontend API (Slack) is rate-limiting Calvin.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-canary-missing",
+          "title": "Canary: no completed synthetic turn in 25 min",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 1500,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 25 MINUTE AND event_name IN ('turn.ended') LIMIT 1 BY event_id) WHERE synthetic AND outcome = 'completed'"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "The canary has not completed a turn in 25 minutes: Calvin, or the telemetry pipeline, is down.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin",
+            "email": "true"
+          }
+        },
+        {
+          "uid": "calvin-canary-failing",
+          "title": "Canary: two synthetic failures in a row",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT countIf(outcome = 'failed') AS value FROM (SELECT outcome FROM turns WHERE synthetic AND sent_at > now() - INTERVAL 1 HOUR ORDER BY sent_at DESC LIMIT 1 BY turn_id LIMIT 2)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "The last two canary turns failed.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-speed"
+          },
+          "labels": {
+            "team": "calvin",
+            "email": "true"
+          }
+        },
+        {
+          "uid": "calvin-host-silent",
+          "title": "Host silent",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 86400,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT host_id, dateDiff('second', max(occurred_at), now()) AS value FROM calvin_events\nWHERE event_name = 'host.sample' AND occurred_at > now() - INTERVAL 1 DAY GROUP BY host_id"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        300
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "A host seen in the last day has sent no host.sample for 5 minutes ({{ $labels.host_id }}).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-hosts"
+          },
+          "labels": {
+            "team": "calvin",
+            "email": "true"
+          }
+        },
+        {
+          "uid": "calvin-gateway-down",
+          "title": "Gateway down",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(countIf(service_name = 'gateway') = 0 AND (countIf(event_name = 'host.sample' AND NOT JSONExtractBool(data, 'gateway_connected')) > 0\n  OR maxIf(JSONExtractFloat(data, 'since_gateway_message_s'), event_name = 'host.sample') > 300), 1, 0) AS value\nFROM calvin_events WHERE occurred_at > now() - INTERVAL 5 MINUTE"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "No gateway events for 5 minutes while hosts report the gateway connection down or stale.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-hosts"
+          },
+          "labels": {
+            "team": "calvin",
+            "email": "true"
+          }
+        },
+        {
+          "uid": "calvin-pipeline-silent",
+          "title": "Telemetry pipeline silent",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM calvin_events WHERE occurred_at > now() - INTERVAL 10 MINUTE"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "No telemetry rows at all for 10 minutes: the collector, Tinybird ingestion or every emitter is down.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-reliability"
+          },
+          "labels": {
+            "team": "calvin",
+            "email": "true"
+          }
+        }
+      ]
+    },
+    {
+      "orgId": 1,
+      "name": "calvin-computer-api",
+      "folder": "Calvin",
+      "interval": "5m",
+      "rules": [
+        {
+          "uid": "calvin-api-api-gaps-1h",
+          "title": "Computer API: journal gaps in an hour > 3",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT countIf((event_name = 'sessionlog.recovery' AND JSONExtractString(data, 'kind') = 'gap_4010') OR (event_name = 'sessionlog.append' AND JSONExtractString(data, 'refused') = 'gap')) AS value\nFROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 3600 SECOND AND event_name IN ('sessionlog.recovery', 'sessionlog.append') LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        3
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "More than 3 journal gaps (4010 closes or appends refused for a gap) in the last hour: hosts and the Computer DO disagree about the journal.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-recover-alarms-1h",
+          "title": "Computer API: recover alarm fired > 0",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 3600 SECOND AND event_name IN ('sessionlog.recovery') LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'kind') = 'recover_alarm'"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "The Computer DO recover alarm acted (host gone or runner stopped mid-turn); see Q6 for the reason.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-api-503-ratio",
+          "title": "Computer API: 503 computer_unavailable ratio > 0.05",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT if(count() >= 20, countIf(JSONExtractInt(data, 'status') = 503) / count(), 0) AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 900 SECOND AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.05
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "annotations": {
+            "summary": "More than 5% of computer API requests answered 503 computer_unavailable over 15 min (n >= 20): the host is not connected.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-held-write-timeouts-15m",
+          "title": "Computer API: held writes timed out > 0",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT count() AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 900 SECOND AND event_name IN ('computer.write') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'timed_out')"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "An API write waited on an epoch adoption, or for the host, and timed out.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-wire-refused-5m",
+          "title": "Wire: refusals in 5 min > 100",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT countIf(event_name = 'wire.refused' OR JSONExtractString(data, 'result') = 'refused') AS value FROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 300 SECOND AND event_name IN ('wire.refused', 'wireworker.request') LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        100
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "A spike of refused wire connections (relay or wire Worker): bad tickets, revoked keys or a client in a reconnect loop.",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-freshness-p95",
+          "title": "Computer API: event age p95 at the DO or the wire socket (ms) > 2000",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT greatest(\n  if(countIf(event_name = 'mirror.ack') >= 50, quantileIf(0.95)(JSONExtractInt(data, 'age_ms'), event_name = 'mirror.ack'), 0),\n  if(countIf(event_name = 'wire.flush') >= 50, quantileIf(0.95)(JSONExtractInt(data, 'oldest_age_ms'), event_name = 'wire.flush'), 0)) AS value\nFROM (SELECT * FROM calvin_events WHERE occurred_at > now() - INTERVAL 900 SECOND AND event_name IN ('mirror.ack', 'wire.flush') LIMIT 1 BY event_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        2000
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "15m",
+          "annotations": {
+            "summary": "Events reach the Computer DO or a wire client more than 2000 ms after the runner wrote them (p95 over 15 min, n >= 50).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-slack-k2-v4-ratio",
+          "title": "Slack K2 warm p95 on v4 runners ÷ v3 > 1.2",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 86400,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT ifNull(if(countIf(first_visible_ms IS NOT NULL AND v4) >= 30 AND countIf(first_visible_ms IS NOT NULL AND NOT v4) >= 30, quantileIf(0.95)(first_visible_ms, v4) / greatest(quantileIf(0.95)(first_visible_ms, NOT v4), 1), NULL), 0) AS value FROM (SELECT t.sent_at AS sent_at, t.first_visible_ms AS first_visible_ms, t.overhead_ms AS overhead_ms, p.protocol IN ('v4', 'v4+client') AS v4\nFROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 24 HOUR AND surface = 'slack' AND path = 'warm' AND outcome != 'silent' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at > now() - INTERVAL 25 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1.2
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Warm Slack K2 p95 on v4 runners is more than 1.2x v3 over 24 h (n >= 30 per side): 084's journal may be slowing Slack. Confirm with the same-org before/after check (084 instrumentation answers).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        },
+        {
+          "uid": "calvin-api-slack-k3-v4-ratio",
+          "title": "Slack K3 warm p95 on v4 runners ÷ v3 > 1.2",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 86400,
+                "to": 0
+              },
+              "datasourceUid": "calvin-tinybird",
+              "model": {
+                "refId": "A",
+                "editorType": "sql",
+                "format": 1,
+                "queryType": "table",
+                "rawSql": "SELECT ifNull(if(countIf(overhead_ms IS NOT NULL AND v4) >= 30 AND countIf(overhead_ms IS NOT NULL AND NOT v4) >= 30, quantileIf(0.95)(overhead_ms, v4) / greatest(quantileIf(0.95)(overhead_ms, NOT v4), 1), NULL), 0) AS value FROM (SELECT t.sent_at AS sent_at, t.first_visible_ms AS first_visible_ms, t.overhead_ms AS overhead_ms, p.protocol IN ('v4', 'v4+client') AS v4\nFROM (SELECT * FROM turns WHERE sent_at > now() - INTERVAL 24 HOUR AND surface = 'slack' AND path = 'warm' AND outcome != 'silent' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at > now() - INTERVAL 25 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1.2
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Warm Slack K3 p95 on v4 runners is more than 1.2x v3 over 24 h (n >= 30 per side): 084's journal may be slowing Slack. Confirm with the same-org before/after check (084 instrumentation answers).",
+            "description": "Value {{ $values.B.Value }}. Slowest traces: /d/calvin-traces; runbook: work 054, \"Operator runbook\"",
+            "__dashboardUid__": "calvin-computer-api"
+          },
+          "labels": {
+            "team": "calvin"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+DESCRIPTION >
+    Every turn and event of one thread (`session_key`: `teamId:channel:threadTs` on the hosted gateway, `channel:threadTs` on the standalone gateway), oldest first. Take a turn's `trace_id` from here into `trace`.
+
+TOKEN "calvin_read" READ
+
+NODE session_events
+SQL >
+    %
+    SELECT
+        occurred_at AS at,
+        trace_id,
+        turn_id,
+        event_name AS name,
+        service_name AS service,
+        outcome,
+        duration_ms
+    FROM calvin_events
+    WHERE
+        session_key = {{ String(session_key, required=True) }}
+        {% if defined(since) %} AND occurred_at >= {{ DateTime(since) }} {% end %}
+        {% if defined(until) %} AND occurred_at < {{ DateTime(until) }} {% end %}
+    LIMIT 1 BY event_id
+
+NODE session_turns
+SQL >
+    %
+    SELECT
+        sent_at AS at,
+        trace_id,
+        turn_id,
+        concat('turn:', path) AS name,
+        'runner' AS service,
+        outcome,
+        first_visible_ms AS duration_ms
+    FROM turns
+    WHERE
+        session_key = {{ String(session_key, required=True) }}
+        {% if defined(since) %} AND sent_at >= {{ DateTime(since) }} {% end %}
+        {% if defined(until) %} AND sent_at < {{ DateTime(until) }} {% end %}
+    LIMIT 1 BY turn_id
+
+NODE endpoint
+SQL >
+    SELECT *
+    FROM
+        (
+            SELECT 'event' AS kind, *
+            FROM session_events
+            UNION ALL
+            SELECT 'turn' AS kind, *
+            FROM session_turns
+        )
+    ORDER BY at, kind DESC, name
+    LIMIT 5000
+
+TYPE ENDPOINT

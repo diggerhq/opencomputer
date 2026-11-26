@@ -22,7 +22,6 @@ function env(overrides: Partial<AutumnEnv> = {}): AutumnEnv {
     AUTUMN_WEBHOOK_SECRET: "whsec_test",
     EVENT_SECRET: "event-secret",
     AGENT_RUNTIME_USAGE_HMAC_SECRET: "agent-runtime-secret",
-    CF_ADMIN_SECRET: "admin-secret",
     OPENCOMPUTER_DB: {} as D1Database,
     ...overrides,
   };
@@ -97,7 +96,7 @@ describe("managed-agent runtime usage billing", () => {
 
     expect(response.status).toBe(200);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/customers/org_1"))).toHaveLength(2);
-    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?7"))).toBe(true);
   });
 
   it("replaces a trial_days warning once the minutes are the nearer limit", async () => {
@@ -112,7 +111,7 @@ describe("managed-agent runtime usage billing", () => {
 
     await post({ quantity_seconds: 1_200, close_reason: "turn_settled", idempotency_key: "crt_1:5" }, { OPENCOMPUTER_DB: db });
 
-    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(true);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?7"))).toBe(true);
   });
 
   it("does not re-project when the stored warning still stands", async () => {
@@ -126,7 +125,7 @@ describe("managed-agent runtime usage billing", () => {
     await post({ close_reason: "turn_settled", idempotency_key: "crt_1:6" }, { OPENCOMPUTER_DB: db });
 
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/customers/org_1"))).toHaveLength(1);
-    expect(writes.some((sql) => sql.includes("billing_warning = ?8"))).toBe(false);
+    expect(writes.some((sql) => sql.includes("billing_warning = ?7"))).toBe(false);
   });
 
   it("bills an org on a work-minute plan in work minutes", async () => {

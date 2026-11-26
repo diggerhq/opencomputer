@@ -1,0 +1,715 @@
+[
+ {
+  "step": "send clean up"
+ },
+ {
+  "slack": "conversations.info",
+  "args": {
+   "channel": "C1"
+  }
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U1"
+  }
+ },
+ {
+  "harness": "start",
+  "resume": "sdk-0",
+  "mode": "default",
+  "model": "claude-opus-5-5",
+  "effort": "medium"
+ },
+ {
+  "harness": "send",
+  "v": {
+   "text": "[Slack: from name-U1 (<@U1>) in #eng, mentions you]\nclean up",
+   "how": "queue"
+  }
+ },
+ {
+  "slack": "agents.sessions.setStatus",
+  "args": {
+   "channel_id": "C1",
+   "status": "processing",
+   "thread_ts": "1.0",
+   "title": "golden",
+   "initiator_user_id": "U1"
+  }
+ },
+ {
+  "busy": true
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Started",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Bash(rm -rf build)",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate Bash"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Claude wants to use Bash",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Claude wants to use Bash*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "```\nrm -rf build\n```"
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow"
+       },
+       "action_id": "p:QzEtMS4w:00000002:allow",
+       "value": "allow",
+       "style": "primary"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow Bash for this session"
+       },
+       "action_id": "p:QzEtMS4w:00000002:always",
+       "value": "always"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Deny"
+       },
+       "action_id": "p:QzEtMS4w:00000002:deny",
+       "value": "deny",
+       "style": "danger"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here to decline and say what to do instead"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Bash(rm -rf build) · waiting for approval ↓",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "press allow"
+ },
+ {
+  "slack": "users.info",
+  "args": {
+   "user": "U2"
+  }
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.4"
+  }
+ },
+ {
+  "decision": "tu_1",
+  "d": {
+   "behavior": "allow",
+   "updatedInput": {
+    "command": "rm -rf build"
+   }
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Bash(rm -rf build) · allowed by name-U2",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool_result"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Bash(rm -rf build) · allowed by name-U2",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Write(x.ts) · 1 lines · 1 earlier: ✓ Bash",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate Write"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Claude wants to use Write",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Claude wants to use Write*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "`x.ts`\n```\nx\n```"
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow"
+       },
+       "action_id": "p:QzEtMS4w:00000003:allow",
+       "value": "allow",
+       "style": "primary"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Deny"
+       },
+       "action_id": "p:QzEtMS4w:00000003:deny",
+       "value": "deny",
+       "style": "danger"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here to decline and say what to do instead"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Write(x.ts) · waiting for approval ↓ · 1 earlier: ✓ Bash",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "send no, put it in tmp/"
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.10"
+  }
+ },
+ {
+  "decision": "tu_2",
+  "d": {
+   "behavior": "deny",
+   "message": "The user declined and said: [Slack: from name-U1 (<@U1>) in #eng, mentions you]\nno, put it in tmp/"
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.2",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000001",
+     "title": "Write(x.ts) · continues below ↓",
+     "status": "pending"
+    }
+   ],
+   "session_status": "processing"
+  }
+ },
+ {
+  "step": "feed tool_result"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Write(x.ts) · declined by name-U1 · denied",
+     "status": "error"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Bash(make) · 1 earlier: ✗ Write",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate Bash"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Claude wants to use Bash",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Claude wants to use Bash*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "```\nmake\n```"
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow"
+       },
+       "action_id": "p:QzEtMS4w:00000005:allow",
+       "value": "allow",
+       "style": "primary"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Allow Bash for this session"
+       },
+       "action_id": "p:QzEtMS4w:00000005:always",
+       "value": "always"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Deny"
+       },
+       "action_id": "p:QzEtMS4w:00000005:deny",
+       "value": "deny",
+       "style": "danger"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here to decline and say what to do instead"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Bash(make) · waiting for approval ↓ · 1 earlier: ✗ Write",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "press always"
+ },
+ {
+  "slack": "chat.delete",
+  "args": {
+   "channel": "C1",
+   "ts": "1.16"
+  }
+ },
+ {
+  "decision": "tu_3",
+  "d": {
+   "behavior": "allow",
+   "updatedInput": {
+    "command": "make"
+   },
+   "remember": true
+  }
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Bash(make) · allowed for session by name-U1 · 1 earlier: ✗ Write",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed tool_result"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Bash(make) · allowed for session by name-U1 · 1 earlier: ✗ Write · built",
+     "status": "complete"
+    }
+   ]
+  }
+ },
+ {
+  "step": "feed request,block,block,message,tool"
+ },
+ {
+  "slack": "chat.appendStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Plan ready · 2 earlier: ✗ Write · ✓ Bash",
+     "status": "in_progress"
+    }
+   ]
+  }
+ },
+ {
+  "step": "gate ExitPlanMode"
+ },
+ {
+  "slack": "chat.postMessage",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "text": "Plan ready for review",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Plan ready for review*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "1. do it\n2. ship it"
+    },
+    {
+     "type": "actions",
+     "elements": [
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Approve · auto-accept edits"
+       },
+       "action_id": "p:QzEtMS4w:00000006:accept",
+       "value": "accept",
+       "style": "primary"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Approve · ask before edits"
+       },
+       "action_id": "p:QzEtMS4w:00000006:allow",
+       "value": "allow"
+      },
+      {
+       "type": "button",
+       "text": {
+        "type": "plain_text",
+        "text": "Keep planning"
+       },
+       "action_id": "p:QzEtMS4w:00000006:deny",
+       "value": "deny"
+      }
+     ]
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "or reply here to decline and say what to do instead"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "step": "press accept"
+ },
+ {
+  "persist": {
+   "mode": "acceptEdits",
+   "sdk": "sdk-0"
+  }
+ },
+ {
+  "slack": "chat.update",
+  "args": {
+   "channel": "C1",
+   "ts": "1.22",
+   "text": "✅ plan approved · auto-accepting edits · name-U1",
+   "blocks": [
+    {
+     "type": "section",
+     "text": {
+      "type": "mrkdwn",
+      "text": "*Plan ready for review*"
+     }
+    },
+    {
+     "type": "markdown",
+     "text": "1. do it\n2. ship it"
+    },
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "✅ plan approved · auto-accepting edits · name-U1"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.14",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000004",
+     "title": "Plan ready · continues below ↓",
+     "status": "pending"
+    }
+   ],
+   "session_status": "processing"
+  }
+ },
+ {
+  "decision": "tu_4",
+  "d": {
+   "behavior": "allow",
+   "updatedInput": {
+    "plan": "1. do it\n2. ship it"
+   },
+   "mode": "acceptEdits"
+  }
+ },
+ {
+  "step": "feed tool_result,request,block,live,block,text,message,turn_ended"
+ },
+ {
+  "slack": "chat.startStream",
+  "args": {
+   "channel": "C1",
+   "thread_ts": "1.0",
+   "recipient_user_id": "U1",
+   "recipient_team_id": "T1",
+   "task_display_mode": "timeline",
+   "chunks": [
+    {
+     "type": "task_update",
+     "id": "run-00000007",
+     "title": "Plan ready",
+     "status": "complete",
+     "output": "approved"
+    },
+    {
+     "type": "markdown_text",
+     "text": "Done."
+    }
+   ]
+  }
+ },
+ {
+  "slack": "chat.stopStream",
+  "args": {
+   "channel": "C1",
+   "ts": "1.25",
+   "blocks": [
+    {
+     "type": "context",
+     "elements": [
+      {
+       "type": "mrkdwn",
+       "text": "default · acceptEdits · 16s · ctx 1.2k"
+      }
+     ]
+    }
+   ],
+   "session_status": "active"
+  }
+ },
+ {
+  "busy": false
+ }
+]

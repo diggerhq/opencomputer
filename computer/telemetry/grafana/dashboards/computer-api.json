@@ -1,0 +1,1643 @@
+{
+  "uid": "calvin-computer-api",
+  "title": "Calvin · Computer API",
+  "tags": [
+    "calvin",
+    "telemetry"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "datasource",
+        "label": "Tinybird",
+        "query": "grafana-clickhouse-datasource",
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Calvin",
+      "type": "dashboards",
+      "tags": [
+        "calvin"
+      ],
+      "asDropdown": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Do we need to optimize?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "1 · Computer DO contention: DO time per batch and write, Slack wait busy − quiet (p95)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, if(event_name = 'sessionlog.append', 'DO time per journal batch p95', 'DO time per API write p95') AS metric, quantile(0.95)(if(event_name = 'sessionlog.append', JSONExtractInt(data, 'do_ack_ms'), JSONExtractInt(data, 'do_ms'))) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE (event_name = 'sessionlog.append' AND JSONHas(data, 'do_ack_ms')) OR (event_name = 'computer.write' AND JSONHas(data, 'do_ms')) GROUP BY time, metric\nUNION ALL\nSELECT toStartOfHour(occurred_at) AS time, if(event_name = 'dispatch.sent', 'Slack dispatch wait p95: busy − quiet (hourly)', 'K1 p95: busy − quiet (hourly)') AS metric,\n  if(countIf(busy) > 0 AND countIf(NOT busy) > 0, quantileIf(0.95)(ms, busy) - quantileIf(0.95)(ms, NOT busy), NULL) AS value\nFROM (SELECT occurred_at, event_name, if(event_name = 'dispatch.sent', JSONExtractInt(data, 'wait_ms'), toInt64(duration_ms)) AS ms,\n  (org_id, toStartOfMinute(occurred_at)) IN (SELECT DISTINCT org_id, toStartOfMinute(occurred_at) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE org_id != '') AS busy FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('dispatch.sent', 'ack.done') AND NOT synthetic LIMIT 1 BY event_id))\nGROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Optimize the Computer DO when any line stays above 100 ms (n ≥ 50 batches, 20 writes, 20 dispatches per side over 3 h; the same verdict: Tinybird `optimize_checks`). Why 100 ms: the host flushes a streaming session's journal every 100 ms, so a DO that spends 100 ms or more on each batch (`do_ack_ms`: frame received → ack sent) or API write (`do_ms`) is handling them back to back and starts to queue everything else, including Slack. The busy − quiet lines are the direct test: p95 Slack dispatch wait (`dispatch.sent` wait_ms) and K1 in org-minutes when journal batches reached that org's DO, minus minutes when none did, per hour (both sides need samples in the hour); 100 ms (K1: 100 ms) is 10% of the K1 budget (1 s). Caveat: Workers clocks stand still during synchronous code, so do_* counts awaits (storage, the SessionLog RPC, the per-session chain), not CPU; DO CPU is Cloudflare's GraphQL analytics (the manual CPU check in the 084 instrumentation answers). Busy ms per org-minute (threshold 30000) and the span breakdown are in the DO load row below."
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "2 · SessionLog: append and commit lag p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'SessionLog append p95 (append_ms)' AS metric, quantile(0.95)(JSONExtractInt(data, 'append_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'refused') = '' GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'commit lag p95: host sent → journal-ack (commit_ms)' AS metric, quantile(0.95)(JSONExtractInt(data, 'commit_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.ack') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 200
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Optimize the SessionLog append path when either line stays above 200 ms (n ≥ 50 over 3 h; commit uses 200 ms). Why: 200 ms is two 100 ms flush windows. While an append takes longer than that, the host has the next batch ready before the last one is acknowledged, so batches pile up per session and every API reader and wire client sees events late. `append_ms` is the DO → SessionLog round trip (refused appends excluded); `commit_ms` is the host's view: oldest covered batch sent → journal-ack received."
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "3 · Slack K2/K3 warm p95: v4 runners ÷ v3 (3 h buckets)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 3 HOUR) AS time, if(countIf(first_visible_ms IS NOT NULL AND v4) >= 30 AND countIf(first_visible_ms IS NOT NULL AND NOT v4) >= 30, quantileIf(0.95)(first_visible_ms, v4) / greatest(quantileIf(0.95)(first_visible_ms, NOT v4), 1), NULL) AS `K2 v4 ÷ v3`, if(countIf(overhead_ms IS NOT NULL AND v4) >= 30 AND countIf(overhead_ms IS NOT NULL AND NOT v4) >= 30, quantileIf(0.95)(overhead_ms, v4) / greatest(quantileIf(0.95)(overhead_ms, NOT v4), 1), NULL) AS `K3 v4 ÷ v3`\nFROM (SELECT t.sent_at AS sent_at, t.first_visible_ms AS first_visible_ms, t.overhead_ms AS overhead_ms, p.protocol IN ('v4', 'v4+client') AS v4\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND path = 'warm' AND outcome != 'silent' AND NOT synthetic LIMIT 1 BY turn_id) AS t LEFT JOIN (SELECT turn_id, trace_id, multiIf(JSONExtractUInt(data, 'host_protocol') = 4 AND JSONExtractUInt(data, 'api_clients') > 0, 'v4+client', JSONExtractUInt(data, 'host_protocol') = 4, 'v4', 'v3') AS protocol FROM calvin_events WHERE event_name = 'turn.started' AND turn_id != '' AND occurred_at >= $__fromTime - INTERVAL 1 DAY AND occurred_at < $__toTime + INTERVAL 1 HOUR LIMIT 1 BY turn_id) AS p ON p.turn_id = t.turn_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1.2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Optimize the runner's v4 path when a ratio stays above 1.2 (each side needs 30 warm Slack turns in the bucket; the rules check 24 h). Why 1.2, not 1.0: v3 and v4 runners are different hosts and orgs, so some spread is population, not 084. The deploy-regression rule allows 1.3× and CI perf-check fails at 1.5× p50; 1.2 catches a smaller shift earlier. Above it, confirm causally with the same-org before/after check (rollout step 3 in the 084 instrumentation answers). The per-protocol K1-K6 detail, with an attached client split out, is on Calvin · Speed and the `slack_by_protocol` endpoint."
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "4 · Runner journaling on the hot path: runner wrote → host sent, urgent batches (p95)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'urgent batches: newest event age at send p95' AS metric, quantile(0.95)(JSONExtractInt(data, 'newest_age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'urgent') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'flushed batches: oldest event age at send p95' AS metric, quantile(0.95)(JSONExtractInt(data, 'oldest_age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE NOT JSONExtractBool(data, 'urgent') GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Optimize the runner's journal writer when the urgent line stays above 50 ms (n ≥ 50 over 3 h). Urgent batches (turn end, ask, status) skip the 100 ms flush wait, so their newest event's age at send is the runner's append + fold + outbox + host hop with no deliberate delay; 50 ms is an eighth of the K3 warm budget (400 ms). The flushed line includes up to 100 ms of intended wait and is context only. Not in production telemetry: the runner's own append and fold time per turn; that cost is measured by CI `npm run perf-check` (turn CPU v3 vs v4 vs v4 with a client), whose gate is the Slack-visible p50, not CPU."
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Computer DO load (check 1 detail)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "DO busy ms per org-minute p95 (batches + writes, chain wait excluded)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(minute) AS time, quantile(0.95)(busy_ms) AS `busy ms per org-minute p95`, max(busy_ms) AS `max` FROM (\n  SELECT org_id, toStartOfMinute(occurred_at) AS minute,\n    sumIf(greatest(JSONExtractInt(data, 'do_ack_ms') - JSONExtractInt(data, 'do_chain_wait_ms'), 0), event_name = 'sessionlog.append') + sumIf(JSONExtractInt(data, 'do_ms'), event_name = 'computer.write') AS busy_ms\n  FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE org_id != '' GROUP BY org_id, minute)\nGROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Above 30000 ms (half of every minute) one org's DO spends most of its time awaiting journal and write work. Await time, not CPU (see check 1)."
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Where a batch's DO time goes (avg)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, avg(JSONExtractInt(data, 'do_chain_wait_ms')) AS chain_wait, avg(JSONExtractInt(data, 'do_pre_ms')) AS pre, avg(JSONExtractInt(data, 'append_ms')) AS append,\n  avg(JSONExtractInt(data, 'do_post_ms')) AS post FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "description": "chain_wait: behind the session's earlier batches; pre: received → append RPC sent; append: the SessionLog round trip; post: answered → row updated and ack sent."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Slack dispatch wait and K1 p95: busy − quiet org-minutes (hourly)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfHour(occurred_at) AS time, if(event_name = 'dispatch.sent', 'Slack dispatch wait p95: busy − quiet (hourly)', 'K1 p95: busy − quiet (hourly)') AS metric,\n  if(countIf(busy) > 0 AND countIf(NOT busy) > 0, quantileIf(0.95)(ms, busy) - quantileIf(0.95)(ms, NOT busy), NULL) AS value\nFROM (SELECT occurred_at, event_name, if(event_name = 'dispatch.sent', JSONExtractInt(data, 'wait_ms'), toInt64(duration_ms)) AS ms,\n  (org_id, toStartOfMinute(occurred_at)) IN (SELECT DISTINCT org_id, toStartOfMinute(occurred_at) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE org_id != '') AS busy FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('dispatch.sent', 'ack.done') AND NOT synthetic LIMIT 1 BY event_id))\nGROUP BY time, metric"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "The DO's Slack queue (max)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'rows pending + running' AS metric, max(JSONExtractInt(data, 'slack_queue_rows')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE JSONHas(data, 'slack_queue_rows') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'oldest pending wait (ms)' AS metric, max(JSONExtractInt(data, 'slack_queue_oldest_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'computer.write') LIMIT 1 BY event_id) WHERE JSONHas(data, 'slack_queue_oldest_ms') GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Q2 · What the session log costs",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "SessionLog append latency",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, quantile(0.5)(JSONExtractInt(data, 'append_ms')) AS p50, quantile(0.95)(JSONExtractInt(data, 'append_ms')) AS p95, max(JSONExtractInt(data, 'append_ms')) AS max\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Journal and SessionLog volume",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'journal batches' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'journal events' AS metric, sum(JSONExtractInt(data, 'events')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'rows written' AS metric, sum(JSONExtractInt(data, 'rows')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'refused appends' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'refused') != '' GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Bytes appended and spilled to R2",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 53
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'appended' AS metric, sum(JSONExtractInt(data, 'bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'spilled in the append' AS metric, sum(JSONExtractInt(data, 'spill_sync_bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'spilled after commit' AS metric, sum(JSONExtractInt(data, 'spill_bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.spill') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Per org: batches, bytes, spills, refolds, storage",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 53
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT org_id, countIf(event_name = 'sessionlog.append') AS appends, sumIf(JSONExtractInt(data, 'events'), event_name = 'sessionlog.append') AS events,\n  sumIf(JSONExtractInt(data, 'bytes'), event_name = 'sessionlog.append') AS bytes, quantileIf(0.95)(JSONExtractInt(data, 'append_ms'), event_name = 'sessionlog.append') AS append_p95_ms,\n  sumIf(JSONExtractInt(data, 'spills_sync'), event_name = 'sessionlog.append') + sumIf(JSONExtractInt(data, 'spills'), event_name = 'sessionlog.spill') AS spills,\n  sumIf(JSONExtractInt(data, 'failed'), event_name = 'sessionlog.spill') AS spills_failed, countIf(JSONExtractBool(data, 'refolded')) AS refolds,\n  maxIf(JSONExtractInt(data, 'storage_bytes'), event_name = 'sessionlog.append') AS storage_bytes_max\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append', 'sessionlog.spill') LIMIT 1 BY event_id) GROUP BY org_id ORDER BY bytes DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Q3 · How fresh is what clients see",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "panels": []
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Event age p95 at each hop",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, '1 host sent (oldest in batch)' AS metric, quantile(0.95)(JSONExtractInt(data, 'oldest_age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, '2 DO committed (newest acked)' AS metric, quantile(0.95)(JSONExtractInt(data, 'age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.ack') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, '2b blue commit lag (max per append)' AS metric, quantile(0.95)(JSONExtractInt(data, 'commit_lag_ms_max')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, '3 API reader (oldest delivered)' AS metric, quantile(0.95)(JSONExtractInt(data, 'oldest_age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'events') > 0 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, '4 wire socket (oldest written)' AS metric, quantile(0.95)(JSONExtractInt(data, 'oldest_age_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 2000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Each hop's p95 age of an event (now − its createdAt on the runner). Runner and Cloudflare clocks differ, so blue-side ages carry the skew. The alert fires when the DO-committed or wire-socket p95 is above 2000 ms for 15 min. Per turn: the `freshness` endpoint with `per_turn`."
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Q4 · HTTP API",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Requests by layer and status class",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 75
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, concat(if(event_name = 'edge.request', 'edge ', 'blue '), toString(intDiv(JSONExtractInt(data, 'status'), 100)), 'xx') AS metric, count() AS value\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request', 'httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY time, metric ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Latency p95 by route: edge total and blue DO time",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 75
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, concat('edge ', JSONExtractString(data, 'route')) AS metric, quantile(0.95)(duration_ms) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('blue DO ', JSONExtractString(data, 'route')) AS metric, quantile(0.95)(JSONExtractInt(data, 'do_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONHas(data, 'do_ms') GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "503 computer_unavailable, 429s, replays, empty long-polls",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 85
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, '503 (blue)' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'status') = 503 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, '429 (edge)' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'status') = 429 OR JSONExtractBool(data, 'rate_limited') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'idempotent replays' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'replayed') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'long-polls returned empty' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'wait_ms') > 0 AND JSONExtractBool(data, 'empty') GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 22,
+      "type": "table",
+      "title": "Outages, auth failures and rate limits by key",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 85
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT * FROM (\nSELECT 'outage: time until the host came' AS what, '' AS detail, count() AS n, quantile(0.5)(JSONExtractInt(data, 'wait_ms')) AS p50_ms, quantile(0.95)(JSONExtractInt(data, 'wait_ms')) AS p95_ms FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('computer.unavailable') AND NOT synthetic LIMIT 1 BY event_id)\nUNION ALL SELECT 'edge auth refused', JSONExtractString(data, 'auth'), count(), NULL, NULL FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'auth') NOT IN ('ok', '') GROUP BY 2\nUNION ALL SELECT 'rate limited key', JSONExtractString(data, 'key_id'), count(), NULL, NULL FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'status') = 429 OR JSONExtractBool(data, 'rate_limited') GROUP BY 2\nUNION ALL SELECT 'long-poll hold', JSONExtractString(data, 'route'), count(), quantile(0.5)(duration_ms), quantile(0.95)(duration_ms) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('httpapi.request') AND NOT synthetic LIMIT 1 BY event_id) WHERE JSONExtractInt(data, 'wait_ms') > 0 GROUP BY 2\n) ORDER BY what, n DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 23,
+      "type": "row",
+      "title": "Q5 · Wire",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 95
+      },
+      "panels": []
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Connects, refusals and closes",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'connects' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.connect') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('refused ', toString(JSONExtractInt(data, 'status'))) AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.refused') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('worker ', JSONExtractString(data, 'result'), ' ', JSONExtractString(data, 'reason')) AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wireworker.request') LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'result') != 'ok' GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('close ', toString(JSONExtractInt(data, 'code'))) AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.close') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Attach, ticket and reconnect p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'relay attach (request → attached queued)' AS metric, quantile(0.95)(JSONExtractInt(data, 'attach_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.attach') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'opc attach (socket open → first frame drawn)' AS metric, quantile(0.95)(JSONExtractInt(data, 'attach_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.attach') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'opc reconnect gap' AS metric, quantile(0.95)(JSONExtractInt(data, 'gap_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.attach') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'reconnect') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'ticket mint' AS metric, quantile(0.95)(duration_ms) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('ticket.minted') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Backpressure: flush wait p95 and queued bytes max",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 106
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'flush wait p95 (ms)' AS metric, quantile(0.95)(JSONExtractInt(data, 'wait_ms_max')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'queued bytes max' AS metric, max(JSONExtractInt(data, 'queued_bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'paused batches' AS metric, countIf(JSONExtractBool(data, 'paused')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'detached' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.detached') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Bytes in and out",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 106
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'out: flushes' AS metric, sum(JSONExtractInt(data, 'bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'in/out: terminals' AS metric, sum(JSONExtractInt(data, 'bytes_in') + JSONExtractInt(data, 'bytes_out')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.terminal') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('files ', JSONExtractString(data, 'op')) AS metric, sum(JSONExtractInt(data, 'bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.files') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Concurrent connections, members, terminals (max per host)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 116
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, 'connections' AS metric, max(JSONExtractInt(data, 'connections')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.sample') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'members' AS metric, max(JSONExtractInt(data, 'members')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.sample') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'attached' AS metric, max(JSONExtractInt(data, 'attached')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.sample') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'terminals' AS metric, max(JSONExtractInt(data, 'terminals')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.sample') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 29,
+      "type": "row",
+      "title": "Q6 · Recovery",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 126
+      },
+      "panels": []
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Recovery events by kind",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 127
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, concat('blue ', JSONExtractString(data, 'kind')) AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.recovery') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'blue append refused (gap)' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id) WHERE JSONExtractString(data, 'refused') = 'gap' GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'blue held write timed out' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('computer.write') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'timed_out') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'host stale epoch drop' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.stale_epoch') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'host epoch adopted' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.epoch_adopted') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'host batch resent' AS metric, count() AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('mirror.batch') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'resent') GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "description": "Alerts: journal gaps above 3 an hour, any recover-alarm fire, any held-write timeout."
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Recovery: counts and durations",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 127
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT * FROM (\nSELECT concat('blue ', JSONExtractString(data, 'kind')) AS kind, JSONExtractString(data, 'reason') AS detail, count() AS n, countIf(outcome = 'failed') AS failed, quantile(0.95)(duration_ms) AS p95_ms FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.recovery') LIMIT 1 BY event_id) GROUP BY kind, detail\nUNION ALL SELECT 'held write', if(JSONExtractBool(data, 'timed_out'), 'timed out', if(JSONExtractBool(data, 'replayed'), 'replayed', '')), count(), countIf(JSONExtractBool(data, 'timed_out')), quantile(0.95)(JSONExtractInt(data, 'held_ms')) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('computer.write') LIMIT 1 BY event_id) WHERE JSONExtractBool(data, 'held') OR JSONExtractBool(data, 'timed_out') OR JSONExtractBool(data, 'replayed') GROUP BY 2\nUNION ALL SELECT 'epoch adopted', if(JSONExtractBool(data, 'torn'), 'torn', ''), count(), countIf(outcome = 'failed'), quantile(0.95)(duration_ms) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.epoch_adopted') LIMIT 1 BY event_id) GROUP BY 2\nUNION ALL SELECT 'frame held', if(JSONExtractBool(data, 'asked'), 'asked for epoch', ''), count(), 0, quantile(0.95)(duration_ms) FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.held') LIMIT 1 BY event_id) GROUP BY 2\nUNION ALL SELECT 'duplicates', 'append dupes + mismatches', toUInt64(sum(JSONExtractInt(data, 'dupes') + JSONExtractInt(data, 'mismatches'))), 0, NULL FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('sessionlog.append') LIMIT 1 BY event_id)\nUNION ALL SELECT 'duplicates', 'relay dropped at or below the cursor', toUInt64(sum(JSONExtractInt(data, 'duplicates'))), 0, NULL FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('wire.flush') LIMIT 1 BY event_id)\n) ORDER BY kind, detail"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 32,
+      "type": "row",
+      "title": "Q7 · What an opc user sees",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 137
+      },
+      "panels": []
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "opc: Enter → first output drawn p95, by version",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 138
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, JSONExtractString(data, 'client_version') AS metric, quantile(0.95)(JSONExtractInt(data, 'first_output_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.turn') LIMIT 1 BY event_id) WHERE JSONHas(data, 'first_output_ms') GROUP BY time, metric"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "opc: steer and interrupt round trip p95, render lag p95",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 138
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, concat('round trip ', JSONExtractString(data, 'kind')) AS metric, quantile(0.95)(JSONExtractInt(data, 'round_trip_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.control') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat('applied ', JSONExtractString(data, 'kind')) AS metric, quantile(0.95)(JSONExtractInt(data, 'applied_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.control') LIMIT 1 BY event_id) WHERE JSONHas(data, 'applied_ms') GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, 'render lag (slow draws)' AS metric, quantile(0.95)(JSONExtractInt(data, 'lag_ms')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.render') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 35,
+      "type": "table",
+      "title": "opc errors by class, version and OS",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 148
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT JSONExtractString(data, 'class') AS class, JSONExtractString(data, 'client_version') AS version, JSONExtractString(data, 'os') AS os, count() AS n FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.error') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY class, version, os ORDER BY n DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 36,
+      "type": "table",
+      "title": "opc versions and OS in use (turns)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 148
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT JSONExtractString(data, 'client_version') AS version, JSONExtractString(data, 'os') AS os, JSONExtractString(data, 'arch') AS arch, count() AS turns, countIf(JSONExtractBool(data, 'interrupted')) AS interrupted_before_output,\n  quantile(0.5)(JSONExtractInt(data, 'first_output_ms')) AS first_output_p50_ms FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('cli.turn') AND NOT synthetic LIMIT 1 BY event_id) GROUP BY version, os, arch ORDER BY turns DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 37,
+      "type": "row",
+      "title": "Q8 · Steer, interrupt and answer through the API",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 158
+      },
+      "panels": []
+    },
+    {
+      "id": 38,
+      "type": "timeseries",
+      "title": "Request accepted → runner applied p95 (api.write), by surface and method",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 159
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, concat(surface, ' ', JSONExtractString(data, 'method')) AS metric, quantile(0.95)(duration_ms) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.write') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Blue's share: write sent → host answered p95 (computer.write)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 159
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT $__timeInterval(occurred_at) AS time, JSONExtractString(data, 'method') AS metric, quantile(0.95)(duration_ms) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('computer.write') LIMIT 1 BY event_id) WHERE 1 GROUP BY time, metric"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Q9 · Keys and revocation",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 169
+      },
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "table",
+      "title": "Key syncs, revokes and refusals after a revoke",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 170
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT * FROM (\nSELECT concat('synced ', JSONExtractString(data, 'trigger')) AS what, count() AS n, countIf(NOT JSONExtractBool(data, 'ok') OR outcome = 'failed') AS failed, quantile(0.95)(duration_ms) AS p95_ms, NULL AS last_after_revoke_ms FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('keys.synced') LIMIT 1 BY event_id) GROUP BY what\nUNION ALL SELECT 'revoked', count(), countIf(NOT JSONExtractBool(data, 'host_told')), quantile(0.95)(duration_ms), NULL FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('keys.revoked') LIMIT 1 BY event_id)\nUNION ALL SELECT concat('used after revoke (', if(e.event_name = 'edge.request', 'edge', 'wire'), ')'), count(),\n  countIf(NOT ((e.event_name = 'edge.request' AND JSONExtractUInt(e.data, 'status') IN (401, 403)) OR (e.event_name = 'wireworker.request' AND JSONExtractString(e.data, 'result') = 'refused'))), NULL,\n  max(toInt64(dateDiff('millisecond', r.revoked_at, e.occurred_at)))\nFROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('edge.request', 'wireworker.request') LIMIT 1 BY event_id) AS e\nINNER JOIN (SELECT JSONExtractString(data, 'key_id') AS key_id, min(occurred_at) AS revoked_at FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('keys.revoked') LIMIT 1 BY event_id) GROUP BY key_id) AS r ON r.key_id = JSONExtractString(e.data, 'key_id')\nWHERE e.occurred_at > r.revoked_at GROUP BY 1\n) ORDER BY what"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "description": "\"used after revoke\" counts requests carrying a revoked key; `failed` there counts the ones that were let through (should be 0). Revoke → last socket closed is not measurable: wire.close has no key_id."
+    },
+    {
+      "id": 42,
+      "type": "row",
+      "title": "Q10 · Load on the computer",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 180
+      },
+      "panels": []
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "api.sample: open journals and held frames (max per host)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 181
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' open_journals') AS metric, max(JSONExtractInt(data, 'open_journals')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' runner_writers') AS metric, max(JSONExtractInt(data, 'runner_writers')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' host_writers') AS metric, max(JSONExtractInt(data, 'host_writers')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' held_frames') AS metric, max(JSONExtractInt(data, 'held_frames')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "api.sample: journal bytes on disk and spooled (max per host)",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 181
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "${datasource}"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT * FROM (\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' journal_bytes') AS metric, max(JSONExtractInt(data, 'journal_bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\nUNION ALL\nSELECT $__timeInterval(occurred_at) AS time, concat(host_id, ' mirror_spooled_bytes') AS metric, max(JSONExtractInt(data, 'mirror_spooled_bytes')) AS value FROM (SELECT * FROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name IN ('api.sample') LIMIT 1 BY event_id) GROUP BY time, metric\n) ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
