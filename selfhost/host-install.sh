@@ -402,11 +402,17 @@ EOF
   # an empty tmpfs over /var/lib (and re-binds only the overlay store), so with
   # the home there a compose network is created but "not found" when the
   # container starts. GATEWAY_NETWORKS is outside it.
+  # Logs to files: with journald (the default) a system user's container logs
+  # land in the system journal, which it cannot read, so `podman logs` is empty.
   conf="$GATEWAY_HOME/.config/containers/containers.conf"
   install -d -m 0700 -o "$GATEWAY_USER" -g "$group" "$GATEWAY_NETWORKS"
   if [[ ! -e $conf ]] || grep -qs '^# host-install.sh' "$conf"; then
     install -m 0644 -o "$GATEWAY_USER" -g "$group" /dev/stdin "$conf" <<EOF
-# host-install.sh: networks of $GATEWAY_USER, outside /var/lib (Podman 4.9 hides it from rootless networking).
+# host-install.sh: networks of $GATEWAY_USER outside /var/lib (Podman 4.9 hides it from rootless networking); logs it can read.
+[containers]
+log_driver = "k8s-file"
+log_size_max = 52428800
+
 [network]
 network_config_dir = "$GATEWAY_NETWORKS"
 EOF
