@@ -257,7 +257,7 @@ opc access <id> --add <user> --remove <user>
 
 Shows or changes who may see and drive a session: only its owner, everyone in the organization, or the owner and the people listed. People are user ids or emails. `--add` and `--remove` change the people list of an owner-only or people session and are repeatable; removing the last person makes it owner only. Sharing prints a warning on standard error: the agent runs as the owner, with the owner's secrets and subscription. See [Sharing](/cli/sharing).
 
-The owner, the people a session is shared with and organization admins can change it. Anyone else who may use the session gets exit code `3`; to someone who may not, the session does not exist (exit code `2`). People must be members of your organization who have used OpenComputer; anyone else is refused with exit code `2`. An admin can set the access of a session they cannot use with `owner`, `org` or `people`, but not `--add` or `--remove`, which read the current list first.
+The owner, the people a session is shared with and organization admins can change it. Anyone else who may use the session gets exit code `3`; to someone who may not, the session does not exist (exit code `2`). People must be members of your organization who have used OpenComputer; anyone else is refused with exit code `2`. An admin can show and change the access of a session they cannot use, `--add` and `--remove` included, but sees nothing else of it.
 
 | Option | Does |
 | --- | --- |

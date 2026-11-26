@@ -91,28 +91,31 @@ pub async fn run(ctx: &mut Ctx, a: AccessArgs) -> Result<i32> {
         ctx.note(SHARED_WARNING);
     }
     let got = ctx.http.patch(&session_path(&sid, ""), &body).await.map_err(crate::error::access_change)?;
-    // An admin who may change the access but not use the session gets no
-    // session back, only its access.
-    if got.get("session").is_some_and(Value::is_null) {
-        let mut session = Session { id: sid, ..Default::default() };
-        session.access = serde_json::from_value(got.get("access").cloned().unwrap_or_default()).ok();
-        session.can_manage_access = got.get("canManageAccess").and_then(Value::as_bool);
-        print(ctx, &session, a.json);
-        return Ok(0);
+    let (session, usable) = read_session(&sid, &got)?;
+    if usable {
+        crate::cache::upsert_session(ctx.http.api_url(), &session);
     }
-    let session = read_session(&got)?;
-    crate::cache::upsert_session(ctx.http.api_url(), &session);
     print(ctx, &session, a.json);
     Ok(0)
 }
 
 async fn get(ctx: &Ctx, sid: &str) -> Result<Session> {
-    read_session(&ctx.http.get(&session_path(sid, ""), &[]).await?)
+    Ok(read_session(sid, &ctx.http.get(&session_path(sid, ""), &[]).await?)?.0)
 }
 
-fn read_session(got: &Value) -> Result<Session> {
-    serde_json::from_value(got.get("session").cloned().unwrap_or_else(|| got.clone()))
-        .map_err(|e| Error::new("internal", format!("the API returned a session opc cannot read: {e}")))
+/// The session from a `GET` or `PATCH`, and whether you may use it. An admin
+/// who may change the access but not use the session gets no session back
+/// (`session: null`), only its access.
+fn read_session(sid: &str, got: &Value) -> Result<(Session, bool)> {
+    if got.get("session").is_some_and(Value::is_null) {
+        let mut session = Session { id: sid.to_string(), ..Default::default() };
+        session.access = serde_json::from_value(got.get("access").cloned().unwrap_or_default()).ok();
+        session.can_manage_access = got.get("canManageAccess").and_then(Value::as_bool);
+        return Ok((session, false));
+    }
+    let session = serde_json::from_value(got.get("session").cloned().unwrap_or_else(|| got.clone()))
+        .map_err(|e| Error::new("internal", format!("the API returned a session opc cannot read: {e}")))?;
+    Ok((session, true))
 }
 
 fn unsupported() -> Error {
@@ -189,5 +192,15 @@ mod tests {
         assert_eq!(edited(&people(&["usr_a"]), &[], &s(&["usr_z"])).unwrap_err().code, "usage");
         let org = Access { mode: "org".into(), ..Default::default() };
         assert_eq!(edited(&org, &s(&["usr_a"]), &[]).unwrap_err().code, "usage");
+    }
+
+    #[test]
+    fn reads_the_access_an_admin_outside_the_session_gets() {
+        let got = json!({"session": null, "access": {"mode": "owner", "people": []}, "canManageAccess": true, "seq": 7});
+        let (s, usable) = read_session("cs_x", &got).unwrap();
+        assert!(!usable);
+        assert_eq!(s.id, "cs_x");
+        assert_eq!(s.access.unwrap().mode, "owner");
+        assert_eq!(s.can_manage_access, Some(true));
     }
 }

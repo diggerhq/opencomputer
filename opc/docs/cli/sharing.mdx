@@ -32,7 +32,7 @@ You can share with people by user id or email. They must be members of your orga
 | --- | --- |
 | Anyone with access | See it, attach, send messages, answer asks, change settings, read its history |
 | The owner and the people it is shared with | Also change who has access |
-| An organization admin | Change who has access. Not see or drive a session they do not have access to: they add themselves first, with `opc access <id> people <themselves> <the others>...`, since they cannot read the current list. |
+| An organization admin | See and change who has access, with `opc access <id>`. Not see or drive a session they do not have access to: they add themselves first, with `opc access <id> --add <themselves>`. |
 | An API key | What the member who created it can do |
 
 Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).

@@ -110,6 +110,8 @@ Returns `{ "session": … }`, the complete [object](/api/reference/objects#sessi
 | --- | --- |
 | `minSeq` | Wait until the session includes this `seq`, up to 2 seconds. Pass the `seq` a write returned to read your own write. See [Consistency](/api/model#consistency). |
 
+An organization admin who may not use the session gets only its access, `{ "session": null, "access", "canManageAccess", "seq" }`, the same as an admin's [update](#update-a-session) returns, so they can read the current access before changing it.
+
 `404 session_not_found` when the session does not exist or you cannot see it. The two cases are not distinguished. `503 unavailable` with `retryAfterMs` when `minSeq` is not reached in time.
 
 ## Get a session's capabilities
