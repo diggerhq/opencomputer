@@ -148,6 +148,6 @@ Suspending cancels queued turns, stops running subagents, closes open asks as `i
 
 ## Resume
 
-`sessions.resume` (`POST /sessions/{id}/resume`) starts the runtime of a suspended session and returns at once; `runtime.starting` and `runtime.connected` events follow. On a session that is not suspended it returns the session unchanged. [Sending a turn](/api/turns#send) to a suspended session also starts it.
+`sessions.resume` (`POST /sessions/{id}/resume`) starts the runtime of a suspended session, or of an `idle` one whose runner has exited after two hours idle, and returns at once; `runtime.starting` and `runtime.connected` events follow. On a session that is not suspended it returns the session unchanged. [Sending a turn](/api/turns#send) to a suspended session also starts it.
 
 {/* Sources: computer/schema/computer-api.v1.json (Session, CreateSessionBody, AttachResult, methods); computer/src/api/schema-methods.ts; computer/src/api/read-methods.ts; computer/src/runner/api/api.ts (update, compact, suspend handlers); computer/src/host/session-writer.ts (suspend, resume, queued send while suspended); computer/src/wire/connection.ts and attachment.ts (attach, URL attach, read-only); computer/src/wire/limits.ts; opc/src/cmd (POST /sessions, GET /sessions) */}

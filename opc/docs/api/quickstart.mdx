@@ -1,0 +1,72 @@
+---
+title: "API quickstart"
+description: "Start a session, watch it work and read the result, with curl and with JavaScript."
+---
+
+You need an API key. Create one on the dashboard under **Settings → API keys**, then:
+
+```bash
+export OPENCOMPUTER_API_KEY=<your key>
+export API=https://app.opencomputer.dev/api/managed-agents/computer
+```
+
+## 1. Start a session with a message
+
+```bash
+curl -s "$API/sessions" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" \
+  -H "idempotency-key: $(uuidgen)" \
+  -d '{ "input": "Which of our services still use Node 18? Answer with a list." }'
+```
+
+```json
+{
+  "session": { "id": "cs_7f3a9k2m4q8r1t6v", "status": "starting", "title": "Which of our services still use Node 18?", "…": "…" },
+  "turn": { "id": "tn_4m8q2x7c1v9b", "status": "queued", "…": "…" },
+  "delivery": "started",
+  "duplicate": false,
+  "seq": 3
+}
+```
+
+The session starts, and the agent begins on the message as soon as it is up. The response does not wait for it.
+
+You can choose the session's id yourself by sending `id`, so you know it before the response arrives. See [Create a session](/api/http/sessions#create-a-session).
+
+## 2. Wait for the turn to end
+
+```bash
+id=cs_7f3a9k2m4q8r1t6v turn=tn_4m8q2x7c1v9b
+until curl -s "$API/sessions/$id/turns/$turn?waitMs=60000" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do :; done
+```
+
+With `waitMs`, the request is held open until the turn ends, or for up to a minute, so the loop makes one request a minute while the agent works and returns the moment it is done. See [Get a turn](/api/http/turns#get-a-turn).
+
+If the session's `status` becomes `waiting` meanwhile, the agent needs a person: see [Asks](/api/http/asks).
+
+## 3. Read the result
+
+```bash
+curl -s "$API/sessions/$id/turns/$turn" -H "x-api-key: $OPENCOMPUTER_API_KEY" | jq -r .turn.text
+```
+
+`text` is the agent's last message in the turn. For a turn that `failed`, `error` says why.
+
+## Stream it instead
+
+Waiting is fine for scripts. To show the agent's work as it happens, open a WebSocket. With `websocat`:
+
+```bash
+websocat -H "x-api-key: $OPENCOMPUTER_API_KEY" --protocol opc.v1 \
+  "wss://wire.opencomputer.dev/v1?attach=$id&deltas=1"
+```
+
+The connection attaches to the session in the same request and sends its events as they happen, with text as it is written. In a browser, which cannot send the key, connect with a [ticket](/api/http/tickets) instead. See [Connecting](/api/websocket/connect).
+
+## Next
+
+- [The model](/api/model): sessions, turns, events and how they fit
+- [Sending messages](/api/http/turns): queue, steer and interrupt
+- [Events](/api/reference/events): every event and its fields

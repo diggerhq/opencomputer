@@ -94,7 +94,7 @@ import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, harnessOnProfile, helloProfiles, profileHarnesses, takeHarnessPrefix } from "./harnesses.js";
 import { type SealPurpose, seal, sha256Hex, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
-import { type Linked, LINK_TIMEOUT_MS, LOOKUP_FAILED_TEXT, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
+import { type Linked, type Posted, LINK_TIMEOUT_MS, LOOKUP_FAILED_TEXT, ThreadAccess, findThreadLinks, forwardedLinked, threadRefFor } from "./threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
 import { failureNotice } from "./failure.js";
@@ -3425,8 +3425,37 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       text: req.text,
       sessionUrl: slackThreadUrl(session.teamId, session.channelId, session.threadTs),
     });
-    console.log(JSON.stringify({ level: "info", event: "computer.thread_posted" }));
-    return posted;
+    const woke = this.wakeThread(from, session, posted);
+    console.log(JSON.stringify({ level: "info", event: "computer.thread_posted", woke }));
+    return { ts: posted.ts, url: posted.url };
+  }
+
+  /**
+   * A post into a thread that has a session reaches that session as the
+   * owner's message: Slack's own copy is the app's, which the events route
+   * drops (slack.ts). It is queued like a typed one, so the access and credit
+   * gates apply as if the owner had written it there. The first line says
+   * where it came from, and keeps the agent's text from reading as a `!`
+   * command or `+tier` run with the owner's authority.
+   */
+  private wakeThread(from: string, poster: { teamId: string; ownerId: string; channelId: string; threadTs: string }, posted: Posted): boolean {
+    const { teamId, ownerId } = poster;
+    const key = sessionKey(teamId, posted.channel, posted.threadTs);
+    if (key === from || !this.session(key)) return false;
+    const source = slackThreadUrl(teamId, poster.channelId, poster.threadTs);
+    this.requeueSlackJob({
+      eventId: `post_thread:${posted.channel}:${posted.ts}`,
+      teamId,
+      channelId: posted.channel,
+      threadTs: posted.threadTs,
+      messageTs: posted.ts,
+      userId: ownerId,
+      text: `Posted here for <@${ownerId}> by the session in ${source ? `<${source}|another thread>` : "another thread"}:\n${posted.body}`,
+      mentioned: false,
+      channelType: "channel",
+      receivedAt: Date.now(),
+    });
+    return true;
   }
 
   /**

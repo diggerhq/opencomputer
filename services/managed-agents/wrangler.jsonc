@@ -59,7 +59,12 @@
       // Work 084: one per computer session, the API's copy of its event log.
       { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject" },
       // Work tracking 3.6: one per organization, the projection of its knowledge repository.
-      { "name": "WORK_INDEX", "class_name": "WorkIndexDurableObject" }
+      { "name": "WORK_INDEX", "class_name": "WorkIndexDurableObject" },
+      // Tracks and threads: the organization's directory of work, its Slack link, and the readers of
+      // its occurrence stream (`<org>:<kind>`).
+      { "name": "ORGS", "class_name": "OrgDurableObject" },
+      { "name": "SLACK", "class_name": "SlackDurableObject" },
+      { "name": "DELIVERY", "class_name": "DeliveryDurableObject" }
     ]
   },
   "migrations": [
@@ -87,7 +92,12 @@
       "new_sqlite_classes": ["ComputerDurableObject"]
     },
     { "tag": "v6", "new_sqlite_classes": ["SessionLogDurableObject"] },
-    { "tag": "v7", "new_sqlite_classes": ["WorkIndexDurableObject"] }
+    { "tag": "v7", "new_sqlite_classes": ["WorkIndexDurableObject"] },
+    // Tracks and threads: the classes ship as shells first, so this migration deploys on its own.
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["OrgDurableObject", "SlackDurableObject", "DeliveryDurableObject"]
+    }
   ],
   "observability": {
     "enabled": true,

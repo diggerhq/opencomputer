@@ -1,0 +1,72 @@
+[package]
+name = "opc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "A terminal client for your organization's Computer"
+license = "Apache-2.0"
+repository = "https://github.com/diggerhq/opencomputer/tree/main/opc"
+default-run = "opc"
+
+[[bin]]
+name = "opc"
+path = "src/main.rs"
+
+[lib]
+name = "opc"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.23"
+bytes = "1"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
+crossterm = { version = "0.29", features = ["event-stream"] }
+dirs = "7"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+getrandom = "0.4"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1.12", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+ignore = "0.4"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+ring = { version = "0.17", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tar = "0.4"
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "net", "time", "macros", "io-util", "io-std", "signal", "sync", "fs", "process"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+zstd = "0.14"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+unicode-width = "0.2"
+libc = "0.2"
+
+[dev-dependencies]
+libc = "0.2"
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+jsonschema = { version = "0.33", default-features = false }
+hyper = { version = "1.12", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "http1", "http2"] }
+tokio = { version = "1.54", features = ["full", "test-util"] }
+serde_json = "1"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", features = ["sink", "std"] }
+http-body-util = "0.1"
+bytes = "1"
+http = "1"
+
+[profile.release]
+opt-level = 3
+# Thin LTO: about a third of fat LTO's build time, same startup.
+lto = "thin"
+panic = "abort"
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 1
