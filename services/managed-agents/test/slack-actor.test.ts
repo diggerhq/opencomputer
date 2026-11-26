@@ -1,10 +1,10 @@
 import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { SlackDurableObject } from "../src/slack/durable-object.js";
+import type { SlackDurableObject } from "../src/actors/slack/durable-object.js";
 import { seal } from "../src/crypto/seal.js";
-import { routeSlackPublic, type SlackRouteEnv } from "../src/slack/routes.js";
-import { entryIdFor, sessionIdFor, turnIdFor } from "../src/slack/store.js";
+import { routeSlackPublic, type SlackRouteEnv } from "../src/http/slack/webhooks.js";
+import { entryIdFor, sessionIdFor, turnIdFor } from "../src/actors/slack/schema.js";
 import type { Call, FakeComputer, FakeOrg, FakeSessionLog } from "./fixtures/slack-test-worker.js";
 
 const bindings = env as unknown as {

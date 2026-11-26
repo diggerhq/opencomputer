@@ -31,7 +31,7 @@ import {
   slackThreadUrl,
 } from "../src/slack-api/web-api.js";
 import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/computer/team-cache.js";
-import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/slack/access.js";
+import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/actors/slack/access.js";
 import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack-api/threads.js";
 
 describe("new-thread harness prefixes", () => {

@@ -319,7 +319,7 @@ import { SessionLogDurableObject } from "../actors/session-log/durable-object.js
 // Kept for the class that exists in production; removed with a deleted_classes migration (org/work-index.ts).
 import { WorkIndexDurableObject } from "../actors/org/work-index.js";
 import { OrgDurableObject } from "../actors/org/durable-object.js";
-import { SlackDurableObject } from "../slack/durable-object.js";
+import { SlackDurableObject } from "../actors/slack/durable-object.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import {
   type Latency,
@@ -330,7 +330,7 @@ import {
 import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../computer/routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
 import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
-import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../slack/routes.js";
+import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../http/slack/webhooks.js";
 
 export {
   AccountDurableObject,

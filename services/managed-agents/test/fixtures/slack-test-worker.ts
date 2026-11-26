@@ -5,7 +5,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { AcceptResult, MutateReply, Principal, SlackCarry } from "../../src/actor/contracts.js";
 
-export { SlackDurableObject } from "../../src/slack/durable-object.js";
+export { SlackDurableObject } from "../../src/actors/slack/durable-object.js";
 
 export type Call = { method: string; args: unknown[] };
 
