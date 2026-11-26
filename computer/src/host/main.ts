@@ -27,6 +27,8 @@
 //   [SP_RUNNER_USER=agent]     run runners as this user, through sudo (work 077, runner-user.ts); the host then runs as another
 //   [SP_SESSION_BROWSER=0]     1: a person who may drive a session may open its browser (headless Chromium in its
 //                              container, terminal.ts `app: browser`); default off
+//   [SP_SESSION_DESKTOP=0]     1: the same for its desktop (an X display over VNC, terminal.ts `app: desktop`; the
+//                              image needs TigerVNC's Xvnc); default off
 //   [SP_RUNNER_PATH=...]       the PATH runners and workspace commands get then (the host's own has no agent-owned directory)
 //   node --import tsx src/host/main.ts
 //
@@ -299,7 +301,7 @@ const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-a
   routed: async (id) => { const r = [...runners.values()].find((x) => x.id === id); if (r) await subs.called(r.key); }, // model-access.ts `called`
   wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
     stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files, terminal: sandbox?.terminal,
-    browser: env.SP_SESSION_BROWSER === '1' }), sandbox: sandbox?.place, telemetry: tm });
+    browser: env.SP_SESSION_BROWSER === '1', desktop: env.SP_SESSION_DESKTOP === '1' }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
   if (disk) toGateway(disk);

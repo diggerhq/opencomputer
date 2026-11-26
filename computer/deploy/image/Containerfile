@@ -32,14 +32,16 @@ ARG DEBIAN_FRONTEND=noninteractive
 # containers inside (crun is the runtime containers.conf names; catatonit is the
 # init Podman adds for `docker run --init`, compose's `init: true` and Compose
 # v2's builds). procps: the host closes a terminal with pkill. python3: the
-# host's terminal helper.
+# host's terminal helper. tigervnc-standalone-server, openbox, hsetroot and
+# xterm: the session's desktop (host/desktop-vnc.py; Xvnc is its X and VNC
+# server, hsetroot draws desktop-wallpaper.png).
 RUN apt-get update -q \
  && apt-get install -y -q --no-install-recommends \
       ca-certificates curl gnupg git git-lfs openssh-client \
       build-essential pkg-config make \
       jq ripgrep fd-find tree unzip zip xz-utils rsync less file lsof procps \
       python3 python3-venv python3-pip sqlite3 \
-      tmux htop sudo util-linux iproute2 tini \
+      tmux htop sudo util-linux iproute2 tini tigervnc-standalone-server openbox hsetroot xterm \
       ffmpeg fontconfig fonts-dejavu-core fonts-liberation2 fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
       podman podman-docker podman-compose buildah crun catatonit uidmap fuse-overlayfs slirp4netns netavark aardvark-dns iptables libcap2-bin \
  && rm -rf /var/lib/apt/lists/* \
@@ -124,6 +126,7 @@ COPY --chmod=0644 containers.conf /etc/containers/containers.conf
 COPY --chmod=0644 registries.conf /etc/containers/registries.conf
 COPY --chmod=0644 gitconfig /etc/gitconfig
 COPY --chmod=0755 sp-session-init /usr/local/bin/sp-session-init
+COPY --chmod=0644 desktop-wallpaper.png /usr/share/opc-desktop/wallpaper.png
 
 # The one owner of every constant a process in the container needs. The host
 # adds per-container values at create and per-start values through boot.env.

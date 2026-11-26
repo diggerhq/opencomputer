@@ -131,6 +131,8 @@ const CapabilitiesSchema = z.looseObject({
     steer: z.boolean(),
     // The Browser tab: absent on computers that do not run browsers.
     browser: z.boolean().optional(),
+    // The Desktop tab: likewise.
+    desktop: z.boolean().optional(),
   }),
 })
 export type Capabilities = z.infer<typeof CapabilitiesSchema>

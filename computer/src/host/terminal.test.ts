@@ -163,6 +163,32 @@ describe('browsers', () => {
   });
 });
 
+describe('desktops', () => {
+  it('only where the host allows them', async () => {
+    const r = await terms.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'desktop' }, onExit);
+    expect('error' in r && r.error.code).toBe('desktop_unavailable');
+  });
+
+  it('runs the desktop helper, one per session, besides the browser', async () => {
+    const d = createTerminals({ dir, launch: 'detached', path: env.PATH, browser: true, desktop: true });
+    try {
+      const r = (await d.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: true, command: 'echo PWNED', app: 'desktop' }, onExit)) as Opened;
+      expect(r.terminalId).toMatch(/^dk_/);
+      const again = await d.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'desktop' }, onExit);
+      expect('error' in again && again.error.code).toBe('too_many_desktops');
+      expect('error' in (await d.open({ sessionId: 'cs_c', cwd: dir, cols: 80, rows: 24, tty: false, app: 'browser' }, onExit))).toBe(false);
+      // Without Xvnc here, the helper refuses in RFB; either way it speaks RFB first.
+      const out = collect(await connect(r.socket));
+      await until(() => out.text.startsWith('RFB 003.008'));
+      await d.close(r.terminalId);
+      await until(() => out.ended);
+      expect(out.text).not.toContain('PWNED');
+    } finally {
+      await d.closeAll();
+    }
+  }, 20_000);
+});
+
 describe('terminals in containers (work 103, C13)', () => {
   it('on a podman host, an open that names no sandbox starts nothing', async () => {
     const podman = createTerminals({ dir: path.join(dir, 'p'), launch: 'podman' });

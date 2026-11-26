@@ -141,8 +141,12 @@ it('shows a tab strip for several tabs and keeps the shell when switching', () =
   expect(container.textContent).toContain('notes')
   click(tabs[0])
   expect(mounts).toBe(1)
-  // The real registry: the browser only where the computer runs one.
-  expect(SIDEBAR_TABS.map((t) => t.id)).toEqual(['terminal', 'browser'])
+  // The real registry: the browser and desktop only where the computer runs them.
+  expect(SIDEBAR_TABS.map((t) => t.id)).toEqual([
+    'terminal',
+    'browser',
+    'desktop',
+  ])
   expect(tabsFor(undefined).map((t) => t.id)).toEqual(['terminal'])
   expect(tabsFor({ features: { steer: true } }).map((t) => t.id)).toEqual([
     'terminal',
@@ -150,6 +154,9 @@ it('shows a tab strip for several tabs and keeps the shell when switching', () =
   expect(
     tabsFor({ features: { steer: true, browser: true } }).map((t) => t.id),
   ).toEqual(['terminal', 'browser'])
+  expect(
+    tabsFor({ features: { steer: true, desktop: true } }).map((t) => t.id),
+  ).toEqual(['terminal', 'desktop'])
 })
 
 it('resizes from its left edge and keeps the width within bounds', () => {

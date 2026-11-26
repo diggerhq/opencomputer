@@ -693,6 +693,7 @@ const capabilities = {
     reasoning: true,
     subagents: true,
     browser: true,
+    desktop: true,
   },
 }
 

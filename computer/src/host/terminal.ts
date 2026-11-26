@@ -33,7 +33,9 @@
 // - A browser (`app: browser`, docs/design/session-browser-desktop.md) is a
 //   terminal without a tty whose command is browser-cdp.py, chosen here and
 //   never by the caller: only where the host allows it (SP_SESSION_BROWSER),
-//   at most one per session, besides the 8 terminals; its id is `br_…`.
+//   at most one per session, besides the 8 terminals; its id is `br_…`. A
+//   desktop (`app: desktop`) is the same with desktop-vnc.py, where the host
+//   allows it (SP_SESSION_DESKTOP); its id is `dk_…`.
 
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -51,12 +53,18 @@ import { unavailable } from './unavailable.js';
 
 export const TERMINALS_PER_SESSION = 8;
 export const BROWSERS_PER_SESSION = 1;
+export const DESKTOPS_PER_SESSION = 1;
 const PENDING_MAX = 1 << 20;
 const STOP_AFTER_MS = 6000;
 const HELPER = path.join(import.meta.dirname, 'terminal-pty.py');
 const BROWSER = path.join(import.meta.dirname, 'browser-cdp.py');
-/** The browser's command line in the terminal helper: -I, so no PYTHON* variable or user site changes what runs. */
-export const browserCommand = (helper = BROWSER) => `exec python3 -I '${helper.replaceAll("'", "'\\''")}'`;
+const DESKTOP = path.join(import.meta.dirname, 'desktop-vnc.py');
+/** An app's command line in the terminal helper: -I, so no PYTHON* variable or user site changes what runs. */
+export const appCommand = (helper: string) => `exec python3 -I '${helper.replaceAll("'", "'\\''")}'`;
+export const browserCommand = (helper = BROWSER) => appCommand(helper);
+
+/** What runs instead of a terminal's command (`app`), always without a tty. */
+export type TerminalApp = 'browser' | 'desktop';
 
 export interface TerminalOpen {
   sessionId: string;
@@ -68,8 +76,8 @@ export interface TerminalOpen {
   term?: string;
   /** The session's sandbox id, on a `podman` host: the terminal opens inside its container, which the caller knows to be running. */
   sandbox?: string;
-  /** The session's browser instead of `command` (header). */
-  app?: 'browser';
+  /** The session's browser or desktop instead of `command` (header). */
+  app?: TerminalApp;
 }
 
 export type TerminalExit = (terminalId: string, exitCode: number | null, signal: string | null) => void;
@@ -100,6 +108,8 @@ export interface TerminalsOptions {
   python?: string;
   /** Whether a session may open its browser (SP_SESSION_BROWSER); default no. */
   browser?: boolean;
+  /** Whether a session may open its desktop (SP_SESSION_DESKTOP); default no. */
+  desktop?: boolean;
   /** On a `podman` host (sandbox/host.ts `terminal`); without it no terminal opens there. */
   inside?: {
     /** Before a terminal starts in this sandbox: waits as long as a person may be kept waiting, rejects with Unavailable; `leave` once the terminal is over. */
@@ -111,6 +121,18 @@ export interface TerminalsOptions {
 
 /** A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (work 103, C13). */
 export const browserUnavailable = () => apiError('browser_unavailable', 'This computer does not run browsers for its sessions.', 409, { retryable: false });
+export const desktopUnavailable = () => apiError('desktop_unavailable', 'This computer does not run desktops for its sessions.', 409, { retryable: false });
+
+const APPS: Record<TerminalApp, { helper: string; prefix: 'br' | 'dk'; max: number; allowed: (o: TerminalsOptions) => boolean; unavailable: () => ApiError; full: () => ApiError }> = {
+  browser: {
+    helper: BROWSER, prefix: 'br', max: BROWSERS_PER_SESSION, allowed: (o) => o.browser === true, unavailable: browserUnavailable,
+    full: () => apiError('too_many_browsers', 'The browser is already open in this session, in another tab or by someone else.', 409, { retryable: false }),
+  },
+  desktop: {
+    helper: DESKTOP, prefix: 'dk', max: DESKTOPS_PER_SESSION, allowed: (o) => o.desktop === true, unavailable: desktopUnavailable,
+    full: () => apiError('too_many_desktops', 'The desktop is already open in this session, in another tab or by someone else.', 409, { retryable: false }),
+  },
+};
 
 export const sessionNotRunning = () => apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' });
 
@@ -125,7 +147,7 @@ interface Helper {
 interface Term {
   id: string;
   sessionId: string;
-  app?: 'browser';
+  app?: TerminalApp;
   helper: Helper;
   servers: net.Server[];
   out: Stream;
@@ -291,11 +313,12 @@ export function createTerminals(o: TerminalsOptions): Terminals {
 
   const self: Terminals = {
     async open(asked, onExit) {
-      if (asked.app === 'browser' && !o.browser) return { error: browserUnavailable() };
-      const req = asked.app === 'browser' ? { ...asked, command: browserCommand(), tty: false } : asked;
+      const app = asked.app ? APPS[asked.app] : undefined;
+      if (app && !app.allowed(o)) return { error: app.unavailable() };
+      const req = app ? { ...asked, command: appCommand(app.helper), tty: false } : asked;
       const mine = () => [...terms.values()].filter((t) => t.sessionId === req.sessionId && t.app === req.app).length;
-      const full = () => req.app === 'browser'
-        ? mine() >= BROWSERS_PER_SESSION && { error: apiError('too_many_browsers', 'The browser is already open in this session, in another tab or by someone else.', 409, { retryable: false }) }
+      const full = () => app
+        ? mine() >= app.max && { error: app.full() }
         : mine() >= TERMINALS_PER_SESSION && { error: apiError('too_many_terminals', '8 terminals are already open in this session.', 409, { retryable: false }) };
       const many = full();
       if (many) return many;
@@ -317,7 +340,7 @@ export function createTerminals(o: TerminalsOptions): Terminals {
         const refused = full() || (!use?.running && { error: sessionNotRunning() });
         if (refused) return use?.leave(), refused;
       }
-      const id = mintId(req.app === 'browser' ? 'br' : 'tm');
+      const id = mintId(app?.prefix ?? 'tm');
       const helper = takeHelper(inside);
       if (use) void helper.exited.then(use.leave);
       const t: Term = {

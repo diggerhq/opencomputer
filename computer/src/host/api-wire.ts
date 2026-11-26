@@ -44,6 +44,8 @@ export interface WireOptions {
   terminal?: TerminalsOptions['inside'];
   /** SP_SESSION_BROWSER: a session may open its browser (terminal.ts `app: browser`). */
   browser?: boolean;
+  /** SP_SESSION_DESKTOP: a session may open its desktop (terminal.ts `app: desktop`). */
+  desktop?: boolean;
 }
 
 /** The gid of `name`, or undefined where it does not exist. */
@@ -74,6 +76,7 @@ export function wireFor(o: WireOptions): ((hooks: WireHooks) => Promise<WireLink
       group,
       inside: podman ? o.terminal : undefined,
       browser: o.browser,
+      desktop: o.desktop,
     });
     const inSandbox = podman ? o.files : undefined;
     const files = createWorkspaceFiles({

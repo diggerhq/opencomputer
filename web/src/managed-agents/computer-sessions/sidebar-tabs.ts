@@ -1,5 +1,5 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
-import { Globe, SquareTerminal, type LucideIcon } from 'lucide-react'
+import { Globe, Monitor, SquareTerminal, type LucideIcon } from 'lucide-react'
 import type { Capabilities } from '../computer-sessions-api'
 
 // The sidebar's tabs. Each one is a component that gets the session; adding a
@@ -31,6 +31,10 @@ const SessionBrowser = lazy(() =>
   import('./SessionBrowser').then((m) => ({ default: m.SessionBrowser })),
 )
 
+const SessionDesktop = lazy(() =>
+  import('./SessionDesktop').then((m) => ({ default: m.SessionDesktop })),
+)
+
 export const SIDEBAR_TABS: readonly SidebarTab[] = [
   {
     id: 'terminal',
@@ -46,6 +50,14 @@ export const SIDEBAR_TABS: readonly SidebarTab[] = [
     hint: "A browser in this session's computer, for its localhost and the web",
     component: SessionBrowser,
     available: (f) => f.browser === true,
+  },
+  {
+    id: 'desktop',
+    label: 'Desktop',
+    icon: Monitor,
+    hint: "A desktop in this session's computer, for apps with windows",
+    component: SessionDesktop,
+    available: (f) => f.desktop === true,
   },
 ]
 
