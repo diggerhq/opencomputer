@@ -606,6 +606,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     this.connections = new ComputerConnections({
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
+      instructs: (key, userId) => this.roles.instructs(key, userId),
       linkOfSlack: (slackUserId) => this.access.agents.linkOfSlack(slackUserId),
       grantable: (userId, service) => this.account().grantableComputerConnections(userId, service),
       grant: (input) => this.account().grantOwnComputerServiceConnection(input),

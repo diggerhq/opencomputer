@@ -5,15 +5,21 @@
 // dashboard), and grants one to this thread or to all their threads. The
 // grant is checked again on submit: nobody grants a connection they do not
 // own, so the button carries no authority and forwarding it gives nothing.
-// Grants for everyone are an admin's, from the dashboard or the CLI.
+// Only people who can drive the session may click it (work 112, as for a
+// secret): anyone else in the thread is refused, privately, on click and on
+// submit. Grants for everyone are an admin's, from the dashboard or the CLI.
 
 import { base64UrlToBytes, bytesToBase64Url } from "./crypto.js";
 import type { SlackResult } from "./slack.js";
+import { LOOKUP_FAILED_TEXT } from "./threads.js";
 
 export const CONNECTION_VIEW = "computer_connection";
 // GitHub is not here: the computer uses the organization's GitHub App.
 export const CONNECTION_SERVICES = ["linear", "gmail", "calendar", "drive", "sheets"] as const;
 const PREFIX = "cn:";
+
+/** Ephemeral or modal error: the clicker cannot drive the session that asked. */
+export const driversOnlyText = (name: string) => `Only people who can drive this session can grant it ${name}. Ask its owner to share it with you first.`;
 
 export interface ConnectionRequest {
   service: string;
@@ -39,6 +45,8 @@ interface Session {
 export interface ConnectionDeps {
   slack: (method: string, body: Record<string, unknown>) => Promise<SlackResult>;
   session: (key: string) => Session | undefined;
+  /** Whether the Slack user can drive (instruct) the session: its owner or a driver. May throw when Slack cannot be asked. */
+  instructs: (sessionKey: string, slackUserId: string) => Promise<boolean>;
   /** The dashboard user a Slack user linked with `!link`. */
   linkOfSlack: (slackUserId: string) => string | undefined;
   grantable: (dashboardUserId: string, service: string) => Promise<GrantableConnection[]>;
@@ -170,6 +178,10 @@ export class ComputerConnections {
     if (!d) return;
     const session = this.deps.session(d.k);
     const name = serviceName(d.s);
+    if (session) {
+      const refusal = await this.driverRefusal(session.key, ctx.userId, name);
+      if (refusal) return this.ephemeral(ctx, session, refusal);
+    }
     const user = this.deps.linkOfSlack(ctx.userId);
     let view: Record<string, unknown>;
     if (!session) {
@@ -216,6 +228,8 @@ export class ComputerConnections {
     if (scope !== "session" && scope !== "user") return { errors: { scope: "Choose who it is for." } };
     const session = this.deps.session(meta.k);
     if (!session) return { errors: { conn: "This session has ended." } };
+    const refusal = await this.driverRefusal(session.key, userId, serviceName(meta.s));
+    if (refusal) return { errors: { conn: refusal } };
     const user = this.deps.linkOfSlack(userId);
     if (!user) return { errors: { conn: "Link your Slack user to OpenComputer first (`!link`)." } };
     // The owner check: grantable lists only this person's own connections.
@@ -241,5 +255,24 @@ export class ComputerConnections {
         }
       },
     };
+  }
+
+  /** Why the Slack user may not grant a connection to the session, or undefined when they can drive it. */
+  private async driverRefusal(sessionKey: string, userId: string, name: string): Promise<string | undefined> {
+    try {
+      return (await this.deps.instructs(sessionKey, userId)) ? undefined : driversOnlyText(name);
+    } catch {
+      return LOOKUP_FAILED_TEXT;
+    }
+  }
+
+  private async ephemeral(ctx: OpenContext, session: Session, text: string): Promise<void> {
+    const r = await this.deps.slack("chat.postEphemeral", {
+      channel: ctx.channelId ?? session.channelId,
+      user: ctx.userId,
+      thread_ts: ctx.threadTs ?? session.threadTs,
+      text,
+    });
+    if (!r.ok) console.error("connection_refusal_failed", { error: r.error });
   }
 }
