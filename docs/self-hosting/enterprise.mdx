@@ -8,7 +8,7 @@ The Community Edition (CE) is the deployment described in [Start here](/self-hos
 | | Community Edition | Enterprise Edition |
 | --- | --- | --- |
 | Computer VMs | One VM per organization, sized by you | A pool of VMs per organization that grows and shrinks with the number of sessions |
-| Sandboxes for heavy builds | OpenComputer's hosted sandboxes | Sandboxes in your own Azure, AWS or Google Cloud account |
+| Sandboxes for heavy builds | Cloud sandbox providers only, such as OpenComputer's hosted sandboxes | Sandboxes in your own Azure, AWS or Google Cloud account |
 | Sign-in | WorkOS | WorkOS, or your identity provider directly: Okta, Microsoft Entra ID, or any SAML 2.0 or OIDC provider |
 | Images | Built from this repository | Prebuilt images that need a license key |
 | Support | GitHub issues | A named contact and an agreed response time |
@@ -19,7 +19,7 @@ In CE every session of an organization runs on its one VM, so the size of that V
 
 ## Sandboxes in your cloud account
 
-Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on OpenComputer's hosted sandboxes. You choose the worker instance types and how far the fleet scales.
+Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on a cloud sandbox provider, which is the only option in CE. You choose the worker instance types and how far the fleet scales.
 
 ## Sign-in with your identity provider
 
