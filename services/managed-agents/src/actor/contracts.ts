@@ -326,7 +326,7 @@ export interface SlackRpc {
   /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
   forHost(): Promise<{
     people: CalvinPerson[];
-    slack: { botToken: string; botUserId: string; teamId: string; installer?: { slackUser: string; member: string | null } } | null;
+    slack: { botToken: string; botUserId: string; teamId: string; teamName?: string; installer?: { slackUser: string; member: string | null } } | null;
   }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;

@@ -984,7 +984,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     try {
       const got = await this.actors.slack().forHost();
       this.slackHost = got.slack;
-      if (changed) await this.slackChanged(got.slack);
+      await this.slackChanged(got.slack, changed);
       if (!this.socket()) return;
       if (got.people.length) this.send({ t: "people", people: got.people });
       if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials()) });
@@ -998,9 +998,13 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * means to use it) and the installer's model access moves from their dashboard id to their Slack id;
    * unlinked: it moves back. `slackLinked` is the link this Computer last saw, so each happens once.
    */
-  private async slackChanged(slack: Awaited<ReturnType<SlackRpc["forHost"]>>["slack"]): Promise<void> {
+  private async slackChanged(slack: Awaited<ReturnType<SlackRpc["forHost"]>>["slack"], start: boolean): Promise<void> {
     const before = this.setting("slackLinked");
+    this.put("slackSeen", "1");
     if (slack) {
+      // What the dashboard's overview shows of the link.
+      this.put("slackLinkedBot", slack.botUserId);
+      this.put("slackLinkedName", slack.teamName ?? "");
       const installer = slack.installer;
       if (before !== slack.teamId) {
         this.put("slackLinked", slack.teamId);
@@ -1008,10 +1012,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         if (installer) this.put("slackLinkedInstaller", installer.slackUser);
         else this.remove("slackLinkedInstaller");
       }
-      await this.ensureComputerOnInstall(this.accountId());
+      if (start) await this.ensureComputerOnInstall(this.accountId());
     } else if (before) {
       await this.access.agents.unrekey(this.setting("slackLinkedInstaller"));
-      this.remove("slackLinked", "slackLinkedInstaller");
+      this.remove("slackLinked", "slackLinkedInstaller", "slackLinkedBot", "slackLinkedName");
     }
   }
 
@@ -1495,13 +1499,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   async overview(accountId: string, userId?: string): Promise<ComputerOverview> {
     this.bind(accountId);
     this.kickPool();
-    const teamId = this.setting("slackTeamId");
-    const teamName = this.setting("slackTeamName");
-    const botUserId = this.setting("slackBotUserId");
+    // The link is the Slack actor's: what it last told this object, or this object's own until it has.
+    const seen = this.setting("slackSeen");
+    const teamId = seen ? this.setting("slackLinked") : this.setting("slackBotToken") ? this.setting("slackTeamId") : undefined;
+    const teamName = seen ? this.setting("slackLinkedName") : this.setting("slackTeamName");
+    const botUserId = seen ? this.setting("slackLinkedBot") : this.setting("slackBotUserId");
     return {
       computer: this.lifecycle.view(),
       slack:
-        teamId && this.setting("slackBotToken")
+        teamId
           ? { installed: true, teamId, ...(teamName ? { teamName } : {}), ...(botUserId ? { botUserId } : {}) }
           : { installed: false },
       plan: await this.plan(),

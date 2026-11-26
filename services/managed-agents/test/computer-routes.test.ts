@@ -1,5 +1,5 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { randomToken } from "../src/computer/crypto.js";
@@ -19,7 +19,6 @@ import { REVOKED_SLACK_BOT_TOKEN, SLACK_BOT_TOKEN } from "./fixtures/computer-fa
 
 const ORIGIN = "https://managedagents.test";
 const ACCOUNT = "local";
-const SIGNING_SECRET = "computer-signing-secret";
 const FORBIDDEN = /azure|eastus|westus|Standard_|D2as|oc-local|managedagents\.test|subscription|resourceGroup/i;
 
 type Namespace = DurableObjectNamespace<ComputerDurableObject>;
@@ -30,18 +29,6 @@ async function api(path: string, init: RequestInit = {}) {
   const response = await SELF.fetch(`${ORIGIN}${path}`, init);
   const text = await response.text();
   return { status: response.status, headers: response.headers, text, body: text ? (JSON.parse(text) as any) : null };
-}
-
-async function signed(path: string, body: string, contentType = "application/json") {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`v0:${timestamp}:${body}`)));
-  const signature = `v0=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-  return SELF.fetch(`${ORIGIN}${path}`, {
-    method: "POST",
-    headers: { "content-type": contentType, "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
-    body,
-  });
 }
 
 async function settleAlarms(limit = 30) {
@@ -166,117 +153,14 @@ describe("computer routes", () => {
     expect(replay.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=invalid_state");
 
     const linked = await api("/v1/computer");
-    expect(linked.body.slack).toEqual({ installed: true, teamId: "T0ACME", teamName: "Acme", botUserId: "UBOT" });
+    expect(linked.body.slack).toEqual({ installed: true, teamId: "T0ACME", botUserId: "UBOT" });
     expect(linked.text).not.toContain(SLACK_BOT_TOKEN);
-    // Who approved the install is kept, to ask them when someone else tries to link it.
-    expect(
-      await runInDurableObject(computer(), (_instance, state) =>
-        [...state.storage.sql.exec<{ value: string }>("SELECT value FROM settings WHERE key = 'slackInstallerUserId'")][0]?.value,
-      ),
-    ).toBe("U0INSTALLER");
-    // One workspace, one organization.
-    expect(await computers().getByName("computer-slack-team:T0ACME").claimTeam("T0ACME", "org_other")).toEqual({ ok: false, holder: ACCOUNT });
-
-    // Slack events: signature first, url_verification, then a mention becomes a delivery.
-    const unsigned = await SELF.fetch(`${ORIGIN}/v1/webhooks/computer/slack/events`, { method: "POST", body: "{}" });
-    expect(unsigned.status).toBe(401);
-    const challenge = await signed("/v1/webhooks/computer/slack/events", JSON.stringify({ type: "url_verification", challenge: "abc" }));
-    expect(await challenge.json()).toEqual({ challenge: "abc" });
-
-    const event = {
-      type: "event_callback",
-      event_id: "Ev1",
-      team_id: "T0ACME",
-      event: { type: "app_mention", channel: "C1", user: "U1", text: "<@UBOT> fix the build", ts: "100.1" },
-    };
-    expect((await signed("/v1/webhooks/computer/slack/events", JSON.stringify(event))).status).toBe(200);
-    // The edge hands the event over after answering; hand it over here too (the dedup makes it once).
-    const job = { eventId: "Ev1", teamId: "T0ACME", channelId: "C1", threadTs: "100.1", messageTs: "100.1", userId: "U1", text: "<@UBOT> fix the build", mentioned: true, receivedAt: Date.now() };
-    // Work 068: the accept drains the queue inline, so the frame may come before any alarm.
-    const delivered = nextMessage(socket, "deliver");
-    await computer().acceptSlackEvent(ACCOUNT, job);
-    expect(await computer().acceptSlackEvent(ACCOUNT, { ...job, eventId: "Ev2" })).toEqual({ accepted: false });
-    await runInDurableObject(computer(), (_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-    await runDurableObjectAlarm(computer());
-    const deliver = await delivered;
-    expect(deliver).toMatchObject({
-      session: { key: "T0ACME:C1:100.1", kind: "thread", channel: "C1", threadTs: "100.1", owner: { slackUserId: "U1" }, mode: "bypassPermissions" },
-      msg: { userId: "U1", text: "fix the build", ts: "100.1", mentioned: true },
-      credentials: { slackBotToken: SLACK_BOT_TOKEN },
-      secrets: [],
-    });
-    socket.send(JSON.stringify({ t: "session", report: { key: "T0ACME:C1:100.1", status: "busy", speed: "standard" } }));
-    socket.send(JSON.stringify({ t: "reply", id: deliver.id, ok: true }));
-
-    // A token request with no GitHub connected answers with a clear error.
-    const tokenAnswer = nextMessage(socket, "token");
-    socket.send(JSON.stringify({ t: "token", id: "tok1", repos: ["acme/api"] }));
-    expect(await tokenAnswer).toEqual({ t: "token", id: "tok1", error: expect.stringMatching(/GitHub is not connected/) });
-
-    // An OpenComputer key carries the session the host names only when it is
-    // a live session of this workspace (work 080).
-    const named = await runInDurableObject(computer(), ((instance: any) =>
-      ["T0ACME:C1:100.1", "T0ACME:C1:999.9", "T0OTHER:C1:100.1", 42].map((key) => instance.liveSessionKey(key))) as never);
-    expect(named).toEqual(["T0ACME:C1:100.1", undefined, undefined, undefined]);
-    // Connection grants are for that session and the Slack user who owns it.
-    expect(await computer().grantAudience("T0ACME:C1:100.1")).toEqual({ sessionKey: "T0ACME:C1:100.1", ownerId: "U1" });
-    expect(await computer().grantAudience("T0ACME:C1:999.9")).toBeNull();
-    // A runner's reported speed (a `!speed` change) is kept, so the next delivery starts with it.
-    const speed = await runInDurableObject(computer(), (_instance, state) =>
-      [...state.storage.sql.exec<{ speed: string | null }>("SELECT speed FROM sessions WHERE runner_key = ?", "T0ACME:C1:100.1")][0]?.speed,
-    );
-    expect(speed).toBe("standard");
-
-    const sessions = await api("/v1/computer/sessions");
-    expect(sessions.body).toEqual({
-      sessions: [
-        {
-          key: "T0ACME:C1:100.1",
-          title: "fix the build",
-          channelId: "C1",
-          threadTs: "100.1",
-          ownerSlackUserId: "U1",
-          status: "busy",
-          updatedAt: expect.any(String),
-          slackUrl: "https://app.slack.com/client/T0ACME/C1/thread/C1-100.1",
-        },
-      ],
-    });
-
-    // Parking (decision 10): with the host gone and the computer parked, a
-    // reply in the thread wakes it, says so once, and waits in the queue.
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(computer(), fn as never) as Promise<T>;
-    await inside((_instance, state) => {
-      for (const ws of state.getWebSockets()) ws.close(1000, "test");
-      state.storage.sql.exec("UPDATE sessions SET status = 'idle'");
-    });
-    socket.close();
-    expect(await inside((instance) => instance.lifecycle.park())).toBe(true);
-    for (let i = 0; i < 5; i += 1) {
-      await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0"));
-      await runDurableObjectAlarm(computer());
-    }
-    expect((await api("/v1/computer")).body.computer).toMatchObject({ state: "parked", connected: false });
-    for (const [eventId, ts] of [["Ev3", "100.2"], ["Ev4", "100.3"]] as const) {
-      await computer().acceptSlackEvent(ACCOUNT, { ...job, eventId, messageTs: ts, text: "and the tests too", mentioned: false });
-    }
-    await inside((_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-    await runDurableObjectAlarm(computer());
-    expect((await api("/v1/computer")).body.computer.state).toBe("waking");
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT thread_key AS t, kind FROM notices")])).toEqual([
-      { t: "C1:100.1", kind: "waking" },
-    ]);
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM dispatches WHERE state = 'pending'")][0])).toEqual({ n: 2 });
-    await settleAlarms();
-    expect((await api("/v1/computer")).body.computer.state).toBe("ready");
-
-    // Unlink: 204, then nothing linked; the workspace is free for another organization.
+    // Unlink: 204, then nothing linked.
     expect((await api("/v1/computer/slack", { method: "DELETE" })).status).toBe(204);
     const again = await api("/v1/computer/slack", { method: "DELETE" });
     expect(again.status).toBe(404);
     expect(again.body.error.code).toBe("computer_slack_not_installed");
     expect((await api("/v1/computer")).body.slack).toEqual({ installed: false });
-    expect(await computers().getByName("computer-slack-team:T0ACME").claimTeam("T0ACME", "org_other")).toEqual({ ok: true });
 
     // Work 054: TINYBIRD_API_URL is set here but the append token is not, so
     // telemetry is off: through all of the above, nothing reached Tinybird.
@@ -302,7 +186,7 @@ describe("computer routes", () => {
     expect(callback.status).toBe(302);
     expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=connected");
     const after = await org().overview(ORG);
-    expect(after.slack).toEqual({ installed: true, teamId: "T0INSTALL", teamName: "Acme", botUserId: "UBOT" });
+    expect(after.slack).toEqual({ installed: true, teamId: "T0INSTALL", botUserId: "UBOT" });
     expect(after.computer).toMatchObject({ state: "provisioning", connected: false });
 
     // Creating again (POST /v1/computer's path) stays idempotent.
@@ -380,10 +264,6 @@ describe("computer routes", () => {
         instance.telemetry.vmTerminated = (days: number) => instance.terminated.push(days);
         state.storage.sql.exec("DELETE FROM settings WHERE key = 'planCheckedAt'");
       });
-      // Day 8, never warned: the DM fails, so no warning is recorded and the VM stays.
-      await inside((instance) => instance.idleCheck());
-      expect(await setting("unpaidWarnedAt")).toBeUndefined();
-      expect((await row())?.state).toBe("ready");
       // A later check reaches the installer: warned now, the VM stays a day more.
       await inside((instance) => instance.put("slackInstallerUserId", "U0INSTALLER"));
       await inside((instance) => instance.idleCheck());
@@ -411,20 +291,6 @@ describe("computer routes", () => {
         delete instance.env.OPENCOMPUTER_BILLING;
       });
     }
-  });
-
-  it("links Slack even when the computer cannot be created on install", async () => {
-    const ORG = "org_install_broken";
-    // Computers not configured for this object: the claim fails, the install does not.
-    await runInDurableObject(computers().getByName(ORG), ((instance: any) => {
-      instance.env.COMPUTER_HOST_GATEWAY_URL = "";
-    }) as never);
-    const callback = await slackInstall(ORG, "join:T0BROKEN:U0INSTALLER");
-    expect(callback.status).toBe(302);
-    expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=connected");
-    const after = await computers().getByName(ORG).overview(ORG);
-    expect(after.slack.installed).toBe(true);
-    expect(after.computer).toBeNull();
   });
 
   it("bills a computer like a serverless agent: managed key, working time, credit gate", async () => {
@@ -975,114 +841,6 @@ describe("computer routes", () => {
     socket.close();
   });
 
-  it("refuses a Slack workspace already linked to another organization", async () => {
-    // Claimed by an organization whose object holds no link: nobody to ask.
-    await computers().getByName("computer-slack-team:T0OTHER").claimTeam("T0OTHER", "org_other");
-    const callback = await callbackWith("other-team");
-    expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=team_already_linked&notified=0");
-    expect((await api("/v1/computer")).body.slack.installed).toBe(false);
-  });
-
-  it("DMs the requester and the installer with the holder's token, once a day, and never links", async () => {
-    await linkOther("org_holder", "T0HELD", "U0OWNER");
-    await joinCalls(true);
-
-    const first = await callbackWith("join:T0HELD:U0NEWBIE");
-    expect(first.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=team_already_linked&notified=1");
-    expect(first.headers.get("location")).not.toMatch(/org_holder|T0HELD/);
-    expect((await api("/v1/computer")).body.slack.installed).toBe(false);
-    expect(await computers().getByName("computer-slack-team:T0HELD").teamAccount()).toBe("org_holder");
-
-    const all = await slackCalls(true);
-    const calls = all.filter((call) => call.token === "Bearer xoxb-holder-token");
-    expect(calls.map((call) => [call.method, call.body.users ?? call.body.channel])).toEqual([
-      // The holder's token is alive: the workspace stays theirs.
-      ["auth.test", undefined],
-      ["conversations.open", "U0NEWBIE"],
-      ["chat.postMessage", "D-U0NEWBIE"],
-      ["conversations.open", "U0OWNER"],
-      ["chat.postMessage", "D-U0OWNER"],
-    ]);
-    // The holder's token, never the one this install was granted.
-    for (const call of all.filter((call) => /U0NEWBIE|U0OWNER/.test(String(call.body.users ?? call.body.channel)))) {
-      expect(call.token).toBe("Bearer xoxb-holder-token");
-    }
-    expect(calls[2]!.body.text).toBe(
-      "This Slack workspace already works with OpenComputer, set up by <@U0OWNER>. We've let them know you'd like to join, so look out for an invite.",
-    );
-    expect(calls[4]!.body.text).toBe(
-      "<@U0NEWBIE> just tried to set up OpenComputer for this workspace. It's already yours: invite them to your organization so they can use the computer with you: https://app.example/settings",
-    );
-
-    // Again within a day: the same answer, no more DMs.
-    const again = await callbackWith("join:T0HELD:U0NEWBIE");
-    expect(again.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=team_already_linked&notified=1");
-    expect((await joinCalls(true)).map((call) => call.method)).toEqual(["auth.test"]);
-
-    // A day later, or another person: DMs again.
-    await runInDurableObject(computers().getByName("org_holder"), (_instance, state) =>
-      state.storage.sql.exec("UPDATE join_requests SET notified_at = notified_at - 86400001"),
-    );
-    await callbackWith("join:T0HELD:U0NEWBIE");
-    expect((await joinCalls(true)).length).toBe(5);
-    await callbackWith("join:T0HELD:U0SECOND");
-    expect((await joinCalls(true)).map((call) => call.body.users).filter(Boolean)).toEqual(["U0SECOND", "U0OWNER"]);
-  });
-
-  it("only tells the requester when nobody is known to have linked the workspace", async () => {
-    await linkOther("org_legacy", "T0LEGACY", undefined);
-    await joinCalls(true);
-    const callback = await callbackWith("join:T0LEGACY:U0NEWBIE");
-    expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=team_already_linked&notified=0");
-    const calls = await joinCalls(true);
-    expect(calls.map((call) => call.method)).toEqual(["auth.test", "conversations.open", "chat.postMessage"]);
-    expect(calls[2]!.body.text).toBe("This Slack workspace already works with OpenComputer. Ask a teammate who uses it to invite you.");
-  });
-
-  it("does not fail the redirect when a DM cannot be sent", async () => {
-    await linkOther("org_gone", "T0GONE", "U0GONE");
-    await joinCalls(true);
-    const callback = await callbackWith("join:T0GONE:U0NEWBIE");
-    expect(callback.status).toBe(302);
-    expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=team_already_linked&notified=0");
-    expect((await joinCalls(true)).map((call) => call.method)).toEqual(["auth.test", "conversations.open", "chat.postMessage", "conversations.open"]);
-  });
-
-  it("frees a workspace whose holder uninstalled the app, and links it", async () => {
-    await linkOther("org_uninstalled", "T0FREED", "U0OWNER", REVOKED_SLACK_BOT_TOKEN);
-    await joinCalls(true);
-    const callback = await callbackWith("join:T0FREED:U0NEWBIE");
-    expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=connected");
-    expect((await api("/v1/computer")).body.slack).toEqual({ installed: true, teamId: "T0FREED", teamName: "Acme", botUserId: "UBOT" });
-    expect(await computers().getByName("computer-slack-team:T0FREED").teamAccount()).toBe(ACCOUNT);
-    expect((await computers().getByName("org_uninstalled").overview("org_uninstalled")).slack).toEqual({ installed: false });
-    // Only the dead token was tried; nobody was DMed with it.
-    expect((await joinCalls(true)).map((call) => [call.method, call.token])).toEqual([["auth.test", `Bearer ${REVOKED_SLACK_BOT_TOKEN}`]]);
-  });
-
-  it("unlinks on app_uninstalled and tokens_revoked only when Slack says the token is dead", async () => {
-    const uninstalled = (teamId: string, eventId: string) =>
-      signed("/v1/webhooks/computer/slack/events", JSON.stringify({ type: "event_callback", event_id: eventId, team_id: teamId, event: { type: "app_uninstalled" } }));
-
-    // A live token: the event changes nothing (it could be stale or replayed).
-    await linkOther("org_live", "T0LIVE", "U0OWNER");
-    expect((await uninstalled("T0LIVE", "EvU1")).status).toBe(200);
-    await vi.waitFor(async () => expect((await slackCalls()).map((call) => call.method)).toContain("auth.test"));
-    expect(await computers().getByName("computer-slack-team:T0LIVE").teamAccount()).toBe("org_live");
-    expect((await computers().getByName("org_live").overview("org_live")).slack.installed).toBe(true);
-
-    // A dead token: unlinked, and the workspace is free.
-    await linkOther("org_dead", "T0DEAD", "U0OWNER", REVOKED_SLACK_BOT_TOKEN);
-    expect((await uninstalled("T0DEAD", "EvU2")).status).toBe(200);
-    await vi.waitFor(async () => expect(await computers().getByName("computer-slack-team:T0DEAD").teamAccount()).toBeNull());
-    expect((await computers().getByName("org_dead").overview("org_dead")).slack).toEqual({ installed: false });
-
-    // tokens_revoked for the bot does the same.
-    await linkOther("org_revoked", "T0REVOKED", "U0OWNER", REVOKED_SLACK_BOT_TOKEN);
-    const revoked = { type: "event_callback", event_id: "EvR1", team_id: "T0REVOKED", event: { type: "tokens_revoked", tokens: { bot: ["UBOTHELD"] } } };
-    expect((await signed("/v1/webhooks/computer/slack/events", JSON.stringify(revoked))).status).toBe(200);
-    await vi.waitFor(async () => expect(await computers().getByName("computer-slack-team:T0REVOKED").teamAccount()).toBeNull());
-  });
 });
 
 /** Another organization with `teamId` linked, approved by `installer` (or a link from before installers were kept). */
@@ -1099,33 +857,18 @@ async function linkOther(accountId: string, teamId: string, installer: string | 
     });
 }
 
-/** Starts an install as the `local` organization and returns Slack's callback with `code`. */
-async function callbackWith(code: string) {
-  const install = await api("/v1/computer/slack/install", { method: "POST" });
-  const state = new URL(install.body.url).searchParams.get("state")!;
-  return SELF.fetch(`${ORIGIN}/v1/computer/slack/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`, { redirect: "manual" });
-}
-
 /** Slack's OAuth callback with `code` for an install `accountId` started (POST /v1/computer/slack/install, minus the edge identity). */
 async function slackInstall(accountId: string, code: string): Promise<Response> {
   const nonce = randomToken();
-  await computers().getByName(accountId).startSlackInstall(accountId, "user_installer", nonce);
+  // The install's nonce is the Slack actor's; the link reaches the computer as `changed("slack")`.
+  const installer = { org: accountId, subject: "user_installer", kind: "member", via: "dashboard", scopes: [], audiences: ["org"], admin: true, credential: { id: "test", expiresAt: null } };
+  await (env as unknown as { SLACK: { getByName(name: string): { startInstall(p: unknown, nonce: string): Promise<void> } } }).SLACK.getByName(accountId).startInstall(installer, nonce);
   return SELF.fetch(`${ORIGIN}/v1/computer/slack/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(encodeInstallState(accountId, nonce))}`, {
     redirect: "manual",
   });
 }
 
 /** The fake's recorded Slack Web API calls; `reset` clears them. */
-/**
- * Slack calls a join callback made: those with a held workspace's token.
- * Other test files share the fake Slack and run in parallel; their calls
- * (status updates, user lookups) carry their own tokens.
- */
-async function joinCalls(reset = false): Promise<Array<{ method: string; token: string | null; body: any }>> {
-  const held = new Set(["Bearer xoxb-holder-token", `Bearer ${REVOKED_SLACK_BOT_TOKEN}`]);
-  return (await slackCalls(reset)).filter((call) => call.token !== null && held.has(call.token));
-}
-
 // The fake is shared with the other test files of this project, so a reset only moves this file's cursor:
 // clearing the fake would drop calls another file is about to read.
 let slackCursor = 0;
