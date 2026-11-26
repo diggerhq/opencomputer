@@ -46,6 +46,8 @@ import {
   type AccessInput,
   type AccessRow,
   accessOf,
+  isOwner,
+  mayChangeSession,
   mayManage,
   mayUse,
   membersOf,
@@ -90,8 +92,13 @@ export interface ApiCaller {
   member: string;
   /** The dashboard (WorkOS) user id. */
   userId: string;
-  /** The caller's organization role is owner or admin: they may open terminals in any session they can see. */
+  /** The caller's organization role is owner or admin: org settings only; it opens no session (owner first). */
   admin?: boolean;
+  /**
+   * Set for a session's own computer key (`principal: "computer"`): the runner key of the one session it may see,
+   * read, drive and mint tickets for. Empty: a key minted for no session, which sees none.
+   */
+  onlySession?: string;
   name: string | null;
   email: string | null;
   /** The actor's `via`, and a new session's origin type: `opc`, `api` or `dashboard`. */
@@ -298,7 +305,20 @@ export class ComputerSessionsApi {
       CREATE INDEX IF NOT EXISTS api_idempotency_created ON api_idempotency (created_at);
     `);
     this.members = new ApiMembers(sql, this.now);
+    // Owner first (CTO-37), once: a session from before access modes has no stored mode and was org-wide. It is
+    // its owner's now (accessOf reads a missing mode as `owner` too); the host hears it on the next hello or call.
+    const migrated = sql.exec(
+      `UPDATE sessions SET access_mode = 'owner', access_people = NULL
+       WHERE access_mode IS NULL AND session_id IS NOT NULL AND origin_type != 'slack'`,
+    ).rowsWritten;
+    if (migrated > 0) {
+      this.accessStale = true;
+      console.log(JSON.stringify({ event: "computer.session_access_migrated", sessions: migrated, mode: "owner" }));
+    }
   }
+
+  /** Rows the one-time owner-first migration changed whose new access the host has not been sent yet. */
+  private accessStale = false;
 
   // ---------------------------------------------------------------- rows
 
@@ -312,11 +332,13 @@ export class ComputerSessionsApi {
 
   /**
    * A session the caller may use (read or drive), by its access (session-access.ts): a Slack one only by its
-   * linked owner. Every read and write goes through here; an admin is no exception (Q4).
+   * linked owner. Every read and write goes through here; an admin is no exception. A session's own key sees
+   * only that session.
    */
   visible(caller: ApiCaller, sessionId: string): ApiRow | undefined {
     const row = this.anyRow(sessionId);
-    return row && mayUse(row, caller) ? row : undefined;
+    if (!row || !mayUse(row, caller)) return undefined;
+    return caller.onlySession === undefined || (caller.onlySession !== "" && row.key === caller.onlySession) ? row : undefined;
   }
 
   private anyRow(sessionId: string): ApiRow | undefined {
@@ -439,8 +461,12 @@ export class ComputerSessionsApi {
     if (op.op !== "me" && !this.deps.enabled()) {
       return { status: 409, error: { code: "feature_unavailable", message: "The sessions API is not enabled for this organization yet.", feature: "sessions" } };
     }
-    if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member);
+    if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member, this.keySessions(caller));
     if (caller.admin !== undefined) this.noteAdmin(caller.member, caller.admin);
+    if (this.accessStale && this.v4Host()) {
+      this.accessStale = false;
+      this.sendAllAccess();
+    }
     this.members.observe(caller.member, caller.email, caller.name);
     switch (op.op) {
       case "me":
@@ -519,6 +545,10 @@ export class ComputerSessionsApi {
   }
 
   private async create(caller: ApiCaller, body: unknown, idempotencyKey?: string): Promise<ApiReply> {
+    // A session's own key reaches its session alone: a session it started would belong to no person.
+    if (caller.onlySession !== undefined) {
+      return { status: 403, error: { code: "forbidden", message: "Sessions cannot start sessions over this API.", reason: "computer_principal" } };
+    }
     const input = validateCreate(body);
     if ("error" in input) return input.error;
     const hash = await sha256Hex(stableJson(input.value));
@@ -656,12 +686,7 @@ export class ComputerSessionsApi {
 
   private async get(caller: ApiCaller, sessionId: string, minSeq?: number): Promise<ApiReply> {
     let row = this.visible(caller, sessionId);
-    if (!row) {
-      // An admin outside the session reads its access and nothing else, as the PATCH returns it (Q4).
-      const found = this.anyRow(sessionId);
-      if (!found || !mayManage(found, caller)) return notFound();
-      return { status: 200, body: { session: null, access: accessOf(found), canManageAccess: true, seq: found.lastSeq } };
-    }
+    if (!row) return notFound();
     if (minSeq !== undefined && row.lastSeq < minSeq) {
       await this.waitSeq(sessionId, minSeq, MIN_SEQ_WAIT_MS);
       row = this.row(sessionId)!;
@@ -705,23 +730,20 @@ export class ComputerSessionsApi {
   }
 
   private async patch(caller: ApiCaller, sessionId: string, body: unknown, idempotencyKey?: string): Promise<ApiReply> {
-    const found = this.anyRow(sessionId);
-    const uses = !!found && mayUse(found, caller);
-    // An admin outside the session may change its access and nothing else, and learns nothing more of it (Q4).
-    if (!found || (!uses && !mayManage(found, caller))) return notFound();
+    // Owner first: someone the session is shared with sees it but changes nothing of it; to anyone else it does not exist.
+    const found = this.visible(caller, sessionId);
+    if (!found) return notFound();
     const parsed = validatePatch(body);
     if ("error" in parsed) return parsed.error;
     const { access: wanted, ...p } = parsed.value;
     const fields = Object.keys(p).length > 0;
-    if (!uses && fields) return notFound();
+    if (fields && !mayChangeSession(found, caller)) return ownerOnly("Only the session's owner can rename, archive or change its settings.");
     let access: { mode: AccessInput["mode"]; people: string[] } | undefined;
     if (wanted) {
       if (found.originType === "slack") {
         return { status: 403, error: { code: "forbidden", message: "A Slack session's access is set in its thread (`!access`).", reason: "access_in_slack" } };
       }
-      if (!mayManage(found, caller)) {
-        return { status: 403, error: { code: "forbidden", message: "Only the session's owner, people it is shared with, or an admin can change its access.", reason: "not_member" } };
-      }
+      if (!mayManage(found, caller)) return ownerOnly("Only the session's owner can change who has access. Ask them to share it.");
       const resolved = await this.resolveAccess(wanted);
       if ("error" in resolved) return resolved.error;
       access = resolved;
@@ -737,8 +759,7 @@ export class ComputerSessionsApi {
       const out = reply.body as { session: Session; seq: number };
       return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller) } } };
     }
-    if (mayUse(row, caller)) return { status: 200, body: { session: this.compose(row, undefined, caller), seq: row.lastSeq } };
-    return { status: 200, body: { session: null, access: accessOf(row), canManageAccess: mayManage(row, caller), seq: row.lastSeq } };
+    return { status: 200, body: { session: this.compose(row, undefined, caller), seq: row.lastSeq } };
   }
 
   /** Stores a session's new access and tells the host, whose relay drops attachments and terminals it no longer allows. */
@@ -830,7 +851,7 @@ export class ComputerSessionsApi {
   private aside(caller: ApiCaller, op: Extract<ApiOp, { op: "aside.set" | "aside.clear" }>): ApiReply {
     const row = this.visible(caller, op.sessionId);
     if (!row) return notFound();
-    if (row.ownerUserId !== caller.member) {
+    if (!isOwner(row, caller)) {
       return { status: 403, error: { code: "forbidden", message: "Only the session's owner can set it aside.", reason: "aside_owner_only" } };
     }
     let ref: string | null = null;
@@ -842,6 +863,13 @@ export class ComputerSessionsApi {
     }
     this.deps.sql.exec("UPDATE sessions SET aside_ref = ? WHERE session_id = ?", ref, op.sessionId);
     return { status: 200, body: { session: this.compose(this.row(op.sessionId)!, undefined, caller) } };
+  }
+
+  /** A session's own key: the session ids it may reach on the wire ([] for none). Anyone else: undefined, no limit. */
+  private keySessions(caller: ApiCaller): string[] | undefined {
+    if (caller.onlySession === undefined) return undefined;
+    const row = caller.onlySession ? this.rowByKey(caller.onlySession) : undefined;
+    return row?.sessionId ? [row.sessionId] : [];
   }
 
   private async ticket(caller: ApiCaller, body: unknown): Promise<ApiReply> {
@@ -872,6 +900,14 @@ export class ComputerSessionsApi {
     if (!this.deps.env.WIRE_TICKET_KEY) return { status: 503, error: { code: "unavailable", message: "Tickets are not available yet.", retryAfterMs: 60_000 } };
     const request = validateTicketRequest(body, caller.userAgent);
     if (!request.ok) return invalid(request.errors[0]!.field, request.errors[0]!.message);
+    // Only sessions the caller may use: the relay checks again on attach, this refuses at the mint. A session's own
+    // key gets a ticket for its session alone, named or not.
+    const own = this.keySessions(caller);
+    if (own && !request.value.sessionIds) {
+      if (!own.length) return notFound();
+      request.value.sessionIds = own;
+    }
+    if (request.value.sessionIds?.some((id) => !this.visible(caller, id))) return notFound();
     const now = this.now();
     const recent = (this.tickets.get(key.id) ?? []).filter((at) => now - at < 60_000);
     if (recent.length >= TICKETS_PER_MINUTE) {
@@ -881,7 +917,7 @@ export class ComputerSessionsApi {
     this.tickets.set(key.id, recent);
     const tunnelId = this.deps.tunnelId();
     if (!tunnelId) return this.unavailable();
-    facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
+    facts.keyWritten = await this.deps.keys.ensure(key, caller.member, own);
     facts.sessions = request.value.sessionIds?.length ?? 0;
     try {
       const org = this.deps.organizationId();
@@ -904,13 +940,17 @@ export class ComputerSessionsApi {
     for (const name of q.keys()) {
       if (!["owner", "status", "origin", "archived", "q", "order", "limit", "cursor"].includes(name)) return invalid(name, `Unknown query parameter ${name}.`);
     }
-    // Only sessions the caller may use (session-access.ts mayUse); admins included (Q4).
+    // Only sessions the caller may use (session-access.ts mayUse); admins included. A session's own key: that one only.
     const where = [
       "session_id IS NOT NULL",
-      `(owner_user_id = ? OR (origin_type != 'slack' AND (access_mode IS NULL OR access_mode = 'org'
+      `(owner_user_id = ? OR (origin_type != 'slack' AND (access_mode = 'org'
         OR (access_mode = 'people' AND EXISTS (SELECT 1 FROM json_each(access_people) WHERE value = ?)))))`,
     ];
     const args: SqlStorageValue[] = [caller.member, caller.member];
+    if (caller.onlySession !== undefined) {
+      where.push("runner_key = ?");
+      args.push(caller.onlySession || null);
+    }
     const owner = q.get("owner") ?? "me";
     if (owner === "me") {
       where.push("owner_user_id = ?");
@@ -1333,22 +1373,20 @@ export class ComputerSessionsApi {
   isAdmin(member: string): boolean {
     return this.admins().includes(member);
   }
-
+  /** Records whether `member` is an admin (Slack session roles and secrets read it; access lists do not carry it). */
   /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
   private noteAdmin(member: string, admin: boolean): void {
     const admins = this.admins();
     if (admins.includes(member) === admin) return;
     this.adminsCache = admin ? [...admins, member].sort() : admins.filter((m) => m !== member);
     this.deps.put("apiAdmins", JSON.stringify(this.adminsCache));
-    if (this.v4Host()) this.sendAllAccess();
   }
 
-  /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
+  /** API sessions: their access (`membersOf`). Slack sessions: only their linked owner. */
+  // No `admins`: an admin opens no terminal by role (owner first), and a host from before that would still let them.
   private sendAccess(row: { sessionId: string } & AccessRow): void {
-    const admins = this.admins();
-    const extra = admins.length ? { admins } : {};
     if (row.originType === "slack" && !row.ownerUserId) return;
-    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row), ...extra } });
+    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row) } });
   }
 
   /**
@@ -1760,6 +1798,11 @@ export function attentionRef(asks: readonly Ask[]): string | null {
 
 function notFound(): ApiReply {
   return { status: 404, error: { code: "session_not_found", message: "No such session." } };
+}
+
+/** Someone the session is shared with asked for what only its owner may do. */
+function ownerOnly(message: string): ApiReply {
+  return { status: 403, error: { code: "forbidden", message, reason: "owner_only" } };
 }
 
 function conflict(code: string, message: string): ApiReply {

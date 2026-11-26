@@ -202,6 +202,8 @@ async function callerOf(request: Request, identity: RequestIdentity, requestId: 
     client: ua ? ua.replace(/[^\x20-\x7e]|\|/g, "").slice(0, 64) || null : null,
     scopes: key ? apiScopes(key.scopes) : [...API_SCOPES],
     ...(key ? { apiKey: key } : {}),
+    // A session's own key (work 080) reaches only the session it was minted for; none named, none at all.
+    ...(identity.principal === COMPUTER_PRINCIPAL ? { onlySession: identity.sessionKey ?? "" } : {}),
     requestId,
     userAgent: ua,
   };

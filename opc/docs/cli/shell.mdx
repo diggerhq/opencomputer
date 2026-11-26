@@ -22,7 +22,7 @@ Inside a session, `/shell` does the same and returns to the session screen when 
 
 ## Who can open one
 
-Only the session's owner, or an admin of the organization. Anyone else gets `opc: only the owner of this session can open a shell in it` and exit code `3`.
+Only the session's owner, and people the owner shared the session with by name. Members of a session shared with the whole organization, and organization admins, cannot: a shell is never given by role. Anyone else gets `opc: only the session's owner, or someone it is shared with by name, can open a shell in it` and exit code `3`.
 
 A shell runs inside the session's own container, as user `agent` (uid 1500), the same user as the session's agent. It sees what that container holds: this session's workspace and the repositories it uses, not other sessions' workspaces. Its environment is the container's own, plus `TERM`; no session secret is set in it. Because it runs as the agent's user in the agent's container, it can reach whatever this session's agent can.
 

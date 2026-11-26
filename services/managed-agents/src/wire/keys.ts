@@ -16,6 +16,8 @@ export interface WireKeyRecord {
   /** ms epoch; null: never. */
   expiresAt: number | null;
   kind: "user" | "project";
+  /** A session's own key: the only sessions it may name, on its own or through a ticket. Absent: no limit. */
+  sessionIds?: string[];
 }
 
 export interface WireKeysKv {
@@ -35,7 +37,8 @@ function isRecord(value: unknown): value is WireKeyRecord {
     typeof r.tunnelId === "string" && typeof r.keyId === "string" &&
     Array.isArray(r.scopes) && r.scopes.every((s) => typeof s === "string") &&
     (r.expiresAt === null || r.expiresAt === undefined || typeof r.expiresAt === "number") &&
-    (r.kind === "user" || r.kind === "project")
+    (r.kind === "user" || r.kind === "project") &&
+    (r.sessionIds === undefined || (Array.isArray(r.sessionIds) && r.sessionIds.every((id) => typeof id === "string")))
   );
 }
 

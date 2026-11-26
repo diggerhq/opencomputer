@@ -3,15 +3,19 @@ title: "Sharing"
 description: "Who can see, attach to and talk in a session."
 ---
 
-Sessions are shared within an organization, the same way a Slack thread is shared within a channel.
+A session belongs to the person who started it. Until they share it, only they can see it. The owner shares it with named people, or with the whole organization, and only the owner can change that.
 
 | Who | Can |
 | --- | --- |
-| The owner, who started the session | Everything, including opening a [shell](/cli/shell) in its workspace |
-| An organization admin | What any member can, and open a shell |
-| Any member of the organization | See it on the dashboard, attach by id or Slack link, send messages, answer asks, change settings. Not open a shell. |
-| Anyone but the owner, for a session started in Slack | Nothing: the session is not listed and attaching fails with `session not found`. |
+| The owner, who started the session | Everything: share it, rename, archive or change its settings, set its secrets, and open a [shell](/cli/shell) in its workspace |
+| Someone the owner shared it with by name | See it, attach by id or link, send messages, answer asks, stop it, and open a shell. Not change its sharing, title, settings or secrets |
+| Any member, when it is shared with the whole organization | See it, attach, send messages, answer asks and stop it. Not open a shell, and not change its sharing, title, settings or secrets |
+| An organization admin | Nothing more than any other member. To get into someone's session, ask its owner to share it. Admins manage the organization: its secrets, invites, roles and API keys |
+| Anyone else | Nothing: the session is not listed and attaching fails with `session not found` |
+| Anyone but the owner, for a session started in Slack | Nothing here: who drives a Slack session is set in its thread |
 | An API key | What the member who created it can do |
+
+Sessions from before sharing existed are their owner's alone until the owner shares them.
 
 Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).
 
