@@ -6,7 +6,7 @@ import { NOWHERE } from './host'
 // channel and never a socket or a token; API requests go to `/api/…` on the
 // app's own origin, where the main process adds the credential.
 
-type Target = { threadId?: string; trackId?: string; askId?: string }
+type Target = { threadId?: string; trackId?: string; askId?: string; new?: boolean }
 type FromMain =
   | { t: 'chan.frame'; frame: ServerFrame }
   | { t: 'chan.state'; state: 'open' | 'closed' }
@@ -56,7 +56,14 @@ export function desktopHost(oc: Bridge): Host {
     platform: 'desktop',
     principal: oc.host.principal,
     name: oc.host.name,
-    api: { fetch: (path, init) => fetch(`/api${path}`, init) },
+    // The shell answers `/api` only to its own page, which says so (spec 24.2).
+    api: {
+      fetch(path, init) {
+        const headers = new Headers(init?.headers)
+        headers.set('x-oc-app', '1')
+        return fetch(`/api${path}`, { ...init, headers })
+      },
+    },
     // One relay for the app: each "connection" is a view of it.
     connect(): Channel {
       return {

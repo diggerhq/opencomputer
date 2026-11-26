@@ -1,0 +1,367 @@
+---
+title: "Objects"
+description: "Session, Turn, Ask, Subagent, Result, Actor and Capabilities: the shapes every response and event uses."
+---
+
+The same objects appear in HTTP responses, WebSocket results and event data, byte for byte. Field names are camelCase. Times are ISO 8601 strings in UTC with milliseconds. Fields that do not apply are `null`, not absent: every field listed here is always present.
+
+New fields may appear in any object at any time. Ignore the ones you do not know. Every string field that lists values, such as `status` or `kind`, may gain new values. See [Versioning](/api/reference/versioning).
+
+The objects and events are also published as JSON Schema: [`https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/schema/computer-api.v1.json`](https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/schema/computer-api.v1.json). `opc schema` prints it.
+
+## Session
+
+```json
+{
+  "id": "cs_7f3a9k2m4q8r1t6v",
+  "title": "flaky test in segment.test.ts",
+  "status": "running",
+  "archived": false,
+  "owner": { "id": "usr_2k9d8f7a", "name": "Ada Lovelace", "email": "ada@acme.dev" },
+  "origin": { "type": "opc", "client": "opc/0.1.0", "slack": null },
+  "settings": { "model": "claude-opus-5-5", "effort": "high", "mode": "acceptEdits", "speed": null },
+  "metadata": { "job": "ci-fix-tests" },
+  "activeTurnId": "tn_4m8q2x7c1v9b",
+  "queued": [{ "id": "tn_9x2c7v1b4m8q", "status": "queued", "input": "then update the changelog", "…": "Turn" }],
+  "asks": [],
+  "subagents": [],
+  "lastTurn": { "id": "tn_1b4m8q9x2c7v", "status": "completed", "endedAt": "2026-10-26T09:12:44.120Z", "text": "Done. The PR is #482.", "error": null, "reason": null, "forced": null },
+  "lastText": "I'll start by running the test a few times",
+  "context": { "usedTokens": 41250, "windowTokens": 200000 },
+  "lastSeq": 1184,
+  "logEpoch": 1,
+  "epochStartSeq": 1,
+  "createdAt": "2026-10-26T09:01:02.311Z",
+  "lastActiveAt": "2026-10-26T09:14:51.007Z",
+  "syncedAt": "2026-10-26T09:14:51.009Z",
+  "urls": {
+    "dashboard": "https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v"
+  }
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | `cs_` followed by 16 characters of lowercase Crockford base32 (`0-9a-hjkmnp-tv-z`). Stable for the session's life. A client may choose it when [creating](/api/http/sessions#create-a-session) the session. |
+| `title` | string | From the first message until someone sets it. Up to 200 characters. |
+| `status` | string | `starting`, `running`, `waiting`, `idle` or `suspended`. See [Concepts](/concepts#status). |
+| `archived` | boolean | Archived sessions are left out of lists unless asked for. Set with [`PATCH`](/api/http/sessions#update-a-session). Any new message un-archives the session. |
+| `owner` | [Person](#person) | Who started the session. The agent acts as this person. |
+| `origin` | object | Where the session started. `type` is `slack`, `opc`, `dashboard` or `api`, the same values as [`actor.via`](#actor). `client` is the creating client's name and version, from its `User-Agent`, or `null`. `slack` is `{ teamId, channelId, channelName, threadTs, url }` for sessions started in Slack, else `null`. The `type` `session` is reserved for sessions another session starts, which will also carry `origin.parent`: `{ sessionId, callId }`. |
+| `settings` | object | `model`, `effort` and `speed` for the next turn, and the permission `mode` in force now. `model` and `effort` are `null` until the session reports them. `speed` is `fast` or `standard`; `null` means the default, `fast`. |
+| `metadata` | object | Your own string keys and string values, `{}` when none. At most 20 keys; keys up to 40 characters, values up to 500. Set on create and with `PATCH`. Filter lists with `metadata[key]=value`. |
+| `activeTurnId` | string or null | The running turn |
+| `queued` | array of [Turn](#turn) | Turns waiting to run, in the order they will run |
+| `asks` | array of [Ask](#ask) | Open asks, oldest first. Empty unless `status` is `waiting`. |
+| `subagents` | array of [Subagent](#subagent) | Running subagents, oldest first. A session that is `idle` with subagents here has background work going on. |
+| `lastTurn` | [TurnSummary](#turnsummary) or null | The most recent turn that ended |
+| `lastText` | string or null | The first 200 characters of the last message the agent wrote, for lists |
+| `context` | object | `usedTokens` of `windowTokens` in the model's context window, as of the last model call's [`usage.recorded`](/api/reference/events#model) |
+| `lastSeq` | integer | The `seq` of the newest event. `0` for a session with no events yet. |
+| `logEpoch` | integer | The log's epoch, from `1`. It changes only when a computer is lost mid-turn and the server records the recovery. See [If a computer is lost](/api/model#if-a-computer-is-lost). |
+| `epochStartSeq` | integer | The first `seq` recorded in `logEpoch` |
+| `createdAt`, `lastActiveAt` | string | Creation, and the newest event |
+| `syncedAt` | string or null | `null` over the WebSocket, where the computer itself answers. Over HTTP, when the server last heard from the session on the computer. When the computer is not running and `syncedAt` is old, show the session as possibly stale. |
+| `urls` | object | `dashboard`: the session on the dashboard, or `null` over the WebSocket. A Slack session's thread is `origin.slack.url`. |
+
+Lists and `GET /sessions/{id}` return the identical object. A session's [capabilities](#capabilities) are read separately.
+
+## TurnSummary
+
+The short form of a turn that ended, as a session's `lastTurn`. Read the full [Turn](#turn) with [`GET /sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn).
+
+```json
+{ "id": "tn_1b4m8q9x2c7v", "status": "completed", "endedAt": "2026-10-26T09:12:44.120Z", "text": "Done. The PR is #482.", "error": null, "reason": null, "forced": null }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | The turn |
+| `status` | string | `completed`, `failed` or `cancelled` |
+| `endedAt` | string | |
+| `text` | string or null | Its last agent message |
+| `error` | object or null | A [turn failure](/api/reference/errors#turn-failures) when `failed` |
+| `reason` | string or null | When `cancelled`: as on [Turn](#turn) |
+| `forced` | boolean or null | When `cancelled`: as on [Turn](#turn) |
+
+## Turn
+
+```json
+{
+  "id": "tn_4m8q2x7c1v9b",
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "status": "running",
+  "ifBusy": "queue",
+  "trigger": "message",
+  "subagentId": null,
+  "input": "fix the flaky test in segment.test.ts and open a PR",
+  "author": { "id": "usr_2k9d8f7a", "name": "Ada Lovelace", "via": "opc", "client": "opc/0.1.0" },
+  "steering": [],
+  "createdAt": "2026-10-26T09:01:02.400Z",
+  "startedAt": "2026-10-26T09:01:02.415Z",
+  "endedAt": null,
+  "text": null,
+  "error": null,
+  "reason": null,
+  "forced": null,
+  "usage": null
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | `tn_` followed by 12 characters of lowercase Crockford base32 |
+| `sessionId` | string | The session |
+| `status` | string | `queued`, `running`, `cancelling`, `completed`, `failed` or `cancelled`. `cancelling` is a running turn that has been [interrupted](/api/http/control#interrupt) and has not stopped yet. |
+| `ifBusy` | string | How it was sent: `queue`, `steer` or `interrupt` |
+| `trigger` | string | What started it: `message`, a message someone sent, or `subagent`, a background [subagent](#subagent) that ended. Claude Code starts a turn on its own to read the result. |
+| `subagentId` | string or null | The subagent, when `trigger` is `subagent` |
+| `input` | string or null | The message, exactly as sent. `null` when `trigger` is not `message`. |
+| `author` | [Actor](#actor) or null | Who sent it. `null` when `trigger` is `subagent`. |
+| `steering` | array | Messages steered into this turn while it ran: `{ input, author, createdAt }` |
+| `createdAt` | string | When its message was accepted |
+| `startedAt` | string or null | When the agent began it. `null` while `queued`, and for a queued turn that was cancelled. |
+| `endedAt` | string or null | When it ended |
+| `text` | string or null | The agent's last message, once the turn completed |
+| `error` | object or null | A [turn failure](/api/reference/errors#turn-failures) when `failed` |
+| `reason` | string or null | When `cancelled`: `interrupted` when it was running or queued when an interrupt came, `withdrawn` when it was queued and someone [cancelled it](/api/http/turns#cancel-a-queued-turn) |
+| `forced` | boolean or null | When `cancelled`: `true` if the agent process had to be restarted to stop it |
+| `usage` | object or null | When ended: `{ inputTokens, outputTokens, reasoningTokens, cachedTokens, cacheWriteTokens, costUsd }`, summed over the turn's model calls. `costUsd` is a decimal string, such as `"0.41"`, and `null` when your organization uses its own model account. |
+
+A message sent with `steer` while a turn runs joins that turn: it has no turn of its own, appears in the running turn's `steering`, and the send's `turn` is the running turn. A message the running turn ends without reading starts a new turn at once, with a new id.
+
+A message sent with `steer` while an ask is open joins the running turn the same way, and [declines](/api/model#messages-while-an-ask-is-open) the open asks.
+
+## Ask
+
+```json
+{
+  "id": "ak_7c1v9b4m8q2x",
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "kind": "approval",
+  "status": "open",
+  "createdAt": "2026-10-26T09:05:11.002Z",
+  "closedAt": null,
+  "closedBy": null,
+  "answer": null,
+  "approval": { "…": "see Approval" },
+  "question": null,
+  "secret": null
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | `ak_` followed by 12 characters of lowercase Crockford base32 |
+| `sessionId` | string | The session |
+| `turnId` | string | The turn that raised it |
+| `kind` | string | `approval`, `question` or `secret` |
+| `status` | string | `open`, `answered`, `dismissed`, `declined` or `interrupted` |
+| `createdAt` | string | |
+| `closedAt` | string or null | |
+| `closedBy` | [Actor](#actor) or null | Who answered, dismissed or declined it. `null` when `interrupted`. |
+| `answer` | object or null | The answer, in the shape for its kind. When `declined`: `{ message, messageSeq }`, the message that declined it and the `seq` of its `message.received`. |
+| `approval` | object or null | When `kind` is `approval`. See [Approval](#approval). |
+| `question` | object or null | When `kind` is `question`. See [Question](#question). |
+| `secret` | object or null | When `kind` is `secret`. See [Secret request](#secret-request). |
+
+The fields of each kind are in the object named after it. The other two are `null`.
+
+An ask closes as `interrupted` when its turn is interrupted, including by an explicit [suspend](/api/http/control#suspend), and as `declined` when someone sends a message with `steer` while it is open. It never expires: a session with an open ask is not suspended for being idle, and the ask stays open until someone closes it.
+
+### Approval
+
+```json
+"approval": {
+  "toolName": "Bash",
+  "callId": "toolu_01AbC",
+  "input": { "command": "terraform plan -out=tfplan", "cwd": "infra/staging" },
+  "title": "Bash: terraform plan -out=tfplan",
+  "alwaysAllows": "Bash(terraform plan *)"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `toolName`, `callId`, `input` | The call waiting for approval, with its full input |
+| `title` | One line for display |
+| `alwaysAllows` | The rule answering `always` adds for the rest of the session, or `null` when this call cannot be allowed for the session. A `Bash` rule covers the command and its first subcommand, such as `Bash(terraform plan *)` or `Bash(npm test *)`. |
+
+For a plan in `plan` mode, `toolName` is `ExitPlanMode` and `input.plan` is the plan.
+
+Answer: `{ "decision": "allow" | "deny" | "always", "message": "optional, read by the agent", "mode": "optional, plans only" }`. Allowing a plan, with `decision: "allow"` only, switches the session to `mode` (`default`, `acceptEdits`, `auto` or `bypassPermissions`), or to `default` without one.
+
+### Question
+
+```json
+"question": {
+  "questions": [
+    {
+      "id": "q1",
+      "header": "Fix",
+      "text": "Which fix do you want?",
+      "multiSelect": false,
+      "options": [
+        { "label": "Make the test wait for the debounce", "description": "Smallest change; recommended" },
+        { "label": "Make flush() await pending timers", "description": "Changes behaviour for callers" }
+      ]
+    }
+  ]
+}
+```
+
+Answer: `{ "answers": [{ "questionId": "q1", "choices": ["Make the test wait for the debounce"], "text": null }] }`. `choices` are option labels. `text` is a free-text answer, with or without choices. Every question needs an answer with at least one choice or a text.
+
+### Secret request
+
+```json
+"secret": {
+  "name": "STRIPE_API_KEY",
+  "purpose": "To run the billing integration tests against Stripe's test mode.",
+  "file": false
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The secret the agent needs |
+| `purpose` | Why, in the agent's words |
+| `file` | `true` when the agent wants the value as a file |
+
+A secret request is answered in Slack. It cannot be answered through the API or `opc`.
+
+## Subagent
+
+A subagent is an agent the session's agent starts to do part of the work, such as Claude Code's `Task` tool. A foreground subagent runs inside its turn; the turn waits for it. A background subagent can outlive the turn that started it.
+
+```json
+{
+  "id": "sa_3q8r1t6v7f3a",
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "callId": "toolu_01XyZ",
+  "name": "auth flow",
+  "agentType": "Explore",
+  "background": false,
+  "status": "running",
+  "activity": "reading src/auth/session.ts",
+  "toolCalls": 14,
+  "tokens": 38120,
+  "createdAt": "2026-10-26T09:05:11.002Z",
+  "endedAt": null,
+  "durationMs": null,
+  "result": null,
+  "resultTruncated": false,
+  "error": null,
+  "stoppedBy": null
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | `sa_` followed by 12 characters of lowercase Crockford base32 |
+| `sessionId` | string | The session |
+| `turnId` | string | The turn that started it. Its events carry this `turnId`, also after that turn ended. |
+| `callId` | string or null | The tool call that started it, or `null` when the agent does not say |
+| `name` | string | Its description, as the agent gave it |
+| `agentType` | string or null | The kind of subagent, such as `Explore`, when the agent says |
+| `background` | boolean | `true` when it runs in the background, apart from its turn |
+| `status` | string | `running`, `completed`, `failed` or `stopped` |
+| `activity` | string or null | What it is doing now, while `running` |
+| `toolCalls` | integer | Tool calls it has made |
+| `tokens` | integer | Tokens it has used |
+| `createdAt` | string | |
+| `endedAt` | string or null | |
+| `durationMs` | integer or null | From start to end, once ended |
+| `result` | string or null | Its final answer, once ended. Up to 8 KiB in lists and events; [get the subagent](/api/http/subagents#get-a-subagent) for the full text. |
+| `resultTruncated` | boolean | `true` when `result` was cut to 8 KiB |
+| `error` | object or null | `{ code, message }` when `failed` |
+| `stoppedBy` | [Actor](#actor) or null | Who stopped it, when someone [stopped it](/api/http/subagents#stop-a-subagent). `null` when an interrupt or suspend stopped it. |
+
+`activity`, `toolCalls` and `tokens` come from [`subagent.progress`](/api/reference/events#subagents), which is not recorded. Every read returns their latest values.
+
+A background subagent keeps running after its turn completes. An [interrupt](/api/http/control#interrupt) of its turn stops it, as it stops foreground ones: with Claude Code, an interrupt stops the turn and all of its subagents. An explicit [suspend](/api/http/control#suspend) stops every subagent. Either way it ends as `stopped`, with `stoppedBy: null`. When a background subagent ends, Claude Code starts a turn with `trigger: "subagent"` to read its result.
+
+## Result
+
+The outcome of one turn, as `opc -p`, `opc wait` and `opc watch` print it. It is the last line of `stream-json` and the whole output of `json`. See [Scripting](/cli/scripting).
+
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "isError": false,
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "status": "completed",
+  "result": "Done. The PR is #482.",
+  "error": null,
+  "reason": null,
+  "ask": null,
+  "subagents": [{ "id": "sa_9b4m8q2x7c1v", "name": "update the docs", "status": "running", "background": true }],
+  "url": "https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v",
+  "durationMs": 48211,
+  "usage": { "inputTokens": 81233, "outputTokens": 2210, "reasoningTokens": 940, "cachedTokens": 76002, "cacheWriteTokens": 5120, "costUsd": "0.41" },
+  "turn": { "id": "tn_4m8q2x7c1v9b", "…": "Turn" }
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `type` | string | Always `result` |
+| `subtype` | string | `success`, `error`, `cancelled` or `waiting` |
+| `isError` | boolean | `true` when `subtype` is `error` |
+| `sessionId`, `turnId` | string | The session and the turn |
+| `status` | string | `completed`, `failed`, `cancelled`, or `waiting` when an ask is open |
+| `result` | string or null | The agent's last message, when `completed` |
+| `error` | object or null | A [turn failure](/api/reference/errors#turn-failures) when `failed` |
+| `reason` | string or null | The turn's `reason` when `cancelled` |
+| `ask` | [Ask](#ask) or null | The open ask, when `waiting` |
+| `subagents` | array | The subagents the turn started: `{ id, name, status, background }`. A turn completes while its background subagents run; they are listed as `running`, unless the command waited for them with `--wait-subagents`. |
+| `url` | string | The session's `urls.dashboard` |
+| `durationMs` | integer | From the message being accepted to the turn ending, or to the ask opening |
+| `usage` | object or null | Exactly the turn's `usage` |
+| `turn` | [Turn](#turn) | The full turn, as it is now |
+
+A command that fails before a turn ends, such as a usage or authentication error, prints `{ "error": … }` to standard error instead. In `stream-json` it also ends standard output with `{ "type": "result", "subtype": "error", "isError": true, "error": { … } }`, so a reader always gets a last line.
+
+## Actor
+
+Who did something, in turns, asks and events.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | The person's id, `usr_…` |
+| `name` | string | Display name |
+| `via` | string | `slack`, `opc`, `dashboard` or `api` |
+| `client` | string or null | The client's name and version, for `opc` and `api` |
+
+`via` and `client` come from the credential and the request, never from the request body. A client cannot claim to be someone else.
+
+## Person
+
+`{ id, name, email }`. `email` is `null` when your organization hides it.
+
+## Capabilities
+
+A session's capabilities are not on the Session object. Read them with [`GET /sessions/{id}/capabilities`](/api/http/sessions#get-a-sessions-capabilities), which returns `{ "capabilities": … }`; they are also in the result of [`sessions.attach`](/api/websocket/methods#attach). [`GET /me`](/api/authentication#who-am-i) has what a new session would get.
+
+```json
+{
+  "models": [
+    { "id": "claude-opus-5-5", "name": "Opus 5.5", "efforts": ["low", "medium", "high", "xhigh", "max"], "contextWindow": 200000, "default": true },
+    { "id": "claude-sonnet-5-5", "name": "Sonnet 5.5", "efforts": ["low", "medium", "high"], "contextWindow": 200000, "default": false }
+  ],
+  "modes": ["default", "acceptEdits", "plan", "auto", "dontAsk"],
+  "features": { "steer": true, "compact": true, "terminal": true, "workspace": true, "reasoning": true, "subagents": true }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `models` | Models this session may use, as your organization allows. `efforts` lists the levels each accepts. |
+| `modes` | Permission modes this session may use |
+| `features` | What this session supports. A client hides what is `false`. `steer`: messages mid-turn; `compact`; `terminal`: [terminals](/api/websocket/terminals); `workspace`: files; `reasoning`: the model's reasoning is streamed; `subagents`: the agent reports [subagents](#subagent), and tool events inside one carry `parentCallId` and `subagentId`. |
+
+Capabilities are per session, not per release: check them instead of the API version. They change only when your organization's settings change.

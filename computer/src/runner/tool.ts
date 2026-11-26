@@ -13,11 +13,16 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+/** The call a handler runs for: its id is the Idempotency-Key of what the tool writes (section 41). */
+export interface ToolCall {
+  id?: string;
+}
+
 export interface CalvinTool<S extends z.ZodRawShape = z.ZodRawShape> {
   name: string;
   description: string;
   inputSchema: S;
-  handler(args: z.infer<z.ZodObject<S>>): Promise<ToolResult>;
+  handler(args: z.infer<z.ZodObject<S>>, call?: ToolCall): Promise<ToolResult>;
   /** Always in the model's tool list, never deferred behind a tool search. */
   alwaysLoad?: boolean;
 }
@@ -26,7 +31,7 @@ export function tool<S extends z.ZodRawShape>(
   name: string,
   description: string,
   inputSchema: S,
-  handler: (args: z.infer<z.ZodObject<S>>) => Promise<ToolResult>,
+  handler: (args: z.infer<z.ZodObject<S>>, call?: ToolCall) => Promise<ToolResult>,
   extras: { alwaysLoad?: boolean } = {},
 ): CalvinTool<S> {
   return { name, description, inputSchema, handler, ...extras };
@@ -39,14 +44,14 @@ export function jsonSchema(t: CalvinTool): Record<string, unknown> {
 }
 
 /** Run the tool on input the model wrote: invalid input or a thrown handler is a failed result, never a throw. */
-export async function invoke(t: CalvinTool, raw: unknown): Promise<ToolResult> {
+export async function invoke(t: CalvinTool, raw: unknown, call?: ToolCall): Promise<ToolResult> {
   const parsed = z.object(t.inputSchema).safeParse(raw ?? {});
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(input)'}: ${i.message}`).join('; ');
     return { content: [{ type: 'text', text: `Invalid arguments for tool ${t.name}: ${issues}` }], isError: true };
   }
   try {
-    return await t.handler(parsed.data);
+    return await t.handler(parsed.data, call);
   } catch (e) {
     return { content: [{ type: 'text', text: (e as Error)?.message ?? String(e) }], isError: true };
   }

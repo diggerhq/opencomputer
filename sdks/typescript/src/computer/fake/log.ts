@@ -407,7 +407,7 @@ export class Log {
       approval: a.kind === "approval" ? { toolName: "Bash", title: a.title, command: a.command ?? null, input: a.command ? { command: a.command } : {} } : null,
       question:
         a.kind === "question"
-          ? { questions: [{ id: "q1", header: "Question", text: a.question, question: a.question, multiSelect: false, options: a.options.map((label) => ({ label, description: "" })) }] }
+          ? { questions: [{ id: "q1", header: "Question", text: a.question, multiSelect: false, options: a.options.map((label) => ({ label, description: "" })) }] }
           : null,
       secret: null,
     };

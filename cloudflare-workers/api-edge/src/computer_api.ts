@@ -97,7 +97,7 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   { methods: new Set(["GET"]), pattern: route("/work/overview"), scope: "work:read" },
   {
     methods: new Set(["GET"]),
-    pattern: route(`/work/tracks/${SEG}/doc/revisions(?:/${SEG})?`),
+    pattern: route(`/work/tracks/${SEG}/doc(?:/revisions(?:/${SEG})?)?`),
     scope: "work:read",
   },
   { methods: new Set(["GET"]), pattern: route(`/work/results/${SEG}/review`), scope: "work:read" },

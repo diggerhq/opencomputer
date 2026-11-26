@@ -154,7 +154,7 @@ describe("the session directory through Org", () => {
     const { call } = setup({ org });
     const r = await call("POST", "/sessions", { body: { id: SID, title: "x", trackId: "trk_0123456789abcdef" } });
     expect(r).toEqual({ status: 201, body: { session: row(), turn: null, delivery: null, duplicate: false, seq: 3 } });
-    expect(org.createSession).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), { id: SID, title: "x", trackId: "trk_0123456789abcdef" });
+    expect(org.createSession).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), { id: SID, title: "x", trackId: "trk_0123456789abcdef", person: { name: null, email: null } });
     duplicate = true;
     expect((await call("POST", "/sessions", { body: { id: SID } })).status).toBe(200);
     org.createSession.mockResolvedValueOnce({ ok: false, code: "taken" } as never);
@@ -162,6 +162,15 @@ describe("the session directory through Org", () => {
     expect(taken.status).toBe(409);
     expect(taken.body.error.code).toBe("taken");
     expect((await call("POST", "/sessions", { body: { parent: OTHER } })).status).toBe(400);
+  });
+
+  it("POST /sessions: Session.owner's name and email are the credential's; a body cannot name them", async () => {
+    const org = { createSession: vi.fn(async () => ({ ok: true, session: row(), place: null, duplicate: false })) };
+    const { call } = setup({ org });
+    const named = { ...member, userName: "Ada Lovelace", userEmail: "ada@example.com" } as RequestIdentity;
+    expect((await call("POST", "/sessions", { body: { id: SID, person: { name: "Mallory", email: null } }, identity: named })).status).toBe(400);
+    await call("POST", "/sessions", { body: { id: SID }, identity: named });
+    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, person: { name: "Ada Lovelace", email: "ada@example.com" } });
   });
 
   it("POST /sessions from an agent: parent is the caller's own session; role is a member's only", async () => {
@@ -172,7 +181,7 @@ describe("the session directory through Org", () => {
     const role = await call("POST", "/sessions", { body: { role: "start" }, identity: agent });
     expect(role.status).toBe(403);
     await call("POST", "/sessions", { body: { role: "start" } });
-    expect(org.createSession).toHaveBeenLastCalledWith(expect.anything(), { role: "start" });
+    expect(org.createSession).toHaveBeenLastCalledWith(expect.anything(), { role: "start", person: { name: null, email: null } });
   });
 
   it("POST /sessions with input sends the turn through the inbox: delivered 201, waking 202", async () => {
@@ -181,7 +190,7 @@ describe("the session directory through Org", () => {
     const { call } = setup({ org, ...up });
     const r = await call("POST", "/sessions", { body: { id: SID, input: "hello", turnId: "tn_0123456789ab" }, headers: { "x-oc-trace": "tr_0123456789abcdef" } });
     expect(r).toEqual({ status: 201, body: { session: row(), turn: { id: "tn_0123456789ab" }, delivery: "started", duplicate: false, seq: 4 } });
-    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, input: "hello" });
+    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, input: "hello", person: { name: null, email: null } });
     expect(up.entries[0]!.entry).toEqual({ id: "tn_0123456789ab", kind: "turn", body: { input: "hello", ifBusy: "queue" }, trace: "tr_0123456789abcdef" });
     expect(up.computer.drain).toHaveBeenCalledWith(SID, { wait: true });
 

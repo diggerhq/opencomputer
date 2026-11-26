@@ -85,6 +85,9 @@ export class NullSurface implements Surface {
   client = nullClient();
   readonly target: Target = { channel: '', recipientUserId: '' };
 
+  /** `result`: what a sent file becomes where there is no thread to post it to (section 41). */
+  constructor(private readonly result?: (f: FileUpload) => Promise<void>) {}
+
   segment(after: Promise<unknown>) {
     return new Segment(this.client, this.target, after);
   }
@@ -103,7 +106,8 @@ export class NullSurface implements Surface {
   }
   async update() {}
   async delete() {}
-  async upload(): Promise<void> {
+  async upload(f: FileUpload): Promise<void> {
+    if (this.result) return this.result(f);
     throw new Error('this session has no Slack thread to post files to; tell the person where the file is instead');
   }
   async setStatus() {}

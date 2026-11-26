@@ -7,11 +7,14 @@
 //   "ask"                   a question ask with three options; the answer continues the turn
 //   "pr", "pull request"    a pull request and a changes result, a review, `thread.ready`, a `done` proposal
 //   "long"                  a long answer with a code block
+//   "and"                   (not the first message of a loose thread) the agent wraps the thread in a new track and
+//                           passes the message to it (G3); if the person undid such a wrap before, it asks instead
 //   "track"                 (not the first message of a loose thread) a `wrap` proposal: make this a track
 //   anything else           one tool call and a short reply
 // A `start` session (the Start box): a message with " and ", "track", or over 120 characters becomes
 // a track (section 23's `start_track`), and the start thread goes; anything else is a plain thread.
-// A track's agent: its first message names the track, writes the Doc and starts two threads;
+// A track's agent: its first message names the track, writes the Doc and starts two threads; around a thread
+// the person wrapped (Track it) it writes the goal to the Doc and starts nothing;
 //   "start", "thread"       starts one thread with the message as its input
 //   "tell"                  passes the message to every open thread of the track
 //   anything else           is noted in the Doc.
@@ -149,7 +152,15 @@ export class Agents {
       return a.endTurn(sid);
     }
     const place = org.place(sid);
-    if (has(text, "track") && n > 1 && place && !place.trackId) {
+    const loose = n > 1 && !!place && !place.trackId;
+    // G3: plainly several pieces. The person's Undo of an earlier wrap stands (R30), so then it asks.
+    const unwrapped = org.all("op").some((o) => o.name === "track.create" && o.sessionId === sid && o.undoneBy != null);
+    if (loose && has(text, "and") && !unwrapped) {
+      a.mutate(sid, "track.create", { tid: this.ctx.id("trk"), agentSessionId: this.ctx.id("cs"), sid, firstInput: text });
+      await a.say(sid, "That is more than one piece of work, so I made this a track. Passed to the track.");
+      return a.endTurn(sid);
+    }
+    if (loose && has(text, "track", "and")) {
       a.mutate(sid, "proposal.create", {
         proposalId: this.ctx.id("prp"),
         kind: "wrap",
@@ -199,8 +210,17 @@ export class Agents {
     if (!track) return a.endTurn(sid);
     const doc = org.need("doc", track.id);
     const threads = () => org.threadsOf(track.id);
+    // The first time a person sees a track, its opening reply says how to use it (J3).
+    const steer = org.all("track").length === 1 ? " Steer here; the work happens in the threads." : "";
     if (!isPerson(turn.by)) {
-      await a.say(sid, turn.by === "platform" ? "Ready. Tell me what this track is for and I'll plan it with you." : "Noted.");
+      const first = threads()[0];
+      if (turn.by === "platform" && !doc.text && first) {
+        // A7: the person made a track around a thread. The goal goes to the Doc; nothing else starts.
+        const goal = org.need("session", first.id).title;
+        if (!track.name) a.mutate(sid, "track.rename", { tid: track.id, name: goal });
+        a.mutate(sid, "doc.save", { tid: track.id, baseRev: doc.rev, text: `## Goal\n\n${goal}\n\n## Threads\n\n- ${goal}\n\n## Decided\n\nNothing yet.`, spans: [] });
+        await a.say(sid, `I've started a Doc with the goal as I understand it: ${goal}. Nothing else has changed; the thread carries on as it was.${steer}`);
+      } else await a.say(sid, turn.by === "platform" ? "Ready. Tell me what this track is for and I'll plan it with you." : "Noted.");
       this.restand(track);
       return a.endTurn(sid);
     }
@@ -208,9 +228,9 @@ export class Agents {
       const name = track.name ?? titleFrom(text);
       if (!track.name) a.mutate(sid, "track.rename", { tid: track.id, name });
       a.mutate(sid, "doc.save", { tid: track.id, baseRev: doc.rev, text: `## Goal\n\n${text.trim()}\n\n## Plan\n\n- Scope the work\n- Build it\n\n## Decided\n\nNothing yet.`, spans: [] });
-      if (threads().length) await a.say(sid, "Taking that as the goal; it is in the Doc. The thread you had is the first one here.");
+      if (threads().length && isPerson(track.createdBy)) await a.say(sid, `Taking that as the goal; it is in the Doc. The thread you had is the first one here.${steer}`);
       else {
-        await a.say(sid, "Taking that as the goal. I've written it to the Doc and started two threads.");
+        await a.say(sid, `I take the goal to be: ${name}. I've written it to the Doc and started two threads.${steer}`);
         if (log.turn(sid) !== turn) return;
         const one = `Scope: ${name}`.slice(0, 60);
         const two = `Build: ${name}`.slice(0, 60);
@@ -225,8 +245,14 @@ export class Agents {
       await a.say(sid, `Started a thread for it: ${title}.`);
     } else if (has(text, "tell")) {
       const open = threads().filter((p) => p.doneAt == null);
-      for (const p of open) log.accept(p.id, { id: this.ctx.id("tn", 12), kind: "turn", input: `From the track: ${text}`, ifBusy: "queue" }, `agent:${sid}`, agentActor(sid));
-      await a.say(sid, `Passed it on to ${open.length} thread${open.length === 1 ? "" : "s"}.`);
+      // G4: a change of course steers each open thread, is named in the reply and kept in the Doc.
+      const what = text.replace(/^\s*tell (them|the threads|everyone|all)?\s*(to\b)?[:,]?\s*/i, "").trim() || text.trim();
+      for (const p of open) log.accept(p.id, { id: this.ctx.id("tn", 12), kind: "turn", input: `From the track: ${what}` }, `agent:${sid}`, agentActor(sid));
+      const now = org.need("doc", track.id);
+      a.mutate(sid, "doc.save", { tid: track.id, baseRev: now.rev, text: `${now.text}\n\n## Changed course\n\n${what}`, spans: now.spans });
+      log.note(sid, "track.note", { text: "Doc updated: a change of course" });
+      const names = open.map((p) => `**${org.need("session", p.id).title}**`);
+      await a.say(sid, open.length ? `This affects ${names.join(" and ")}. I've passed it on to ${open.length === 1 ? "it" : "each"} and written it to the Doc.` : "No thread is open to pass it to. It is in the Doc.");
     } else {
       const now = org.need("doc", track.id);
       a.mutate(sid, "doc.save", { tid: track.id, baseRev: now.rev, text: `${now.text}\n\n## Note\n\n${text.trim()}`, spans: now.spans });

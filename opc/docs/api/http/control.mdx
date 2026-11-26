@@ -1,0 +1,78 @@
+---
+title: "Control"
+description: "Interrupt, compact, suspend and resume a session."
+---
+
+These routes act on the session as a whole. None waits for the agent: each returns as soon as the request is recorded, with the session as it is at that moment and the `seq` of the last event it recorded, and the events say when the action is complete. Each is safe to repeat: doing it again when there is nothing to do returns the same response and changes nothing. Each accepts an `Idempotency-Key`.
+
+## Interrupt
+
+```http
+POST /sessions/{id}/interrupt
+```
+
+Stops the running turn and cancels every queued turn. What `Esc` does in `opc`.
+
+| Field | Meaning |
+| --- | --- |
+| `turnId` | Optional. Interrupt only if this turn is still running or queued. If it has ended, the request returns `200` and changes nothing, so an interrupt meant for one turn never stops the next. |
+
+Returns `202 { "session": Session, "seq" }` at once. In it, the running turn is `cancelling` and the queued turns are already `cancelled`. Then:
+
+- Each queued turn gets a `turn.cancelled` event with reason `interrupted`, in order, before the response is sent.
+- The running turn is told to stop. A tool that was running is stopped; files it had already changed stay changed. Open asks close as `interrupted`. With Claude Code, every subagent of the turn, background ones included, ends as `stopped` with `stoppedBy: null`. When the agent has stopped, usually within a second, its `turn.cancelled` is recorded, with reason `interrupted` and `forced: false`.
+- If the agent has not stopped after 10 seconds, its process is restarted and the turn is cancelled anyway, with `forced: true`.
+
+With nothing running, or with a `turnId` that has ended, it returns `200 { "session": Session, "seq" }` and does nothing. The cancelled turns' inputs are in their `turn.cancelled` events, so a client can offer them again, as `opc` does by putting them back in the prompt.
+
+To wait for the stop without a WebSocket, [get the turn](/api/http/turns#get-a-turn) with `status=cancelling&waitMs=60000`: it returns when the turn is `cancelled`.
+
+To interrupt and send a new message in one request, [send it](/api/http/turns#send-a-message) with `ifBusy: "interrupt"`. To cancel one queued turn and leave the rest, [cancel it](/api/http/turns#cancel-a-queued-turn).
+
+## Compact
+
+```http
+POST /sessions/{id}/compact
+```
+
+Replaces the conversation so far with a summary, freeing context. The agent keeps working from the summary. `opc` runs it with `/compact`, and the agent compacts on its own when the context is nearly full. A compaction can take tens of seconds: `session.compacting` marks its start and `session.compacted` its end.
+
+| Field | Meaning |
+| --- | --- |
+| `instructions` | Optional. What the summary must keep, such as `keep the list of failing tests` |
+
+Compacting runs as its own turn: queued behind a running one, so it runs after the current turn, or started at once when idle. The response is what [sending a message](/api/http/turns#send-a-message) returns, `202 { "turn": Turn, "delivery", "duplicate", "seq" }`, not the session: it is the one route here that creates a turn. The turn's events include `session.compacted` with the context before and after.
+
+`409 feature_unavailable` when `capabilities.features.compact` is `false`.
+
+## Suspend
+
+```http
+POST /sessions/{id}/suspend
+```
+
+Stops the agent process now, rather than after two hours idle. The conversation and the workspace are kept. The next message resumes the session.
+
+| Field | Meaning |
+| --- | --- |
+| `ifIdle` | Optional. `true`: suspend only if the session is `idle`. Otherwise the request returns `200` and changes nothing. Default `false`. |
+
+Returns `202 { "session": Session, "seq" }`; `runtime.suspended` follows within a few seconds, and the session is then `suspended`.
+
+- A session that is `waiting` is suspended anyway: its open asks close as `interrupted` and its turn is cancelled with reason `interrupted`, as an [interrupt](#interrupt) would. An ask is never open on a suspended session.
+- Running [subagents](/api/http/subagents), background ones too, end as `stopped`.
+- Open [terminals](/api/websocket/terminals) are closed.
+
+`409 session_busy` while a turn is running and no ask is open. Interrupt it first, or wait.
+
+## Resume
+
+```http
+POST /sessions/{id}/resume
+```
+
+Starts the agent process of a suspended session, without sending anything. Sending a message resumes the session anyway, so this is only to save the wait. Resuming takes a few seconds; `opc` starts it the moment you pick the session on its interactive screen.
+
+Returns `202 { "session": Session, "seq" }` as soon as the resume has started, with `status: "starting"`. `runtime.connected` with `resumed: true` follows when it is ready. On a session that is not suspended, it returns `200` and does nothing.
+
+`402 insufficient_credits` when your organization is out of credits. `503 computer_unavailable` when your computer is down, and `503 unavailable` on a temporary failure, both with `retryAfterMs`.
