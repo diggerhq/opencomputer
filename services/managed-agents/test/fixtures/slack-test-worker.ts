@@ -52,7 +52,7 @@ export class FakeOrg extends Recorder {
 
   async mutate(p: Principal, m: unknown): Promise<MutateReply> {
     this.record("mutate", p, m);
-    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1 };
+    return this.mutateError ? { error: { code: this.mutateError as "refused" } } : { protocol: 1, version: 1 };
   }
 
   async linkPerson(from: string, to: string): Promise<void> {

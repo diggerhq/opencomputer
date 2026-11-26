@@ -597,7 +597,6 @@ const STATUS_OF: Record<string, number> = {
   refused: 409,
   taken: 409,
   conflict: 409,
-  out_of_order: 409,
   idempotency_conflict: 409,
   reset: 409,
   agent_turns: 409,
@@ -1077,15 +1076,9 @@ async function orgRoute(
         if (kinds?.some((k) => !CORE_KINDS.includes(k))) return out.error(403, "forbidden", "Work kinds need the work:read scope.", { reason: "missing_scope", scope: "work:read" });
         kinds ??= CORE_KINDS;
       }
-      const clientId = query.get("client") ?? undefined;
-      if (clientId !== undefined && !CLIENT_ID.test(clientId)) return out.error(400, "invalid_request", "client is cl_ and 16 lowercase Crockford base32 characters.", { field: "client" });
-      const ack = intParam(query, "ack", 0, Number.MAX_SAFE_INTEGER);
-      if (ack === null) return out.error(400, "invalid_request", "ack is a non-negative integer.", { field: "ack" });
       const frame = await timed(org().feed(p, {
         ...(after !== undefined ? { after } : {}),
         ...(kinds?.length ? { kinds } : {}),
-        ...(clientId ? { clientId } : {}),
-        ...(ack !== undefined ? { ack } : {}),
         ...(query.get("sum") === "1" ? { sum: true } : {}),
       }));
       if ("reset" in frame) return reset(out, "The feed has moved past this cursor; read a snapshot.");
@@ -1115,19 +1108,10 @@ async function orgRoute(
       if ("error" in parsed) return out.error(...parsed.error);
       const body = asObject(parsed.value);
       if (!body) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
-      // A member's client numbers its mutations; an agent or a key sends an Idempotency-Key instead.
-      const clientId = request.headers.get("x-oc-client");
-      const n = request.headers.get("x-oc-n");
-      let client: { id: string; n: number } | undefined;
-      if (clientId !== null || n !== null) {
-        if (clientId === null || !CLIENT_ID.test(clientId)) return out.error(400, "invalid_request", "x-oc-client is cl_ and 16 lowercase Crockford base32 characters.", { field: "x-oc-client" });
-        if (n === null || !/^[1-9]\d{0,15}$/.test(n) || !Number.isSafeInteger(Number(n))) return out.error(400, "invalid_request", "x-oc-n is a positive integer.", { field: "x-oc-n" });
-        client = { id: clientId, n: Number(n) };
-      }
       const r = await timed(org().mutate(p, {
         name: route.name!,
         args: { ...body, ...route.args },
-        ...(client ? { client } : idem ? { idem } : {}),
+        ...(idem ? { idem } : {}),
         ...(trace ? { trace } : {}),
         ...(person ? { person } : {}),
       }));

@@ -46,9 +46,9 @@ describe("the feed (spec 37.1)", () => {
   it("passes the query to Org and answers its frame", async () => {
     const org = { feed: vi.fn(async () => frame) };
     const call = setup(org);
-    const r = await call("GET", `/feed?after=f1.2&kinds=session,thread&client=${CLIENT}&ack=3&sum=1`);
+    const r = await call("GET", "/feed?after=f1.2&kinds=session,thread&sum=1");
     expect(r).toEqual({ status: 200, body: frame });
-    expect(org.feed).toHaveBeenCalledWith(expect.objectContaining({ subject: expect.any(String), kind: "member" }), { after: "f1.2", kinds: ["session", "thread"], clientId: CLIENT, ack: 3, sum: true });
+    expect(org.feed).toHaveBeenCalledWith(expect.objectContaining({ subject: expect.any(String), kind: "member" }), { after: "f1.2", kinds: ["session", "thread"], sum: true });
   });
 
   it("a reset, a foreign cursor or an old protocol is 409 reset with cursor null", async () => {
@@ -85,15 +85,15 @@ describe("the feed (spec 37.1)", () => {
 });
 
 describe("the mutation routes (spec 37.3)", () => {
-  it("sends the mutation with the body and the path's ids, numbered by the client", async () => {
-    const org = { mutate: vi.fn(async () => ({ protocol: 1, version: 7, op: null })) };
+  it("sends the mutation with the body, the path's ids and the member's Idempotency-Key, and answers its version", async () => {
+    const org = { mutate: vi.fn(async () => ({ protocol: 1, version: 7 })) };
     const call = setup(org);
-    const r = await call("PUT", `/work/threads/${SID}/title`, { body: { title: "x", sid: "cs_other" }, headers: { "x-oc-client": CLIENT, "x-oc-n": "4", "x-oc-trace": "t1" } });
-    expect(r.status).toBe(200);
-    expect(org.mutate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ name: "thread.rename", args: { title: "x", sid: SID }, client: { id: CLIENT, n: 4 } }));
+    const r = await call("PUT", `/work/threads/${SID}/title`, { body: { title: "x", sid: "cs_other" }, headers: { "idempotency-key": "ib_1", "x-oc-trace": "t1" } });
+    expect(r).toMatchObject({ status: 200, body: { protocol: 1, version: 7 } });
+    expect(org.mutate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ name: "thread.rename", args: { title: "x", sid: SID }, idem: "ib_1" }));
   });
 
-  it("names every route's mutation and uses an Idempotency-Key without a client", async () => {
+  it("names every route's mutation and passes its Idempotency-Key", async () => {
     const org = { mutate: vi.fn(async () => ({ protocol: 1, version: 1, op: null })) };
     const call = setup(org);
     const cases: [string, string, string, Record<string, string>][] = [
@@ -125,13 +125,13 @@ describe("the mutation routes (spec 37.3)", () => {
   });
 
   it("maps refusals, refuses bad ids and needs work:write", async () => {
-    const org = { mutate: vi.fn(async () => ({ error: { code: "out_of_order", message: "gap", lastMutation: 3 } })) };
+    const org = { mutate: vi.fn(async () => ({ error: { code: "conflict", message: "Taken.", reason: "taken" } })) };
     const call = setup(org);
-    const r = await call("PUT", `/work/threads/${SID}/done`, { body: {}, headers: { "x-oc-client": CLIENT, "x-oc-n": "9" } });
+    const r = await call("PUT", `/work/threads/${SID}/done`, { body: {}, headers: { "idempotency-key": "ib_9" } });
     expect(r.status).toBe(409);
-    expect(r.body.error).toMatchObject({ code: "out_of_order", lastMutation: 3 });
+    expect(r.body.error).toMatchObject({ code: "conflict", reason: "taken" });
     expect((await call("PUT", "/work/threads/nope/done", { body: {} })).status).toBe(404);
-    expect((await call("PUT", `/work/threads/${SID}/done`, { body: {}, headers: { "x-oc-n": "1" } })).status).toBe(400);
+    expect((await call("PUT", `/work/threads/${SID}/done`, { body: {}, headers: { "idempotency-key": "bad key" } })).status).toBe(400);
     expect((await call("PUT", `/work/threads/${SID}/done`, { body: {}, identity: key(["work:read"]) })).status).toBe(403);
     expect(org.mutate).toHaveBeenCalledTimes(1);
   });

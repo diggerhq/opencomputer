@@ -83,8 +83,11 @@ const V1 = [
 /** Customer webhooks are gone: a poke owed to Delivery(webhook) is dropped, not retried forever. */
 const V2 = [`DELETE FROM _owed WHERE grp = 'poke:webhook'`];
 
+/** A mutation's `Idempotency-Key` names it, for members too: the per-client numbering is gone. */
+const V3 = [`DROP TABLE client`];
+
 /** `meta.api_access_default`: the organization's default access for sessions not from Slack (spec 36.2); NULL is `owner`. */
-const V3 = [`ALTER TABLE meta ADD COLUMN api_access_default TEXT`];
+const V4 = [`ALTER TABLE meta ADD COLUMN api_access_default TEXT`];
 
 const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
-export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1), run(V2), run(V3)];
+export const STEPS: ((sql: Sql) => void)[] = [run(V0), run(V1), run(V2), run(V3), run(V4)];
