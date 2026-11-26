@@ -19,7 +19,7 @@ export DO_NOT_TRACK=1         # the cross-tool convention
 
 ## How it is sent
 
-Only on the connection `opc` already has open to your computer, as a `telemetry` notification. `opc` never opens a connection or makes a request just to send telemetry, and sends nothing when it uses only HTTP. Events wait in memory for about a second so a few go in one message, at most 6 messages a minute. If more than 60 are waiting, the oldest are dropped and only their count is sent. On exit `opc` waits at most 200 ms to send what is left, and only while the connection is open.
+Only on the connection `opc` already has open to your computer, as a `telemetry` notification. `opc` never opens a connection or makes a request just to send telemetry, and sends nothing when it uses only HTTP and [Live](https://docs.opencomputer.dev/api/live), as `opc -p`, `opc wait` and `opc watch` do. Only `opc shell` and the interactive screen open that connection. Events wait in memory for about a second so a few go in one message, at most 6 messages a minute. If more than 60 are waiting, the oldest are dropped and only their count is sent. On exit `opc` waits at most 200 ms to send what is left, and only while the connection is open.
 
 The server checks every event against a closed list of names, keys and values and drops anything else. It adds your member id from the connection itself (never from what `opc` sends) and stores the events with OpenComputer's other service telemetry, where OpenComputer's engineers use them to find slow and failing paths.
 

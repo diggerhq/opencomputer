@@ -322,7 +322,7 @@ opc whoami [--json]
 opc doctor [--json]
 ```
 
-Checks, in order, and stops at the first failure: the configuration file, the credential, the API, your computer, the connection to it, and a round trip through it. Prints each step's time. `--json` prints `{ "steps": [{ name, ok, ms, detail, error }] }`, with the failure in its step's `error` rather than on standard error. Run it first when something is wrong. See [Troubleshooting](/troubleshooting).
+Checks, in order, and stops at the first failure: the configuration file (`config`), the credential, the API, your computer, the [Live](https://docs.opencomputer.dev/api/live) socket every watching command uses (`live`), 20 pings through it (`round trip`), and the WebSocket to your computer that `opc shell` and the interactive screen use (`wire`), when this API has one. Prints each step's time. `--json` prints `{ "steps": [{ name, ok, ms, detail, error }] }`, with the failure in its step's `error` rather than on standard error. Run it first when something is wrong. See [Troubleshooting](/troubleshooting).
 
 ## opc schema
 
