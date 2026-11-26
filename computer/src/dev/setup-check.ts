@@ -156,6 +156,8 @@ const db = new DatabaseSync(':memory:');
 const secrets = openSecrets(db, STORE_KEY);
 process.env.SP_STORE_KEY = STORE_KEY;
 process.env.SETUP_TOKEN = SETUP_TOKEN;
+// The steps below re-run after setup is complete; the lock itself is checked at the end.
+process.env.SP_SETUP_OPEN = '1';
 const pushes: [string, string][] = [];
 const changes: string[] = [];
 const slackCalls: { op: string; manifest?: any; token?: string }[] = [];
@@ -370,6 +372,16 @@ await check('without SETUP_TOKEN the flow is closed', async () => {
   delete process.env.SETUP_TOKEN;
   assert.equal((await http('/setup')).status, 503);
   process.env.SETUP_TOKEN = SETUP_TOKEN;
+});
+
+await check('complete: /setup and the token sign-in answer 404, webhooks still work; SP_SETUP_OPEN=1 reopens', async () => {
+  delete process.env.SP_SETUP_OPEN;
+  assert.equal((await http('/setup')).status, 404);
+  assert.equal((await http(`/setup?token=${SETUP_TOKEN}`)).status, 404);
+  assert.equal((await post('/setup/host', { csrf, label: 'late' })).status, 404);
+  assert.equal((await realFetch(base + '/github/events', { method: 'POST', body: '{}' })).status, 401);
+  process.env.SP_SETUP_OPEN = '1';
+  assert.equal((await http('/setup')).status, 200);
 });
 
 server.close();

@@ -24,6 +24,7 @@ The host reads its settings once at start (`src/host/host-config.ts`). A value t
 | `SP_ORIGIN` | `http://localhost:<PORT>` | Public origin, for example `https://computer.example.com`. Used in Slack and GitHub callback URLs and the host URL. |
 | `SP_STORE_KEY` | unset | Secret the encryption key for stored secrets is derived from (`openssl rand -hex 32`). Unset: `/setup` and people cannot store secrets. Changed: every stored secret is unreadable. |
 | `SETUP_TOKEN` | unset | Token that signs in to `/setup`. |
+| `SP_SETUP_OPEN` | unset | `1` keeps `/setup` open after every step is done. Unset: once the Slack app and GitHub App are installed, a model credential is set and a host token exists, `/setup` answers 404. |
 | `GITHUB_ORG` | unset | GitHub organization that owns the GitHub App. Required for the GitHub step of `/setup`. |
 | `SLACK_APP_NAME` | `Computer` | Name of the Slack app and bot that `/setup` creates, and the name the bot answers to. |
 | `SP_HOST_TOKENS` | empty | Comma-separated host tokens accepted besides those `/setup` issues. |

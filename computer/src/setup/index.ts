@@ -9,6 +9,10 @@
 // Steps: 1 Slack app (paste config refresh token → create → connect URLs →
 // /slack/install), 2 GitHub App (manifest flow → install), 3 Claude credential,
 // 4 people (not here yet: the gateway seeds them from env), 5 host tokens.
+//
+// Once every step is done (setupComplete), /setup and its forms answer 404, the
+// token sign-in included, so a public gateway stops exposing an admin page.
+// SP_SETUP_OPEN=1 (and a restart) opens it again to repair or rotate.
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -47,6 +51,29 @@ export function slackReady(secrets: Secrets): boolean {
 /** True once the Slack app exists, so Bolt can serve /slack/events and the OAuth install. */
 export function slackAppReady(secrets: Secrets): boolean {
   return !!(secrets.get('SLACK_SIGNING_SECRET') && secrets.get('SLACK_CLIENT_ID') && secrets.get('SLACK_CLIENT_SECRET'));
+}
+
+/**
+ * True once nothing is left for the browser: the Slack app is installed, the GitHub App
+ * is installed, there is a model credential, and a host can dial in (SP_HOST_TOKENS or
+ * an issued token).
+ */
+export function setupComplete(secrets: Secrets, db?: DatabaseSync): boolean {
+  const has = (n: string) => {
+    try {
+      return !!secrets.get(n);
+    } catch {
+      return false;
+    }
+  };
+  const model = has('CLAUDE_CODE_OAUTH_TOKEN') || has('ANTHROPIC_API_KEY') || (has('MODEL_PROFILE') && has('MODEL_TOKEN'));
+  const host = !!process.env.SP_HOST_TOKENS?.split(',').some((t) => t.trim()) || (!!db && listHostTokens(db).length > 0);
+  return slackReady(secrets) && has('GITHUB_INSTALLATION_ID') && model && host;
+}
+
+/** /setup answers 404: setup is complete and SP_SETUP_OPEN is not 1. */
+export function setupLocked(secrets: Secrets, db?: DatabaseSync): boolean {
+  return process.env.SP_SETUP_OPEN !== '1' && setupComplete(secrets, db);
 }
 
 // ---------------------------------------------------------------- html
@@ -132,10 +159,11 @@ interface Ctx {
   csrf: string;
 }
 
-/** Runs `handler` only for an authorized browser; handles ?token= and the cookie. */
-function guarded(origin: string, handler: (req: IncomingMessage, res: ServerResponse, ctx: Ctx) => Promise<void> | void) {
+/** Runs `handler` only for an authorized browser while setup is open; handles ?token= and the cookie. */
+function guarded(origin: string, locked: () => boolean, handler: (req: IncomingMessage, res: ServerResponse, ctx: Ctx) => Promise<void> | void) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
+      if (locked()) return void res.writeHead(404, { 'Cache-Control': 'no-store' }).end();
       const url = new URL(req.url ?? '/', 'http://setup.local');
       const k = key();
       if (!k) return send(res, 503, page('Setup unavailable', '<p>Set <code>SETUP_TOKEN</code> in the gateway environment to enable /setup.</p>'));
@@ -230,7 +258,7 @@ function statusPage(deps: SetupDeps, ctx: Ctx): string {
 
   return page(
     'slack-presence setup',
-    `<p>Origin <code>${esc(origin)}</code>. Every step can be re-run to repair or rotate.</p>
+    `<p>Origin <code>${esc(origin)}</code>. Every step can be re-run to repair or rotate. Once all of them are done, this page closes (404) until <code>SP_SETUP_OPEN=1</code>.</p>
 ${writable ? '' : '<p class="err">SP_STORE_KEY is not set: nothing can be saved. Set it (<code>openssl rand -hex 32</code>) as a secret and restart.</p>'}
 
 <h2>1. Slack app: ${badge(slackApp)}, installed: ${badge(slackInst)}</h2>
@@ -275,6 +303,9 @@ ${hosts.length ? `<ul>${hosts.map((h) => `<li><code>${esc(h.id)}</code> ${esc(h.
 
 // ---------------------------------------------------------------- routes
 
+/** Where a host on the gateway's own machine dials: loopback, never through the public origin. */
+const hostUrl = () => `ws://127.0.0.1:${process.env.PORT || 3170}/host`;
+
 export function setupRoutes(deps: SetupDeps): CustomRoute[] {
   const { secrets, origin } = deps;
   const slack = () => (deps.slack ??= slackApi());
@@ -291,7 +322,8 @@ export function setupRoutes(deps: SetupDeps): CustomRoute[] {
     return d;
   };
 
-  const route = (method: string, path: string, h: Parameters<typeof guarded>[1]): CustomRoute => ({ method, path, handler: guarded(origin, h) });
+  const locked = () => setupLocked(secrets, deps.db ?? secretsDb(secrets));
+  const route = (method: string, path: string, h: Parameters<typeof guarded>[2]): CustomRoute => ({ method, path, handler: guarded(origin, locked, h) });
 
   return [
     route('GET', '/setup', (_req, res, ctx) => send(res, 200, statusPage(deps, ctx))),
@@ -395,8 +427,10 @@ export function setupRoutes(deps: SetupDeps): CustomRoute[] {
         page(
           'Host token issued',
           `<p>Token for <b>${esc(label)}</b>. It is shown once; only its hash is kept.</p>
-<pre>SP_GATEWAY_URL=${esc(origin)}\nSP_HOST_TOKEN=${esc(token)}</pre>
-<p>Give both to the host's provisioning script; the host dials the gateway with <code>Authorization: Bearer $SP_HOST_TOKEN</code>.</p>${back}`,
+<pre>SP_GATEWAY_URL=${esc(hostUrl())}\nSP_HOST_TOKEN=${esc(token)}</pre>
+<p>Give both to the host's provisioning script; the host dials the gateway with <code>Authorization: Bearer $SP_HOST_TOKEN</code>.
+The URL is the gateway's loopback port, for a host on the same machine; a host elsewhere dials <code>${esc(origin.replace(/^http/, 'ws'))}/host</code>.</p>
+${setupLocked(secrets, db()) ? '<p>Setup is complete: from now on <code>/setup</code> answers 404. Set <code>SP_SETUP_OPEN=1</code> and restart the gateway to open it again.</p>' : back}`,
         ),
       );
     }),

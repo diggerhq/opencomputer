@@ -9,6 +9,7 @@
 //   SP_VERSION      code version reported on /healthz (the image has no .git)
 //   SP_TUNNEL=1     laptop mode: provision.ts creates/updates the app behind ngrok
 //   SP_HOST_TOKENS  comma list of accepted host tokens (plus tokens issued by /setup)
+//   SP_SETUP_OPEN=1 keep /setup open after every step is done (it answers 404 then otherwise)
 //   GITHUB_ORG      required for /setup's GitHub App step: the organization that will own the app (no default)
 //   SP_PEOPLE       JSON array of SlackPerson, upserted into the people table on start
 //   SP_SLACK_API_URL  dev only: Slack Web API base URL (a local fake), for every Slack call the gateway makes
