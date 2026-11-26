@@ -22,6 +22,7 @@ import type { StartSpec } from "./contract.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./held-for-org/model-access/api-session-route.js";
 import type { Principal } from "../../auth/principal.js";
+import { logOf } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
@@ -206,7 +207,7 @@ export interface SessionsApiDeps {
   put: (key: string, value: string) => void;
   remove: (key: string) => void;
   now?: () => number;
-  /** A session's SessionLog (stubs.ts `logOf`). Absent: the `SESSION_LOG` binding. */
+  /** A session's SessionLog (addresses.ts `logOf`). Absent: the `SESSION_LOG` binding. */
   log?: (sessionId: string) => SessionLogRpc;
   /** The organization's Live (stubs.ts `liveOf`). */
   live: () => LiveRpc;
@@ -269,9 +270,7 @@ export class ComputerSessionsApi {
 
   private log(sessionId: string): SessionLogRpc {
     if (this.deps.log) return this.deps.log(sessionId);
-    const ns = this.deps.env.SESSION_LOG;
-    if (!ns) throw new Error("SESSION_LOG is not bound");
-    return ns.getByName(sessionId) as unknown as SessionLogRpc;
+    return logOf(this.deps.env, sessionId);
   }
 
   /** The runner's spec for a session: an API one (`kind: "api"`) or a Slack thread. */

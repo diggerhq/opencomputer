@@ -8,12 +8,12 @@ import { POOL_OBJECT } from "../ids/computer-names.js";
 
 export type ComputerStub = DurableObjectStub<ComputerDurableObject>;
 
-export function computers(env: ComputerEdgeEnv): DurableObjectNamespace<ComputerDurableObject> | null {
-  return (env.COMPUTERS as DurableObjectNamespace<ComputerDurableObject> | undefined) ?? null;
+export function computers(env: ComputerEdgeEnv): DurableObjectNamespace<ComputerDurableObject> {
+  return env.COMPUTERS as unknown as DurableObjectNamespace<ComputerDurableObject>;
 }
 
 export function computerOf(env: ComputerEdgeEnv, accountId: string): ComputerStub {
-  return computers(env)!.getByName(accountId);
+  return computers(env).getByName(accountId);
 }
 
 

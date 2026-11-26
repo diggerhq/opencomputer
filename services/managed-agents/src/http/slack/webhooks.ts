@@ -25,13 +25,13 @@ const teamRouter = (env: SlackRouteEnv, teamId: string) => slackOf(env, `slack-t
  */
 async function teamOrg(env: SlackRouteEnv, teamId: string): Promise<string | null> {
   const org = await teamRouter(env, teamId).teamOrg();
-  if (org || !env.COMPUTERS) return org;
+  if (org) return org;
   const old = env.COMPUTERS.getByName(slackTeamLinkName(teamId)) as unknown as { teamAccount(): Promise<string | null> };
   return old.teamAccount();
 }
 
 function configured(env: SlackRouteEnv): boolean {
-  return Boolean(env.SLACK && env.SLACK_COMPUTER_CLIENT_ID && env.SLACK_COMPUTER_CLIENT_SECRET && env.SLACK_COMPUTER_SIGNING_SECRET && env.SLACK_COMPUTER_SCOPES);
+  return Boolean(env.SLACK_COMPUTER_CLIENT_ID && env.SLACK_COMPUTER_CLIENT_SECRET && env.SLACK_COMPUTER_SIGNING_SECRET && env.SLACK_COMPUTER_SCOPES);
 }
 
 /** Slack's webhooks and the OAuth callback (their own authentication); null when the path is not one of them. */
@@ -73,7 +73,7 @@ export async function routeSlackDashboard(request: Request, env: SlackRouteEnv, 
 
 /** The verified raw body, or the Response that ends the request. */
 async function verified(request: Request, env: SlackRouteEnv): Promise<string | Response> {
-  if (!env.SLACK || !env.SLACK_COMPUTER_SIGNING_SECRET) return problem(503, "computer_slack_not_configured", "The Slack app is not available yet");
+  if (!env.SLACK_COMPUTER_SIGNING_SECRET) return problem(503, "computer_slack_not_configured", "The Slack app is not available yet");
   const raw = await request.text();
   if (!(await verifySlackSignature(raw, request.headers, env.SLACK_COMPUTER_SIGNING_SECRET))) return problem(401, "invalid_signature", "Invalid Slack signature");
   return raw;

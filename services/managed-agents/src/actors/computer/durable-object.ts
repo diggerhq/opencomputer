@@ -519,7 +519,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         const teamName = this.setting("slackTeamName");
         return { installed, ...(teamName ? { teamName } : {}) };
       },
-      poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
+      poolProbe: (token, user) => (this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
       slackUserName: (userId) => this.actors.slack().userName(userId),
@@ -1550,7 +1550,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   /** Reminds the pool to look at itself, at most every few minutes, off the request's path. */
   private kickPool(): void {
-    if (!this.env.COMPUTERS || this.poolTarget() === 0) return;
+    if (this.poolTarget() === 0) return;
     const last = Number(this.setting("poolKickedAt") ?? 0);
     if (Date.now() - last < POOL_KICK_INTERVAL_MS) return;
     this.put("poolKickedAt", String(Date.now()));
@@ -1569,7 +1569,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * usual way. The steps are in this file's header.
    */
   private async claimFromPool(accountId: string): Promise<LifecycleReply | null> {
-    if (!this.env.COMPUTERS || this.poolTarget() === 0) return null;
+    if (this.poolTarget() === 0) return null;
     if (this.lifecycle.row() || isPoolId(accountId)) return null;
     if (missingEdgeConfig(this.env).length) return null;
     const started = Date.now();
