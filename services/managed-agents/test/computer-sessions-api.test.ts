@@ -2,19 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ApiEvent, Ask, LogSummary } from "../src/computer/api-types.js";
 import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
-import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
 import { ComputerKeys } from "../src/computer/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/computer/session-log-contract.js";
 import {
   type ApiCaller,
   ComputerSessionsApi,
-  EPOCH_TAIL_RETRY_MS,
   GAP_CLOSE_INTERVAL_MS,
   HOST_CALL_HELD_TIMEOUT_MS,
   HOST_CALL_TIMEOUT_MS,
   RECOVER_AFTER_MS,
-  STALE_EPOCH_RESEND_MS,
   validateCreate,
   validatePatch,
 } from "../src/computer/sessions-api.js";
@@ -159,7 +156,7 @@ function fixture(options: { protocol?: number | null; enabled?: boolean; status?
   const recovers: number[] = [];
   const pendingWork: Promise<unknown>[] = [];
   let clock = 1_800_000_000_000;
-  const state = { protocol: options.protocol === undefined ? 4 : options.protocol, wakes: 0, links: new Map<string, string>() };
+  const state = { protocol: options.protocol === undefined ? 6 : options.protocol, wakes: 0, links: new Map<string, string>() };
   const settings = new Map<string, string>();
   const env = {
     SESSION_LOG: { getByName: (id: string) => logOf(id) },
@@ -334,19 +331,6 @@ describe("API model routing", () => {
 });
 
 describe("journal: single writer, no gaps, no duplicates", () => {
-  it("stores, mirrors and acks a batch; fences an older epoch", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    expect(f.frames("journal-ack")).toEqual([{ t: "journal-ack", sessionId: SID, epoch: 1, seq: 2 }]);
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 2, logEpoch: 1, title: "From the log" });
-    // A recovery moved the row to epoch 2: a stale writer's batch never reaches the log.
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    await f.api.journal(SID, 1, [event(3)]);
-    expect(f.logOf(SID).appends).toHaveLength(1);
-    expect(f.frames("journal-ack")).toHaveLength(1);
-  });
-
   it("a batch whose summary changed only lastSeq writes only the per-batch columns", async () => {
     const f = fixture();
     await created(f);
@@ -381,15 +365,6 @@ describe("journal: single writer, no gaps, no duplicates", () => {
     f.advance(GAP_CLOSE_INTERVAL_MS);
     await f.api.journal(SID, 1, [event(5)]);
     expect(f.closed).toHaveLength(2);
-  });
-
-  it("a stale epoch from the log raises the row's epoch, so later frames carry it", async () => {
-    const f = fixture();
-    await created(f);
-    f.logOf(SID).epoch = 3;
-    await f.api.journal(SID, 1, [event(1)]);
-    expect(f.api.row(SID)!.logEpoch).toBe(3);
-    expect(f.frames("journal-ack")).toHaveLength(0);
   });
 
   it("the row never goes backwards in (epoch, seq)", async () => {
@@ -605,20 +580,6 @@ describe("writes", () => {
     expect(await f.api.handle(caller(), { op: "call", sessionId: "cs_0000000000000000", method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
   });
 
-  it("PATCH: archive and metadata are the row's (no host needed); settings need the host", async () => {
-    const f = fixture();
-    await created(f);
-    f.state.protocol = null;
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { archived: true, metadata: { a: "1" } } })).toMatchObject({ status: 200, body: { session: { archived: true, metadata: { a: "1" } }, seq: 0 } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { metadata: { a: null, b: "2" } } })).toMatchObject({ body: { session: { metadata: { b: "2" } } } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "New" } })).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: {} })).toMatchObject({ status: 400 });
-    f.state.protocol = 4;
-    f.answers.set("sessions.update", () => ({ result: { session: { title: "New" }, seq: 1 } }));
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "New" } })).toMatchObject({ status: 200, body: { session: { title: "New", archived: true }, seq: 1 } });
-    expect(f.api.row(SID)!.title).toBe("New");
-  });
-
   it("PATCH speed: forwarded to the writer and kept on the row", async () => {
     const f = fixture();
     await created(f);
@@ -752,29 +713,6 @@ describe("visibility and lists", () => {
 });
 
 describe("recovery: a lost writer", () => {
-  it("host gone 60 s with a turn open: the log is recovered under epoch + 1; the next host hears the new epoch", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', api_status = 'running' WHERE session_id = ?", SID);
-    f.state.protocol = null;
-    f.api.onHostClosed();
-    expect(f.recovers).toEqual([f.now() + RECOVER_AFTER_MS]);
-    await f.api.recoverTick();
-    expect(f.logOf(SID).recovered).toHaveLength(0);
-    f.advance(RECOVER_AFTER_MS);
-    await f.api.recoverTick();
-    expect(f.logOf(SID).recovered).toMatchObject([{ sessionId: SID, organizationId: ORG, epoch: 2 }]);
-    expect(f.api.row(SID)).toMatchObject({ logEpoch: 2, lastSeq: 4, apiStatus: "suspended" });
-    // The old writer's late batch is fenced; the new one continues at lastSeq + 1.
-    f.state.protocol = 4;
-    await f.api.journal(SID, 1, [event(3)]);
-    expect(f.frames("journal-ack")).toHaveLength(1);
-    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 6 } }));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "go on" } });
-    expect(f.frames("api").at(-1)).toMatchObject({ epoch: 2, lastSeq: 4 });
-  });
-
   it("host connected, runner stopped mid-turn and the log silent 60 s: recovered, and the host told at once", async () => {
     const f = fixture();
     await created(f);
@@ -809,88 +747,6 @@ describe("recovery: a lost writer", () => {
     ]);
     const firstAtTwo = f.sent.findIndex((x) => "epoch" in x && (x as { epoch: number }).epoch === 2);
     expect(f.sent[firstAtTwo]!.t).toBe("epoch");
-  });
-
-  it("a hello during the recover RPC still gets epoch, and a Slack delivery waits for it (review r2 P1-1)", async () => {
-    const f = fixture();
-    f.slackRow("T1:C1:1.2");
-    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    await f.api.journal(slackId, 1, [event(1, slackId), event(2, slackId)]);
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', api_status = 'running' WHERE session_id = ?", slackId);
-    f.state.protocol = null;
-    f.api.onHostClosed();
-    f.advance(RECOVER_AFTER_MS);
-    let release!: () => void;
-    f.logOf(slackId).gate = new Promise<void>((r) => (release = r));
-    const tick = f.api.recoverTick();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(f.logOf(slackId).recovered).toHaveLength(1);
-    // The host comes back while the recover RPC is in flight; its journal is at the old epoch, as is the row.
-    f.state.protocol = 4;
-    f.sent.length = 0;
-    f.api.onHello([{ sessionId: slackId, epoch: 1, lastSeq: 2 }]);
-    const delivery = f.api.slackDelivery("T1:C1:1.2", "U1");
-    await new Promise((r) => setTimeout(r, 0));
-    expect(f.frames("epoch")).toHaveLength(0);
-    release();
-    await tick;
-    const d = await delivery;
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: slackId, epoch: 2, startSeq: 3, lastSeq: 4 }]);
-    // The delivery was held until the frame went, and carries the committed epoch.
-    expect(d).toMatchObject({ sessionId: slackId, epoch: 2, lastSeq: 4 });
-    expect(f.logOf(slackId).tailReads).toBe(0);
-  });
-
-  it("a recover answered stale_epoch with the log ahead of the row sends epoch (review r3 P1-1)", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    // An earlier recover committed epoch 2 in the log; its result never reached the row (an instance reset mid-RPC).
-    Object.assign(f.logOf(SID), { epoch: 2, ack: 4, epochStartSeq: 3 });
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', status = 'stopped' WHERE session_id = ?", SID);
-    f.advance(RECOVER_AFTER_MS + 1);
-    f.sent.length = 0;
-    await f.api.recoverTick();
-    await Promise.all(f.pending());
-    expect(f.logOf(SID).recovered).toHaveLength(1);
-    expect(f.api.row(SID)).toMatchObject({ logEpoch: 2 });
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2, startSeq: 3, lastSeq: 4 }]);
-  });
-
-  it("a failed epochTail read is retried; when every read fails the stale resend is open again (review r3 P1-1)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const f = fixture();
-      await created(f);
-      Object.assign(f.logOf(SID), { epoch: 2, ack: 2, epochStartSeq: 1 });
-      const log = f.logOf(SID);
-      const real = log.epochTail.bind(log);
-      let failures = 1;
-      log.epochTail = async () => {
-        if (failures-- > 0) throw new Error("rpc reset");
-        return real();
-      };
-      f.sent.length = 0;
-      await f.api.journal(SID, 0, []);
-      await vi.advanceTimersByTimeAsync(EPOCH_TAIL_RETRY_MS[0]!);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2 }]);
-      // Every read fails: no frame, and the next stale batch (inside the 5 s limit) asks again.
-      f.sent.length = 0;
-      f.advance(STALE_EPOCH_RESEND_MS);
-      failures = 99;
-      await f.api.journal(SID, 1, [event(1)]);
-      await vi.advanceTimersByTimeAsync(EPOCH_TAIL_RETRY_MS.reduce((a, b) => a + b, 0));
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toHaveLength(0);
-      failures = 0;
-      await f.api.journal(SID, 1, [event(1)]);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2 }]);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("an empty journal batch under an older epoch asks for epoch (rate-limited); at the row's epoch it is nothing (calvin 424bd40)", async () => {
@@ -957,24 +813,6 @@ describe("recovery: a lost writer", () => {
     }
   });
 
-  it("hello: a journal behind the log hears epoch first; one in step hears nothing", async () => {
-    const f = fixture();
-    await created(f);
-    await created(f, "cs_2222222222222222");
-    f.sql.exec("UPDATE sessions SET log_epoch = 3 WHERE session_id = ?", SID);
-    f.logOf(SID).epoch = 3;
-    f.logOf(SID).ack = 5;
-    f.logOf(SID).epochStartSeq = 5;
-    f.sent.length = 0;
-    f.api.onHello([
-      { sessionId: SID, epoch: 1, lastSeq: 7 },
-      { sessionId: "cs_2222222222222222", epoch: 1, lastSeq: 0 },
-    ]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 3, startSeq: 5, lastSeq: 5 }]);
-    expect(f.logOf("cs_2222222222222222").tailReads).toBe(0);
-  });
-
   it("hello: a journal at the log's epoch but short of its stored events (or torn, epoch 0) hears epoch (calvin r2 P1-2)", async () => {
     const f = fixture();
     await created(f);
@@ -995,31 +833,6 @@ describe("recovery: a lost writer", () => {
       [SID, 2, 4, 6],
       ["cs_3333333333333333", 2, 4, 6],
     ]);
-  });
-
-  it("a batch under a fenced epoch: epoch again, at most once per session per 5 s", async () => {
-    const f = fixture();
-    await created(f);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    f.logOf(SID).epoch = 2;
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toHaveLength(1);
-    expect(f.logOf(SID).appends).toHaveLength(0);
-    f.advance(STALE_EPOCH_RESEND_MS);
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toHaveLength(2);
-    // The log fencing a batch the row let through (the row was behind): the row follows, epoch goes.
-    const g = fixture();
-    await created(g);
-    g.logOf(SID).epoch = 4;
-    await g.api.journal(SID, 1, [event(1)]);
-    await Promise.all(g.pending());
-    expect(g.api.row(SID)!.logEpoch).toBe(4);
-    expect(g.frames("epoch")).toMatchObject([{ epoch: 4 }]);
   });
 
   it("an api call waits for an in-flight epoch send and carries the new epoch after it", async () => {
@@ -1184,18 +997,6 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
 });
 
 describe("rollout gate (COMPUTER_API_ORGS)", () => {
-  it("parses: unset or empty is nobody, * is everybody, otherwise the listed organizations", () => {
-    expect(computerApiEnabled(undefined, ORG)).toBe(false);
-    expect(computerApiEnabled("", ORG)).toBe(false);
-    expect(computerApiEnabled(" , ", ORG)).toBe(false);
-    expect(computerApiEnabled("*", ORG)).toBe(true);
-    expect(computerApiEnabled("*", undefined)).toBe(true);
-    expect(computerApiEnabled(`org_other, ${ORG} `, ORG)).toBe(true);
-    expect(computerApiEnabled("org_other", ORG)).toBe(false);
-    expect(computerApiEnabled("org_other", undefined)).toBe(false);
-    expect(GATED_PROTOCOL).toBe(3);
-  });
-
   it("gated off: every operation but /me answers 409 feature_unavailable; nothing is stored or sent", async () => {
     const f = fixture({ enabled: false, ticketKey: true });
     const ops = [

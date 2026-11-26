@@ -1,0 +1,77 @@
+---
+title: "Logging in"
+description: "opc login, logout and whoami, and where the credential lives."
+---
+
+`opc` uses the same login as the `opencomputer` CLI. Logging in with either logs in both.
+
+You rarely need to run `opc login` yourself. The first time you run `opc` in a terminal without a credential, it runs the same login, then carries on into the new session.
+
+## Log in
+
+```bash
+opc login
+```
+
+```
+  Open https://app.opencomputer.dev/device and enter the code
+      WDJB-MJHT
+  Waiting for confirmation… (Ctrl+C to cancel)
+✓ Logged in as Ada Lovelace (ada@acme.dev) · acme
+  Credential "ada-mbp" saved to ~/.opencomputer/config.json
+```
+
+`opc` opens the page in your browser when it can. You confirm the code there, signed in to OpenComputer. The code expires after 10 minutes.
+
+The result is a long-lived credential named after your machine, saved in `~/.opencomputer/config.json` with permissions `0600`. It does not expire. It stops working when you log out or revoke it on the dashboard under **Settings → API keys**, where it is listed by that name.
+
+| Option | Does |
+| --- | --- |
+| `--no-browser` | Prints the link without opening it, for remote machines |
+| `--force` | Logs in again even when already logged in, and revokes the previous credential |
+
+Without a terminal, `opc login` does nothing and exits with code `3`: there is nobody to confirm the code. Use an [API key](/cli/ci) instead.
+
+## Who am I
+
+```
+$ opc whoami
+Ada Lovelace (ada@acme.dev)
+organization  acme
+credential    ada-mbp (login) · created 2026-10-25
+api           https://app.opencomputer.dev
+computer      ready
+```
+
+`computer` is `ready`, `asleep` (it starts on first use) or `not set up`. When it is not set up, every command that needs it fails with exit code `3`:
+
+```
+opc: your organization's computer is not set up. Finish setup: https://app.opencomputer.dev/computer
+```
+
+`--json` prints the same as `GET /me` returns.
+
+## Log out
+
+```bash
+opc logout
+```
+
+Revokes the credential on the server and removes it from `~/.opencomputer/config.json`. This logs out the `opencomputer` CLI too. If the server cannot be reached, the local copy is removed anyway and `opc` tells you to revoke it on the dashboard.
+
+## More than one organization
+
+A credential belongs to one organization. To use several, give each its own configuration file:
+
+```bash
+OPENCOMPUTER_CONFIG=~/.opencomputer/acme.json opc login
+OPENCOMPUTER_CONFIG=~/.opencomputer/acme.json opc
+```
+
+A shell alias per organization makes this one word.
+
+## What reaches the computer
+
+Your credential is sent to OpenComputer only, never to your organization's computer. `opc` sends it with each API request, and on the request that opens a session's connection. OpenComputer's edge checks it there and passes on only who you are, so there is no extra round trip and no ticket to fetch. Tickets are for browsers, which cannot send a credential that way. See [Tickets](/api/http/tickets).
+
+An open connection closes when its credential is revoked, within a minute.

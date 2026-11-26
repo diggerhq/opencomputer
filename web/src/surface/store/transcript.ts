@@ -19,7 +19,8 @@ const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const withoutSlackHeader = (text: string | null): string | null =>
   text && text.replace(/^\[Slack: from [^\n]*\]\n?/gm, '').trim()
 
-export function buildTranscript(events: readonly ApiEvent[]): Item[] {
+// `me`: the person looking; their own messages carry no name.
+export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[] {
   const items: Item[] = []
   const steps = new Map<string, Extract<Item, { kind: 'step' }>>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
@@ -28,11 +29,14 @@ export function buildTranscript(events: readonly ApiEvent[]): Item[] {
     switch (e.type) {
       case 'message.received': {
         // Input the platform writes is not drawn as a message (R15).
-        if (e.actor?.via === 'platform') break
+        if (e.actor?.via === 'platform' || e.actor?.id === 'platform') break
         const text = withoutSlackHeader(str(d.input))
         const name = e.actor?.name
-        if (text)
-          items.push({ kind: 'user', key: e.turnId ?? e.id, text, author: name && name !== e.actor?.id ? name : null, at: e.createdAt })
+        if (!text) break
+        // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
+        if (e.actor?.via === 'agent') items.push({ kind: 'line', key: e.turnId ?? e.id, text, tone: 'muted', at: e.createdAt })
+        else
+          items.push({ kind: 'user', key: e.turnId ?? e.id, text, author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null, at: e.createdAt })
         break
       }
       case 'message.completed': {
@@ -141,7 +145,7 @@ export function opLines(
     const a = op.args as Record<string, string | null | undefined>
     const before = (op.inverse as { args?: Record<string, string> } | null)?.args
     let text: string | null = null
-    if (op.name === 'track.create' && inThread) text = `Now in the track **${names.track(String(a.tid))}**`
+    if (op.name === 'track.create' && inThread) text = op.undoneBy ? 'Was made a track' : `Now in the track **${names.track(String(a.tid))}**`
     else if (op.name === 'thread.place' && inThread)
       text = a.trackId ? `Moved to the track **${names.track(a.trackId)}**` : 'Taken out of its track'
     else if (op.name === 'thread.place' && a.sid) text = `**${names.thread(a.sid)}** joined`

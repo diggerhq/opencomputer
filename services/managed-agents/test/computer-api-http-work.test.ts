@@ -109,8 +109,18 @@ describe("the mutation routes (spec 37.3)", () => {
     ];
     for (const [method, path, name, args] of cases) {
       expect((await call(method, path, { body: {}, headers: { "idempotency-key": "k1" } })).status).toBe(200);
-      expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), { name, args, idem: "k1" });
+      expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), { name, args, idem: "k1", person: { name: null, email: null } });
     }
+  });
+
+  it("carries the credential's name and email, for a session the mutation makes; never an agent's or a body's", async () => {
+    const org = { mutate: vi.fn(async () => ({ protocol: 1 })) };
+    const call = setup(org);
+    const named = { ...member, userName: "Ada Lovelace", userEmail: "ada@example.com" } as RequestIdentity;
+    await call("POST", "/work/tracks", { body: { tid: TID, person: { name: "Mallory" } }, headers: { "idempotency-key": "k2" }, identity: named });
+    expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ person: { name: "Ada Lovelace", email: "ada@example.com" } }));
+    await call("POST", "/work/tracks", { body: { tid: TID }, headers: { "idempotency-key": "k3" }, identity: agent });
+    expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), expect.not.objectContaining({ person: expect.anything() }));
   });
 
   it("maps refusals, refuses bad ids and needs work:write", async () => {
@@ -132,6 +142,7 @@ describe("the work reads (spec 37.1)", () => {
       threads: vi.fn(async () => ({ rows: [{ id: SID }], next: null })),
       overview: vi.fn(async () => ({ tracks: [], threads: [] })),
       docRevisions: vi.fn(async () => [{ rev: 2, body: "b" }]),
+      doc: vi.fn(async (_p: unknown, tid: string) => (tid === TID ? { kind: "doc", id: TID, rev: 0, text: "", spans: [] } : null)),
       review: vi.fn(async (_p: unknown, id: string) => (id.endsWith("f") ? { resultId: id } : null)),
       search: vi.fn(async () => ({ rows: [] })),
     };
@@ -139,6 +150,8 @@ describe("the work reads (spec 37.1)", () => {
     expect(await call("GET", `/work/threads?earlier=true&track=${TID}&limit=10`)).toEqual({ status: 200, body: { protocol: 1, rows: [{ id: SID }], next: null } });
     expect(org.threads).toHaveBeenCalledWith(expect.anything(), { earlier: true, trackId: TID, limit: 10 });
     expect((await call("GET", "/work/overview")).body).toEqual({ protocol: 1, tracks: [], threads: [] });
+    expect(await call("GET", `/work/tracks/${TID}/doc`, { identity: agent })).toEqual({ status: 200, body: { protocol: 1, doc: { kind: "doc", id: TID, rev: 0, text: "", spans: [] } } });
+    expect((await call("GET", "/work/tracks/trk_0123456789abcdee/doc")).status).toBe(404);
     expect((await call("GET", `/work/tracks/${TID}/doc/revisions`)).body).toEqual({ protocol: 1, revisions: [{ rev: 2, body: "b" }] });
     expect((await call("GET", `/work/tracks/${TID}/doc/revisions/2`)).body).toEqual({ protocol: 1, revision: { rev: 2, body: "b" } });
     expect((await call("GET", `/work/tracks/${TID}/doc/revisions/3`)).status).toBe(404);

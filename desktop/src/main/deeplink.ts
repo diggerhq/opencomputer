@@ -30,9 +30,11 @@ export function parseDeepLink(link: string): OpenTarget | null {
   return null
 }
 
-/** The app path a target opens at, when there is no page yet to tell. */
-export function targetPath(target: OpenTarget): string {
-  if (target.threadId) return `/thread/${target.threadId}${target.askId ? `?ask=${target.askId}` : ''}`
-  if (target.trackId) return `/track/${target.trackId}`
-  return '/'
+/** The target that reopens a location the surface mirrored (`/t/<thread>`, `/k/<track>`, `/new`). */
+export function locationTarget(path: string): OpenTarget | null {
+  const [, kind, id] = path.split('?')[0]!.split('/')
+  if (kind === 't' && id && SESSION.test(id)) return { threadId: id }
+  if (kind === 'k' && id && TRACK.test(id)) return { trackId: id }
+  if (kind === 'new' && !id) return { new: true }
+  return null
 }

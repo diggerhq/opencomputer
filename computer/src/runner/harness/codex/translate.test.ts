@@ -44,7 +44,7 @@ describe('Translator', () => {
 
   it("a dynamic tool call is Calvin's tool by its Claude name; a shell command is Bash; each a response of its own", () => {
     const tool = bodies(replay('tool'));
-    expect(tool).toContainEqual({ t: 'tool', id: 'call_1', name: 'mcp__calvin__read_thread', input: { url: 'https://x.slack.com/archives/C1/p1' } });
+    expect(tool).toContainEqual({ t: 'tool', id: 'call_1', name: 'mcp__calvin__read_thread', input: { thread: 'https://x.slack.com/archives/C1/p1' } });
     expect(tool.filter((e) => e.t === 'request' && e.phase === 'first_token')).toHaveLength(2);
     const exec = bodies(replay('exec'));
     expect(exec).toContainEqual(expect.objectContaining({ t: 'tool', id: 'call_1', name: 'Bash' }));
