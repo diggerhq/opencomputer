@@ -2,7 +2,7 @@
 // its settings, and the added `link`, `thread` and `meta`. Slack's event ids go to the shared
 // module's `idem`, so `slack_events` is not here.
 
-import type { Sql } from "../actor/index.js";
+import { owed, type Sql } from "../actor/index.js";
 import { CROCKFORD } from "../computer/session-ids.js";
 
 export const STEPS: ((sql: Sql) => void)[] = [
@@ -53,9 +53,22 @@ export const STEPS: ((sql: Sql) => void)[] = [
   },
   // The message whose status or 👀 a thread shows, so `notify` can take it off.
   (sql) => sql.exec("CREATE TABLE IF NOT EXISTS acks (thread_key TEXT PRIMARY KEY, user_id TEXT NOT NULL, ts TEXT NOT NULL)"),
-  // The import's cursor: the next page of Computer's export.
-  (sql) => sql.exec("ALTER TABLE meta ADD COLUMN import_after TEXT"),
+  // The queue's waiting rows become owed `process` calls, in their order; the queue goes.
+  (sql) => {
+    for (const row of sql.exec<{ sequence: number; payload: string; thread: string | null }>("SELECT sequence, payload, thread_key AS thread FROM slack_queue WHERE state != 'failed' ORDER BY sequence")) {
+      oweProcess(sql, row.thread ?? `seq:${row.sequence}`, JSON.parse(row.payload));
+    }
+    sql.exec("DROP TABLE slack_queue");
+  },
 ];
+
+/** A Slack item's waits between tries (five in all), then the dead list. */
+const PROCESS_SCHEDULE = [2_000, 4_000, 8_000, 16_000];
+
+/** An item from Slack owed a `process` call, in its thread's order (40.11 step 2), in the caller's transaction. */
+export function oweProcess(tx: Sql, threadKey: string, job: unknown): void {
+  owed.add(tx, { group: `thread:${threadKey}`, call: "process", body: job, schedule: PROCESS_SCHEDULE });
+}
 
 export const settings = {
   get(sql: Sql, key: string): string | undefined {

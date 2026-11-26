@@ -60,7 +60,7 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const q = url.searchParams;
   const me = ctx.principal.subject;
-  const actor = { ...personActor(ctx.principal), client: headers.get("x-oc-client") };
+  const actor = personActor(ctx.principal);
   const key = headers.get("idempotency-key");
   let m: RegExpExecArray | null;
 
@@ -68,8 +68,7 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
 
   if (method === "GET" && path === "/feed") {
     const kinds = q.get("kinds");
-    const ack = q.get("ack");
-    return { status: 200, body: await org.feed({ after: q.get("after"), kinds: kinds ? kinds.split(",").filter(Boolean) : null, client: q.get("client"), ack: ack == null ? null : Number(ack), sum: q.get("sum") === "1" }) };
+    return { status: 200, body: await org.feed({ after: q.get("after"), kinds: kinds ? kinds.split(",").filter(Boolean) : null, sum: q.get("sum") === "1" }) };
   }
   if (method === "POST" && path === "/feed/mismatch") {
     org.mismatches.push(clone(body));
@@ -168,12 +167,7 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
   for (const [verb, re, name, arg] of MUTATIONS) {
     if (verb !== method || !(m = re.exec(path))) continue;
     const args = { ...body, ...(arg ? { [arg]: decodeURIComponent(m[1]) } : {}) };
-    const client = headers.get("x-oc-client");
-    const n = Number(headers.get("x-oc-n"));
-    if (client && Number.isInteger(n) && n > 0) return mutations.member(client, n, name, args);
-    // An API key's request: no numbering.
-    const value = mutations.run(me, name, args);
-    return { status: 200, body: { protocol: 1, ...(value === undefined ? {} : { value }) } };
+    return mutations.member(key, name, args);
   }
 
   throw new Refusal("not_found", `no route ${method} ${path}`);

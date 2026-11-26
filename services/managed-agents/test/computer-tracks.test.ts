@@ -1,14 +1,14 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { DeliveredOutcome, ExportedSession, InboxEntry } from "../src/actor/contracts.js";
+import type { DeliveredOutcome, InboxEntry } from "../src/actor/contracts.js";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { linkSlack } from "./fixtures/computer-link.js";
 
 /**
  * Tracks and threads, the Computer actor (spec 36.3, 40.2, 40.5): `start` and `drain` against a fake
- * SessionLog and a fake host on protocol 6, deltas to a fake Live, the export Org adopts from.
+ * SessionLog and a fake host on protocol 6, deltas to a fake Live.
  * Each test has its own organization.
  */
 
@@ -53,7 +53,7 @@ async function computer(org: string): Promise<{ stub: Stub; fakes: Fakes }> {
     };
     instance.actors.log = () => log;
     instance.actors.live = () => ({ publish: async (stream: string, frame: unknown) => (fakes.published.push({ stream, frame }), { head: "1" }) });
-    instance.actors.org = () => ({ forHost: async () => ({ sessions: [], admins: [], knowledge: null }), acceptMachine: async () => ({ accepted: true }), adopt: async () => undefined });
+    instance.actors.org = () => ({ forHost: async () => ({ sessions: [], admins: [], knowledge: null }), acceptMachine: async () => ({ accepted: true }) });
     instance.actors.slack = () => ({ forHost: async () => ({ people: [], slack: null }), import: async () => undefined });
     instance.admitForApi = async () => fakes.admitted;
     instance.wakeForApi = async () => undefined;
@@ -247,27 +247,16 @@ describe("the Computer actor of tracks and threads", () => {
     expect(await inside(stub, (instance) => instance.seen)).toEqual([{ actionId: "s:abc", triggerId: "trig", where: { userId: "U1", channelId: "C1" } }, { left: "U1" }]);
   });
 
-  it("exports its sessions in pages, minting an id for a row that has none", async () => {
-    const { stub } = await computer("tt-export");
-    for (const n of [1, 2, 3]) await stub.start(spec("tt-export", SESSION(n)));
+  it("hands the Slack actor its old install once: settings, people and links", async () => {
+    const { stub } = await computer("tt-carry");
+    await linkSlack(stub, "tt-carry", { teamId: "T1", teamName: "Acme", botUserId: "UBOT", botToken: "xoxb-old" });
     await inside(stub, (_instance, state) => {
-      state.storage.sql.exec(
-        "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, created_at, updated_at) VALUES ('T1:C1:1.0', 'T1', 'C1', '1.0', 'U1', 'Old thread', 1, 1)",
-      );
+      state.storage.sql.exec("INSERT INTO people (slack_user_id, dir, git_name, git_email, updated_at) VALUES ('U1', 'ann', 'Ann', 'ann@example.com', 1)");
     });
-    const page = (after: string | null, limit: number) =>
-      stub.exportSessions(after, limit) as unknown as Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
-    const first = await page(null, 2);
-    expect(first.rows).toHaveLength(2);
-    expect(first.rows[0]).toMatchObject({ title: "Old thread", owner: "slack:T1:U1", slackThreadKey: "T1:C1:1.0", origin: { type: "slack" } });
-    expect(first.rows[0]!.id).toMatch(/^cs_/);
-    expect(first.next).not.toBeNull();
-    const second = await page(first.next, 2);
-    expect(second.rows).toHaveLength(2);
-    expect(second.next).toBeNull();
-    expect([first.rows[1]!.id, ...second.rows.map((row) => row.id)].sort()).toEqual([SESSION(1), SESSION(2), SESSION(3)]);
-    expect(second.newestCreatedAt).toBeGreaterThan(1);
-    // The minted id is kept.
-    expect((await page(null, 1)).rows[0]!.id).toBe(first.rows[0]!.id);
+    const carry = await stub.slackCarry();
+    expect(Object.keys(carry.settings).sort()).toEqual(["slackBotToken", "slackBotUserId", "slackTeamId", "slackTeamName"]);
+    expect(carry.settings.slackBotToken).not.toBe("xoxb-old");
+    expect(carry.people).toEqual([{ slack_user_id: "U1", dir: "ann", git_name: "Ann", git_email: "ann@example.com", updated_at: 1 }]);
+    expect(carry.links).toEqual([]);
   });
 });

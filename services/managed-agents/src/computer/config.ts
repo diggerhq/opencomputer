@@ -85,7 +85,7 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   CF_VERSION_METADATA?: { id?: string };
   /** Work 084: one SessionLogDurableObject per session (`getByName(cs_…)`): the API's copy of its event log. */
   SESSION_LOG?: DurableObjectNamespace;
-  /** The retired Work board's object, read by Org once while adopting (org/work-index.ts); removed with its class. */
+  /** The retired Work board's object, its knowledge repository setting read by Org once (org/work-index.ts); removed with its class. */
   WORK_INDEX?: DurableObjectNamespace;
   /** Tracks and threads: Org and Slack, one per organization; Delivery, one per organization and kind. */
   ORGS?: DurableObjectNamespace;
