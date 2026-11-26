@@ -381,6 +381,22 @@ gateway_user() {
       printf '%s:%s:65536\n' "$GATEWAY_USER" "$start" >> "$f"
     fi
   done
+  # Storage of its own. sandbox.sh's /etc/containers/storage.conf sets
+  # rootless_storage_path to the agent's /data/containers/storage for every
+  # rootless user; without this file the gateway user's Podman tries to use it
+  # and fails (permission denied on .../libpod). A user's storage.conf replaces
+  # the system one, so it names the driver too.
+  local conf="$GATEWAY_HOME/.config/containers/storage.conf" group
+  group="$(id -gn "$GATEWAY_USER")"
+  if [[ ! -e $conf ]] || grep -qs '^# host-install.sh' "$conf"; then
+    install -d -m 0700 -o "$GATEWAY_USER" -g "$group" "$GATEWAY_HOME/.config" "$GATEWAY_HOME/.config/containers"
+    install -m 0644 -o "$GATEWAY_USER" -g "$group" /dev/stdin "$conf" <<EOF
+# host-install.sh: rootless storage of $GATEWAY_USER, apart from the agent's.
+[storage]
+driver = "overlay"
+graphroot = "$GATEWAY_HOME/.local/share/containers/storage"
+EOF
+  fi
 }
 
 gateway_units() {
@@ -599,7 +615,7 @@ install_all() {
   host_user
   gateway_units
   start_host
-  log "done: release $SHA, image $IMAGE, $(node --version), podman $(podman --version | awk '{print $3}'), podman-compose $PODMAN_COMPOSE_VERSION"
+  log "done: release $SHA, image $IMAGE, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
   echo "The compose stack is $GATEWAY_USER's: copy selfhost/ and computer/ to $GATEWAY_HOME/$GATEWAY_DIR_NAME, then as $GATEWAY_USER, from $GATEWAY_HOME/$GATEWAY_DIR_NAME/selfhost: podman compose up -d (selfhost/CONTRACT.md)"
 }
 
