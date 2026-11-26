@@ -106,6 +106,27 @@ export class Store {
       .run(p.slackUserId, JSON.stringify(p));
   }
 
+  /**
+   * Make the table exactly these people: upsert each, delete everyone else, so removing
+   * someone from SP_PEOPLE revokes their access. Only the row goes; their sessions and
+   * workspace stay, and come back if they are listed again. Returns who was removed.
+   */
+  syncPeople(people: SlackPerson[]): string[] {
+    const keep = new Set(people.map((p) => p.slackUserId));
+    const gone = this.people().map((p) => p.slackUserId).filter((id) => !keep.has(id));
+    this.db.exec('BEGIN');
+    try {
+      for (const p of people) this.putPerson(p);
+      const del = this.db.prepare('DELETE FROM people WHERE slack_user_id = ?');
+      for (const id of gone) del.run(id);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+    return gone;
+  }
+
   // ---- hosts
 
   /** The host id a token was issued to, or undefined. */

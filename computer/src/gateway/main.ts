@@ -10,7 +10,7 @@
 //   SP_TUNNEL=1     laptop mode: provision.ts creates/updates the app behind ngrok
 //   SP_HOST_TOKENS  comma list of accepted host tokens (plus tokens issued by /setup)
 //   GITHUB_ORG      required for /setup's GitHub App step: the organization that will own the app (no default)
-//   SP_PEOPLE       JSON array of SlackPerson, upserted into the people table on start
+//   SP_PEOPLE       JSON array of SlackPerson; on start the people table becomes exactly this list
 //   SP_SLACK_API_URL  dev only: Slack Web API base URL (a local fake), for every Slack call the gateway makes
 //
 // The sessions' model credentials (work 097 C9), sent to hosts as `models`;
@@ -86,7 +86,16 @@ const get = (name: string) => {
   }
 };
 
-for (const p of JSON.parse(env.SP_PEOPLE ?? '[]') as SlackPerson[]) store.putPerson(p);
+// SP_PEOPLE is the allowlist: when it lists people, anyone else in the table loses access.
+// Unset or empty, the table is left as it is.
+if (env.SP_PEOPLE) {
+  const listed = JSON.parse(env.SP_PEOPLE) as SlackPerson[];
+  if (!Array.isArray(listed) || !listed.length) log.warn('SP_PEOPLE is not a non-empty JSON array; people table left as it is');
+  else {
+    const gone = store.syncPeople(listed);
+    if (gone.length) log.info(`removed ${gone.length} person(s) no longer in SP_PEOPLE: ${gone.join(', ')}`);
+  }
+}
 
 // Secrets people give their sessions (work 046), encrypted with SP_STORE_KEY.
 const vault = new Vault(store.db);
