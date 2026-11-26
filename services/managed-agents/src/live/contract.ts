@@ -38,12 +38,39 @@ export interface HeadPush {
 export type Push = FeedPush | EventPush | DeltaPush | HeadPush;
 
 /**
- * The socket upgrade, which the edge passes to the stub `liveOf` names: `fetch` with the request's
- * own `Upgrade` and `Sec-WebSocket-Protocol` headers and the principal in `PRINCIPAL_HEADER`,
- * signed by `signPrincipal`.
+ * The socket upgrade, which the edge passes to the stub `liveOf` names as `fetch(liveRequest(...))`:
+ * a request built afresh, carrying the principal the edge verified in `PRINCIPAL_HEADER` and only
+ * the request's WebSocket headers. The hop is private (only a Worker bound to the class reaches the
+ * stub), so the header needs no signature; it is a header and not an RPC argument because an RPC
+ * reply cannot carry a WebSocket.
  */
 export interface LiveUpgrade {
   fetch(request: Request): Promise<Response>;
+}
+
+export const PRINCIPAL_HEADER = "x-oc-live-principal";
+const UPGRADE_HEADERS = ["upgrade", "connection", "sec-websocket-protocol", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions"];
+
+/** The edge's side: the upgrade it passes to `liveOf(org)`, with nothing of the client's but the WebSocket headers. */
+export function liveRequest(request: Request, p: Principal): Request {
+  const headers = new Headers();
+  for (const name of UPGRADE_HEADERS) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  headers.set(PRINCIPAL_HEADER, JSON.stringify(p));
+  return new Request(request.url, { method: "GET", headers });
+}
+
+/** Live's side: the principal of a `liveRequest`, null when it is missing or not one. */
+export function upgradePrincipal(request: Request): Principal | null {
+  try {
+    const p = JSON.parse(request.headers.get(PRINCIPAL_HEADER) ?? "null") as Principal | null;
+    if (!p || typeof p.org !== "string" || typeof p.subject !== "string" || !Array.isArray(p.audiences) || !Array.isArray(p.scopes)) return null;
+    return p;
+  } catch {
+    return null;
+  }
 }
 
 export const feedStream = "feed";
@@ -52,9 +79,9 @@ export const deltasStream = (sessionId: string): string => `deltas:${sessionId}`
 
 // ---------------------------------------------------------------- what Live calls
 
-/** `SessionLog.watch` (section 36.2). `machine` names the Computer that serves the session (its `Access.machine`); absent, the organization's first. */
+/** `SessionLog.watch` (section 36.2). `machine` names the Computer that serves the session (its `Access.machine`). */
 export interface SessionLogWatch {
-  watch(p: Principal, until: number): Promise<{ head: string; machine?: string } | null>;
+  watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
 }
 
 export interface ComputerWatch {
@@ -63,11 +90,16 @@ export interface ComputerWatch {
 }
 
 /**
- * The edge's credential check, a `POST` on the `EDGE` service binding with `Authorization: Bearer
- * <LIVE_KEY>`. `{ check: [credential ids] }` answers `{ revoked: [ids] }`; `{ token }` (an `auth`
- * frame's) answers `{ principal }`, null when the token does not verify.
+ * The edge's credential check: api-edge's `LiveCredentials` entrypoint, over the `EDGE` service
+ * binding. `revoked` answers the ids that no longer verify; `principal` an `auth` frame's token's
+ * principal, null when the token does not verify.
  */
-export const EDGE_CREDENTIALS_URL = "https://api-edge/internal/live/credentials";
+export interface LiveCredentials {
+  revoked(ids: string[]): Promise<string[]>;
+  principal(token: string): Promise<Principal | null>;
+}
+/** The most ids one `revoked` call takes. */
+export const LIVE_CHECK_MAX = 500;
 
 // ---------------------------------------------------------------- the socket (section 38)
 
@@ -117,51 +149,4 @@ export interface LiveAttachment {
   w: Record<string, 1 | 2 | 3>;
   /** When the edge last confirmed the credential, in seconds: kept here because Live's memory does not outlive hibernation. */
   v: number;
-}
-
-// ---------------------------------------------------------------- the signed principal
-
-export const PRINCIPAL_HEADER = "x-oc-live-principal";
-/** An upgrade is passed on at once; a header older than this is refused. */
-export const PRINCIPAL_MAX_AGE_MS = 60_000;
-
-const encoder = new TextEncoder();
-
-function base64url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64url(text: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-function hmacKey(key: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-}
-
-/** The edge's side: the value of `PRINCIPAL_HEADER` on the upgrade it passes to `liveOf(org)`. */
-export async function signPrincipal(key: string, principal: Principal, now = Date.now()): Promise<string> {
-  const payload = base64url(encoder.encode(JSON.stringify({ p: principal, t: now })));
-  const signature = await crypto.subtle.sign("HMAC", await hmacKey(key), encoder.encode(payload));
-  return `${payload}.${base64url(new Uint8Array(signature))}`;
-}
-
-export async function verifyPrincipal(key: string, header: string | null, now = Date.now()): Promise<Principal | null> {
-  if (!key || !header) return null;
-  const [payload, signature, ...rest] = header.split(".");
-  if (!payload || !signature || rest.length > 0) return null;
-  try {
-    if (!(await crypto.subtle.verify("HMAC", await hmacKey(key), fromBase64url(signature), encoder.encode(payload)))) return null;
-    const body = JSON.parse(new TextDecoder().decode(fromBase64url(payload))) as { p?: Principal; t?: number };
-    if (!body.p || typeof body.t !== "number" || Math.abs(now - body.t) > PRINCIPAL_MAX_AGE_MS) return null;
-    if (typeof body.p.org !== "string" || typeof body.p.subject !== "string" || !Array.isArray(body.p.audiences)) return null;
-    return body.p;
-  } catch {
-    return null;
-  }
 }

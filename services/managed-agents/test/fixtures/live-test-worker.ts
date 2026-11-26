@@ -1,9 +1,9 @@
 // Live with fakes of the two actors it calls. A fake keeps what it was told in memory; a test
 // sets its answers and reads its calls over RPC.
 
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
-import type { Principal } from "../../src/live/contract.js";
+import type { LiveCredentials, Principal } from "../../src/live/contract.js";
 
 export { LiveDurableObject } from "../../src/live/durable-object.js";
 
@@ -43,6 +43,32 @@ export class FakeComputer extends DurableObject {
 
   async calls(): Promise<{ call: "watch" | "block"; sessionId: string; blockId?: string }[]> {
     return this.seen;
+  }
+}
+
+/**
+ * api-edge's `LiveCredentials` entrypoint, faked: the credential `cred_revoked` is revoked, the
+ * token `renewed` verifies as the same principal with a later expiry, `other` as another subject.
+ */
+export class FakeEdge extends WorkerEntrypoint implements LiveCredentials {
+  async revoked(ids: string[]): Promise<string[]> {
+    return ids.filter((id) => id === "cred_revoked");
+  }
+
+  async principal(token: string): Promise<Principal | null> {
+    const principal = (subject: string): Principal => ({
+      org: "org_a",
+      subject,
+      kind: "member",
+      via: "app",
+      scopes: ["sessions:read", "work:read"],
+      audiences: ["org"],
+      admin: false,
+      credential: { id: "cred_renewed", expiresAt: null },
+    });
+    if (token === "renewed") return principal("user_1");
+    if (token === "other") return principal("user_2");
+    return null;
   }
 }
 

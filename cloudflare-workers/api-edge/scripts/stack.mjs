@@ -15,8 +15,8 @@
 //      OC_STACK_AUTUMN_WEBHOOK_SECRET (optional, Autumn sandbox), OC_STACK_HOME (default ~/.oc-stacks).
 //
 // Reads/writes $OC_STACK_HOME/<name>/stack.json and secrets.json shared with
-// the blue script (OC_MANAGED_AGENTS_SECRET, OC_MANAGED_CRED_HMAC_SECRET,
-// BLUE_USAGE_HMAC_SECRET and LIVE_KEY must match on both sides). `seed-key` writes the
+// the blue script (OC_MANAGED_AGENTS_SECRET, OC_MANAGED_CRED_HMAC_SECRET
+// and BLUE_USAGE_HMAC_SECRET must match on both sides). `seed-key` writes the
 // CLI API key to $OC_STACK_HOME/<name>/api-key (mode 0600) — never to stdout.
 // `up` registers <apiEdgeUrl>/auth/callback as a redirect URI on the staging
 // WorkOS app (Management API) and `destroy` removes it. `add-member` pre-creates
@@ -147,7 +147,6 @@ async function up() {
     CF_ADMIN_SECRET: secrets.CF_ADMIN_SECRET,
     SECRET_ENCRYPTION_KEY: secrets.SECRET_ENCRYPTION_KEY,
     EVENT_SECRET: secrets.EVENT_SECRET,
-    LIVE_KEY: secrets.LIVE_KEY,
   });
 
   stack.apiEdgeDeployedAt = new Date().toISOString();
@@ -573,8 +572,6 @@ function loadSecrets() {
     "CF_ADMIN_SECRET",
     "SECRET_ENCRYPTION_KEY",
     "EVENT_SECRET",
-    // Live's credential check (POST /internal/live/credentials); shared with the blue script.
-    "LIVE_KEY",
   ]) {
     secrets[key] ??= randomBytes(32).toString("hex");
   }

@@ -240,7 +240,7 @@ export interface SessionLogRpcAdded {
   /** The outcome of the entry `accept` took under this id; null when the inbox holds none. For the caller that accepted it. */
   entry(id: string): Promise<EntryOutcome | null>;
   /** The events cursor of the log's end; null when `p` may not read. */
-  watch(p: Principal, until: number): Promise<{ head: string } | null>;
+  watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
   destroy(): Promise<void>;
 }
 

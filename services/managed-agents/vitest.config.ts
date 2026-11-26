@@ -5,7 +5,6 @@ import { defineConfig } from "vitest/config";
 
 import { fakeWorkerdRuntime } from "./test/fixtures/fake-workerd-runtime.mjs";
 import { fakeDeliveryOutbound } from "./test/fixtures/delivery-fakes.mjs";
-import { fakeLiveEdge } from "./test/fixtures/live-fakes.mjs";
 import { fakeSlackOutbound } from "./test/fixtures/slack-fakes.mjs";
 import { fakeComputerOutbound, fakeComputerPlatform } from "./test/fixtures/computer-fakes.mjs";
 import { artifactBundle, mockModel } from "./test/fixtures/memory-integrated-fixture.mjs";
@@ -36,12 +35,7 @@ export default defineConfig({
     projects: [
       {
         // Tracks and threads: Live alone, with fakes of SessionLog, Computer and the edge.
-        plugins: [
-          cloudflareTest({
-            wrangler: { configPath: "./wrangler.live-test.jsonc" },
-            miniflare: { serviceBindings: { EDGE: fakeLiveEdge } },
-          }),
-        ],
+        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.live-test.jsonc" } })],
         test: { name: "live", include: ["test/live.test.ts"] },
       },
       {
