@@ -4,7 +4,12 @@
 import type { Principal } from "../../../auth/principal.js";
 import type { Origin } from "../../../api-objects/objects.js";
 import { isPerson, ownsSession, ownsTrack, holdsTrack, isOwnSession, parse, readSession, readTrack, seesTrack, summaryOf, type TrackRec, type Tx } from "../tx.js";
-import { acceptOpenProposals, addTrackAgent, byFor, Changes, firstMachine, isSid, isStr, isTid, markDone, optStr, placesOf, removeSession } from "./common.js";
+import { byFor, isSid, isStr, isTid, optStr } from "./args.js";
+import { Changes } from "./changes.js";
+import { acceptOpenProposals, markDone } from "./done.js";
+import { placesOf } from "./places.js";
+import { removeSession } from "./remove-session.js";
+import { addTrackAgent, firstMachine } from "./track-agent.js";
 import { applied, refuse, type MutationFn, type MutationRefusal } from "./outcome.js";
 import type { MutationName } from "./table.js";
 import { deleteThread, threadOf } from "./thread.js";

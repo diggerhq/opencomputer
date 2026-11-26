@@ -1,8 +1,8 @@
-// The thread mutations of spec 39: place, done, reopen, keep, ready, attention, writers, delete.
-// (`thread.rename` is in index.ts.) Authorization is 19.2's table; a row the caller may not see or
+// The thread mutations of spec 39: rename, place, done, reopen, keep, ready, attention, writers,
+// delete. Authorization is 19.2's table; a row the caller may not see or
 // change is `not_found`.
 
-import type { Principal } from "../../../auth/principal.js";
+import { byOf, type Principal } from "../../../auth/principal.js";
 import {
   agentArranges,
   isMember,
@@ -11,6 +11,7 @@ import {
   ownsSession,
   ownsTrack,
   holdsTrack,
+  parse,
   readPlace,
   readSession,
   readTrack,
@@ -20,11 +21,27 @@ import {
   type SessionRec,
   type Tx,
 } from "../tx.js";
-import { byFor, Changes, isSid, isStr, isTid, markDone, optStr, ready, removeSession, unread } from "./common.js";
+import { byFor, isSid, isStr, isTid, optStr } from "./args.js";
+import { Changes } from "./changes.js";
+import { markDone } from "./done.js";
+import { removeSession } from "./remove-session.js";
 import { applied, refuse, type MutationFn, type MutationRefusal } from "./outcome.js";
 import type { MutationName } from "./table.js";
 
 type Thread = { s: SessionRec; place: PlaceRec };
+
+/** Unread for its owner: the agent wrote after the owner's read mark (spec 22.1, "New"). */
+function unread(tx: Tx, s: SessionRec): boolean {
+  const seq = tx.sql.exec<{ read_seq: number }>("SELECT read_seq FROM read WHERE member = ? AND session_id = ?", s.owner, s.id)[0]?.read_seq ?? 0;
+  return (summaryOf(s).lastAgentSeq ?? 0) > seq;
+}
+
+/** Ready for its owner: `ready_seq` past the owner's read mark, or an open proposal on it (spec 22.1). */
+function ready(tx: Tx, s: SessionRec, place: PlaceRec | null): boolean {
+  const seq = tx.sql.exec<{ read_seq: number }>("SELECT read_seq FROM read WHERE member = ? AND session_id = ?", s.owner, s.id)[0]?.read_seq ?? 0;
+  if (place?.ready_seq !== null && place?.ready_seq !== undefined && place.ready_seq > seq) return true;
+  return tx.sql.exec("SELECT 1 FROM proposal WHERE target = ? AND state = 'open'", s.id).length > 0;
+}
 
 /** The thread `sid` names, if `p` may see it; a track's agent session is not a thread. */
 export function threadOf(tx: Tx, p: Principal, sid: unknown): Thread | MutationRefusal {
@@ -186,7 +203,38 @@ const threadDelete: MutationFn = (tx, p, args) => {
   return applied();
 };
 
+/** `thread.rename { sid, title }`: sets `title`, `title_by`; the old title joins `former_titles`. Inverse: the old two. */
+const threadRename: MutationFn = (tx, p, args) => {
+  const { sid, title } = args;
+  if (typeof sid !== "string" || typeof title !== "string" || title.trim() === "" || title.length > 200) return refuse("invalid_request", "title");
+  const session = readSession(tx.sql, sid);
+  if (!session || session.role === "track" || !seesSession(tx.sql, p, session)) return refuse("not_found");
+  if (p.kind === "agent") {
+    if (!agentArranges(tx.sql, p, readPlace(tx.sql, sid))) return refuse("not_found");
+    if (isPerson(session.title_by)) return refuse("refused", "user_set");
+  } else if (p.kind !== "platform" && !ownsSession(p, session)) return refuse("not_found");
+
+  const by = byOf(p);
+  const next = title.trim();
+  const former = parse<string[]>(session.former_titles, []);
+  if (session.title !== null) former.push(session.title);
+  tx.sql.exec("UPDATE session SET title = ?, title_by = ?, former_titles = ? WHERE id = ?", next, by, JSON.stringify(former.slice(-20)), sid);
+  tx.stamp("session", sid);
+  const op = tx.op({
+    by,
+    name: "thread.rename",
+    args: { sid, title: next },
+    inverse: { title: session.title, titleBy: session.title_by },
+    fields: { title: next, title_by: by },
+    sessionId: sid,
+    trackId: readPlace(tx.sql, sid)?.track_id ?? null,
+    audience: session.audience,
+  });
+  return applied({ op });
+};
+
 export const THREAD_MUTATIONS = {
+  "thread.rename": threadRename,
   "thread.place": threadPlace,
   "thread.done": threadDone,
   "thread.reopen": threadReopen,

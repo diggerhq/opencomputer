@@ -8,7 +8,8 @@
 
 import { isMember, parse, readSession, readTrack, type Tx } from "../tx.js";
 import type { Principal } from "../../../auth/principal.js";
-import { byFor, Changes, type OpFields, type OpInverse, type Table, type Values } from "./common.js";
+import { byFor } from "./args.js";
+import { Changes, type OpFields, type OpInverse, type Table, type Values } from "./changes.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";
 import type { MutationName } from "./table.js";
 import { deleteThread } from "./thread.js";

@@ -8,7 +8,8 @@
 import type { Principal } from "../../../auth/principal.js";
 import { crockfordId } from "../../../ids/crockford.js";
 import { holdsTrack, isMember, isPerson, ownsTrack, parse, readSession, readTrack, seesSession, seesTrack, type Tx } from "../tx.js";
-import { anchorOf, byFor, isBy, isSid, isStr, isTid } from "./common.js";
+import { anchorOf } from "./anchor.js";
+import { byFor, isBy, isSid, isStr, isTid } from "./args.js";
 import { applied, refuse, refuseKeeping, type MutationFn } from "./outcome.js";
 import type { MutationName } from "./table.js";
 

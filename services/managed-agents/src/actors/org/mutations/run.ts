@@ -13,12 +13,14 @@
 // The envelope (the `Idempotency-Key`, the publish) is `Org.mutate`'s, not a mutation's.
 //
 // Files: thread.ts, track.ts (40.7), doc.ts (doc.save, read.set, pref.set), result.ts, proposal.ts,
-// undo.ts; table.ts the names, routes and argument shapes clients send by; common.ts holds the argument checks and `Changes`, which writes field changes with their
-// effects and makes every op's `fields` and `inverse` (undo.ts replays them); outcome.ts the shapes.
+// undo.ts; table.ts the names, routes and argument shapes clients send by; outcome.ts the shapes.
+// Shared by them: args.ts (argument checks, `byFor`), changes.ts (`Changes`, which writes field
+// changes with their effects and makes every op's `fields` and `inverse`; undo.ts replays them),
+// done.ts, places.ts, anchor.ts, remove-session.ts, track-agent.ts.
 
-import { byOf, type Principal } from "../../../auth/principal.js";
-import { agentArranges, isPerson, ownsSession, parse, readPlace, readSession, seesSession, type Tx } from "../tx.js";
-import { applied, keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
+import type { Principal } from "../../../auth/principal.js";
+import type { Tx } from "../tx.js";
+import { keeps, refuse, type MutationFn, type MutationOutcome } from "./outcome.js";
 import { THREAD_MUTATIONS } from "./thread.js";
 import { TRACK_MUTATIONS } from "./track.js";
 import { DOC_MUTATIONS } from "./doc.js";
@@ -29,39 +31,8 @@ import type { MutationName } from "./table.js";
 
 export { applied, refuse, refuseKeeping, type MutationFn, type MutationOutcome, type MutationRefusal } from "./outcome.js";
 
-/** `thread.rename { sid, title }`: sets `title`, `title_by`; the old title joins `former_titles`. Inverse: the old two. */
-const threadRename: MutationFn = (tx, p, args) => {
-  const { sid, title } = args;
-  if (typeof sid !== "string" || typeof title !== "string" || title.trim() === "" || title.length > 200) return refuse("invalid_request", "title");
-  const session = readSession(tx.sql, sid);
-  if (!session || session.role === "track" || !seesSession(tx.sql, p, session)) return refuse("not_found");
-  if (p.kind === "agent") {
-    if (!agentArranges(tx.sql, p, readPlace(tx.sql, sid))) return refuse("not_found");
-    if (isPerson(session.title_by)) return refuse("refused", "user_set");
-  } else if (p.kind !== "platform" && !ownsSession(p, session)) return refuse("not_found");
-
-  const by = byOf(p);
-  const next = title.trim();
-  const former = parse<string[]>(session.former_titles, []);
-  if (session.title !== null) former.push(session.title);
-  tx.sql.exec("UPDATE session SET title = ?, title_by = ?, former_titles = ? WHERE id = ?", next, by, JSON.stringify(former.slice(-20)), sid);
-  tx.stamp("session", sid);
-  const op = tx.op({
-    by,
-    name: "thread.rename",
-    args: { sid, title: next },
-    inverse: { title: session.title, titleBy: session.title_by },
-    fields: { title: next, title_by: by },
-    sessionId: sid,
-    trackId: readPlace(tx.sql, sid)?.track_id ?? null,
-    audience: session.audience,
-  });
-  return applied({ op });
-};
-
 /** One per name in the table (table.ts). */
 export const MUTATIONS: Record<MutationName, MutationFn> = {
-  "thread.rename": threadRename,
   ...THREAD_MUTATIONS,
   ...TRACK_MUTATIONS,
   ...DOC_MUTATIONS,

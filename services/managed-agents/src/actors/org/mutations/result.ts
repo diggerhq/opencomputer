@@ -5,7 +5,7 @@ import { Validator, type Schema } from "@cfworker/json-schema";
 import reviewSchema from "../review.v1.json" with { type: "json" };
 import { isOwnSession, readSession, type Tx } from "../tx.js";
 import type { Principal } from "../../../auth/principal.js";
-import { byFor, isSid, isStr, optStr } from "./common.js";
+import { byFor, isSid, isStr, optStr } from "./args.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";
 import type { MutationName } from "./table.js";
 
