@@ -2,7 +2,7 @@
 // occurrences and the list reads. Mutations are in mutations.ts.
 
 import { checksum } from "../sum.js";
-import type { DocRow, FeedFrame, MutationError, PlaceRow, ResultRow, Row, RowKind, RowOf, SessionRow, TrackRow } from "../types.js";
+import type { DocRow, FeedFrame, PlaceRow, ResultRow, Row, RowKind, RowOf, SessionRow, TrackRow } from "../types.js";
 import type { Review } from "../review.js";
 import { ROW_KINDS } from "../types.js";
 import { clone, Refusal, type Ctx } from "./ctx.js";
@@ -31,7 +31,6 @@ export interface Published {
   to: number;
   rows: Row[];
   gone: Gone[];
-  mutations: { clientId: string; n: number }[];
 }
 
 export const MAX_ROWS = 2000;
@@ -48,7 +47,8 @@ export class Org {
   floor = 0;
   tables = new Map<RowKind, Map<string, Row>>();
   gone: Gone[] = [];
-  clients = new Map<string, { last: number; errors: MutationError[] }>();
+  /** A member's mutation replies by `Idempotency-Key`, with the request's hash. */
+  idem = new Map<string, { hash: string; reply: { status: number; body: unknown } }>();
   occurrences: Occurrence[] = [];
   reviews = new Map<string, Review>();
   docRevs = new Map<string, { trackId: string; rev: number; by: string; at: number; text: string }[]>();
@@ -59,7 +59,6 @@ export class Org {
   private depth = 0;
   private dirty = new Set<Row>();
   private removed: { kind: string; id: string; audience: string }[] = [];
-  private muts: { clientId: string; n: number }[] = [];
 
   constructor(private ctx: Ctx) {
     for (const k of ROW_KINDS) this.tables.set(k, new Map());
@@ -132,24 +131,17 @@ export class Org {
     });
   }
 
-  /** A member's mutation was applied or refused: its number rides the transaction's range. */
-  applied(clientId: string, n: number): void {
-    this.tx(() => void this.muts.push({ clientId, n }));
-  }
-
   private commit(): void {
-    if (!this.dirty.size && !this.removed.length && !this.muts.length) return;
+    if (!this.dirty.size && !this.removed.length) return;
     const from = this.version;
     const to = ++this.version;
     const rows = [...this.dirty];
     for (const r of rows) r.version = to;
     const gone = this.removed.map((g) => ({ ...g, version: to, at: this.ctx.now() }));
     this.gone.push(...gone);
-    const mutations = this.muts;
     this.dirty = new Set();
     this.removed = [];
-    this.muts = [];
-    this.ctx.live.publishFeed({ from, to, rows, gone, mutations });
+    this.ctx.live.publishFeed({ from, to, rows, gone });
   }
 
   // ---------- derived
@@ -247,7 +239,7 @@ export class Org {
   }
 
   /** Throws `Refusal('reset')` for a cursor below the floor or one that does not parse. */
-  async feed(q: { after: string | null; kinds: string[] | null; client: string | null; ack: number | null; sum: boolean }): Promise<FeedFrame> {
+  async feed(q: { after: string | null; kinds: string[] | null; sum: boolean }): Promise<FeedFrame> {
     const p = this.ctx.principal;
     let after: number | null = null;
     if (q.after != null) {
@@ -277,18 +269,11 @@ export class Org {
       more,
       rows: clone(rows),
       gone: after == null ? [] : this.gone.filter((g) => g.version > after! && g.version <= to && this.visible(g.audience)).map((g) => ({ kind: g.kind, id: g.id })),
+      version: to,
     };
     if (after == null) frame.counts = this.counts();
-    if (q.client) Object.assign(frame, this.clientState(q.client, q.ack));
     if (q.sum) frame.sum = await checksum(this.snapshotRows(null).filter((r) => r.version <= to));
     return frame;
-  }
-
-  clientState(clientId: string, ack: number | null = null): { lastMutation: number; errors: MutationError[] } {
-    const c = this.clients.get(clientId);
-    if (!c) return { lastMutation: 0, errors: [] };
-    if (ack != null) c.errors = c.errors.filter((e) => e.n > ack);
-    return { lastMutation: c.last, errors: clone(c.errors) };
   }
 
   // ---------- the other reads

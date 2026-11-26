@@ -117,7 +117,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         cred: principal.credential.id,
         exp: principal.credential.expiresAt ?? 0,
       },
-      cl: "",
+      h: false,
       f: false,
       w: {},
       v: Math.floor(Date.now() / 1000),
@@ -207,7 +207,6 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
       const a = this.sockets.get(socket);
       if (!a) continue;
       const sees = (row: { kind: string; audience: string }): boolean => a.p.aud.includes(row.audience) && (!a.k || a.k.includes(row.kind));
-      const mine = a.cl ? (push.mutations ?? []).filter((m) => m.clientId === a.cl) : [];
       // Every range goes to every subscriber, with no rows when none is theirs, so a filtered
       // reader can still tell a gap from nothing (section 18.4).
       const frame: ServerFrame = {
@@ -216,9 +215,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         to: push.to,
         rows: push.rows.filter(sees),
         gone: push.gone.filter(sees).map(({ kind, id }) => ({ kind, id })),
-        ...(mine.length > 0
-          ? { lastMutation: Math.max(...mine.map((m) => m.n)), errors: mine.flatMap((m) => m.errors ?? []) }
-          : {}),
+        version: push.version,
       };
       const text = JSON.stringify(frame);
       this.sendText(socket, encoder.encode(text).length <= MAX_FRAME_BYTES ? text : JSON.stringify({ t: "behind", stream: feedStream, head: push.to } satisfies ServerFrame));
@@ -249,10 +246,8 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     if (!a || !frame || typeof frame !== "object") return this.close(socket, CLOSE_PROTOCOL, "Not a frame.");
     if (frame.t === "ping") return this.send(socket, { t: "pong" });
     if (frame.t === "hello") {
-      if (frame.protocol !== LIVE_PROTOCOL || typeof frame.clientId !== "string" || !frame.clientId) {
-        return this.close(socket, CLOSE_PROTOCOL, `This is protocol ${LIVE_PROTOCOL}.`);
-      }
-      if (!this.save(socket, { ...a, cl: frame.clientId })) return this.close(socket, CLOSE_PROTOCOL, "The client id is too long.");
+      if (frame.protocol !== LIVE_PROTOCOL) return this.close(socket, CLOSE_PROTOCOL, `This is protocol ${LIVE_PROTOCOL}.`);
+      this.save(socket, { ...a, h: true });
       return this.send(socket, {
         t: "ready",
         connectionId: a.c,
@@ -263,7 +258,7 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         limits: { sessions: MAX_WATCHED_SESSIONS, frameBytes: MAX_FRAME_BYTES },
       });
     }
-    if (!a.cl) return this.close(socket, CLOSE_PROTOCOL, "The first frame is hello.");
+    if (!a.h) return this.close(socket, CLOSE_PROTOCOL, "The first frame is hello.");
     switch (frame.t) {
       case "sub":
         return this.subscribe(socket, a, frame);

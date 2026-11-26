@@ -10,7 +10,7 @@
 // - `args` is the request's body plus the ids of its path (`sid`, `tid`, …), unchecked.
 // - It answers `applied(value?)` or a refusal. `runMutation` undoes whatever a refused function
 //   wrote, so a mutation may call another through `runMutation` and pass its refusal on.
-// The envelope (the client's `n`, `idem`, the publish) is `Org.mutate`'s, not a mutation's.
+// The envelope (the `Idempotency-Key`, the publish) is `Org.mutate`'s, not a mutation's.
 //
 // Files: thread.ts, track.ts (40.7), doc.ts (doc.save, read.set, pref.set), result.ts, proposal.ts,
 // undo.ts; common.ts holds the argument checks and `Changes`, which writes field changes with their
