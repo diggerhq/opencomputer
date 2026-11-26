@@ -19,6 +19,7 @@ import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./api-model-route.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
+import { sessionCapNotice, sessionCapReached } from "./admission.js";
 import { DEFAULT_MODE, MODELS, capabilities, checkSettings } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import { sha256Hex } from "./crypto.js";
@@ -42,6 +43,8 @@ import { isSessionId, memberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
+/** Refused by the session cap (429): the Retry-After it suggests. */
+export const SESSION_CAP_RETRY_MS = 30_000;
 /** A write's answer from the host: 15 s, then 503. */
 export const HOST_CALL_TIMEOUT_MS = 15_000;
 /**
@@ -129,7 +132,7 @@ export const WRITE_METHODS = [
 ] as const;
 export type WriteMethod = (typeof WRITE_METHODS)[number];
 
-/** Writes that spend credits: admitted like a Slack message. */
+/** Writes that spend credits: admitted like a Slack message (credits, then a self-managed gateway's session cap). */
 const ADMITTED = new Set<string>(["turns.send", "sessions.compact", "sessions.resume"]);
 /** Answered 202 when they acted (the seq advanced), 200 when there was nothing to do. */
 const ACTS = new Set<string>(["sessions.interrupt", "sessions.suspend", "sessions.resume", "subagents.stop"]);
@@ -481,6 +484,10 @@ export class ComputerSessionsApi {
       const refused = await this.admission();
       if (refused) return refused;
     }
+    if (v.input !== undefined) {
+      const capped = this.sessionCap(row ? row.key : null);
+      if (capped) return capped;
+    }
     if (!this.v4Host()) return this.unavailable();
 
     if (!row) {
@@ -593,7 +600,7 @@ export class ComputerSessionsApi {
     const row = this.visible(caller, sessionId);
     if (!row) return notFound();
     if (ADMITTED.has(method)) {
-      const refused = await this.admission();
+      const refused = (await this.admission()) ?? this.sessionCap(row.key);
       if (refused) return refused;
     }
     if (!this.v4Host()) return this.unavailable();
@@ -861,6 +868,17 @@ export class ComputerSessionsApi {
     } catch {
       return { status: 503, error: { code: "unavailable", message: "Billing is unavailable; retry.", retryAfterMs: 2_000 } };
     }
+  }
+
+  /**
+   * The Community Edition's session cap (admission.ts `sessionCapReached`): 429 when work for session
+   * `key` (null: a new one) would start one session more than a self-managed gateway allows. Work for
+   * a session already running is never refused.
+   */
+  private sessionCap(key: string | null): ApiReply | null {
+    const limit = sessionCapReached(this.deps.env, this.deps.sql, key);
+    if (limit === null) return null;
+    return { status: 429, error: { code: "session_limit_reached", message: sessionCapNotice(limit), limit, retryAfterMs: SESSION_CAP_RETRY_MS } };
   }
 
   private unavailable(): ApiReply {

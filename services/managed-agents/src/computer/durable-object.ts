@@ -71,8 +71,13 @@ import {
   admitDelivery,
   billingWarningMessage,
   forgetCreditsNotice,
+  forgetSessionCapNotice,
   refusal,
   refuseForCredits,
+  refuseForSessionCap,
+  runningSessions,
+  sessionCapNotice,
+  sessionCapReached,
 } from "./admission.js";
 import { ComputerRuntimeBilling } from "./billing.js";
 import { PlatformComputerCloud } from "./cloud.js";
@@ -382,6 +387,9 @@ const DEFINITION_TIMEOUT_MS = 10_000;
 const KNOWLEDGE_TIMEOUT_MS = 2_000;
 /** How often a delivery may re-read the organization's repositories (work 052). */
 const DEFINITION_RECHECK_MS = 60_000;
+
+/** What the admission decided for a message (`admitWith`): admitted, or the refusal (also the ignored message's telemetry reason). */
+type Admitted = "admitted" | "no_credits" | "session_cap";
 
 type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover";
 
@@ -1023,7 +1031,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     const count = (query: string) => [...this.ctx.storage.sql.exec<{ n: number }>(query)][0]?.n ?? 0;
     return {
       // Work 084: a session whose subagents still run is working, even with its turn over.
-      busySessions: count("SELECT COUNT(*) AS n FROM sessions WHERE status IN ('starting', 'busy') OR subagents > 0"),
+      busySessions: runningSessions(this.ctx.storage.sql),
       pendingDispatches: count("SELECT COUNT(*) AS n FROM dispatches WHERE state IN ('pending', 'sent')"),
     };
   }
@@ -2384,16 +2392,16 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     // The credit gate, before anything is created or delivered (the working
     // status was usually started on accept; a refusal resets it).
     const ackKey = `${job.channelId}:${job.messageTs}`;
-    let admitted: boolean;
+    let admitted: Admitted;
     try {
-      admitted = await this.admit(job.channelId, job.threadTs, { messageTs: job.messageTs, t });
+      admitted = await this.telemetry.within(t, (t) => this.admitWith(t, job.channelId, job.threadTs, job.messageTs));
     } finally {
       this.acks.delete(ackKey);
     }
-    if (!admitted) {
-      // refuseForCredits reset the status; a 👀 comes off here.
+    if (admitted !== "admitted") {
+      // refuseForCredits (or refuseForSessionCap) reset the status; a 👀 comes off here.
       await this.withdrawAcknowledgement(job, sequence, { statusReset: true });
-      return t.emit("message.ignored", { data: { reason: "no_credits" } });
+      return t.emit("message.ignored", { data: { reason: admitted } });
     }
     const addressed = session !== undefined;
     if (!session) {
@@ -2486,15 +2494,22 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   }
 
   /**
-   * The autonomous sessions' credit admission (admission.ts). Refused: the
-   * thread is told once and nothing is delivered. Billing unavailable:
-   * throws, and the Slack queue retries the message.
+   * The autonomous sessions' credit admission (admission.ts), then, on a
+   * self-managed gateway, the session cap for this thread's session.
+   * Refused: the thread is told once and nothing is delivered. Billing
+   * unavailable: throws, and the Slack queue retries the message.
    */
   private async admit(channelId: string, threadTs: string, o: { messageTs?: string; t?: GatewayTelemetry } = {}): Promise<boolean> {
-    return this.telemetry.within(o.t, (t) => this.admitWith(t, channelId, threadTs, o.messageTs));
+    return (await this.telemetry.within(o.t, (t) => this.admitWith(t, channelId, threadTs, o.messageTs))) === "admitted";
   }
 
-  private async admitWith(t: GatewayTelemetry, channelId: string, threadTs: string, messageTs: string | undefined): Promise<boolean> {
+  /** The session cap's refusal for work in thread `channelId`/`threadTs` (admission.ts `sessionCapReached`): its limit, or null. */
+  private sessionCapFor(channelId: string, threadTs: string): number | null {
+    const teamId = this.setting("slackTeamId");
+    return sessionCapReached(this.env, this.ctx.storage.sql, teamId ? sessionKey(teamId, channelId, threadTs) : null);
+  }
+
+  private async admitWith(t: GatewayTelemetry, channelId: string, threadTs: string, messageTs: string | undefined): Promise<Admitted> {
     const accountId = this.accountId();
     const stored = this.storedAdmission();
     const age = stored ? Date.now() - stored.checkedAt : Infinity;
@@ -2514,7 +2529,18 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       forgetCreditsNotice(this.ctx.storage.sql, channelId, threadTs);
       const warning = cached ? stored?.warning : admission.warning;
       if (warning) this.warnOfBilling(t, warning, channelId, threadTs);
-      return true;
+      // The cap is read last, after billing's await. A session admitted here counts once its runner
+      // reports `starting`, so messages for new threads landing in that window can pass it together.
+      const limit = this.sessionCapFor(channelId, threadTs);
+      if (limit === null) {
+        forgetSessionCapNotice(this.ctx.storage.sql, channelId, threadTs);
+        return "admitted";
+      }
+      console.log(JSON.stringify({ level: "info", event: "computer.delivery_refused_session_cap", accountId, limit }));
+      const pending = messageTs ? this.acks.get(`${channelId}:${messageTs}`) : undefined;
+      if (pending) await pending.catch(() => null);
+      await refuseForSessionCap({ sql: this.ctx.storage.sql, slack: (method, body) => this.slack(method, body), channelId, threadTs, limit });
+      return "session_cap";
     }
     console.log(JSON.stringify({ level: "info", event: "computer.delivery_refused_credits", accountId }));
     // The working status started on accept lands before the reset, never after it.
@@ -2530,7 +2556,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       haltReason: admission.haltReason ?? null,
     });
     if (shown) paywallShown(t, admission.haltReason ?? null);
-    return false;
+    return "no_credits";
   }
 
   /**
@@ -3474,6 +3500,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       throw new Error("a task and a brief are required");
     }
     if (req.tier !== undefined && !SPAWN_TIERS.has(req.tier)) throw new Error(`unknown tier ${String(req.tier)}: use smart, fast or default`);
+    // A new session: the cap counts it whatever its parent is doing.
+    const limit = sessionCapReached(this.env, this.ctx.storage.sql, null);
+    if (limit !== null) throw new Error(sessionCapNotice(limit));
     if (!(await this.admit(parent.channelId, parent.threadTs))) throw new Error("out of credits");
     const ownerId = parent.ownerId;
     const task = req.task.trim();
