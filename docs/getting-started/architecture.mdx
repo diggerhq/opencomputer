@@ -21,6 +21,8 @@ The manager on your VM. It connects to the gateway and picks up new work. For ev
 
 One coding agent working on one thread. Each session in the diagram is a runner. It posts its replies straight to Slack, so you see the agent's work as it happens.
 
+On the VM each runner runs in its own rootless Podman container, with its own workspace, home and secrets, and outbound network only. See [What a session can reach](/slack/permission-modes#what-a-session-can-reach).
+
 ## Where state lives
 
 A session's state is written to the VM's durable disk first, then persisted to a durable git store. The disk keeps sessions fast; the git store makes them portable.
