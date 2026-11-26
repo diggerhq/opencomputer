@@ -187,6 +187,30 @@ describe("Live: the feed", () => {
     expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", version: 1 }]);
   });
 
+  it("gives a key without work:read its member's session rows, and no Work kind of any audience (spec 34.3)", async () => {
+    const live = liveOf("org_key");
+    const key = member("org_key", { kind: "key", via: "api", scopes: ["sessions:read", "sessions:write"] });
+    const client = await connect("org_key", key);
+    client.send({ t: "sub", stream: "feed" });
+    await client.next("subd");
+    await live.publish("feed", {
+      from: "f1.1",
+      to: "f1.2",
+      rows: [
+        { kind: "session", id: "cs_mine", version: 2, audience: "member:user_1" },
+        { kind: "place", id: "cs_mine", version: 2, audience: "member:user_1" },
+        { kind: "track", id: "trk_1", version: 2, audience: "member:user_1" },
+        { kind: "session", id: "cs_theirs", version: 2, audience: "member:user_2" },
+        { kind: "session", id: "cs_org", version: 2, audience: "org" },
+      ],
+      gone: [{ kind: "session", id: "cs_moved", audience: "member:user_1" }, { kind: "track", id: "trk_2", audience: "member:user_1" }],
+      version: 2,
+    });
+    const frame = await client.next("feed");
+    expect(frame.rows).toEqual([{ kind: "session", id: "cs_mine", version: 2 }, { kind: "session", id: "cs_org", version: 2 }]);
+    expect(frame.gone).toEqual([{ kind: "session", id: "cs_moved" }]);
+  });
+
   it("tells subscribers they are behind when a range does not fit a frame", async () => {
     const live = liveOf("org_big");
     const client = await connect("org_big");

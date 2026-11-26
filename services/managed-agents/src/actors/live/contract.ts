@@ -140,6 +140,7 @@ export type ServerFrame =
 /** A socket's attachment (section 35.4): who it is and what it watches, never a position. */
 export interface LiveAttachment {
   c: string;
+  /** `read`: holds `work:read`, so reads the Work kinds; without it only CORE_KINDS, of every audience in `aud` (spec 34.3). */
   p: { org: string; subject: string; kind: Principal["kind"]; read: boolean; aud: string[]; cred: string; exp: number };
   /** `hello` arrived. */
   h: boolean;
