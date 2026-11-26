@@ -17,10 +17,8 @@
       { "name": "COMPUTERS", "class_name": "ComputerDurableObject", "script_name": "managed-agents" }
     ]
   },
-  // The credential check (LiveCredentials in src/live/contract.ts) is api-edge's entrypoint of that
-  // name. Bound when api-edge serves it; without it a socket ends at its credential's expiry or on
-  // `revoke`.
-  // "services": [{ "binding": "EDGE", "service": "<the api-edge Worker>", "entrypoint": "LiveCredentials" }],
+  // The credential check (LiveCredentials in src/live/contract.ts) is api-edge's entrypoint of that name.
+  "services": [{ "binding": "EDGE", "service": "opencomputer-edge-prod", "entrypoint": "LiveCredentials" }],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["LiveDurableObject"] }
   ],

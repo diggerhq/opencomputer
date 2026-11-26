@@ -234,8 +234,8 @@ export interface SessionsApiDeps {
   now?: () => number;
   /** A session's SessionLog (stubs.ts `logOf`). Absent: the `SESSION_LOG` binding. */
   log?: (sessionId: string) => SessionLogRpc & SessionLogRpcAdded;
-  /** The organization's Live (stubs.ts `liveOf`); null where it is not bound. */
-  live?: () => LiveRpc | null;
+  /** The organization's Live (stubs.ts `liveOf`). */
+  live: () => LiveRpc;
   /** `start`: the session's harness, the spec's or its owner's (model access's `harnessFor`). */
   chooseHarness?: (row: Pick<ApiRow, "key" | "ownerId" | "ownerUserId">, harness?: CalvinHarness) => void;
   /** The Slack user a member linked, for a Slack thread started by one. */
@@ -945,8 +945,8 @@ export class ComputerSessionsApi {
         return true;
       case "delta": {
         // Never acknowledged, never stored; dropped for a session with no runner row here (spec 36.3).
-        const live = Array.isArray(frame.deltas) && this.hasRow(frame.sessionId) ? this.deps.live?.() : null;
-        if (live) {
+        if (Array.isArray(frame.deltas) && this.hasRow(frame.sessionId)) {
+          const live = this.deps.live();
           const push = { epoch: frame.epoch, deltas: frame.deltas } as unknown as DeltaPush;
           this.deps.waitUntil(live.publish(`deltas:${frame.sessionId}`, push).then(() => undefined, () => undefined));
         }

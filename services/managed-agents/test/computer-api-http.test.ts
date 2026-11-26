@@ -450,20 +450,6 @@ describe("the session reads (spec 37.1)", () => {
     expect(log.events).toHaveBeenCalledTimes(4);
   });
 
-  it("the wait rule without Live polls the owner every second", async () => {
-    const log = {
-      events: vi.fn()
-        .mockResolvedValueOnce({ ok: true, events: [], lastSeq: 4, cursor: "e1.2.4" })
-        .mockResolvedValueOnce({ ok: true, events: [event(5)], lastSeq: 5, cursor: "e1.2.5" }),
-    };
-    const { call } = setup({ log });
-    const began = Date.now();
-    const r = await call("GET", `/sessions/${SID}/events?after=e1.2.4&waitMs=5000`);
-    expect(r.body.cursor).toBe("e1.2.5");
-    expect(Date.now() - began).toBeGreaterThanOrEqual(900);
-    expect(Date.now() - began).toBeLessThan(3_000);
-  });
-
   it("turns, asks and subagents read the log as the principal", async () => {
     const p = expect.objectContaining({ subject: MEMBER });
     const log = {

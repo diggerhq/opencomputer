@@ -109,8 +109,7 @@ export interface SessionLogEnv extends TelemetryEnv, ActorEnv {
 export interface SessionLogPeers {
   org(org: string): Pick<OrgRpc, "access" | "acceptSummary">;
   computer(machine: string): Pick<ComputerRpcAdded, "drain">;
-  /** Null where Live is not bound: nothing is published. */
-  live(org: string): Pick<LiveRpc, "publish"> | null;
+  live(org: string): Pick<LiveRpc, "publish">;
 }
 
 /** Where big event data lives outside the object (spec 17.9): the only R2 access of the log. */
@@ -566,7 +565,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     this.push = null;
     const org = this.meta.organizationId;
     if (!org || this.meta.watchedUntil <= Date.now()) return;
-    await this.peers.live(org)?.publish(`events:${this.sessionId()}`, frame);
+    await this.peers.live(org).publish(`events:${this.sessionId()}`, frame);
   }
 
   /** `Computer.drain`, owed until `delivered` leaves no entry waiting: a `waking` answer keeps it owed. */
@@ -1050,7 +1049,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
         this.meta = next;
       }
       // Spec 40.4: Live holds a lease on these events. Spilled data does not travel: `{ head }`, and the client reads.
-      if ((rows.length > 0 || newEpoch) && watchedUntil > now && this.peers.live(m.organizationId!)) {
+      if ((rows.length > 0 || newEpoch) && watchedUntil > now) {
         owed.add(this.db, { group: "live", key: "live:events", call: "live" });
         const inline = rows.every((r) => r.spill === null && r.blob === null);
         push = inline ? { from: cursor.encode("e", [m.logEpoch, m.ack]), to: cursor.encode("e", [logEpoch, ack]), events: rows.map((r) => r.event) } : null;

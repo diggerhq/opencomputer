@@ -26,5 +26,5 @@ export const logOf = (env: ActorEnv, sessionId: string) => stub<SessionLogRpc & 
 export const computerOf = (env: ActorEnv, machine: string) => stub<ComputerRpcAdded>(env.COMPUTERS, "COMPUTERS", machine);
 export const slackOf = (env: ActorEnv, org: string) => stub<SlackRpc>(env.SLACK, "SLACK", org);
 export const deliveryOf = (env: ActorEnv, org: string, kind: DeliveryKind) => stub<DeliveryRpc>(env.DELIVERY, "DELIVERY", `${org}:${kind}`);
-/** Live, or null where the script is not bound (a test, a deploy before it): a publish is then skipped. */
-export const liveOf = (env: ActorEnv, org: string): LiveRpc | null => (env.LIVE ? (env.LIVE.getByName(org) as unknown as LiveRpc) : null);
+/** The organization's Live, in the `opencomputer-live` script. */
+export const liveOf = (env: ActorEnv, org: string) => stub<LiveRpc>(env.LIVE, "LIVE", org);

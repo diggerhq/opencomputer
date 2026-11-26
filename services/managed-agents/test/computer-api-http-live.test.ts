@@ -54,18 +54,13 @@ describe("/live (spec 38)", () => {
     expect((await call("GET", "/live")).status).toBe(426);
   });
 
-  it("is 503 without Live", async () => {
-    expect((await setup({})("GET", "/live", { headers: { upgrade: "websocket" } })).status).toBe(503);
-  });
-
-  it("the edge's revoke reaches Live; 503 without it; only from the edge", async () => {
+  it("the edge's revoke reaches Live; only from the edge", async () => {
     const live = { revoke: vi.fn(async () => undefined) };
     const edge = { kind: "user", userId: "opencomputer-edge", accountId: ORG, organizationId: ORG } as RequestIdentity;
     const revoke = (env: unknown, identity: RequestIdentity, body: unknown) =>
       routeComputerDashboard(new Request("https://blue.test/v1/internal/live/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), env as never, identity, () => {});
     expect((await revoke({ LIVE: ns(live) }, edge, { org: ORG, credentialId: "key_1" }))?.status).toBe(204);
     expect(live.revoke).toHaveBeenCalledWith("key_1");
-    expect((await revoke({}, edge, { org: ORG, credentialId: "key_1" }))?.status).toBe(503);
     expect((await revoke({ LIVE: ns(live) }, edge, { org: "org_2", credentialId: "key_1" }))?.status).toBe(403);
     expect((await revoke({ LIVE: ns(live) }, member, { org: ORG, credentialId: "key_1" }))?.status).toBe(403);
     expect(live.revoke).toHaveBeenCalledTimes(1);

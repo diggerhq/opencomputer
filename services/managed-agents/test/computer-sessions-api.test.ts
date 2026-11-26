@@ -169,6 +169,7 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
     organizationId: () => ORG,
     host: () => (state.protocol === null ? undefined : {}),
     routeSession: options.routeSession,
+    live: () => ({ publish: async () => ({ head: "" }) }) as never,
     ...(options.secretsFor ? { secretsFor: options.secretsFor } : {}),
     send: (frame) => {
       if (state.protocol === null) return false;
