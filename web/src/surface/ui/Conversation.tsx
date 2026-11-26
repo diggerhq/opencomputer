@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Ask } from '@opencomputer/sdk/computer'
+import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -23,8 +24,12 @@ import { ACTS, BLOCK, I, Mk, Rich } from './bits'
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
 
 const PAGE = 200
-// Where the reader was in each conversation, for when they return (R44).
-const places = new Map<string, { top: number; end: boolean }>()
+// Where the reader was in each conversation, for when they return (R44), with
+// the sizes its items were measured at so the place is found again exactly.
+const places = new Map<
+  string,
+  { top: number; end: boolean; sizes?: VirtualItem[] }
+>()
 
 const WARN = 'text-status-pending'
 const ASIDE = 'text-muted-foreground text-[12.5px]'
@@ -410,7 +415,28 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
 
 // ---- the scroll area ----
 
+// A day's first item, or the item itself: what the virtual list draws.
+type Row = { key: string; day?: string; item?: Item }
+
+function DayLine({ at }: { at: string }) {
+  return (
+    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-[11.5px] font-medium after:h-px after:flex-1 after:content-['']">
+      {dayLabel(at)}
+    </div>
+  )
+}
+
 export function Conversation(props: {
+  sid: string
+  trackId?: string
+  children?: ReactNode
+  id?: string
+}) {
+  // One list per conversation: its measured sizes are its own.
+  return <Transcript key={props.sid} {...props} />
+}
+
+function Transcript(props: {
   sid: string
   trackId?: string
   children?: ReactNode
@@ -426,15 +452,36 @@ export function Conversation(props: {
   // Where this pane last put itself. Its scroll event arrives a frame later,
   // when a pane that is changing width has grown again: it is not the reader's.
   const own = useRef(-1)
+
+  const [n, setN] = useState(PAGE)
+  const shown = items.length > n ? items.slice(items.length - n) : items
+
+  const rows: Row[] = []
+  let day = ''
+  shown.forEach((item, i) => {
+    const d = dayOf(item.at)
+    if (i > 0 && d !== day) rows.push({ key: `day-${item.key}`, day: item.at })
+    day = d
+    rows.push({ key: item.key, item })
+  })
+
+  const v = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => ref.current,
+    estimateSize: (i) => (rows[i].day ? 20 : 72),
+    getItemKey: (i) => rows[i].key,
+    // The list starts below the pane's padding and "Show earlier", which is
+    // not counted: the rows drawn either side of the view cover it.
+    overscan: 6,
+    initialMeasurementsCache: places.get(sid)?.sizes,
+  })
+  const remember = (el: HTMLDivElement, end: boolean) =>
+    places.set(sid, { top: el.scrollTop, end, sizes: v.measurementsCache })
   const toEnd = (el: HTMLDivElement) => {
     el.scrollTop = el.scrollHeight
     own.current = el.scrollTop
-    places.set(sid, { top: el.scrollTop, end: true })
+    remember(el, true)
   }
-
-  const [more, setMore] = useState({ sid, n: PAGE })
-  const n = more.sid === sid ? more.n : PAGE
-  const shown = items.length > n ? items.slice(items.length - n) : items
 
   // Opening a conversation: where the reader left it, else its end.
   useLayoutEffect(() => {
@@ -445,10 +492,11 @@ export function Conversation(props: {
     if (was && !was.end) el.scrollTop = was.top
     else toEnd(el)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid])
+  }, [])
 
   // After every change: follow the end only if the reader is at it. Safari
-  // has no scroll anchoring, so content revealed above is compensated here.
+  // has no scroll anchoring, so content revealed above is compensated here;
+  // items measured above the view are compensated by the virtualizer.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -478,32 +526,15 @@ export function Conversation(props: {
     ro.observe(el)
     return () => ro.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid])
+  }, [])
 
   const onScroll = () => {
     const el = ref.current
     if (!el || el.scrollTop === own.current) return
     const end = el.scrollHeight - el.scrollTop - el.clientHeight < 24
     pinned.current = end
-    places.set(sid, { top: el.scrollTop, end })
+    remember(el, end)
   }
-
-  const out: ReactNode[] = []
-  let day = ''
-  shown.forEach((item, i) => {
-    const d = dayOf(item.at)
-    if (i > 0 && d !== day)
-      out.push(
-        <div
-          className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-[11.5px] font-medium after:h-px after:flex-1 after:content-['']"
-          key={`day-${item.key}`}
-        >
-          {dayLabel(item.at)}
-        </div>,
-      )
-    day = d
-    out.push(<ItemView key={item.key} item={item} />)
-  })
 
   return (
     <div
@@ -520,13 +551,40 @@ export function Conversation(props: {
           onClick={() => {
             const el = ref.current
             if (el) hold.current = el.scrollHeight - el.scrollTop
-            setMore({ sid, n: n + PAGE })
+            setN(n + PAGE)
           }}
         >
           Show earlier
         </Button>
       )}
-      {out}
+      {rows.length > 0 && (
+        <div
+          className="relative flex-none"
+          style={{ height: v.getTotalSize() }}
+        >
+          {v.getVirtualItems().map((it) => {
+            const row = rows[it.index]
+            return (
+              <div
+                key={it.key}
+                ref={v.measureElement}
+                data-index={it.index}
+                className={cn(
+                  'absolute top-0 left-0 flex w-full flex-col',
+                  it.index > 0 && 'pt-4',
+                )}
+                style={{ transform: `translateY(${it.start}px)` }}
+              >
+                {row.item ? (
+                  <ItemView item={row.item} />
+                ) : (
+                  <DayLine at={row.day!} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
       {open?.text ? (
         <div className="max-w-180">
           <Rich text={open.text} />
