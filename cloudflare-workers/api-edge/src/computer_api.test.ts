@@ -495,7 +495,6 @@ describe("computer API proxy to blue", () => {
       aud: "managedagents",
       org_id: ORG,
       user_id: USER,
-      role: "admin",
       key_id: `key-${keySeq}`,
       key_hash: await hashAPIKey(key),
       key_name: "laptop",
@@ -542,7 +541,9 @@ describe("computer API proxy to blue", () => {
     expect(url).toBe(`${BLUE}/v1/computer/sessions`);
     expect(headers.get("x-opencomputer-surface")).toBe("api");
     const payload = claims(headers.get("x-opencomputer-agent-token") ?? "");
-    expect(payload).toMatchObject({ org_id: ORG, user_id: USER, role: "admin" });
+    expect(payload).toMatchObject({ org_id: ORG, user_id: USER, oc_principal: { kind: "member", admin: true } });
+    // Who asks is the principal alone: no older role, principal or session claims.
+    for (const claim of ["role", "principal", "session_key"]) expect(payload[claim]).toBeUndefined();
     for (const claim of Object.keys(payload)) {
       expect(claim.startsWith("key_")).toBe(false);
     }
@@ -638,6 +639,8 @@ describe("computer API proxy to blue", () => {
     const { url, headers } = sent(fetchMock);
     expect(url).toBe(`${BLUE}/v1/computer/sessions`);
     expect(headers.get("x-opencomputer-surface")).toBeNull();
+    // The dashboard mount names the member's principal too (the Slack install and unlink need it).
+    expect(claims(headers.get("x-opencomputer-agent-token") ?? "").oc_principal).toMatchObject({ org: ORG, kind: "member", via: "dashboard" });
   });
 });
 

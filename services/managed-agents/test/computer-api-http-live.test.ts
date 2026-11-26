@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import { routeComputerDashboard } from "../src/computer/routes.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
+import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
 import { PRINCIPAL_HEADER, upgradePrincipal } from "../src/live/contract.js";
 
 const ORG = "org_1";
@@ -14,8 +15,8 @@ const SID = "cs_0123456789abcdef";
 const RID = "res_0123456789abcdef";
 const WH = "wh_0123456789abcdef";
 
-const member = { kind: "user", userId: USER, accountId: ORG, organizationId: ORG, role: "member" } as RequestIdentity;
-const agent = { ...member, principal: "computer", sessionKey: SID, apiKey: { id: "key_2", hash: "b".repeat(64), name: "s", kind: "user", scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null } } as RequestIdentity;
+const member = memberIdentity(ORG, USER);
+const agent = agentIdentity(ORG, SID, ["sessions:read", "sessions:write"]);
 
 function setup(env: Record<string, unknown>) {
   const stub: ComputerApiStub = { computerApi: vi.fn() };
@@ -100,7 +101,7 @@ describe("PATCH and aside (spec 37.2)", () => {
     expect((await call("DELETE", `/sessions/${SID}/aside`)).status).toBe(200);
     expect(org.patchSession).toHaveBeenLastCalledWith(expect.anything(), SID, { aside: null });
     expect((await call("PUT", `/sessions/${SID}/aside`, { body: { ref: "a b" } })).status).toBe(400);
-    const reader = { ...member, apiKey: { id: "key_1", hash: "a".repeat(64), name: "r", kind: "user", scopes: ["sessions:read"], expiresAt: null, createdAt: null } } as RequestIdentity;
+    const reader = keyIdentity(ORG, USER, ["sessions:read"]);
     expect((await call("PUT", `/sessions/${SID}/aside`, { body: { ref: "x" }, identity: reader })).status).toBe(403);
     expect(org.patchSession).toHaveBeenCalledTimes(2);
   });

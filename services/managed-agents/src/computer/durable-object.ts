@@ -111,7 +111,7 @@ import { POOL_OBJECT, isPoolId } from "./names.js";
 import { ComputerPool, type PoolClaim, type PoolProbeResult, type PoolSlot, type PoolSlotStatus, SLOT_PROBE_TIMEOUT_MS, poolSize } from "./pool.js";
 import { ComputerPreviews } from "./previews.js";
 import { ComputerKeys, type SyncedKey } from "./keys.js";
-import { type ApiCaller, type ApiOp, type ApiReply, ComputerSessionsApi } from "./sessions-api.js";
+import { type ApiOp, type ApiRequest, type ApiReply, ComputerSessionsApi } from "./sessions-api.js";
 import type { PreviewComputerState } from "../previews/worker.js";
 import {
   CALVIN_PROTOCOL_VERSION,
@@ -1833,7 +1833,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   // ------------------------------------------------------------------ session API (work 084)
 
   /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
-  async computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
+  async computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
     // Organization secrets (work 095) answer whether or not the sessions API is enabled for the organization.
     if (op.op === "secrets.session.put") {

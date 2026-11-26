@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/actor/principal.js";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
-import { principalClaim, principalOf } from "../src/edge/computer-principal.js";
+import { principalClaim } from "../src/edge/computer-principal.js";
 
 const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
@@ -15,10 +15,27 @@ const MEMBER = "usr_01jabcdefghjkmnpqrstvwxyz0";
 const SID = "cs_0123456789abcdef";
 const OTHER = "cs_fedcba9876543210";
 
-const member = { kind: "user", userId: USER, accountId: ORG, organizationId: ORG, role: "member" } as RequestIdentity;
+const memberP: Principal = {
+  org: ORG, subject: MEMBER, kind: "member", via: "dashboard",
+  scopes: ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"],
+  audiences: ["org", `member:${MEMBER}`], admin: false, credential: { id: `login:${USER}`, expiresAt: null },
+};
+const member = { kind: "user", userId: USER, accountId: ORG, organizationId: ORG, ocPrincipal: memberP } as RequestIdentity;
 const key = (scopes: string[]) =>
-  ({ ...member, apiKey: { id: "key_1", hash: "a".repeat(64), name: "k", kind: "user", scopes, expiresAt: "2030-01-01T00:00:00.000Z", createdAt: null } }) as RequestIdentity;
-const agent = { ...member, principal: "computer", sessionKey: OTHER, apiKey: { id: "key_2", hash: "b".repeat(64), name: "s", kind: "user", scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null } } as RequestIdentity;
+  ({
+    ...member,
+    apiKey: { id: "key_1", hash: "a".repeat(64), name: "k", kind: "user", scopes, expiresAt: "2030-01-01T00:00:00.000Z", createdAt: null },
+    ocPrincipal: { ...memberP, kind: "key", via: "api", scopes: scopes as Principal["scopes"], credential: { id: "key_1", expiresAt: Date.parse("2030-01-01T00:00:00.000Z") } },
+  }) as RequestIdentity;
+const agent = {
+  ...member,
+  apiKey: { id: "key_2", hash: "b".repeat(64), name: "s", kind: "user", scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null },
+  ocPrincipal: {
+    org: ORG, subject: OTHER, kind: "agent", via: "agent", session: OTHER,
+    scopes: ["sessions:read", "sessions:write", "work:read", "work:write"], audiences: [], admin: false,
+    credential: { id: "key_2", expiresAt: null },
+  },
+} as RequestIdentity;
 
 const ns = (make: (name: string) => unknown) => ({ getByName: vi.fn((name: string) => make(name)) });
 const row = (id = SID) => ({ id, title: "t", lastSeq: 3, status: "idle", settings: { model: null, effort: null, mode: "default", speed: null }, asks: [], queued: [], subagents: [] });
@@ -147,27 +164,18 @@ describe("one turn id, and the result to the caller that accepted the entry (spe
 });
 
 describe("the principal (spec 34.3)", () => {
-  it("is built from the older claims: member, key and a session's key", async () => {
-    expect(await principalOf(member, "Mozilla")).toEqual({
-      org: ORG, subject: MEMBER, kind: "member", via: "dashboard",
-      scopes: ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"],
-      audiences: ["org", `member:${MEMBER}`], admin: false, credential: { id: `login:${USER}`, expiresAt: null },
-    });
-    const k = await principalOf({ ...key(["sessions:read"]), role: "owner" }, "opc/1.2.3");
-    expect(k).toMatchObject({ kind: "key", via: "opc", scopes: ["sessions:read"], admin: true, credential: { id: "key_1", expiresAt: Date.parse("2030-01-01T00:00:00.000Z") } });
-    expect(await principalOf(agent, null)).toEqual({
-      org: ORG, subject: OTHER, kind: "agent", via: "agent", session: OTHER,
-      scopes: ["sessions:read", "sessions:write", "work:read", "work:write"], audiences: [], admin: false,
-      credential: { id: "key_2", expiresAt: null },
-    });
-    expect(await principalOf({ ...key([]), apiKey: { ...key([]).apiKey!, kind: "project" } }, null)).toBeNull();
+  it("is the assertion's oc_principal; a request without one is refused", async () => {
+    const { call, stub } = setup({});
+    const { ocPrincipal: _, ...bare } = member;
+    expect(await call("GET", "/sessions", { identity: bare as RequestIdentity })).toMatchObject({ status: 401, body: { error: { code: "unauthenticated" } } });
+    expect(await call("POST", `/sessions/${SID}/compact`, { identity: bare as RequestIdentity, body: {} })).toMatchObject({ status: 401 });
+    expect(stub.computerApi).not.toHaveBeenCalled();
   });
 
   it("is the edge's oc_principal claim when the assertion has one; a bad or foreign claim is refused", async () => {
     const claim = { org: ORG, subject: MEMBER, kind: "member", via: "app", scopes: ["sessions:read", "nope"], audiences: ["org"], admin: false, credential: { id: "c", expiresAt: 5 } };
     const p = principalClaim(claim, ORG)!;
     expect(p).toEqual({ ...claim, scopes: ["sessions:read"] });
-    expect(await principalOf({ ...member, ocPrincipal: p }, null)).toBe(p);
     expect(principalClaim(undefined, ORG)).toBeUndefined();
     expect(principalClaim({ ...claim, org: "org_2" }, ORG)).toBeNull();
     expect(principalClaim({ ...claim, kind: "platform" }, ORG)).toBeNull();

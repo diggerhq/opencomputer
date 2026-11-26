@@ -33,6 +33,7 @@ import {
   proxyPublicTemplateInspection,
 } from "./managed_agents";
 import { computerEnabledFor } from "./computer";
+import { cookieCredentialId, memberPrincipal } from "./principal";
 import { enableManagedBilling } from "./model_billing";
 import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
@@ -671,16 +672,29 @@ export async function handleDashboard(
     const membership = await env.OPENCOMPUTER_DB.prepare(
       `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
     ).bind(caller.orgID, caller.userID).first<{ role: string }>();
+    const role =
+      membership?.role === "owner" || membership?.role === "admin"
+        ? "admin"
+        : membership?.role;
+    const token = (req.headers.get("cookie") ?? "").match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`))?.[1] ?? "";
     return proxyManagedAgents(
       req,
       env,
       {
         orgID: caller.orgID,
         userID: caller.userID,
-        role:
-          membership?.role === "owner" || membership?.role === "admin"
-            ? "admin"
-            : membership?.role,
+        role,
+        // The one principal (tracks and threads spec 34.3): the dashboard's Slack install and unlink need it.
+        ocPrincipal: await memberPrincipal({
+          org: caller.orgID,
+          userId: caller.userID,
+          admin: role === "admin",
+          via: "dashboard",
+          credential: {
+            id: await cookieCredentialId(token, caller.orgID, caller.userID, caller.claims.exp),
+            expiresAt: caller.claims.exp * 1000,
+          },
+        }),
       },
       "/api/dashboard/managed-agents",
     );

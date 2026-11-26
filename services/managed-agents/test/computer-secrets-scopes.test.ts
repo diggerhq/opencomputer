@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import { apiScopes } from "../src/computer/keys.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
+import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
 
 /** Work 095 step 1: only people set secrets. A wildcard key lacks `secrets:write`; a session's key is refused. */
 
@@ -21,8 +22,7 @@ describe("apiScopes", () => {
 });
 
 describe("secrets routes", () => {
-  const person: RequestIdentity = { kind: "user", organizationId: "org_1", userId: "user_1", role: "member" } as RequestIdentity;
-  const key = { id: "key_1", hash: "a".repeat(64), name: "laptop", kind: "user" as const, expiresAt: null, createdAt: null };
+  const person = memberIdentity("org_1", "user_1");
   const put = () => new Request("https://blue.test/v1/computer/sessions/cs_1/secrets/API_KEY", { method: "PUT", body: "{}" });
   const route = (identity: RequestIdentity, request = put()) => {
     const stub: ComputerApiStub = { computerApi: vi.fn(async () => ({ status: 204 })) };
@@ -31,7 +31,7 @@ describe("secrets routes", () => {
   const code = async (res: Response) => ((await res.json()) as { error: { reason?: string; code: string } }).error;
 
   it("refuses a session's key whatever scopes it names", async () => {
-    const session = { ...person, principal: "computer", apiKey: { ...key, scopes: ["secrets:write"] } } as RequestIdentity;
+    const session = agentIdentity("org_1", "cs_1", ["secrets:write"]);
     const res = await route(session);
     expect(res.status).toBe(403);
     expect(await code(res)).toMatchObject({ reason: "computer_principal" });
@@ -40,10 +40,10 @@ describe("secrets routes", () => {
   });
 
   it("refuses a wildcard key, lets a named one and the dashboard through", async () => {
-    const wildcard = await route({ ...person, apiKey: { ...key, scopes: ["sandbox:*"] } });
+    const wildcard = await route(keyIdentity("org_1", "user_1", ["sandbox:*"]));
     expect(wildcard.status).toBe(403);
     expect(await code(wildcard)).toMatchObject({ reason: "missing_scope", scope: "secrets:write" });
-    expect((await route({ ...person, apiKey: { ...key, scopes: ["secrets:write"] } })).status).toBe(204);
+    expect((await route(keyIdentity("org_1", "user_1", ["secrets:write"]))).status).toBe(204);
     expect((await route(person)).status).toBe(204);
   });
 
@@ -62,7 +62,7 @@ describe("secrets routes", () => {
     const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 204 })) };
     const go = (identity: RequestIdentity, method: string, path: string, body?: string) =>
       routeComputerApi(new Request(`https://blue.test/v1/computer${path}`, { method, ...(body ? { body } : {}) }), {} as never, identity, "org_1", stub, path);
-    const wildcard = { ...person, apiKey: { ...key, scopes: ["sandbox:*"] } } as RequestIdentity;
+    const wildcard = keyIdentity("org_1", "user_1", ["sandbox:*"]);
     expect((await go(wildcard, "GET", "/secrets")).status).toBe(204);
     expect((await go(wildcard, "GET", "/secrets/API_KEY/events")).status).toBe(204);
     expect((await go(wildcard, "PUT", "/organization/secrets/API_KEY", '{"value":"v"}')).status).toBe(403);

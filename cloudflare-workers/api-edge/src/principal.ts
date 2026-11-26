@@ -33,7 +33,7 @@ export interface Principal {
   credential: { id: string; expiresAt: number | null };
 }
 
-/** What a member by cookie or by the Mac app's token may do: what the surface uses. */
+/** What a member by the Mac app's token may do: what the surface uses (no terminals, no secrets). */
 export const MEMBER_SCOPES: readonly ApiScope[] = [
   "sessions:read",
   "sessions:write",
@@ -41,6 +41,9 @@ export const MEMBER_SCOPES: readonly ApiScope[] = [
   "work:read",
   "work:write",
 ];
+
+/** A member by cookie: the web tab is not narrowed (it sets organization secrets). */
+export const DASHBOARD_SCOPES: readonly ApiScope[] = API_SCOPES;
 
 const WORKOS_USER = /^user_([0-9A-HJKMNP-TV-Z]{26})$/;
 
@@ -83,7 +86,7 @@ export async function memberPrincipal(input: {
     subject,
     kind: "member",
     via: input.via,
-    scopes: [...MEMBER_SCOPES],
+    scopes: [...(input.via === "dashboard" ? DASHBOARD_SCOPES : MEMBER_SCOPES)],
     audiences: ["org", `member:${subject}`],
     admin: input.admin,
     credential: input.credential,

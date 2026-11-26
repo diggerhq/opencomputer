@@ -108,7 +108,7 @@ describe("the principal in the assertion", () => {
       subject: SUBJECT,
       kind: "member",
       via: "dashboard",
-      scopes: ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"],
+      scopes: ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals", "work:read", "work:write"],
       audiences: ["org", `member:${SUBJECT}`],
       admin: true,
     });
@@ -118,7 +118,7 @@ describe("the principal in the assertion", () => {
     expect(p.session).toBeUndefined();
   });
 
-  it("names a key by its creator, opc or api by the user agent, keeping the old claims", async () => {
+  it("names a key by its creator, opc or api by the user agent; the principal is the only caller claim", async () => {
     const { db, env } = seeded();
     const { key, id } = await addKey(db, { expiresAt: 1_900_000_000 });
     const fetchMock = vi.fn().mockImplementation(async () => Response.json({}));
@@ -137,7 +137,8 @@ describe("the principal in the assertion", () => {
     });
     expect(assertedPrincipal(fetchMock, 1).via).toBe("api");
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(claims(new Headers(init.headers).get("x-opencomputer-agent-token")!)).toMatchObject({ key_id: id, user_id: USER, role: "admin" });
+    expect(claims(new Headers(init.headers).get("x-opencomputer-agent-token")!)).toMatchObject({ key_id: id, user_id: USER });
+    expect(claims(new Headers(init.headers).get("x-opencomputer-agent-token")!).role).toBeUndefined();
   });
 
   it("makes a session's key that session's agent: work scopes, no terminals", async () => {

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/computer/secrets.js";
 import { SecretsStore } from "../src/computer/secrets-store.js";
+import type { Principal } from "../src/actor/principal.js";
+import type { ApiRequest } from "../src/computer/sessions-api.js";
 import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
 import { secretNameProblem } from "../src/computer/secrets.js";
 import type { SlackResult } from "../src/computer/slack.js";
@@ -259,7 +261,14 @@ describe("!secret parsing", () => {
 });
 
 describe("organization secrets over the Computer API (work 095 v1)", () => {
-  const MEMBER = { member: "usr_01jabcdefghjkmnpqrstvwxyz0", userId: "user_1", name: "Owner", email: null, via: "dashboard" as const, client: null, scopes: [], requestId: "req_1" };
+  const as = (subject: string, via: Principal["via"] = "dashboard"): ApiRequest => ({
+    principal: { org: "org_1", subject, kind: "member", via, scopes: [], audiences: ["org", `member:${subject}`], admin: false, credential: { id: "ck_1", expiresAt: null } },
+    name: "Owner",
+    email: null,
+    client: null,
+    requestId: "req_1",
+  });
+  const MEMBER = as("usr_01jabcdefghjkmnpqrstvwxyz0");
   const VALUE = "sk-live-do-not-show";
 
   it("sets a sealed session-only secret through the API without returning the value", async () => {
@@ -274,15 +283,15 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
 
   it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
     const created = await s.api(MEMBER, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: VALUE } });
-    expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.member, name: "Owner" } } } });
+    expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.principal.subject, name: "Owner" } } } });
     expect(pushes).toEqual([{}]);
     expect((await s.forSession(SESSION.key, SESSION.ownerId)).find((x) => x.name === "EXECUTOR_API_KEY")?.value).toBe(VALUE);
 
-    const replaced = await s.api({ ...MEMBER, via: "opc" }, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: "sk-new" } });
+    const replaced = await s.api(as(MEMBER.principal.subject, "opc"), { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: "sk-new" } });
     expect(replaced.status).toBe(200);
     const listed = await s.api(MEMBER, { op: "secrets.list" });
     expect(JSON.stringify(listed)).not.toContain("sk-");
-    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.member } }] });
+    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.principal.subject } }] });
 
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).status).toBe(204);
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).error?.code).toBe("secret_not_found");
@@ -313,7 +322,7 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect((await put("A", {})).error).toMatchObject({ code: "invalid_request", field: "value" });
     expect((await put("A", { value: "x", file: true, variable: true })).error?.code).toBe("invalid_request");
     expect((await put("A", { value: "x".repeat(64 * 1024 + 1) })).status).toBe(413);
-    for (let i = 0; i < 200; i++) await s.api({ ...MEMBER, member: `usr_${i}` }, { op: "secrets.put", name: `K${i}`, body: { value: "v" } });
+    for (let i = 0; i < 200; i++) await s.api(as(`usr_${i}`), { op: "secrets.put", name: `K${i}`, body: { value: "v" } });
     expect((await put("ONE_TOO_MANY", { value: "v" })).error?.code).toBe("limit_reached");
   });
 

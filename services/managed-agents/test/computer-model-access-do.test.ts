@@ -1,4 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
+import type { ApiRequest } from "../src/computer/sessions-api.js";
 import { describe, expect, it } from "vitest";
 
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
@@ -89,7 +90,13 @@ describe("vault secrets for API sessions", () => {
   it("a web form write preserves scope resolution for pushes and later starts", async () => {
     const org = "org_api_secret_form";
     const stub = await seeded(org);
-    const caller = { member: LINKED, userId: "user_01JABCDEFGHJKMNPQRSTVWXYZ0", name: "Owner", email: null, via: "dashboard", client: null, scopes: ["secrets:write"], requestId: "req_form" };
+    const caller: ApiRequest = {
+      principal: { org, subject: LINKED, kind: "member", via: "dashboard", scopes: ["secrets:write"], audiences: ["org", `member:${LINKED}`], admin: false, credential: { id: "ck_form", expiresAt: null } },
+      name: "Owner",
+      email: null,
+      client: null,
+      requestId: "req_form",
+    };
     const write = (sessionId: string) => inside(stub, (instance) => instance.computerApi(org, caller, {
       op: "secrets.session.put", sessionId, name: "FORM_TOKEN", body: { value: "form-fixture" },
     }));
