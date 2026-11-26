@@ -281,8 +281,16 @@ export interface ComputerRpcAdded {
   block(sessionId: string, blockId: string): Promise<void>;
   /** Org only; relayed as the host's `access` frame. */
   setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
-  /** The Slack actor only. `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user it linked the Slack person to. */
-  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string }): Promise<{ reply: string; member?: string }>;
+  /**
+   * The Slack actor only. `args`: the command's text after its name; for `grant`, the clicked button's action
+   * id, with Slack's `triggerId`. `channelId` and `threadTs`: where the command was sent (absent: the
+   * session's thread). `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user
+   * it linked the Slack person to.
+   */
+  command(
+    p: Principal,
+    c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
+  ): Promise<{ reply: string; member?: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
@@ -325,7 +333,11 @@ export interface SlackRpc {
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
   /** Computer only. */
-  forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }>;
+  /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
+  forHost(): Promise<{
+    people: CalvinPerson[];
+    slack: { botToken: string; botUserId: string; teamId: string; teamName?: string; installer?: { slackUser: string; member: string | null } } | null;
+  }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
   /** Delivery(slack) only. */
