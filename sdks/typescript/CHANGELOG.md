@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.1.3
+
+- New entry point `@opencomputer/sdk/computer`: the client of Computer's
+  tracks and threads. `createClient({ principal, fetch, connect, storage })`
+  returns a `Client` with the feed (`feed(kinds)`), a session's events and
+  live deltas (`events`, `deltas`), and writes that are applied at once and
+  queued in `storage` until the server takes them (`mutate`,
+  `createSession`, `send`, `answer`, `dismiss`, `interrupt`, `settings`).
+  `pending()` lists the queued writes and `failures` reports refused ones.
+  `setSecret` is sent at once, never queued. `read(path)` is a one-off read;
+  an error reply throws `Refused`. The caller supplies `fetch` (with the
+  API prefix and credential), the `/live` socket (`connect`) and `storage`;
+  `memoryStorage()` keeps it in memory.
+- Also exported from it: the row, HTTP body and socket frame types, the
+  mutation names and arguments (`MutationName`, `MutationArgs`), `makeId`,
+  and the review summary schema (`ReviewSummary` and its parts as zod
+  schemas, `REVIEW_SCHEMA_ID`, `reviewJsonSchema()`).
+- `zod` is now a runtime dependency, used by `@opencomputer/sdk/computer`.
+- `@opencomputer/sdk/agents` is unchanged.
+
 ## 3.0.0
 
 Breaking. The sandbox client is removed; the package keeps only the
