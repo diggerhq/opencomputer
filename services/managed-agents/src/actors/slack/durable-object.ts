@@ -11,8 +11,9 @@ import { type SlackGrant, type SlackRpc } from "./contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type ActorEnv, logOf, orgOf, slackOf, computerOf } from "../addresses.js";
 import { alarms } from "../../durable/alarms.js";
-import { emitter } from "../../telemetry/log-emitter.js";
-import { errorText, owed } from "../../durable/outbox.js";
+import { type Emitter, emitter } from "../../telemetry/log-emitter.js";
+import { slackTsMs, type TelemetryEnv } from "../../telemetry/gateway.js";
+import { errorText, owed, RetryAfter } from "../../durable/outbox.js";
 import { idem } from "../../durable/idempotency.js";
 import { migrate } from "../../durable/migrations.js";
 import { type Principal, platformPrincipal } from "../../auth/principal.js";
@@ -60,6 +61,7 @@ import {
   type SlackMessageJob,
   type SlackResult,
   slackApi,
+  slackRateLimited,
   slackThreadUrl,
   slackTokenDead,
   STARTING_NOTICE,
@@ -68,10 +70,10 @@ import {
 import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "../../slack-api/threads.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../../ids/slack-ids.js";
 import { links, settings, threads } from "./tables.js";
-import { oweProcess } from "./outbox.js";
+import { owePost, oweProcess, postGroup } from "./outbox.js";
 import { STEPS } from "./schema.js";
 
-export interface SlackEnv extends ActorEnv {
+export interface SlackEnv extends ActorEnv, TelemetryEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
   COMPUTER_PUBLIC_ORIGIN?: string;
   OPENCOMPUTER_APP_URL?: string;
@@ -101,7 +103,30 @@ const isOther = (job: Job): job is OtherJob => "item" in job;
 
 export class SlackDurableObject extends DurableObject<SlackEnv> implements SlackRpc {
   protected readonly sql: Sql;
-  private readonly emit = emitter("slack", () => ({ team: this.ctx.id.name }));
+  private readonly emit = emitter("slack", () => ({ team: this.ctx.id.name }), {
+    env: () => this.env,
+    waitUntil: (promise) => this.ctx.waitUntil(promise),
+    fetch: () => this.telemetryFetch,
+    dims: () => ({ org_id: this.ctx.id.name, surface: "slack" }),
+  });
+  /** Tests: the catalog events' Tinybird POST goes here instead of `fetch`. */
+  telemetryFetch: typeof fetch | undefined;
+  /**
+   * The owed calls' emitter: a Slack item that ran out of tries is also `queue.failed` (K7), as the old
+   * queue reported a job it gave up on.
+   */
+  private readonly owedEmit: Emitter = (event, fields, level) => {
+    this.emit(event, fields, level);
+    if (event !== "owed.dead" || fields?.call !== "process") return;
+    const where = /^thread:([^:]+):(.*)$/.exec(String(fields.group ?? ""));
+    const team = settings.get(this.sql, "slackTeamId");
+    this.emit("queue.failed", {
+      ...(where && team ? { session_key: sessionKey(team, where[1]!, where[2]!) } : {}),
+      outcome: "failed",
+      error_type: "unknown",
+      attempt: fields.tries,
+    }, "error");
+  };
   private access?: { teamId: string; threads: ThreadAccess };
   private token?: { sealed: string; plain: string };
   private importing: Promise<void> | undefined;
@@ -119,7 +144,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   override async alarm(): Promise<void> {
     await this.ready();
     await alarms.run(this.sql, Date.now(), {
-      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit),
+      owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.owedEmit),
     });
   }
 
@@ -541,11 +566,18 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     }
     if (call === "changed") return computerOf(this.env, this.org()).changed("slack");
     if (call === "memberLeft") return computerOf(this.env, this.org()).memberLeft(body as string);
+    if (call === "post") {
+      const { method, body: args } = body as { method: string; body: Record<string, unknown> };
+      const result = await this.slack(method, args);
+      // Rate limited: tried again on the post schedule, not before Slack's Retry-After; other refusals are final.
+      if (slackRateLimited(result)) throw new RetryAfter(`${method}: ${result.error}`, result.retryAfterMs ?? 0);
+      return;
+    }
     console.warn(JSON.stringify({ level: "warn", event: "slack.owed_unknown", call }));
   }
 
   private sendOwedNow(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.emit).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
+    return owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.owedEmit).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) })));
   }
 
   // ------------------------------------------------------------------ the person (34.3)
@@ -673,8 +705,24 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   /** The working status on the thread, or 👀 where that is unavailable; `notify` takes it off. */
   private async acknowledge(job: MessageJob, key: string): Promise<void> {
     this.sql.exec("INSERT INTO acks (thread_key, user_id, ts) VALUES (?, ?, ?) ON CONFLICT(thread_key) DO UPDATE SET user_id = excluded.user_id, ts = excluded.ts", key, job.userId, job.messageTs);
-    const status = await this.slack("agents.sessions.setStatus", { channel_id: job.channelId, thread_ts: job.threadTs, status: "processing", initiator_user_id: job.userId });
-    if (!status.ok) await this.slack("reactions.add", { channel: job.channelId, timestamp: job.messageTs, name: "eyes" });
+    const started = Date.now();
+    let indicator = "status";
+    let result = await this.slack("agents.sessions.setStatus", { channel_id: job.channelId, thread_ts: job.threadTs, status: "processing", initiator_user_id: job.userId });
+    if (!result.ok) {
+      indicator = "reaction";
+      result = await this.slack("reactions.add", { channel: job.channelId, timestamp: job.messageTs, name: "eyes" });
+    }
+    // K1: Slack's time for the message → the indicator confirmed.
+    const sentAt = job.trace?.sentAt ?? slackTsMs(job.messageTs);
+    this.emit("ack.done", {
+      session_key: key,
+      ...(job.trace?.id ? { trace_id: job.trace.id } : {}),
+      ...(Number.isFinite(sentAt) ? { duration_ms: Math.max(0, Date.now() - sentAt) } : {}),
+      outcome: result.ok ? "completed" : "failed",
+      ...(result.ok ? {} : { error_type: "surface_error" }),
+      indicator,
+      call_ms: Date.now() - started,
+    });
   }
 
   /**
@@ -722,10 +770,26 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     return { threadKey };
   }
 
-  /** What Org's echo described (36.6): a refused turn's reason, or the machine's notice; the status and 👀 come off. */
+  /**
+   * What Org's echo described (36.6): a refused turn's reason, or the machine's notice; the status and 👀 come off.
+   * Each Slack call is owed in its thread's order (`post`), so a rate-limited one is tried again, then dead-listed.
+   */
   async notify(e: SlackEcho): Promise<void> {
     await this.ready();
     this.org();
+    this.sql.transaction(() => this.noticesOf(e));
+    const keys = e.kind === "machine" ? e.threadKeys : [e.threadKey];
+    await Promise.all(
+      keys.map((key) =>
+        owed
+          .run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.owedEmit, postGroup(key))
+          .catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) }))),
+      ),
+    );
+  }
+
+  /** `notify`'s once-only rows and the Slack calls it owes, in one transaction. */
+  private noticesOf(e: SlackEcho): void {
     if (e.kind === "machine") {
       if (e.state === "ready") {
         for (const key of e.threadKeys) this.sql.exec("DELETE FROM notices WHERE thread_key = ?", key);
@@ -736,7 +800,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       for (const key of e.threadKeys) {
         const where = parseSessionKey(key);
         if (!where || this.sql.exec("INSERT OR IGNORE INTO notices (thread_key, kind) VALUES (?, ?) RETURNING 1", key, e.state).length === 0) continue;
-        await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: notice });
+        owePost(this.sql, key, "chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: notice });
       }
       return;
     }
@@ -746,17 +810,17 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (e.code === "insufficient_credits") {
       // Once per person and kind: a thread hears it only from the first refused message.
       if (this.sql.exec("INSERT OR IGNORE INTO billing_warnings (recipient, kind) VALUES (?, ?) RETURNING 1", person, e.code).length > 0) {
-        await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: CREDITS_TEXT });
+        owePost(this.sql, e.threadKey, "chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: CREDITS_TEXT });
       }
     } else if (e.code === "computer_unavailable") {
-      await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: UNREACHABLE_TEXT });
+      owePost(this.sql, e.threadKey, "chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: UNREACHABLE_TEXT });
     } else if (/^[UW][A-Z0-9]+$/.test(person)) {
-      await this.slack("chat.postEphemeral", { channel: where.channelId, user: person, thread_ts: where.threadTs, text: e.code === "model_refused" ? REFUSED_TEXT : `${REFUSED_TEXT} (${e.code})` });
+      owePost(this.sql, e.threadKey, "chat.postEphemeral", { channel: where.channelId, user: person, thread_ts: where.threadTs, text: e.code === "model_refused" ? REFUSED_TEXT : `${REFUSED_TEXT} (${e.code})` });
     }
     const ack = this.sql.exec<{ ts: string }>("SELECT ts FROM acks WHERE thread_key = ?", e.threadKey)[0];
-    await this.slack("agents.sessions.setStatus", { channel_id: where.channelId, thread_ts: where.threadTs, status: "" });
+    owePost(this.sql, e.threadKey, "agents.sessions.setStatus", { channel_id: where.channelId, thread_ts: where.threadTs, status: "" });
     if (ack) {
-      await this.slack("reactions.remove", { channel: where.channelId, timestamp: ack.ts, name: "eyes" });
+      owePost(this.sql, e.threadKey, "reactions.remove", { channel: where.channelId, timestamp: ack.ts, name: "eyes" });
       this.sql.exec("DELETE FROM acks WHERE thread_key = ?", e.threadKey);
     }
   }

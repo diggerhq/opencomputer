@@ -848,7 +848,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       await this.slackChanged(got.slack, changed);
       if (!this.socket()) return;
       if (got.people.length) this.send({ t: "people", people: got.people });
-      if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials(undefined, got.slack)) });
+      // Unlinked: the host's credentials again, with the bot token emptied, so it stops using the old one.
+      if (got.slack || changed) this.send({ t: "credentials", ...(await this.hostCredentials(undefined, got.slack)) });
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", event: "computer.slack_read_failed", message: errorText(error) }));
     }
@@ -2359,6 +2360,13 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     // The host starts over: what it reports working now is billed from now;
     // whatever the previous socket left open ends here.
     this.billing.closeAll("host_reconnected", Date.now());
+    // A runner the host no longer reports is not running, whatever its row last said: `stopped`, so the
+    // recovery tick closes a turn it left open (a row left `busy` would never be looked at).
+    const reported = JSON.stringify((event.sessions ?? []).map((report) => report.key));
+    this.ctx.storage.sql.exec(
+      "UPDATE sessions SET status = 'stopped' WHERE status IN ('starting', 'busy') AND runner_key NOT IN (SELECT value FROM json_each(?))",
+      reported,
+    );
     for (const report of event.sessions ?? []) await this.report(report);
     // Work 077: a restarted host and proxy have no tokens; its sessions on a seat (or refused) get their routes again.
     await this.access.models.helloed((event.sessions ?? []).map((report) => report.key)).catch((error) =>

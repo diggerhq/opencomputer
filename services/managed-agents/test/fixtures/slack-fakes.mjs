@@ -1,5 +1,6 @@
 // Slack's Web API, faked for the Slack actor's tests: everyone is a full member of team T1 except
-// users whose id starts with `UGUEST`; every post succeeds with a fresh ts.
+// users whose id starts with `UGUEST`; every post succeeds with a fresh ts, except into a channel whose
+// id starts with `CRATE`, which Slack rate-limits (HTTP 429, Retry-After 7 s).
 let ts = 1000;
 export async function fakeSlackOutbound(request) {
   const url = new URL(request.url);
@@ -7,6 +8,7 @@ export async function fakeSlackOutbound(request) {
   const method = url.pathname.replace("/api/", "");
   const text = await request.text();
   const body = (request.headers.get("content-type") ?? "").includes("json") ? JSON.parse(text || "{}") : Object.fromEntries(new URLSearchParams(text));
+  if (String(body.channel ?? body.channel_id ?? "").startsWith("CRATE")) return new Response("", { status: 429, headers: { "retry-after": "7" } });
   switch (method) {
     case "users.info": {
       const id = String(body.user ?? "");

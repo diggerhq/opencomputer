@@ -7,6 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 import { alarms } from "../../durable/alarms.js";
 import { computerOf, liveOf, logOf, slackOf, type ActorEnv } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
+import type { TelemetryEnv } from "../../telemetry/gateway.js";
 import { hashOf } from "../../encoding/canonical-json.js";
 import { migrate } from "../../durable/migrations.js";
 import { owed, type Dead } from "../../durable/outbox.js";
@@ -29,7 +30,7 @@ import * as sessions from "./sessions.js";
 import { accessOf, readSession, trackOfAgent, type PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
-export type OrgEnv = ActorEnv & {
+export type OrgEnv = ActorEnv & TelemetryEnv & {
   SERVERLESS_AGENTS_DB?: D1Database;
   /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
   ACCOUNTS?: DurableObjectNamespace;
@@ -63,7 +64,7 @@ const AGE_EVERY_MS = 60 * 60 * 1_000;
 
 export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   private store: Sql | null = null;
-  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }));
+  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }), { env: () => this.env, waitUntil: (promise) => this.ctx.waitUntil(promise) });
 
   /** The organization's id: the object's name, else what the first principal said. */
   get org(): string {

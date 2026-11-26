@@ -156,7 +156,9 @@ async function sendGroup(sql: Sql, group: string, send: (call: string, body: unk
     } catch (error) {
       const tries = row.tries + 1;
       const schedule = row.schedule ? (JSON.parse(row.schedule) as number[]) : null;
-      const wait = schedule ? schedule[tries - 1] : tries < BACKOFF_TRIES ? (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS) : undefined;
+      const step = schedule ? schedule[tries - 1] : tries < BACKOFF_TRIES ? (BACKOFF_MS[tries - 1] ?? BACKOFF_REST_MS) : undefined;
+      // A peer that said when to come back (a rate limit's Retry-After) is not asked sooner; the schedule still ends the call.
+      const wait = step === undefined ? undefined : Math.max(step, retryAfterOf(error));
       if (wait === undefined) {
         const died = sql.transaction(() => {
           // Only if the row is still this one: a replaced slot is a new call.
@@ -172,5 +174,20 @@ async function sendGroup(sql: Sql, group: string, send: (call: string, body: unk
     }
   }
 }
+
+/**
+ * A failed call that should not be tried again before `retryAfterMs` (Slack's Retry-After on a 429): thrown by `send`,
+ * it waits at least that long, still within its schedule.
+ */
+export class RetryAfter extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+  }
+}
+
+const retryAfterOf = (error: unknown): number => (error instanceof RetryAfter && Number.isFinite(error.retryAfterMs) ? Math.max(0, error.retryAfterMs) : 0);
 
 export const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 500);

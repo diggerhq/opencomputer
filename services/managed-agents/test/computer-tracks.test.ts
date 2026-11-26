@@ -256,4 +256,34 @@ describe("the Computer actor of tracks and threads", () => {
     expect(carry.people).toEqual([{ slack_user_id: "U1", dir: "ann", git_name: "Ann", git_email: "ann@example.com", updated_at: 1 }]);
     expect(carry.links).toEqual([]);
   });
+
+  it("a host's hello stops the runner rows it no longer reports, so the recovery tick looks at them", async () => {
+    const { stub } = await computer("tt-stale");
+    const first = await host("tt-stale");
+    await stub.start(spec("tt-stale", SESSION(1)));
+    await stub.start(spec("tt-stale", SESSION(2)));
+    await until(() => first.frames.filter((frame) => frame.t === "start"), (all) => all.length === 2, "start frames");
+    const statuses = () => inside(stub, (_i, state) => Object.fromEntries([...state.storage.sql.exec<{ runner_key: string; status: string }>("SELECT runner_key, status FROM sessions")].map((row) => [row.runner_key, row.status])));
+    const keys = Object.keys(await statuses());
+    expect(keys).toHaveLength(2);
+    // The old host left one runner busy and one idle, then went away.
+    await inside(stub, (_i, state) => {
+      state.storage.sql.exec("UPDATE sessions SET status = 'busy' WHERE runner_key = ?", keys[0]);
+      state.storage.sql.exec("UPDATE sessions SET status = 'idle' WHERE runner_key = ?", keys[1]);
+    });
+    first.socket.close(1000, "restart");
+    await sleep(50);
+    // The new host reports no runners: the busy row is stopped; the idle one is left as it was.
+    await host("tt-stale");
+    expect(await statuses()).toEqual({ [keys[0]!]: "stopped", [keys[1]!]: "idle" });
+  });
+
+  it("tells the host its Slack bot token is gone when Slack is unlinked", async () => {
+    const { stub } = await computer("tt-unlink");
+    const { frames } = await host("tt-unlink");
+    await stub.changed("slack");
+    // The fake Slack actor has no link: the credentials go again with the token emptied.
+    const sent = await until(() => frames.filter((frame) => frame.t === "credentials"), (all) => all.length > 0, "credentials frame");
+    expect(sent.at(-1).credentials).toMatchObject({ slackBotToken: "", slackBotUserId: "" });
+  });
 });

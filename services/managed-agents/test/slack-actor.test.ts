@@ -1,4 +1,4 @@
-import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, env, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { SlackDurableObject } from "../src/actors/slack/durable-object.js";
@@ -461,3 +461,90 @@ describe("the Slack actor: Computer's interactions and people who leave", () => 
     expect(await response!.json()).toEqual({ response_action: "errors", errors: { value: "Enter a value" } });
   });
 });
+
+/** The catalog events the object sends to Tinybird, switched on for this object only (the test env has no Tinybird settings). */
+async function telemetry(org: string): Promise<Record<string, any>[]> {
+  const posted: Record<string, any>[] = [];
+  await runInDurableObject(slackOf(org), (instance) => {
+    const o = instance as unknown as SlackDurableObject & { env: Record<string, unknown> };
+    o.env = { ...o.env, TINYBIRD_API_URL: "https://tb.test", TINYBIRD_APPEND_TOKEN: "p.append" };
+    o.telemetryFetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      for (const line of String(init?.body).split("\n")) posted.push(JSON.parse(line));
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+  });
+  return posted;
+}
+
+async function sent(posted: Record<string, any>[], event: string): Promise<Record<string, any>> {
+  for (let i = 0; i < 300; i++) {
+    const found = posted.find((e) => e.event_name === event);
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`no ${event} sent; got ${JSON.stringify(posted.map((e) => e.event_name))}`);
+}
+
+describe("the Slack actor: alert events and Slack's rate limit", () => {
+  it("sends ack.done (K1) to calvin_events when it acknowledges a message", async () => {
+    const org = "org_ack_event";
+    await linked(org);
+    const posted = await telemetry(org);
+    await slackOf(org).accept(message({ text: "hi", ts: `${Math.floor(Date.now() / 1000)}.000100` }));
+    await settled(org);
+    const ack = await sent(posted, "ack.done");
+    expect(ack).toMatchObject({ org_id: org, surface: "slack", outcome: "completed" });
+    expect(ack.session_key).toMatch(/^T1:C1:/);
+    expect(ack.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(ack.data)).toMatchObject({ indicator: "status" });
+  });
+
+  it("sends queue.failed (K7) and owed.dead when a message runs out of tries", async () => {
+    const org = "org_dead_event";
+    await linked(org);
+    const posted = await telemetry(org);
+    const sid = await sessionIdFor("T1:C1:970.1");
+    await logOf(sid).set({ failures: 100 });
+    await slackOf(org).accept(message({ text: "never", ts: "970.1" }));
+    // Past its schedule's last try: the next failure dead-lists it.
+    for (let i = 0; i < 100 && !(await inSlack(org, (exec) => exec("SELECT tries FROM _owed WHERE call = 'process' AND tries > 0"))).length; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    await inSlack(org, (exec) => {
+      exec("UPDATE _owed SET tries = 4, at = 0 WHERE call = 'process'");
+      exec("UPDATE _alarm SET at = 0 WHERE purpose = 'owed'");
+    });
+    await runDurableObjectAlarm(slackOf(org));
+    await settled(org);
+    expect(await inSlack(org, (exec) => exec("SELECT grp, call, tries FROM _dead"))).toEqual([{ grp: "thread:C1:970.1", call: "process", tries: 5 }]);
+    expect(await sent(posted, "queue.failed")).toMatchObject({ session_key: "T1:C1:970.1", outcome: "failed", org_id: org });
+    const dead = await sent(posted, "owed.dead");
+    expect(JSON.parse(dead.data)).toMatchObject({ group: "thread:C1:970.1", call: "process", tries: 5 });
+  });
+
+  it("retries a rate-limited notice after Slack's Retry-After, and dead-lists it past its schedule", async () => {
+    const org = "org_ratelimit";
+    await linked(org);
+    const posted = await telemetry(org);
+    const key = "T1:CRATE1:980.1";
+    const before = Date.now();
+    await slackOf(org).notify({ kind: "refused", threadKey: key, person: "slack:T1:U1", code: "computer_unavailable" });
+    // Owed in the thread's order, not dropped: the post waits at least Retry-After (7 s) beyond the 5 s step.
+    const rows = await inSlack(org, (exec) => exec("SELECT grp, call, tries, at, body FROM _owed WHERE grp = ? ORDER BY n", `post:${key}`));
+    expect(rows.map((r) => [r.call, JSON.parse(r.body as string).method])).toEqual([
+      ["post", "chat.postMessage"],
+      ["post", "agents.sessions.setStatus"],
+    ]);
+    expect(rows[0]).toMatchObject({ tries: 1 });
+    expect(rows[0]!.at as number).toBeGreaterThanOrEqual(before + 7_000);
+    expect(rows[1]).toMatchObject({ tries: 0 });
+
+    // Still limited at its last try: the dead list, and owed.dead to alert on.
+    await inSlack(org, (exec) => {
+      exec("UPDATE _owed SET tries = 6, at = 0 WHERE grp = ? AND tries = 1", `post:${key}`);
+      exec("UPDATE _alarm SET at = 0 WHERE purpose = 'owed'");
+    });
+    await runDurableObjectAlarm(slackOf(org));
+    expect(await inSlack(org, (exec) => exec("SELECT grp, call, tries, last_error FROM _dead"))).toEqual([{ grp: `post:${key}`, call: "post", tries: 7, last_error: expect.stringContaining("http_429") }]);
+    expect(JSON.parse((await sent(posted, "owed.dead")).data)).toMatchObject({ group: `post:${key}`, call: "post" });
+  });
+});
+
