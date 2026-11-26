@@ -313,6 +313,8 @@ export const SLACK_STRANDED_GRACE_MS = 5_000;
 export const SLACK_STRANDED_MS = 60_000;
 const REPOSITORY_PAGES = 10;
 const DEFINITION_TIMEOUT_MS = 10_000;
+/** A drain re-reads the organization's repositories at most this often (`definitionCheckedAt`). */
+const DEFINITION_RECHECK_MS = 60_000;
 
 type AlarmPurpose = typeof OWED_PURPOSE | "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "dial";
 
@@ -801,6 +803,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   async drain(sessionId: string): Promise<void> {
     await this.api.drain(sessionId);
+    // After the send, never before it: it calls the account and GitHub.
+    this.ctx.waitUntil(this.refreshDefinitionIfStale());
   }
 
   async watch(sessionId: string, until: number): Promise<void> {
@@ -2137,6 +2141,17 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       return {};
     }
     return {};
+  }
+
+  /**
+   * Repositories connected after the host said hello (GitHub connected once the computer is up) reach it
+   * without a reconnect: on a drain, at most once a minute by the stored `definitionCheckedAt`, a changed
+   * definition goes to the host in a fresh `welcome`. Never throws.
+   */
+  private async refreshDefinitionIfStale(): Promise<void> {
+    if (!this.socket()) return;
+    if (Date.now() - Number(this.setting("definitionCheckedAt") ?? 0) < DEFINITION_RECHECK_MS) return;
+    await this.refreshDefinition();
   }
 
   /** Re-read the organization's repositories; a changed definition goes to the host in a fresh `welcome`. Never throws. */
