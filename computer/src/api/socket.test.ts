@@ -212,9 +212,8 @@ describe('serveApi / dialApi', () => {
   it('pending calls resolve unavailable when the server goes away', async () => {
     const { log, sid, sock, server } = await served();
     const c = await dialApi(sock, TOKEN);
-    const t = mintId('tn');
-    log.append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
-    const waiting = c.call('turns.get', { sessionId: sid, turnId: t, waitMs: 5000 }, ANN_CTX);
+    // A read for a seq the log has not reached waits (at most 2 s).
+    const waiting = c.call('sessions.get', { sessionId: sid, minSeq: 99 }, ANN_CTX);
     await new Promise((r) => setTimeout(r, 20));
     await server.close();
     expect((await waiting).error).toMatchObject({ code: 'unavailable', retryable: true });

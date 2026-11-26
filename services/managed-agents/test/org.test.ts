@@ -463,6 +463,9 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       expect(wakes).toHaveLength(1);
 
       const page = await org.threads(a, {});
+      expect((await org.thread(a, thread))!.rows.map((r) => r.kind).sort()).toEqual(["place", "result", "session"]);
+      expect(await org.thread({ ...a, audiences: [] }, thread)).toBeNull();
+      expect(await org.thread(a, "cs_0000000000000099")).toBeNull();
       expect([...new Set(page.rows.map((r) => r.kind))].sort()).toEqual(["place", "result", "session"]);
       expect(page.next).toBeNull();
       expect((await org.search(a, { q: "LOGIN" })).rows.map((r) => r.kind).sort()).toEqual(["place", "result", "session", "track"]);

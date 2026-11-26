@@ -184,6 +184,16 @@ export function threads(sql: Sql, p: Principal, q: { earlier?: boolean; trackId?
   return { rows, next: more && last ? cursor.encode("p", [last.last_active_at ?? last.created_at, last.id]) : null };
 }
 
+/** One thread's rows, as a `threads` page holds them; null when it is not a thread or `p` may not see it. */
+export function thread(sql: Sql, p: Principal, sessionId: string): { rows: Row[] } | null {
+  const s = readSession(sql, sessionId);
+  const place = readPlace(sql, sessionId);
+  if (!s || !place || !seesSession(sql, p, s)) return null;
+  const rows: Row[] = [forClient(sessionRow(sql, s)), forClient(feedRow("place", place as unknown as Raw))];
+  for (const raw of rawResults(sql, [sessionId])) rows.push(forClient(feedRow("result", raw)));
+  return { rows };
+}
+
 const like = (word: string): string => `%${word.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 /** Rows whose title, former titles, name, former names, stand or result title contain every word of `q`. */

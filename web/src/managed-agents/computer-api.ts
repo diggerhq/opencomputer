@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { apiFetch } from '@/api/client'
+import { ApiError } from '@/api/errors'
 
 // The organization's computer (serverless-agents-ws work 052, "API
 // contract"). The edge proxies these dashboard routes to the backend's
@@ -192,6 +193,51 @@ export async function getComputerSessions() {
       computerSessionsSchema,
     )
   ).sessions
+}
+
+// A cold computer takes a few minutes to boot; past this, starting gives up.
+const START_TIMEOUT_MS = 5 * 60_000
+
+const startedSessionSchema = z.looseObject({
+  session: z.looseObject({ id: z.string() }),
+})
+
+/**
+ * Starts a session (the Computer API's `POST /sessions`, with the dashboard's
+ * cookie on the public `/api` base). While the computer is starting (the
+ * first session of an organization with no computer creates it), the API
+ * answers 503 `computer_unavailable`: wait as it asks and try again, telling
+ * the caller so it can say why the wait.
+ */
+export async function createSession(
+  input: string,
+  onComputerStarting?: () => void,
+) {
+  const deadline = Date.now() + START_TIMEOUT_MS
+  for (;;) {
+    try {
+      const result = await apiFetch(
+        '/managed-agents/computer/sessions',
+        { method: 'POST', body: JSON.stringify({ input }) },
+        startedSessionSchema,
+        '/api',
+      )
+      return result.session
+    } catch (error) {
+      if (
+        !(error instanceof ApiError) ||
+        error.type !== 'computer_unavailable' ||
+        Date.now() > deadline
+      ) {
+        throw error
+      }
+      onComputerStarting?.()
+      const wait = error.details?.retryAfterMs
+      await new Promise((resolve) =>
+        setTimeout(resolve, typeof wait === 'number' ? wait : 5_000),
+      )
+    }
+  }
 }
 
 /** Slack's authorize URL, with a short-lived state bound to this organization. */

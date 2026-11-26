@@ -329,28 +329,7 @@ describe("Live: a session", () => {
   });
 });
 
-describe("Live: wait and revoke", () => {
-  it("releases a long-poll when the stream moves, and answers at the timeout otherwise", async () => {
-    const org = "org_wait";
-    const live = liveOf(org);
-    await bindings.SESSION_LOG.getByName("cs_wait").set({ head: "e1.1.2" });
-    expect(await live.wait(member(org), "events:cs_wait", "e1.1.1", 1_000)).toEqual({ moved: true, head: "e1.1.2" });
-    expect(await live.wait(member(org), "events:cs_wait", "e1.1.2", 50)).toEqual({ moved: false, head: "e1.1.2" });
-
-    const waiting = live.wait(member(org), "events:cs_wait", "e1.1.2", 5_000);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await live.publish("events:cs_wait", { from: "e1.1.2", to: "e1.1.3", events: events(3) });
-    expect(await waiting).toEqual({ moved: true, head: "e1.1.3" });
-
-    const feed = live.wait(member(org), "feed", "f1.1", 5_000);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await live.publish("feed", { from: "f1.1", to: "f1.2", rows: [], gone: [], version: 2 });
-    expect(await feed).toEqual({ moved: true, head: "f1.2" });
-
-    await bindings.SESSION_LOG.getByName("cs_wait_no").set({ allowed: false });
-    expect(await live.wait(member(org), "events:cs_wait_no", "e1.1.0", 1_000)).toEqual({ moved: false, head: null });
-  });
-
+describe("Live: revoke", () => {
   it("closes the sockets of a revoked credential, by revoke and by the periodic check", async () => {
     const org = "org_revoke";
     const live = liveOf(org);

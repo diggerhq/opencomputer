@@ -53,7 +53,6 @@ import { apiBridge, localPort, type WriterPort } from './api-bridge.js';
 import { mirrorAcks } from './mirror-acks.js';
 import { type Dial, remotePort } from './remote-port.js';
 import { apiSocketFor, mintToken, runnerApis, subagentsRunning } from './runner-api.js';
-import { apiWake } from './api-wake.js';
 import { apiRelay, type WireHooks, type WireLinkLike } from './api-relay.js';
 import { type ApiMeter, apiMeter } from './api-meter.js';
 import type { Telemetry } from '../telemetry/emitter.js';
@@ -67,7 +66,7 @@ export interface StartOptions {
 
 export type { WireHooks, WireLinkLike };
 
-type HostWriter = Pick<HostSessionWriter, 'sessionId' | 'call' | 'subscribe' | 'handOff' | 'failQueued'>;
+type HostWriter = Pick<HostSessionWriter, 'sessionId' | 'call' | 'subscribe' | 'handOff'>;
 
 export interface ApiHostDeps {
   /** HOST_DATA: journals go in `<dataDir>/journals`. */
@@ -211,7 +210,7 @@ export function apiHost(d: ApiHostDeps) {
     const { epoch, lastSeq } = logOf(sessionId);
     const h = { socket: apiSocketFor(sessionId, runnersDir), token: mintToken(), epoch, w: undefined as unknown as Promise<HostWriter> };
     h.w = openHostWriter({
-      sessionId, journal, epoch, lastSeq, waitMs: 2000, wake,
+      sessionId, journal, epoch, lastSeq, waitMs: 2000,
       seed: { sessionId, owner: ownerOf(spec?.owner) }, created: spec && createdOf(spec),
       socket: { path: h.socket, token: h.token },
     });
@@ -236,12 +235,6 @@ export function apiHost(d: ApiHostDeps) {
     hostWriters.delete(sessionId);
     await h.w.then((w) => w.handOff()).catch((e) => log.warn(`host writer ${sessionId} hand-off: ${e?.message ?? e}`));
   }
-
-  const waker = apiWake({
-    send: (m) => d.send(m),
-    failQueued: (sessionId, message) => void hostWriters.get(sessionId)?.w.then((w) => w.failQueued(message), () => {}),
-  });
-  const wake = waker.wake;
 
   /** Record the session and its log's position from a gateway frame; start mirroring it. */
   function seed(spec: SessionSpec | undefined, sessionId: string | undefined, epoch?: number, lastSeq?: number) {
@@ -272,21 +265,6 @@ export function apiHost(d: ApiHostDeps) {
       return h.w.then(
         () => ({ socket: h.socket, token: h.token, writer: 'host' as const, epoch: h.epoch }),
         () => undefined,
-      );
-    },
-    async resume(sessionId) {
-      const spec = specs.get(sessionId);
-      if (!spec && !known(sessionId)) return { error: apiError('session_not_found', `no session ${sessionId} on this computer`, 404) };
-      if (pending.has(sessionId)) return { status: 'starting' as const };
-      // No runner: the gateway's `start` brings it with the session's secrets, as a wake does (api-wake.ts). With no
-      // spec (none seen since the host started) it brings the spec too.
-      if (!spec || !live.has(sessionId)) {
-        if (!waker.wake(sessionId)) return { error: apiError('unavailable', 'The computer could not reach the gateway to start the agent', 503, { retryable: true }) };
-        return { status: 'starting' as const };
-      }
-      return d.start(spec, {}).then(
-        (s) => ({ status: apiStatus(s) }),
-        (e) => ({ error: apiError('internal', String(e?.message ?? e), 500, { retryable: true }) }),
       );
     },
     async workspace(sessionId) {
@@ -432,19 +410,24 @@ export function apiHost(d: ApiHostDeps) {
       const s = await started;
       d.send({ t: 'started', id: m.id, sessionId, status: apiStatus(s) });
     } catch (e) {
-      if (isSessionId(sessionId)) waker.failed(sessionId);
       d.send({ t: 'started', id: m.id, sessionId, status: 'suspended', error: apiError('internal', e instanceof Error ? e.message : String(e), 500, { retryable: true }) });
     }
   }
 
-  /** `api`: a call that needs the agent has its runner first, with what the frame carries for it; then the session's writer (api-bridge.ts). */
+  /**
+   * `api`: a call that needs the agent has its runner first, with what the frame carries for it; then the session's
+   * writer (api-bridge.ts). The gateway's frame is the only start: a call that needs the agent and finds no runner
+   * after it is refused, retryable, never queued on the host's writer to wait for one.
+   */
   function call(m: Extract<GatewayToHost, { t: 'api' }>) {
-    const spec = NEEDS_AGENT.has(m.method) ? specs.get(m.sessionId) : undefined;
+    const needs = NEEDS_AGENT.has(m.method);
+    const spec = needs ? specs.get(m.sessionId) : undefined;
+    const refuse = (why: string) => void d.send({ t: 'api-result', id: m.id, error: apiError('unavailable', `The agent could not be started: ${why}`, 503, { retryable: true }) });
     const step = (calls.get(m.sessionId) ?? Promise.resolve())
       .then(() => spec && d.start(spec, { credentials: m.credentials, secrets: m.secrets, model: m.model }))
       .then(
-        () => void bridge.api(m),
-        (e) => void d.send({ t: 'api-result', id: m.id, error: apiError('unavailable', `The agent could not be started: ${e?.message ?? e}`, 503, { retryable: true }) }),
+        () => (needs && !live.has(m.sessionId) && !pending.has(m.sessionId) ? refuse(spec ? 'no runner came' : 'the session is not known here') : void bridge.api(m)),
+        (e) => refuse(String(e?.message ?? e)),
       );
     calls.set(m.sessionId, step);
     void step.then(() => calls.get(m.sessionId) === step && calls.delete(m.sessionId));
@@ -499,7 +482,6 @@ export function apiHost(d: ApiHostDeps) {
       const sessionId = spec.sessionId;
       if (!isSessionId(sessionId)) return undefined;
       specs.set(sessionId, spec);
-      waker.woken(sessionId);
       await adopting.get(sessionId);
       starting(sessionId);
       await handOff(sessionId);
@@ -579,7 +561,6 @@ export function apiHost(d: ApiHostDeps) {
     hooks,
 
     async stop() {
-      waker.stop();
       meter?.stop();
       for (const t of asking.values()) clearInterval(t);
       bridge.stop();

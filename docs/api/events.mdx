@@ -11,7 +11,7 @@ description: "A session's events are numbered by `seq` from 1 with no gaps; read
 
 ## Read a range
 
-`events.list` (`GET /sessions/{id}/events`) returns events in `seq` order. To follow a session over HTTP, loop on it with `after` and `waitMs`.
+`events.list` (`GET /sessions/{id}/events`) returns events in `seq` order. To follow a session over HTTP, read it every few seconds with `after`; to see events the moment they are recorded, attach over the WebSocket.
 
 ```
 GET /sessions/cs_0123456789abcdef/events?after=400&limit=100&types=turn.*,ask.opened
@@ -24,7 +24,6 @@ GET /sessions/cs_0123456789abcdef/events?after=400&limit=100&types=turn.*,ask.op
 | `tailTurns` | Start at the last 1 to 50 turns instead; `earlierTurns` in the result holds the turns before them. Cannot be combined with `after` |
 | `turnId` | Only events of this turn |
 | `types` | A comma-separated list of types. A trailing `*` matches a prefix |
-| `waitMs` | When there is nothing after `after`, wait up to this long (at most 60,000) for an event |
 
 The result is `events`, `earlierTurns`, `lastSeq` (the journal's last `seq`) and `hasMore`.
 

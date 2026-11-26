@@ -20,7 +20,7 @@
 // - `subagents` is folded the same way; `subagent.progress` (never journaled) lives in memory only,
 //   per running subagent, merged into reads (not into the summary `append` returns).
 // - Every read takes the reader's principal, and `minSeq` answers `unavailable` at once when `ack` has
-//   not reached it. Nothing waits here: the edge waits through Live (spec 37.1).
+//   not reached it. Nothing waits: a client follows over Live (spec 37.1).
 
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { gatewayTelemetry, type TelemetryEnv } from "./telemetry/gateway.js";
@@ -1524,7 +1524,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return { ok: false, error: "reset", cursor: cursor.encode("e", [m.logEpoch, first - 1]), seq: first - 1 };
   }
 
-  /** A read's gate: `not_found` to a principal that may not read, then `minSeq`, at once (the edge retries, or waits through Live). */
+  /** A read's gate: `not_found` to a principal that may not read, then `minSeq`, at once (the client retries). */
   private async admit(minSeq: number | undefined, p: Principal): Promise<LogReadRefusal | null> {
     const access = await this.accessFor(p);
     if (!access || !mayRead(p, access, this.sessionId()!)) return { ok: false, error: "not_found" };

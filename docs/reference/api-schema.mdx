@@ -25,7 +25,7 @@ On an HTTP route, path parameters replace `sessionId`, `turnId`, `askId` and `su
 | `sessions.suspend` | `POST /sessions/{id}/suspend` | `sessionId`, `idempotencyKey?`, `ifIdle?` | `session`, `seq` |
 | `sessions.resume` | `POST /sessions/{id}/resume` | `sessionId`, `idempotencyKey?` | `session`, `seq` |
 | `turns.send` | `POST /sessions/{id}/turns` | `sessionId`, `idempotencyKey?`, `input` (1 to 100,000 characters), `ifBusy?` (`queue`, `steer`, `interrupt`) | `turn`, `delivery` (`started`, `queued`, `steered`), `duplicate`, `seq`, `timing?` |
-| `turns.get` | `GET /sessions/{id}/turns/{turnId}` | `sessionId`, `turnId`, `waitMs?` (0 to 60,000), `status?`, `minSeq?` | `turn` |
+| `turns.get` | `GET /sessions/{id}/turns/{turnId}` | `sessionId`, `turnId`, `minSeq?` | `turn` |
 | `turns.cancel` | `POST /sessions/{id}/turns/{turnId}/cancel` | `sessionId`, `turnId`, `idempotencyKey?` | `turn`, `seq` |
 | `asks.list` | `GET /sessions/{id}/asks` | `sessionId`, `status?`, `limit?` (1 to 100), `cursor?` | `asks`, `nextCursor \| null` |
 | `asks.get` | `GET /sessions/{id}/asks/{askId}` | `sessionId`, `askId` | `ask` |
@@ -34,7 +34,7 @@ On an HTTP route, path parameters replace `sessionId`, `turnId`, `askId` and `su
 | `subagents.list` | `GET /sessions/{id}/subagents` | `sessionId`, `status?` (`running`, `all`), `limit?` (1 to 100), `cursor?` | `subagents`, `nextCursor \| null` |
 | `subagents.get` | `GET /sessions/{id}/subagents/{subagentId}` | `sessionId`, `subagentId` | `subagent` |
 | `subagents.stop` | `POST /sessions/{id}/subagents/{subagentId}/stop` | `sessionId`, `subagentId`, `idempotencyKey?` | `subagent`, `seq` |
-| `events.list` | `GET /sessions/{id}/events` | `sessionId`, `after?`, `limit?` (1 to 500, default 100), `waitMs?` (0 to 60,000), `tailTurns?` (1 to 50), `turnId?`, `types?` | `events`, `earlierTurns \| null`, `lastSeq`, `hasMore` |
+| `events.list` | `GET /sessions/{id}/events` | `sessionId`, `after?`, `limit?` (1 to 500, default 100), `tailTurns?` (1 to 50), `turnId?`, `types?` | `events`, `earlierTurns \| null`, `lastSeq`, `hasMore` |
 | `terminals.open` | WebSocket only | `sessionId`, `cols?`, `rows?` (1 to 1,000 each), `command?` (up to 10,000 characters), `tty?`, `term?` (up to 64 characters) | `terminal.id`, `terminal.channel`, `terminal.stderrChannel \| null` |
 | `terminals.resize` | WebSocket only | `terminalId`, `cols`, `rows` | empty |
 | `terminals.eof` | WebSocket only | `terminalId` | empty |

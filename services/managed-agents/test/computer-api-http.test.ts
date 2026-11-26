@@ -44,7 +44,6 @@ interface Fakes {
   org?: Record<string, unknown>;
   log?: Record<string, unknown>;
   computer?: Record<string, unknown>;
-  live?: Record<string, unknown>;
 }
 
 function setup(f: Fakes) {
@@ -52,7 +51,6 @@ function setup(f: Fakes) {
     ORGS: ns(() => f.org ?? {}),
     SESSION_LOG: ns(() => f.log ?? {}),
     COMPUTERS: ns(() => f.computer ?? {}),
-    ...(f.live ? { LIVE: ns(() => f.live) } : {}),
   };
   const stub: ComputerApiStub = { computerApi: vi.fn() };
   const call = async (method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; identity?: RequestIdentity } = {}) => {
@@ -206,8 +204,8 @@ describe("the session directory through Org", () => {
     expect((await call("GET", "/sessions?limit=0")).status).toBe(400);
   });
 
-  it("GET /sessions/{id} lays the log's newer summary over Org's row; Org's not_found is 404", async () => {
-    const org = { getSession: vi.fn(async (_p: Principal, id: string) => (id === SID ? { ok: true, session: row() } : { ok: false, code: "not_found" })) };
+  it("GET /sessions/{id} lays the log's newer summary over Org's row; Org's session_not_found is 404", async () => {
+    const org = { getSession: vi.fn(async (_p: Principal, id: string) => (id === SID ? { ok: true, session: row() } : { ok: false, code: "session_not_found" })) };
     const log = { summary: vi.fn(async () => ({ ok: true, summary: { lastSeq: 9, status: "running", activeTurnId: "tn_x", queued: [], asks: [], subagents: [], lastTurn: null, lastText: "hey", context: { usedTokens: 1, windowTokens: 2 }, lastActiveAt: null, syncedAt: null, settings: null } })) };
     const { call } = setup({ org, log });
     const r = await call("GET", `/sessions/${SID}?minSeq=9`);
@@ -216,7 +214,7 @@ describe("the session directory through Org", () => {
     expect(log.summary).toHaveBeenCalledWith(9, expect.objectContaining({ subject: MEMBER }));
     const missing = await call("GET", `/sessions/${OTHER}`);
     expect(missing.status).toBe(404);
-    expect(missing.body.error.code).toBe("not_found");
+    expect(missing.body.error.code).toBe("session_not_found");
   });
 
   it("POST /sessions without input: Org creates; 201, a duplicate 200; a refusal is its status", async () => {
@@ -390,9 +388,9 @@ describe("the writes through the inbox (spec 37.2, 40.2)", () => {
     const { call } = setup({ log });
     const nf = await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } });
     expect(nf.status).toBe(404);
-    expect(nf.body.error.code).toBe("not_found");
+    expect(nf.body.error.code).toBe("session_not_found");
     log.accept.mockResolvedValueOnce({ ok: false, code: "forbidden" });
-    expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).body.error.code).toBe("not_found");
+    expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).body.error.code).toBe("session_not_found");
     log.accept.mockResolvedValueOnce({ ok: false, code: "idempotency_conflict" });
     expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).status).toBe(409);
     log.accept.mockResolvedValueOnce({ ok: false, code: "inbox_full" });
@@ -462,37 +460,29 @@ describe("the session reads (spec 37.1)", () => {
     expect(reset.body.error).toMatchObject({ code: "reset", cursor: "e1.3.99", seq: 99 });
   });
 
-  it("events: a session the caller may not read is not_found", async () => {
-    const log = { events: vi.fn(async () => ({ ok: false, error: "forbidden" })) };
+  it("events: a session the caller may not read is session_not_found, the code GET /sessions/{id} answers", async () => {
+    const log = { events: vi.fn(async () => ({ ok: false, error: "forbidden" })), turn: vi.fn(async () => ({ ok: false, error: "not_found" })) };
     const { call } = setup({ log });
     const r = await call("GET", `/sessions/${SID}/events`);
     expect(r.status).toBe(404);
-    expect(r.body.error.code).toBe("not_found");
+    expect(r.body.error.code).toBe("session_not_found");
+    expect((await call("GET", `/sessions/${SID}/turns/tn_0123456789ab`)).body.error.code).toBe("session_not_found");
   });
 
-  it("the wait rule: nothing new, then Live's wait, then one more read", async () => {
+  it("reads answer at once: no long-poll, and minSeq not reached is 503 with retryAfterMs", async () => {
     const log = {
-      events: vi.fn()
-        .mockResolvedValueOnce({ ok: true, events: [], lastSeq: 4, cursor: "e1.2.4" })
-        .mockResolvedValueOnce({ ok: true, events: [event(5)], lastSeq: 5, cursor: "e1.2.5" }),
+      events: vi.fn(async () => ({ ok: true, events: [], lastSeq: 4, cursor: "e1.2.4" })),
+      summary: vi.fn(async () => ({ ok: false, error: "unavailable", lastSeq: 4, retryAfterMs: 500 })),
     };
-    const live = { wait: vi.fn(async () => ({ moved: true, head: "e1.2.5" })) };
-    const { call } = setup({ log, live });
+    const org = { getSession: vi.fn(async () => ({ ok: true, session: row() })) };
+    const { call } = setup({ log, org });
     const r = await call("GET", `/sessions/${SID}/events?after=e1.2.4&waitMs=20000`);
-    expect(r.body.cursor).toBe("e1.2.5");
-    expect(live.wait).toHaveBeenCalledWith(expect.objectContaining({ subject: MEMBER }), `events:${SID}`, "e1.2.4", 20_000);
-    expect(log.events).toHaveBeenCalledTimes(2);
-
-    // Something new at once: no wait.
-    log.events.mockResolvedValueOnce({ ok: true, events: [event(6)], lastSeq: 6, cursor: "e1.2.6" });
-    await call("GET", `/sessions/${SID}/events?after=e1.2.5&waitMs=20000`);
-    expect(live.wait).toHaveBeenCalledTimes(1);
-    // Timed out: the first, empty answer.
-    log.events.mockResolvedValueOnce({ ok: true, events: [], lastSeq: 6, cursor: "e1.2.6" });
-    live.wait.mockResolvedValueOnce({ moved: false, head: "e1.2.6" });
-    const empty = await call("GET", `/sessions/${SID}/events?after=e1.2.6&waitMs=1000`);
-    expect(empty.body).toEqual({ events: [], lastSeq: 6, cursor: "e1.2.6" });
-    expect(log.events).toHaveBeenCalledTimes(4);
+    expect(r.body).toEqual({ events: [], lastSeq: 4, cursor: "e1.2.4" });
+    expect(log.events).toHaveBeenCalledTimes(1);
+    const behind = await call("GET", `/sessions/${SID}?minSeq=9`);
+    expect(behind.status).toBe(503);
+    expect(behind.body.error).toMatchObject({ code: "unavailable", retryAfterMs: 500 });
+    expect(log.summary).toHaveBeenCalledTimes(1);
   });
 
   it("turns, asks and subagents read the log as the principal", async () => {

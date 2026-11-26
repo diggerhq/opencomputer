@@ -10,15 +10,15 @@
 //
 // Telemetry (work 084 instrumentation, Q3/Q4): one `httpapi.request` per request, after the
 // response is made, sent through the caller's `waitUntil` (never awaited here). Facts only: the
-// route family and op, status, error code, time in the Computer DO and the SessionLog, a long-poll's
-// wait and whether it came back empty, the events delivered and their age. Never a path, query,
+// route family and op, status, error code, time in the Computer DO and the SessionLog, whether an
+// events read came back empty, the events delivered and their age. Never a path, query,
 // body or key.
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
-import { eventsStream, type LiveUpgrade, liveRequest } from "../live/contract.js";
+import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
@@ -61,6 +61,7 @@ function workRoute(method: string, s: string[]): Route | null {
   switch (a) {
     case "threads":
       if (is("GET", 1)) return { op: "work.threads" };
+      if (is("GET", 2)) return { op: "work.thread", args: { sid: b! } };
       if (is("DELETE", 2)) return m("thread.delete", { sid: b! });
       if (is("PUT", 3) && THREAD_MARKS[c!]) return m(THREAD_MARKS[c!]!, { sid: b! });
       if (is("DELETE", 3) && c === "done") return m("thread.reopen", { sid: b! });
@@ -197,8 +198,6 @@ interface RequestFacts {
   /** Time awaiting the Computer DO / the SessionLog, ms. */
   doMs: number;
   logMs: number;
-  /** A long-poll's requested wait, ms. */
-  waitMs?: number;
   /** events.list: events returned, and now − createdAt of the first and last. */
   events?: number;
   oldestAgeMs?: number;
@@ -321,7 +320,7 @@ const OPS = new Set([
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
-  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
+  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -346,7 +345,6 @@ function requestFact(env: ComputerEdgeEnv, identity: RequestIdentity, method: st
         status,
         do_ms: Math.round(f.doMs),
         log_ms: Math.round(f.logMs),
-        ...(f.waitMs !== undefined ? { wait_ms: f.waitMs } : {}),
         ...(f.events !== undefined ? { events: f.events, empty: f.events === 0 } : {}),
         ...(f.oldestAgeMs !== undefined ? { oldest_age_ms: f.oldestAgeMs } : {}),
         ...(f.newestAgeMs !== undefined ? { newest_age_ms: f.newestAgeMs } : {}),
@@ -554,14 +552,11 @@ const ACTOR_OPS = new Set([
   "sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
-  "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
+  "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
-const ENDED_TURNS = new Set(["completed", "failed", "cancelled"]);
-/** How long `GET /sessions/{id}?minSeq` waits for the log without `waitMs`. */
-const MIN_SEQ_WAIT_MS = 10_000;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
 const ENTRY_KINDS = {
   "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt",
@@ -589,6 +584,7 @@ const STATUS_OF: Record<string, number> = {
   forbidden: 403,
   principal_mismatch: 403,
   not_found: 404,
+  session_not_found: 404,
   refused: 409,
   taken: 409,
   conflict: 409,
@@ -628,7 +624,7 @@ function logRefusalOf(out: Reply, r: LogRefused): Response {
   if (r.error === "reset") return out.error(409, "reset", "The cursor's position no longer exists.", { cursor: r.cursor ?? null, ...(r.seq !== undefined ? { seq: r.seq } : {}) });
   if (r.error === "invalid_cursor") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
   if (r.error === "unavailable") return out.error(503, "unavailable", "The session has not reached minSeq yet.", { retryAfterMs: r.retryAfterMs ?? 1_000 });
-  if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "not_found", "No such session.");
+  if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "session_not_found", "No such session.");
   return out.error(404, r.error, `No such ${r.error.replace(/_not_found$/, "")}.`);
 }
 
@@ -664,35 +660,14 @@ type Sent = { delivered: unknown } | { waking: true } | { response: Response };
 async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, entry: { id: string; kind: InboxKind; body: unknown }, trace: string | undefined, out: Reply): Promise<Sent> {
   const accepted = await timedLog(out.facts, logOf(env, sessionId).accept(p, { ...entry, ...(trace ? { trace } : {}) }, { wait: true }));
   if (!accepted.ok) {
-    const code = accepted.code === "forbidden" ? "not_found" : accepted.code;
-    return { response: refusalOf(out, { ok: false, code, message: code === "not_found" ? "No such session." : `Refused: ${code}.` }) };
+    const code = accepted.code === "forbidden" || accepted.code === "not_found" ? "session_not_found" : accepted.code;
+    return { response: refusalOf(out, { ok: false, code, message: code === "session_not_found" ? "No such session." : `Refused: ${code}.` }) };
   }
   if (accepted.duplicate) out.facts.replayed = true;
   const { outcome } = accepted;
   if (outcome.state === "delivered") return { delivered: outcome.result ?? null };
   if (outcome.state === "refused") return { response: hostErrorOf(out, outcome.error) };
   return { waking: true };
-}
-
-/**
- * The wait rule (spec 37.1): the owner was read and had nothing new; wait on Live's stream from
- * `after` (empty: from wherever Live's head is), read the owner again, until `done` or the time is
- * up. Live takes the session's lease.
- */
-async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, after: string, waitMs: number, first: T, read: () => Promise<T>, done: (r: T) => boolean): Promise<T> {
-  const live = liveOf(env, p.org);
-  const deadline = Date.now() + waitMs;
-  let r = first;
-  let head = after;
-  while (!done(r)) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    const waited = await live.wait(p, stream, head, remaining).catch(() => null);
-    if (!waited?.moved || waited.head === null) break;
-    head = waited.head;
-    r = await read();
-  }
-  return r;
 }
 
 type CreateInput = CreateSession & { turnId?: string };
@@ -872,7 +847,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
-  if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
+  if (!isSessionId(sessionId)) return out.error(404, "session_not_found", "No such session.");
   if (route.sub !== undefined && !ID.test(route.sub)) {
     const what = route.op.split(".")[0]!.replace(/s$/, "");
     return out.error(404, `${what}_not_found`, `No such ${what}.`);
@@ -881,23 +856,18 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (minSeq === null) return out.error(400, "invalid_request", "minSeq must be a non-negative integer.", { field: "minSeq" });
 
   if (route.op === "get") {
-    const waitMs = intParam(query, "waitMs", 0, 60_000);
-    if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
-    const readSummary = () => timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null);
-    let [got, summary] = await Promise.all([timedDo(out.facts, org().getSession(p, sessionId)), readSummary()]);
+    const [got, summary] = await Promise.all([
+      timedDo(out.facts, org().getSession(p, sessionId)),
+      timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null),
+    ]);
     if (!got.ok && p.admin) {
       // An admin outside the session reads its access and nothing else (sessions.mdx#access).
       const outside = await timedDo(out.facts, org().sessionAccess(p, sessionId));
       if (outside.ok) return out.send(200, strip(outside));
     }
     if (!got.ok) return refusalOf(out, got);
-    // With minSeq, until the log has it (spec 37.1's wait rule).
-    const behind = (r: typeof summary) => !!r && !r.ok && r.error === "unavailable";
-    if (behind(summary)) {
-      out.facts.waitMs = waitMs ?? MIN_SEQ_WAIT_MS;
-      summary = await waitFor(env, p, eventsStream(sessionId), "", waitMs ?? MIN_SEQ_WAIT_MS, summary, readSummary, (r) => !behind(r));
-      if (summary && !summary.ok && behind(summary)) return logRefusalOf(out, summary);
-    }
+    // With minSeq the log has not reached: 503 with retryAfterMs, as every read (spec 37.1).
+    if (summary && !summary.ok && summary.error === "unavailable") return logRefusalOf(out, summary);
     return out.send(200, { session: withSummary(got.session, summary?.ok ? summary.summary : null) });
   }
 
@@ -945,9 +915,8 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       // A cursor the module cannot read (a bare seq of the old API included) is reset with no cursor.
       if (after !== undefined && !cursor.read("e", after)) return out.error(409, "reset", "after is not a cursor of this session's events.", { cursor: null });
       const lim = limit(500);
-      const waitMs = intParam(query, "waitMs", 0, 60_000);
       const tailTurns = intParam(query, "tailTurns", 1, 50);
-      for (const [name, v] of [["limit", lim], ["waitMs", waitMs], ["tailTurns", tailTurns]] as const) {
+      for (const [name, v] of [["limit", lim], ["tailTurns", tailTurns]] as const) {
         if (v === null) return out.error(400, "invalid_request", `${name} is out of range.`, { field: name });
       }
       if (tailTurns !== undefined && after !== undefined) return out.error(400, "invalid_request", "tailTurns cannot be sent with after.", { field: "tailTurns" });
@@ -961,13 +930,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
         ...(turnId ? { turnId } : {}),
         ...(minSeq !== undefined ? { minSeq } : {}),
       };
-      const read = () => timedLog(out.facts, log.events(q, p));
-      let r = await read();
-      if (waitMs && r.ok && !r.events.length) {
-        out.facts.waitMs = waitMs;
-        const head = r.cursor ?? after;
-        r = await waitFor(env, p, eventsStream(sessionId), head ?? "", waitMs, r, read, (n) => !n.ok || n.events.length > 0);
-      }
+      const r = await timedLog(out.facts, log.events(q, p));
       if (r.ok) delivered(out.facts, r.events);
       return answer(r);
     }
@@ -977,23 +940,8 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       const status = query.get("status")?.split(",").filter(Boolean);
       return answer(await timedLog(out.facts, log.turns({ ...(lim !== undefined ? { limit: lim } : {}), ...(pageCursor ? { cursor: pageCursor } : {}), ...(status ? { status } : {}), ...(minSeq !== undefined ? { minSeq } : {}) }, p)));
     }
-    case "turns.get": {
-      const waitMs = intParam(query, "waitMs", 0, 60_000);
-      if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
-      const status = query.get("status") ?? undefined;
-      const read = () => timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p));
-      // Until the turn leaves `status`, or ends; the edge waits, not the log (spec 37.1).
-      const done = (r: LogPage | LogRefused) => {
-        const turnStatus = r.ok ? (r.turn as { status?: string } | undefined)?.status : undefined;
-        return !r.ok || turnStatus === undefined || (status ? turnStatus !== status : ENDED_TURNS.has(turnStatus));
-      };
-      let r = await read();
-      if (waitMs && !done(r)) {
-        out.facts.waitMs = waitMs;
-        r = await waitFor(env, p, eventsStream(sessionId), "", waitMs, r, read, done);
-      }
-      return answer(r, "turn");
-    }
+    case "turns.get":
+      return answer(await timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p)), "turn");
     case "asks.list": {
       const lim = limit(100);
       if (lim === null) return out.error(400, "invalid_request", "limit is 1 to 100.", { field: "limit" });
@@ -1051,7 +999,9 @@ async function orgRoute(
   if (protocol !== null && !(Number(protocol) >= PROTOCOL)) return reset(out, `This server speaks protocol ${PROTOCOL}.`);
   // Path ids of the wrong shape name nothing.
   for (const [name, value] of Object.entries(route.args ?? {})) {
-    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) return out.error(404, "not_found", `No such ${name}.`);
+    if (PATH_ID[name] && !PATH_ID[name]!.test(value)) {
+      return name === "sid" ? out.error(404, "session_not_found", "No such session.") : out.error(404, "not_found", `No such ${name}.`);
+    }
   }
   if (route.sub !== undefined && route.op !== "work.review" && !PATH_ID.tid!.test(route.sub)) return out.error(404, "not_found", "No such track.");
   if (route.op === "work.review" && !PATH_ID.resultId!.test(route.sub!)) return out.error(404, "not_found", "No such result.");
@@ -1122,6 +1072,11 @@ async function orgRoute(
         ...(limit !== undefined ? { limit } : {}),
       }));
       return out.send(200, { protocol: PROTOCOL, rows: r.rows, next: r.next });
+    }
+    case "work.thread": {
+      // One thread, by id, whatever its age (a deep link to one no page has loaded): the rows a page holds for it.
+      const r = await timed(org().thread(p, route.args!.sid!));
+      return r ? out.send(200, { protocol: PROTOCOL, rows: r.rows }) : out.error(404, "session_not_found", "No such session.");
     }
     case "work.overview":
       return out.send(200, { protocol: PROTOCOL, ...(await timed(org().overview(p))) });

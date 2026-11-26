@@ -154,7 +154,14 @@ export function ThreadPane({ sid }: { sid: string }) {
   // Whose name is being edited, so moving to another thread ends the edit.
   const [renaming, setRenaming] = useState<string | null>(null)
   const [confirm, dialog] = useConfirm()
+  const missing = useS((s) => s.missing[sid] === true)
 
+  if (!thread && missing)
+    return (
+      <div className={cn(IN, 'items-center justify-center')} data-pane="thread" data-missing>
+        <p className="text-muted-foreground text-sm">This thread was not found.</p>
+      </div>
+    )
   if (!thread) return <div className={IN} data-pane="thread" />
 
   const status = thread.session.status

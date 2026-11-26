@@ -360,7 +360,7 @@ async function onGateway(m: GatewayToHost) {
   }
 }
 
-/** Work 084: start the session's runner for the API (`start`, a wake, an `api` call that needs the agent), or find it running; tell it the credentials, secrets and preview ports; its status. */
+/** Work 084: start the session's runner for the API (`start`, an `api` call that needs the agent), or find it running; tell it the credentials, secrets and preview ports; its status. */
 async function startSession(spec: SessionSpec, o: StartOptions) {
   const f = traceFields(spec.key);
   const credentials = await subs.delivered(spec.key, o.credentials, o.model, spec.harness);

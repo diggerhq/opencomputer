@@ -11,7 +11,6 @@
 // screen actually reads, not the full interface.
 
 import { ApiError } from './errors'
-import { computerSessionsMock } from './mock-computer-sessions'
 import { workMock } from './mock-work'
 
 // Fixed clock so screenshots are deterministic.
@@ -910,8 +909,6 @@ export function mockFetch<T>(path: string, options: RequestInit = {}): T {
   const method = (options.method ?? 'GET').toUpperCase()
   const work = workMock(path, method, options.body)
   if (work !== undefined) return work as T
-  const computerSessions = computerSessionsMock(path, method, options.body)
-  if (computerSessions !== undefined) return computerSessions as T
   if (
     /^\/managed-agents\/projects\/[^/]+\/service-connections$/.test(path) &&
     (method === 'POST' || method === 'DELETE')
