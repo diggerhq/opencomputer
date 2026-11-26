@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mulberry } from "./fake/ctx.js";
 import { makeId } from "./ids.js";
 
 const CROCKFORD = /^[0-9a-hjkmnp-tv-z]+$/;
@@ -28,9 +27,8 @@ describe("makeId", () => {
     expect(seen.size).toBe(32);
   });
 
-  it("takes an injected source, as the fake's seeded ids do", () => {
+  it("takes an injected source", () => {
     expect(makeId("op", () => 0)).toBe("op_0000000000000000");
     expect(makeId("tn", () => 0.999999)).toBe("tn_zzzzzzzzzzzz");
-    expect(makeId("cs", mulberry(7))).toBe(makeId("cs", mulberry(7)));
   });
 });

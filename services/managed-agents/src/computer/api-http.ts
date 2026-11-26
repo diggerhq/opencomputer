@@ -28,6 +28,7 @@ import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
+import { matchMutation } from "../org/mutations/table.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
@@ -49,12 +50,10 @@ interface Route {
   args?: Record<string, string>;
 }
 
-const THREAD_MARKS: Record<string, string> = { title: "thread.rename", track: "thread.place", done: "thread.done", keep: "thread.keep", ready: "thread.ready", attention: "thread.attention", writers: "thread.writers" };
-const TRACK_MARKS: Record<string, string> = { name: "track.rename", stand: "track.set_stand", done: "track.done", keep: "track.keep", doc: "doc.save" };
-
-/** The work routes of tracks and threads (spec 37.1, 37.3): the reads and one route per mutation. */
+/** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
-  const m = (name: string, args: Record<string, string> = {}): Route => ({ op: "mutate", name, args });
+  const mutation = matchMutation(method, `/work/${s.join("/")}`);
+  if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;
   const is = (verb: string, length: number) => method === verb && n === length;
@@ -62,36 +61,17 @@ function workRoute(method: string, s: string[]): Route | null {
     case "threads":
       if (is("GET", 1)) return { op: "work.threads" };
       if (is("GET", 2)) return { op: "work.thread", args: { sid: b! } };
-      if (is("DELETE", 2)) return m("thread.delete", { sid: b! });
-      if (is("PUT", 3) && THREAD_MARKS[c!]) return m(THREAD_MARKS[c!]!, { sid: b! });
-      if (is("DELETE", 3) && c === "done") return m("thread.reopen", { sid: b! });
       return null;
     case "tracks":
-      if (is("POST", 1)) return m("track.create");
-      if (is("DELETE", 2)) return m("track.delete", { tid: b! });
-      if (is("PUT", 3) && TRACK_MARKS[c!]) return m(TRACK_MARKS[c!]!, { tid: b! });
-      if (is("DELETE", 3) && c === "done") return m("track.reopen", { tid: b! });
-      if (is("POST", 3) && c === "dissolve") return m("track.dissolve", { tid: b! });
       if (is("GET", 3) && c === "doc") return { op: "work.doc", sub: b! };
       if (method === "GET" && c === "doc" && d === "revisions" && (n === 4 || n === 5)) return { op: "work.doc.revisions", sub: b!, ...(n === 5 ? { args: { rev: s[4]! } } : {}) };
       return null;
     case "tell-track":
       return is("POST", 1) ? { op: "work.tell" } : null;
-    case "reads":
-      return is("PUT", 2) ? m("read.set", { sid: b! }) : null;
-    case "prefs":
-      return is("PUT", 2) ? m("pref.set", { key: b! }) : null;
     case "results":
-      if (is("PUT", 2)) return m("result.add", { resultId: b! });
       if (is("GET", 3) && c === "diff") return { op: "work.diff", sub: b! };
-      if (n === 3 && c === "review") return method === "PUT" ? m("review.save", { resultId: b! }) : method === "GET" ? { op: "work.review", sub: b! } : null;
+      if (is("GET", 3) && c === "review") return { op: "work.review", sub: b! };
       return null;
-    case "proposals":
-      if (is("POST", 1)) return m("proposal.create");
-      if (is("POST", 3) && (c === "accept" || c === "dismiss")) return m(`proposal.${c}`, { proposalId: b! });
-      return null;
-    case "ops":
-      return is("POST", 3) && c === "undo" ? m("undo", { opId: b! }) : null;
     case "overview":
       return is("GET", 1) ? { op: "work.overview" } : null;
     case "search":
@@ -130,7 +110,6 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   // The same for every session, so the new-session screen can read it before there is one.
   if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
   if (is("GET", 1) && p[0] === "feed") return { op: "feed" };
-  if (is("POST", 2) && p[0] === "feed" && p[1] === "mismatch") return { op: "feed.mismatch" };
   if (is("GET", 1) && p[0] === "occurrences") return { op: "occurrences" };
   if (is("GET", 1) && p[0] === "live") return { op: "live" };
   if (is("POST", 4) && p[0] === "slack" && p[1] === "threads" && p[3] === "messages") return { op: "slack.post", sub: p[2] };
@@ -183,7 +162,7 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "secrets.events") return "sessions:read";
   if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
   if (op === "live") return "sessions:read";
-  if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "sessions:read";
+  if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
   return "sessions:write";
@@ -303,7 +282,7 @@ export function routeFamily(op: string): string {
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
   if (op.startsWith("work.") || op === "mutate") return "work";
-  if (op === "feed" || op === "feed.mismatch" || op === "occurrences" || op === "live") return "feed";
+  if (op === "feed" || op === "occurrences" || op === "live") return "feed";
   return "other";
 }
 
@@ -314,7 +293,7 @@ const OPS = new Set([
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
-  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
+  "feed", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -545,7 +524,7 @@ const ACTOR_OPS = new Set([
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
-  "feed", "feed.mismatch", "occurrences", "mutate",
+  "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
 ]);
@@ -958,7 +937,6 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
 
 /** The feed's kinds a principal without `work:read` may read (spec 37.1). */
 const CORE_KINDS = ["session", "machine"];
-const CLIENT_ID = /^cl_[0-9a-hjkmnp-tv-z]{16}$/;
 const PROTOCOL = 1;
 
 const reset = (out: Reply, message: string) => out.error(409, "reset", message, { cursor: null });
@@ -1009,20 +987,9 @@ async function orgRoute(
       const frame = await timed(org().feed(p, {
         ...(after !== undefined ? { after } : {}),
         ...(kinds?.length ? { kinds } : {}),
-        ...(query.get("sum") === "1" ? { sum: true } : {}),
       }));
       if ("reset" in frame) return reset(out, "The feed has moved past this cursor; read a snapshot.");
       return out.send(200, frame);
-    }
-    case "feed.mismatch": {
-      const parsed = await bodyOf(request);
-      if ("error" in parsed) return out.error(...parsed.error);
-      const b = asObject(parsed.value);
-      if (!b || !CLIENT_ID.test(String(b.clientId)) || ["cursor", "server", "client"].some((f) => typeof b[f] !== "string" || (b[f] as string).length > 1_024)) {
-        return out.error(400, "invalid_request", "The body is { clientId, cursor, server, client }.", { field: "" });
-      }
-      await timed(org().mismatch(p, { clientId: b.clientId as string, cursor: b.cursor as string, server: b.server as string, client: b.client as string }));
-      return out.send(204, null);
     }
     case "occurrences": {
       const after = query.get("after") ?? undefined;

@@ -1,6 +1,6 @@
 // Ids as section 34.1 makes them: a prefix and Crockford base32. They become
 // server row ids and idempotency keys, so they are drawn from the platform's
-// crypto; a seeded source is injected only by the fake.
+// crypto; a seeded source is injected only by tests.
 
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 

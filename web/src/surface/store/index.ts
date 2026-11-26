@@ -715,7 +715,7 @@ export function createSurface(o: SurfaceOptions) {
       if (now) onto(now)
       for (let tries = 0; ; tries++) {
         const row = get().rows.doc.get(tid)
-        const spans = docSpans(row, from.text, ours, me)
+        const spans = docSpans(row, from.text, ours, `user:${me}`)
         try {
           await mutate('doc.save', { tid, baseRev: from.rev, text: ours, spans }).settled
           break
@@ -784,8 +784,8 @@ export function createSurface(o: SurfaceOptions) {
       addUnder(reply.rows)
       return reply.rows
     },
-    review(resultId: string) {
-      return client.read<Review>(`/work/results/${resultId}/review`)
+    async review(resultId: string) {
+      return (await client.read<{ review: Review }>(`/work/results/${resultId}/review`)).review
     },
     // What a session may be started with or changed to (the model, effort and mode pickers).
     async capabilities() {

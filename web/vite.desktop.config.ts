@@ -11,12 +11,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
-      '@opencomputer/sdk/computer/fake': fileURLToPath(
-        new URL(
-          '../sdks/typescript/src/computer/fake/index.ts',
-          import.meta.url,
-        ),
-      ),
       '@opencomputer/sdk/computer': fileURLToPath(
         new URL('../sdks/typescript/src/computer/index.ts', import.meta.url),
       ),

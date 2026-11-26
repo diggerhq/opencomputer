@@ -1054,7 +1054,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       }
       // Spec 40.3 step 1. Any other append's lastSeq, lastText and lastActiveAt go with the next revision.
       const was = m.summary;
-      const changed = newEpoch || was.status !== summary.status || was.title !== summary.title || JSON.stringify(was.asks) !== JSON.stringify(summary.asks);
+      const changed = newEpoch || was.status !== summary.status || was.activeTurnId !== summary.activeTurnId || was.title !== summary.title || JSON.stringify(was.asks) !== JSON.stringify(summary.asks);
       const running = summary.activeTurnId !== null && now - slotAt > SLOT_REFRESH_MS;
       if (occurred || changed || running) this.bump(next, now);
       else {

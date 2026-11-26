@@ -133,7 +133,6 @@ export type FeedFrame = {
   /** The feed version `to` names: a mutation's reply names the one that holds its effect. */
   version: number;
   counts?: { earlier: number; trackEarlier: Record<string, number> };
-  sum?: string;
 };
 /** What Org publishes to Live on `feed` (spec 40.4): rows and gone entries with their audience. */
 export type FeedPush = {
@@ -188,7 +187,7 @@ export interface OrgRpc {
   setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>>;
 
   // the feed and the work part
-  feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }>;
+  feed(p: Principal, q: { after?: string; kinds?: string[] }): Promise<FeedFrame | { reset: true; cursor: null }>;
   mutate(p: Principal, m: MutateRequest): Promise<MutateReply>;
   threads(p: Principal, q: { earlier?: boolean; trackId?: string; before?: string; limit?: number }): Promise<{ rows: Row[]; next: string | null }>;
   /** One thread's `session`, `place` and `result` rows, as `threads` holds them; null when `p` may not see it. */
@@ -202,7 +201,6 @@ export interface OrgRpc {
   doc(p: Principal, trackId: string): Promise<Row | null>;
   docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]>;
   review(p: Principal, resultId: string): Promise<ReviewRow | null>;
-  mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void>;
 
   // the occurrence stream
   occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }>;

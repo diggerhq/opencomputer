@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { migrate, owed, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
 import { runMutation } from "../src/org/mutations/index.js";
 import { STEPS } from "../src/org/schema.js";
@@ -261,30 +261,6 @@ describe("Org: session access (spec 36.2)", () => {
   });
 });
 
-describe("Org.mismatch", () => {
-  it("reports a client's checksum mismatch at error level, to alert on (spec 27, 28)", async () => {
-    await withActor("mismatch", async (org) => {
-      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-      try {
-        await org.mismatch(member("usr_a", "mismatch"), { clientId: "cl_1", cursor: "v9", server: "aa", client: "bb" });
-        expect(error).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(error.mock.calls[0]![0] as string)).toMatchObject({
-          level: "error",
-          actor: "org",
-          event: "org.feed_mismatch",
-          org: "mismatch",
-          subject: "usr_a",
-          clientId: "cl_1",
-          server: "aa",
-          client: "bb",
-        });
-      } finally {
-        error.mockRestore();
-      }
-    });
-  });
-});
-
 describe("Org.feed", () => {
   it("answers a snapshot, then deltas by version, to the row's audience only", async () => {
     await withActor("feed", async (org) => {
@@ -293,10 +269,9 @@ describe("Org.feed", () => {
       await org.createSession(a, { id: "cs_0000000000000020", input: "One", access: { mode: "org" } });
       await org.createSession(a, { id: "cs_0000000000000021", input: "Private", origin: { type: "slack", client: null, slack: null } });
 
-      const snap = frameOf(await org.feed(a, { sum: true }));
+      const snap = frameOf(await org.feed(a, {}));
       expect(snap).toMatchObject({ protocol: 1, org: "feed", subject: "usr_a", from: null, to: "f1.2", more: false, gone: [], counts: { earlier: 0, trackEarlier: {} } });
       expect(kindsOf(snap)).toEqual(["place:cs_0000000000000020:1", "place:cs_0000000000000021:2", "session:cs_0000000000000020:1", "session:cs_0000000000000021:2"]);
-      expect(snap.sum).toMatch(/^[0-9a-f]{16}$/);
       expect(snap.rows[0]).not.toHaveProperty("audience");
       expect(kindsOf(frameOf(await org.feed(b, {})))).toEqual(["place:cs_0000000000000020:1", "session:cs_0000000000000020:1"]);
       expect(frameOf(await org.feed(a, { after: snap.to }))).toMatchObject({ from: "f1.2", to: "f1.2", rows: [], more: false });

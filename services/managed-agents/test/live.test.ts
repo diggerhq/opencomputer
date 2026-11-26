@@ -152,6 +152,7 @@ describe("Live: the feed", () => {
     const a = await mine.next("feed");
     expect(a).toMatchObject({ from: "f1.4", to: "f1.5", gone: [], version: 5 });
     expect(a.rows.map((r) => (r as { id: string }).id)).toEqual(["th_1", "th_2", "tr_1"]);
+    expect(a.rows[0]).toEqual({ kind: "thread", id: "th_1", version: 1, title: "For all" }); // no audience
     const b = await other.next("feed");
     expect(b.rows.map((r) => (r as { id: string }).id)).toEqual(["th_1"]);
     expect(b.gone).toEqual([{ kind: "thread", id: "th_3" }]);
@@ -183,7 +184,7 @@ describe("Live: the feed", () => {
       gone: [],
       version: 2,
     });
-    expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", version: 1, audience: "org" }]);
+    expect((await client.next("feed")).rows).toEqual([{ kind: "session", id: "cs_1", version: 1 }]);
   });
 
   it("tells subscribers they are behind when a range does not fit a frame", async () => {

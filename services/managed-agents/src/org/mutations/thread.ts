@@ -22,6 +22,7 @@ import {
 } from "../tx.js";
 import { byFor, Changes, isSid, isStr, isTid, markDone, optStr, ready, removeSession, unread } from "./common.js";
 import { applied, refuse, type MutationFn, type MutationRefusal } from "./outcome.js";
+import type { MutationName } from "./table.js";
 
 type Thread = { s: SessionRec; place: PlaceRec };
 
@@ -185,7 +186,7 @@ const threadDelete: MutationFn = (tx, p, args) => {
   return applied();
 };
 
-export const THREAD_MUTATIONS: Record<string, MutationFn> = {
+export const THREAD_MUTATIONS = {
   "thread.place": threadPlace,
   "thread.done": threadDone,
   "thread.reopen": threadReopen,
@@ -194,4 +195,4 @@ export const THREAD_MUTATIONS: Record<string, MutationFn> = {
   "thread.attention": threadAttention,
   "thread.writers": threadWriters,
   "thread.delete": threadDelete,
-};
+} satisfies Partial<Record<MutationName, MutationFn>>;

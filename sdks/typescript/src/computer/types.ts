@@ -1,9 +1,9 @@
 // The wire contract of tracks and threads, as a client sees it: spec sections 35 (rows), 37 (HTTP),
-// 38 (socket), 39 (mutations) and 42.1 (this SDK). Shared by the client, the fake server and the
-// surface's store. No runtime code here. The review summary (`GET`/`PUT /work/results/{id}/review`, S9)
+// 38 (socket), 39 (mutations) and 42.1 (this SDK). Shared by the client and the surface's store.
+// No runtime code here. The review summary (`GET`/`PUT /work/results/{id}/review`, S9)
 // is a schema with its types, in review.ts.
 
-import type { ReviewPart } from "./review.js";
+import type { MutationArgs, MutationName } from "./mutation-table.js";
 
 // ---------- the session API's objects (services/managed-agents/src/computer/api-types.ts) ----------
 
@@ -280,7 +280,6 @@ export interface FeedFrame {
   /** The feed version `to` names: a mutation is confirmed once the feed reaches the `version` of its reply. */
   version: number;
   counts?: { earlier: number; trackEarlier: Record<string, number> };
-  sum?: string;
 }
 
 export type ErrorCode = "refused" | "not_found" | "taken" | "conflict" | "idempotency_conflict" | "principal_mismatch" | "reset" | (string & {});
@@ -343,38 +342,9 @@ export interface Capabilities {
   features: { steer: boolean };
 }
 
-// ---------- mutations (section 39; routes in section 37.3) ----------
+// ---------- mutations (section 39; routes in section 37.3): the server's table, copied ----------
 
-export interface MutationArgs {
-  "thread.rename": { sid: string; title: string };
-  "thread.place": { sid: string; trackId: string | null };
-  "thread.done": { sid: string; outcome?: string };
-  "thread.reopen": { sid: string };
-  "thread.keep": { sid: string; keep: boolean };
-  "thread.ready": { sid: string; what: string; resultId?: string };
-  "thread.attention": { sid: string; what: string | null };
-  "thread.writers": { sid: string; writers: "members" | By[] };
-  "thread.delete": { sid: string };
-  "track.create": { tid: string; agentSessionId: string; name?: string; sid?: string; firstInput?: string };
-  "track.rename": { tid: string; name: string };
-  "track.set_stand": { tid: string; stand: string };
-  "track.done": { tid: string; outcome?: string };
-  "track.reopen": { tid: string };
-  "track.keep": { tid: string; keep: boolean };
-  "track.dissolve": { tid: string; threads: "keep" | "stop" };
-  "track.delete": { tid: string };
-  "read.set": { sid: string; seq: number };
-  "pref.set": { key: string; value: unknown };
-  "doc.save": { tid: string; baseRev: number; text: string; spans: DocRow["spans"] };
-  "result.add": { resultId: string; sid: string; kind: ResultKind; ref: string; title: string; meta?: Record<string, unknown> };
-  "review.save": { resultId: string; head: string; parts: ReviewPart[] };
-  "proposal.create": { proposalId: string; kind: ProposalKind; target: string; what: string; args?: Record<string, unknown> };
-  "proposal.accept": { proposalId: string };
-  "proposal.dismiss": { proposalId: string };
-  undo: { opId: string; resolution?: "force" };
-}
-
-export type MutationName = keyof MutationArgs;
+export type { MutationArgs, MutationName };
 
 // ---------- the socket (section 38) ----------
 
@@ -512,8 +482,7 @@ export interface Client {
   status: Signal<"connecting" | "online" | "offline">;
   /**
    * The cursor and the rows are kept in storage. The first value is the rows held, as a frame with
-   * `from: null`; any later frame with `from: null` (a snapshot after `reset` or a checksum
-   * mismatch) replaces every row.
+   * `from: null`; any later frame with `from: null` (a snapshot after `reset`) replaces every row.
    */
   feed(kinds: string[]): Stream<FeedFrame>;
   events(sessionId: string, o?: { tailTurns?: number }): Stream<EventsUpdate>;

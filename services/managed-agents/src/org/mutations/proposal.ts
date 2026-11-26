@@ -10,6 +10,7 @@ import { byFor, isStr, isTid } from "./common.js";
 import { openProposal, ownsTarget } from "./doc.js";
 import { runMutation } from "./index.js";
 import { applied, refuse, refuseKeeping, type MutationFn, type MutationRefusal } from "./outcome.js";
+import type { MutationName } from "./table.js";
 
 type ProposalRec = { id: string; kind: string; target: string; by: string; what: string | null; args: string | null; state: string; audience: string };
 const isPid = (v: unknown): v is string => typeof v === "string" && /^prp_[0-9A-Za-z]{4,40}$/.test(v);
@@ -94,8 +95,8 @@ const proposalDismiss: MutationFn = (tx, p, args) => {
   return applied();
 };
 
-export const PROPOSAL_MUTATIONS: Record<string, MutationFn> = {
+export const PROPOSAL_MUTATIONS = {
   "proposal.create": proposalCreate,
   "proposal.accept": proposalAccept,
   "proposal.dismiss": proposalDismiss,
-};
+} satisfies Partial<Record<MutationName, MutationFn>>;

@@ -183,7 +183,8 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
         t: "feed",
         from: push.from,
         to: push.to,
-        rows: push.rows.filter(sees),
+        // A row's audience is Live's to filter by, not the client's to read (spec 35.1).
+        rows: push.rows.filter(sees).map(({ audience: _audience, ...row }) => row),
         gone: push.gone.filter(sees).map(({ kind, id }) => ({ kind, id })),
         version: push.version,
       };

@@ -13,7 +13,6 @@
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./src/*"],
-      "@opencomputer/sdk/computer/fake": ["../sdks/typescript/src/computer/fake/index.ts"],
       "@opencomputer/sdk/computer": ["../sdks/typescript/src/computer/index.ts"],
       "zod": ["./node_modules/zod"]
     },
@@ -23,5 +22,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src", "scripts"]
 }

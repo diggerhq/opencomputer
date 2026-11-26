@@ -1,11 +1,12 @@
 // A stand-in for the edge: the sign-in routes of section 34.3, one API route
 // and the socket of section 38, with the checks the real one makes on what
-// the shell sends.
+// the shell sends. With `surface`, the API and the socket go on to a caller of
+// the managed-agents Worker run locally (services/managed-agents/test/fixtures/stack.ts).
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { createFakeServer, type FakeServer } from '../../sdks/typescript/src/computer/fake/index'
+import type { Caller } from '../../services/managed-agents/test/fixtures/stack'
 
 export type FakeEdge = {
   url: string
@@ -21,12 +22,13 @@ export type FakeEdge = {
   /** The access token of a generation, shaped as the edge's: a JWT whose claims name the member. */
   token(generation: number): string
   accessLifeSeconds: number
-  /** With `surface`: the SDK's fake server (sections 37 and 38) behind the API and the socket. */
-  server: FakeServer | null
   close(): Promise<void>
 }
 
-export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<FakeEdge> {
+/** The member's principal, as the edge maps the token's claims: a `surface` caller is this member. */
+export const EDGE_MEMBER = { org: 'org_test', name: '01jtesttesttesttesttesttes' }
+
+export async function startFakeEdge(o: { surface?: Caller } = {}): Promise<FakeEdge> {
   // The subject is the member id of the token's `user_id`, as the edge maps it.
   const principal = { org: 'org_test', subject: 'usr_01jtesttesttesttesttesttes' }
   const claims = Buffer.from(JSON.stringify({ iss: 'opensandbox-app', org_id: 'org_test', user_id: 'user_01JTESTTESTTESTTESTTESTTES', dev: 'dev_1' })).toString('base64url')
@@ -44,7 +46,6 @@ export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<Fake
     sockets: [],
     frames: [],
     accessLifeSeconds: 900,
-    server: null,
     token: tokenOf,
     revokeAccess: () => void generation++,
     revokeDevice: () => {
@@ -102,10 +103,12 @@ export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<Fake
     if (url.pathname.startsWith('/api/managed-agents/computer/')) {
       edge.apiHeaders.push(req.headers)
       if (!valid(req.headers.authorization?.replace('Bearer ', ''))) return json(401, { error: { code: 'unauthenticated' } })
-      if (edge.server) {
-        const init: RequestInit = { method: req.method, headers: req.headers as Record<string, string> }
+      if (o.surface) {
+        const headers: Record<string, string> = {}
+        for (const k of ['content-type', 'idempotency-key', 'if-none-match', 'x-oc-trace']) if (typeof req.headers[k] === 'string') headers[k] = req.headers[k]
+        const init: RequestInit = { method: req.method, headers }
         if (req.method !== 'GET' && req.method !== 'HEAD') init.body = JSON.stringify(await body(req))
-        const r = await edge.server.fetch(url.pathname.slice('/api/managed-agents/computer'.length) + url.search, init)
+        const r = await o.surface.fetch(url.pathname.slice('/api/managed-agents/computer'.length) + url.search, init)
         return res.writeHead(r.status, { 'content-type': r.headers.get('content-type') ?? 'application/json' }).end(Buffer.from(await r.arrayBuffer()))
       }
       if (url.pathname.endsWith('/feed')) return json(200, { protocol: 1, rows: [], gone: [], to: 'f1.0', more: false, principal })
@@ -127,11 +130,14 @@ export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<Fake
     wss.handleUpgrade(req, socket, head, (ws) => {
       if (url.pathname !== '/api/managed-agents/computer/live' || !valid(token)) return ws.close(4001, 'unauthenticated')
       edge.sockets.push(ws)
-      if (edge.server) {
-        const channel = edge.server.connect()
-        channel.onFrame((f) => ws.send(JSON.stringify(f)))
-        ws.on('message', (data) => channel.send(JSON.parse(String(data))))
-        ws.on('close', () => channel.close())
+      if (o.surface) {
+        const live = o.surface.socket()
+        const held: string[] = []
+        live.on('open', () => held.splice(0).forEach((f) => live.send(f)))
+        live.on('message', (data) => ws.send(String(data)))
+        live.on('close', () => ws.close())
+        ws.on('message', (data) => (live.readyState === live.OPEN ? live.send(String(data)) : held.push(String(data))))
+        ws.on('close', () => live.close())
         return
       }
       ws.on('message', (data) => {
@@ -144,7 +150,6 @@ export async function startFakeEdge(o: { surface?: boolean } = {}): Promise<Fake
     })
   })
 
-  if (o.surface) edge.server = createFakeServer({ principal, seed: 'demo' })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
   edge.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   return edge

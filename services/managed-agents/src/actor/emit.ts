@@ -7,7 +7,7 @@ export interface Emitter {
   (event: string, fields?: Record<string, unknown>, level?: Level): void;
 }
 
-/** An actor's emitter: `emit("org.feed_mismatch", { subject })`. `base` is stamped on every line. */
+/** An actor's emitter: `emit("org.mutated", { subject })`. `base` is stamped on every line. */
 export function emitter(actor: string, base: () => Record<string, unknown> = () => ({})): Emitter {
   return (event, fields, level = "info") => {
     try {

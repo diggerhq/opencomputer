@@ -36,7 +36,7 @@ const CORE_KINDS: FeedTable[] = ["session", "machine"];
 
 // ------------------------------------------------------------------ the feed read (spec 37.1)
 
-export type FeedRead = { frame: FeedFrame; sumOver: string[] | null } | { reset: true; cursor: null };
+export type FeedRead = FeedFrame | { reset: true; cursor: null };
 
 /** The WHERE of the rows a snapshot leaves out for a table: those of a thread in Earlier, and old ops. */
 function snapshotWhere(table: FeedTable, now: number): { sql: string; args: unknown[] } {
@@ -57,7 +57,7 @@ function snapshotWhere(table: FeedTable, now: number): { sql: string; args: unkn
   }
 }
 
-export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): FeedRead {
+export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; kinds?: string[] }): FeedRead {
   return sql.transaction(() => {
     const meta = metaOf(sql);
     let after = 0;
@@ -133,34 +133,8 @@ export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; k
       frame.counts = { earlier: earlier.reduce((sum, row) => sum + row.c, 0), trackEarlier };
     } else if (snapshot) frame.counts = { earlier: 0, trackEarlier: {} };
 
-    // What `sum` covers: every track, place and session row a snapshot at `to` would send.
-    let sumOver: string[] | null = null;
-    if (q.sum) {
-      sumOver = [];
-      if (audiences.length > 0) {
-        for (const table of ["track", "place", "session"] as const) {
-          if (!kinds.includes(table)) continue;
-          const extra = snapshotWhere(table, now);
-          const key = (FEED_TABLES[table] as readonly string[])[0]!;
-          for (const row of sql.exec<{ id: string; version: number }>(`SELECT ${key} AS id, version FROM ${table} WHERE version <= ? AND audience IN (${marks}) AND ${extra.sql}`, to, ...audiences, ...extra.args)) {
-            sumOver.push(`${table}|${row.id}|${row.version}`);
-          }
-        }
-      }
-    }
-    return { frame, sumOver };
+    return frame;
   });
-}
-
-/** The XOR of the first 8 bytes of SHA-256 of each entry, as 16 hex digits (spec 37.1, `sum`). */
-export async function checksum(entries: string[]): Promise<string> {
-  const acc = new Uint8Array(8);
-  const encoder = new TextEncoder();
-  for (const entry of entries) {
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(entry)));
-    for (let i = 0; i < 8; i += 1) acc[i]! ^= digest[i]!;
-  }
-  return [...acc].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ------------------------------------------------------------------ publishing (spec 40.4)
