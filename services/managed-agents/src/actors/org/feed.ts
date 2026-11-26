@@ -16,12 +16,12 @@ import { DAY_MS, FEED_ROWS_MAX, IDEM_TTL_MS, PUSH_BYTES_MAX } from "./limits.js"
 import { readPlace, readSession, readTrack } from "./records.js";
 import { summaryOf } from "./summary.js";
 import { changesAt, transact, type PublishOwed, type Tx } from "./tx.js";
-import { audiencesOf } from "./who-may.js";
+import { audiencesOf, readsWork } from "./who-may.js";
 
 type Meta = { version: number; occ: number; floor: number; org: string | null };
 export const metaOf = (sql: Sql): Meta => sql.exec<Meta>("SELECT version, occ, floor, org FROM meta WHERE k = 1")[0]!;
 
-/** The kinds a key without `work:read` reads: the session API's. */
+/** The kinds a key without `work:read` reads (`readsWork`): the session API's, of every audience it reads. */
 const CORE_KINDS: FeedTable[] = ["session", "machine"];
 
 // ------------------------------------------------------------------ the feed read (spec 37.1)
@@ -58,7 +58,7 @@ export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; k
       after = parts[0] as number;
     }
     const audiences = audiencesOf(p);
-    const work = p.kind !== "key" || p.scopes.includes("work:read" as never);
+    const work = readsWork(p);
     const kinds = FEED_KINDS.filter((k) => (q.kinds === undefined || q.kinds.includes(k)) && (work || CORE_KINDS.includes(k)));
     const marks = audiences.map(() => "?").join(",");
     const scoped = (table: FeedTable) => {
@@ -116,7 +116,8 @@ export function feed(sql: Sql, now: number, p: Principal, q: { after?: string; k
       version: to,
     };
 
-    if (snapshot && audiences.length > 0) {
+    // Earlier's counts are of places, Work proper.
+    if (snapshot && audiences.length > 0 && work) {
       const earlier = sql.exec<{ track_id: string | null; c: number }>(`SELECT track_id, COUNT(*) AS c FROM place WHERE earlier_at IS NOT NULL AND audience IN (${marks}) GROUP BY track_id`, ...audiences);
       const trackEarlier: Record<string, number> = {};
       for (const row of earlier) if (row.track_id !== null) trackEarlier[row.track_id] = row.c;
@@ -154,7 +155,9 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
   else {
     const audiences = audiencesOf(p);
     if (audiences.length === 0) return { entries: [], to: cursor.encode("o", [after]) };
-    rows = sql.exec<OccRec>(`SELECT * FROM occurrence WHERE n > ? AND audience IN (${audiences.map(() => "?").join(",")}) ORDER BY n LIMIT ?`, after, ...audiences, limit);
+    // A key without `work:read` reads its sessions' occurrences, not a track's own (`track.quiet`).
+    const work = readsWork(p) ? "" : " AND (session_id IS NOT NULL OR audience = 'org')";
+    rows = sql.exec<OccRec>(`SELECT * FROM occurrence WHERE n > ? AND audience IN (${audiences.map(() => "?").join(",")})${work} ORDER BY n LIMIT ?`, after, ...audiences, limit);
   }
   const entries = rows.map((r): Occurrence => ({ n: String(r.n), key: r.key, kind: r.kind, sessionId: r.session_id, trackId: r.track_id, by: r.by, at: iso(r.at) }));
   // A short page reached the head: the next read starts there, past entries of other audiences.

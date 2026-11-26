@@ -5,20 +5,29 @@ import type { Sql } from "../../durable/sql.js";
 import { readPlace, readTrack, trackOfAgent, type PlaceRec, type SessionRec, type TrackRec } from "./records.js";
 import { isPerson, sharedWith } from "./audience.js";
 
-/** Whether `p` reads rows of this audience. An agent has no audience: it reads by `seesSession`. */
+/**
+ * Whether `p` reads Work proper: tracks, their places, the Doc, results, proposals, ops (spec 34.3).
+ * A member always; a key only with `work:read`. Reading sessions is not Work: it needs only
+ * `sessions:read`, which the route checks.
+ */
+export const readsWork = (p: Principal): boolean => p.kind !== "key" || p.scopes.includes("work:read");
+
+/**
+ * Whether `p` reads rows of this audience. A key reads as its member does (spec 34.3: "a key is as
+ * today"): the sessions of its member's audiences; Work kinds and tracks it reads only by `readsWork`,
+ * checked where they are read. An agent has no audience: it reads by `seesSession`.
+ */
 export function visible(p: Principal, audience: string): boolean {
   if (p.kind === "platform") return true;
   if (p.kind === "agent") return false;
-  if (audience.startsWith("member:") && p.kind === "key" && !p.scopes.includes("work:read" as never)) return false;
   return p.audiences.includes(audience) || audience === `member:${p.subject}`;
 }
 
-/** The audiences `p` reads the feed for. */
+/** The audiences `p` reads the feed and occurrences for: those `visible` admits. */
 export function audiencesOf(p: Principal): string[] {
   if (p.kind === "agent" || p.kind === "platform") return [];
   const own = `member:${p.subject}`;
-  const all = p.audiences.includes(own) ? p.audiences : [...p.audiences, own];
-  return p.kind === "key" && !p.scopes.includes("work:read" as never) ? all.filter((a) => !a.startsWith("member:")) : all;
+  return p.audiences.includes(own) ? p.audiences : [...p.audiences, own];
 }
 
 export const isMember = (p: Principal): boolean => p.kind === "member" || p.kind === "key";
@@ -39,8 +48,10 @@ export function agentArranges(sql: Sql, p: Principal, place: PlaceRec | null): b
 }
 
 /**
- * Whether `p` may see a session at all; a mutation answers `not_found` when not (spec 39). A
- * member by audience or as a person it is shared with; an agent its own session, one it started, its track's threads, and its
+ * Whether `p` may see a session at all; a mutation answers `not_found` when not (spec 39). The one
+ * rule for reading a session: `getSession`, `patchSession`, the mutations, Org's work reads; the
+ * member filter of `listSessions` is its SQL, and SessionLog's `mayRead` its copy over `Access`. A
+ * member, or a member's key (`sessions:read` is the route's), by audience or as a person it is shared with; an agent its own session, one it started, its track's threads, and its
  * track's agent.
  */
 export function seesSession(sql: Sql, p: Principal, s: SessionRec): boolean {
@@ -60,8 +71,9 @@ export function seesSession(sql: Sql, p: Principal, s: SessionRec): boolean {
   return false;
 }
 
+/** Whether `p` may see a track: Work proper, so a key needs `work:read` (`readsWork`). */
 export function seesTrack(sql: Sql, p: Principal, t: TrackRec): boolean {
-  if (p.kind !== "agent") return visible(p, t.audience);
+  if (p.kind !== "agent") return readsWork(p) && visible(p, t.audience);
   if (t.agent_session === p.session) return true;
   return p.session !== undefined && readPlace(sql, p.session)?.track_id === t.id;
 }

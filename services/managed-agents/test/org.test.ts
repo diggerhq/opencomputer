@@ -364,6 +364,54 @@ describe("Org: session access (spec 36.2)", () => {
       expect(await org.createSession(agent, { id: other, access: { mode: "org" } })).toMatchObject({ ok: false, code: "invalid_request", field: "access" });
     });
   });
+
+  it("lets a key read and change its member's sessions with sessions:read alone, and keeps Work for work:read (spec 34.3)", async () => {
+    await withActor("access-key", async (org, _fakes, sql) => {
+      const a = member("usr_a", "access-key");
+      const key = (subject: string, scopes: Principal["scopes"] = ["sessions:read", "sessions:write"]): Principal => ({ ...member(subject, "access-key"), kind: "key", via: "api", scopes, credential: { id: `key_${subject}`, expiresAt: null } });
+      const keyA = key("usr_a");
+      const keyB = key("usr_b");
+      // The organization's default: owner, so the session's rows are `member:usr_a`.
+      expect(await org.createSession(keyA, { id: SID, input: "Mine" })).toMatchObject({ ok: true, session: { access: { mode: "owner", people: [] } } });
+      expect(await org.getSession(keyA, SID)).toMatchObject({ ok: true, session: { id: SID } });
+      const listed = await org.listSessions(keyA, {});
+      expect(listed.ok && listed.sessions.map((s) => s.id)).toEqual([SID]);
+      // The feed: the session row, not its place (a Work kind).
+      expect(kindsOf(frameOf(await org.feed(keyA, {}))).map((k) => k.split(":").slice(0, 2).join(":"))).toEqual([`session:${SID}`]);
+      expect(await org.patchSession(keyA, SID, { title: "Renamed by key" })).toMatchObject({ ok: true, session: { title: "Renamed by key" } });
+
+      // Another member's key: not found, not listed, not in its feed.
+      expect(await org.getSession(keyB, SID)).toMatchObject({ ok: false, code: "session_not_found", status: 404 });
+      expect(await org.patchSession(keyB, SID, { title: "Theirs" })).toMatchObject({ ok: false, code: "session_not_found" });
+      const theirs = await org.listSessions(keyB, { owner: "anyone" });
+      expect(theirs.ok && theirs.sessions).toEqual([]);
+      expect(frameOf(await org.feed(keyB, {})).rows).toEqual([]);
+
+      // A track of usr_a (`member:usr_a`): Work proper, so not to a key without work:read.
+      const thread = "cs_0000000000000038";
+      await org.createSession(a, { id: thread, input: "Plan" });
+      expect(await org.mutate(a, { name: "track.create", args: { tid: "trk_0009", agentSessionId: "cs_0000000000000039", name: "Launch", sid: thread } })).toMatchObject({ protocol: 1 });
+      const kinds = new Set(frameOf(await org.feed(keyA, {})).rows.map((r) => r.kind));
+      expect([...kinds].sort()).toEqual(["session"]);
+      expect(await org.doc(keyA, "trk_0009")).toBeNull();
+      expect(await org.docRevisions(keyA, "trk_0009")).toEqual([]);
+      expect(await org.doc(a, "trk_0009")).not.toBeNull();
+      // Occurrences: its sessions', not a track's own.
+      transact(sql, Date.now(), (tx) => {
+        tx.occur({ key: "turn", kind: "turn.completed", sessionId: SID, by: "platform", audience: "member:usr_a" });
+        tx.occur({ key: "quiet", kind: "track.quiet", trackId: "trk_0009", by: "rule:age", audience: "member:usr_a" });
+      });
+      const occ = await org.occurrences(keyA, {});
+      expect("entries" in occ && occ.entries.map((e) => e.kind)).toContain("turn.completed");
+      expect("entries" in occ && occ.entries.map((e) => e.kind)).not.toContain("track.quiet");
+      const memberOcc = await org.occurrences(a, {});
+      expect("entries" in memberOcc && memberOcc.entries.map((e) => e.kind)).toContain("track.quiet");
+      // With work:read the key reads Work as its member does.
+      const worker = key("usr_a", ["sessions:read", "work:read"]);
+      expect(await org.doc(worker, "trk_0009")).not.toBeNull();
+      expect(new Set(frameOf(await org.feed(worker, {})).rows.map((r) => r.kind))).toEqual(new Set(frameOf(await org.feed(a, {})).rows.map((r) => r.kind)));
+    });
+  });
 });
 
 describe("Org.feed", () => {
