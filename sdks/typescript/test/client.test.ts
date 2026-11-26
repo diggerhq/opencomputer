@@ -125,13 +125,14 @@ async function eventsOf(me: Caller, sid: string): Promise<ApiEvent[]> {
   }
 }
 
+/** The feed held what the server held at one moment (a later change may be on its way to both). */
 async function converged(me: Caller, feed: ReturnType<typeof watchFeed>, kinds: string[] = KINDS): Promise<void> {
+  let truth = new Map<string, Row[]>();
   const same = async () => {
-    const truth = await rowsOf(me, kinds);
+    truth = await rowsOf(me, kinds);
     return kinds.every((k) => JSON.stringify(feed.of(k)) === JSON.stringify(truth.get(k)));
   };
   await until(same).catch(() => {});
-  const truth = await rowsOf(me, kinds);
   for (const k of kinds) expect(feed.of(k), k).toEqual(truth.get(k));
 }
 
