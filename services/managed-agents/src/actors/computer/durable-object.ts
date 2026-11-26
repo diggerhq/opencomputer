@@ -61,7 +61,7 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
-import { isSessionId } from "../../ids/session-ids.js";
+import { isSessionId, workOsUserOf } from "../../ids/session-ids.js";
 import type { AccessCarry, ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
 import type { BillingNotice, SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
@@ -625,7 +625,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       log: (sessionId) => this.actors.log(sessionId),
       live: () => this.actors.live(),
       chooseHarness: (row, harness) => this.chooseHarness(row.key, row.ownerId ?? row.ownerUserId ?? "", harness),
-      slackOfMember: (member) => this.access.agents.view(member).linkedSlackUser?.id,
+      slackOfMember: (member) => linkedSlackUser(this.access, member),
       transaction: (fn) => ctx.storage.transactionSync(fn),
     });
     // The retired Work board's stamp: its triggers moved a counter on every session and person write.
@@ -879,7 +879,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       const installer = slack.installer;
       if (before !== slack.teamId) {
         this.put("slackLinked", slack.teamId);
-        if (installer?.member) await this.access.agents.rekey(installer.member, installer.slackUser);
+        // Model access keys people by their WorkOS user; the Slack actor names the installer's member id.
+        const dashboardUser = installer?.member ? workOsUserOf(installer.member) : null;
+        if (installer && dashboardUser) await this.access.agents.rekey(dashboardUser, installer.slackUser);
         if (installer) this.put("slackLinkedInstaller", installer.slackUser);
         else this.remove("slackLinkedInstaller");
       }
@@ -935,7 +937,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string; member?: string }> {
     this.bind(p.org);
     // A linked person's subject is their member id: the Slack user is the one linked to it.
-    const userId = p.subject.startsWith("slack:") ? p.subject.slice(p.subject.lastIndexOf(":") + 1) : this.access.agents.view(p.subject).linkedSlackUser?.id;
+    const userId = p.subject.startsWith("slack:") ? p.subject.slice(p.subject.lastIndexOf(":") + 1) : linkedSlackUser(this.access, p.subject);
     if (!userId) return { reply: "This command works from Slack." };
     const row = c.sessionId
       ? [...this.ctx.storage.sql.exec<{ key: string; channelId: string; threadTs: string; ownerId: string | null }>(

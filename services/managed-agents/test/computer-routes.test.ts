@@ -440,6 +440,35 @@ describe("computer routes", () => {
     socket.close();
   });
 
+  it("rekeys the installer's agent by their WorkOS user, not their member id", async () => {
+    const ORG = "org_rekey_installer";
+    const inside = <T,>(fn: (instance: any) => T) => runInDurableObject(computers().getByName(ORG), fn as never) as Promise<T>;
+    const member = "usr_01j9z8y7x6w5v4t3s2r1q0p9n8";
+    const calls = await inside(async (instance) => {
+      instance.bind(ORG);
+      const calls: unknown[][] = [];
+      instance.access.agents.rekey = async (...args: unknown[]) => void calls.push(["rekey", ...args]);
+      instance.access.agents.unrekey = async (...args: unknown[]) => void calls.push(["unrekey", ...args]);
+      instance.access.agents.view = (user: string) => ({ linkedSlackUser: user === "user_01J9Z8Y7X6W5V4T3S2R1Q0P9N8" ? { id: "U0LINKED" } : undefined });
+      const slack = (installer: unknown) => ({ botToken: "xoxb-rekey", botUserId: "UBOT", teamId: "T0REKEY", installer });
+      await instance.slackChanged(slack({ slackUser: "U0INSTALLER", member }), false);
+      // A member id that is not a WorkOS user's (no dashboard agent to move) and an installer with none: nothing to rekey.
+      await instance.slackChanged(null, false);
+      await instance.slackChanged(slack({ slackUser: "U0INSTALLER", member: "usr_notaworkosuser" }), false);
+      await instance.slackChanged(null, false);
+      await instance.slackChanged(slack({ slackUser: "U0INSTALLER", member: null }), false);
+      // A linked person's member id finds their Slack user the same way.
+      calls.push(["command", (await instance.command({ org: ORG, subject: member }, { name: "secret" })).reply !== "This command works from Slack."]);
+      return calls;
+    });
+    expect(calls).toEqual([
+      ["rekey", "user_01J9Z8Y7X6W5V4T3S2R1Q0P9N8", "U0INSTALLER"],
+      ["unrekey", "U0INSTALLER"],
+      ["unrekey", "U0INSTALLER"],
+      ["command", true],
+    ]);
+  });
+
 });
 
 /** Another organization with `teamId` linked, approved by `installer`. */
