@@ -272,6 +272,31 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect(JSON.stringify(calls)).not.toContain("private-value");
   });
 
+  it("lists and deletes a session's own secrets: names and metadata only, other layers untouched", async () => {
+    await s.api({ ...MEMBER, via: "opc" }, { op: "secrets.session.put", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY", body: { value: "dummy-session-value" } }, SESSION.key);
+    await submit(submission("FROM_SLACK", "dummy-slack-value", "session"), "U_OWNER");
+    await s.api(MEMBER, { op: "secrets.put", name: "ORG_ONLY", body: { value: "dummy-org-value" } });
+    const listed = await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_test" }, SESSION.key);
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({
+      secrets: [
+        { name: "AWS_SECRET_ACCESS_KEY", scope: "session", sessionId: "cs_test", kind: "secret", file: false, effective: true, setBy: { id: MEMBER.member, name: "Owner", via: "opc", client: null }, updatedAt: expect.any(String) },
+        { name: "FROM_SLACK", scope: "session", sessionId: "cs_test", kind: "secret", file: false, effective: true, setBy: { id: "U_OWNER", name: "U_OWNER", via: "slack", client: null }, updatedAt: expect.any(String) },
+      ],
+    });
+    expect(JSON.stringify(listed)).not.toContain("dummy-");
+    expect((await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_other" }, "other-session")).body).toEqual({ secrets: [] });
+
+    pushes = [];
+    expect(await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY" }, SESSION.key)).toEqual({ status: 204 });
+    expect(pushes).toEqual([{ key: SESSION.key }]);
+    expect((await s.forSession(SESSION.key, SESSION.ownerId)).map((x) => x.name).sort()).toEqual(["FROM_SLACK", "ORG_ONLY"]);
+    expect((await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "AWS_SECRET_ACCESS_KEY" }, SESSION.key)).error?.code).toBe("secret_not_found");
+    // The organization's secret of a name is not the session's to delete.
+    expect((await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "ORG_ONLY" }, SESSION.key)).error?.code).toBe("secret_not_found");
+    expect((await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_test" })).error?.code).toBe("session_not_found");
+  });
+
   it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
     const created = await s.api(MEMBER, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: VALUE } });
     expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.member, name: "Owner" } } } });

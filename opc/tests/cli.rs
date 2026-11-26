@@ -591,7 +591,7 @@ fn subagents_ls_and_stop() {
 fn secret_asks_are_answered_in_slack_and_only_skipped_here() {
     let fake = Fake::start();
     let o = run(&fake, &["--help"]);
-    assert!(!o.stdout.contains("secret"), "no secret command: {}", o.stdout);
+    assert!(o.stdout.contains("secrets"), "the secrets command is listed: {}", o.stdout);
     let sid = fake.seed_session(Seed::new("s"));
     fake.send(&sid, "secret STRIPE_KEY", "queue").unwrap();
     let ask = fake.wait_ask(&sid, T).expect("an ask");
@@ -911,4 +911,82 @@ fn help_says_how_to_turn_telemetry_off() {
     let o = run(&fake, &["help", "telemetry"]);
     assert_eq!(o.code, 0);
     assert!(o.stdout.contains("never sends what you type"), "{}", o.stdout);
+}
+
+#[test]
+fn secrets_set_reads_stdin_and_never_prints_the_value() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    let o = run_in(&fake, &["secrets", "set", "DUMMY_TOKEN", "-s", &sid], Some("dummy-value-1\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(fake.secrets(&sid), vec![("DUMMY_TOKEN".to_string(), "dummy-value-1".to_string())]);
+    let put = &fake.requests_to("PUT /sessions/*/secrets/*")[0];
+    assert_eq!(put.json()["value"], "dummy-value-1");
+
+    let o = run(&fake, &["secrets", "ls", "-s", &sid]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.starts_with("DUMMY_TOKEN"), "{}", o.stdout);
+    let o = run(&fake, &["secrets", "list", &sid, "--json"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let v = o.json();
+    assert_eq!(v["secrets"][0]["name"], "DUMMY_TOKEN");
+    check("Secret", &v["secrets"][0]);
+    for out in [&o.stdout, &o.stderr] {
+        assert!(!out.contains("dummy-value-1"), "{out}");
+    }
+}
+
+#[test]
+fn secrets_set_keeps_a_file_as_given_and_replaces() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    assert_eq!(run_in(&fake, &["secrets", "set", "CFG", "-s", &sid], Some("one")).code, 0);
+    let o = run_in(&fake, &["secrets", "set", "CFG", "-s", &sid, "--file"], Some("a = 1\n"));
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(fake.secrets(&sid), vec![("CFG".to_string(), "a = 1\n".to_string())]);
+}
+
+#[test]
+fn secrets_set_refuses_empty_values_bad_names_and_no_session() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    for (args, stdin) in [
+        (vec!["secrets", "set", "EMPTY", "-s", sid.as_str()], "\n"),
+        (vec!["secrets", "set", "EMPTY", "-s", sid.as_str()], "   "),
+        (vec!["secrets", "set", "9BAD", "-s", sid.as_str()], "dummy"),
+        (vec!["secrets", "set", "NO_SESSION"], "dummy"),
+    ] {
+        let o = run_in(&fake, &args, Some(stdin));
+        assert_eq!(o.code, 2, "{args:?}: {}", o.stderr);
+    }
+    assert!(fake.requests_to("PUT /sessions/*/secrets/*").is_empty());
+    // The value is never an argument.
+    assert_eq!(run(&fake, &["secrets", "set", "X", "dummy", "-s", &sid]).code, 2);
+}
+
+#[test]
+fn secrets_rm_deletes_and_names_a_missing_one() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    assert_eq!(run_in(&fake, &["secrets", "set", "GONE", "-s", &sid], Some("dummy")).code, 0);
+    let o = run(&fake, &["secrets", "rm", "GONE", "-s", &sid]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(fake.secrets(&sid).is_empty());
+    let o = run(&fake, &["secrets", "delete", "GONE", "-s", &sid]);
+    assert_eq!(o.code, 2);
+    assert!(o.stderr.contains("GONE is not set on"), "{}", o.stderr);
+}
+
+#[test]
+fn secrets_on_an_unknown_session_or_without_the_scope() {
+    let fake = Fake::start();
+    let o = run_in(&fake, &["secrets", "set", "X", "-s", "cs_0000000000000000"], Some("dummy"));
+    assert_eq!(o.code, 2, "{}", o.stderr);
+    let sid = fake.seed_session(Seed::new("s"));
+    fake.fail_next("PUT /sessions/*/secrets/*", 1, Failure::forbidden("missing_scope"));
+    let o = run_in(&fake, &["secrets", "set", "X", "-s", &sid, "--json"], Some("dummy"));
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    let e = o.err_json();
+    check("Error", &e["error"]);
+    assert!(e["error"]["message"].as_str().unwrap().contains("secrets:write"));
 }

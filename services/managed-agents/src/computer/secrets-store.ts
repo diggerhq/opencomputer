@@ -63,9 +63,11 @@ export interface SecretActor {
   surface: "slack" | "dashboard" | "api" | "opc" | "system";
 }
 
-/** Organization secrets and private writes to a visible session. */
+/** Organization secrets, and a visible session's own layer ("This session only"). */
 export type SecretsApiOp =
   | { op: "secrets.session.put"; sessionId: string; name: string; body: unknown }
+  | { op: "secrets.session.list"; sessionId: string }
+  | { op: "secrets.session.delete"; sessionId: string; name: string }
   | { op: "secrets.list" }
   | { op: "secrets.put"; name: string; body: unknown }
   | { op: "secrets.delete"; name: string }
@@ -500,7 +502,9 @@ export class SecretsStore {
    * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
    */
   async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
+    if (op.op.startsWith("secrets.session.") && !sessionKey) return apiError(404, "session_not_found", "No such session.");
     if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows() } };
+    if (op.op === "secrets.session.list") return { status: 200, body: { secrets: this.sessionRows(sessionKey!, op.sessionId) } };
     if (op.op === "secrets.events") return { status: 200, body: { events: this.orgEvents(op.name) } };
     const actor: SecretActor = { id: caller.member, name: caller.name ?? caller.email, surface: caller.via };
     const recent = this.deps.sql.exec<{ n: number }>(
@@ -516,8 +520,12 @@ export class SecretsStore {
       await this.pushAll();
       return { status: 204 };
     }
+    if (op.op === "secrets.session.delete") {
+      if (!this.remove("session", sessionKey!, op.name, actor)) return apiError(404, "secret_not_found", "No such secret on this session.");
+      await this.deps.push({ key: sessionKey! });
+      return { status: 204 };
+    }
 
-    if (op.op === "secrets.session.put" && !sessionKey) return apiError(404, "session_not_found", "No such session.");
     const body = op.body;
     if (!body || typeof body !== "object" || Array.isArray(body)) return apiError(400, "invalid_request", "The body must be a JSON object.", { field: "" });
     const { value, file = false, variable = false } = body as Record<string, unknown>;
@@ -586,6 +594,29 @@ export class SecretsStore {
         overriddenIn: overrides.get(r.name) ?? { threads: 0, people: 0 },
       })),
     );
+  }
+
+  /**
+   * A session's own layer as `Secret` objects (opc/docs/api/reference/objects.mdx): names and metadata, never a value,
+   * variables included. The session layer is the narrowest, so each is the one the session gets (`effective`).
+   */
+  private sessionRows(sessionKey: string, sessionId: string) {
+    return [...this.deps.sql.exec<{ name: string; file: number; variable: number; setBy: string; setByName: string | null; updatedAt: number; via: string | null }>(
+      `SELECT s.name, s.file, s.variable, s.set_by AS setBy, s.set_by_name AS setByName, s.updated_at AS updatedAt,
+              (SELECT e.surface FROM secret_events e WHERE e.scope = 'session' AND e.owner = s.owner AND e.name = s.name
+               AND e.action IN ('set', 'replace') ORDER BY e.ts DESC LIMIT 1) AS via
+       FROM secrets s WHERE s.scope = 'session' AND s.owner = ? ORDER BY s.name`,
+      sessionKey,
+    )].map((r) => ({
+      name: r.name,
+      scope: "session" as const,
+      sessionId,
+      kind: r.variable ? ("variable" as const) : ("secret" as const),
+      file: !!r.file,
+      effective: true,
+      setBy: { id: r.setBy, name: r.setByName ?? r.setBy, via: r.via && r.via !== "system" ? r.via : r.setBy.startsWith("usr_") ? "dashboard" : "slack", client: null },
+      updatedAt: iso(r.updatedAt),
+    }));
   }
 
   /** The organization layer's history for one name, newest first. */
