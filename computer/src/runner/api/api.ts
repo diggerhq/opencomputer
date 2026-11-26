@@ -238,7 +238,7 @@ export class SessionApi implements Writer {
     const cur = this.tap.cur;
     if (ifBusy === 'interrupt') return this.interruptWith(text, actor, turnId);
     if (ifBusy === 'steer' && cur) {
-      await this.run(() => this.session.send(text, undefined, [], undefined, { actor, ifBusy }));
+      await this.run(() => this.session.send(text, undefined, [], undefined, { actor, ifBusy, turnId }));
       return this.sent(cur.id, 'steered');
     }
     if (this.queue.length >= QUEUE_MAX) return fail('queue_full', `at most ${QUEUE_MAX} turns may wait`, 409, { retryable: true, retryAfterMs: 5000 });

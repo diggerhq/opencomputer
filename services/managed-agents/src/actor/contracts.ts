@@ -2,7 +2,7 @@
 // class's RPC methods and the values they pass. No actor reads another's storage, and none calls a
 // method not listed here. `p` is the caller's principal. Types only; nothing here runs.
 
-import type { ApiErrorBody, ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
+import type { ApiEvent, LogSummary, Origin, Session, SessionSettings } from "../computer/api-types.js";
 import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
@@ -219,7 +219,8 @@ export interface InboxEntry {
 }
 export type Inbox = { entries: InboxEntry[]; epoch: number; lastSeq: number };
 export type AcceptResult =
-  | { ok: true; id: string; duplicate: boolean; machine: string; result?: unknown }
+  /** `outcome`: the entry's as `accept` returned (`waiting` unless it waited and the drain was done). */
+  | { ok: true; id: string; duplicate: boolean; outcome: EntryOutcome }
   | { ok: false; code: "not_found" | "forbidden" | "idempotency_conflict" | "inbox_full" | "agent_turns" };
 /** A refused entry's error as the host (or the drain) gave it: its HTTP `status` when it has one, and its other fields (`turn`, `feature`, …). */
 export type EntryError = { code: string; message: string; status?: number; [field: string]: unknown };
@@ -235,12 +236,11 @@ export type EventsReset = { ok: false; error: "reset"; cursor: string | null; se
 export interface SessionLogRpcAdded {
   /** Kept only if `access.revision` is newer. */
   setAccess(access: Access): Promise<void>;
-  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }): Promise<AcceptResult>;
+  /** `wait`: the drain is awaited (bounded) and `outcome` is the entry's after it; the API's writes. */
+  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts?: { wait?: boolean }): Promise<AcceptResult>;
   /** The entries that are `waiting`, in order. */
   inbox(): Promise<Inbox>;
   delivered(id: string, outcome: DeliveredOutcome): Promise<void>;
-  /** The outcome of the entry `accept` took under this id; null when the inbox holds none. For the caller that accepted it. */
-  entry(id: string): Promise<EntryOutcome | null>;
   /** The events cursor of the log's end; null when `p` may not read. */
   watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
   destroy(): Promise<void>;
@@ -249,9 +249,6 @@ export interface SessionLogRpcAdded {
 // ------------------------------------------------------------------ Computer (36.3)
 
 export type StartSpec = { session: SessionRow; settings: SessionSettings; role: RoleSpec | null; harness?: string; trace?: string };
-export type DrainResult =
-  | { state: "delivered"; results: { id: string; result?: unknown; error?: ApiErrorBody["error"] }[] }
-  | { state: "waking" };
 /**
  * What the Slack actor carries over from Computer at cutover (spec 43.1): the install's settings (the bot token
  * sealed, as stored), the people the machine knows and their links to members. Nothing of a thread or a session.
@@ -265,7 +262,8 @@ export interface SlackCarry {
 export interface ComputerRpcAdded {
   start(spec: StartSpec): Promise<void>;
   stop(sessionId: string): Promise<void>;
-  drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult>;
+  /** SessionLog's owed `drain` only: the session's drain is owed here; resolves once delivered, or waiting for the host. */
+  drain(sessionId: string): Promise<void>;
   watch(sessionId: string, until: number): Promise<void>;
   /** "Send this block so far." */
   block(sessionId: string, blockId: string): Promise<void>;

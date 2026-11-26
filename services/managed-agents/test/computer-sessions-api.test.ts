@@ -16,6 +16,8 @@ import { ApiTelemetry } from "../src/computer/telemetry/api.js";
 import { createTelemetry } from "../src/computer/telemetry/emitter.js";
 import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
+import type { Sql } from "../src/actor/sql.js";
+import { migrate, owed } from "../src/actor/store.js";
 
 /**
  * Work 084: the session API in the Computer DO against a fake v4 host and a fake SessionLog.
@@ -184,8 +186,12 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
   const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
   /** The host answers each `api` frame with this (by method). */
   const answers = new Map<string, (frame: Extract<CalvinGatewayToHost, { t: "api" }>) => { result?: unknown; error?: unknown } | null>();
+  // The shared actor module's tables on the same storage (the drains owed here).
+  const store: Sql = { exec: <T>(query: string, ...params: unknown[]) => sql.exec(query, ...params).toArray() as T[], transaction: (fn) => fn(), arm: () => {} };
+  migrate(store, []);
   const api: ComputerSessionsApi = new ComputerSessionsApi({
     sql,
+    store,
     env,
     organizationId: () => ORG,
     host: () => (state.protocol === null ? undefined : {}),
@@ -234,6 +240,7 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
   return {
     api,
     sql,
+    store,
     sent,
     closed,
     recovers,
@@ -311,8 +318,7 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
       entry("ie_0000000000000004", "cancel", { turnId: "tn_4m8q2x7c1v9b" }),
       entry("ie_0000000000000005", "stop", { subagentId: "sa_000000000001" }),
     ];
-    const result = await f.api.drain(SID, { wait: true });
-    expect(result.state).toBe("delivered");
+    await f.api.drain(SID);
     expect(f.frames("api").map((frame) => [frame.method, frame.idempotencyKey, frame.params])).toEqual([
       ["sessions.compact", "ie_0000000000000001", { instructions: "short", sessionId: SID }],
       ["sessions.suspend", "ie_0000000000000002", { ifIdle: true, sessionId: SID }],
@@ -335,11 +341,7 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     const turn = { id: "tn_4m8q2x7c1v9b", status: "running" };
     f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, retryable: false, requestId: "rq", turn } }));
     f.logOf(SID).entries = [entry("ie_0000000000000004", "cancel", { turnId: turn.id })];
-    const result = await f.api.drain(SID, { wait: true });
-    expect(result).toEqual({
-      state: "delivered",
-      results: [{ id: "ie_0000000000000004", error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, turn, requestId: "", retryable: false } }],
-    });
+    await f.api.drain(SID);
     expect(f.logOf(SID).outcomes.map((o) => o.outcome)).toEqual([{ ok: false, code: "turn_not_cancellable", message: "the turn is running", status: 409, turn }]);
   });
 
@@ -348,21 +350,40 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     await created(f);
     f.answers.set("turns.cancel", () => ({ result: {} }));
     f.logOf(SID).entries = [entry("ie_0000000000000001", "compact"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" }), entry("ie_0000000000000003", "resume")];
-    await f.api.drain(SID, { wait: true });
+    await f.api.drain(SID);
     expect(f.frames("api").map((frame) => frame.method)).toEqual(["turns.cancel"]);
     expect(f.logOf(SID).outcomes.map((o) => (o.outcome.ok ? "ok" : o.outcome.code))).toEqual(["insufficient_credits", "ok", "insufficient_credits"]);
   });
 
-  it("a host that disconnects mid-drain leaves the entry waiting and the session waking", async () => {
+  it("a host that disconnects mid-drain leaves the entry waiting and the drain owed here, the machine woken", async () => {
     const f = fixture();
     await created(f);
     f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend")];
-    const pending = f.api.drain(SID, { wait: true });
+    const pending = f.api.drain(SID);
     await new Promise((resolve) => setTimeout(resolve, 0));
     f.api.onHostClosed();
-    expect(await pending).toEqual({ state: "waking" });
+    await pending;
     expect(f.logOf(SID).entries).toHaveLength(1);
     expect(f.logOf(SID).outcomes).toEqual([]);
+    expect(f.api.owes()).toBe(true);
+    expect(f.store.exec("SELECT grp, tries FROM _owed")).toEqual([{ grp: SID, tries: 1 }]);
+  });
+
+  it("one path, one owner: a drain held for the host replaces none and doubles none; hello delivers it once", async () => {
+    const f = fixture();
+    await created(f);
+    f.answers.set("sessions.suspend", () => ({ result: {} }));
+    f.state.protocol = null;
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend")];
+    await f.api.drain(SID);
+    await f.api.drain(SID);
+    expect(f.store.exec("SELECT grp FROM _owed")).toEqual([{ grp: SID }]);
+    expect(f.settings.get("drainOwed")).toBeUndefined();
+    f.state.protocol = 6;
+    f.api.onHello([]);
+    await Promise.all(f.pending());
+    expect(f.frames("api").map((frame) => frame.idempotencyKey)).toEqual(["ie_0000000000000001"]);
+    expect(owed.groups(f.store)).toEqual([]);
   });
 });
 
@@ -397,7 +418,7 @@ describe("recovery: a lost writer", () => {
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 4 } }));
     await Promise.all([
       f.api.recoverTick(),
-      ((f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "go on" })]), f.api.drain(SID, { wait: true })),
+      ((f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "go on" })]), f.api.drain(SID)),
     ]);
     const firstAtTwo = f.sent.findIndex((x) => "epoch" in x && (x as { epoch: number }).epoch === 2);
     expect(f.sent[firstAtTwo]!.t).toBe("epoch");
@@ -452,7 +473,7 @@ describe("recovery: a lost writer", () => {
     f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
     f.sent.length = 0;
     f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "hi" })];
-    await f.api.drain(SID, { wait: true });
+    await f.api.drain(SID);
     expect(f.sent.map((x) => x.t).filter((t) => t === "epoch" || t === "api")).toEqual(["epoch", "api"]);
     expect(f.frames("api")[0]).toMatchObject({ epoch: 2 });
   });
