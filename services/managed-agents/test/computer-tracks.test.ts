@@ -213,6 +213,26 @@ describe("the Computer actor of tracks and threads", () => {
     expect(frames.filter((frame) => frame.t === "block")).toEqual([{ t: "block", sessionId: SESSION(1), blockId: "blk_1" }]);
   });
 
+  it("takes the Slack actor's interactions as the presser, and forgets a person who left", async () => {
+    const { stub } = await computer("tt-interact");
+    await inside(stub, (instance) => {
+      instance.put("slackSeen", "1");
+      instance.put("slackLinked", "T0INTERACT");
+      instance.seen = [];
+      instance.secrets.open = async (actionId: string, triggerId: string, where: unknown) => void instance.seen.push({ actionId, triggerId, where });
+      instance.secrets.submit = async (_view: unknown, userId: string) => ({ errors: { name: `no, ${userId}` } });
+      instance.access.models.memberRemoved = async (userId: string) => void instance.seen.push({ left: userId });
+    });
+    const p = { org: "tt-interact", subject: "slack:T0INTERACT:U1", kind: "member", via: "slack", scopes: [], audiences: [], admin: false, credential: { id: "slack:T0INTERACT:U1", expiresAt: null } };
+    const from = { user: { id: "U1" }, team: { id: "T0INTERACT" } };
+    expect(await stub.interaction(p as never, { interaction: { ...from, type: "block_actions", trigger_id: "trig", actions: [{ action_id: "s:abc" }], channel: { id: "C1" } } })).toEqual({});
+    expect(await stub.interaction(p as never, { interaction: { ...from, type: "view_submission", view: { callback_id: "secret" } } })).toEqual({ errors: { name: "no, U1" } });
+    // Another workspace's interaction is not this Computer's.
+    expect(await stub.interaction(p as never, { interaction: { ...from, team: { id: "T0OTHER" }, type: "view_submission", view: { callback_id: "secret" } } })).toEqual({});
+    await stub.memberLeft("U1");
+    expect(await inside(stub, (instance) => instance.seen)).toEqual([{ actionId: "s:abc", triggerId: "trig", where: { userId: "U1", channelId: "C1" } }, { left: "U1" }]);
+  });
+
   it("exports its sessions in pages, minting an id for a row that has none", async () => {
     const { stub } = await computer("tt-export");
     for (const n of [1, 2, 3]) await stub.start(spec("tt-export", SESSION(n)));

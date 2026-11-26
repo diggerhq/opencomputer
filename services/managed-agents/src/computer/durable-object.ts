@@ -61,7 +61,7 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "./session-ids.js";
-import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackRpc, StartSpec } from "../actor/contracts.js";
+import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
 import type { Access, Principal } from "../actor/principal.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
 import { DurableObject } from "cloudflare:workers";
@@ -1078,8 +1078,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    */
   async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string; member?: string }> {
     this.bind(p.org);
-    if (!p.subject.startsWith("slack:")) return { reply: "This command works from Slack." };
-    const userId = p.subject.slice(p.subject.lastIndexOf(":") + 1);
+    // A linked person's subject is their member id: the Slack user is the one linked to it.
+    const userId = p.subject.startsWith("slack:") ? p.subject.slice(p.subject.lastIndexOf(":") + 1) : this.access.agents.view(p.subject).linkedSlackUser?.id;
+    if (!userId) return { reply: "This command works from Slack." };
     const row = c.sessionId
       ? [...this.ctx.storage.sql.exec<{ key: string; channelId: string; threadTs: string; ownerId: string | null }>(
           "SELECT runner_key AS key, channel_id AS channelId, thread_ts AS threadTs, owner_id AS ownerId FROM sessions WHERE session_id = ?",
@@ -2996,6 +2997,40 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.bind(accountId);
     const userId = interaction.user?.id;
     if (!userId || interaction.team?.id !== this.setting("slackTeamId")) return {};
+    return this.interact(userId, interaction);
+  }
+
+  /**
+   * The Slack actor's interactions that are this Computer's (the contract's list), as the presser. The
+   * workspace is the one the Slack actor last reported; a `v:` button's session is named by its id.
+   */
+  async interaction(p: Principal, c: Parameters<ComputerRpcAdded["interaction"]>[1]): Promise<SlackModalReply> {
+    this.bind(p.org);
+    if (typeof c.interaction !== "object" || c.interaction === null) return {};
+    let interaction = c.interaction as SlackInteraction;
+    // The presser is the interaction's Slack user (the Slack actor checked them; a linked person's subject is their member id).
+    const userId = interaction.user?.id;
+    if (!userId || (p.subject.startsWith("slack:") && !p.subject.endsWith(`:${userId}`))) return {};
+    if (interaction.team?.id !== (this.setting("slackSeen") ? this.setting("slackLinked") : this.setting("slackTeamId"))) return {};
+    const action = interaction.actions?.[0];
+    if (c.sessionId && action?.action_id?.startsWith("v:")) {
+      const key = [...this.ctx.storage.sql.exec<{ key: string }>("SELECT runner_key AS key FROM sessions WHERE session_id = ?", c.sessionId)][0]?.key;
+      // No runner row here: the handler answers that the session is gone.
+      interaction = { ...interaction, actions: [{ ...action, action_id: `v:${key ?? c.sessionId}` }, ...(interaction.actions ?? []).slice(1)] };
+    }
+    return this.interact(userId, interaction);
+  }
+
+  /** The Slack actor only: a person left the workspace, was deactivated or became a guest; their subscriptions go. */
+  async memberLeft(slackUserId: string): Promise<void> {
+    const named = this.ctx.id.name;
+    if (!this.setting("accountId") && named && !named.startsWith("computer-")) this.bind(named);
+    if (!this.setting("accountId")) return;
+    this.threads().forget(slackUserId);
+    await this.access.models.memberRemoved(slackUserId);
+  }
+
+  private async interact(userId: string, interaction: SlackInteraction): Promise<SlackModalReply> {
     // The subscription modals (work 097, 6b): only where ModelAccess has them.
     const slack = this.access.slack;
     // Work 077: the Claude subscription modal; errors keep it open, `view` replaces it while the token is checked.
