@@ -88,6 +88,16 @@ export class FakeComputer extends Recorder {
     this.record("changed", source);
   }
 
+  async interaction(p: Principal, c: { interaction: unknown; sessionId?: string }): Promise<{ errors?: Record<string, string> }> {
+    this.record("interaction", p, c);
+    const view = (c.interaction as { type?: string; view?: { state?: { values?: Record<string, unknown> } } }).view;
+    return view && !Object.keys(view.state?.values ?? {}).length ? { errors: { value: "Enter a value" } } : {};
+  }
+
+  async memberLeft(slackUserId: string): Promise<void> {
+    this.record("memberLeft", slackUserId);
+  }
+
   async exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }> {
     this.record("exportSlack", after, limit);
     const start = after === null ? 0 : Number(after);

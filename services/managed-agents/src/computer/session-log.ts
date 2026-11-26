@@ -44,6 +44,7 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type DeliveredOutcome,
+  type EntryOutcome,
   type EventPush,
   type EventsReset,
   type Inbox,
@@ -726,6 +727,15 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     return { entries, epoch: this.meta.logEpoch, lastSeq: this.meta.ack };
   }
 
+  /** One entry's outcome, for the caller that accepted it: another drain than its own may have delivered it. */
+  async entry(id: string): Promise<EntryOutcome | null> {
+    const row = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", id).toArray()[0];
+    if (!row) return null;
+    if (row.state === "delivered") return { state: "delivered", result: row.result === null ? null : (JSON.parse(row.result) as unknown) };
+    if (row.state === "refused") return { state: "refused", error: JSON.parse(row.error ?? "{}") as { code: string; message: string } };
+    return { state: "waiting" };
+  }
+
   async delivered(id: string, outcome: DeliveredOutcome): Promise<void> {
     const now = Date.now();
     this.db.transaction(() => {
@@ -1231,7 +1241,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     } else {
       // The legacy internal path: a seq.
       after = Math.max(0, Math.floor(query.after ?? 0));
-      if (after > this.meta.ack) return { ok: false, error: "cursor_ahead", lastSeq: this.meta.ack, logEpoch: this.meta.logEpoch };
+      if (after > this.meta.ack) return { ok: false, error: "reset", cursor: this.head(), seq: this.meta.ack };
       given = cursor.encode("e", [this.meta.logEpoch, after]);
     }
     const limit = clamp(query.limit, EVENTS_DEFAULT_LIMIT, 1, EVENTS_MAX_LIMIT);

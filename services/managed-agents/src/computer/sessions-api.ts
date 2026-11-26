@@ -43,7 +43,7 @@ import {
   sessionKey,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isMemberId, isSessionId, memberId, mintId } from "./session-ids.js";
+import { isId, isMemberId, isSessionId, memberId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
@@ -374,8 +374,6 @@ export class ComputerSessionsApi {
       lastText: summary?.lastText ?? null,
       context: summary?.context ?? { usedTokens: null, windowTokens: null },
       lastSeq: row.lastSeq,
-      logEpoch: row.logEpoch,
-      epochStartSeq: row.epochStartSeq,
       createdAt: new Date(row.createdAt).toISOString(),
       lastActiveAt: new Date(row.lastActiveAt ?? row.updatedAt).toISOString(),
       syncedAt: row.syncedAt ? new Date(row.syncedAt).toISOString() : null,
@@ -448,7 +446,7 @@ export class ComputerSessionsApi {
         return this.get(caller, op.sessionId, op.minSeq);
       case "access": {
         const row = this.visible(caller, op.sessionId);
-        return row ? { status: 200, body: { sessionId: row.sessionId, logEpoch: row.logEpoch, lastSeq: row.lastSeq } } : notFound();
+        return row ? { status: 200, body: { sessionId: row.sessionId, lastSeq: row.lastSeq } } : notFound();
       }
       case "call":
         return this.call(caller, op.sessionId, op.method, op.params, op.idempotencyKey);
@@ -1046,7 +1044,8 @@ export class ComputerSessionsApi {
       id: crypto.randomUUID(),
       sessionId: row.sessionId,
       method: DRAIN_METHODS[entry.kind],
-      params: { ...body, sessionId: row.sessionId },
+      // One turn id end to end (spec 40.2): the entry's id is the turn's in the log. An id the host would not take is left to it.
+      params: { ...body, sessionId: row.sessionId, ...(entry.kind === "turn" && isId("tn", entry.id) ? { turnId: entry.id } : {}) },
       actor: { id: entry.actor.subject, name: null, via: entry.actor.via, client: null },
       member: entry.actor.subject,
       idempotencyKey: entry.id,

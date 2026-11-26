@@ -290,3 +290,68 @@ describe("Org's adoption", () => {
     );
   });
 });
+
+import { age } from "../src/org/work.js";
+
+describe("Org: a track, its agent, a pull request and the work reads", () => {
+  it("starts the track's agent with its role, applies the rules and answers the reads", async () => {
+    await withActor("work", async (org, fakes, sql) => {
+      const a = member("usr_a", "work");
+      const thread = "cs_0000000000000050";
+      const agentSession = "cs_0000000000000051";
+      const agent: Principal = { ...a, subject: thread, kind: "agent", via: "agent", audiences: [], session: thread };
+      const url = "https://github.com/o/r/pull/1";
+      await org.createSession(a, { id: thread, input: "Fix the login redirect" });
+      expect(await org.mutate(a, { name: "track.create", args: { tid: "trk_0001", agentSessionId: agentSession, name: "Login", sid: thread } })).toMatchObject({ protocol: 1 });
+      await org.drain();
+      const starts = fakes.calls.filter((c) => c[0] === "Computer.start").map((c) => c[1] as { session: { id: string }; role: unknown });
+      expect(starts.find((s) => s.session.id === agentSession)).toMatchObject({ role: { name: "track", trackId: "trk_0001" } });
+      expect(await org.access(thread)).toMatchObject({ agents: [`agent:${agentSession}`], readers: [`agent:${agentSession}`] });
+      expect(await org.trackAgent(agent)).toBe(agentSession);
+
+      expect(await org.mutate(agent, { name: "result.add", args: { resultId: "res_0001", sid: thread, kind: "pr", ref: url, title: "Login PR" }, idem: "r1" })).toMatchObject({ protocol: 1 });
+      await org.acceptSummary(pub(thread, 1, { status: "idle", lastSeq: 4, lastText: "Opened the pull request." }));
+
+      // rule:pr-merged, then rule:reply.
+      await org.acceptPull({ url, state: "merged", checks: null, title: "Login PR", at: Date.now() });
+      expect(sql.exec("SELECT done_by, outcome, done_at IS NOT NULL AS done FROM place WHERE session_id = ?", thread)).toEqual([{ done_by: "rule:pr-merged", outcome: "done", done: 1 }]);
+      expect(sql.exec("SELECT state FROM result WHERE id = 'res_0001'")).toEqual([{ state: "merged" }]);
+      await org.acceptSummary(pub(thread, 2, { status: "running", lastSeq: 5 }, [{ epoch: 1, seq: 5, kind: "message.received", by: "user:usr_a", at: Date.now() }]));
+      expect(sql.exec("SELECT done_at FROM place WHERE session_id = ?", thread)).toEqual([{ done_at: null }]);
+
+      const changed = sql.exec<{ n: number }>("SELECT n FROM occurrence WHERE kind = 'result.changed' ORDER BY n DESC LIMIT 1")[0]!.n;
+      expect(await org.wakeTargets(changed)).toEqual([agentSession]);
+      expect(await org.digest(agentSession, 1, changed)).toContain("Fix the login redirect");
+
+      const page = await org.threads(a, {});
+      expect([...new Set(page.rows.map((r) => r.kind))].sort()).toEqual(["place", "result", "session"]);
+      expect(page.next).toBeNull();
+      expect((await org.search(a, { q: "LOGIN" })).rows.map((r) => r.kind).sort()).toEqual(["place", "result", "session", "track"]);
+      expect(await org.overview(a)).toMatchObject({ tracks: [{ id: "trk_0001", name: "Login" }], threads: [{ id: thread, trackId: "trk_0001", results: [{ id: "res_0001", state: "merged" }] }] });
+      expect(await org.overview(agent)).toMatchObject({ tracks: [{ id: "trk_0001" }], threads: [{ id: thread }] });
+      expect(await org.result(member("usr_b", "work"), "res_0001")).toMatchObject({ kind: "result", type: "pr", ref: url });
+      expect(await org.docRevisions(a, "trk_0001")).toEqual(expect.any(Array));
+
+      // The machine: a preview opens and closes; an older revision is not taken.
+      const machine = { machine: "work", state: "ready" as const, newestCreatedAt: 0 };
+      expect(await org.acceptMachine({ ...machine, revision: 1, previews: [{ sessionId: thread, name: "web", url: "https://web.example" }] })).toEqual({ accepted: true });
+      expect(sql.exec("SELECT kind, ref, title FROM result WHERE kind = 'preview'")).toEqual([{ kind: "preview", ref: "https://web.example", title: "web" }]);
+      expect(await org.acceptMachine({ ...machine, revision: 2, previews: [] })).toEqual({ accepted: true });
+      expect(sql.exec("SELECT 1 FROM result WHERE kind = 'preview'")).toEqual([]);
+      expect(await org.acceptMachine({ ...machine, revision: 2, previews: [] })).toEqual({ accepted: false });
+      const machineOcc = sql.exec<{ n: number }>("SELECT n FROM occurrence WHERE kind = 'machine.changed'");
+      expect(machineOcc).toHaveLength(1);
+      expect(await org.echo(machineOcc[0]!.n)).toBeNull();
+
+      // Ageing: quiet and read for 7 days goes to Earlier; not while working.
+      age(sql, Date.now() + 8 * 24 * 60 * 60 * 1_000);
+      expect(sql.exec("SELECT earlier_at FROM place WHERE session_id = ?", thread)).toEqual([{ earlier_at: null }]);
+      await org.acceptSummary(pub(thread, 3, { status: "idle", lastSeq: 6, lastActiveAt: new Date().toISOString() }));
+      age(sql, Date.now() + 8 * 24 * 60 * 60 * 1_000);
+      expect(sql.exec("SELECT earlier_at IS NOT NULL AS earlier FROM place WHERE session_id = ?", thread)).toEqual([{ earlier: 1 }]);
+      expect((await org.threads(a, { earlier: true })).rows.filter((r) => r.kind === "session")).toHaveLength(1);
+
+      await org.linkPerson("slack:T1:U1", "usr_a");
+    });
+  });
+});

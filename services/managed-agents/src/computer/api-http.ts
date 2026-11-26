@@ -325,6 +325,11 @@ export async function routeComputerApi(
   try {
     response = await routeApi(request, env, identity, accountId, computer, suffix, out);
     return response;
+  } catch (error) {
+    // Org could not read a page of the sessions it adopts (spec 43.1): retryable, and Org retries by itself.
+    if (!(error instanceof Error) || !/\badopting\b/.test(error.message)) throw error;
+    response = out.error(503, "adopting", "The organization's sessions are being moved. Try again shortly.", { retryAfterMs: 5_000 });
+    return response;
   } finally {
     requestFact(env, identity, request.method, out, response?.status ?? 500, waitUntil);
   }
@@ -543,8 +548,14 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
       if (body.ifBusy !== undefined && body.ifBusy !== "queue" && body.ifBusy !== "steer" && body.ifBusy !== "interrupt") {
         return { error: "ifBusy is queue, steer or interrupt.", field: "ifBusy" };
       }
-      if (body.id !== undefined && !isId("tn", body.id)) return { error: "id must be tn_ and 12 lowercase Crockford base32 characters.", field: "id" };
-      return allow("id", "input", "ifBusy");
+      // `turnId` is `id` under the name `POST /sessions` gives it; either way it becomes the turn's id.
+      for (const field of ["id", "turnId"] as const) {
+        if (body[field] !== undefined && !isId("tn", body[field])) return { error: `${field} must be tn_ and 12 lowercase Crockford base32 characters.`, field };
+      }
+      if (body.id !== undefined && body.turnId !== undefined && body.id !== body.turnId) return { error: "id and turnId name the same turn: send one.", field: "turnId" };
+      const { turnId, ...rest } = body;
+      const named = allow("id", "input", "ifBusy", "turnId");
+      return "error" in named || turnId === undefined ? named : { value: { ...rest, id: turnId } };
     }
     case "turns.cancel":
       return Object.keys(body).length ? { error: `Unknown field ${Object.keys(body)[0]}.`, field: Object.keys(body)[0]! } : { value: { turnId: route.sub } };
@@ -653,7 +664,7 @@ function hostErrorOf(out: Reply, error: NonNullable<Extract<DrainResult, { state
 /** A SessionLog read's refusal: `reset` is 409 with its cursor; one the caller may not see is `not_found`. */
 function logRefusalOf(out: Reply, r: LogRefused): Response {
   if (r.error === "reset") return out.error(409, "reset", "The cursor's position no longer exists.", { cursor: r.cursor ?? null, ...(r.seq !== undefined ? { seq: r.seq } : {}) });
-  if (r.error === "invalid_cursor" || r.error === "cursor_ahead") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
+  if (r.error === "invalid_cursor") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
   if (r.error === "unavailable") return out.error(503, "unavailable", "The session has not reached minSeq yet.", { retryAfterMs: r.retryAfterMs ?? 1_000 });
   if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "not_found", "No such session.");
   return out.error(404, r.error, `No such ${r.error.replace(/_not_found$/, "")}.`);
@@ -697,12 +708,14 @@ async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, 
   if (accepted.duplicate) out.facts.replayed = true;
   if (accepted.duplicate && accepted.result !== undefined) return { delivered: accepted.result };
   const drained = await timedDo(out.facts, computerOf(env, accepted.machine).drain(sessionId, { wait: true }));
-  if (drained.state === "waking") return { waking: true };
-  // Not among the results: the session's own drain delivered it; its outcome shows in the session's row.
-  const mine = drained.results.find((r) => r.id === entry.id);
-  if (!mine) return { waking: true };
-  if (mine.error) return { response: hostErrorOf(out, mine.error) };
-  return { delivered: mine.result ?? null };
+  const mine = drained.state === "delivered" ? drained.results.find((r) => r.id === entry.id) : undefined;
+  if (mine) return mine.error ? { response: hostErrorOf(out, mine.error) } : { delivered: mine.result ?? null };
+  // Not among this drain's results: the SessionLog's own owed drain (which `accept` starts) took the entry
+  // first, and this call only waited behind it. The entry's outcome is in the inbox, whoever delivered it.
+  const outcome = await timedLog(out.facts, logOf(env, sessionId).entry(entry.id));
+  if (outcome?.state === "delivered") return { delivered: outcome.result ?? null };
+  if (outcome?.state === "refused") return { response: hostErrorOf(out, { ...outcome.error, requestId: trace ?? "", retryable: false }) };
+  return { waking: true };
 }
 
 /**

@@ -124,6 +124,20 @@ export function stateText(owner: string, writers: "members" | string[]): string 
   return `Runs as ${shown(owner)}. ${who}`;
 }
 
+// ------------------------------------------------------------------ Computer's interactions
+
+/** Model access's buttons (computer/model-access.ts). */
+const MODEL_ACTIONS = new Set(["mc:connect", "md:disconnect", "cx:connect", "cx:disconnect"]);
+
+/** Whether an interaction's state is Computer's: any modal's submission, and the secret, connection, variable and subscription buttons. */
+export function computerHeld(interaction: { type?: string; actions?: Array<{ action_id?: string }> }): boolean {
+  if (interaction.type === "view_submission") return true;
+  const actionId = interaction.actions?.[0]?.action_id ?? "";
+  return /^(s|cn|v):/.test(actionId) || MODEL_ACTIONS.has(actionId);
+}
+
+export const sessionGoneText = () => "That session is gone; nothing was set.";
+
 // ------------------------------------------------------------------ the request's buttons
 
 export type AccessVerb = "allow" | "deny";

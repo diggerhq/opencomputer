@@ -35,8 +35,6 @@
     "terminal.closed"
   ],
   "x-methods": {
-    "sessions.attach": "-",
-    "sessions.detach": "-",
     "sessions.get": "GET /sessions/{id}",
     "sessions.update": "PATCH /sessions/{id}",
     "sessions.interrupt": "POST /sessions/{id}/interrupt",
@@ -125,77 +123,6 @@
     "methods": {
       "type": "object",
       "properties": {
-        "sessions.attach": {
-          "type": "object",
-          "properties": {
-            "params": {
-              "type": "object",
-              "properties": {
-                "sessionId": {
-                  "$ref": "#/$defs/SessionId"
-                },
-                "after": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "tailTurns": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 50
-                },
-                "deltas": {
-                  "type": "boolean"
-                },
-                "resume": {
-                  "type": "boolean"
-                },
-                "readOnly": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "sessionId"
-              ],
-              "additionalProperties": true
-            },
-            "result": {
-              "$ref": "#/$defs/AttachResult"
-            }
-          },
-          "required": [
-            "params",
-            "result"
-          ],
-          "additionalProperties": true
-        },
-        "sessions.detach": {
-          "type": "object",
-          "properties": {
-            "params": {
-              "type": "object",
-              "properties": {
-                "sessionId": {
-                  "$ref": "#/$defs/SessionId"
-                }
-              },
-              "required": [
-                "sessionId"
-              ],
-              "additionalProperties": true
-            },
-            "result": {
-              "not": {
-                "type": "null"
-              }
-            }
-          },
-          "required": [
-            "params",
-            "result"
-          ],
-          "additionalProperties": true
-        },
         "sessions.get": {
           "type": "object",
           "properties": {
@@ -259,6 +186,13 @@
                 },
                 "effort": {
                   "type": "string"
+                },
+                "speed": {
+                  "type": "string",
+                  "enum": [
+                    "fast",
+                    "standard"
+                  ]
                 },
                 "mode": {
                   "type": "string"
@@ -444,6 +378,40 @@
                     "steer",
                     "interrupt"
                   ]
+                },
+                "turnId": {
+                  "type": "string",
+                  "pattern": "^tn_[0-9a-hjkmnp-tv-z]{12}$",
+                  "description": "`tn_` + 12 lowercase Crockford base32"
+                },
+                "slack": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "ts": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "type": "array"
+                    },
+                    "mentioned": {
+                      "type": "boolean"
+                    },
+                    "mentionedInline": {
+                      "type": "boolean"
+                    },
+                    "context": {},
+                    "linked": {
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "ts"
+                  ],
+                  "additionalProperties": true
                 }
               },
               "required": [
@@ -693,12 +661,27 @@
                       "$ref": "#/$defs/QuestionAnswer"
                     }
                   ]
+                },
+                "slack": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "value"
+                  ],
+                  "additionalProperties": true
                 }
               },
               "required": [
                 "sessionId",
-                "askId",
-                "answer"
+                "askId"
               ],
               "additionalProperties": true
             },
@@ -1219,8 +1202,6 @@
         }
       },
       "required": [
-        "sessions.attach",
-        "sessions.detach",
         "sessions.get",
         "sessions.update",
         "sessions.interrupt",
@@ -1329,171 +1310,6 @@
           ],
           "additionalProperties": true
         },
-        "sessions.attached": {
-          "type": "object",
-          "properties": {
-            "sessionId": {
-              "$ref": "#/$defs/SessionId"
-            },
-            "error": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Error"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "session": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Session"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "logEpoch": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "epochStartSeq": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "capabilities": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Capabilities"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "earlierTurns": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/Turn"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "timing": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "serverUs": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "serverUs"
-                  ],
-                  "additionalProperties": true
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "sessionId",
-            "error",
-            "session",
-            "logEpoch",
-            "epochStartSeq",
-            "capabilities",
-            "earlierTurns",
-            "timing"
-          ],
-          "additionalProperties": true
-        },
-        "event": {
-          "$ref": "#/$defs/Event"
-        },
-        "delta": {
-          "$ref": "#/$defs/Delta"
-        },
-        "session.detached": {
-          "type": "object",
-          "properties": {
-            "sessionId": {
-              "$ref": "#/$defs/SessionId"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "logEpoch": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string",
-                  "enum": [
-                    "Infinity",
-                    "-Infinity",
-                    "NaN"
-                  ]
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "epochStartSeq": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string",
-                  "enum": [
-                    "Infinity",
-                    "-Infinity",
-                    "NaN"
-                  ]
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "sessionId",
-            "reason"
-          ],
-          "additionalProperties": true
-        },
         "terminal.exited": {
           "type": "object",
           "properties": {
@@ -1535,10 +1351,6 @@
       },
       "required": [
         "ready",
-        "sessions.attached",
-        "event",
-        "delta",
-        "session.detached",
         "terminal.exited"
       ],
       "additionalProperties": true
@@ -1546,27 +1358,124 @@
     "clientNotifications": {
       "type": "object",
       "properties": {
-        "sessions.ack": {
+        "telemetry": {
           "type": "object",
           "properties": {
-            "sessionId": {
-              "$ref": "#/$defs/SessionId"
+            "v": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "enum": [
+                    1
+                  ]
+                }
+              ]
             },
-            "seq": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
+            "client": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "opc"
+                      ]
+                    }
+                  ]
+                },
+                "version": {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                "os": {
+                  "type": "string"
+                },
+                "arch": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "version"
+              ],
+              "additionalProperties": true
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "at": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string",
+                        "enum": [
+                          "Infinity",
+                          "-Infinity",
+                          "NaN"
+                        ]
+                      }
+                    ]
+                  },
+                  "sessionId": {
+                    "$ref": "#/$defs/SessionId"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "data": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "Infinity",
+                            "-Infinity",
+                            "NaN"
+                          ]
+                        },
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "data"
+                ],
+                "additionalProperties": true
+              },
+              "minItems": 1,
+              "maxItems": 20
             }
           },
           "required": [
-            "sessionId",
-            "seq"
+            "v",
+            "client",
+            "events"
           ],
           "additionalProperties": true
         }
       },
       "required": [
-        "sessions.ack"
+        "telemetry"
       ],
       "additionalProperties": true
     },
@@ -1740,12 +1649,23 @@
         },
         "mode": {
           "type": "string"
+        },
+        "speed": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "model",
         "effort",
-        "mode"
+        "mode",
+        "speed"
       ],
       "additionalProperties": true
     },
@@ -2542,6 +2462,9 @@
         "archived": {
           "type": "boolean"
         },
+        "aside": {
+          "type": "boolean"
+        },
         "owner": {
           "$ref": "#/$defs/Person"
         },
@@ -2646,16 +2569,6 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
-        "logEpoch": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
-        "epochStartSeq": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
         "createdAt": {
           "type": "string",
           "description": "ISO 8601, UTC, milliseconds",
@@ -2715,8 +2628,6 @@
         "lastText",
         "context",
         "lastSeq",
-        "logEpoch",
-        "epochStartSeq",
         "createdAt",
         "lastActiveAt",
         "syncedAt",
@@ -3050,7 +2961,7 @@
       "properties": {
         "code": {
           "type": "string",
-          "description": "One of `invalid_request`, `unsupported_model`, `unsupported_effort`, `unsupported_mode`, `invalid_answer`, `answer_with_secret`, `invalid_path`, `invalid_archive`, `invalid_cursor`, `unauthenticated`, `insufficient_credits`, `forbidden`, `admin_required`, `not_found`, `session_not_found`, `turn_not_found`, `ask_not_found`, `path_not_found`, `secret_not_found`, `id_conflict`, `idempotency_conflict`, `ask_closed`, `session_busy`, `turn_not_cancellable`, `queue_full`, `cursor_ahead`, `path_exists`, `feature_unavailable`, `computer_not_set_up`, `too_large`, `upgrade_required`, `rate_limited`, `internal`, `computer_unavailable`, `unavailable`, `terminal_not_found`, `too_far_behind`, `too_many_attached`, `too_many_terminals`, `subagent_not_found`, `subagent_ended`; may gain values.",
+          "description": "One of `invalid_request`, `unsupported_model`, `unsupported_effort`, `unsupported_mode`, `invalid_answer`, `answer_with_secret`, `invalid_path`, `invalid_archive`, `invalid_cursor`, `unauthenticated`, `insufficient_credits`, `forbidden`, `admin_required`, `not_found`, `session_not_found`, `turn_not_found`, `ask_not_found`, `path_not_found`, `secret_not_found`, `id_conflict`, `idempotency_conflict`, `ask_closed`, `session_busy`, `turn_not_cancellable`, `queue_full`, `path_exists`, `feature_unavailable`, `computer_not_set_up`, `too_large`, `upgrade_required`, `rate_limited`, `internal`, `computer_unavailable`, `unavailable`, `terminal_not_found`, `too_far_behind`, `too_many_terminals`, `subagent_not_found`, `subagent_ended`; may gain values.",
           "examples": [
             "invalid_request"
           ]
@@ -6426,63 +6337,6 @@
         }
       ]
     },
-    "AttachResult": {
-      "type": "object",
-      "properties": {
-        "session": {
-          "$ref": "#/$defs/Session"
-        },
-        "logEpoch": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "epochStartSeq": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "capabilities": {
-          "$ref": "#/$defs/Capabilities"
-        },
-        "earlierTurns": {
-          "anyOf": [
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Turn"
-              }
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "timing": {
-          "type": "object",
-          "properties": {
-            "serverUs": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            }
-          },
-          "required": [
-            "serverUs"
-          ],
-          "additionalProperties": true
-        }
-      },
-      "required": [
-        "session",
-        "logEpoch",
-        "epochStartSeq",
-        "capabilities",
-        "earlierTurns",
-        "timing"
-      ],
-      "additionalProperties": true
-    },
     "SessionResult": {
       "type": "object",
       "properties": {
@@ -6633,11 +6487,6 @@
     "Limits": {
       "type": "object",
       "properties": {
-        "maxAttached": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
         "maxMessageBytes": {
           "type": "integer",
           "minimum": 0,
@@ -6650,7 +6499,6 @@
         }
       },
       "required": [
-        "maxAttached",
         "maxMessageBytes",
         "maxRequestsPerSecond"
       ],
@@ -6676,6 +6524,13 @@
         },
         "effort": {
           "type": "string"
+        },
+        "speed": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "standard"
+          ]
         },
         "mode": {
           "type": "string"

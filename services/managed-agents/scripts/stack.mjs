@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Render + deploy an isolated managed-agents preview stack (edge, platform,
-// Workerd runtime, D1) in a development Cloudflare account.
+// Workerd runtime, Live, D1) in a development Cloudflare account.
 //
 //   node scripts/stack.mjs <devin-name> render|up|status|destroy [--api-edge-url URL]
 //                                       [--runtime-image ARN --runtime-image-version V]
@@ -79,6 +79,8 @@ const names = {
   edge: `managed-agents-edge-${name}`,
   platform: `managed-agents-platform-${name}`,
   workerd: `managed-agents-workerd-${name}`,
+  // Tracks and threads 18.8: the fan-out actor, in a script of its own.
+  live: `opencomputer-live-${name}`,
   d1: `serverless-agents-${name}`,
   apiEdge: `opencomputer-api-edge-${name}`,
 };
@@ -141,7 +143,8 @@ async function up() {
 
   const workerdExists = await workerExists(names.workerd);
   const edgeExists = await workerExists(names.edge);
-  const bootstrap = !workerdExists || !edgeExists;
+  const liveExists = await workerExists(names.live);
+  const bootstrap = !workerdExists || !edgeExists || !liveExists;
   const files = writeConfigs(stack, { bootstrap });
 
   step("platform");
@@ -168,6 +171,7 @@ async function up() {
     BLUE_CHANNEL_ENCRYPTION_KEY: secrets.BLUE_CHANNEL_ENCRYPTION_KEY,
     BLUE_SESSION_INDEX_ADMIN_SECRET: secrets.BLUE_SESSION_INDEX_ADMIN_SECRET,
     COMPUTER_HOST_TOKEN_KEY: secrets.COMPUTER_HOST_TOKEN_KEY,
+    LIVE_KEY: secrets.LIVE_KEY,
     ...optionalSecrets({
       SLACK_COMPUTER_CLIENT_SECRET: "OC_STACK_SLACK_COMPUTER_CLIENT_SECRET",
       SLACK_COMPUTER_SIGNING_SECRET: "OC_STACK_SLACK_COMPUTER_SIGNING_SECRET",
@@ -187,9 +191,10 @@ async function up() {
   };
   if (bootstrap) {
     // Edge ⇄ Workerd bind to each other (service binding one way, MEMORY
-    // Durable Object the other). First deploy of the edge omits the Workerd
-    // service binding so the Workerd worker can bind to the edge's DO class.
-    step("edge (bootstrap, no WORKERD_RUNTIME binding)");
+    // Durable Object the other), and so do edge ⇄ Live (LIVE one way,
+    // SESSION_LOG and COMPUTERS the other). First deploy of the edge omits the
+    // Workerd service binding and LIVE so both can bind to the edge's classes.
+    step("edge (bootstrap, no WORKERD_RUNTIME or LIVE binding)");
     deploy(files.edgeBootstrap, edgeSecrets);
   }
 
@@ -200,6 +205,9 @@ async function up() {
       ? { OPENROUTER_API_KEY: edgeSecrets.OPENROUTER_API_KEY }
       : {},
   );
+
+  step("live");
+  deploy(files.live, { LIVE_KEY: secrets.LIVE_KEY });
 
   step("d1 migrations");
   wrangler([
@@ -378,7 +386,7 @@ async function githubApp() {
 
 async function destroy() {
   requireEnv(["CLOUDFLARE_API_TOKEN"]);
-  for (const worker of [names.edge, names.workerd, names.platform]) {
+  for (const worker of [names.live, names.edge, names.workerd, names.platform]) {
     if (await workerExists(worker)) {
       step(`delete worker ${worker}`);
       await cf(`/workers/scripts/${worker}?force=true`, { method: "DELETE" });
@@ -407,6 +415,7 @@ function configPaths() {
   return {
     platform: path.join(repoRoot, `wrangler.platform.${name}.generated.jsonc`),
     workerd: path.join(repoRoot, `wrangler.workerd.${name}.generated.jsonc`),
+    live: path.join(repoRoot, `wrangler.live.${name}.generated.jsonc`),
     edge: path.join(repoRoot, `wrangler.${name}.generated.jsonc`),
     edgeBootstrap: path.join(
       repoRoot,
@@ -496,6 +505,28 @@ function writeConfigs(stack, { bootstrap }) {
     observability,
   };
 
+  const live = {
+    $schema: schema,
+    name: names.live,
+    account_id: ACCOUNT_ID,
+    main: "src/live/index.ts",
+    compatibility_date: "2026-07-24",
+    compatibility_flags: ["nodejs_compat"],
+    workers_dev: false,
+    preview_urls: false,
+    durable_objects: {
+      bindings: [
+        { name: "LIVE", class_name: "LiveDurableObject" },
+        { name: "SESSION_LOG", class_name: "SessionLogDurableObject", script_name: names.edge },
+        { name: "COMPUTERS", class_name: "ComputerDurableObject", script_name: names.edge },
+      ],
+    },
+    // The credential check goes to the same stack's api-edge, once it is up.
+    ...(stack.apiEdgeUrl ? { services: [{ binding: "EDGE", service: names.apiEdge }] } : {}),
+    migrations: [{ tag: "v1", new_sqlite_classes: ["LiveDurableObject"] }],
+    observability,
+  };
+
   const edgeServices = [
     { binding: "DEPLOYMENTS", service: names.platform },
     { binding: "RUNTIMES", service: names.platform },
@@ -511,7 +542,7 @@ function writeConfigs(stack, { bootstrap }) {
         ]
       : []),
   ];
-  const edge = (withWorkerd) => ({
+  const edge = (full) => ({
     $schema: schema,
     name: names.edge,
     account_id: ACCOUNT_ID,
@@ -561,7 +592,7 @@ function writeConfigs(stack, { bootstrap }) {
         migrations_dir: "migrations",
       },
     ],
-    services: withWorkerd
+    services: full
       ? [
           { binding: "WORKERD_RUNTIME", service: names.workerd },
           ...edgeServices,
@@ -580,6 +611,12 @@ function writeConfigs(stack, { bootstrap }) {
         { name: "SESSION_LOG", class_name: "SessionLogDurableObject" },
         // Work tracking: one per organization, the index of its knowledge repository's work items.
         { name: "WORK_INDEX", class_name: "WorkIndexDurableObject" },
+        // Tracks and threads: the organization's directory of work, its Slack link, and the
+        // readers of its occurrence stream; Live is the stack's own `live` Worker.
+        { name: "ORGS", class_name: "OrgDurableObject" },
+        { name: "SLACK", class_name: "SlackDurableObject" },
+        { name: "DELIVERY", class_name: "DeliveryDurableObject" },
+        ...(full ? [{ name: "LIVE", class_name: "LiveDurableObject", script_name: names.live }] : []),
       ],
     },
     migrations: [
@@ -593,12 +630,17 @@ function writeConfigs(stack, { bootstrap }) {
       { tag: "v5", new_sqlite_classes: ["ComputerDurableObject"] },
       { tag: "v6", new_sqlite_classes: ["SessionLogDurableObject"] },
       { tag: "v7", new_sqlite_classes: ["WorkIndexDurableObject"] },
+      {
+        tag: "v8",
+        new_sqlite_classes: ["OrgDurableObject", "SlackDurableObject", "DeliveryDurableObject"],
+      },
     ],
     observability,
   });
 
   writeJson(files.platform, platform);
   writeJson(files.workerd, workerd);
+  writeJson(files.live, live);
   writeJson(files.edge, edge(true));
   if (bootstrap) writeJson(files.edgeBootstrap, edge(false));
   else fs.rmSync(files.edgeBootstrap, { force: true });
@@ -732,6 +774,8 @@ function loadSecrets() {
     "BLUE_CHANNEL_ENCRYPTION_KEY",
     "BLUE_SESSION_INDEX_ADMIN_SECRET",
     "COMPUTER_HOST_TOKEN_KEY",
+    // Signs the principal on a Live socket upgrade; the same value on edge, Live and api-edge.
+    "LIVE_KEY",
   ]) {
     secrets[key] ??=
       key === "BLUE_CHANNEL_ENCRYPTION_KEY"

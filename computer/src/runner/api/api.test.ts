@@ -77,6 +77,28 @@ describe('SessionApi', () => {
     for (const e of w.events()) assertEvent(e);
   });
 
+  it('a block reusing an earlier message\'s index (Claude restarts them per message) gets a fresh blockId, so its deltas still stream', async () => {
+    const w = await world();
+    const got: { type: string; data: unknown }[] = [];
+    const sub = w.log.subscribe({ deltas: true, onEvent: () => {}, onDelta: (d) => void got.push(d), onDetached: () => {} });
+    if ('error' in sub) throw new Error(sub.error.message);
+    await w.call('turns.send', { input: 'first' });
+    await w.t.feed(w.T.first(), ...w.T.thinking('0', 'hmm'), ...w.T.text('1', 'one'), w.T.done());
+    await w.call('turns.send', { input: 'second' });
+    await w.t.feed(w.T.first(), ...w.T.text('0', 'two'), ...w.T.text('0', 'again'));
+    await w.t.feed(w.T.first(), ...w.T.thinking('0', 'more'), ...w.T.text('1', 'three'), w.T.done());
+    const completed = w.of('message.completed').map((e) => e.data as { blockId: string; text: string });
+    expect(completed.map((c) => c.text)).toEqual(['one', 'two', 'again', 'three']);
+    // Every text block of the session has its own id, and its delta carries it.
+    expect(new Set(completed.map((c) => c.blockId)).size).toBe(4);
+    const texts = got.filter((d) => d.type === 'message.delta').map((d) => d.data as { blockId: string; text: string });
+    expect(texts.map((d) => [d.blockId, d.text])).toEqual(completed.map((c) => [c.blockId, c.text]));
+    const reasoning = w.of('reasoning.completed').map((e) => (e.data as { blockId: string }).blockId);
+    expect(new Set([...reasoning, ...completed.map((c) => c.blockId)]).size).toBe(6);
+    expect(got.filter((d) => d.type === 'reasoning.delta').map((d) => (d.data as { blockId: string }).blockId)).toEqual(reasoning);
+    sub.close();
+  });
+
   it('a message from outside Slack is quoted into the thread under its sender, before the turn; one from Slack is not', async () => {
     const w = await world();
     const posts = () =>
