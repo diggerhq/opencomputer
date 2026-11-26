@@ -218,6 +218,8 @@ describe("computer API allowlist", () => {
   it.each([
     ["GET", "/computer/me"],
     ["POST", "/computer/tickets"],
+    ["GET", "/computer/settings"],
+    ["PATCH", "/computer/settings"],
     ["GET", "/computer/sessions"],
     ["POST", "/computer/sessions"],
     ["GET", "/computer/sessions/cs_01h"],
@@ -275,6 +277,8 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/a%2Fb"],
     ["GET", "/computer/sessions/cs_01h/unknown"],
     ["POST", "/computer/slack/install"],
+    ["PUT", "/computer/settings"],
+    ["GET", "/computer/settings/apiAccessDefault"],
     // Close and Reopen come with build step 5.
     ["POST", "/computer/work/items/22/close"],
     ["DELETE", "/computer/work/repository"],

@@ -41,6 +41,8 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   { methods: new Set(["GET"]), pattern: route("/me") },
   { methods: new Set(["GET"]), pattern: route("/capabilities") },
   { methods: new Set(["POST"]), pattern: route("/tickets") },
+  // The organization's API settings: apiAccessDefault (docs/api/sessions.mdx).
+  { methods: new Set(["GET", "PATCH"]), pattern: route("/settings") },
   { methods: new Set(["GET", "POST"]), pattern: route("/sessions") },
   { methods: new Set(["GET", "PATCH"]), pattern: route(`/sessions/${SEG}`) },
   {

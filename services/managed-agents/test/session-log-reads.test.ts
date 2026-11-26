@@ -38,6 +38,16 @@ describe("a principal's reads", () => {
     expect(await errors(member(OWNER_ID, { org: "org_other" }))).toEqual(refused);
   });
 
+  it("answer a person it is shared with, beyond the audience", async () => {
+    const log = await openLog({ access: accessOf({ audience: `member:${OWNER_ID}`, writers: [`user:${OWNER_ID}`, `user:${MATE_ID}`], readers: [`user:${MATE_ID}`] }) });
+    await log.stub.append(log.identity, 1, fill(log, 1, 2));
+    expect((await log.stub.events({}, member(MATE_ID))).ok).toBe(true);
+    expect((await log.stub.events({}, member("usr_stranger"))).ok).toBe(false);
+    // Stopping it: a person who reads it; not one who does not.
+    expect(await log.stub.accept(member(MATE_ID), { id: "in_mate", kind: "interrupt", body: {} })).toMatchObject({ ok: true });
+    expect(await log.stub.accept(member("usr_stranger"), { id: "in_stranger", kind: "interrupt", body: {} })).toEqual({ ok: false, code: "not_found" });
+  });
+
   it("answer not_found for a session Org does not have", async () => {
     const log = await openLog({ access: null });
     expect(await log.stub.events({}, member())).toEqual({ ok: false, error: "not_found" });

@@ -17,7 +17,7 @@
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
-import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
+import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
@@ -117,6 +117,8 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   const p = suffix.split("/").filter(Boolean);
   const is = (m: string, n: number) => method === m && p.length === n;
   if (is("GET", 1) && p[0] === "me") return { op: "me" };
+  // The organization's settings for sessions (sessions.mdx#organization-default): Org's.
+  if (p[0] === "settings" && p.length === 1 && (method === "GET" || method === "PATCH")) return { op: method === "GET" ? "settings.get" : "settings.patch" };
   if (is("POST", 1) && p[0] === "tickets") return { op: "ticket" };
   // Secret writes: organization and session layers; personal secrets remain unavailable over HTTP.
   if (is("GET", 1) && p[0] === "secrets") return { op: "secrets.list" };
@@ -175,7 +177,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
 
 /** The scope a route needs. */
 function scopeOf(op: string): ApiScope | null {
-  if (op === "me" || op === "ticket") return null;
+  if (op === "me" || op === "ticket" || op === "settings.get") return null;
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
@@ -312,7 +314,7 @@ export function routeFamily(op: string): string {
 }
 
 const OPS = new Set([
-  "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "list", "create", "get", "patch", "capabilities",
+  "me", "ticket", "settings.get", "settings.patch", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "list", "create", "get", "patch", "capabilities",
   "aside.set", "aside.clear",
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
@@ -551,7 +553,7 @@ const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "slack.post",
+  "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
@@ -675,7 +677,7 @@ function createInput(body: unknown): { value: CreateInput } | { error: [number, 
   const input = asObject(body);
   const bad = (field: string, message: string) => ({ error: [400, "invalid_request", message, { field }] as [number, string, string, Record<string, unknown>] });
   if (!input) return bad("", "The body must be a JSON object.");
-  const fields = new Set(["id", "input", "turnId", "title", "model", "effort", "mode", "speed", "metadata", "trackId", "role"]);
+  const fields = new Set(["id", "input", "turnId", "title", "model", "effort", "mode", "speed", "metadata", "trackId", "role", "access"]);
   for (const field of Object.keys(input)) if (!fields.has(field)) return bad(field, `Unknown field ${field}.`);
   const value: CreateInput = {};
   if (input.id !== undefined) {
@@ -713,6 +715,8 @@ function createInput(body: unknown): { value: CreateInput } | { error: [number, 
     if (input.role !== "start") return bad("role", "role is start.");
     value.role = "start";
   }
+  // Org checks it (org/sessions.ts `parseAccess`).
+  if (input.access !== undefined) value.access = input.access as CreateInput["access"];
   const settings = checkSettings({
     ...(value.model !== undefined ? { model: value.model } : {}),
     ...(value.effort !== undefined ? { effort: value.effort } : {}),
@@ -831,6 +835,14 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       return resultDiff(request, env, p, route.sub!, org, out);
     case "slack.post":
       return slackPost(request, env, p, route.sub!, out);
+    case "settings.get":
+      return out.send(200, { settings: await timedDo(out.facts, org().settings(p)) });
+    case "settings.patch": {
+      const parsed = await bodyOf(request);
+      if ("error" in parsed) return out.error(...parsed.error);
+      const r = await timedDo(out.facts, org().setSettings(p, parsed.value as Partial<OrgSettings>));
+      return r.ok ? out.send(200, { settings: r.settings }) : refusalOf(out, r);
+    }
   }
   if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
@@ -848,6 +860,11 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       timedDo(out.facts, org().getSession(p, sessionId)),
       timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null),
     ]);
+    if (!got.ok && p.admin) {
+      // An admin outside the session reads its access and nothing else (sessions.mdx#access).
+      const outside = await timedDo(out.facts, org().sessionAccess(p, sessionId));
+      if (outside.ok) return out.send(200, strip(outside));
+    }
     if (!got.ok) return refusalOf(out, got);
     // With minSeq the log has not reached: 503 with retryAfterMs, as every read (spec 37.1).
     if (summary && !summary.ok && summary.error === "unavailable") return logRefusalOf(out, summary);
@@ -1151,7 +1168,7 @@ async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal
   if ("error" in parsed) return out.error(...parsed.error);
   const patch = validatePatch(parsed.value);
   if ("error" in patch) return out.of(patch.error);
-  const { title, archived, metadata, model, effort, mode, speed } = patch.value;
+  const { title, archived, metadata, model, effort, mode, speed, access } = patch.value;
   const settings = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
   if (!settings.ok) return out.error(400, settings.code, settings.message, { field: settings.field });
   const mutate = async (name: string, args: Record<string, unknown>, part: string): Promise<Response | null> => {
@@ -1177,6 +1194,12 @@ async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal
     const sent = await sendEntry(env, p, sessionId, { id, kind: "settings", body }, trace, out);
     if ("response" in sent) return sent.response;
     if ("waking" in sent) waking = id;
+  }
+  // Access last: an admin outside the session changes it and nothing else, and learns nothing more (sessions.mdx#access).
+  if (access !== undefined) {
+    const r = await timedDo(out.facts, org().patchSession(p, sessionId, { access: access as SessionPatch["access"] }));
+    if (!r.ok) return refusalOf(out, r);
+    if (r.session === null) return out.send(200, strip(r));
   }
   const got = await timedDo(out.facts, org().getSession(p, sessionId));
   if (!got.ok) return refusalOf(out, got);
