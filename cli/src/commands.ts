@@ -4,6 +4,7 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentLog,
   type ManagedGitHubInstallation,
+  type ComputerServiceAttachment,
   type ManagedGitHubStatus,
   type ManagedSessionSnapshot,
   type ManagedSessionSummary,
@@ -209,6 +210,11 @@ function flag(args: string[], name: string): boolean {
   if (index < 0) return false;
   args.splice(index, 1);
   return true;
+}
+
+/** The `connection revoke` flag that names one grant to the computer. */
+function grantFlag(scope: ComputerServiceAttachment["scope"], subject: string): string {
+  return scope === "everyone" ? "--everyone" : `--${scope} ${subject}`;
 }
 
 function option(args: string[], name: string): string | undefined {
@@ -2225,11 +2231,20 @@ export async function runCommand(
       const target = args.shift();
       if (!target) {
         throw new Error(
-          `Use \`opencomputer connection ${action} <alias|connection-id>\``,
+          action === "grant"
+            ? "Use `opencomputer connection grant <alias|connection-id>`"
+            : "Use `opencomputer connection revoke <alias|connection-id> [--everyone | --session <key> | --user <slack-user-id>]`",
         );
       }
       const service = option(args, "--service");
+      // Revoke names one grant; the connection's other grants stay.
+      const everyone = action === "revoke" && flag(args, "--everyone");
+      const session = action === "revoke" ? option(args, "--session") : undefined;
+      const user = action === "revoke" ? option(args, "--user") : undefined;
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if ([everyone, session, user].filter(Boolean).length > 1) {
+        throw new Error("Choose one grant to revoke: --everyone, --session <key> or --user <slack-user-id>");
+      }
       const connection = await findConnection(target, service);
       const resolved = service ?? serviceOfConnection(connection);
       if (action === "grant") {
@@ -2245,14 +2260,38 @@ export async function runCommand(
           process.stdout.write(
             `Granted ${connection.label} (${resolved}) to everyone on the computer.\n`,
           );
-      } else {
-        await client.revokeComputerServiceConnection(connection.id);
-        if (globals.json) printJSON({ revoked: connection.id });
-        else
-          process.stdout.write(
-            `Revoked ${connection.label} (${resolved}) from the computer.\n`,
-          );
+        return;
       }
+      let grant: { scope: ComputerServiceAttachment["scope"]; subject: string };
+      if (everyone) grant = { scope: "everyone", subject: "" };
+      else if (session) grant = { scope: "session", subject: session };
+      else if (user) grant = { scope: "user", subject: user };
+      else {
+        // No grant named: the connection's only grant, or the choices.
+        const grants = (await client.computerServiceConnections()).filter(
+          (attachment) => attachment.connectionId === connection.id,
+        );
+        if (!grants.length) {
+          throw new Error(`${connection.label} (${resolved}) is not granted to the computer.`);
+        }
+        if (grants.length > 1) {
+          throw new Error(
+            `${connection.label} (${resolved}) has ${grants.length} grants; choose the one to revoke:\n` +
+              grants
+                .map((g) => `  opencomputer connection revoke ${connection.id} ${grantFlag(g.scope, g.subject)}`)
+                .join("\n"),
+          );
+        }
+        grant = { scope: grants[0]!.scope, subject: grants[0]!.subject };
+      }
+      await client.revokeComputerServiceConnection(connection.id, grant);
+      const audience =
+        grant.scope === "everyone" ? "everyone" : `${grant.scope} ${grant.subject}`;
+      if (globals.json) printJSON({ revoked: connection.id, scope: grant.scope, subject: grant.subject });
+      else
+        process.stdout.write(
+          `Revoked ${connection.label} (${resolved}) from ${audience} on the computer.\n`,
+        );
       return;
     }
 

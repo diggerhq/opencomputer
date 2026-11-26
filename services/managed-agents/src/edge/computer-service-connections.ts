@@ -7,8 +7,9 @@
  * - POST grants a connection to everyone on the computer: only an organization
  *   admin, and only with a connection of their own. The dashboard has no thread
  *   or Slack user to bind a narrower grant to; those come from Slack.
- * - DELETE revokes a connection's grants (all, or one scope and subject): its
- *   owner or an admin.
+ * - DELETE revokes one grant of a connection, named by its scope and subject
+ *   (none for `everyone`): its owner or an admin. Never all of a connection's
+ *   grants at once, so revoking a thread's grant leaves the others in place.
  *
  * The computer itself never reaches these: it uses grants, a person makes them.
  */
@@ -109,22 +110,18 @@ export async function routeComputerServiceConnections(
   }
 
   const scope = body?.scope;
-  if (scope !== undefined && !SCOPES.includes(scope as ComputerGrantScope)) {
-    return problem(400, "invalid_scope", "scope must be session, user or everyone");
+  if (!SCOPES.includes(scope as ComputerGrantScope)) {
+    return problem(400, "invalid_scope", "scope must be session, user or everyone: the grant to revoke");
   }
-  const subject = body?.subject;
-  if (subject !== undefined && typeof subject !== "string") {
-    return problem(400, "invalid_subject", "subject must be a string");
+  const subject = scope === "everyone" ? "" : body?.subject;
+  if (typeof subject !== "string" || (scope !== "everyone" && !subject)) {
+    return problem(400, "invalid_subject", `A ${String(scope)} grant is named by its subject: the session key or Slack user ID`);
   }
   const connection = await account.getConnection(connectionId);
   if (!connection || (!admin && connection.ownerUserId !== identity.userId)) {
     return problem(404, "connection_not_found", "Connection not found");
   }
-  const revoked = await account.revokeComputerServiceConnection({
-    connectionId,
-    ...(scope !== undefined ? { scope: scope as ComputerGrantScope } : {}),
-    ...(typeof subject === "string" ? { subject } : {}),
-  });
+  const revoked = await account.revokeComputerServiceConnection({ connectionId, scope: scope as ComputerGrantScope, subject });
   return revoked > 0
     ? new Response(null, { status: 204 })
     : problem(404, "attachment_not_found", "The computer has no such grant");

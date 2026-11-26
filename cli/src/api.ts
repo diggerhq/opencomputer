@@ -1022,11 +1022,25 @@ export class OpenComputerClient {
     );
   }
 
-  /** Revokes every grant of a connection to the computer. */
-  revokeComputerServiceConnection(connectionId: string) {
+  /**
+   * Revokes one grant of a connection to the computer, named by its scope
+   * and subject (the session key or Slack user ID; none for `everyone`).
+   * The connection's other grants stay.
+   */
+  revokeComputerServiceConnection(
+    connectionId: string,
+    grant: { scope: ComputerServiceAttachment["scope"]; subject?: string },
+  ) {
     return this.request<void>(
       "/api/managed-agents/computer/service-connections",
-      { method: "DELETE", body: JSON.stringify({ connectionId }) },
+      {
+        method: "DELETE",
+        body: JSON.stringify({
+          connectionId,
+          scope: grant.scope,
+          ...(grant.scope === "everyone" ? {} : { subject: grant.subject }),
+        }),
+      },
     );
   }
 
