@@ -102,7 +102,7 @@ await new Promise<void>((r) => hangServer.listen(0, '127.0.0.1', r));
 
 const shipped = JSON.parse(readFileSync(path.join(ROOT, 'modelproxy', 'profiles', 'default.json'), 'utf8'));
 const route = (profile: string, token: string): ModelRoute => ({ mode: 'profile', profile, vars: { token }, key: modelKey(profile, { token }) });
-// --claude: the route the gateway gives these settings (gateway/main.ts); a turn on it is real.
+// --claude: the route the gateway gives these settings; a turn on it is real.
 const real = !CLAUDE ? undefined
   : process.env.CLAUDE_CODE_OAUTH_TOKEN ? route('claude-oauth', process.env.CLAUDE_CODE_OAUTH_TOKEN)
   : process.env.ANTHROPIC_API_KEY ? route('anthropic-key', process.env.ANTHROPIC_API_KEY)
