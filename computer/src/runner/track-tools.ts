@@ -41,10 +41,15 @@ export function trackTools(w: Work): CalvinTool[] {
   const tools = [
     tool(
       'rename',
-      'Rename a thread of this track, or the track. A name a person set stays: the refusal says so.',
-      { target: z.string().describe('The thread (cs_…) or the track (trk_…)'), name: z.string().min(1).max(200) },
+      'Name this track (no `target`), or rename a thread of it. A name a person set stays: the refusal says so.',
+      {
+        target: z.string().optional().describe('A thread (cs_…) to rename; omit, or give the track\'s own id (trk_…), to name this track'),
+        name: z.string().min(1).max(200),
+      },
       ({ target, name }, call) =>
-        asTrack('rename', 'not renamed', async () => {
+        asTrack('rename', 'not renamed', async (tid) => {
+          // The track's id is in no message the agent is sent, so naming the track takes none.
+          target = target?.trim() || tid;
           if (TID.test(target)) await w.api.call('PUT', `/work/tracks/${target}/name`, { body: { name }, key: keyOf(call) });
           else if (SID.test(target)) await w.api.call('PUT', `/work/threads/${target}/title`, { body: { title: name }, key: keyOf(call) });
           else throw new Error('target is a session id (cs_…) or a track id (trk_…)');

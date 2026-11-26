@@ -36,3 +36,17 @@ describe('the Doc tools', () => {
     expect(t.calls).toMatchObject([{ method: 'PUT', path: `/work/tracks/${TID}/stand`, o: { body: { stand: 'Waiting on you.' } } }]);
   });
 });
+
+describe('rename', () => {
+  it("names this track without its id, which no message gives the agent; a thread by its id", async () => {
+    const t = rig(() => ({ protocol: 1 }));
+    expect((await t.tools.rename!.handler({ name: 'Login redirect' }, { id: 'toolu_3' } as never)).content[0].text).toBe(`Renamed ${TID}.`);
+    await t.tools.rename!.handler({ target: TID, name: 'Login' }, { id: 'toolu_4' } as never);
+    await t.tools.rename!.handler({ target: 'cs_0000000000000002', name: 'Fix the cookie' }, { id: 'toolu_5' } as never);
+    expect(t.calls).toMatchObject([
+      { method: 'PUT', path: `/work/tracks/${TID}/name`, o: { body: { name: 'Login redirect' } } },
+      { method: 'PUT', path: `/work/tracks/${TID}/name`, o: { body: { name: 'Login' } } },
+      { method: 'PUT', path: '/work/threads/cs_0000000000000002/title', o: { body: { title: 'Fix the cookie' } } },
+    ]);
+  });
+});
