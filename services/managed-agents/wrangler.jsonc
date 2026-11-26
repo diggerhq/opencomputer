@@ -13,6 +13,7 @@
     "BLUE_CHANNEL_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     "OC_MANAGED_CRED_HMAC_SECRET": "test-managed-credential-secret",
     "BLUE_SESSION_INDEX_ADMIN_SECRET": "test-session-index-admin-secret",
+    "REHEARSAL_KEY": "test-rehearsal-key",
     "MANAGED_RUNTIME_PROFILES": "{\"acme-scanner\":{\"displayName\":\"Acme scanning\",\"imageArn\":\"dedicated-acme-image\",\"imageVersion\":\"1.0\"}}",
     "OPENCOMPUTER_APP_URL": "https://app.example",
     "COMPUTER_API_ORGS": "*",

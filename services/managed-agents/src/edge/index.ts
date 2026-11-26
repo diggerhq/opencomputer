@@ -40,6 +40,7 @@ import type {
   WorkspaceArtifact,
   WorkspaceExport,
 } from "../protocol.js";
+import { rehearsalResponse } from "../computer/rehearsal-route.js";
 import {
   connectionSupportsProtocol,
   resolveModelRoute as resolveConfiguredModelRoute,
@@ -10670,6 +10671,9 @@ export default {
           env as Env & PlatformEnv & ComputerEdgeEnv,
           url.pathname.endsWith("/wake") ? "wake" : "status",
         );
+      }
+      if (url.pathname.startsWith("/internal/computer/rehearsal/")) {
+        return await rehearsalResponse(request, env as Env & PlatformEnv & ComputerEdgeEnv, url);
       }
       if (url.pathname === "/internal/session-index/backfill") {
         return await backfillSessionIndex(request, env as Env & PlatformEnv);

@@ -60,6 +60,7 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
+import { dumpTable, loadRows, type RehearsalRow, type RehearsalTable } from "./rehearsal.js";
 import { isSessionId } from "./session-ids.js";
 import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackRpc, StartSpec } from "../actor/contracts.js";
 import type { Access, Principal } from "../actor/principal.js";
@@ -1653,6 +1654,26 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const key = this.liveSessionKey(runner);
     const ownerId = key ? this.runnerSession(key)?.ownerId : undefined;
     return key && ownerId ? { sessionKey: key, ownerId } : null;
+  }
+
+  /** Rehearsal (rehearsal.ts): a page of this organization's rows, read only. Null: no Computer object for it. */
+  async rehearsalDump(accountId: string, table: RehearsalTable, offset: number, limit: number): Promise<ReturnType<typeof dumpTable> | null> {
+    if (this.setting("accountId") !== accountId) return null;
+    return dumpTable(this.ctx.storage.sql, table, offset, limit);
+  }
+
+  /** Rehearsal: rows of a dump, into this organization's object. Never in production. */
+  async rehearsalLoad(accountId: string, table: RehearsalTable, rows: RehearsalRow[]): Promise<number> {
+    if ((this.env as { BLUE_ENVIRONMENT?: string }).BLUE_ENVIRONMENT === "production") throw new Error("rehearsal: no load in production");
+    this.bind(accountId);
+    return this.ctx.storage.transactionSync(() => loadRows(this.ctx.storage.sql, table, rows));
+  }
+
+  /** Rehearsal: what spec 43.1 owes on the first alarm, now. What is still null failed and retries on the `migrate` alarm. */
+  async rehearsalMigrate(accountId: string): Promise<{ adopted: string | null; imported: string | null }> {
+    this.bind(accountId);
+    await this.migrate();
+    return { adopted: this.setting("adopted") ?? null, imported: this.setting("imported") ?? null };
   }
 
   /** The computer as an operator sees it: why it is up or parked, and when it is looked at next. Null: none. */
