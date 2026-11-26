@@ -198,7 +198,8 @@ function Activity({ track }: { track: TrackView }) {
   return (
     <>
       {(track.threads.length > 0 || track.earlier > 0) && (
-        <div className="flex flex-col gap-2 border-b px-4 pt-3 pb-1">
+        // Held to part of the pane, so the agent's conversation and composer stay in sight.
+        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-y-auto border-b px-4 pt-3 pb-1">
           {track.threads.map((t) => (
             <Card key={t.id} thread={t} sel={open === t.id} />
           ))}

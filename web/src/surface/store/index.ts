@@ -43,6 +43,8 @@ export interface Toast {
   text: string
   tone?: 'error'
   undo?: () => void
+  // A way on from an error: "Add credits" on an out-of-credits refusal.
+  action?: { label: string; run: () => void }
 }
 
 export interface Convo {
@@ -86,6 +88,9 @@ export interface State extends Kept {
   earlierNext: Record<string, string | null | undefined>
   // Threads a link named that the server does not have (spec 26.2): shown as not found.
   missing: Record<string, true>
+  // Threads a link named whose read failed otherwise (forbidden, server error):
+  // shown as not opened, with Try again.
+  unopened: Record<string, true>
 }
 
 const KEPT: (keyof Kept)[] = [
@@ -110,6 +115,58 @@ export interface SurfaceOptions {
   // Where UI state is kept; localStorage in a browser.
   kept?: { get(): string | null; set(v: string): void }
   visible?: () => boolean
+  // Calls back when the network may be back: the browser is online again, or
+  // the tab is shown. Default: those two events of the page.
+  wake?: (cb: () => void) => () => void
+}
+
+const pageWake = (cb: () => void) => {
+  if (typeof window === 'undefined') return () => {}
+  const shown = () => {
+    if (document.visibilityState === 'visible') cb()
+  }
+  window.addEventListener('online', cb)
+  document.addEventListener('visibilitychange', shown)
+  return () => {
+    window.removeEventListener('online', cb)
+    document.removeEventListener('visibilitychange', shown)
+  }
+}
+
+// What a refusal's code means to the person, when the server gave no reason.
+const CODES: Record<string, string> = {
+  insufficient_credits: 'you are out of credits',
+  http_402: 'you are out of credits',
+  session_not_found: 'this thread no longer exists',
+  computer_unavailable: 'your computer is not reachable right now',
+  unavailable: 'the service is not reachable right now',
+  workspace_unavailable: 'your computer is not reachable right now',
+  forbidden: 'you do not have access to this',
+  http_403: 'you do not have access to this',
+  unauthenticated: 'you are signed out',
+  http_401: 'you are signed out',
+  turn_in_progress: 'the agent is still working',
+  inbox_full: 'too many messages are waiting; try again when the agent catches up',
+  too_large: 'it is too long',
+  http_413: 'it is too long',
+  rate_limited: 'too many requests; try again in a moment',
+  model_unavailable: 'that model is not available',
+  unsupported_model: 'that model is not available',
+  unsupported_effort: 'that effort is not available for this model',
+  unsupported_mode: 'that mode is not available',
+  conflict: 'it changed meanwhile',
+  not_found: 'it no longer exists',
+  internal: 'something went wrong on our side',
+}
+function without<T>(r: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...r }
+  delete next[key]
+  return next
+}
+
+const OUT_OF_CREDITS = new Set(['insufficient_credits', 'http_402'])
+export function sayFailure(f: Pick<Failure, 'code' | 'reason'>): string {
+  return f.reason || CODES[f.code] || f.code
 }
 
 export type Surface = ReturnType<typeof createSurface>
@@ -117,6 +174,10 @@ export type Surface = ReturnType<typeof createSurface>
 export function createSurface(o: SurfaceOptions) {
   const { host } = o
   const me = host.principal.subject
+  // The client's waits (reconnect, retry), held so they can be cut short when
+  // the network comes back (`hurry`).
+  const waits = new Map<number, { fn: () => void; h: ReturnType<typeof setTimeout> }>()
+  let waitIds = 0
   const client: Client = createClient({
     principal: host.principal,
     fetch: (path, init) => host.api.fetch(path, init),
@@ -126,7 +187,27 @@ export function createSurface(o: SurfaceOptions) {
       typeof navigator !== 'undefined' && navigator.locks
         ? (name, fn) => navigator.locks.request(name, fn)
         : undefined,
+    setTimeout: (fn, ms) => {
+      const id = ++waitIds
+      waits.set(id, { fn, h: setTimeout(() => (waits.delete(id), fn()), ms) })
+      return id
+    },
+    clearTimeout: (id) => {
+      const w = waits.get(id as number)
+      if (w) clearTimeout(w.h)
+      waits.delete(id as number)
+    },
   })
+  // The network may be back: an offline client reconnects (and retries) now,
+  // not at the end of its backoff.
+  const hurry = () => {
+    if (client.status.get() === 'online') return
+    for (const [id, w] of [...waits]) {
+      clearTimeout(w.h)
+      waits.delete(id)
+      w.fn()
+    }
+  }
 
   let kept: Partial<Kept> = {}
   try {
@@ -152,6 +233,7 @@ export function createSurface(o: SurfaceOptions) {
     keysSheet: false,
     earlierNext: {},
     missing: {},
+    unopened: {},
     layout: {},
     trackTab: {},
     listHidden: false,
@@ -312,11 +394,15 @@ export function createSurface(o: SurfaceOptions) {
     if (looked.has(sid)) return
     looked.add(sid)
     client.read<{ rows: Row[] }>(`/work/threads/${encodeURIComponent(sid)}`).then(
-      (reply) => addUnder(reply.rows),
+      (reply) => {
+        if (get().unopened[sid]) set({ unopened: without(get().unopened, sid) })
+        addUnder(reply.rows)
+      },
       (e: unknown) => {
-        if (e instanceof Refused && e.code === 'session_not_found') set({ missing: { ...get().missing, [sid]: true } })
-        // Offline or failing: read again when it is next named.
-        else looked.delete(sid)
+        if (e instanceof Refused && e.code === 'session_not_found') return set({ missing: { ...get().missing, [sid]: true } })
+        // Offline or failing: said, and read again when it is next named.
+        looked.delete(sid)
+        if (!get().unopened[sid]) set({ unopened: { ...get().unopened, [sid]: true } })
       },
     )
   }
@@ -398,7 +484,24 @@ export function createSurface(o: SurfaceOptions) {
           : e.kind === 'settings'
             ? 'Could not change the settings'
             : 'That did not go through'
-    toast({ text: `${what}: ${f.reason || f.code}`, tone: 'error' })
+    // What the person typed is not lost: it goes back in its box, unless
+    // something new was typed there meanwhile.
+    if (e.kind === 'turn' || e.kind === 'session') {
+      const input = e.kind === 'turn' ? e.input : e.body.input
+      const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
+      if (!get().drafts[key]) actions.setDraft(key, input)
+    }
+    const billing = host.billing
+    toast({
+      text: `${what}: ${sayFailure(f)}`,
+      tone: 'error',
+      action: billing && OUT_OF_CREDITS.has(f.code) ? { label: 'Add credits', run: () => host.openExternal(billing) } : undefined,
+    })
+  }
+  // The composer a session's messages are typed in: its track's, or its own.
+  const draftKeyOf = (sid: string) => {
+    for (const k of get().rows.track.values()) if (k.agentSession === sid) return `k:${k.id}`
+    return `t:${sid}`
   }
 
   // ---- conversations ----
@@ -493,6 +596,7 @@ export function createSurface(o: SurfaceOptions) {
     stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
     stops.push(client.pending().subscribe((pending) => recompose({ pending })))
     stops.push(client.failures.subscribe(onFailure))
+    stops.push((o.wake ?? pageWake)(hurry))
     stops.push(
       client.status.subscribe((status) => {
         set({ status })
@@ -524,6 +628,11 @@ export function createSurface(o: SurfaceOptions) {
     },
     openStart() {
       go({ ...NOWHERE, start: true })
+    },
+    // A thread a link named that could not be read: read it again.
+    retryThread(sid: string) {
+      set({ unopened: without(get().unopened, sid) })
+      lookUp(sid)
     },
     openResult(r: ResultRow) {
       // A preview opens in the browser: the app's shell allows no frames (spec 24.2).
