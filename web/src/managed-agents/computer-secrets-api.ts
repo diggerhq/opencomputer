@@ -27,6 +27,8 @@ export const orgSecretSchema = z.object({
   lastUsedAt: z.string().nullable(),
   /** Narrower copies of the name that win where they apply (counts only). */
   overriddenIn: z.object({ threads: z.number(), people: z.number() }),
+  /** Whether the caller may replace or delete it: its creator or an organization admin. Missing from an older server: no. */
+  canChange: z.boolean().optional().default(false),
 })
 
 export type SecretActor = z.infer<typeof actorSchema>
@@ -36,15 +38,43 @@ export const orgSecretsQueryKey = ['managed-computer', 'secrets'] as const
 
 const PREFIX = '/managed-agents/computer'
 
+/** The organization's secrets, each with whether the caller may replace or delete it. */
 export async function getOrgSecrets() {
+  return apiFetch(
+    `${PREFIX}/secrets`,
+    undefined,
+    z.object({ secrets: z.array(orgSecretSchema) }),
+    '/api',
+  )
+}
+
+export const orgSecretEventSchema = z.object({
+  at: z.string().nullable(),
+  name: z.string(),
+  action: z.enum(['set', 'replace', 'delete']),
+  kind: z.enum(['secret', 'variable']),
+  actor: actorSchema.nullable(),
+  via: z.string(),
+})
+
+export type OrgSecretEvent = z.infer<typeof orgSecretEventSchema>
+
+export const orgSecretEventsQueryKey = [
+  'managed-computer',
+  'secrets',
+  'events',
+] as const
+
+/** Every change to the organization's secrets, newest first: who and when, never a value. */
+export async function getOrgSecretEvents() {
   return (
     await apiFetch(
-      `${PREFIX}/secrets`,
+      `${PREFIX}/secrets/events`,
       undefined,
-      z.object({ secrets: z.array(orgSecretSchema) }),
+      z.object({ events: z.array(orgSecretEventSchema) }),
       '/api',
     )
-  ).secrets
+  ).events
 }
 
 /** Sets or replaces an organization secret or variable. */

@@ -633,6 +633,7 @@ function previewOrgSecrets() {
     updatedBy: previewSecretActor(by),
     lastUsedAt: used === null ? null : at(used),
     overriddenIn: { threads: 0, people: 0 },
+    canChange: true,
     ...extra,
   })
   return {

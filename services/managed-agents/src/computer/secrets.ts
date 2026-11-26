@@ -10,7 +10,7 @@
 //   scope      applies to                          owner        set by
 //   session    one thread's session                runner key   anyone in it
 //   user       every session the person owns       user id      that person
-//   workspace  every session of the organization   '*'         full members of its Slack workspace (not guests)
+//   workspace  every session of the organization   '*'         any member creates; its creator or an admin replaces/removes
 //
 // The `workspace` scope keeps Calvin's protocol name; people see it as the
 // organization's (one organization links one Slack workspace).
@@ -116,7 +116,7 @@ export const HELP = [
   "`!secret NAME`: set or replace `$NAME` through a private form (`!secret NAME file` for a file; `$NAME` is its path)",
   "`!secret`: names this session gets, by scope",
   "`!secret rm NAME [session|me|org]`: remove one",
-  "Scopes: *this session*; *just me* (all your sessions); *organization* (every session of your organization; full members, not guests). The narrowest wins.",
+  "Scopes: *this session*; *just me* (all your sessions); *organization* (every session of your organization; full members, not guests, add new names; only the person who set one or an organization admin replaces or removes it). The narrowest wins.",
   "Values that are not secret (an org name, a hostname): `!var help`.",
 ].join("\n");
 

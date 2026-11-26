@@ -86,6 +86,7 @@ describe("secrets routes", () => {
     const wildcard = { ...person, apiKey: { ...key, scopes: ["sandbox:*"] } } as RequestIdentity;
     expect((await go(wildcard, "GET", "/secrets")).status).toBe(204);
     expect((await go(wildcard, "GET", "/secrets/API_KEY/events")).status).toBe(204);
+    expect((await go(wildcard, "GET", "/secrets/events")).status).toBe(204);
     expect((await go(wildcard, "PUT", "/organization/secrets/API_KEY", '{"value":"v"}')).status).toBe(403);
     expect((await go(person, "PUT", "/organization/secrets/API_KEY", '{"value":"v"}')).status).toBe(204);
     expect((await go(person, "DELETE", "/organization/secrets/API_KEY")).status).toBe(204);
@@ -94,8 +95,19 @@ describe("secrets routes", () => {
     expect(seen).toEqual([
       { op: "secrets.list" },
       { op: "secrets.events", name: "API_KEY" },
+      { op: "secrets.history" },
       { op: "secrets.put", name: "API_KEY", body: { value: "v" } },
       { op: "secrets.delete", name: "API_KEY" },
     ]);
+  });
+
+  it("tells the Computer whether the caller is an organization admin or owner, who alone change organization secrets", async () => {
+    const callers: Array<{ admin?: boolean }> = [];
+    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, caller, _op) => (callers.push(caller), { status: 204 })) };
+    for (const role of ["member", "admin", "owner"]) {
+      const path = "/organization/secrets/API_KEY";
+      await routeComputerApi(new Request(`https://blue.test/v1/computer${path}`, { method: "DELETE" }), {} as never, { ...person, role } as RequestIdentity, "org_1", stub, path);
+    }
+    expect(callers.map((c) => c.admin)).toEqual([false, true, true]);
   });
 });

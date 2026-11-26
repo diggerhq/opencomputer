@@ -71,6 +71,8 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   },
   // Secrets (docs/api/http/secrets.mdx).
   { methods: new Set(["GET"]), pattern: route("/secrets") },
+  // Every name's history: the dashboard's notice of organization changes.
+  { methods: new Set(["GET"]), pattern: route("/secrets/events") },
   { methods: new Set(["GET"]), pattern: route(`/secrets/${SEG}/events`) },
   { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/secrets`) },
   {

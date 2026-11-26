@@ -58,6 +58,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (is("POST", 1) && p[0] === "tickets") return { op: "ticket" };
   // Secrets: organization and session layers; personal secrets remain unavailable over HTTP.
   if (is("GET", 1) && p[0] === "secrets") return { op: "secrets.list" };
+  if (is("GET", 2) && p[0] === "secrets" && p[1] === "events") return { op: "secrets.history" };
   if (is("GET", 3) && p[0] === "secrets" && p[2] === "events") return { op: "secrets.events", sub: p[1] };
   if (p[0] === "organization" && p[1] === "secrets" && p.length === 3 && (method === "PUT" || method === "DELETE")) {
     return { op: method === "PUT" ? "secrets.put" : "secrets.delete", sub: p[2] };
@@ -119,7 +120,7 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "me" || op === "ticket") return null;
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
-  if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
+  if (op === "secrets.events" || op === "secrets.history" || op === "secrets.session.list") return "sessions:read";
   if (op === "work.repository.put") return "work:write";
   if (op.startsWith("work.")) return "work:read";
   if (op === "settings.get") return null;
@@ -275,7 +276,7 @@ export function routeFamily(op: string): string {
 }
 
 const OPS = new Set([
-  "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.put", "secrets.delete", "secrets.session.put", "secrets.session.list", "secrets.session.delete", "list", "create", "get", "patch", "capabilities",
+  "me", "ticket", "secrets", "secrets.list", "secrets.events", "secrets.history", "secrets.put", "secrets.delete", "secrets.session.put", "secrets.session.list", "secrets.session.delete", "list", "create", "get", "patch", "capabilities",
   "aside.set", "aside.clear",
   "sessions.interrupt", "sessions.compact", "sessions.suspend", "sessions.resume",
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
@@ -416,6 +417,7 @@ async function routeApi(
   }
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
   if (route.op === "secrets.list") return call({ op: "secrets.list" });
+  if (route.op === "secrets.history") return call({ op: "secrets.history" });
   if (route.op === "secrets.session.list") return call({ op: "secrets.session.list", sessionId: route.sessionId! });
   if (route.op.startsWith("secrets.")) {
     const name = route.sub!;

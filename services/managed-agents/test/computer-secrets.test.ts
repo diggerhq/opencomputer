@@ -17,6 +17,7 @@ let pushes: Array<{ key?: string; owner?: string }>;
 let woken: Array<{ key: string; userId: string; text: string }>;
 let guests: Set<string>;
 let s: SecretsStore;
+let sql: ReturnType<typeof sqlStorage>;
 /** Who may write to SESSION (work 112); undefined: everyone. */
 let drivers: string[] | undefined;
 
@@ -39,7 +40,7 @@ beforeEach(() => {
   // The Durable Object's one lookup of a person (threads.ts).
   const people = new ThreadAccess(slack, "T1");
   s = new SecretsStore({
-    sql: sqlStorage(),
+    sql: (sql = sqlStorage()),
     encryptionKey: () => KEY,
     member: (userId) => people.member(userId),
     instructs: async (_key, userId) => !drivers || drivers.includes(userId),
@@ -125,8 +126,8 @@ describe("computer session secrets (ported from dash-cal)", () => {
     expect(await s.forSession(SESSION.key, "U_OWNER")).toEqual([]);
   });
 
-  it("!secret lists names only; a guest cannot remove workspace secrets, a member can", async () => {
-    await submit(submission("SHARED", "shared-value", "workspace"), "U_MEMBER");
+  it("!secret lists names only; an organization secret is removed by who set it or an admin, not a guest or another member", async () => {
+    await submit(submission("SHARED", "shared-value", "workspace"), "U_OTHER");
     await submit(submission("MINE", "mine-value", "user"), "U_OWNER");
     await s.command({ kind: "list" }, inSession("U_OWNER"));
     const listing = String(last("chat.postEphemeral")!.text);
@@ -136,9 +137,28 @@ describe("computer session secrets (ported from dash-cal)", () => {
 
     await s.command({ kind: "rm", name: "SHARED" }, inSession("U_GUEST"));
     expect(String(last("chat.postEphemeral")!.text)).toMatch(/only full members/);
-    await s.command({ kind: "rm", name: "SHARED" }, inSession("U_OWNER"));
+    // Another member, and a Slack user who linked no member, are not who set it.
+    for (const who of ["U_OWNER", "U_NOLINK"]) {
+      await s.command({ kind: "rm", name: "SHARED" }, inSession(who));
+      expect(String(last("chat.postEphemeral")!.text)).toBe("Only the person who set SHARED (Name of U_OTHER) or an organization admin can replace or delete it.");
+    }
+    await s.command({ kind: "rm", name: "SHARED" }, inSession("U_OTHER"));
     expect(String(last("chat.postEphemeral")!.text)).toMatch(/Removed/);
     expect((await s.forSession(SESSION.key, "U_OWNER")).map((x) => x.name)).toEqual(["MINE"]);
+  });
+
+  it("the form adds an organization secret for any full member; replacing one is its creator's or an admin's", async () => {
+    const org = (value: string) => submission("ORG_KEY", value, "workspace", { ch: "C1" });
+    expect((await submit(org("dummy-1"), "U_OWNER")).errors).toBeUndefined();
+    const refused = { errors: { scope: "Only the person who set ORG_KEY (Name of U_OWNER) or an organization admin can replace or delete it." } };
+    expect(await s.submit(org("dummy-2"), "U_OTHER")).toEqual(refused);
+    expect(await s.submit(org("dummy-2"), "U_NOLINK")).toEqual(refused);
+    expect((await submit(org("dummy-3"), "U_OWNER")).errors).toBeUndefined();
+    expect((await submit(org("dummy-4"), "U_ADMIN")).errors).toBeUndefined();
+    expect(await s.forSession(SESSION.key, "U_OWNER")).toEqual([{ name: "ORG_KEY", value: "dummy-4", scope: "workspace" }]);
+    // A Slack user who linked no member adds a new name, and cannot replace even that one.
+    expect((await submit(submission("NOLINK_KEY", "dummy-5", "workspace", { ch: "C1" }), "U_NOLINK")).errors).toBeUndefined();
+    expect((await s.submit(submission("NOLINK_KEY", "dummy-6", "workspace", { ch: "C1" }), "U_NOLINK")).errors?.scope).toMatch(/^Only the person who set NOLINK_KEY/);
   });
 
   it("request_secret posts a button in the thread; setting it updates that message and wakes the session", async () => {
@@ -211,6 +231,23 @@ describe("computer session variables (!var)", () => {
     expect(answers.at(-1)).toMatch(/Only full members/);
   });
 
+  it("an organization variable is any full member's to add, and its creator's or an admin's to replace or remove", async () => {
+    const refused = "Not changed: Only the person who set ORG_NAME (Name of U_OTHER) or an organization admin can replace or delete it.";
+    expect(await say("!var ORG_NAME first org", inSession("U_OTHER"))).toMatch(/^Set `ORG_NAME` = `first`/);
+    pushes = [];
+    // Another member, and a Slack user who linked no member, cannot touch it.
+    for (const who of ["U_OWNER", "U_NOLINK"]) {
+      expect(await say("!var ORG_NAME second org", inSession(who))).toBe(refused);
+      expect(await say("!var rm ORG_NAME org", inSession(who))).toBe(refused);
+    }
+    expect(pushes).toEqual([]);
+    expect(await say("!var ORG_NAME mine org", inSession("U_OTHER"))).toMatch(/^Set `ORG_NAME` = `mine`/);
+    expect(await say("!var ORG_NAME admins org", inSession("U_ADMIN"))).toMatch(/^Set `ORG_NAME` = `admins`/);
+    expect(await say("!var rm ORG_NAME org", inSession("U_ADMIN"))).toMatch(/^Removed `ORG_NAME`/);
+    // An unlinked full member may still add a new name.
+    expect(await say("!var NEW_ORG x org", inSession("U_NOLINK"))).toMatch(/^Set `NEW_ORG`/);
+  });
+
   it("flags credential-looking names and values, not ordinary ones", () => {
     for (const n of ["DEPLOY_TOKEN", "STRIPE_KEY", "db_password", "SENTRY_DSN"]) expect(credentialHint(n, "x")).toMatch(/sounds like a credential/);
     for (const v of ["sk_live_abcdefghijkl", `ghp_${"a".repeat(36)}`, "xoxb-1234-5678-abcdef", "AKIAABCDEFGHIJKLMNOP", "postgres://me:hunter2@db/x"])
@@ -265,6 +302,7 @@ describe("!secret parsing", () => {
 
 describe("organization secrets over the Computer API (work 095 v1)", () => {
   const MEMBER = { member: "usr_01jabcdefghjkmnpqrstvwxyz0", userId: "user_1", name: "Owner", email: null, via: "dashboard" as const, client: null, scopes: [], requestId: "req_1" };
+  const ADMIN = { ...MEMBER, member: LINKS.U_ADMIN!, name: "Admin", admin: true };
   const VALUE = "sk-live-do-not-show";
 
   it("sets a sealed session-only secret through the API without returning the value", async () => {
@@ -374,13 +412,15 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect((await api(LINKS.U_OTHER!)).error?.message).toBe(refusal("S3", "U_NOLINK"));
     expect(await api(LINKS.U_ADMIN!, true)).toEqual({ status: 204 });
 
-    // Personal and organization secrets keep their rules: any full member removes an organization secret.
+    // Organization secrets follow the same rule (2026-11-26): another member is refused, an admin removes it.
     await submit(submission("ORG_S", "dummy-9", "workspace", { ch: "C1" }), "U_OWNER");
     await s.command({ kind: "rm", name: "ORG_S", scope: "workspace" }, inSession("U_OTHER"));
+    expect(last("chat.postEphemeral")?.text).toBe(refusal("ORG_S", "U_OWNER"));
+    await s.command({ kind: "rm", name: "ORG_S", scope: "workspace" }, inSession("U_ADMIN"));
     expect(last("chat.postEphemeral")?.text).toMatch(/^Removed `ORG_S`/);
   });
 
-  it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
+  it("any member creates one, then replaces and deletes their own; values never come back; every session gets it", async () => {
     const created = await s.api(MEMBER, { op: "secrets.put", name: "EXECUTOR_API_KEY", body: { value: VALUE } });
     expect(created).toMatchObject({ status: 201, body: { secret: { name: "EXECUTOR_API_KEY", layer: "organization", kind: "secret", file: false, updatedBy: { member: MEMBER.member, name: "Owner" } } } });
     expect(pushes).toEqual([{}]);
@@ -390,12 +430,72 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     expect(replaced.status).toBe(200);
     const listed = await s.api(MEMBER, { op: "secrets.list" });
     expect(JSON.stringify(listed)).not.toContain("sk-");
-    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.member } }] });
+    expect(listed.body).toMatchObject({ secrets: [{ name: "EXECUTOR_API_KEY", createdBy: { member: MEMBER.member }, canChange: true }] });
 
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).status).toBe(204);
     expect((await s.api(MEMBER, { op: "secrets.delete", name: "EXECUTOR_API_KEY" })).error?.code).toBe("secret_not_found");
     const events = (await s.api(MEMBER, { op: "secrets.events", name: "EXECUTOR_API_KEY" })).body as { events: Array<{ action: string; via: string }> };
     expect(events.events.map((e) => [e.action, e.via])).toEqual([["delete", "dashboard"], ["replace", "opc"], ["set", "dashboard"]]);
+  });
+
+  it("another member cannot replace or delete one, an admin's included, and nothing changes; an admin changes any", async () => {
+    const OTHER = { ...MEMBER, member: LINKS.U_OTHER!, name: "Other" };
+    await s.api(ADMIN, { op: "secrets.put", name: "BY_ADMIN", body: { value: "dummy-admin" } });
+    await s.api(MEMBER, { op: "secrets.put", name: "BY_MEMBER", body: { value: "dummy-member", variable: true } });
+    pushes = [];
+    const refusal = (name: string, who: string) => ({
+      status: 403,
+      error: { code: "forbidden", reason: "not_secret_owner", message: `Only the person who set ${name} (${who}) or an organization admin can replace or delete it.` },
+    });
+    // A member, and a caller whose role is unknown, are not admins.
+    for (const who of [OTHER, { ...OTHER, admin: false }]) {
+      expect(await s.api(who, { op: "secrets.put", name: "BY_ADMIN", body: { value: "dummy-x" } })).toEqual(refusal("BY_ADMIN", "Admin"));
+      expect(await s.api(who, { op: "secrets.delete", name: "BY_ADMIN" })).toEqual(refusal("BY_ADMIN", "Admin"));
+      expect(await s.api(who, { op: "secrets.put", name: "BY_MEMBER", body: { value: "dummy-x", variable: true } })).toEqual(refusal("BY_MEMBER", "Owner"));
+      expect(await s.api(who, { op: "secrets.delete", name: "BY_MEMBER" })).toEqual(refusal("BY_MEMBER", "Owner"));
+    }
+    expect(pushes).toEqual([]);
+    expect(await s.forSession(SESSION.key, SESSION.ownerId)).toEqual([
+      { name: "BY_ADMIN", value: "dummy-admin", scope: "workspace" },
+      { name: "BY_MEMBER", value: "dummy-member", scope: "workspace", variable: true },
+    ]);
+    expect(((await s.api(MEMBER, { op: "secrets.history" })).body as { events: unknown[] }).events).toHaveLength(2);
+    // The list says which each caller may change.
+    const canChange = async (who: typeof MEMBER) =>
+      ((await s.api(who, { op: "secrets.list" })).body as { secrets: Array<{ name: string; canChange: boolean }> }).secrets.map((x) => [x.name, x.canChange]);
+    expect(await canChange(MEMBER)).toEqual([["BY_ADMIN", false], ["BY_MEMBER", true]]);
+    expect(await canChange(OTHER)).toEqual([["BY_ADMIN", false], ["BY_MEMBER", false]]);
+    expect(await canChange(ADMIN)).toEqual([["BY_ADMIN", true], ["BY_MEMBER", true]]);
+    // The admin replaces a member's and deletes it; replacing keeps the creator.
+    expect((await s.api(ADMIN, { op: "secrets.put", name: "BY_MEMBER", body: { value: "dummy-y", variable: true } })).body).toMatchObject({ secret: { createdBy: { member: MEMBER.member } } });
+    expect(await s.api(ADMIN, { op: "secrets.delete", name: "BY_MEMBER" })).toEqual({ status: 204 });
+  });
+
+  it("a row with no recorded creator is an admin's only", async () => {
+    await s.api(MEMBER, { op: "secrets.put", name: "LEGACY", body: { value: "dummy-old" } });
+    sql.exec("UPDATE secrets SET created_by = NULL, created_by_name = NULL WHERE name = 'LEGACY'");
+    const message = "LEGACY has no recorded creator, so only an organization admin can replace or delete it.";
+    expect((await s.api(MEMBER, { op: "secrets.delete", name: "LEGACY" })).error).toMatchObject({ reason: "not_secret_owner", message });
+    expect((await s.api(MEMBER, { op: "secrets.list" })).body).toMatchObject({ secrets: [{ name: "LEGACY", canChange: false }] });
+    await s.command({ kind: "rm", name: "LEGACY", scope: "workspace" }, inSession("U_OWNER"));
+    expect(last("chat.postEphemeral")?.text).toBe(message);
+    expect(await s.submit(submission("LEGACY", "dummy-new", "workspace", { ch: "C1" }), "U_OWNER")).toEqual({ errors: { scope: message } });
+    expect((await s.api(ADMIN, { op: "secrets.put", name: "LEGACY", body: { value: "dummy-new" } })).status).toBe(200);
+    expect(await s.api(ADMIN, { op: "secrets.delete", name: "LEGACY" })).toEqual({ status: 204 });
+  });
+
+  it("the organization's history covers every name, newest first, from every surface, without values", async () => {
+    await s.api(ADMIN, { op: "secrets.put", name: "A_KEY", body: { value: "dummy-a" } });
+    await submit(submission("B_KEY", "dummy-b", "workspace", { ch: "C1" }), "U_ADMIN");
+    await s.api({ ...ADMIN, via: "opc" }, { op: "secrets.delete", name: "A_KEY" });
+    // Narrower layers are not the organization's.
+    await submit(submission("C_KEY", "dummy-c", "session"), "U_OWNER");
+    const reply = await s.api(MEMBER, { op: "secrets.history" });
+    expect(reply.status).toBe(200);
+    const { events } = reply.body as { events: Array<Record<string, unknown>> };
+    expect(events.map((e) => [e.name, e.action, e.via])).toEqual([["A_KEY", "delete", "opc"], ["B_KEY", "set", "slack"], ["A_KEY", "set", "dashboard"]]);
+    expect(events[1]).toMatchObject({ kind: "secret", actor: { slackUserId: "U_ADMIN" } });
+    expect(JSON.stringify(reply)).not.toContain("dummy-");
   });
 
   it("lists variables with their values, counts narrower copies that win, and records Slack changes too", async () => {

@@ -31,15 +31,19 @@ import { notifyError, notifySuccess } from '@/lib/errors'
 import {
   SECRET_NAME,
   deleteOrgSecret,
+  getOrgSecretEvents,
   getOrgSecrets,
+  orgSecretEventsQueryKey,
   orgSecretsQueryKey,
   putOrgSecret,
   type OrgSecret,
+  type OrgSecretEvent,
 } from './computer-secrets-api'
 
 // The computer's organization secrets (serverless-agents-ws work 095, v1):
-// names only, set and replaced from here. Personal and thread secrets stay in
-// Slack for now.
+// names only. Any member adds one; its creator or an organization admin
+// replaces or deletes it (the server's `canChange`); everyone sees the names and
+// the recent changes. Personal and thread secrets stay in Slack for now.
 
 export default function ComputerSecretsPage() {
   const auth = useContext(AuthContext)
@@ -57,6 +61,7 @@ export function ComputerSecrets() {
   })
   const [editing, setEditing] = useState<Editing | null>(null)
   const [deleting, setDeleting] = useState<OrgSecret | null>(null)
+  const list = secrets.data?.secrets
 
   const add = (
     <Button onClick={() => setEditing({ mode: 'add' })}>
@@ -69,8 +74,8 @@ export function ComputerSecrets() {
     <div>
       <PageHeader
         title="Secrets"
-        description="Every session on your computer gets these as environment variables. Anyone in your organization can set them; values can't be read back."
-        actions={secrets.data?.length ? add : null}
+        description="Every session on your computer gets these as environment variables. Anyone in the organization can add one; only whoever added it or an admin can replace or delete it. Values can't be read back."
+        actions={list?.length ? add : null}
       />
       <Panel>
         {secrets.isLoading ? (
@@ -92,7 +97,7 @@ export function ComputerSecrets() {
               </Button>
             }
           />
-        ) : !secrets.data?.length ? (
+        ) : !list?.length ? (
           <EmptyState
             icon={KeyRound}
             title="No secrets yet"
@@ -101,7 +106,7 @@ export function ComputerSecrets() {
           />
         ) : (
           <SecretsTable
-            secrets={secrets.data}
+            secrets={list}
             onReplace={(secret) => setEditing({ mode: 'replace', secret })}
             onDelete={setDeleting}
           />
@@ -111,6 +116,7 @@ export function ComputerSecrets() {
         These are organization-wide. A Slack thread or a person can set their
         own value for the same name in Slack, and theirs is used there instead.
       </p>
+      {secrets.isSuccess ? <RecentChanges /> : null}
 
       {editing ? (
         <SecretDialog editing={editing} onClose={() => setEditing(null)} />
@@ -126,17 +132,21 @@ function SecretsTable({
   onDelete,
 }: {
   secrets: OrgSecret[]
+  /** Offered on the rows the viewer may change (`canChange`). */
   onReplace: (secret: OrgSecret) => void
   onDelete: (secret: OrgSecret) => void
 }) {
+  const actions = secrets.some((s) => s.canChange)
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead className="pl-4">Name</TableHead>
-          <TableHead className="pr-4 text-right">
-            <span className="sr-only">Actions</span>
-          </TableHead>
+          {actions ? (
+            <TableHead className="pr-4 text-right">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          ) : null}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -145,25 +155,29 @@ function SecretsTable({
             <TableCell className="py-3 pl-4 font-mono text-sm font-medium">
               {secret.name}
             </TableCell>
-            <TableCell className="py-2 pr-4 text-right">
-              <div className="flex justify-end gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onReplace(secret)}
-                >
-                  Replace
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive"
-                  onClick={() => onDelete(secret)}
-                >
-                  Delete
-                </Button>
-              </div>
-            </TableCell>
+            {actions ? (
+              <TableCell className="py-2 pr-4 text-right">
+                {secret.canChange ? (
+                  <div className="flex justify-end gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onReplace(secret)}
+                    >
+                      Replace
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive"
+                      onClick={() => onDelete(secret)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ) : null}
+              </TableCell>
+            ) : null}
           </TableRow>
         ))}
       </TableBody>
@@ -324,5 +338,62 @@ function DeleteSecretDialog({
       pending={remove.isPending}
       onConfirm={() => secret && remove.mutate(secret.name)}
     />
+  )
+}
+
+const ACTION: Record<OrgSecretEvent['action'], string> = {
+  set: 'added',
+  replace: 'replaced',
+  delete: 'deleted',
+}
+
+function actorLabel(event: OrgSecretEvent): string {
+  const actor = event.actor
+  if (!actor) return 'someone'
+  if ('member' in actor) return actor.name ?? 'a member'
+  if ('slackUserId' in actor) return 'someone in Slack'
+  return 'the system'
+}
+
+/**
+ * The organization's notice of changes: every add, replace and delete, by
+ * whom, from where and when; never a value. Members see it too.
+ */
+function RecentChanges() {
+  const events = useQuery({
+    queryKey: orgSecretEventsQueryKey,
+    queryFn: getOrgSecretEvents,
+  })
+  if (!events.data?.length) return null
+  return (
+    <section className="mt-8" aria-labelledby="secret-changes">
+      <h2 id="secret-changes" className="mb-2 text-sm font-medium">
+        Recent changes
+      </h2>
+      <Panel>
+        <ul className="divide-y text-sm">
+          {events.data.slice(0, 20).map((event, i) => (
+            <li
+              key={`${event.at}-${event.name}-${i}`}
+              className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-4 py-2"
+            >
+              <span>
+                <span className="font-mono font-medium">{event.name}</span>{' '}
+                {ACTION[event.action]} by {actorLabel(event)}
+                <span className="text-muted-foreground"> via {event.via}</span>
+              </span>
+              {event.at ? (
+                <time
+                  dateTime={event.at}
+                  className="text-muted-foreground text-xs"
+                >
+                  {new Date(event.at).toLocaleString()}
+                </time>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    </section>
   )
 }

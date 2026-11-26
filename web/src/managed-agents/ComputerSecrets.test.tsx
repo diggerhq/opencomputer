@@ -8,6 +8,7 @@ import { ApiError } from '@/api/errors'
 
 const secretsApi = vi.hoisted(() => ({
   getOrgSecrets: vi.fn(),
+  getOrgSecretEvents: vi.fn(),
   putOrgSecret: vi.fn(),
   deleteOrgSecret: vi.fn(),
 }))
@@ -29,7 +30,12 @@ const row = {
   updatedBy: { member: 'usr_1', name: 'Ayush' },
   lastUsedAt: null,
   overriddenIn: { threads: 1, people: 0 },
+  canChange: true,
 }
+/** Someone else's: the viewer is neither its creator nor an admin. */
+const others = { ...row, name: 'SHARED_TOKEN', canChange: false }
+
+const list = (secrets: (typeof row)[]) => ({ secrets })
 
 let container: HTMLDivElement
 let root: Root
@@ -41,6 +47,7 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  secretsApi.getOrgSecretEvents.mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -96,7 +103,7 @@ async function flush() {
 
 describe('computer secrets page', () => {
   it('lists organization secrets by name only', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([row])
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     await render()
     expect(container.textContent).toContain('EXECUTOR_API_KEY')
     expect(container.textContent).not.toContain('Ayush')
@@ -104,14 +111,14 @@ describe('computer secrets page', () => {
   })
 
   it('offers to add the first secret when there are none', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([])
+    secretsApi.getOrgSecrets.mockResolvedValue(list([]))
     await render()
     expect(container.textContent).toContain('No secrets yet')
     expect(button('Add secret')).toBeTruthy()
   })
 
   it('adds a secret and shows a refused name next to the field', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([])
+    secretsApi.getOrgSecrets.mockResolvedValue(list([]))
     secretsApi.putOrgSecret.mockRejectedValueOnce(
       new ApiError(
         "Can't use this name: PATH is reserved.",
@@ -142,7 +149,7 @@ describe('computer secrets page', () => {
   })
 
   it('replaces without showing or prefilling the old value', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([row])
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     secretsApi.putOrgSecret.mockResolvedValue(row)
     await render()
     act(() => button('Replace').click())
@@ -161,7 +168,7 @@ describe('computer secrets page', () => {
   })
 
   it('deletes after a confirm that names the organization layer', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue([row])
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     secretsApi.deleteOrgSecret.mockResolvedValue(undefined)
     await render()
     act(() => button('Delete').click())
@@ -175,6 +182,69 @@ describe('computer secrets page', () => {
     await flush()
     expect(secretsApi.deleteOrgSecret.mock.calls[0]?.[0]).toBe(
       'EXECUTOR_API_KEY',
+    )
+  })
+
+  it('offers Replace and Delete only on the rows the viewer may change', async () => {
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row, others]))
+    await render()
+    expect(container.textContent).toContain('SHARED_TOKEN')
+    expect(container.textContent).toContain(
+      'only whoever added it or an admin can replace or delete it',
+    )
+    const rows = [...container.querySelectorAll('tbody tr')]
+    const labels = (el: Element) =>
+      [...el.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels(rows[0])).toEqual(['Replace', 'Delete'])
+    expect(labels(rows[1])).toEqual([])
+    expect(button('Add secret')).toBeTruthy()
+  })
+
+  it('lets a member who may change none still add one', async () => {
+    secretsApi.getOrgSecrets.mockResolvedValue(list([others]))
+    await render()
+    const labels = [...document.querySelectorAll('button')].map((el) =>
+      el.textContent?.trim(),
+    )
+    expect(labels).toContain('Add secret')
+    expect(labels).not.toContain('Replace')
+    expect(labels).not.toContain('Delete')
+  })
+
+  it('lists recent changes to organization secrets, without values', async () => {
+    secretsApi.getOrgSecrets.mockResolvedValue(list([others]))
+    secretsApi.getOrgSecretEvents.mockResolvedValue([
+      {
+        at: '2026-11-26T10:00:00.000Z',
+        name: 'OLD_TOKEN',
+        action: 'delete',
+        kind: 'secret',
+        actor: { member: 'usr_1', name: 'Ayush' },
+        via: 'dashboard',
+      },
+      {
+        at: '2026-11-25T10:00:00.000Z',
+        name: 'EXECUTOR_API_KEY',
+        action: 'replace',
+        kind: 'secret',
+        actor: { slackUserId: 'U07ABCDE' },
+        via: 'slack',
+      },
+    ])
+    await render()
+    for (
+      let i = 0;
+      i < 20 && !container.textContent?.includes('Recent changes');
+      i++
+    ) {
+      await flush()
+    }
+    expect(container.textContent).toContain('Recent changes')
+    expect(container.textContent).toContain(
+      'OLD_TOKEN deleted by Ayush via dashboard',
+    )
+    expect(container.textContent).toContain(
+      'EXECUTOR_API_KEY replaced by someone in Slack via slack',
     )
   })
 })

@@ -246,6 +246,7 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/capabilities"],
     ["GET", "/computer/secrets"],
     ["GET", "/computer/secrets/API_KEY/events"],
+    ["GET", "/computer/secrets/events"],
     ["GET", "/computer/sessions/cs_01h/secrets"],
     ["PUT", "/computer/sessions/cs_01h/secrets/API_KEY"],
     ["DELETE", "/computer/sessions/cs_01h/secrets/API_KEY"],
