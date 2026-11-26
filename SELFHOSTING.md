@@ -329,7 +329,7 @@ OPENSANDBOX_S3_FORCE_PATH_STYLE=<true-or-false>
 If you run multiple cells, keep object naming and retention policies consistent
 across cells. The code also supports global blob store settings for canonical
 golden rootfs and template blobs; see `internal/config/config.go` and
-`docs/multi-cloud.md`.
+`.agents/reference/multi-cloud.md`.
 
 ## Deployment Checklist
 
@@ -372,7 +372,7 @@ boot path, and in-VM agent are all connected.
 
 ## Related Docs
 
-- `docs/multi-cloud.md` explains the internal provider abstraction.
+- `.agents/reference/multi-cloud.md` explains the internal provider abstraction.
 - `deploy/ec2/README.md` documents the AWS single-host dev environment.
 - `deploy/server.env.example` and `deploy/worker.env.example` show service
   environment files.

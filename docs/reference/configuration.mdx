@@ -65,7 +65,7 @@ description: "Every environment variable, by the process that reads it, with its
 | `SP_IDLE_MS` | `7200000` | Milliseconds without a message before the host stops a runner. |
 | `SP_POOL_SIZE` | `2` | Spare runners kept started for new sessions. `0`: no pool. |
 | `SP_LAUNCH` | `systemd` on Linux, `detached` elsewhere; `podman` on a new hosted computer | `systemd`: runners are transient systemd user units. `detached`: detached processes that log to `<SP_RUN>/logs/`. `podman`: each session runs in its own container of `SP_IMAGE`, started in a user unit of the runner user; needs `SP_RUNNER_USER`, `SP_IMAGE` and `SP_IMAGE_ABI`. A restarted host takes back its running containers; spares are removed. |
-| `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. See Resource limits. |
+| `SP_SYSTEMD_RUN` | `systemd-run --user --slice=slack-presence-runners.slice -p MemoryHigh=<60% of RAM, at most 12G> -p MemoryMax=<75% of RAM, at most 16G>` | Command prefix that starts a runner unit. Setting it replaces the memory limits too. Limits on all runners together: [Limits](/reference/limits#slack-sessions-and-the-computer). |
 | `SP_RUNNER_USER` | unset: runners run as the host's user | Start runners as this user through `sudo`. Where the host runs as `sp-host`, the install sets `agent`, with `SP_RUNNER_PATH`. |
 | `SP_RUNNER_PATH` | unset | `PATH` of runners and workspace commands when `SP_RUNNER_USER` is set. |
 
@@ -109,7 +109,7 @@ The host sets each of these on every runner, to its own value or empty; a runner
 | Variable | Default in the runner | Purpose |
 |---|---|---|
 | `MODEL` | `claude-opus-5-5` | Model id of the `default` tier. See [Models and harnesses](/slack/models-and-harnesses). |
-| `SP_COMPACT_AT` | `120000` | Tokens in a turn's last request above which the conversation is compacted between turns. `0`: off. See Context and compaction. |
+| `SP_COMPACT_AT` | `120000` | Tokens in a turn's last request above which the conversation is compacted between turns. `0`: off. The idle compaction threshold (60,000 tokens) drops to this value when it is lower. All compaction thresholds: [Limits](/reference/limits#slack-sessions-and-the-computer). |
 | `SP_CONTEXT_WINDOW` | `183000` | Tokens. Claude Code's auto-compact window, applied inside a turn. `0`: Claude Code's default. |
 | `SP_PROMPT_CACHE_TTL` | `1h` on Anthropic's API; Claude Code's default through another base URL | Claude Code's prompt cache lifetime, `5m` or `1h`, for the conversation and its subagents. |
 | `SP_PROMPT_GUARD` | on | `off`: the runner no longer withholds copies of its system prompt from its posts. |

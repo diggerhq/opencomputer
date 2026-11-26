@@ -91,7 +91,7 @@ Triage lists the asks waiting on you. Setting a session aside moves its ask out 
 
 `sessions.compact` (`POST /sessions/{id}/compact`) queues a compaction as a turn and returns the same result as `turns.send`.
 
-`instructions` (up to 10,000 characters) is passed to the harness's `/compact` command. The `session.compacted` event gives `beforeTokens`, `afterTokens` and `auto` (true when the harness compacted on its own). See Context and compaction.
+`instructions` (up to 10,000 characters) is passed to the harness's `/compact` command. The `session.compacted` event gives `beforeTokens`, `afterTokens` and `auto` (true when the harness compacted on its own). Separately, Computer compacts a conversation between turns once a turn's last request carried more than 120,000 tokens, configurable with `SP_COMPACT_AT`; all compaction thresholds are in [Limits](/reference/limits#slack-sessions-and-the-computer).
 
 ## Suspend
 
