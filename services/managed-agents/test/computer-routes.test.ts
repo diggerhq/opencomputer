@@ -150,7 +150,7 @@ describe("computer routes", () => {
     expect(replay.headers.get("location")).toBe("https://app.example/computer?slack=error&reason=invalid_state");
 
     const linked = await api("/v1/computer");
-    expect(linked.body.slack).toEqual({ installed: true, teamId: "T0ACME", botUserId: "UBOT" });
+    expect(linked.body.slack).toEqual({ installed: true, teamId: "T0ACME", teamName: "Acme", botUserId: "UBOT" });
     expect(linked.text).not.toContain(SLACK_BOT_TOKEN);
     // Unlink: 204, then nothing linked.
     expect((await api("/v1/computer/slack", { method: "DELETE" })).status).toBe(204);
@@ -183,7 +183,9 @@ describe("computer routes", () => {
     expect(callback.status).toBe(302);
     expect(callback.headers.get("location")).toBe("https://app.example/computer?slack=connected");
     const after = await org().overview(ORG);
-    expect(after.slack).toEqual({ installed: true, teamId: "T0INSTALL", botUserId: "UBOT" });
+    expect(after.slack).toEqual({ installed: true, teamId: "T0INSTALL", teamName: "Acme", botUserId: "UBOT" });
+    // Slack.forHost names the installer and the team (the day-6 unpaid DM goes to the installer).
+    expect(await inside((instance) => [instance.setting("slackInstallerUserId"), instance.setting("slackTeamName")])).toEqual(["U0INSTALLER", "Acme"]);
     expect(after.computer).toMatchObject({ state: "provisioning", connected: false });
 
     // Creating again (POST /v1/computer's path) stays idempotent.
@@ -226,11 +228,11 @@ describe("computer routes", () => {
     expect((await row())?.state).toBe("parked");
 
     // A free trial over: it stays asleep.
-    await inside((instance) => void (instance.admitForApi = async () => false));
+    await inside((instance) => void (instance.admission = async () => ({ deliver: false })));
     expect(await org().wireWake()).toBe("asleep");
     expect((await row())?.state).toBe("parked");
 
-    await inside((instance) => void (instance.admitForApi = async () => true));
+    await inside((instance) => void (instance.admission = async () => ({ deliver: true })));
     expect(await org().wireWake()).toBe("waking");
     expect((await row())?.state).toBe("waking");
   });
