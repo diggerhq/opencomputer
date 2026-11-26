@@ -258,12 +258,9 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   // ------------------------------------------------------------------ the feed and the work part
 
-  async feed(p: Principal, q: { after?: string; kinds?: string[]; sum?: boolean }): Promise<FeedFrame | { reset: true; cursor: null }> {
+  async feed(p: Principal, q: { after?: string; kinds?: string[] }): Promise<FeedFrame | { reset: true; cursor: null }> {
     this.seen(p);
-    const read = feeds.feed(this.sql, Date.now(), p, q);
-    if ("reset" in read) return read;
-    if (read.sumOver) read.frame.sum = await feeds.checksum(read.sumOver);
-    return read.frame;
+    return feeds.feed(this.sql, Date.now(), p, q);
   }
 
   async mutate(p: Principal, m: MutateRequest): Promise<MutateReply> {
@@ -312,11 +309,6 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async review(p: Principal, resultId: string): Promise<ReviewRow | null> {
     this.seen(p);
     return work.review(this.sql, p, resultId);
-  }
-
-  async mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void> {
-    // Spec 27, 28: the rules missed something; counted and alerted on.
-    this.emit("org.feed_mismatch", { subject: p.subject, ...body }, "error");
   }
 
   // ------------------------------------------------------------------ the occurrence stream

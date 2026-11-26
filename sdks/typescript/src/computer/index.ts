@@ -5,4 +5,3 @@ export * from "./review.js";
 export { createClient } from "./client.js";
 export { memoryStorage } from "./memory-storage.js";
 export { makeId } from "./ids.js";
-export { checksum } from "./sum.js";

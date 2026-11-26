@@ -11,7 +11,6 @@ const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
 const SID = "cs_0123456789abcdef";
 const TID = "trk_0123456789abcdef";
-const CLIENT = "cl_0123456789abcdef";
 
 const member = memberIdentity(ORG, USER);
 const key = (scopes: string[]) =>
@@ -46,9 +45,9 @@ describe("the feed (spec 37.1)", () => {
   it("passes the query to Org and answers its frame", async () => {
     const org = { feed: vi.fn(async () => frame) };
     const call = setup(org);
-    const r = await call("GET", "/feed?after=f1.2&kinds=session,thread&sum=1");
+    const r = await call("GET", "/feed?after=f1.2&kinds=session,thread");
     expect(r).toEqual({ status: 200, body: frame });
-    expect(org.feed).toHaveBeenCalledWith(expect.objectContaining({ subject: expect.any(String), kind: "member" }), { after: "f1.2", kinds: ["session", "thread"], sum: true });
+    expect(org.feed).toHaveBeenCalledWith(expect.objectContaining({ subject: expect.any(String), kind: "member" }), { after: "f1.2", kinds: ["session", "thread"] });
   });
 
   it("a reset, a foreign cursor or an old protocol is 409 reset with cursor null", async () => {
@@ -69,16 +68,11 @@ describe("the feed (spec 37.1)", () => {
     expect((await call("GET", "/feed", { identity: key(["work:read"]) })).status).toBe(403);
   });
 
-  it("a mismatch report is 204; the occurrence stream has protocol and resets", async () => {
+  it("the occurrence stream has protocol and resets", async () => {
     const org = {
-      mismatch: vi.fn(async () => undefined),
       occurrences: vi.fn(async (_p: unknown, q: { after?: string }) => (q.after === "o1.9" ? { reset: true, cursor: null } : { entries: [{ n: 1 }], to: "o1.1" })),
     };
     const call = setup(org);
-    const body = { clientId: CLIENT, cursor: "f1.1", server: "a", client: "b" };
-    expect((await call("POST", "/feed/mismatch", { body })).status).toBe(204);
-    expect(org.mismatch).toHaveBeenCalledWith(expect.anything(), body);
-    expect((await call("POST", "/feed/mismatch", { body: { ...body, clientId: "x" } })).status).toBe(400);
     expect(await call("GET", "/occurrences?limit=5")).toEqual({ status: 200, body: { protocol: 1, entries: [{ n: 1 }], to: "o1.1" } });
     expect((await call("GET", "/occurrences?after=o1.9")).status).toBe(409);
   });

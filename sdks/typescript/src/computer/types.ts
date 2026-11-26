@@ -262,7 +262,6 @@ export interface FeedFrame {
   /** The feed version `to` names: a mutation is confirmed once the feed reaches the `version` of its reply. */
   version: number;
   counts?: { earlier: number; trackEarlier: Record<string, number> };
-  sum?: string;
 }
 
 export type ErrorCode = "refused" | "not_found" | "taken" | "conflict" | "idempotency_conflict" | "principal_mismatch" | "reset" | (string & {});
@@ -479,8 +478,7 @@ export interface Client {
   status: Signal<"connecting" | "online" | "offline">;
   /**
    * The cursor and the rows are kept in storage. The first value is the rows held, as a frame with
-   * `from: null`; any later frame with `from: null` (a snapshot after `reset` or a checksum
-   * mismatch) replaces every row.
+   * `from: null`; any later frame with `from: null` (a snapshot after `reset`) replaces every row.
    */
   feed(kinds: string[]): Stream<FeedFrame>;
   events(sessionId: string, o?: { tailTurns?: number }): Stream<EventsUpdate>;

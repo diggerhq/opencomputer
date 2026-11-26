@@ -127,7 +127,6 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   // The same for every session, so the new-session screen can read it before there is one.
   if (is("GET", 1) && p[0] === "capabilities") return { op: "capabilities" };
   if (is("GET", 1) && p[0] === "feed") return { op: "feed" };
-  if (is("POST", 2) && p[0] === "feed" && p[1] === "mismatch") return { op: "feed.mismatch" };
   if (is("GET", 1) && p[0] === "occurrences") return { op: "occurrences" };
   if (is("GET", 1) && p[0] === "live") return { op: "live" };
   if (is("POST", 4) && p[0] === "slack" && p[1] === "threads" && p[3] === "messages") return { op: "slack.post", sub: p[2] };
@@ -180,7 +179,7 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "secrets.events") return "sessions:read";
   if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
   if (op === "live") return "sessions:read";
-  if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "sessions:read";
+  if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
   return "sessions:write";
@@ -308,7 +307,7 @@ export function routeFamily(op: string): string {
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
   if (op.startsWith("work.") || op === "mutate") return "work";
-  if (op === "feed" || op === "feed.mismatch" || op === "occurrences" || op === "live") return "feed";
+  if (op === "feed" || op === "occurrences" || op === "live") return "feed";
   return "other";
 }
 
@@ -319,7 +318,7 @@ const OPS = new Set([
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
-  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
+  "feed", "occurrences", "mutate", "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -551,7 +550,7 @@ const ACTOR_OPS = new Set([
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
-  "feed", "feed.mismatch", "occurrences", "mutate",
+  "feed", "occurrences", "mutate",
   "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post",
 ]);
@@ -1008,7 +1007,6 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
 
 /** The feed's kinds a principal without `work:read` may read (spec 37.1). */
 const CORE_KINDS = ["session", "machine"];
-const CLIENT_ID = /^cl_[0-9a-hjkmnp-tv-z]{16}$/;
 const PROTOCOL = 1;
 
 const reset = (out: Reply, message: string) => out.error(409, "reset", message, { cursor: null });
@@ -1057,20 +1055,9 @@ async function orgRoute(
       const frame = await timed(org().feed(p, {
         ...(after !== undefined ? { after } : {}),
         ...(kinds?.length ? { kinds } : {}),
-        ...(query.get("sum") === "1" ? { sum: true } : {}),
       }));
       if ("reset" in frame) return reset(out, "The feed has moved past this cursor; read a snapshot.");
       return out.send(200, frame);
-    }
-    case "feed.mismatch": {
-      const parsed = await bodyOf(request);
-      if ("error" in parsed) return out.error(...parsed.error);
-      const b = asObject(parsed.value);
-      if (!b || !CLIENT_ID.test(String(b.clientId)) || ["cursor", "server", "client"].some((f) => typeof b[f] !== "string" || (b[f] as string).length > 1_024)) {
-        return out.error(400, "invalid_request", "The body is { clientId, cursor, server, client }.", { field: "" });
-      }
-      await timed(org().mismatch(p, { clientId: b.clientId as string, cursor: b.cursor as string, server: b.server as string, client: b.client as string }));
-      return out.send(204, null);
     }
     case "occurrences": {
       const after = query.get("after") ?? undefined;

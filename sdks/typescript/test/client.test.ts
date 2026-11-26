@@ -11,7 +11,7 @@ import type { ApiEvent, Client, ClientOptions, Delta, EventsUpdate, Failure, Fee
 const KINDS = [...ROW_KINDS];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** The client's delays, 500 times shorter (a reconnect in 2 to 10 ms); the hourly checksum never fires. */
+/** The client's delays, 500 times shorter (a reconnect in 2 to 10 ms); none of ten minutes or more fires. */
 const fast: ClientOptions["setTimeout"] = (fn, ms) => (ms >= 600_000 ? null : setTimeout(fn, ms / 500));
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -218,23 +218,6 @@ describe("the feed", () => {
     const feed = watchFeed(again);
     await until(() => feed.frames.filter((f) => f.from === null).length === 2);
     await converged(w.me, feed);
-  });
-
-  it("re-syncs with a snapshot when the checksum differs", async () => {
-    const w = await setup();
-    const sid = await thread(w);
-    const first = watchFeed(w.client);
-    await converged(w.me, first);
-    await sleep(5);
-    w.client.close();
-    // A row lost from storage: the cursor says it is held, the checksum says not.
-    await w.storage.delete(`feed/row/session/${sid}`);
-    const again = connect(w, w.storage);
-    const feed = watchFeed(again);
-    await until(() => w.net.requests.some((r) => r.path === "/feed/mismatch"));
-    await converged(w.me, feed);
-    expect(feed.frames[feed.frames.length - 1].from).toBeNull();
-    expect(w.net.requests.filter((r) => r.path === "/feed/mismatch").length).toBe(1);
   });
 
   it("converges while pushed frames are dropped, duplicated and reordered", async () => {

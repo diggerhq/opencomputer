@@ -5,22 +5,17 @@
 // - While a read is in flight pushed frames are ignored, and one more read follows it, so a frame
 //   that raced the reply is not lost.
 // - `reset` drops the rows and reads from the cursor it names (a snapshot when null).
-// - On each connection and hourly a read asks for the checksum; a difference is reported and a
-//   snapshot replaces the rows. The sum is over the rows held less the `session` and `place` rows of
-//   a thread whose place has `earlierAt` set, since a snapshot would not send those.
+// - On each connection a read catches up from the cursor.
 
 import { transient, type Ctx, type Op } from "./ctx.js";
 import { emitter } from "./signal.js";
-import { checksum } from "./sum.js";
 import type { FeedFrame, Row, ServerFrame, Stream } from "./types.js";
-
-const HOUR = 3_600_000;
 
 export interface Feed {
   stream(kinds: string[]): Stream<FeedFrame>;
   /** Storage's copy, read at start. */
   load(cursor: string | null, rows: Row[]): void;
-  /** A new socket: subscribe again and catch up, with the checksum. */
+  /** A new socket: subscribe again and catch up. */
   connected(): void;
   onSocket(f: ServerFrame): void;
   /** Read from the cursor now. */
@@ -43,8 +38,6 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
   let active = false;
   let reading = false;
   let again = false;
-  let wantSum = false;
-  let stopHourly = () => {};
 
   const frameOf = (from: string | null, to: string, r: Row[]): FeedFrame => ({ protocol: 1, org, subject, from, to, more: false, rows: r, gone: [], version });
 
@@ -81,15 +74,8 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     if (to !== null) subs.emit(frameOf(null, to, []));
   }
 
-  function sumRows(): Row[] {
-    const earlier = new Set<string>();
-    for (const r of rows.values()) if (r.kind === "place" && r.earlierAt != null) earlier.add(r.id);
-    return [...rows.values()].filter((r) => !((r.kind === "place" || r.kind === "session") && earlier.has(r.id)));
-  }
-
-  function catchUp(sum = false): void {
+  function catchUp(): void {
     if (!active || ctx.closed) return;
-    wantSum ||= sum;
     if (reading) {
       again = true;
       return;
@@ -102,12 +88,10 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     const live = () => active && !ctx.closed;
     while (live()) {
       again = false;
-      const sum = wantSum;
       const sent = cursor;
       const q = new URLSearchParams();
       if (sent !== null) q.set("after", sent);
       q.set("kinds", kinds.join(","));
-      if (sum) q.set("sum", "1");
       const reply = await ctx.request(`/feed?${q}`).catch(() => null);
       if (!live()) return;
       if (!reply || transient(reply.status)) {
@@ -124,38 +108,18 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
       const frame = reply.body as FeedFrame;
       if (frame.org !== org || frame.subject !== subject) return; // computed for another principal (section 20)
       apply(frame);
-      if (frame.more) continue;
-      if (sum) {
-        wantSum = false;
-        if (frame.sum !== undefined) {
-          const mine = await checksum(sumRows());
-          if (!live()) return;
-          if (mine !== frame.sum) {
-            const body = JSON.stringify({ clientId: ctx.clientId, cursor: frame.to, server: frame.sum, client: mine });
-            await ctx.request("/feed/mismatch", { method: "POST", headers: { "content-type": "application/json" }, body }).catch(() => null);
-            drop(null);
-            continue;
-          }
-        }
-      }
-      if (!again && !wantSum) return;
+      if (!frame.more && !again) return;
     }
   }
 
   function start(): void {
     active = true;
     ctx.send({ t: "sub", stream: "feed", after: cursor ?? undefined, kinds });
-    catchUp(true);
-    const tick = () => {
-      catchUp(true);
-      stopHourly = ctx.timer(tick, HOUR);
-    };
-    stopHourly = ctx.timer(tick, HOUR);
+    catchUp();
   }
 
   function stop(): void {
     active = false;
-    stopHourly();
     ctx.send({ t: "unsub", stream: "feed" });
   }
 
@@ -181,7 +145,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
     connected() {
       if (!active) return;
       ctx.send({ t: "sub", stream: "feed", after: cursor ?? undefined, kinds });
-      catchUp(true);
+      catchUp();
     },
     onSocket(f) {
       if (!active) return;
@@ -198,7 +162,7 @@ export function createFeed(ctx: Ctx, onFrame: (frame: FeedFrame) => () => void):
         catchUp();
       }
     },
-    catchUp: () => catchUp(),
+    catchUp,
     active: () => active,
     version: () => version,
     row: (kind, id) => rows.get(`${kind}/${id}`),

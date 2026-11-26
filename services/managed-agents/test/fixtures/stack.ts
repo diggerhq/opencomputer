@@ -23,7 +23,7 @@ import { fakeComputerOutbound, fakeComputerPlatform } from "./computer-fakes.mjs
 
 const SECRET = "stack-test-assertion-secret";
 const HOST_KEY = "stack-test-host-token-key";
-const root = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url));
+const root = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url).href);
 
 /** A caller of the API: its principal, and a fetch and a socket as it. */
 export interface Caller {
