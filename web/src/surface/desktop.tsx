@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Toaster } from '@/components/ui/sonner'
@@ -26,11 +27,16 @@ async function host(): Promise<Host> {
   })
 }
 
+// The dashboard gives the web tab its query client; the desktop has its own.
+const queries = new QueryClient()
+
 void host().then((h) =>
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <Surface host={h} />
-      <Toaster />
+      <QueryClientProvider client={queries}>
+        <Surface host={h} />
+        <Toaster />
+      </QueryClientProvider>
     </StrictMode>,
   ),
 )
