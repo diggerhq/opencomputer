@@ -74,9 +74,16 @@ export class FakeSessionLog extends Recorder {
 
 export class FakeComputer extends Recorder {
   private rows: ExportedSlackRow[] = [];
+  /** As the old team router (`computer-slack-team:<T>`): the organization it names. */
+  private account: string | null = null;
 
-  async set(next: { rows?: ExportedSlackRow[] }): Promise<void> {
+  async set(next: { rows?: ExportedSlackRow[]; teamAccount?: string }): Promise<void> {
     if (next.rows) this.rows = next.rows;
+    if (next.teamAccount) this.account = next.teamAccount;
+  }
+
+  async teamAccount(): Promise<string | null> {
+    return this.account;
   }
 
   async command(p: Principal, c: { name: string; args: string; sessionId?: string }): Promise<{ reply: string }> {

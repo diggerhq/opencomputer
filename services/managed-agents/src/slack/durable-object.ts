@@ -138,6 +138,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   override async alarm(): Promise<void> {
+    await this.ready();
     await alarms.run(this.sql, Date.now(), {
       owed: () => owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now()),
       [QUEUE]: async () => {
@@ -161,9 +162,20 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     return stored;
   }
 
+  /**
+   * Every entry imports Computer's Slack state first (spec 43.1, lazy on first touch): before
+   * it this object has no team, token or threads and would drop what it was given. Not in
+   * `forHost`, which Computer's export may call, nor in the team router's methods.
+   */
+  private async ready(): Promise<void> {
+    const meta = this.sql.exec<{ imported: number }>("SELECT imported FROM meta WHERE k = 1")[0];
+    if (!meta?.imported) await this.import();
+  }
+
   // ------------------------------------------------------------------ accept (40.11 step 1)
 
   async accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void> {
+    await this.ready();
     this.org();
     const now = Date.now();
     const seen = `slack:${e.kind}:${e.id}`;
@@ -221,6 +233,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
    * as the presser; any other interaction is accepted and queued.
    */
   async interact(id: string, body: unknown): Promise<SlackModalReply> {
+    await this.ready();
     this.org();
     const interaction = isRecord(body) ? (body as SlackInteraction) : null;
     const userId = interaction?.user?.id;
@@ -839,6 +852,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** A child of a Slack thread's session: its brief posted at the top level of the parent's channel, and that thread recorded as the child's. */
   async announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }> {
+    await this.ready();
     this.org();
     const known = threads.keyOf(this.sql, child.sessionId);
     if (known) return { threadKey: known };
@@ -854,6 +868,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** What Org's echo described (36.6): a refused turn's reason, or the machine's notice; the status and 👀 come off. */
   async notify(e: SlackEcho): Promise<void> {
+    await this.ready();
     this.org();
     if (e.kind === "machine") {
       if (e.state === "ready") {
@@ -892,6 +907,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** `post_thread`: a message in a session's Slack thread, for whoever may read the session. */
   async post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>> {
+    await this.ready();
     this.org();
     const sid = threads.sessionOf(this.sql, threadKey);
     const where = parseSessionKey(threadKey);
@@ -941,6 +957,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** The workspace linked: its settings and sealed bot token; the installer linked to the person who installed; the host told. */
   async install(p: Principal, grant: SlackGrant): Promise<void> {
+    await this.ready();
     const org = this.org();
     this.mayInstall(p);
     const sealed = await seal(grant.botToken, this.env.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0${grant.teamId}`);
@@ -966,6 +983,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** The bot token and the workspace's settings go; the app stays installed in Slack until removed there. */
   async unlink(p: Principal): Promise<void> {
+    await this.ready();
     this.org();
     this.mayInstall(p);
     this.forget();
@@ -987,6 +1005,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   async startInstall(p: Principal, nonce: string): Promise<void> {
+    await this.ready();
     this.org();
     this.mayInstall(p);
     const now = Date.now();
@@ -995,6 +1014,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   async consumeInstall(nonce: string): Promise<{ ok: true; subject: string } | { ok: false; reason: "invalid_state" | "state_expired" }> {
+    await this.ready();
     const hash = await sha256Hex(nonce);
     const row = this.sql.exec<{ subject: string; expiresAt: number }>("SELECT user_id AS subject, expires_at AS expiresAt FROM install_nonces WHERE nonce_hash = ?", hash)[0];
     if (!row) return { ok: false, reason: "invalid_state" };
@@ -1004,6 +1024,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   async unlinkRevoked(teamId: string): Promise<{ unlinked: boolean }> {
+    await this.ready();
     if (settings.get(this.sql, "slackTeamId") !== teamId || !settings.get(this.sql, "slackBotToken")) return { unlinked: false };
     const answer = await this.slack("auth.test", {});
     if (!slackTokenDead(answer)) return { unlinked: false };
@@ -1014,6 +1035,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   }
 
   async joinRequest(teamId: string, requesterUserId: string): Promise<{ installerNotified: boolean }> {
+    await this.ready();
     if (settings.get(this.sql, "slackTeamId") !== teamId || !settings.get(this.sql, "slackBotToken")) return { installerNotified: false };
     const now = Date.now();
     this.sql.exec("DELETE FROM join_requests WHERE notified_at < ?", now - JOIN_REQUEST_INTERVAL_MS);
