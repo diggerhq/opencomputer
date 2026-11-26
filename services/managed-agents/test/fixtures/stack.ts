@@ -413,7 +413,7 @@ async function connectHost(url: string, org: string, token: string): Promise<Hos
     },
     ask(sessionId, ask) {
       const j = journal(sessionId);
-      const id = `ask_${org}_${++asks}`;
+      const id = `ask_${(++asks).toString().padStart(4, "0")}${Math.random().toString(36).slice(2, 10)}`;
       append(sessionId, "ask.opened", { ask: { id, status: "open", ...ask } }, { turnId: j.turn });
       status(sessionId, "waiting");
       return id;

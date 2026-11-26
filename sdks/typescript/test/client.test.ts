@@ -276,17 +276,17 @@ describe("mutations", () => {
     const feed = watchFeed(w.client);
     const sid = await thread(w);
     await converged(w.me, feed);
-    let pendingAtFrame = -1;
-    w.client.feed(KINDS).subscribe((f) => {
-      const row = f.rows.find((r) => r.kind === "session" && r.id === sid) as SessionRow | undefined;
-      if (row?.title === "Renamed" && pendingAtFrame < 0) pendingAtFrame = w.client.pending().get().length;
+    // The moment it leaves pending(), the feed already shows its effect: no flicker back to the old title.
+    let titleWhenLeft: string | undefined;
+    w.client.pending().subscribe((list) => {
+      if (list.length === 0 && titleWhenLeft === undefined) titleWhenLeft = feed.session(sid)?.title;
     });
     const m = w.client.mutate("thread.rename", { sid, title: "Renamed" });
     expect(w.client.pending().get()).toMatchObject([{ kind: "mutation", name: "thread.rename", args: { sid, title: "Renamed" } }]);
     await m.settled;
-    await until(() => pendingAtFrame >= 0);
+    await until(() => titleWhenLeft !== undefined);
     expect(w.client.pending().get()).toEqual([]);
-    expect(pendingAtFrame).toBe(0);
+    expect(titleWhenLeft).toBe("Renamed");
     expect(feed.session(sid)!.title).toBe("Renamed");
     expect(w.net.requests.find((r) => r.path === `/work/threads/${sid}/title`)).toMatchObject({ method: "PUT", status: 200 });
   });
@@ -369,8 +369,10 @@ describe("mutations", () => {
     const track = w.client.mutate("track.create", { tid, agentSessionId: makeId("cs"), name: "Billing" });
     const s = w.client.createSession({ input: "Start on the invoices", trackId: tid });
     await Promise.all([track.settled, s.settled]);
-    const order = w.net.requests.filter((r) => r.method === "POST" && (r.path === "/work/tracks" || r.path === "/sessions")).map((r) => [r.path, r.status]);
-    expect(order).toEqual([["/work/tracks", 200], ["/sessions", 201]]);
+    // The session was sent once the track was answered (its row may reach the feed before its reply does).
+    const order = w.net.requests.filter((r) => r.method === "POST" && (r.path === "/work/tracks" || r.path === "/sessions"));
+    expect(order.map((r) => r.path)).toEqual(["/work/tracks", "/sessions"]);
+    expect(order[0].status).toBe(200);
     await converged(w.me, feed);
     expect(feed.rows.get(`place/${s.id}`)).toMatchObject({ trackId: tid });
   });
@@ -448,7 +450,10 @@ describe("a session", () => {
     await until(() => w.client.status.get() === "online");
     w.host.tool(sid, "after");
     w.host.end(sid);
-    await until(async () => events.held.length >= (await eventsOf(w.me, sid)).length);
+    await until(async () => {
+      const truth = await eventsOf(w.me, sid);
+      return truth.some((e) => e.type === "turn.completed") && events.held.length >= truth.length;
+    });
     expect(events.seqs()).toEqual((await eventsOf(w.me, sid)).map((e) => e.seq));
     expect(events.updates.some((u) => u.reset)).toBe(false);
     // The read after the reconnect asked for what follows the cursor, not for the log again.
