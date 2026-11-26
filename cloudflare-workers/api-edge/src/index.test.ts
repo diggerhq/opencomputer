@@ -650,6 +650,7 @@ describe("/api/managed-agents/computer/agent/connect — public CLI connect", ()
 
 describe("/internal/computer-keys", () => {
   const MANAGED = "managed-secret";
+  const SESSION = "cs_0123456789abcdef";
   const sign = async (secret: string, ts: string, body: string): Promise<string> => {
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
     const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${ts}.${body}`));
@@ -685,8 +686,8 @@ describe("/internal/computer-keys", () => {
       }),
     };
     const authEnv = { ...env, OC_MANAGED_CRED_HMAC_SECRET: MANAGED, OPENCOMPUTER_DB: db } as unknown as Env;
-    expect((await post(MANAGED, "org-missing", authEnv)).status).toBe(404);
-    const res = await post(MANAGED, "org-x", authEnv);
+    expect((await post(MANAGED, "org-missing", authEnv, { session_key: SESSION })).status).toBe(404);
+    const res = await post(MANAGED, "org-x", authEnv, { session_key: SESSION });
     expect(res.status).toBe(200);
     const out = (await res.json()) as { key: string; expiresAt: string };
     expect(out.key).toMatch(/^osb_/);
@@ -695,12 +696,12 @@ describe("/internal/computer-keys", () => {
     expect(ttl).toBeLessThanOrEqual(3600_000);
     expect(runs[0][1]).toBe("org-x");
     expect(runs[0][2]).toBe("computer");
-    expect(runs[0][8]).toBeNull();
-    // Work 095: an explicit list, never a wildcard and never secrets:write.
-    expect(runs[0][9]).toBe("sessions:read,sessions:write,asks:answer,terminals");
+    expect(runs[0][8]).toBe(SESSION);
+    // Work 095: an explicit list, never a wildcard, never secrets:write; spec 34.3: never terminals.
+    expect(runs[0][9]).toBe("sessions:read,sessions:write,asks:answer");
   });
 
-  it("records the session a key is for, and refuses a malformed one", async () => {
+  it("refuses a key without a cs_ session: none reaches the whole organization", async () => {
     const runs: unknown[][] = [];
     const db = {
       prepare: (sql: string) => ({
@@ -711,10 +712,9 @@ describe("/internal/computer-keys", () => {
       }),
     };
     const authEnv = { ...env, OC_MANAGED_CRED_HMAC_SECRET: MANAGED, OPENCOMPUTER_DB: db } as unknown as Env;
-    expect((await post(MANAGED, "org-x", authEnv, { session_key: "T1:C1:1.2" })).status).toBe(200);
-    expect(runs[0][8]).toBe("T1:C1:1.2");
-    expect((await post(MANAGED, "org-x", authEnv, { session_key: "T1:C1" })).status).toBe(400);
+    expect((await post(MANAGED, "org-x", authEnv)).status).toBe(400);
+    expect((await post(MANAGED, "org-x", authEnv, { session_key: "T1:C1:1.2" })).status).toBe(400);
     expect((await post(MANAGED, "org-x", authEnv, { session_key: 7 })).status).toBe(400);
-    expect(runs).toHaveLength(1);
+    expect(runs).toHaveLength(0);
   });
 });

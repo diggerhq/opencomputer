@@ -7,6 +7,7 @@
  */
 import { hmacSha256Hex } from "../edge/runtime-usage.js";
 import type { ProvisionEnv } from "./model-key.js";
+import { isSessionId } from "./session-ids.js";
 
 export const COMPUTER_KEYS_PATH = "/internal/computer-keys";
 const MINT_TIMEOUT_MS = 10_000;
@@ -19,17 +20,20 @@ export interface OpenComputerKey {
 }
 
 /**
- * `sessionKey`, when given, is a live session of this organization the gateway
- * checked: the edge stores it on the key and asserts it to the API (work 080).
+ * `sessionId` is the `cs_…` session of this organization the gateway found for
+ * the asking runner: the edge stores it on the key, which makes the key that
+ * session's agent (spec 34.3). Without one nothing is minted: a key with no
+ * session would reach the whole organization.
  */
 export async function mintOpenComputerKey(
   env: ProvisionEnv,
   organizationId: string,
-  sessionKey?: string,
+  sessionId: string | undefined,
   fetcher: typeof fetch = fetch,
 ): Promise<OpenComputerKey> {
+  if (!isSessionId(sessionId)) throw new Error("OpenComputer keys are minted for a session only");
   if (!env.OPENCOMPUTER_APP_URL || !env.OC_MANAGED_CRED_HMAC_SECRET) throw new Error("OpenComputer keys are not configured on this gateway");
-  const body = JSON.stringify(sessionKey ? { org_id: organizationId, session_key: sessionKey } : { org_id: organizationId });
+  const body = JSON.stringify({ org_id: organizationId, session_key: sessionId });
   const timestamp = String(Math.floor(Date.now() / 1_000));
   const signature = await hmacSha256Hex(env.OC_MANAGED_CRED_HMAC_SECRET, `${timestamp}.${body}`);
   const response = await fetcher(new URL(COMPUTER_KEYS_PATH, env.OPENCOMPUTER_APP_URL), {

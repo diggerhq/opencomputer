@@ -7,6 +7,7 @@ import type { PublicComputerState } from "../computer/config.js";
 import type { CalvinPerson } from "../computer/protocol.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "./principal.js";
+import type { Dead } from "./store.js";
 
 export type { Access, Principal };
 
@@ -203,6 +204,8 @@ export interface OrgRpc {
   linkPerson(from: string, to: string): Promise<void>;
   /** Computer only, once: spec 43.1. */
   adopt(): Promise<void>;
+  /** For an operator (Computer's operator status): the owed calls that ran out of tries. */
+  dead(): Promise<Dead[]>;
 }
 
 // ------------------------------------------------------------------ SessionLog (36.2)
