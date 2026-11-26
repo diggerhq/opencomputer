@@ -68,12 +68,13 @@ const button = (label: string) => {
 
 // React tracks an input's value itself; set it the way a person typing does.
 function type(input: HTMLInputElement, value: string) {
-  const set = Object.getOwnPropertyDescriptor(
+  const desc = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value',
-  )!.set!
+  )!
   act(() => {
-    set.call(input, value)
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- called on `input` here
+    Reflect.apply(desc.set!, input, [value])
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
@@ -81,7 +82,9 @@ function type(input: HTMLInputElement, value: string) {
 describe('approval', () => {
   it('offers to always allow what the call can remember', () => {
     draw(
-      ask({ approval: { toolName: 'Bash', command: 'ls', alwaysAllows: 'ls' } }),
+      ask({
+        approval: { toolName: 'Bash', command: 'ls', alwaysAllows: 'ls' },
+      }),
     )
     const always = button('Always allow for this session')
     expect(always.title).toBe('Allows ls without asking again in this session')
@@ -123,9 +126,7 @@ describe('question', () => {
       ask({
         kind: 'question',
         question: {
-          questions: [
-            { id: 'q1', text: 'Which?', options: [{ label: 'A' }] },
-          ],
+          questions: [{ id: 'q1', text: 'Which?', options: [{ label: 'A' }] }],
         },
       }),
     )
@@ -153,14 +154,14 @@ describe('secret', () => {
     const input = el.querySelector('input')!
     expect(input.type).toBe('password')
     type(input, 's3cret')
-    act(() => button('Save secret and continue').click())
+    await act(() => Promise.resolve(button('Save secret and continue').click()))
     expect(surface.setSecret).toHaveBeenCalledWith('cs_1', 'API_TOKEN', {
       value: 's3cret',
       file: false,
     })
-    expect(el.textContent).toContain('Saving…')
-    await act(async () => done())
-    expect(el.querySelector('input')).toBeNull()
+    await vi.waitFor(() => expect(el.textContent).toContain('Saving…'))
+    await act(() => Promise.resolve(done()))
+    await vi.waitFor(() => expect(el.querySelector('input')).toBeNull())
     expect(el.innerHTML).not.toContain('s3cret')
     expect(el.textContent).toContain('Saved')
   })
@@ -169,7 +170,11 @@ describe('secret', () => {
     surface.setSecret.mockRejectedValue(new Error('no'))
     draw(secret)
     type(el.querySelector('input')!, 'v')
-    await act(async () => button('Save secret and continue').click())
-    expect(el.textContent).toContain('Could not save the secret. Please retry.')
+    await act(() => Promise.resolve(button('Save secret and continue').click()))
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain(
+        'Could not save the secret. Please retry.',
+      ),
+    )
   })
 })

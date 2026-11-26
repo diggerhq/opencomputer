@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { useSurface } from '../hooks'
 import { Rich } from './bits'
 import { ACTS, BLOCK } from './kit'
+import { ApprovalDetail } from './ApprovalDetail'
 import { SecretForm } from './SecretForm'
 
 // An ask in the conversation: its buttons while it waits on the person, what
@@ -53,7 +54,9 @@ function answered(ask: Ask): string {
   }
   if (a.decision)
     return a.decision === 'deny'
-      ? 'Not allowed'
+      ? isPlan(ask)
+        ? 'Kept planning'
+        : 'Not allowed'
       : a.decision === 'always'
         ? isPlan(ask)
           ? 'Allowed, accepting edits'
@@ -87,58 +90,46 @@ export function AskBlock({ ask }: { ask: Ask }) {
 
 function Approval({ ask }: { ask: Ask }) {
   const surface = useSurface()
-  const a = ask.approval ?? {}
-  const title = str(a.title) ?? str(a.toolName)
-  const command = str(a.command)
   const plan = isPlan(ask)
-    ? str((a.input as { plan?: unknown } | undefined)?.plan)
-    : null
-  const always = plan ? null : str(a.alwaysAllows)
+  const always = plan ? null : str(ask.approval?.alwaysAllows)
   const decide = (decision: 'allow' | 'deny' | 'always') =>
     surface.answer(ask.sessionId, ask.id, { decision })
   return (
     <>
-      {plan ? (
-        <Rich text={plan} />
-      ) : (
-        <>
-          <Rich text={command && title ? title : 'Needs your OK'} />
-          {(command ?? title) && (
-            <pre className="bg-card mt-2 overflow-auto rounded-md border px-3 py-2 font-mono text-xs">
-              {command ?? title}
-            </pre>
-          )}
-        </>
-      )}
-      {ask.status === 'open' && (
-        <div className={ACTS}>
-          <Button size="sm" onClick={() => decide('allow')}>
-            Allow
-          </Button>
-          {isPlan(ask) && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => decide('always')}
-            >
+      <ApprovalDetail ask={ask} />
+      {ask.status === 'open' &&
+        (plan ? (
+          <div className={ACTS}>
+            <Button size="sm" onClick={() => decide('always')}>
               Approve, accept edits
             </Button>
-          )}
-          {always && (
-            <Button
-              size="sm"
-              variant="outline"
-              title={`Allows ${always} without asking again in this session`}
-              onClick={() => decide('always')}
-            >
-              Always allow for this session
+            <Button size="sm" variant="outline" onClick={() => decide('allow')}>
+              Approve, ask before edits
             </Button>
-          )}
-          <Button size="sm" variant="outline" onClick={() => decide('deny')}>
-            Don't allow
-          </Button>
-        </div>
-      )}
+            <Button size="sm" variant="outline" onClick={() => decide('deny')}>
+              Keep planning
+            </Button>
+          </div>
+        ) : (
+          <div className={ACTS}>
+            <Button size="sm" onClick={() => decide('allow')}>
+              Allow
+            </Button>
+            {always && (
+              <Button
+                size="sm"
+                variant="outline"
+                title={`Allows ${always} without asking again in this session`}
+                onClick={() => decide('always')}
+              >
+                Always allow for this session
+              </Button>
+            )}
+            <Button size="sm" variant="outline" onClick={() => decide('deny')}>
+              Don't allow
+            </Button>
+          </div>
+        ))}
     </>
   )
 }
@@ -215,14 +206,24 @@ function Questions({ ask }: { ask: Ask }) {
           )}
         </div>
       ))}
-      {open && (!direct || anyTyped) && (
+      {open && (
         <div className={ACTS}>
+          {(!direct || anyTyped) && (
+            <Button
+              size="sm"
+              disabled={!qs.every(said)}
+              onClick={() => send(picked)}
+            >
+              Send
+            </Button>
+          )}
           <Button
             size="sm"
-            disabled={!qs.every(said)}
-            onClick={() => send(picked)}
+            variant="ghost"
+            className="text-muted-foreground"
+            onClick={() => surface.dismissAsk(ask.sessionId, ask.id)}
           >
-            Send
+            Skip
           </Button>
         </div>
       )}

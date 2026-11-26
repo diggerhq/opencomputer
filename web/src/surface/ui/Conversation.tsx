@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { Ask } from '@opencomputer/sdk/computer'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -20,7 +19,7 @@ import { useConversation, useSurface } from '../hooks'
 import type { Item, Step } from '../store/transcript'
 import { AskBlock } from './AskBlock'
 import { Mk, Rich } from './bits'
-import { ACTS, BLOCK, I } from './kit'
+import { I } from './kit'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
@@ -219,8 +218,10 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
               'opacity-60',
           )}
         >
-          {item.author && (
-            <div className="text-muted-foreground text-xs">{item.author}</div>
+          {(item.author || item.via) && (
+            <div className="text-muted-foreground text-xs">
+              {[item.author, item.via].filter(Boolean).join(' · ')}
+            </div>
           )}
           <Rich text={item.text} />
           {item.state === 'failed' && (

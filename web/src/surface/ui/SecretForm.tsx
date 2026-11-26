@@ -100,6 +100,10 @@ export function SecretForm({ ask }: { ask: Ask }) {
           onChange={(e) => setValue(e.target.value)}
         />
       )}
+      <p className="text-muted-foreground mt-1 text-[12px]">
+        Only this session can use this secret. Its value is never posted in the
+        conversation.
+      </p>
       {fileError && (
         <p role="alert" className="text-destructive mt-1 text-[12.5px]">
           Choose a readable text file up to 64 KB.

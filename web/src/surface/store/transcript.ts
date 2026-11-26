@@ -4,8 +4,11 @@ import type { ApiEvent, Ask, InboxEntry, OpRow, Pending } from '@opencomputer/sd
 // the agent's replies, its steps as single lines, and its asks. Types it does
 // not know are skipped, as the API asks of every client.
 
+// Where a message was written, when it was not here.
+const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
+
 export type Item =
-  | { kind: 'user'; key: string; text: string; author: string | null; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
+  | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
   | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
   // A turn's steps, where its first step was: listed while the turn runs,
   // folded into one line once it has ended (the settled pattern).
@@ -53,12 +56,20 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         // Input the platform writes is not drawn as a message (R15).
         if (e.actor?.via === 'platform' || e.actor?.id === 'platform') break
         const text = withoutSlackHeader(str(d.input))
-        const name = e.actor?.name
+        // Journals before the computer stopped using the git author name carry " via Computer".
+        const name = e.actor?.name?.replace(/ via Computer$/, '')
         if (!text) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
         if (e.actor?.via === 'agent') items.push({ kind: 'line', key: e.turnId ?? e.id, text, tone: 'muted', at: e.createdAt })
         else
-          items.push({ kind: 'user', key: e.turnId ?? e.id, text, author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null, at: e.createdAt })
+          items.push({
+            kind: 'user',
+            key: e.turnId ?? e.id,
+            text,
+            author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
+            via: e.actor?.via && VIA[e.actor.via],
+            at: e.createdAt,
+          })
         break
       }
       case 'message.completed': {

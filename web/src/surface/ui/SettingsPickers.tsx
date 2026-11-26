@@ -30,7 +30,8 @@ export function SettingsPickers({
     queryFn: () => surface.capabilities(),
     staleTime: 5 * 60_000,
   })
-  if (!caps) return null
+  // The row keeps its height while the capabilities load, so the composer does not jump.
+  if (!caps) return <div className="h-7" aria-hidden />
   const model =
     caps.models.find((m) => m.id === value.model) ??
     caps.models.find((m) => m.default) ??
@@ -40,7 +41,12 @@ export function SettingsPickers({
       {caps.models.length > 1 && (
         <Select
           value={model?.id ?? ''}
-          onValueChange={(m) => onChange({ model: m })}
+          onValueChange={(m) => {
+            const next = caps.models.find((x) => x.id === m)
+            // An effort the new model does not take is dropped, or a start is refused.
+            const keep = !value.effort || !!next?.efforts.includes(value.effort)
+            onChange(keep ? { model: m } : { model: m, effort: undefined })
+          }}
           options={caps.models.map((m) => ({ value: m.id, label: m.name }))}
           className={PICKER}
           onEscapeKeyDown={oneLayer}

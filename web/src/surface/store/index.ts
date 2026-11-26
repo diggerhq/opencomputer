@@ -584,9 +584,14 @@ export function createSurface(o: SurfaceOptions) {
     // conversation; the agent's next message then closes its ask.
     async setSecret(sid: string, name: string, secret: { value: string; file: boolean }) {
       await client.setSecret(sid, name, secret)
-      actions.send(
-        sid,
-        `Secret $${name} is set for this session. It is available in your next command${secret.file ? ' as the path of a file holding it' : ''}. Continue.`,
+      // Queued, not steered: a turn still running finishes before it reads this.
+      const st = get().rows.session.get(sid)?.status
+      settle(
+        client.send(
+          sid,
+          `Secret $${name} is set for this session. It is available in your next command${secret.file ? ' as the path of a file holding it' : ''}. Continue.`,
+          { ifBusy: st === 'running' || st === 'starting' ? 'queue' : undefined },
+        ),
       )
     },
 
