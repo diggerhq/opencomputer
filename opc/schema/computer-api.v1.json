@@ -1484,10 +1484,18 @@
       "properties": {
         "createSession": {
           "$ref": "#/$defs/CreateSessionBody"
+        },
+        "updateSession": {
+          "$ref": "#/$defs/UpdateSessionBody"
+        },
+        "settings": {
+          "$ref": "#/$defs/OrganizationSettings"
         }
       },
       "required": [
-        "createSession"
+        "createSession",
+        "updateSession",
+        "settings"
       ],
       "additionalProperties": true
     }
@@ -1505,6 +1513,29 @@
       "type": "string",
       "pattern": "^cs_[0-9a-hjkmnp-tv-z]{16}$",
       "description": "`cs_` + 16 lowercase Crockford base32"
+    },
+    "SessionAccess": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "description": "One of `owner`, `org`, `people`; may gain values.",
+          "examples": [
+            "owner"
+          ]
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "people"
+      ],
+      "additionalProperties": true
     },
     "Person": {
       "type": "object",
@@ -2463,6 +2494,12 @@
           "type": "boolean"
         },
         "aside": {
+          "type": "boolean"
+        },
+        "access": {
+          "$ref": "#/$defs/SessionAccess"
+        },
+        "canManageAccess": {
           "type": "boolean"
         },
         "owner": {
@@ -6504,6 +6541,32 @@
       ],
       "additionalProperties": true
     },
+    "AccessBody": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "org",
+            "people"
+          ]
+        },
+        "people": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 320
+          },
+          "maxItems": 50
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": true
+    },
     "CreateSessionBody": {
       "type": "object",
       "properties": {
@@ -6538,8 +6601,64 @@
         "metadata": {
           "type": "object",
           "additionalProperties": true
+        },
+        "access": {
+          "$ref": "#/$defs/AccessBody"
         }
       },
+      "additionalProperties": true
+    },
+    "UpdateSessionBody": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "model": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "speed": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "standard"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "access": {
+          "$ref": "#/$defs/AccessBody"
+        }
+      },
+      "additionalProperties": true
+    },
+    "OrganizationSettings": {
+      "type": "object",
+      "properties": {
+        "apiAccessDefault": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "org"
+          ]
+        }
+      },
+      "required": [
+        "apiAccessDefault"
+      ],
       "additionalProperties": true
     }
   }

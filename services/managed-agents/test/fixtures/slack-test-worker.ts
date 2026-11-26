@@ -42,7 +42,12 @@ export class FakeOrg extends Recorder {
 
   async getSession(p: Principal, id: string) {
     this.record("getSession", p, id);
-    return this.readable ? { ok: true as const, session: { id, owner: { id: this.owner, name: "", email: null }, writers: this.writers } as never } : { ok: false as const, code: "not_found", status: 404 };
+    return this.readable ? { ok: true as const, session: { id, owner: { id: this.owner, name: "", email: null } } as never } : { ok: false as const, code: "not_found", status: 404 };
+  }
+
+  async access(sessionId: string) {
+    this.record("access", sessionId);
+    return this.readable ? { owner: this.owner, audience: `member:${this.owner}`, writers: this.writers, agents: [], readers: [], machine: "org_a", revision: 1 } : null;
   }
 
   async mutate(p: Principal, m: unknown): Promise<MutateReply> {

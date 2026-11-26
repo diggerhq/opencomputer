@@ -56,9 +56,10 @@ describe("accept", () => {
     // An interrupt: any person who reached the session, and a listed agent.
     expect(await log.stub.accept(owner, { id: "o_int", kind: "interrupt", body: {} })).toMatchObject({ ok: true });
     expect(await log.stub.accept(agent("cs_stranger"), { id: "s_int", kind: "interrupt", body: {} })).toEqual({ ok: false, code: "forbidden" });
-    // Settings: the owner; the others only in a session its members write.
+    // Settings: the owner and the people who write it; never an agent or the platform.
     expect(await log.stub.accept(owner, { id: "o_set", kind: "settings", body: { model: "x" } })).toMatchObject({ ok: true });
-    expect(await log.stub.accept(mate, { id: "m_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
+    expect(await log.stub.accept(mate, { id: "m_set", kind: "settings", body: { model: "x" } })).toMatchObject({ ok: true });
+    expect(await log.stub.accept(agent("cs_parent"), { id: "a_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
     expect(await log.stub.accept(platform, { id: "p_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
   });
 

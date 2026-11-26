@@ -31,6 +31,8 @@ import {
   type MutateReply,
   type MutateRequest,
   type Occurrence,
+  type OrgSettings,
+  type OutsideAccess,
   type Overview,
   type PlaceRow,
   type Principal,
@@ -51,6 +53,7 @@ import {
 } from "../actor/index.js";
 import type { OrgForDelivery } from "../delivery/contract.js";
 import { computerSessionId } from "../computer/protocol.js";
+import { memberId } from "../computer/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";
 import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";
@@ -66,6 +69,13 @@ export type OrgEnv = ActorEnv & {
   /** The retired Work board's object, read once while adopting (org/work-index.ts). */
   WORK_INDEX?: DurableObjectNamespace;
 };
+
+/** `access.people` with WorkOS user ids (the dashboard's) as member ids; Org checks the rest. */
+async function memberIds(access: unknown): Promise<CreateSession["access"]> {
+  const a = access as CreateSession["access"];
+  if (!a || typeof a !== "object" || !Array.isArray(a.people)) return a;
+  return { ...a, people: await Promise.all(a.people.map((e) => (typeof e === "string" && /^user_[0-9A-Za-z]{1,64}$/.test(e) ? memberId(e) : e))) };
+}
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
@@ -281,6 +291,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   async createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>> {
     const busy = await this.gate(p);
     if (busy) return busy;
+    body = { ...body, ...(body.access !== undefined ? { access: await memberIds(body.access) } : {}) };
     const { person: _person, ...hashed } = body;
     const hash = await hashOf(hashed);
     const out = sessions.createSession(this.sql, Date.now(), p, body, hash, this.org);
@@ -292,9 +303,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
     return (await this.gate(p)) ?? sessions.getSession(this.sql, p, id);
   }
 
-  async patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>> {
+  async patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow } | OutsideAccess>> {
     const busy = await this.gate(p);
     if (busy) return busy;
+    if (patch.access !== undefined) patch = { ...patch, access: await memberIds(patch.access) };
     const out = sessions.patchSession(this.sql, Date.now(), p, id, patch);
     this.flush();
     return out;
@@ -302,6 +314,19 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
 
   async listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>> {
     return (await this.gate(p)) ?? sessions.listSessions(this.sql, p, q);
+  }
+
+  async sessionAccess(p: Principal, id: string): Promise<Reply<OutsideAccess>> {
+    return (await this.gate(p)) ?? sessions.sessionAccess(this.sql, p, id);
+  }
+
+  async settings(p: Principal): Promise<OrgSettings> {
+    await this.ready(p);
+    return sessions.settings(this.sql);
+  }
+
+  async setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>> {
+    return (await this.gate(p)) ?? sessions.setSettings(this.sql, p, patch);
   }
 
   // ------------------------------------------------------------------ the feed and the work part

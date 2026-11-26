@@ -139,17 +139,107 @@ describe("Org.createSession", () => {
       const start = fakes.calls.find((c) => c[0] === "Computer.start")![1] as { session: { id: string }; role: unknown };
       expect(start).toMatchObject({ session: { id: body.id }, role: null });
       const push = fakes.calls.find((c) => c[0] === "Live.publish")![2] as FeedPush;
-      expect(push.rows.map((r) => `${r.kind}:${r.audience}`).sort()).toEqual(["place:org", "session:org"]);
+      // The organization's default access is `owner`: the owner's audience, written by the owner.
+      expect(push.rows.map((r) => `${r.kind}:${r.audience}`).sort()).toEqual(["place:member:usr_a", "session:member:usr_a"]);
       expect(fakes.calls.find((c) => c[0] === "usage.created")).toEqual(["usage.created", body.id, expect.any(Number)]);
 
       expect(await org.createSession(a, body)).toMatchObject({ ok: true, duplicate: true, session: { id: body.id } });
       expect(await org.createSession(a, { ...body, input: "Something else" })).toMatchObject({ ok: false, code: "taken", status: 409 });
       expect(await org.createSession(member("usr_b", "create"), body)).toMatchObject({ ok: false, code: "taken" });
 
-      expect(await org.getSession(member("usr_b", "create"), body.id)).toMatchObject({ ok: true, session: { owner: { id: "usr_a", name: "Ann" } } });
+      expect(await org.getSession(a, body.id)).toMatchObject({ ok: true, session: { owner: { id: "usr_a", name: "Ann" }, access: { mode: "owner", people: [] }, canManageAccess: true } });
+      expect(await org.getSession(member("usr_b", "create"), body.id)).toMatchObject({ ok: false, code: "session_not_found" });
       const list = await org.listSessions(a, {});
       expect(list).toMatchObject({ ok: true, sessions: [{ id: body.id }], nextCursor: null });
-      expect(await org.access(body.id)).toMatchObject({ owner: "usr_a", audience: "org", writers: "members", machine: "create" });
+      expect(await org.access(body.id)).toMatchObject({ owner: "usr_a", audience: "member:usr_a", writers: ["user:usr_a"], machine: "create" });
+    });
+  });
+});
+
+describe("Org: session access (spec 36.2)", () => {
+  const SID = "cs_0000000000000030";
+  it("defaults from the organization's setting, which only an admin changes", async () => {
+    await withActor("access-default", async (org) => {
+      const a = member("usr_a", "access-default");
+      const admin = { ...member("usr_boss", "access-default"), admin: true };
+      expect(await org.settings(a)).toEqual({ apiAccessDefault: "owner" });
+      expect(await org.setSettings(a, { apiAccessDefault: "org" })).toMatchObject({ ok: false, code: "admin_required", status: 403 });
+      expect(await org.setSettings(admin, { apiAccessDefault: "everyone" as never })).toMatchObject({ ok: false, code: "invalid_request", field: "apiAccessDefault" });
+      expect(await org.setSettings(admin, { apiAccessDefault: "org" })).toEqual({ ok: true, settings: { apiAccessDefault: "org" } });
+      expect(await org.createSession(a, { id: SID })).toMatchObject({ ok: true, session: { access: { mode: "org", people: [] } } });
+      expect(await org.getSession(member("usr_b", "access-default"), SID)).toMatchObject({ ok: true, session: { canManageAccess: false } });
+      // A Slack session is its owner's whatever the default, and takes no `access`.
+      const slack = { type: "slack" as const, client: null, slack: null };
+      expect(await org.createSession(a, { id: "cs_0000000000000031", origin: slack })).toMatchObject({ ok: true, session: { access: { mode: "owner" }, canManageAccess: false } });
+      expect(await org.createSession(a, { id: "cs_0000000000000032", origin: slack, access: { mode: "org" } })).toMatchObject({ ok: false, code: "invalid_request", field: "access" });
+      expect(await org.createSession(a, { id: "cs_0000000000000033", role: "start", access: { mode: "org" } })).toMatchObject({ ok: false, code: "invalid_request", field: "access" });
+    });
+  });
+
+  it("shares with people: they read, list and drive it, and may change its access", async () => {
+    await withActor("access-people", async (org, fakes) => {
+      const a = member("usr_a", "access-people");
+      const b = member("usr_b", "access-people");
+      const c = member("usr_c", "access-people");
+      await org.createSession(c, { id: "cs_0000000000000034", person: { name: "Cy", email: "Cy@Example.com" } });
+      const bad = (people: unknown) => org.createSession(a, { id: SID, access: { mode: "people", people } as never });
+      expect(await bad(["nobody@example.com"])).toMatchObject({ ok: false, status: 400, field: "access.people", reason: "unknown_member" });
+      expect(await bad(Array.from({ length: 51 }, (_, i) => `usr_${i}`))).toMatchObject({ ok: false, field: "access.people" });
+      expect(await org.createSession(a, { id: SID, access: { mode: "owner", people: ["usr_b"] } })).toMatchObject({ ok: false, field: "access.people" });
+
+      const made = await org.createSession(a, { id: SID, access: { mode: "people", people: ["usr_b", "cy@example.com", "usr_a"] } });
+      expect(made).toMatchObject({ ok: true, session: { access: { mode: "people", people: ["usr_b", "usr_c"] }, canManageAccess: true } });
+      expect(await org.access(SID)).toMatchObject({ audience: "member:usr_a", writers: ["user:usr_a", "user:usr_b", "user:usr_c"], readers: ["user:usr_b", "user:usr_c"] });
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { canManageAccess: true } });
+      expect((await org.listSessions(b, { owner: "anyone" })) as { sessions: { id: string }[] }).toMatchObject({ sessions: [{ id: SID }] });
+      const d = member("usr_d", "access-people");
+      expect(await org.getSession(d, SID)).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(((await org.listSessions(d, { owner: "anyone" })) as { sessions: unknown[] }).sessions).toEqual([]);
+      expect(await org.patchSession(d, SID, { access: { mode: "org" } })).toMatchObject({ ok: false, code: "session_not_found" });
+
+      // A person it is shared with changes it (Q7); dropping themselves, they learn only its access.
+      fakes.calls.length = 0;
+      expect(await org.patchSession(b, SID, { access: { mode: "people", people: ["usr_c", "usr_d"] } })).toMatchObject({ ok: true, session: null, access: { mode: "people", people: ["usr_c", "usr_d"] }, canManageAccess: false });
+      await org.drain();
+      expect(fakes.calls.map((call) => call[0])).toEqual(expect.arrayContaining(["Computer.setAccess", "SessionLog.setAccess"]));
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(await org.getSession(d, SID)).toMatchObject({ ok: true });
+    });
+  });
+
+  it("moves the rows when the audience changes, and lets an admin outside change only the access", async () => {
+    await withActor("access-move", async (org) => {
+      const a = member("usr_a", "access-move");
+      const b = member("usr_b", "access-move");
+      const admin = { ...member("usr_boss", "access-move"), admin: true };
+      await org.createSession(a, { id: SID, access: { mode: "org" } });
+      const before = frameOf(await org.feed(b, {}));
+      expect(kindsOf(before).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
+      // Someone who uses it but does not manage it.
+      expect(await org.patchSession(b, SID, { access: { mode: "owner" } })).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "not_member" });
+
+      expect(await org.patchSession(a, SID, { access: { mode: "owner" } })).toMatchObject({ ok: true, session: { access: { mode: "owner" } } });
+      const after = frameOf(await org.feed(b, { after: before.to }));
+      expect(after.rows).toEqual([]);
+      expect(after.gone.map((g) => g.kind).sort()).toEqual(["place", "session"]);
+      expect(kindsOf(frameOf(await org.feed(a, { after: before.to }))).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
+
+      // The admin is outside: they read and change its access, nothing else.
+      expect(await org.getSession(admin, SID)).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(await org.sessionAccess(admin, SID)).toEqual({ ok: true, session: null, access: { mode: "owner", people: [] }, canManageAccess: true });
+      expect(await org.sessionAccess(b, SID)).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(await org.patchSession(admin, SID, { title: "Mine", access: { mode: "org" } })).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(await org.patchSession(admin, SID, { access: { mode: "people", people: ["usr_boss"] } })).toMatchObject({ ok: true, session: { id: SID, access: { mode: "people", people: ["usr_boss"] } } });
+      expect(await org.patchSession(admin, SID, { access: { mode: "org" } })).toMatchObject({ ok: true, session: { access: { mode: "org" } } });
+      expect(kindsOf(frameOf(await org.feed(b, { after: before.to }))).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
+    });
+  });
+
+  it("leaves a Slack session's access to Slack", async () => {
+    await withActor("access-slack", async (org) => {
+      const a = member("usr_a", "access-slack");
+      await org.createSession(a, { id: SID, origin: { type: "slack", client: null, slack: null } });
+      expect(await org.patchSession(a, SID, { access: { mode: "org" } })).toMatchObject({ ok: false, code: "forbidden", reason: "access_in_slack" });
     });
   });
 });
@@ -159,7 +249,7 @@ describe("Org.feed", () => {
     await withActor("feed", async (org) => {
       const a = member("usr_a", "feed");
       const b = member("usr_b", "feed");
-      await org.createSession(a, { id: "cs_0000000000000020", input: "One" });
+      await org.createSession(a, { id: "cs_0000000000000020", input: "One", access: { mode: "org" } });
       await org.createSession(a, { id: "cs_0000000000000021", input: "Private", origin: { type: "slack", client: null, slack: null } });
 
       const snap = frameOf(await org.feed(a, { sum: true }));
@@ -355,7 +445,7 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
       const agentSession = "cs_0000000000000051";
       const agent: Principal = { ...a, subject: thread, kind: "agent", via: "agent", audiences: [], session: thread };
       const url = "https://github.com/o/r/pull/1";
-      await org.createSession(a, { id: thread, input: "Fix the login redirect" });
+      await org.createSession(a, { id: thread, input: "Fix the login redirect", access: { mode: "org" } });
       expect(await org.mutate(a, { name: "track.create", args: { tid: "trk_0001", agentSessionId: agentSession, name: "Login", sid: thread } })).toMatchObject({ protocol: 1 });
       await org.drain();
       const starts = fakes.calls.filter((c) => c[0] === "Computer.start").map((c) => c[1] as { session: { id: string }; role: unknown });

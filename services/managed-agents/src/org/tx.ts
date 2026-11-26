@@ -15,7 +15,7 @@
 // - Calls to other actors are owed calls: `tx.sendAccess`, `tx.start`, `tx.stop`, `tx.destroy`,
 //   `tx.interrupt`, or `tx.owe` for another one. Org's Durable Object knows how to send each `call`.
 
-import type { Ask, LogSummary, Origin, Person, SessionSettings, SessionStatus } from "../computer/api-types.js";
+import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, SessionStatus } from "../computer/api-types.js";
 import { DEFAULT_MODE, MODELS } from "../computer/capabilities.js";
 import { CROCKFORD } from "../computer/session-ids.js";
 import type { Access, PlaceRow, Row, SessionRow, Summary } from "../actor/contracts.js";
@@ -134,6 +134,28 @@ export function mint(prefix: string): string {
 export const isPerson = (by: string | null | undefined): boolean => typeof by === "string" && by.startsWith("user:");
 /** The audience of a session's rows (spec 35.1): `member:<owner>` from Slack and for a role session, else `org`. */
 export const audienceOf = (owner: string, origin: Origin, role: string | null): string => (origin.type === "slack" || role !== null ? `member:${owner}` : "org");
+
+/** The people a session is shared with beyond its audience: the persons in its `writers` list, the owner aside (spec 36.2). */
+export function sharedWith(s: Pick<SessionRec, "owner" | "writers">): string[] {
+  const writers = parse<"members" | string[]>(s.writers, "members");
+  return writers === "members" ? [] : writers.filter((by) => isPerson(by) && by !== `user:${s.owner}`);
+}
+
+/**
+ * The API's `Session.access`, read from the rows (spec 36.2): `org` is the `org` audience; otherwise
+ * the owner's audience, and `people` are the members in `writers` besides the owner. A Slack session
+ * is its owner's here: who drives it is set in Slack (`!access`).
+ */
+export function accessView(s: Pick<SessionRec, "owner" | "origin" | "audience" | "writers">): SessionAccess {
+  if (s.audience === "org") return { mode: "org", people: [] };
+  if (parse<Origin>(s.origin, { type: "api", client: null, slack: null }).type === "slack") return { mode: "owner", people: [] };
+  const people = sharedWith(s).filter((by) => by.startsWith("user:usr_")).map((by) => by.slice(5));
+  return people.length ? { mode: "people", people } : { mode: "owner", people: [] };
+}
+
+/** The rows of an access: `org` is the `org` audience and any member writes; else the owner's audience, written by the owner and the people. */
+export const accessRows = (owner: string, a: SessionAccess): { audience: string; writers: "members" | string[] } =>
+  a.mode === "org" ? { audience: "org", writers: "members" } : { audience: `member:${owner}`, writers: [`user:${owner}`, ...(a.mode === "people" ? a.people : []).map((m) => `user:${m}`)] };
 
 /** The first 80 characters of an input's first line, as today's `POST /sessions` titles a session. */
 export function titleFrom(input: string): string {
@@ -257,6 +279,7 @@ export function sessionRow(sql: Sql, s: SessionRec): SessionRow & Row & { audien
     lastActiveAt: summary.lastActiveAt ?? created,
     syncedAt: summary.syncedAt,
     urls: { dashboard: null },
+    access: accessView(s),
     titleBy: s.title_by,
     agentTitle: summary.agentTitle ?? null,
     lastAgentSeq: summary.lastAgentSeq ?? 0,
@@ -315,11 +338,11 @@ export function agentArranges(sql: Sql, p: Principal, place: PlaceRec | null): b
 
 /**
  * Whether `p` may see a session at all; a mutation answers `not_found` when not (spec 39). A
- * member by audience; an agent its own session, one it started, its track's threads, and its
+ * member by audience or as a person it is shared with; an agent its own session, one it started, its track's threads, and its
  * track's agent.
  */
 export function seesSession(sql: Sql, p: Principal, s: SessionRec): boolean {
-  if (p.kind !== "agent") return visible(p, s.audience);
+  if (p.kind !== "agent") return visible(p, s.audience) || (isMember(p) && sharedWith(s).includes(byOf(p)));
   if (p.session === s.id) return true;
   const place = readPlace(sql, s.id);
   if (place?.parent_session === p.session) return true;
@@ -346,7 +369,7 @@ export function seesTrack(sql: Sql, p: Principal, t: TrackRec): boolean {
 /**
  * A session's access as its SessionLog and its machine hold it, from the rows as they are now.
  * `agents`: the track's agent and the session that started it may write and read; a track's agent
- * may be written to by its threads.
+ * may be written to by its threads. `readers` also holds the people it is shared with.
  */
 export function accessOf(sql: Sql, sessionId: string): Access | null {
   const s = readSession(sql, sessionId);
@@ -358,7 +381,7 @@ export function accessOf(sql: Sql, sessionId: string): Access | null {
     const track = readTrack(sql, place.track_id);
     if (track) agents.add(`agent:${track.agent_session}`);
   }
-  const readers = [...agents];
+  const readers = [...agents, ...sharedWith(s)];
   if (s.role === "track") {
     const track = trackOfAgent(sql, sessionId);
     if (track) for (const row of sql.exec<{ session_id: string }>("SELECT session_id FROM place WHERE track_id = ?", track.id)) agents.add(`agent:${row.session_id}`);
