@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="OpenComputer Docs">
+  <!-- Docs variant of the capital-O OpenComputer mark (OpenComputerMark in
+       web/src/managed-agents/computer-sessions/parts.tsx): the same O and paper
+       tile, with the top-right corner folded over as a page dog-ear in accent
+       blue to signal documentation. The solid tile keeps it legible on light
+       and dark browser tabs. -->
+  <defs>
+    <mask id="fold"><rect width="32" height="32" fill="#fff" /><path d="M20.5 0H32V11.5Z" fill="#000" /></mask>
+  </defs>
+  <g mask="url(#fold)">
+    <rect x="0.75" y="0.75" width="30.5" height="30.5" rx="7" fill="#FAF8F5" stroke="#161513" stroke-opacity="0.12" stroke-width="1.5" />
+    <path fill-rule="evenodd" fill="#161513" d="M16 5.7c-5.3 0-9.4 4.6-9.4 10.3S10.7 26.3 16 26.3s9.4-4.6 9.4-10.3S21.3 5.7 16 5.7Zm0 1c-2.6 0-4.2 4.1-4.2 9.3s1.6 9.3 4.2 9.3 4.2-4.1 4.2-9.3S18.6 6.7 16 6.7Z" />
+  </g>
+  <path d="M20.5 0.75L31.25 11.5H22.5A2 2 0 0 1 20.5 9.5Z" fill="#2F6FEB" />
+</svg>
