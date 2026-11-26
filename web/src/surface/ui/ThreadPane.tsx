@@ -8,25 +8,15 @@ import { cn } from '@/lib/utils'
 import { useList, useS, useSurface, useThread, useTrack } from '../hooks'
 import type { Layout } from '../store'
 import type { ThreadView } from '../store/views'
-import {
-  Composer,
-  MenuButton,
-  Rich,
-  ResultIcon,
-  Tip,
-  type MenuItem,
-} from './bits'
-import {
-  ACTS,
-  BLOCK,
-  COMPOSER,
-  HD,
-  I,
-  IN,
-  resultDetail,
-  resultTitle,
-  useConfirm,
-} from './kit'
+import { I } from './icons'
+import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
+import { resultDetail, resultTitle } from './result-text'
+import { useConfirm } from './use-confirm'
+import { ResultIcon } from './ResultIcon'
+import { Rich } from './Rich'
+import { Tip } from './Tip'
+import { Composer } from './Composer'
+import { MenuButton, type MenuItem } from './MenuButton'
 import { Conversation } from './Conversation'
 import { SettingsPickers } from './SettingsPickers'
 

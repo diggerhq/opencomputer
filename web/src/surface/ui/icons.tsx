@@ -1,0 +1,45 @@
+import {
+  ArrowLeft,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  CircleHelp,
+  Clock,
+  Ellipsis,
+  FileDiff,
+  FileText,
+  GitPullRequest,
+  Globe,
+  ListTree,
+  PanelLeft,
+  PanelRight,
+  RectangleHorizontal,
+  SquarePen,
+  Square,
+  SunMoon,
+} from 'lucide-react'
+
+// The surface's icons, at the sizes it shows them.
+
+const ic = 'size-3.5'
+export const I = {
+  pr: <GitPullRequest className={ic} />,
+  files: <FileDiff className={ic} />,
+  globe: <Globe className={ic} />,
+  doc: <FileText className={ic} />,
+  chev: <ChevronDown className="size-3" />,
+  track: <ListTree className={ic} />,
+  dots: <Ellipsis className="size-4" />,
+  stop: <Square className="size-2.5 fill-current" />,
+  check: <Check className={ic} />,
+  clock: <Clock className={ic} />,
+  up: <ArrowUp className={ic} />,
+  back: <ArrowLeft className={ic} />,
+  side: <PanelLeft className="size-4" />,
+  compose: <SquarePen className="size-4" />,
+  theme: <SunMoon className="size-4" />,
+  help: <CircleHelp className="size-4" />,
+  L1: <PanelLeft className="size-4" />,
+  L2: <PanelRight className="size-4" />,
+  L3: <RectangleHorizontal className="size-4" />,
+}
