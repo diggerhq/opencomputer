@@ -1,7 +1,7 @@
 // The review summary of a change (spec S9, R40; the `review` table, section 35): what a thread's
 // agent writes about its pull request so a person can read the change as a few parts. Defined once
 // here. Its users take it from this file:
-// - the surface (web/) and the fake server read this source, as they read the rest of this SDK;
+// - the surface (web/) reads this source, as it reads the rest of this SDK;
 // - Org's `review.save` (services/managed-agents) and the runner's `review_summary` tool (computer/)
 //   ship on their own, so each reads a copy of schema/review.v1.json in its own tree, which
 //   `npm run schema` emits from `reviewJsonSchema()` and tests hold to it.
