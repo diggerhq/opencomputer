@@ -4,7 +4,7 @@
 {"seq":4,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"starting","to":"running"}}
 {"seq":5,"type":"tool.started","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Edit","callId":"tu_1","parentCallId":null,"title":"Update(a.ts)","input":{"file_path":"/tmp/calvin-golden/work/a.ts","old_string":"x","new_string":"y"},"inputTruncated":false}}
 {"seq":6,"type":"tool.completed","turnId":"tn#1","actor":null,"data":{"subagentId":null,"toolName":"Edit","callId":"tu_1","parentCallId":null,"title":"Update(a.ts)","output":"ok","outputTruncated":false,"fileChanges":null,"durationMs":0}}
-{"seq":7,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"0","parentCallId":null,"text":"Refactored."}}
+{"seq":7,"type":"message.completed","turnId":"tn#1","actor":null,"data":{"blockId":"block#1","parentCallId":null,"text":"Refactored."}}
 {"seq":8,"type":"usage.recorded","turnId":"tn#1","actor":null,"data":{"model":"claude-sonnet-4-5","inputTokens":1200,"outputTokens":80,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"costUsd":"0.2","firstTokenMs":2000,"durationMs":null,"usedTokens":1200,"windowTokens":null}}
 {"seq":9,"type":"turn.completed","turnId":"tn#1","actor":null,"data":{"text":"Refactored.","durationMs":3000,"silent":false}}
 {"seq":10,"type":"session.status_changed","turnId":null,"actor":null,"data":{"from":"running","to":"idle"}}

@@ -64,12 +64,11 @@ export const EPOCH_TAIL_MAX = 1_000;
 export type RecoverResult = { ok: true; ack: number; summary: LogSummary; tail: EpochTail; stats?: AppendStats } | Extract<AppendResult, { ok: false }>;
 
 /**
- * A read refused: `cursor_ahead` (a numeric `after` > lastSeq), `unavailable` (`minSeq` not reached: in
+ * A read refused (besides `reset`, a numeric `after` > lastSeq included): `unavailable` (`minSeq` not reached: in
  * 2 s without a principal, at once with one), or `not_found` (the principal may not read the session).
  */
 export type LogReadRefusal =
   | { ok: false; error: "not_found" }
-  | { ok: false; error: "cursor_ahead"; lastSeq: number; logEpoch: number }
   | { ok: false; error: "unavailable"; lastSeq: number; retryAfterMs: number }
   | { ok: false; error: "turn_not_found" | "ask_not_found" | "subagent_not_found" | "invalid_cursor" };
 

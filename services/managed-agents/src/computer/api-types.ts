@@ -182,8 +182,6 @@ export interface Session {
   lastText: string | null;
   context: SessionContext;
   lastSeq: number;
-  logEpoch: number;
-  epochStartSeq: number;
   createdAt: string;
   lastActiveAt: string;
   syncedAt: string | null;
