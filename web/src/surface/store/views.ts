@@ -105,7 +105,8 @@ const firstLine = (s: string | null | undefined) =>
 export const askLine = (ask: Ask): string => {
   if (ask.kind === 'approval') {
     const a = ask.approval ?? {}
-    return String(a.title ?? a.command ?? a.toolName ?? 'Needs your OK')
+    const line = [a.title, a.command, a.toolName].find((v) => typeof v === 'string')
+    return typeof line === 'string' ? line : 'Needs your OK'
   }
   if (ask.kind === 'question') {
     const qs = (ask.question?.questions ?? []) as { text?: string }[]

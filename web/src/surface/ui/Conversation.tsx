@@ -18,7 +18,8 @@ import {
 import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
 import type { Item, Step } from '../store/transcript'
-import { ACTS, BLOCK, I, Mk, Rich } from './bits'
+import { Mk, Rich } from './bits'
+import { ACTS, BLOCK, I } from './kit'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.

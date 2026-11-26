@@ -4,8 +4,11 @@
 // `[channel u32 BE][data]` on the WebSocket.
 //
 // Invariants:
-// - Only the session's owner or an admin opens one (checked here against the
-//   host's access list and admins; the host checks the 8-per-session limit).
+// - Only someone who may attach opens one, and then the owner, a person the
+//   session is shared with by name, or an admin in an organization-wide
+//   session (edge-auth.ts `mayOpenTerminal`, against the host's access list and
+//   admins; the host checks again, and the 8-per-session limit). When access
+//   changes, terminals their opener may no longer open are hung up (`recheck`).
 // - Output goes out ahead of events (the outbox's urgent queue), in frames of
 //   at most 64 KiB, and the terminal's socket is paused while the connection
 //   is congested, so a flood of output cannot grow memory.
@@ -160,15 +163,31 @@ export class WireTerminals {
 
   /** The connection closed: hang up everything it opened. */
   closeAll() {
-    for (const t of this.byId.values()) {
-      t.done = true;
-      for (const s of t.sockets) s.destroy();
-      void this.deps.host.call({ t: 'terminal.close', terminalId: t.id });
-      this.deps.route(t.id, undefined);
-      this.ended(t, false);
-    }
+    for (const t of this.byId.values()) this.hangUp(t);
     this.byId.clear();
     this.byChannel.clear();
+  }
+
+  /** Access changed: hang up each terminal whose session this member may no longer open one in (absent: gone). */
+  recheck(get: (sessionId: string) => SessionAccess | undefined) {
+    const { host, member } = this.deps;
+    for (const t of [...this.byId.values()]) {
+      const access = get(t.sessionId);
+      if (access && mayOpenTerminal(access, member, host.admins)) continue;
+      this.hangUp(t);
+      this.byId.delete(t.id);
+      this.byChannel.delete(t.channel);
+      if (t.stderrChannel !== null) this.byChannel.delete(t.stderrChannel);
+      this.deps.onChange?.();
+    }
+  }
+
+  private hangUp(t: Open) {
+    t.done = true;
+    for (const s of t.sockets) s.destroy();
+    void this.deps.host.call({ t: 'terminal.close', terminalId: t.id });
+    this.deps.route(t.id, undefined);
+    this.ended(t, false);
   }
 
   private forward(r: { result?: unknown; error?: ApiError }): CallOutcome {

@@ -175,6 +175,8 @@ export function apiHost(d: ApiHostDeps) {
     const f = readJournalFile(journalPath(d.dataDir, sessionId), Number.MAX_SAFE_INTEGER, 0);
     return f.epoch || (f.lastSeq ? 0 : undefined);
   };
+  /** A session of this host: seen in a gateway frame, or with a journal here (one suspended before the host restarted). */
+  const known = (sessionId: string) => specs.has(sessionId) || (isSessionId(sessionId) && existsSync(journalPath(d.dataDir, sessionId)));
   const logOf = (sessionId: string) => logs.get(sessionId) ?? { epoch: fileEpoch(sessionId) || 1, lastSeq: 0 };
 
   function starting(sessionId: string) {
@@ -274,10 +276,11 @@ export function apiHost(d: ApiHostDeps) {
     },
     async resume(sessionId) {
       const spec = specs.get(sessionId);
-      if (!spec) return { error: apiError('session_not_found', `no session ${sessionId} on this computer`, 404) };
+      if (!spec && !known(sessionId)) return { error: apiError('session_not_found', `no session ${sessionId} on this computer`, 404) };
       if (pending.has(sessionId)) return { status: 'starting' as const };
-      // No runner: the gateway's `start` brings it with the session's secrets, as a wake does (api-wake.ts).
-      if (!live.has(sessionId)) {
+      // No runner: the gateway's `start` brings it with the session's secrets, as a wake does (api-wake.ts). With no
+      // spec (none seen since the host started) it brings the spec too.
+      if (!spec || !live.has(sessionId)) {
         if (!waker.wake(sessionId)) return { error: apiError('unavailable', 'The computer could not reach the gateway to start the agent', 503, { retryable: true }) };
         return { status: 'starting' as const };
       }
@@ -297,6 +300,7 @@ export function apiHost(d: ApiHostDeps) {
       }
       return forkPath && owner ? { forkPath, owner } : undefined;
     },
+    known,
     async record(sessionId, type, data, actor) {
       // With no runner the host's own writer records it, opened as for any call: an upload to a stopped session is in its log.
       const w = await writer(sessionId, true);

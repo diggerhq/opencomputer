@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useList, useS, useSurface } from '../hooks'
 import type { ListView, ThreadView, TrackView } from '../store/views'
-import { I, Mk, when } from './bits'
+import { Mk } from './bits'
+import { I, when } from './kit'
 
 // S1: the list. Tracks, then threads on their own, then Earlier, drawn as one
 // virtual list of rows so a long Earlier costs only what is on screen.

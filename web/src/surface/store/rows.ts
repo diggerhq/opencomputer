@@ -42,7 +42,7 @@ export class Draft {
   }
   patch<K extends RowKind>(kind: K, id: string, change: Partial<RowOf<K>>) {
     const row = this.get(kind, id)
-    if (row) this.set({ ...row, ...change } as Row)
+    if (row) this.set({ ...row, ...change })
   }
   delete(kind: RowKind, id: string) {
     if (this.maps[kind].has(id)) this.mine(kind).delete(id)

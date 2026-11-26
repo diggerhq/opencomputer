@@ -23,6 +23,7 @@ const hooks: WireLinkHooks = {
     sid === 'cs_a' ? { forkPath: fork, owner: 'usr_owner' }
     : sid === 'cs_stopped' ? { forkPath: fork, owner: 'usr_owner', sandbox: { id: '0123456789abcdef', person: 'U1', workspace: fork, running: false } }
     : undefined,
+  known: (sid) => sid === 'cs_a' || sid === 'cs_stopped' || sid === 'cs_unplaced',
   record: async (sid, type, data) => {
     recorded.push([sid, type, data]);
     return 42;
@@ -130,6 +131,31 @@ describe('wire link', () => {
     expect(counts.at(-1)).toEqual(['cs_a', 0]);
   });
 
+  it('lets in a listed person, and an admin only where the access list lets them attach (CTO-37 Q4)', async () => {
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    link.setAdmins(['usr_admin']);
+    const open = async (id: string, member: string) => {
+      r.send({ t: 'terminal.open', id, sessionId: 'cs_a', member, cols: 80, rows: 24, tty: true, command: 'sleep 30' });
+      const m = await r.next((f) => f.id === id);
+      if (m.result) r.send({ t: 'terminal.close', id: `${id}c`, terminalId: m.result.terminalId });
+      return m.error?.reason ?? 'opened';
+    };
+    // No access list yet: only the owner.
+    expect(await open('n', 'usr_admin')).toBe('terminal_owner_only');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: [] });
+    expect(await open('o1', 'usr_admin')).toBe('terminal_owner_only');
+    expect(await open('o2', 'usr_owner')).toBe('opened');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: ['usr_pat'] });
+    expect(await open('p1', 'usr_pat')).toBe('opened');
+    expect(await open('p2', 'usr_admin')).toBe('terminal_owner_only');
+    link.setAccess({ sessionId: 'cs_a', owner: 'usr_owner', members: null });
+    expect(await open('g1', 'usr_admin')).toBe('opened');
+    expect(await open('g2', 'usr_pat')).toBe('terminal_owner_only');
+    r.sock.destroy();
+  });
+
   it("refuses a terminal in a session whose container is stopped, and starts nothing (C13)", async () => {
     const r = await relay();
     r.send({ t: 'hello', version: 'test' });
@@ -140,6 +166,18 @@ describe('wire link', () => {
     expect(error.message).toMatch(/[Rr]esume the session first/);
     expect(recorded).toEqual([]);
     expect(counts).toEqual([]);
+    r.sock.destroy();
+  });
+
+  it('refuses a terminal in a session it knows but cannot place (no spec since a restart) as not running, not unknown', async () => {
+    const r = await relay();
+    r.send({ t: 'hello', version: 'test' });
+    await r.next((m) => m.t === 'welcome');
+    r.send({ t: 'terminal.open', id: 't1', sessionId: 'cs_unplaced', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    expect((await r.next((m) => m.id === 't1')).error).toMatchObject({ code: 'conflict', status: 409, reason: 'session_not_running' });
+    r.send({ t: 'terminal.open', id: 't2', sessionId: 'cs_nowhere', member: 'usr_owner', cols: 80, rows: 24, tty: true });
+    expect((await r.next((m) => m.id === 't2')).error).toMatchObject({ code: 'session_not_found', status: 404 });
+    expect(recorded).toEqual([]);
     r.sock.destroy();
   });
 

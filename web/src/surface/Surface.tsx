@@ -22,7 +22,8 @@ import {
 } from './hooks'
 import { createSurface, type Surface as SurfaceApi } from './store'
 import { idbStorage } from './store/idb'
-import { DRAG, I, Tip } from './ui/bits'
+import { Tip } from './ui/bits'
+import { DRAG, I } from './ui/kit'
 import { KeysSheet, Toasts } from './ui/Chrome'
 import { bindKeys } from './ui/keys'
 import { List } from './ui/List'
@@ -244,6 +245,9 @@ export function Surface({
         set: (v) => localStorage.setItem(key, v),
       },
     })
+    // The surface is an external system made here and closed in the cleanup;
+    // publishing it is the one render this effect causes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSurface(made)
     return () => made.close()
   }, [host])

@@ -22,13 +22,16 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
-import { ApiError } from '@/api/client'
 import {
   queryManagedProjectDatabase,
   type ManagedDatabaseResult,
   type ManagedDatabaseValue,
 } from './api'
 import type { ProjectEnvironment } from './project-context'
+import {
+  isUnprovisionedDatabaseError,
+  quoteDatabaseIdentifier,
+} from './database-sql'
 
 const PAGE_SIZE = 50
 const TABLES_SQL = `SELECT name, sql
@@ -43,14 +46,6 @@ const DEFAULT_QUERY = `SELECT name, type
 FROM sqlite_master
 WHERE type IN ('table', 'view')
 ORDER BY name`
-
-export function quoteDatabaseIdentifier(value: string) {
-  return `"${value.replace(/"/g, '""')}"`
-}
-
-export function isUnprovisionedDatabaseError(error: unknown) {
-  return error instanceof ApiError && error.type === 'database_not_provisioned'
-}
 
 function displayValue(value: ManagedDatabaseValue) {
   if (value === null) return <span className="text-muted-foreground">NULL</span>
@@ -148,7 +143,7 @@ export function ManagedProjectDatabase({
       queryManagedProjectDatabase({
         projectId,
         environment,
-        sql: `SELECT * FROM ${quoteDatabaseIdentifier(selectedTable!.name)} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+        sql: `SELECT * FROM ${quoteDatabaseIdentifier(selectedTable.name)} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
       }),
     enabled: deployed && Boolean(selectedTable),
   })

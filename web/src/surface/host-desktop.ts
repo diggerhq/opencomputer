@@ -94,7 +94,10 @@ export function desktopHost(oc: Bridge): Host {
           reads.set(id, resolve)
           oc.send({ t: 'backup.read', what, id })
         }),
-      write: async (what, data) => oc.send({ t: 'backup.write', what, data }),
+      write: (what, data) => {
+        oc.send({ t: 'backup.write', what, data })
+        return Promise.resolve()
+      },
     },
     location: {
       get: () => loc,

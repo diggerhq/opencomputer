@@ -3,10 +3,10 @@ title: "Terminals"
 description: "Open a shell or run a command in a session's workspace, over the WebSocket."
 ---
 
-A terminal is a shell on the computer, in the session's workspace. It is what `opc shell` and `/shell` use. See [Shell](/cli/shell) for a person's view.
+A terminal is a shell in the session's own container, in its workspace, run as user `agent` (uid 1500), the same user as the session's agent. It is what `opc shell` and `/shell` use. See [Shell](/cli/shell) for a person's view.
 
 - It starts in the workspace's root, with the agent's tools on the `PATH`.
-- It does not need the agent: it opens on a suspended session without resuming it.
+- It needs the session to be running: its container runs only while the agent does. On a suspended or idle session, `terminals.open` returns `409 conflict` with `reason: "session_not_running"`. [Resume](/api/http/control#resume) the session (`sessions.resume`), or send it a message, then open the terminal again once it is running. `opc shell` does this for you.
 - While it is open, the session does not suspend for being idle. An explicit [suspend](/api/http/control#suspend) closes it.
 - It ends when you close it, when its process exits, or when its connection closes: the shell gets `SIGHUP`, and after 5 seconds `SIGKILL`. It does not survive a reconnect.
 
@@ -14,9 +14,9 @@ A terminal is a shell on the computer, in the session's workspace. It is what `o
 
 Only the session's owner, or an admin of your organization, can open a terminal in a session. Anyone else gets `403 forbidden` with `reason: "terminal_owner_only"`. An API key needs the `terminals` [scope](/api/authentication#scopes).
 
-A terminal runs as the computer's agent user, the same user every session's agent runs as. It can read every session's workspace on that computer, not only its own. Treat opening a terminal like logging in to the computer.
+A terminal runs inside the session's container, as the session's agent user. It sees this session's workspace and the repositories the session uses, not other sessions' workspaces. Treat opening a terminal like logging in to the session's container.
 
-A terminal's environment does not include the session's secrets, but they are not hidden from it. Because it runs as the same user as every session's agent, it can read the secrets of every session on that computer, just as any session's agent can.
+A terminal's environment is the container's own, plus `TERM`: no session secret is set in it. Because it runs as the agent's user in the agent's container, it can reach whatever this session's agent can.
 
 ## terminals.open
 
@@ -84,7 +84,7 @@ All output is sent before `terminal.exited`. `exitCode` is `null` when a signal 
 
 | | Target |
 | --- | --- |
-| `opc shell` to a remote prompt | One round trip and 20 ms. Each active session keeps one shell started ahead. |
+| `opc shell` to a remote prompt | One round trip, plus starting the shell in the session's container. Nothing is started ahead. |
 | A keystroke to its echo | One round trip, and under 1 ms on our side |
 
 ## Limits
@@ -98,4 +98,5 @@ All output is sent before `terminal.exited`. `exitCode` is `null` when a signal 
 | --- | --- |
 | `forbidden` | You are not the session's owner or an admin (`reason: "terminal_owner_only"`), or your key lacks the `terminals` scope (`reason: "missing_scope"`) |
 | `too_many_terminals` | 8 are already open in this session |
+| `conflict` | The session is not running (`reason: "session_not_running"`). Resume it, then open the terminal again. |
 | `terminal_not_found` | The `terminalId` is not open on this connection |

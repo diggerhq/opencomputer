@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { useS, useSurface } from '../hooks'
-import { oneLayer } from './bits'
+import { oneLayer } from './kit'
 
 // What the surface says, through sonner: the store decides when a toast comes
 // and goes; what can be undone carries Undo (Z).

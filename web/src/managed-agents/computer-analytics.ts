@@ -51,3 +51,16 @@ export function trackAgentConnected(props: {
 export function trackAgentFailed(code: AgentFailureCode): void {
   posthog.capture('computer.setup.agent_failed', { code })
 }
+
+/**
+ * The last setup step, before Slack is in: starting the first session on the
+ * web is the call to action, adding Slack the quiet alternative. Clicks, not
+ * outcomes: the first session landing is what finishes setup.
+ */
+export function trackFirstSessionStartClicked(): void {
+  posthog.capture('computer.setup.start_session_clicked', { via: 'web' })
+}
+
+export function trackSetupSlackClicked(): void {
+  posthog.capture('computer.setup.slack_clicked')
+}
