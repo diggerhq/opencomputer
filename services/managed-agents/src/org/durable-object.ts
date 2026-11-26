@@ -279,6 +279,11 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     return work.threads(this.sql, p, q);
   }
 
+  async thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null> {
+    this.seen(p);
+    return work.thread(this.sql, p, sessionId);
+  }
+
   async search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }> {
     this.seen(p);
     return work.search(this.sql, p, q);

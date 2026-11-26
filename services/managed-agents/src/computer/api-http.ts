@@ -61,6 +61,7 @@ function workRoute(method: string, s: string[]): Route | null {
   switch (a) {
     case "threads":
       if (is("GET", 1)) return { op: "work.threads" };
+      if (is("GET", 2)) return { op: "work.thread", args: { sid: b! } };
       if (is("DELETE", 2)) return m("thread.delete", { sid: b! });
       if (is("PUT", 3) && THREAD_MARKS[c!]) return m(THREAD_MARKS[c!]!, { sid: b! });
       if (is("DELETE", 3) && c === "done") return m("thread.reopen", { sid: b! });
@@ -317,7 +318,7 @@ const OPS = new Set([
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
-  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
+  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -549,7 +550,7 @@ const ACTOR_OPS = new Set([
   "sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
-  "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
+  "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post",
 ]);
 
@@ -581,6 +582,7 @@ const STATUS_OF: Record<string, number> = {
   forbidden: 403,
   principal_mismatch: 403,
   not_found: 404,
+  session_not_found: 404,
   refused: 409,
   taken: 409,
   conflict: 409,
@@ -620,7 +622,7 @@ function logRefusalOf(out: Reply, r: LogRefused): Response {
   if (r.error === "reset") return out.error(409, "reset", "The cursor's position no longer exists.", { cursor: r.cursor ?? null, ...(r.seq !== undefined ? { seq: r.seq } : {}) });
   if (r.error === "invalid_cursor") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
   if (r.error === "unavailable") return out.error(503, "unavailable", "The session has not reached minSeq yet.", { retryAfterMs: r.retryAfterMs ?? 1_000 });
-  if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "not_found", "No such session.");
+  if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "session_not_found", "No such session.");
   return out.error(404, r.error, `No such ${r.error.replace(/_not_found$/, "")}.`);
 }
 
@@ -656,8 +658,8 @@ type Sent = { delivered: unknown } | { waking: true } | { response: Response };
 async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, entry: { id: string; kind: InboxKind; body: unknown }, trace: string | undefined, out: Reply): Promise<Sent> {
   const accepted = await timedLog(out.facts, logOf(env, sessionId).accept(p, { ...entry, ...(trace ? { trace } : {}) }));
   if (!accepted.ok) {
-    const code = accepted.code === "forbidden" ? "not_found" : accepted.code;
-    return { response: refusalOf(out, { ok: false, code, message: code === "not_found" ? "No such session." : `Refused: ${code}.` }) };
+    const code = accepted.code === "forbidden" || accepted.code === "not_found" ? "session_not_found" : accepted.code;
+    return { response: refusalOf(out, { ok: false, code, message: code === "session_not_found" ? "No such session." : `Refused: ${code}.` }) };
   }
   if (accepted.duplicate) out.facts.replayed = true;
   if (accepted.duplicate && accepted.result !== undefined) return { delivered: accepted.result };
@@ -839,7 +841,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
-  if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
+  if (!isSessionId(sessionId)) return out.error(404, "session_not_found", "No such session.");
   if (route.sub !== undefined && !ID.test(route.sub)) {
     const what = route.op.split(".")[0]!.replace(/s$/, "");
     return out.error(404, `${what}_not_found`, `No such ${what}.`);
@@ -1057,6 +1059,11 @@ async function orgRoute(
         ...(limit !== undefined ? { limit } : {}),
       }));
       return out.send(200, { protocol: PROTOCOL, rows: r.rows, next: r.next });
+    }
+    case "work.thread": {
+      // One thread, by id, whatever its age (a deep link to one no page has loaded): the rows a page holds for it.
+      const r = await timed(org().thread(p, route.args!.sid!));
+      return r ? out.send(200, { protocol: PROTOCOL, rows: r.rows }) : out.error(404, "session_not_found", "No such session.");
     }
     case "work.overview":
       return out.send(200, { protocol: PROTOCOL, ...(await timed(org().overview(p))) });

@@ -218,8 +218,8 @@ describe("the session directory through Org", () => {
     expect((await call("GET", "/sessions?limit=0")).status).toBe(400);
   });
 
-  it("GET /sessions/{id} lays the log's newer summary over Org's row; Org's not_found is 404", async () => {
-    const org = { getSession: vi.fn(async (_p: Principal, id: string) => (id === SID ? { ok: true, session: row() } : { ok: false, code: "not_found" })) };
+  it("GET /sessions/{id} lays the log's newer summary over Org's row; Org's session_not_found is 404", async () => {
+    const org = { getSession: vi.fn(async (_p: Principal, id: string) => (id === SID ? { ok: true, session: row() } : { ok: false, code: "session_not_found" })) };
     const log = { summary: vi.fn(async () => ({ ok: true, summary: { lastSeq: 9, status: "running", activeTurnId: "tn_x", queued: [], asks: [], subagents: [], lastTurn: null, lastText: "hey", context: { usedTokens: 1, windowTokens: 2 }, lastActiveAt: null, syncedAt: null, settings: null } })) };
     const { call } = setup({ org, log });
     const r = await call("GET", `/sessions/${SID}?minSeq=9`);
@@ -228,7 +228,7 @@ describe("the session directory through Org", () => {
     expect(log.summary).toHaveBeenCalledWith(9, expect.objectContaining({ subject: MEMBER }));
     const missing = await call("GET", `/sessions/${OTHER}`);
     expect(missing.status).toBe(404);
-    expect(missing.body.error.code).toBe("not_found");
+    expect(missing.body.error.code).toBe("session_not_found");
   });
 
   it("POST /sessions without input: Org creates; 201, a duplicate 200; a refusal is its status", async () => {
@@ -358,9 +358,9 @@ describe("the writes through the inbox (spec 37.2, 40.2)", () => {
     const { call } = setup({ log });
     const nf = await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } });
     expect(nf.status).toBe(404);
-    expect(nf.body.error.code).toBe("not_found");
+    expect(nf.body.error.code).toBe("session_not_found");
     log.accept.mockResolvedValueOnce({ ok: false, code: "forbidden" });
-    expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).body.error.code).toBe("not_found");
+    expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).body.error.code).toBe("session_not_found");
     log.accept.mockResolvedValueOnce({ ok: false, code: "idempotency_conflict" });
     expect((await call("POST", `/sessions/${SID}/turns`, { body: { input: "go" } })).status).toBe(409);
     log.accept.mockResolvedValueOnce({ ok: false, code: "inbox_full" });
@@ -429,12 +429,13 @@ describe("the session reads (spec 37.1)", () => {
     expect(reset.body.error).toMatchObject({ code: "reset", cursor: "e1.3.99", seq: 99 });
   });
 
-  it("events: a session the caller may not read is not_found", async () => {
-    const log = { events: vi.fn(async () => ({ ok: false, error: "forbidden" })) };
+  it("events: a session the caller may not read is session_not_found, the code GET /sessions/{id} answers", async () => {
+    const log = { events: vi.fn(async () => ({ ok: false, error: "forbidden" })), turn: vi.fn(async () => ({ ok: false, error: "not_found" })) };
     const { call } = setup({ log });
     const r = await call("GET", `/sessions/${SID}/events`);
     expect(r.status).toBe(404);
-    expect(r.body.error.code).toBe("not_found");
+    expect(r.body.error.code).toBe("session_not_found");
+    expect((await call("GET", `/sessions/${SID}/turns/tn_0123456789ab`)).body.error.code).toBe("session_not_found");
   });
 
   it("reads answer at once: no long-poll, and minSeq not reached is 503 with retryAfterMs", async () => {
