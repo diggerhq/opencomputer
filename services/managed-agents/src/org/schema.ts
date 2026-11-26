@@ -80,10 +80,17 @@ const V1 = [
   `CREATE INDEX session_created ON session (created_at)`,
 ];
 
+/** Customer webhooks are gone: a poke owed to Delivery(webhook) is dropped, not retried forever. */
+const V2 = [`DELETE FROM _owed WHERE grp = 'poke:webhook'`];
+
 const run = (statements: string[]) => (sql: Sql) => statements.forEach((statement) => sql.exec(statement));
 export const STEPS: ((sql: Sql) => void)[] = [
   run(V0),
   run(V1),
-  // Once: the `board` alarm carries the knowledge repository setting over from the retired Work board (spec 43.1).
-  (sql) => alarms.set(sql, "board", 0),
+  run(V2),
+  // Ageing starts (it re-arms itself), and the knowledge repository setting is carried over, once, from the retired Work board.
+  (sql) => {
+    alarms.set(sql, "age", 0);
+    alarms.set(sql, "board", 0);
+  },
 ];

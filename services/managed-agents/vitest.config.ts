@@ -38,11 +38,6 @@ export default defineConfig({
         test: { name: "live", include: ["test/live.test.ts"] },
       },
       {
-        // Tracks and threads: Delivery alone, with fakes of Org, SessionLog and the Slack actor.
-        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.delivery-test.jsonc" } })],
-        test: { name: "delivery", include: ["test/delivery.test.ts"] },
-      },
-      {
         // Tracks and threads: the Slack actor alone, with fakes of Org, SessionLog, Computer and Slack's Web API.
         plugins: [
           cloudflareTest({

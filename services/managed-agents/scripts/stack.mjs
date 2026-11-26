@@ -609,11 +609,10 @@ function writeConfigs(stack, { bootstrap }) {
         { name: "SESSION_LOG", class_name: "SessionLogDurableObject" },
         // Work tracking: one per organization, the index of its knowledge repository's work items.
         { name: "WORK_INDEX", class_name: "WorkIndexDurableObject" },
-        // Tracks and threads: the organization's directory of work, its Slack link, and the
-        // readers of its occurrence stream; Live is the stack's own `live` Worker.
+        // Tracks and threads: the organization's directory of work and its Slack link; Live is the
+        // stack's own `live` Worker.
         { name: "ORGS", class_name: "OrgDurableObject" },
         { name: "SLACK", class_name: "SlackDurableObject" },
-        { name: "DELIVERY", class_name: "DeliveryDurableObject" },
         ...(full ? [{ name: "LIVE", class_name: "LiveDurableObject", script_name: names.live }] : []),
       ],
     },
@@ -630,7 +629,7 @@ function writeConfigs(stack, { bootstrap }) {
       { tag: "v7", new_sqlite_classes: ["WorkIndexDurableObject"] },
       {
         tag: "v8",
-        new_sqlite_classes: ["OrgDurableObject", "SlackDurableObject", "DeliveryDurableObject"],
+        new_sqlite_classes: ["OrgDurableObject", "SlackDurableObject"],
       },
     ],
     observability,

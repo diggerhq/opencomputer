@@ -1,4 +1,4 @@
-// Copied from ../computer/slack.ts for the Slack actor (tracks and threads, spec 36.6).
+// The Slack actor's (tracks and threads, spec 36.6); Computer reaches Slack only through that actor.
 // The organization-level OpenComputer Slack app (work 052, decision 8): the
 // pure parts. Event envelopes, interactions, message text, the authorize
 // URL and its state, and Web API calls with the linked workspace's bot token.

@@ -8,7 +8,7 @@ import { linkSlack } from "./fixtures/computer-link.js";
 
 /**
  * Tracks and threads, the Computer actor (spec 36.3, 40.2, 40.5): `start` and `drain` against a fake
- * SessionLog and a fake host on protocol 6, deltas to a fake Live, the export Org adopts from.
+ * SessionLog and a fake host on protocol 6, deltas to a fake Live.
  * Each test has its own organization.
  */
 

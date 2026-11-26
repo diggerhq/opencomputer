@@ -154,11 +154,9 @@ jobs:
           # Tracks and threads: the Org actor (with the real Computer for adoption).
           - name: Org
             projects: --project org
-          # Tracks and threads: Delivery and the Slack actor.
-          - name: Delivery and Slack
-            projects: >-
-              --project delivery
-              --project slack
+          # Tracks and threads: the Slack actor.
+          - name: Slack
+            projects: --project slack
           - name: Workerd memory
             projects: --project workerd-memory
           - name: Memory integrated
