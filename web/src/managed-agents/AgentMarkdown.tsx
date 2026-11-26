@@ -4,14 +4,18 @@ import remarkGfm from 'remark-gfm'
 export function AgentMarkdown({
   children,
   resolveUrl,
+  inline = false,
 }: {
   children: string
+  // One line set inside other text: no block wrapper, no paragraph margins.
+  inline?: boolean
   // Rewrites a link or image address before the usual sanitizing, such as a
   // relative link in a working doc to its place on GitHub.
   resolveUrl?: (url: string) => string
 }) {
+  const Wrap = inline ? 'span' : 'div'
   return (
-    <div className="text-sm leading-6">
+    <Wrap className={inline ? undefined : 'text-sm leading-6'}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={
@@ -44,7 +48,9 @@ export function AgentMarkdown({
               {children}
             </h3>
           ),
-          p: (props) => <p className="mb-3 last:mb-0" {...props} />,
+          p: inline
+            ? ({ children }) => <>{children}</>
+            : (props) => <p className="mb-3 last:mb-0" {...props} />,
           ul: (props) => (
             <ul
               className="mb-3 list-disc space-y-1 pl-5 last:mb-0"
@@ -106,6 +112,6 @@ export function AgentMarkdown({
       >
         {children}
       </ReactMarkdown>
-    </div>
+    </Wrap>
   )
 }
