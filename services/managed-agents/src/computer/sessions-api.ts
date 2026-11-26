@@ -616,10 +616,14 @@ export class ComputerSessionsApi {
     if (this.hasRow(sessionId) && this.v4Host()) this.deps.send({ t: "block", sessionId, blockId });
   }
 
-  /** Org's access for a session, as the host's `access` frame (kept by the host in memory; read again from Org at `hello`). */
+  /**
+   * Org's access for a session, as the host's `access` frame (kept by the host in memory; read again from Org at `hello`):
+   * `members` null for the `org` audience, else the people it is shared with (the owner is implicit).
+   */
   setAccess(sessionId: string, access: Access, admins: string[]): void {
     if (!this.v4Host()) return;
-    const members = access.audience === "org" ? null : [access.audience.replace(/^member:/, "")];
+    const people = access.writers === "members" ? [] : access.writers.filter((by) => by.startsWith("user:") && by !== `user:${access.owner}`).map((by) => by.slice(5));
+    const members = access.audience === "org" ? null : people;
     this.deps.send({ t: "access", access: { sessionId, owner: access.owner, members, ...(admins.length ? { admins } : {}) } });
   }
 
@@ -1115,9 +1119,11 @@ interface PatchInput {
   speed?: Speed;
   archived?: boolean;
   metadata?: Record<string, string | null>;
+  /** Who may use it: Org checks it (org/sessions.ts `parseAccess`). */
+  access?: unknown;
 }
 
-const PATCH_FIELDS = new Set(["title", "model", "effort", "mode", "speed", "archived", "metadata"]);
+const PATCH_FIELDS = new Set(["title", "model", "effort", "mode", "speed", "archived", "metadata", "access"]);
 
 export function validatePatch(body: unknown): { value: PatchInput } | { error: ApiReply } {
   const input = object(body);
@@ -1144,5 +1150,6 @@ export function validatePatch(body: unknown): { value: PatchInput } | { error: A
     if (isReply(m)) return { error: m };
     value.metadata = m;
   }
+  if (input.access !== undefined) value.access = input.access;
   return { value };
 }

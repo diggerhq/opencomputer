@@ -376,12 +376,11 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   /** Who owns a session and who may write it, read as the platform (the requester may not see it). */
   private async sessionOf(sid: string): Promise<{ owner: string; writers: "members" | string[] } | null> {
-    const r = await orgOf(this.env, this.org()).getSession(platformPrincipal(this.org()), sid);
-    if (!r.ok) return null;
-    const row = r.session as unknown as { owner?: { id?: string } | string; writers?: unknown };
-    const owner = typeof row.owner === "string" ? row.owner : (row.owner?.id ?? "");
-    const writers = Array.isArray(row.writers) ? row.writers.filter((w): w is string => typeof w === "string") : "members";
-    return { owner, writers };
+    const access = await orgOf(this.env, this.org()).access(sid);
+    if (!access) return null;
+    // Org's writers less the agents it adds (the session that started it, its track's agent).
+    const writers = access.writers === "members" ? "members" : access.writers.filter((by) => !access.agents?.includes(by));
+    return { owner: access.owner, writers };
   }
 
   /** A Slack person's `by`, as their principal would have it. */

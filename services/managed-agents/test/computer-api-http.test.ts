@@ -290,6 +290,58 @@ describe("the session directory through Org", () => {
   });
 });
 
+describe("session access through Org (docs/api/sessions.mdx#access)", () => {
+  const outside = { session: null, access: { mode: "owner", people: [] }, canManageAccess: true };
+  const admin = { ...member, ocPrincipal: { ...memberP, admin: true } } as RequestIdentity;
+
+  it("POST /sessions passes access to Org as given", async () => {
+    const org = { createSession: vi.fn(async () => ({ ok: true, session: row(), place: null, duplicate: false })) };
+    const { call } = setup({ org });
+    expect((await call("POST", "/sessions", { body: { id: SID, access: { mode: "people", people: ["sam@example.com"] } } })).status).toBe(201);
+    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ access: { mode: "people", people: ["sam@example.com"] } }));
+  });
+
+  it("PATCH /sessions/{id} with access: Org's session, or for an admin outside it only the access", async () => {
+    const org = {
+      patchSession: vi.fn(async (p: Principal) => (p.admin ? { ok: true, ...outside } : { ok: true, session: row() })),
+      getSession: vi.fn(async () => ({ ok: true, session: row() })),
+    };
+    const { call } = setup({ org });
+    expect(await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } })).toEqual({ status: 200, body: { session: row() } });
+    expect(org.patchSession).toHaveBeenCalledWith(expect.objectContaining({ subject: MEMBER }), SID, { access: { mode: "org" } });
+    expect(await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "owner" } }, identity: admin })).toEqual({ status: 200, body: outside });
+    org.patchSession.mockResolvedValueOnce({ ok: false, code: "forbidden", status: 403, reason: "access_in_slack" } as never);
+    const slack = await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } });
+    expect(slack.status).toBe(403);
+    expect(slack.body.error).toMatchObject({ code: "forbidden", reason: "access_in_slack" });
+  });
+
+  it("GET /sessions/{id}: an admin outside the session reads its access; anyone else 404", async () => {
+    const org = {
+      getSession: vi.fn(async () => ({ ok: false, code: "session_not_found", status: 404 })),
+      sessionAccess: vi.fn(async () => ({ ok: true, ...outside })),
+    };
+    const log = { summary: vi.fn(async () => ({ ok: false, error: "not_found" })) };
+    const { call } = setup({ org, log });
+    expect(await call("GET", `/sessions/${SID}`, { identity: admin })).toEqual({ status: 200, body: outside });
+    expect((await call("GET", `/sessions/${SID}`)).status).toBe(404);
+    expect(org.sessionAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("GET and PATCH /settings are Org's; PATCH needs sessions:write and is refused to a non-admin", async () => {
+    const org = {
+      settings: vi.fn(async () => ({ apiAccessDefault: "owner" })),
+      setSettings: vi.fn(async (p: Principal) => (p.admin ? { ok: true, settings: { apiAccessDefault: "org" } } : { ok: false, code: "admin_required", status: 403 })),
+    };
+    const { call } = setup({ org });
+    expect(await call("GET", "/settings", { identity: key([]) })).toEqual({ status: 200, body: { settings: { apiAccessDefault: "owner" } } });
+    expect(await call("PATCH", "/settings", { body: { apiAccessDefault: "org" }, identity: admin })).toEqual({ status: 200, body: { settings: { apiAccessDefault: "org" } } });
+    expect(org.setSettings).toHaveBeenCalledWith(expect.objectContaining({ admin: true }), { apiAccessDefault: "org" });
+    expect((await call("PATCH", "/settings", { body: { apiAccessDefault: "org" } })).body.error.code).toBe("admin_required");
+    expect((await call("PATCH", "/settings", { body: { apiAccessDefault: "org" }, identity: key(["sessions:read"]) })).status).toBe(403);
+  });
+});
+
 describe("the writes through the inbox (spec 37.2, 40.2)", () => {
   it("a turn delivered is 200 with the host's result; waking is 202 { accepted, id }", async () => {
     const up = inbox({ turn: { id: "tn_0123456789ab", status: "running" }, delivery: "started", seq: 7 });
