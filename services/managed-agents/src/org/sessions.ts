@@ -8,6 +8,7 @@ import { cursor } from "../actor/cursor.js";
 import { byOf, type Principal } from "../actor/principal.js";
 import type { Sql } from "../actor/sql.js";
 import { runMutation } from "./mutations/index.js";
+import { fullName, storedRepository } from "./repository.js";
 import {
   AGENT_THREADS_MAX,
   accessOf,
@@ -290,8 +291,7 @@ export function forHost(sql: Sql, machine: string): { sessions: { sessionId: str
   const sessions = sql
     .exec<{ id: string }>("SELECT id FROM session WHERE machine = ? ORDER BY id", machine)
     .map((row) => ({ sessionId: row.id, access: accessOf(sql, row.id)! }));
-  const knowledge = sql.exec<{ knowledge: string | null }>("SELECT knowledge FROM meta WHERE k = 1")[0]!.knowledge;
-  return { sessions, admins: adminsOf(sql), knowledge };
+  return { sessions, admins: adminsOf(sql), knowledge: fullName(storedRepository(sql)) };
 }
 
 export { visible };

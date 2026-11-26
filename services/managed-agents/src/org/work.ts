@@ -5,7 +5,6 @@ import type { DocRev, ExportedSession, MachinePub, Overview, PullPub, ResultRow,
 import { cursor } from "../actor/cursor.js";
 import { platformPrincipal, type Principal } from "../actor/principal.js";
 import type { Sql } from "../actor/sql.js";
-import { owed } from "../actor/store.js";
 import { runMutation } from "./mutations/index.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";
 import {
@@ -63,6 +62,7 @@ export function adoptPage(
   now: number,
   org: string,
   page: { rows: ExportedSession[]; next: string | null; newestCreatedAt: number },
+  /** The knowledge repository setting the Work index held (`StoredRepository` as JSON), taken with the last page. */
   knowledge: string | null,
   late = false,
 ): void {
@@ -100,19 +100,6 @@ export function adoptPage(
     if (page.next !== null) sql.exec("UPDATE meta SET adopt_after = ? WHERE k = 1", page.next);
     else sql.exec("UPDATE meta SET adopted = 1, adopt_after = NULL, adopted_at = ?, knowledge = COALESCE(?, knowledge) WHERE k = 1", page.newestCreatedAt, knowledge);
   });
-}
-
-// ------------------------------------------------------------------ the knowledge repository
-
-/** Org's copy of the knowledge repository's name, for `forHost`. True when it changed: Computer is told. */
-export function setKnowledge(sql: Sql, _now: number, fullName: string | null): boolean {
-  const before = sql.exec<{ knowledge: string | null }>("SELECT knowledge FROM meta WHERE k = 1")[0]!.knowledge;
-  if (before === fullName) return false;
-  sql.transaction(() => {
-    sql.exec("UPDATE meta SET knowledge = ? WHERE k = 1", fullName);
-    owed.add(sql, { group: "changed", key: "changed:org", call: "Computer.changed", body: {} });
-  });
-  return true;
 }
 
 // ------------------------------------------------------------------ the machine (spec 36.1, rule:preview)

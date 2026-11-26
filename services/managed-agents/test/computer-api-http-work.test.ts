@@ -172,4 +172,20 @@ describe("the work reads (spec 37.1)", () => {
     expect(org.setRepository).toHaveBeenCalledWith(expect.anything(), { installationId: "5", owner: "o", name: "r" });
     expect((await call("PUT", "/work/repository", { body: { owner: "o" } })).status).toBe(400);
   });
+
+  it("the repository picker is Org's: work:read, its query checked, a refusal passed on", async () => {
+    const installations = [{ id: "12", repositories: [] }];
+    const org = { repositories: vi.fn(async () => ({ ok: true, installations })) };
+    const call = setup(org);
+    expect(await call("GET", "/work/repositories?installation=12&page=2")).toEqual({ status: 200, body: { installations } });
+    expect(org.repositories).toHaveBeenCalledWith(expect.anything(), { installationId: "12", page: 2 });
+    expect((await call("GET", "/work/repositories?page=2")).status).toBe(400);
+    expect((await call("GET", "/work/repositories?x=1")).status).toBe(400);
+    expect((await call("GET", "/work/repositories", { identity: key(["sessions:read"]) })).status).toBe(403);
+    expect((await call("POST", "/work/repositories")).status).toBe(404);
+    const down = setup({ repositories: async () => ({ ok: false, code: "unavailable", status: 503, message: "GitHub could not be reached.", retryAfterMs: 5_000 }) });
+    const r = await down("GET", "/work/repositories");
+    expect(r.status).toBe(503);
+    expect(r.body.error).toMatchObject({ code: "unavailable", retryAfterMs: 5_000 });
+  });
 });

@@ -86,9 +86,16 @@ describe("Org's transaction", () => {
 
 import type { ExportedSession, FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/index.js";
 import type { OrgDurableObject, OrgOut } from "../src/org/durable-object.js";
+import type { StoredRepository, TokenMinter } from "../src/org/repository.js";
 
 type Page = { rows: ExportedSession[]; next: string | null; newestCreatedAt: number };
-type Fakes = { calls: [string, ...unknown[]][]; exportSessions: (after: string | null) => Promise<Page> };
+type Fakes = {
+  calls: [string, ...unknown[]][];
+  exportSessions: (after: string | null) => Promise<Page>;
+  boardRepository?: StoredRepository;
+  account?: TokenMinter;
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
+};
 
 /** Run `fn` on the Org named `name`, every call out replaced by a recorder. */
 async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fakes, sql: Sql) => Promise<T>, fakes: Fakes = { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }) }): Promise<T> {
@@ -102,7 +109,9 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
       delivery: (kind) => ({ poke: async (head) => void fakes.calls.push(["Delivery.poke", kind, head]) }),
       live: () => ({ publish: async (stream, frame) => (fakes.calls.push(["Live.publish", stream, frame]), { head: "" }) }),
       created: rec("usage.created"),
-      workIndex: () => null,
+      boardRepository: async () => fakes.boardRepository ?? null,
+      account: () => fakes.account ?? null,
+      fetch: (url, init) => (fakes.fetch ?? fetch)(url, init),
     };
     org.out = out;
     return fn(org, fakes, sqlOf(state.storage));
@@ -285,6 +294,51 @@ describe("Org's adoption", () => {
         const snap = frameOf(await org.feed(a, {}));
         expect(kindsOf(snap).map((k) => k.split(":").slice(0, 2).join(":"))).toEqual(["place:cs_0000000000000041", "session:cs_0000000000000041"]);
         expect(snap.counts).toEqual({ earlier: 2, trackEarlier: {} });
+      },
+      fakes,
+    );
+  });
+});
+
+describe("Org's knowledge repository", () => {
+  const board: StoredRepository = { installationId: "12", owner: "acme", name: "knowledge", branch: "main", id: 7 };
+  const account: TokenMinter = {
+    mintGitHubInstallationToken: async () => ({ outcome: "minted", token: "ghs_test", expiresAt: "2099-01-01T00:00:00Z" }),
+    getGitHubInstallation: () => ({ accountLogin: "acme" }),
+    listGitHubInstallations: () => [],
+  };
+  const github = async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path === "/repos/acme/notes") return Response.json({ id: 8, name: "notes", owner: { login: "acme" }, default_branch: "main" });
+    if (path === "/repos/acme/notes/git/ref/heads/main") return Response.json({ object: { sha: "abc" } });
+    return Response.json({}, { status: 404 });
+  };
+
+  it("reads the board's setting across once while it adopts, and hands it to the host", async () => {
+    await withActor(
+      "knowledge-adopt",
+      async (org) => {
+        const a = member("usr_a", "knowledge-adopt");
+        expect(await org.repository(a)).toMatchObject({ installationId: "12", owner: "acme", name: "knowledge", branch: "main", problem: null });
+        expect((await org.forHost("knowledge-adopt")).knowledge).toBe("acme/knowledge");
+      },
+      { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }), boardRepository: board },
+    );
+  });
+
+  it("stores a checked choice, owes Computer `changed`, and refuses an agent", async () => {
+    const fakes: Fakes = { calls: [], exportSessions: async () => ({ rows: [], next: null, newestCreatedAt: 0 }), account, fetch: github };
+    await withActor(
+      "knowledge-set",
+      async (org) => {
+        const a = member("usr_a", "knowledge-set");
+        expect(await org.repository(a)).toBeNull();
+        expect(await org.setRepository(a, { installationId: "12", owner: "acme", name: "nope" })).toMatchObject({ ok: false, status: 400, reason: "repository_not_found" });
+        expect(await org.setRepository(a, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: true, repository: { owner: "acme", name: "notes", branch: "main" } });
+        expect((await org.forHost("knowledge-set")).knowledge).toBe("acme/notes");
+        await org.drain();
+        expect(fakes.calls.some((c) => c[0] === "Computer.changed")).toBe(true);
+        expect(await org.setRepository({ ...a, kind: "agent" }, { installationId: "12", owner: "acme", name: "notes" })).toMatchObject({ ok: false, code: "forbidden", status: 403 });
       },
       fakes,
     );

@@ -3,7 +3,7 @@
 // opencomputer). Tracks and threads (spec 37): the session directory is Org's, the writes go
 // through the session's inbox (SessionLog `accept`, then the machine's Computer `drain`), and the
 // log's reads go straight to its SessionLog, all as the caller's principal (spec 34.3). The
-// Computer DO keeps its own routes (secrets, tickets, the Work setting, session controls).
+// Computer DO keeps its own routes (secrets, tickets, session controls).
 //
 // Every response carries a `req_` request id (the caller's when it sent a valid one), as
 // `x-request-id` and in error bodies, and a `Server-Timing` of the time spent here.
@@ -30,14 +30,12 @@ import { type ApiCaller, type ApiOp, type ApiReply, validatePatch, type WriteMet
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
-import type { WorkContextOp, WorkRefsOp, WorkStampOp } from "./work/briefs.js";
-import { repositoryChoice, workRepositories } from "./work/api.js";
-import type { WorkIndexRpc } from "./work/index-contract.js";
+import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
 import { gatewayTelemetry } from "./telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {
-  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp | WorkContextOp | WorkStampOp | WorkRefsOp): Promise<ApiReply>;
+  computerApi(accountId: string, caller: ApiCaller, op: ApiOp | SecretsApiOp): Promise<ApiReply>;
 }
 
 const BODY_MAX_BYTES = 512 * 1024;
@@ -142,7 +140,7 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     return null;
   }
   if (is("POST", 4) && p[0] === "slack" && p[1] === "threads" && p[3] === "messages") return { op: "slack.post", sub: p[2] };
-  // The Work API (work tracking 3.10): the organization's items, read from its knowledge repository.
+  // The Work API (spec 37): tracks and threads, and the knowledge repository setting, all Org's.
   if (p[0] === "work") {
     const tracked = workRoute(method, p.slice(1));
     if (tracked) return tracked;
@@ -475,14 +473,8 @@ async function routeApi(
   }
   const idem = request.headers.get("idempotency-key") ?? undefined;
   if (idem !== undefined && !/^[\x21-\x7e]{1,255}$/.test(idem)) return out.error(400, "invalid_request", "Idempotency-Key is 1 to 255 printable characters.", { field: "Idempotency-Key" });
-  const url = new URL(request.url);
-  const query = url.searchParams;
   const call = (op: ApiOp | SecretsApiOp) => computer.computerApi(accountId, caller, op).then((reply) => out.of(reply));
 
-  if (route.op === "work.repositories") {
-    const index = env.WORK_INDEX ? (env.WORK_INDEX.getByName(accountId) as unknown as WorkIndexRpc) : null;
-    return out.of(await workRepositories(accountId, index, query));
-  }
   if (route.op === "secrets") return out.error(409, "feature_unavailable", "Only organization secrets can be set over this API for now.", { feature: "secrets" });
   if (route.op === "secrets.list") return call({ op: "secrets.list" });
   if (route.op.startsWith("secrets.")) {
@@ -598,7 +590,7 @@ const ACTOR_OPS = new Set([
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
-  "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put",
+  "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post", "webhooks.list", "webhooks.put", "webhooks.delete",
 ]);
 
@@ -1204,6 +1196,12 @@ async function orgRoute(
     }
     case "work.repository.get":
       return out.send(200, { repository: await timed(org().repository(p)) });
+    case "work.repositories": {
+      const q = repositoriesQuery(query);
+      if ("error" in q) return out.of(q.error);
+      const r = await timed(org().repositories(p, q.value));
+      return r.ok ? out.send(200, { installations: r.installations }) : refusalOf(out, r);
+    }
     case "work.repository.put": {
       // Only people change the Work setting (3.9, 3.10): a session's own key is refused.
       if (p.kind === "agent") return out.error(403, "forbidden", "Sessions cannot change Work over this API.", { reason: "computer_principal" });
