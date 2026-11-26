@@ -19,7 +19,7 @@ import {
   unpaidWarningGiven,
 } from "../src/actors/computer/machine/parking.js";
 import { resolvePlan, sizeTier } from "../src/actors/computer/machine/plan.js";
-import { decodeCalvinActionId, parseSessionKey } from "../src/host-protocol/protocol.js";
+import { decodeCalvinActionId, parseSessionKey } from "../src/host-protocol/session-key.js";
 import {
   decodeInstallState,
   decodeSlack,

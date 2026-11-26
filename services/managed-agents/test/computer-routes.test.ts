@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
 import { randomToken } from "../src/crypto/seal.js";
 import { hostToken } from "../src/actors/computer/host-link/host-token.js";
-import { CALVIN_PROTOCOL_VERSION } from "../src/host-protocol/protocol.js";
+import { CALVIN_PROTOCOL_VERSION } from "../src/host-protocol/frames.js";
 import { encodeInstallState } from "../src/slack-api/web-api.js";
 import { SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
 import { linkSlack } from "./fixtures/computer-link.js";

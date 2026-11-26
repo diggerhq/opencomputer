@@ -116,7 +116,7 @@ export async function routeComputerDashboard(
   if (url.pathname === "/v1/internal/live/revoke") return liveRevoke(request, env, identity);
   if (url.pathname !== "/v1/computer" && !url.pathname.startsWith("/v1/computer/")) return null;
   const route = `${request.method} ${url.pathname}`;
-  // Work 084: the session API (api-http.ts). The opencomputer edge sets the surface header on
+  // Work 084: the session API (http/api/dispatch.ts). The opencomputer edge sets the surface header on
   // the routes of its computer mount only, and strips a client's.
   if (request.headers.get("x-opencomputer-surface") === "api") {
     if (identity.kind !== "user") return apiRefusal(request, 403, "forbidden", "Not a person's credential.");

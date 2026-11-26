@@ -21,7 +21,7 @@
 // either a secret or a variable.
 
 import { base64UrlToBytes, bytesToBase64Url, seal, unseal } from "../../../../crypto/seal.js";
-import type { SecretRequest, SecretScope, SessionSecret } from "../../../../host-protocol/protocol.js";
+import type { SecretRequest, SecretScope, SessionSecret } from "../../../../host-protocol/secrets.js";
 
 export type { SecretRequest, SecretScope, SessionSecret };
 

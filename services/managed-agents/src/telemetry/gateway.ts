@@ -11,7 +11,7 @@
 // presence is the switch) the emitter validates and discards, `wait` keeps
 // nothing open and `done` makes no request.
 
-import type { CalvinTraceContext } from "../host-protocol/protocol.js";
+import type { CalvinTraceContext } from "../host-protocol/trace.js";
 import type { ServiceName } from "./catalog.js";
 import { type Batch, createTelemetry, type Telemetry } from "./emitter.js";
 import { type Dimensions, eventLine, tbTime, uuidv7 } from "./envelope.js";

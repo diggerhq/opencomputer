@@ -84,7 +84,7 @@ export interface ComputerEdgeEnv extends PreviewsEnv, ActorEnv {
   CF_VERSION_METADATA?: { id?: string };
   /** The retired Work board's object, its knowledge repository setting read by Org once (org/work-index.ts); removed with its class. */
   WORK_INDEX?: DurableObjectNamespace;
-  /** Delivery, one per organization and kind. */
+  /** Unused: no Delivery actor exists and nothing binds it. */
   DELIVERY?: DurableObjectNamespace;
   /** Work 084: the SessionLog's large payloads and sealed segments (`<org>/<session>/…`). */
   SESSION_LOG_BLOBS?: R2Bucket;

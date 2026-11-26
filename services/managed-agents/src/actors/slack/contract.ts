@@ -3,7 +3,7 @@
 
 import type { Principal } from "../../auth/principal.js";
 import type { Reply } from "../../durable/rpc-reply.js";
-import type { CalvinPerson } from "../../host-protocol/protocol.js";
+import type { CalvinPerson } from "../../host-protocol/person.js";
 import type { SlackResult } from "../../slack-api/web-api.js";
 import type { SlackModalReply } from "../computer/contract.js";
 import type { SlackEcho } from "../org/contract.js";

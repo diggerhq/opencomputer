@@ -6,7 +6,10 @@ import { sqlOf, type Sql } from "../src/durable/sql.js";
 import { type Principal } from "../src/auth/principal.js";
 import { runMutation } from "../src/actors/org/mutations/run.js";
 import { STEPS } from "../src/actors/org/schema.js";
-import { changesAt, emptySummary, sessionRow, readSession, transact } from "../src/actors/org/tx.js";
+import { sessionRow } from "../src/actors/org/feed-rows.js";
+import { readSession } from "../src/actors/org/records.js";
+import { emptySummary } from "../src/actors/org/summary.js";
+import { changesAt, transact } from "../src/actors/org/tx.js";
 
 /** Org's transaction helpers and one mutation, on a real Durable Object's storage (spec 35.1, 37.3). */
 

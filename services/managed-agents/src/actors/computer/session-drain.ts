@@ -1,7 +1,7 @@
-// The Computer's session API in the Computer DO (work 084): the session rows, the host's v4
+// The Computer's session API in the Computer DO (work 084): the session rows, the host's session
 // frames, and every HTTP operation that needs the single writer (create, writes) or the rows
 // (list, get, /me, tickets). Reads of the log itself (events, turns, asks, subagents) go from the
-// route straight to the session's SessionLog (api-http.ts) after an `access` check here.
+// route straight to the session's SessionLog (http/api/dispatch.ts) after an `access` check here.
 //
 // Invariants:
 //   - One writer per session: the host (its runner, or its session-writer when no runner runs).
@@ -13,7 +13,7 @@
 //   - A journal batch is acked only once the SessionLog stored it; batches of one session are
 //     appended in arrival order (one promise chain per session).
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
-//     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
+//     title/mode/model stay the Slack path's.
 
 import type { Access } from "../../auth/principal.js";
 import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind } from "../session-log/contract.js";
@@ -31,21 +31,12 @@ import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
-import {
-  type CalvinApiError,
-  type CalvinGatewayToHost,
-  type CalvinHarness,
-  type CalvinHostToGatewayV4,
-  type CalvinJournalReport,
-  type CalvinMode,
-  type CalvinPerson,
-  type CalvinRoleSpec,
-  type CalvinSessionReport,
-  type CalvinSessionSpec,
-  type SessionSecret,
-  personForMember,
-  sessionKey,
-} from "../../host-protocol/protocol.js";
+import type { CalvinApiError, CalvinJournalReport } from "../../host-protocol/api-shapes.js";
+import type { CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
+import { type CalvinPerson, personForMember } from "../../host-protocol/person.js";
+import type { SessionSecret } from "../../host-protocol/secrets.js";
+import { sessionKey } from "../../host-protocol/session-key.js";
+import type { CalvinHarness, CalvinMode, CalvinRoleSpec, CalvinSessionReport, CalvinSessionSpec } from "../../host-protocol/session.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "../session-log/contract.js";
 import { isId, isMemberId } from "../../ids/session-ids.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./held-for-org/keys/tickets.js";
@@ -207,9 +198,9 @@ export interface SessionsApiDeps {
   put: (key: string, value: string) => void;
   remove: (key: string) => void;
   now?: () => number;
-  /** A session's SessionLog (addresses.ts `logOf`). Absent: the `SESSION_LOG` binding. */
+  /** A session's SessionLog (actors/addresses.ts `logOf`). Absent: the `SESSION_LOG` binding. */
   log?: (sessionId: string) => SessionLogRpc;
-  /** The organization's Live (stubs.ts `liveOf`). */
+  /** The organization's Live (actors/addresses.ts `liveOf`). */
   live: () => LiveRpc;
   /** `start`: the session's harness, the spec's or its owner's (model access's `harnessFor`). */
   chooseHarness?: (row: Pick<ApiRow, "key" | "ownerId" | "ownerUserId">, harness?: CalvinHarness) => void;
@@ -698,7 +689,7 @@ export class ComputerSessionsApi {
     pending.resolve(outcome);
   }
 
-  /** A v4 frame from the host; false when it is not one. */
+  /** A session frame from the host; false when it is not one. */
   async onHostFrame(frame: CalvinHostToGatewayV4): Promise<boolean> {
     switch (frame.t) {
       case "api-result":

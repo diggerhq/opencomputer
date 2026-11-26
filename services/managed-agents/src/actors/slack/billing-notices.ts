@@ -4,7 +4,7 @@
 
 import type { BillingNotice, BillingNoticeResult } from "./contract.js";
 import type { SlackResult } from "../../slack-api/web-api.js";
-import { parseSessionKey } from "../../host-protocol/protocol.js";
+import { parseSessionKey } from "../../host-protocol/session-key.js";
 import type { Sql } from "../../durable/sql.js";
 
 /** A Slack message whose link is a button (086: "Links are buttons, not raw URLs"); `text` keeps the URL for notifications and clients without blocks. */

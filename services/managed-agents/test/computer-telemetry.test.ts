@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { CalvinGatewayToHost, CalvinTraceContext } from "../src/host-protocol/protocol.js";
+import type { CalvinGatewayToHost } from "../src/host-protocol/frames.js";
+import type { CalvinTraceContext } from "../src/host-protocol/trace.js";
 import {
   CREDENTIAL_TTL_S,
   generateTelemetryKeys,
