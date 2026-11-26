@@ -4,15 +4,9 @@ import { Select } from '@/components/form'
 import { useSurface } from '../hooks'
 import { oneLayer } from './one-layer'
 
-// The model, effort and mode a session is started with or changed to, from
-// the computer's capabilities. `onChange` gets the one field changed.
-
-const MODES: Record<string, string> = {
-  default: 'Ask before edits',
-  acceptEdits: 'Accept edits',
-  plan: 'Plan',
-  bypassPermissions: 'Full access',
-}
+// The model and effort a session is started with or changed to, from the
+// computer's capabilities. `onChange` gets the one field changed. No mode is
+// offered: a session runs in the server's default one.
 
 const PICKER =
   'text-muted-foreground hover:border-border h-7 w-auto border-transparent px-2 text-xs whitespace-nowrap'
@@ -62,16 +56,6 @@ export function SettingsPickers({
           onValueChange={(e) => onChange({ effort: e })}
           options={model.efforts.map((e) => ({ value: e, label: e }))}
           className={`${PICKER} capitalize`}
-          onEscapeKeyDown={oneLayer}
-        />
-      )}
-      {caps.modes.length > 1 && (
-        <Select
-          // A session asked for no mode runs with full access, as from Slack.
-          value={value.mode ?? 'bypassPermissions'}
-          onValueChange={(m) => onChange({ mode: m })}
-          options={caps.modes.map((m) => ({ value: m, label: MODES[m] ?? m }))}
-          className={PICKER}
           onEscapeKeyDown={oneLayer}
         />
       )}

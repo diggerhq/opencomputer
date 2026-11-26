@@ -440,7 +440,6 @@ export function ThreadPane({ sid }: { sid: string }) {
               value={{
                 model: settings.model ?? undefined,
                 effort: settings.effort ?? undefined,
-                mode: settings.mode,
               }}
               onChange={(p) => surface.setSettings(sid, p)}
             />

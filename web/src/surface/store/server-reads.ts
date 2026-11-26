@@ -40,7 +40,7 @@ export function serverReads({
     async review(resultId: string) {
       return (await client.read<{ review: Review }>(`/work/results/${resultId}/review`)).review
     },
-    // What a session may be started with or changed to (the model, effort and mode pickers).
+    // What a session may be started with or changed to (the model and effort pickers).
     async capabilities() {
       return (await client.read<{ capabilities: Capabilities }>('/capabilities')).capabilities
     },
