@@ -7,7 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { type AcceptResult } from "../session-log/contract.js";
 import { type SlackEcho } from "../org/contract.js";
-import { type SlackGrant, type SlackRpc } from "./contract.js";
+import { type BillingNotice, type BillingNoticeResult, type SlackGrant, type SlackRpc } from "./contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type ActorEnv, logOf, orgOf, slackOf, computerOf } from "../addresses.js";
 import { alarms } from "../../durable/alarms.js";
@@ -70,6 +70,7 @@ import { entryIdFor, sessionIdFor, turnIdFor } from "../../ids/slack-ids.js";
 import { links, settings, threads } from "./tables.js";
 import { oweProcess } from "./outbox.js";
 import { STEPS } from "./schema.js";
+import { tellBilling } from "./billing-notices.js";
 
 export interface SlackEnv extends ActorEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
@@ -86,7 +87,6 @@ const JOIN_REQUEST_INTERVAL_MS = 24 * 3600_000;
 const MEMBER_SCOPES: Principal["scopes"] = ["sessions:read", "sessions:write", "asks:answer", "work:read", "work:write"];
 const ONLY_MEMBERS_TEXT = "Only full members of this workspace can drive sessions.";
 const INBOX_FULL_TEXT = "This session has too many messages waiting; try again once it has caught up.";
-const CREDITS_TEXT = "This organization is out of credits, so the session cannot run. Add credits in the dashboard and send the message again.";
 const UNREACHABLE_TEXT = "The computer could not be reached, so this message did not run. Try again in a minute.";
 const REFUSED_TEXT = "This message did not run.";
 const FAILED_NOTICE = "Your computer could not start; messages wait until it does.";
@@ -585,11 +585,23 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   // ------------------------------------------------------------------ people and credentials
 
-  async forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }> {
+  async forHost(): ReturnType<SlackRpc["forHost"]> {
     await this.ready();
     const teamId = settings.get(this.sql, "slackTeamId");
     const botToken = await this.botToken();
-    return { people: this.people(), slack: teamId && botToken ? { botToken, botUserId: settings.get(this.sql, "slackBotUserId") ?? "", teamId } : null };
+    if (!teamId || !botToken) return { people: this.people(), slack: null };
+    const teamName = settings.get(this.sql, "slackTeamName");
+    const installer = settings.get(this.sql, "slackInstallerUserId");
+    return {
+      people: this.people(),
+      slack: {
+        botToken,
+        botUserId: settings.get(this.sql, "slackBotUserId") ?? "",
+        teamId,
+        ...(teamName ? { teamName } : {}),
+        ...(installer ? { installer: { slackUser: installer, member: links.memberOf(this.sql, installer) ?? null } } : {}),
+      },
+    };
   }
 
   protected people(): CalvinPerson[] {
@@ -743,14 +755,10 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     const where = parseSessionKey(e.threadKey);
     if (!where) return;
     const person = this.slackIdOf(e.person);
-    if (e.code === "insufficient_credits") {
-      // Once per person and kind: a thread hears it only from the first refused message.
-      if (this.sql.exec("INSERT OR IGNORE INTO billing_warnings (recipient, kind) VALUES (?, ?) RETURNING 1", person, e.code).length > 0) {
-        await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: CREDITS_TEXT });
-      }
-    } else if (e.code === "computer_unavailable") {
+    // insufficient_credits: the paywall is Computer's to owe (`billing`), with the plan and halt reason; here only the status and 👀 come off.
+    if (e.code === "computer_unavailable") {
       await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: UNREACHABLE_TEXT });
-    } else if (/^[UW][A-Z0-9]+$/.test(person)) {
+    } else if (e.code !== "insufficient_credits" && /^[UW][A-Z0-9]+$/.test(person)) {
       await this.slack("chat.postEphemeral", { channel: where.channelId, user: person, thread_ts: where.threadTs, text: e.code === "model_refused" ? REFUSED_TEXT : `${REFUSED_TEXT} (${e.code})` });
     }
     const ack = this.sql.exec<{ ts: string }>("SELECT ts FROM acks WHERE thread_key = ?", e.threadKey)[0];
@@ -759,6 +767,23 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       await this.slack("reactions.remove", { channel: where.channelId, timestamp: ack.ts, name: "eyes" });
       this.sql.exec("DELETE FROM acks WHERE thread_key = ?", e.threadKey);
     }
+  }
+
+  async billing(n: BillingNotice): Promise<BillingNoticeResult> {
+    await this.ready();
+    this.org();
+    if (!(await this.botToken())) return "known";
+    return tellBilling(
+      {
+        sql: this.sql,
+        slack: (method, body) => this.slack(method, body),
+        origin: this.publicOrigin(),
+        teamId: settings.get(this.sql, "slackTeamId") ?? "",
+        installer: settings.get(this.sql, "slackInstallerUserId"),
+        threadOf: (sessionId) => threads.keyOf(this.sql, sessionId),
+      },
+      n,
+    );
   }
 
   /** `post_thread`: a message in a session's Slack thread, for whoever may read the session. */
@@ -894,7 +919,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     const earlier = this.sql.exec<{ notified: number }>("SELECT installer_notified AS notified FROM join_requests WHERE slack_user_id = ?", requesterUserId)[0];
     if (earlier) return { installerNotified: earlier.notified === 1 };
     const installerUserId = settings.get(this.sql, "slackInstallerUserId") ?? null;
-    const origin = (this.env.COMPUTER_PUBLIC_ORIGIN || this.env.OPENCOMPUTER_APP_URL || "https://app.opencomputer.dev").replace(/\/+$/, "");
+    const origin = this.publicOrigin();
     const messages = joinRequestMessages({ requesterUserId, installerUserId, settingsUrl: `${origin}/settings` });
     const requesterSent = await this.directMessage(requesterUserId, messages.requester);
     const installerNotified = installerUserId && messages.installer ? await this.directMessage(installerUserId, messages.installer) : false;
@@ -907,6 +932,11 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       );
     }
     return { installerNotified };
+  }
+
+  /** The app's public origin, for links. */
+  private publicOrigin(): string {
+    return (this.env.COMPUTER_PUBLIC_ORIGIN || this.env.OPENCOMPUTER_APP_URL || "https://app.opencomputer.dev").replace(/\/+$/, "");
   }
 
   private async directMessage(userId: string, text: string): Promise<boolean> {

@@ -60,4 +60,7 @@ export const STEPS: ((sql: Sql) => void)[] = [
     }
     sql.exec("DROP TABLE slack_queue");
   },
+  // The paywall was once per person for ever (`billing_warnings` of kind insufficient_credits); it is now once per
+  // thread (`notices` of kind credits) until the organization is admitted again, so those rows go.
+  (sql) => sql.exec("DELETE FROM billing_warnings WHERE kind = 'insufficient_credits'"),
 ];
