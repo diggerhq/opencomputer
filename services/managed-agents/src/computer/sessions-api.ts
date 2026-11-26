@@ -568,11 +568,11 @@ export class ComputerSessionsApi {
       // No answer: the entry waits; the host's idempotency (the entry's id) covers a frame that did land.
       if (outcome === "lost") return this.waking(sessionId);
       await log.delivered(entry.id, outcome);
-      results.push(
-        outcome.ok
-          ? { id: entry.id, result: outcome.result }
-          : { id: entry.id, error: { code: outcome.code, message: outcome.message, requestId: entry.trace ?? "", retryable: false } },
-      );
+      if (outcome.ok) results.push({ id: entry.id, result: outcome.result });
+      else {
+        const { ok: _ok, ...error } = outcome;
+        results.push({ id: entry.id, error: { ...error, requestId: entry.trace ?? "", retryable: false } });
+      }
     }
     this.unowe("drainOwed", sessionId);
     this.unowe("startOwed", sessionId);
@@ -590,7 +590,10 @@ export class ComputerSessionsApi {
         const routed = await this.deps.routeSession(session, entry.actor.subject);
         if (routed.refused) return { ok: false, code: "model_refused", message: routed.error?.message ?? "The model is not available." };
         if (routed.error?.code === "computer_unavailable") return "lost";
-        if (routed.error) return { ok: false, code: routed.error.code, message: routed.error.message };
+        if (routed.error) {
+          const { retryable: _retryable, requestId: _requestId, ...error } = routed.error;
+          return { ok: false, ...error };
+        }
         session = routed.session;
         model = routed.model;
       }
@@ -616,7 +619,9 @@ export class ComputerSessionsApi {
     });
     if (!outcome.error) return { ok: true, result: outcome.result };
     if (outcome.error.code === "computer_unavailable") return "lost";
-    return { ok: false, code: outcome.error.code, message: outcome.error.message };
+    // The host's error whole: its status (409 `turn_not_cancellable`, …) and fields are the response's.
+    const { retryable: _retryable, requestId: _requestId, ...error } = outcome.error;
+    return { ok: false, ...error };
   }
 
   /** A frame the host answers by `id`; `computer_unavailable` when it is gone or silent. */

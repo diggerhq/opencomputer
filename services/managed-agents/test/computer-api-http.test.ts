@@ -137,6 +137,12 @@ describe("one turn id, and the result to the caller that accepted the entry (spe
       return { ok: true, id: entry.id, duplicate: false, machine: ORG };
     });
     expect(await call("POST", `/sessions/${SID}/turns`, { body: { input: "more" } })).toMatchObject({ status: 429, body: { error: { code: "queue_full" } } });
+    // The host's own status and fields, as the inbox kept them.
+    up.log.accept.mockImplementationOnce(async (_p, entry) => {
+      up.outcomes.set(entry.id, { state: "refused", error: { code: "session_busy", message: "a turn is running", status: 409, feature: "x" } });
+      return { ok: true, id: entry.id, duplicate: false, machine: ORG };
+    });
+    expect(await call("POST", `/sessions/${SID}/turns`, { body: { input: "busy" } })).toMatchObject({ status: 409, body: { error: { code: "session_busy", feature: "x" } } });
     // Still waiting behind a drain that answered: 202 with the entry's id.
     up.log.accept.mockImplementationOnce(async (_p, entry) => ({ ok: true, id: entry.id, duplicate: false, machine: ORG }));
     up.log.entry.mockImplementationOnce(async () => ({ state: "waiting" }));

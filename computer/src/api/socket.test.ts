@@ -177,6 +177,21 @@ describe('serveApi / dialApi', () => {
     expect(seen.slice(2)).toEqual(['result:w', `event:${e.seq}`, 'delta:b']);
   });
 
+  it('close writes the reply of a call being answered first (a suspend ends the runner that answers it)', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const { sid, sock, server } = await served({ 'sessions.suspend': async () => (await gate, { result: { suspended: true } }) });
+    const c = await dialApi(sock, TOKEN);
+    cleanups.push(() => c.close());
+    const answer = c.call('sessions.suspend', { sessionId: sid }, ANN_CTX);
+    await new Promise((r) => setTimeout(r, 20));
+    const closed = server.close();
+    release();
+    expect(await answer).toEqual({ result: { suspended: true } });
+    await closed;
+    await c.closed; // then the connection ends
+  });
+
   it('refuses a cursor ahead, forwards deltas and detached', async () => {
     const { log, sock } = await served();
     const c = await dialApi(sock, TOKEN);

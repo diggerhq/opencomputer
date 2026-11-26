@@ -329,6 +329,20 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     ]);
   });
 
+  it("a host's error keeps its code, status and fields through the drain and the inbox", async () => {
+    const f = fixture();
+    await created(f);
+    const turn = { id: "tn_4m8q2x7c1v9b", status: "running" };
+    f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, retryable: false, requestId: "rq", turn } }));
+    f.logOf(SID).entries = [entry("ie_0000000000000004", "cancel", { turnId: turn.id })];
+    const result = await f.api.drain(SID, { wait: true });
+    expect(result).toEqual({
+      state: "delivered",
+      results: [{ id: "ie_0000000000000004", error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, turn, requestId: "", retryable: false } }],
+    });
+    expect(f.logOf(SID).outcomes.map((o) => o.outcome)).toEqual([{ ok: false, code: "turn_not_cancellable", message: "the turn is running", status: 409, turn }]);
+  });
+
   it("only what spends (a turn, compact, resume) needs credits", async () => {
     const f = fixture({ admitted: false });
     await created(f);

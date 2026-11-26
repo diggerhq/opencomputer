@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 // SessionApi (work 084) over a real Session and a scripted harness: sends and
 // their busy policies, idempotency, interrupt with its forced cancel, asks
@@ -26,7 +27,7 @@ afterEach(async () => {
 });
 
 /** `before`: what the journal holds when the runner attaches (it then resumes, as attachApi does). */
-async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[] } = {}) {
+async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void, o: { scopes?: string[]; connected?: boolean } = {}) {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'], now: new Date('2026-10-26T00:00:00Z') });
   const T = await import('./testing.js');
@@ -36,8 +37,15 @@ async function world(before?: (log: Awaited<ReturnType<typeof openLog>>) => void
   const tmp = tempSession();
   const log = await openLog(tmp.file, tmp.sessionId);
   before?.(log);
-  const suspended = { n: 0 };
-  const api = new SessionApi(log, t.sess, { owner: OWNER, suspend: () => void suspended.n++ });
+  const suspended = { n: 0, idempotent: [] as boolean[] };
+  const api = new SessionApi(log, t.sess, {
+    owner: OWNER,
+    suspend: () => {
+      suspended.n++;
+      suspended.idempotent.push(log.journal.idemGet(createHash('sha256').update('usr_ann|sessions.suspend|k-suspend').digest('hex')) !== undefined);
+    },
+  });
+  if (o.connected) api.connected();
   if (before) api.resume();
   cleanups.push(async () => (t.sess.end(), await log.release(), tmp.cleanup()));
   const sessionId = tmp.sessionId;
@@ -413,6 +421,38 @@ describe('SessionApi', () => {
     expect(w.of('runtime.suspended').map((e) => e.data)).toEqual([{ reason: 'requested' }]);
     expect(w.suspended.n).toBe(1);
     for (const e of w.events()) assertEvent(e);
+  });
+
+  it('suspend ends the runner only once its call is over: the idempotency record is kept first', async () => {
+    const w = await world();
+    const r = result(await w.call('sessions.suspend', {}, { ...ANN_CTX, idempotencyKey: 'k-suspend' }));
+    expect(r.session.status).toBe('suspended');
+    expect(w.suspended).toEqual({ n: 1, idempotent: [true] });
+    expect(result(await w.call('sessions.suspend', {}, { ...ANN_CTX, idempotencyKey: 'k-suspend' })).session.status).toBe('suspended');
+  });
+
+  it('a runner attached to a suspended session says it is up and idle; sessions.resume returns it unchanged', async () => {
+    const w = await world(
+      (log) => {
+        log.append('session.status_changed', { from: 'starting', to: 'idle' }, { actor: null });
+        log.append('runtime.suspended', { reason: 'requested' }, { actor: null });
+        log.append('session.status_changed', { from: 'idle', to: 'suspended' }, { actor: null });
+      },
+      { connected: true },
+    );
+    expect(w.of('runtime.connected').map((e) => e.data)).toEqual([{ warm: false, resumed: true, durationMs: null }]);
+    expect(w.of('session.status_changed').at(-1)?.data).toEqual({ from: 'suspended', to: 'idle' });
+    const seq = w.log.lastSeq;
+    const r = result(await w.call('sessions.resume', {}, { ...ANN_CTX, idempotencyKey: 'k-resume' }));
+    expect(r.session.status).toBe('idle');
+    expect(w.log.lastSeq).toBe(seq);
+    expect(w.suspended.n).toBe(0);
+    for (const e of w.events()) assertEvent(e);
+  });
+
+  it('a runner attached to an idle session records nothing more', async () => {
+    const w = await world((log) => void log.append('session.status_changed', { from: 'starting', to: 'idle' }, { actor: null }), { connected: true });
+    expect(w.of('runtime.connected')).toEqual([]);
   });
 
   it('the computer naming a session journals the title; a person renaming it marks it renamed', async () => {

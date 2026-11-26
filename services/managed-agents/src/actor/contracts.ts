@@ -224,9 +224,11 @@ export type Inbox = { entries: InboxEntry[]; epoch: number; lastSeq: number };
 export type AcceptResult =
   | { ok: true; id: string; duplicate: boolean; machine: string; result?: unknown }
   | { ok: false; code: "not_found" | "forbidden" | "idempotency_conflict" | "inbox_full" | "agent_turns" };
-export type DeliveredOutcome = { ok: true; result?: unknown } | { ok: false; code: string; message: string };
+/** A refused entry's error as the host (or the drain) gave it: its HTTP `status` when it has one, and its other fields (`turn`, `feature`, …). */
+export type EntryError = { code: string; message: string; status?: number; [field: string]: unknown };
+export type DeliveredOutcome = { ok: true; result?: unknown } | ({ ok: false } & EntryError);
 /** One inbox entry's outcome, whichever drain delivered it (spec 40.2 steps 4 to 6). */
-export type EntryOutcome = { state: "waiting" } | { state: "delivered"; result: unknown } | { state: "refused"; error: { code: string; message: string } };
+export type EntryOutcome = { state: "waiting" } | { state: "delivered"; result: unknown } | { state: "refused"; error: EntryError };
 /** What SessionLog publishes to Live on `events:<cs_…>` (spec 40.4). */
 export type EventPush = { from: string; to: string; events: ApiEvent[] };
 /** The events read's answers (spec 37.1): a page with the cursor after its last event, or `reset`. */

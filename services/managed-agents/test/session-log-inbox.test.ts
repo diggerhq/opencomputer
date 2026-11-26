@@ -102,6 +102,10 @@ describe("accept", () => {
     expect(await log.stub.entry("tn_b")).toEqual({ state: "waiting" });
     await log.stub.delivered("tn_b", { ok: false, code: "queue_full", message: "full" });
     expect(await log.stub.entry("tn_b")).toEqual({ state: "refused", error: { code: "queue_full", message: "full" } });
+    // The host's status and fields are kept: the caller that reads the outcome later answers as the drain did.
+    await log.stub.accept(member(), { id: "ie_c", kind: "cancel", body: { turnId: "tn_b" } });
+    await log.stub.delivered("ie_c", { ok: false, code: "turn_not_cancellable", message: "the turn is running", status: 409, turn: { id: "tn_b", status: "running" } });
+    expect(await log.stub.entry("ie_c")).toEqual({ state: "refused", error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, turn: { id: "tn_b", status: "running" } } });
     expect((await log.stub.inbox()).entries).toEqual([]);
   });
 

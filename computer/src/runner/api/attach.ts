@@ -46,6 +46,7 @@ export async function attachApi(
     await log.release('moved');
     throw e;
   }
+  api.connected();
   api.resume(); // turns left queued in the journal (a runner that died, or the host's writer) start in order
   return {
     api,

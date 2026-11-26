@@ -602,8 +602,12 @@ const STATUS_OF: Record<string, number> = {
   inbox_full: 429,
   unavailable: 503,
   computer_unavailable: 503,
-  // The host's refusals of a delivered entry (spec 40.2).
+  // The host's refusals of a delivered entry (spec 40.2); the host's own `status` comes first (an entry refused before it was kept had none).
   ask_closed: 409,
+  session_busy: 409,
+  turn_not_cancellable: 409,
+  subagent_ended: 409,
+  feature_unavailable: 409,
   queue_full: 429,
   insufficient_credits: 402,
   model_refused: 403,
