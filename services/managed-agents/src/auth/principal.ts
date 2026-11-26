@@ -49,3 +49,25 @@ export function mayRead(p: Principal, access: Access, sessionId: string): boolea
   if (p.kind === "agent") return p.session === sessionId || access.readers.includes(byOf(p));
   return p.audiences.includes(access.audience) || access.readers.includes(byOf(p));
 }
+
+/** A member or a member's API key: a person, not an agent or the platform. */
+export const isPerson = (p: Principal): boolean => p.kind === "member" || p.kind === "key";
+
+/**
+ * Whether a person knows of the session: they read it, or they speak in its Slack thread (the Slack
+ * actor admitted them). Anyone else is answered `not_found`, as the session API answers (spec 36.2).
+ */
+export const knows = (p: Principal, access: Access, sessionId: string) => p.via === "slack" || mayRead(p, access, sessionId);
+
+/** Who may put an entry of this kind (an `InboxKind`) in a session's inbox (spec 36.2): SessionLog's rule, and Org's before it owes one. */
+export function mayWrite(p: Principal, kind: string, access: Access, sessionId: string): boolean {
+  const by = byOf(p);
+  // `agents` (the session that started it, its track's agent) write whatever `writers` says (spec 40.7).
+  const listed = (access.writers !== "members" && access.writers.includes(by)) || (p.kind === "agent" && !!access.agents?.includes(by));
+  const members = access.writers === "members" && isPerson(p) && knows(p, access, sessionId);
+  // The model and its settings: a person who may write, or its owner.
+  if (kind === "settings") return isPerson(p) && (members || listed || access.owner === p.subject);
+  // Stopping work (an interrupt, a turn's cancel, a subagent's stop, a suspend): any person who may read it.
+  if (kind === "interrupt" || kind === "cancel" || kind === "stop" || kind === "suspend") return p.kind === "platform" || members || listed || (isPerson(p) && mayRead(p, access, sessionId));
+  return p.kind === "platform" || members || listed;
+}

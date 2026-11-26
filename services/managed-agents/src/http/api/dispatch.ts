@@ -21,7 +21,7 @@ import { crockfordId } from "../../ids/crockford.js";
 import { cursor } from "../../durable/cursor.js";
 import { hashOf } from "../../encoding/canonical-json.js";
 import { liveOf, logOf, orgOf, slackOf } from "../../actors/addresses.js";
-import type { CreateSession, ListQuery, MutateReply, OrgRpc, OrgSettings, SessionPatch, SessionRow } from "../../actors/org/contract.js";
+import type { CreateSession, ListQuery, MutateReply, OrgRpc, OrgSettings, SessionPatch, SessionRow, SettingsEntry } from "../../actors/org/contract.js";
 import type { EntryError, InboxKind } from "../../actors/session-log/contract.js";
 import type { Refusal } from "../../durable/rpc-reply.js";
 import type { Principal } from "../../auth/principal.js";
@@ -29,7 +29,7 @@ import { type LiveUpgrade, liveRequest } from "../../actors/live/contract.js";
 import type { ApiScope, LogSummary } from "../../api-objects/objects.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "../../actors/computer/config.js";
-import { isId, isSessionId } from "../../ids/session-ids.js";
+import { firstTurnId, isId, isSessionId } from "../../ids/session-ids.js";
 import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "../../actors/computer/session-drain.js";
 import { type ComputerInstallation, selectTokenTarget } from "../../actors/computer/held-for-org/github.js";
 import type { GitHubTokenMint } from "../../protocol.js";
@@ -651,16 +651,14 @@ async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, 
   return { waking: true };
 }
 
-type CreateInput = CreateSession & { turnId?: string };
-
 /** `POST /sessions`'s body. `parent`, `writers`, `slackThread`, `origin` and `harness` are the actors' own, never a request's. */
-function createInput(body: unknown): { value: CreateInput } | { error: [number, string, string, Record<string, unknown>] } {
+function createInput(body: unknown): { value: CreateSession } | { error: [number, string, string, Record<string, unknown>] } {
   const input = asObject(body);
   const bad = (field: string, message: string) => ({ error: [400, "invalid_request", message, { field }] as [number, string, string, Record<string, unknown>] });
   if (!input) return bad("", "The body must be a JSON object.");
   const fields = new Set(["id", "input", "turnId", "title", "model", "effort", "mode", "speed", "metadata", "trackId", "role", "access"]);
   for (const field of Object.keys(input)) if (!fields.has(field)) return bad(field, `Unknown field ${field}.`);
-  const value: CreateInput = {};
+  const value: CreateSession = {};
   if (input.id !== undefined) {
     if (!isSessionId(input.id)) return bad("id", "id must be cs_ and 16 lowercase Crockford base32 characters.");
     value.id = input.id;
@@ -697,7 +695,7 @@ function createInput(body: unknown): { value: CreateInput } | { error: [number, 
     value.role = "start";
   }
   // Org checks it (org/sessions.ts `parseAccess`).
-  if (input.access !== undefined) value.access = input.access as CreateInput["access"];
+  if (input.access !== undefined) value.access = input.access as CreateSession["access"];
   const settings = checkSettings({
     ...(value.model !== undefined ? { model: value.model } : {}),
     ...(value.effort !== undefined ? { effort: value.effort } : {}),
@@ -780,7 +778,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     if ("error" in parsed) return out.error(...parsed.error);
     const input = createInput(parsed.value);
     if ("error" in input) return out.error(...input.error);
-    const { turnId: askedTurn, ...create } = input.value;
+    const create = input.value;
     if (create.role && p.kind !== "member") return out.error(403, "forbidden", "Only a member starts a session with a role.", { reason: "members_only" });
     // An Idempotency-Key without an id is hashed into the id, so a retry is the same create.
     const id = create.id ?? (idem ? await entryId("cs", 16, ["create", p.org, p.subject, idem]) : undefined);
@@ -788,6 +786,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       ...create,
       ...(id ? { id } : {}),
       ...(person ? { person } : {}),
+      ...(trace ? { trace } : {}),
       ...(p.kind === "agent" && p.session ? { parent: p.session } : {}),
     }));
     if (!made.ok) return refusalOf(out, made);
@@ -797,8 +796,8 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     if (create.input === undefined) {
       return out.send(made.duplicate ? 200 : 201, { session, turn: null, delivery: null, duplicate: made.duplicate, seq: session.lastSeq });
     }
-    // One turn per create, whatever retries: its id is the client's, else derived from the session's.
-    const turnId = askedTurn ?? (await entryId("tn", 12, ["create", session.id]));
+    // Org owed the first turn with the session; accepting it again (the same id and body, so a duplicate) waits for it.
+    const turnId = create.turnId ?? firstTurnId(session.id);
     const sent = await sendEntry(env, p, session.id, { id: turnId, kind: "turn", body: { input: create.input, ifBusy: "queue" } }, trace, out);
     if ("response" in sent) return sent.response;
     if ("waking" in sent) return out.send(202, { accepted: true, id: turnId, session });
@@ -1107,9 +1106,9 @@ async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal,
 }
 
 /**
- * `PATCH /sessions/{id}` (spec 37.2): `title` is `thread.rename`, `archived` `thread.done` or
- * `thread.reopen`, `metadata` Org's column, the settings one `settings` inbox entry. Each part's
- * idempotency key is the request's with the part's name, so one key covers the whole request.
+ * `PATCH /sessions/{id}` (spec 37.2): one `Org.patchSession`, which applies every field or none (the
+ * settings ones as one `settings` inbox entry it owes). The entry's id is derived from the request's
+ * Idempotency-Key, so a retry is the same entry; accepting it again here waits for its delivery.
  */
 async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal, sessionId: string, idem: string | undefined, trace: string | undefined, org: () => OrgRpc, out: Reply): Promise<Response> {
   const parsed = await bodyOf(request);
@@ -1117,41 +1116,28 @@ async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal
   const patch = validatePatch(parsed.value);
   if ("error" in patch) return out.of(patch.error);
   const { title, archived, metadata, model, effort, mode, speed, access } = patch.value;
-  const settings = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
-  if (!settings.ok) return out.error(400, settings.code, settings.message, { field: settings.field });
-  const mutate = async (name: string, args: Record<string, unknown>, part: string): Promise<Response | null> => {
-    const r = await timedDo(out.facts, org().mutate(p, { name, args: { ...args, sid: sessionId }, ...(idem ? { idem: `${idem}:${part}` } : {}), ...(trace ? { trace } : {}) }));
-    return "error" in r ? mutateReplyOf(out, r) : null;
-  };
-  if (title !== undefined) {
-    const refused = await mutate("thread.rename", { title }, "title");
-    if (refused) return refused;
-  }
-  if (archived !== undefined) {
-    const refused = await mutate(archived ? "thread.done" : "thread.reopen", {}, "archived");
-    if (refused) return refused;
-  }
-  if (metadata) {
-    const r = await timedDo(out.facts, org().patchSession(p, sessionId, { metadata }));
-    if (!r.ok) return refusalOf(out, r);
-  }
-  let waking: string | null = null;
+  const checked = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
+  if (!checked.ok) return out.error(400, checked.code, checked.message, { field: checked.field });
+  let settings: SettingsEntry | undefined;
   if (model !== undefined || effort !== undefined || mode !== undefined || speed !== undefined) {
     const body = { ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}), ...(speed !== undefined ? { speed } : {}) };
-    const id = await entryId("ie", 16, idem ? ["settings", p.org, p.subject, sessionId, idem] : undefined);
-    const sent = await sendEntry(env, p, sessionId, { id, kind: "settings", body }, trace, out);
-    if ("response" in sent) return sent.response;
-    if ("waking" in sent) waking = id;
+    settings = { id: await entryId("ie", 16, idem ? ["settings", p.org, p.subject, sessionId, idem] : undefined), body, ...(trace ? { trace } : {}) };
   }
-  // Access last: an admin outside the session changes it and nothing else, and learns nothing more (sessions.mdx#access).
-  if (access !== undefined) {
-    const r = await timedDo(out.facts, org().patchSession(p, sessionId, { access: access as SessionPatch["access"] }));
-    if (!r.ok) return refusalOf(out, r);
-    if (r.session === null) return out.send(200, strip(r));
-  }
-  const got = await timedDo(out.facts, org().getSession(p, sessionId));
-  if (!got.ok) return refusalOf(out, got);
-  return waking ? out.send(202, { accepted: true, id: waking, session: got.session }) : out.send(200, { session: got.session });
+  const changes: SessionPatch = {
+    ...(title !== undefined ? { title } : {}),
+    ...(archived !== undefined ? { archived } : {}),
+    ...(metadata ? { metadata } : {}),
+    ...(access !== undefined ? { access: access as SessionPatch["access"] } : {}),
+    ...(settings ? { settings } : {}),
+  };
+  const r = await timedDo(out.facts, org().patchSession(p, sessionId, changes));
+  if (!r.ok) return refusalOf(out, r);
+  // An admin outside the session changes its access and nothing else, and learns nothing more (sessions.mdx#access).
+  if (r.session === null) return out.send(200, strip(r));
+  if (!settings) return out.send(200, { session: r.session });
+  const sent = await sendEntry(env, p, sessionId, { id: settings.id, kind: "settings", body: settings.body }, trace, out);
+  if ("response" in sent) return sent.response;
+  return "waking" in sent ? out.send(202, { accepted: true, id: settings.id, session: r.session }) : out.send(200, { session: r.session });
 }
 
 /** A body of exactly one string field of 1 to `max` characters. */

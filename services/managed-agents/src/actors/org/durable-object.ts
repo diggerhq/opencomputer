@@ -157,7 +157,9 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
       }
       case "SessionLog.accept": {
         if (!readSession(sql, sessionId)) return;
-        const result = await this.out.log(sessionId).accept(platformPrincipal(this.org), { id: body.id as string, kind: body.kind as never, body: body.body, ...(body.trace ? { trace: body.trace as string } : {}) });
+        // From whom the transaction owed it (a session's creator, a patch's caller), else the platform.
+        const as = (body.principal as Principal | undefined) ?? platformPrincipal(this.org);
+        const result = await this.out.log(sessionId).accept(as, { id: body.id as string, kind: body.kind as never, body: body.body, ...(body.trace ? { trace: body.trace as string } : {}) });
         // Not there or not allowed: nothing a retry changes. Full: later.
         if (!result.ok && result.code !== "not_found" && result.code !== "forbidden" && result.code !== "idempotency_conflict") throw new Error(result.code);
         return;
@@ -234,7 +236,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>> {
     this.seen(p);
     body = { ...body, ...(body.access !== undefined ? { access: await memberIds(body.access) } : {}) };
-    const { person: _person, ...hashed } = body;
+    const { person: _person, trace: _trace, ...hashed } = body;
     const hash = await hashOf(hashed);
     const out = sessions.createSession(this.sql, Date.now(), p, body, hash, this.org);
     this.flush();

@@ -32,6 +32,9 @@ export function isId(prefix: IdPrefix, id: unknown): id is string {
 /** A session id: `cs_` + 16. */
 export const isSessionId = (id: unknown): id is string => isId("cs", id);
 
+/** The id of a session's first turn when its creator names none: one per session, whoever accepts it. */
+export const firstTurnId = (sessionId: string): string => `tn_${sessionId.slice(3, 15)}`;
+
 const WORKOS_USER = /^user_([0-9A-HJKMNP-TV-Z]{26})$/;
 const MEMBER = /^usr_[0-9a-z]{1,64}$/;
 

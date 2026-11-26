@@ -61,6 +61,10 @@ export type CreateSession = CreateSessionBody & {
   slackThread?: string;
   /** The creating member's name and email, for `Session.owner`: the edge's, from its credential. An agent's child takes its parent's. */
   person?: { name: string | null; email: string | null };
+  /** With `input`: its turn's id (`tn_…`, the client's); absent, the session's first turn id (ids/session-ids.ts `firstTurnId`). */
+  turnId?: string;
+  /** The request's trace, carried to the first turn; not part of the create's idempotency. */
+  trace?: string;
 };
 export interface SessionPatch {
   title?: string;
@@ -70,6 +74,14 @@ export interface SessionPatch {
   aside?: string | null;
   /** `PATCH` with `access`: Org checks it (org/sessions.ts `parseAccess`). */
   access?: AccessInput;
+  /** `PATCH` with `model`, `effort`, `mode` or `speed`: one `settings` inbox entry, owed with the rest or not at all. */
+  settings?: SettingsEntry;
+}
+export interface SettingsEntry {
+  /** The entry's id: the edge derives it from the request's Idempotency-Key, so a retry is the same entry. */
+  id: string;
+  body: { model?: string; effort?: string; mode?: string; speed?: "fast" | "standard" };
+  trace?: string;
 }
 /** What one who manages a session's access but may not use it reads of it (an admin outside it). */
 export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };

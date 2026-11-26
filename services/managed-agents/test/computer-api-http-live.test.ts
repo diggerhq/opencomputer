@@ -69,27 +69,44 @@ describe("/live (spec 38)", () => {
 
 describe("PATCH and aside (spec 37.2)", () => {
   const session = { id: SID, title: "x" };
-  it("title and archived are mutations, metadata Org's column", async () => {
-    const org = {
-      mutate: vi.fn(async () => ({ protocol: 1, version: 2, op: null })),
-      patchSession: vi.fn(async () => ({ ok: true, session })),
-      getSession: vi.fn(async () => ({ ok: true, session })),
-    };
-    const call = setup({ ORGS: ns(org) });
-    const r = await call("PATCH", `/sessions/${SID}`, { body: { title: "t", archived: true, metadata: { a: "b" } }, headers: { "idempotency-key": "k" } });
-    expect(r).toMatchObject({ status: 200, body: { session } });
-    expect(org.mutate).toHaveBeenCalledWith(expect.anything(), { name: "thread.rename", args: { title: "t", sid: SID }, idem: "k:title" });
-    expect(org.mutate).toHaveBeenCalledWith(expect.anything(), { name: "thread.done", args: { sid: SID }, idem: "k:archived" });
-    expect(org.patchSession).toHaveBeenCalledWith(expect.anything(), SID, { metadata: { a: "b" } });
-    await call("PATCH", `/sessions/${SID}`, { body: { archived: false } });
-    expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), { name: "thread.reopen", args: { sid: SID } });
+  it("every field is one Org.patchSession, so all apply or none; settings wait on the entry Org owes", async () => {
+    const accepted: { id: string; kind: string; body: unknown }[] = [];
+    const log = { accept: vi.fn(async (_p: unknown, entry: { id: string; kind: string; body: unknown }) => (accepted.push(entry), { ok: true, id: entry.id, duplicate: true, outcome: { state: "waiting" } })) };
+    const org = { patchSession: vi.fn(async () => ({ ok: true, session })), mutate: vi.fn(), getSession: vi.fn() };
+    const call = setup({ ORGS: ns(org), SESSION_LOG: ns(log) });
+    const body = { title: "t", archived: true, metadata: { a: "b" }, model: "claude-opus-5-5", access: { mode: "org" } };
+    const r = await call("PATCH", `/sessions/${SID}`, { body, headers: { "idempotency-key": "k" } });
+    expect(org.patchSession).toHaveBeenCalledTimes(1);
+    const [, sid, patch] = org.patchSession.mock.calls[0] as unknown as [unknown, string, Record<string, unknown> & { settings: { id: string } }];
+    expect(sid).toBe(SID);
+    expect(patch).toEqual({ title: "t", archived: true, metadata: { a: "b" }, access: { mode: "org" }, settings: { id: expect.stringMatching(/^ie_/), body: { model: "claude-opus-5-5" } } });
+    expect(org.mutate).not.toHaveBeenCalled();
+    expect(org.getSession).not.toHaveBeenCalled();
+    // The same entry, accepted again to wait for it; still waiting: 202 with its id.
+    expect(accepted).toEqual([{ id: patch.settings.id, kind: "settings", body: { model: "claude-opus-5-5" } }]);
+    expect(r).toMatchObject({ status: 202, body: { accepted: true, id: patch.settings.id, session } });
+    // A retry with the key is the same entry.
+    await call("PATCH", `/sessions/${SID}`, { body, headers: { "idempotency-key": "k" } });
+    expect((org.patchSession.mock.calls[1] as unknown as [unknown, string, { settings: { id: string } }])[2].settings.id).toBe(patch.settings.id);
+    // Without settings nothing waits.
+    expect(await call("PATCH", `/sessions/${SID}`, { body: { archived: false } })).toMatchObject({ status: 200, body: { session } });
+    expect(org.patchSession).toHaveBeenLastCalledWith(expect.anything(), SID, { archived: false });
+    expect(log.accept).toHaveBeenCalledTimes(2);
   });
 
-  it("a refused mutation is the reply", async () => {
-    const org = { mutate: vi.fn(async () => ({ error: { code: "forbidden", message: "no" } })), getSession: vi.fn() };
-    const r = await setup({ ORGS: ns(org) })("PATCH", `/sessions/${SID}`, { body: { title: "t" } });
+  it("a refused patch is the reply, and nothing is sent to the log", async () => {
+    const log = { accept: vi.fn() };
+    const org = { patchSession: vi.fn(async () => ({ ok: false, code: "forbidden", status: 403, message: "no" })) };
+    const r = await setup({ ORGS: ns(org), SESSION_LOG: ns(log) })("PATCH", `/sessions/${SID}`, { body: { title: "t", model: "claude-opus-5-5" } });
     expect(r.status).toBe(403);
-    expect(org.getSession).not.toHaveBeenCalled();
+    expect(log.accept).not.toHaveBeenCalled();
+  });
+
+  it("an admin outside the session gets the access view", async () => {
+    const outside = { session: null, access: { mode: "org", people: [] }, canManageAccess: true };
+    const org = { patchSession: vi.fn(async () => ({ ok: true, ...outside })) };
+    const r = await setup({ ORGS: ns(org) })("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } });
+    expect(r).toMatchObject({ status: 200, body: outside });
   });
 
   it("aside sets and clears Org's column", async () => {

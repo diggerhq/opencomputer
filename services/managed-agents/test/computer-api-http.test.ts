@@ -8,6 +8,7 @@ import type { Principal } from "../src/auth/principal.js";
 import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { principalClaim } from "../src/edge/computer-principal.js";
+import { firstTurnId } from "../src/ids/session-ids.js";
 
 const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";
@@ -259,7 +260,8 @@ describe("the session directory through Org", () => {
     const { call } = setup({ org, ...up });
     const r = await call("POST", "/sessions", { body: { id: SID, input: "hello", turnId: "tn_0123456789ab" }, headers: { "x-oc-trace": "tr_0123456789abcdef" } });
     expect(r).toEqual({ status: 201, body: { session: row(), turn: { id: "tn_0123456789ab" }, delivery: "started", duplicate: false, seq: 4 } });
-    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, input: "hello", person: { name: null, email: null } });
+    // Org owes the first turn with the session (one path); the edge accepts the same entry again only to wait for it.
+    expect(org.createSession).toHaveBeenCalledWith(expect.anything(), { id: SID, input: "hello", turnId: "tn_0123456789ab", trace: "tr_0123456789abcdef", person: { name: null, email: null } });
     expect(up.entries[0]!.entry).toEqual({ id: "tn_0123456789ab", kind: "turn", body: { input: "hello", ifBusy: "queue" }, trace: "tr_0123456789abcdef" });
     expect(up.entries[0]!.opts).toEqual({ wait: true });
     expect(up.computer.drain).not.toHaveBeenCalled();
@@ -269,10 +271,10 @@ describe("the session directory through Org", () => {
     const r2 = await w.call("POST", "/sessions", { body: { id: SID, input: "hello" } });
     expect(r2.status).toBe(202);
     expect(r2.body).toEqual({ accepted: true, id: down.entries[0]!.entry.id, session: row() });
-    // No turnId: derived from the session, so a retried create is the same turn.
+    // No turnId: the session's first turn id, the one Org owes, so a retried create is the same turn.
     await w.call("POST", "/sessions", { body: { id: SID, input: "hello" } });
     expect(down.entries[1]!.entry.id).toBe(down.entries[0]!.entry.id);
-    expect(down.entries[0]!.entry.id).toMatch(/^tn_[0-9a-hjkmnp-tv-z]{12}$/);
+    expect(down.entries[0]!.entry.id).toBe(firstTurnId(SID));
   });
 
   it("POST /sessions with an Idempotency-Key and no id: the id is the key's hash", async () => {
