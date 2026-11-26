@@ -990,3 +990,18 @@ fn secrets_on_an_unknown_session_or_without_the_scope() {
     check("Error", &e["error"]);
     assert!(e["error"]["message"].as_str().unwrap().contains("secrets:write"));
 }
+
+#[test]
+fn secrets_set_by_someone_else_are_refused_with_exit_3() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("s"));
+    assert_eq!(run_in(&fake, &["secrets", "set", "KEEP", "-s", &sid], Some("dummy")).code, 0);
+    fake.fail_next("DELETE /sessions/*/secrets/*", 1, Failure::forbidden("not_secret_owner"));
+    let o = run(&fake, &["secrets", "rm", "KEEP", "-s", &sid, "--json"]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    let e = o.err_json();
+    check("Error", &e["error"]);
+    assert_eq!(e["error"]["reason"], "not_secret_owner");
+    assert!(e["error"]["message"].as_str().unwrap().starts_with(&format!("KEEP on {sid} was set by someone else")));
+    assert_eq!(fake.secrets(&sid).len(), 1);
+}

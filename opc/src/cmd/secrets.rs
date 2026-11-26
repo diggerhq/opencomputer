@@ -190,6 +190,8 @@ fn map_error(e: Error, sid: &str, name: &str) -> Error {
         ("session_not_found", _) => format!("no session {sid} that you can see"),
         ("secret_not_found", _) => format!("{name} is not set on {sid} (only the session's own secrets can be deleted here)"),
         ("forbidden", "missing_scope") => "this API key cannot change secrets: it needs the secrets:write scope, which * and sandbox:* keys do not include (opc login gets one)".into(),
+        // The API names who set it: only they or an organization admin may replace or delete it.
+        ("forbidden", "not_secret_owner") => format!("{name} on {sid} was set by someone else: {}", e.message),
         ("forbidden", "computer_principal") => "a session's own key cannot read or set secrets: run this from your own machine".into(),
         ("forbidden", _) => format!("you may not change the secrets of {sid}"),
         ("feature_unavailable", _) => "this server cannot set session secrets yet".into(),
@@ -233,5 +235,9 @@ mod tests {
         assert_eq!(e.message, "no session cs_1 that you can see");
         let e = map_error(Error::from_api(409, &json!({"code": "feature_unavailable", "message": "m"})), "cs_1", "X");
         assert!(e.message.contains("cannot set session secrets"));
+        let m = "Only the person who set X (Test User) or an organization admin can replace or delete it.";
+        let e = map_error(Error::from_api(403, &json!({"code": "forbidden", "message": m, "reason": "not_secret_owner"})), "cs_1", "X");
+        assert_eq!(e.message, format!("X on cs_1 was set by someone else: {m}"));
+        assert_eq!(e.exit_code(), crate::error::exit::AUTH);
     }
 }

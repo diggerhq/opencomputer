@@ -110,6 +110,8 @@ export interface SecretsStoreDeps {
   session(runnerKey: string): { key: string; ownerId: string; channelId: string; threadTs: string } | undefined;
   /** Send changed secrets to running sessions: one session, one person's sessions, or all. */
   push(which: { key?: string; owner?: string }): Promise<void>;
+  /** The organization member (`usr_…`) a Slack user linked, if any: a secret set in Slack is theirs on the API too. */
+  linkOfSlack?(slackUserId: string): string | undefined;
   /** Tell a session that asked for a secret that it is set; starts its next turn. */
   wake(session: { key: string; ownerId: string; channelId: string; threadTs: string }, userId: string, text: string, ts: string): Promise<void>;
 }
@@ -498,7 +500,7 @@ export class SecretsStore {
   /**
    * The Computer API: organization secrets and writes to a session authorized by the caller.
    * Any member may list, set, replace and delete organization secrets
-   * (2026-11-01). api-http.ts has already refused session keys and checked scopes.
+   * (2026-11-01); a session secret is replaced or deleted only by its creator or an admin (sessionOwnerCheck). api-http.ts has already refused session keys and checked scopes.
    * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
    */
   async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
@@ -519,6 +521,10 @@ export class SecretsStore {
       console.log("secret_removed", { scope: "workspace", name: op.name, by: actor.id, via: actor.surface });
       await this.pushAll();
       return { status: 204 };
+    }
+    if (op.op === "secrets.session.put" || op.op === "secrets.session.delete") {
+      const refused = this.sessionOwnerCheck(caller, sessionKey!, op.name);
+      if (refused) return refused;
     }
     if (op.op === "secrets.session.delete") {
       if (!this.remove("session", sessionKey!, op.name, actor)) return apiError(404, "secret_not_found", "No such secret on this session.");
@@ -600,6 +606,24 @@ export class SecretsStore {
    * A session's own layer as `Secret` objects (opc/docs/api/reference/objects.mdx): names and metadata, never a value,
    * variables included. The session layer is the narrowest, so each is the one the session gets (`effective`).
    */
+  /**
+   * A session secret that exists is changed or deleted only by the person who created it or an organization
+   * admin (2026-11-26); a new name is anyone's who may write to the session, and they become its owner.
+   * Replacing keeps the creator. A creator recorded as a Slack user matches the member they linked.
+   */
+  private sessionOwnerCheck(caller: ApiCaller, sessionKey: string, name: string): ApiReply | null {
+    const row = this.deps.sql.exec<{ createdBy: string | null; createdByName: string | null }>(
+      "SELECT created_by AS createdBy, created_by_name AS createdByName FROM secrets WHERE scope = 'session' AND owner = ? AND name = ?",
+      sessionKey,
+      name,
+    ).toArray()[0];
+    if (!row || caller.admin) return null;
+    const by = row.createdBy;
+    if (by === caller.member || (by && !by.startsWith("usr_") && this.deps.linkOfSlack?.(by) === caller.member)) return null;
+    const who = row.createdByName ? ` (${row.createdByName})` : "";
+    return apiError(403, "forbidden", `Only the person who set ${name}${who} or an organization admin can replace or delete it.`, { reason: "not_secret_owner" });
+  }
+
   private sessionRows(sessionKey: string, sessionId: string) {
     return [...this.deps.sql.exec<{ name: string; file: number; variable: number; setBy: string; setByName: string | null; updatedAt: number; via: string | null }>(
       `SELECT s.name, s.file, s.variable, s.set_by AS setBy, s.set_by_name AS setByName, s.updated_at AS updatedAt,

@@ -46,6 +46,7 @@ beforeEach(() => {
     slack,
     session: (key) => (key === SESSION.key ? SESSION : undefined),
     push: async (which) => void pushes.push(which),
+    linkOfSlack: (slackUserId) => (slackUserId === "U_OWNER" ? "usr_01jabcdefghjkmnpqrstvwxyz0" : undefined),
     wake: async (session, userId, text) => void woken.push({ key: session.key, userId, text }),
   });
 });
@@ -295,6 +296,40 @@ describe("organization secrets over the Computer API (work 095 v1)", () => {
     // The organization's secret of a name is not the session's to delete.
     expect((await s.api(MEMBER, { op: "secrets.session.delete", sessionId: "cs_test", name: "ORG_ONLY" }, SESSION.key)).error?.code).toBe("secret_not_found");
     expect((await s.api(MEMBER, { op: "secrets.session.list", sessionId: "cs_test" })).error?.code).toBe("session_not_found");
+  });
+
+  it("a session secret is replaced or deleted only by its creator or an organization admin", async () => {
+    const OTHER = { ...MEMBER, member: "usr_01jothermemberxxxxxxxxxxxx", userId: "user_2", name: "Other" };
+    const ADMIN = { ...MEMBER, member: "usr_01jadminmemberxxxxxxxxxxxx", userId: "user_3", name: "Admin", admin: true };
+    const put = (who: typeof MEMBER, name: string, value: string) => s.api(who, { op: "secrets.session.put", sessionId: "cs_test", name, body: { value } }, SESSION.key);
+    const del = (who: typeof MEMBER, name: string) => s.api(who, { op: "secrets.session.delete", sessionId: "cs_test", name }, SESSION.key);
+
+    // A new name is anyone's who may write to the session; its creator replaces and deletes it.
+    expect(await put(MEMBER, "MINE", "dummy-1")).toEqual({ status: 204 });
+    expect(await put(MEMBER, "MINE", "dummy-2")).toEqual({ status: 204 });
+    expect(await put(OTHER, "THEIRS", "dummy-3")).toEqual({ status: 204 });
+
+    // Someone else gets 403 not_secret_owner, naming the creator, and nothing changes.
+    pushes = [];
+    for (const reply of [await put(OTHER, "MINE", "dummy-4"), await del(OTHER, "MINE")]) {
+      expect(reply).toEqual({ status: 403, error: { code: "forbidden", reason: "not_secret_owner", message: "Only the person who set MINE (Owner) or an organization admin can replace or delete it." } });
+    }
+    expect(pushes).toEqual([]);
+    expect((await s.forSession(SESSION.key, SESSION.ownerId)).find((x) => x.name === "MINE")?.value).toBe("dummy-2");
+
+    // An admin may; replacing keeps the creator, so the creator still may afterwards.
+    expect(await put(ADMIN, "MINE", "dummy-5")).toEqual({ status: 204 });
+    expect((await put(OTHER, "MINE", "dummy-6")).error?.reason).toBe("not_secret_owner");
+    expect(await del(MEMBER, "MINE")).toEqual({ status: 204 });
+    expect(await del(ADMIN, "THEIRS")).toEqual({ status: 204 });
+
+    // Set in Slack: the Slack user's linked member is its creator; others are not.
+    await submit(submission("FROM_SLACK", "dummy-slack", "session"), "U_OWNER");
+    expect((await del(OTHER, "FROM_SLACK")).error?.reason).toBe("not_secret_owner");
+    expect(await del(MEMBER, "FROM_SLACK")).toEqual({ status: 204 });
+    await submit(submission("UNLINKED", "dummy-slack", "session"), "U_GUESTLESS");
+    expect((await del(MEMBER, "UNLINKED")).error?.reason).toBe("not_secret_owner");
+    expect(await del(ADMIN, "UNLINKED")).toEqual({ status: 204 });
   });
 
   it("any member sets, replaces and deletes; values never come back; every session gets it", async () => {
