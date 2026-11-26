@@ -19,7 +19,7 @@ Slack reaches the gateway only through the tunnel. The host agent dials the gate
 | | |
 | --- | --- |
 | A Linux VM | Ubuntu 24.04 or similar, with a user that has `sudo`; size it for the sessions you expect to run at once |
-| Podman 4.7 or newer, and a compose provider | `podman compose` needs **podman-compose 1.1.0 or newer** (`pipx install podman-compose`) or Docker Compose v2. Ubuntu's packaged podman-compose 1.0.6 ignores compose profiles and starts both tunnels. Docker with `docker compose` also works for the containers. |
+| Podman 4.7 or newer, and a compose provider | Sessions need Podman 4.4 (`--userns=keep-id:uid=`, `--network=pasta`); the `podman compose` command this guide uses arrived in 4.7. Ubuntu 24.04 ships 4.9.3, the version this is tested on, and `host-install.sh` refuses anything below 4.7. `podman compose` needs **podman-compose 1.1.0 or newer** (`pipx install podman-compose`) or Docker Compose v2. Ubuntu's packaged podman-compose 1.0.6 ignores compose profiles and starts both tunnels. Docker with `docker compose` also works for the containers. |
 | A public HTTPS hostname | A Cloudflare zone for a named tunnel, or an ngrok account with a reserved domain |
 | A Slack workspace | Permission to create and install apps |
 | A GitHub organization | Permission to create a GitHub App in it |
@@ -60,7 +60,7 @@ cd ~/opencomputer/selfhost
 ```
 
 <Warning>
-Never run the stack as the `agent` user. Sessions run tools as `agent` without asking for permission, and as `agent`, `podman inspect` shows the gateway's environment: every secret it holds.
+The stack runs as `oc-gateway`, and only as `oc-gateway` (or another dedicated user named with `GATEWAY_USER`). `agent` (uid 1500) is the user sessions run as inside their containers; never start compose as `agent`, `sp-host` or root. Sessions run tools as `agent` without asking for permission, so whatever `agent` can read, a session can read: as `agent`, `podman inspect` would show the gateway's environment, every secret it holds.
 </Warning>
 </Step>
 
@@ -113,13 +113,24 @@ podman compose --profile ngrok up -d         # or ngrok
 podman compose up -d                         # or no tunnel container: bring your own
 ```
 
-The first start builds the gateway image from `computer/Dockerfile`. To run a published image instead, set `GATEWAY_IMAGE=ghcr.io/diggerhq/computer-gateway:<version>` in `.env` and run `podman compose pull gateway` before `up -d`.
+The first start builds the gateway image from `computer/Dockerfile` on the VM. That is the default and needs no registry login.
+
+To run a published image instead, set `GATEWAY_IMAGE=ghcr.io/diggerhq/computer-gateway:<version>` in `.env`. The package on GHCR is private, so log in first, as `oc-gateway`, with a GitHub token that has `read:packages` and access to it:
+
+```bash
+podman login ghcr.io -u <github-user>    # paste the token at the prompt, not on the command line
+podman compose pull gateway
+```
+
+Without such a token, stay on the local build (`GATEWAY_IMAGE` empty), or build and tag it yourself: `podman build -t computer-gateway:local ../computer`. The session image the host pulls (`ghcr.io/diggerhq/computer-session`) is public.
 
 `docker compose` takes the same commands.
 </Step>
 
 <Step title="Run /setup">
-Open `https://<your hostname>/setup?token=<SETUP_TOKEN>`. The page walks through the Slack app, the GitHub App and the Claude credential; every step can be re-run.
+Open `https://<your hostname>/setup?token=<SETUP_TOKEN>`. The page walks through the Slack app, the GitHub App and the Claude credential; every step can be re-run while setup is open.
+
+Once every step is done (Slack app installed, GitHub App installed, a model credential, and a host token in `SP_HOST_TOKENS` or issued on `/setup`), `/setup` closes: it answers `404`, and the Slack and GitHub webhooks keep working. To repair or rotate something later, set `SP_SETUP_OPEN=1` in `.env`, run `podman compose up -d`, finish, then remove it and run `podman compose up -d` again. Gateways built before this lock existed leave `/setup` open behind `SETUP_TOKEN`.
 </Step>
 </Steps>
 
@@ -161,13 +172,32 @@ To use an app you created by hand with the same scopes, events and URLs, put its
 
 ## People
 
-Only people listed in `SP_PEOPLE` can use the instance; everyone else is ignored, including whoever installed the Slack app. It is a JSON array, applied on every start:
+One instance serves a whole team through one Slack workspace. Only people listed in `SP_PEOPLE` can use it; anyone else who mentions the app gets "not enabled for you yet", including whoever installed the Slack app. It is a JSON array, one object per person, upserted into the gateway's database on every start:
 
 ```bash
-SP_PEOPLE='[{"slackUserId":"U0123ABCD","dir":"ada","gitName":"Ada Lovelace","gitEmail":"ada@example.com","admin":true}]'
+SP_PEOPLE='[{"slackUserId":"U0123ABCD","dir":"ada","gitName":"Ada Lovelace","gitEmail":"ada@example.com","admin":true},
+            {"slackUserId":"U0456EFGH","dir":"grace","gitName":"Grace Hopper","gitEmail":"grace@example.com"}]'
 ```
 
-`dir` names the person's directory on the host; `gitName` and `gitEmail` sign their commits; admins manage workspace-wide secrets and session access. Run `podman compose up -d` after a change.
+| Field | |
+| --- | --- |
+| `slackUserId` | The person's Slack member id (profile → ⋮ → Copy member ID) |
+| `dir` | Their directory on the host, `/data/people/<dir>`: workspaces and session forks. Unique per person |
+| `gitName`, `gitEmail` | The author of commits made in their sessions |
+| `admin` | Optional. Admins manage workspace-wide secrets, may change who drives any session, and set the default with `!access default open\|owner` |
+
+Write it on one line in `.env` (the example above is wrapped for reading), then run `podman compose up -d`.
+
+<Warning>
+Removing someone from `SP_PEOPLE` does not revoke their access: a start only adds and updates people, it never deletes them, so a removed person can still start and drive sessions. Until the gateway can remove people, the only way is deleting their row from the `people` table in `gateway.db` while the gateway is stopped.
+</Warning>
+
+How several people share it:
+
+- **Starting a session**: any listed person mentions the app in a channel it was invited to, or DMs it. The session belongs to that person (its owner) and runs with their `dir` and git identity. Sessions start only from Slack.
+- **Driving a session**: who else may instruct it follows the default for new sessions, `open` unless an admin set `owner`. With `open`, every listed person in the thread drives it; with `owner`, the others' messages reach it only as context, and mentioning the app asks the owner to let them drive. The owner (or an admin) changes it in the thread with `!access open`, `!access owner`, `!access @a @b`, or `!access add` / `remove`.
+- **Secrets**: `!secret` and `!var` in Slack set them for one session, for all of your own sessions, or for the whole workspace (admins only).
+- **Everyone else**: people not in `SP_PEOPLE` can read the thread but cannot drive or start sessions.
 
 ## Tunnel options
 
@@ -201,8 +231,29 @@ These are the names both halves of the install rely on. [`selfhost/CONTRACT.md`]
 | Host agent's gateway URL | `SP_GATEWAY_URL=ws://127.0.0.1:8080/host` |
 | Host authentication | The host agent sends `Authorization: Bearer $SP_HOST_TOKEN`; the gateway accepts tokens in `SP_HOST_TOKENS` and tokens issued on `/setup` (`sph_…`) |
 | Model proxy | Reached only by the host agent and sessions on the VM; the gateway sends hosts the model credentials and never calls the proxy |
-| Users | Compose runs as `oc-gateway`; sessions as `agent`. Never run the stack as `agent` |
+| Users | The stack runs as the dedicated `oc-gateway` user; the host agent as `sp-host`; `agent` (uid 1500) is only the user sessions run as inside their containers. Never run the stack as `agent` |
 | Gateway state | SQLite at `SP_DB=/data/gateway.db` on the volume `opencomputer_gateway-data` |
+
+## Isolation and limits
+
+- **One container per session.** Each session runs in its own rootless Podman container of the session image, with its own home volume, process and memory limits, and no access to the gateway's container or its environment.
+- **One host user and one kernel for all.** Every session's container belongs to the same host user, `agent`, and shares the VM's kernel. Rootless containers keep sessions apart from each other and from the host's other users, but this is not a VM boundary: a kernel or Podman escape from one session reaches every other session's files under `/data/people`. Run only people you trust with each other's work on one VM.
+- **Shared resources.** `limits.sh` caps all sessions together below the VM's memory and CPU, so the host agent, SSH and the gateway stay responsive; each session gets 60%/75% of RAM as its soft/hard cap (`SP_RUNNER_MEMORY_MAX` moves it). One heavy session can still slow the others down. Size the VM for the sessions you expect at once.
+- **Open internet egress.** Sessions have unrestricted outbound network access (`pasta`), so they can fetch packages and call APIs, and can also send anything they can read anywhere. Only the cloud metadata service is blocked (`slack-presence-imds-block.service`).
+- **No permission prompts by default.** `PERMISSION_MODE` defaults to `bypassPermissions` ("yolo"): the agent runs any tool without asking. Combined with open egress, treat anything a session can read, including secrets set with `!secret`, as reachable by whoever can steer the session through Slack or through content it reads (prompt injection). Set `PERMISSION_MODE` to `default`, `acceptEdits`, `plan` or `auto` in `.env` for a stricter default.
+- **No sudo on the host.** `agent` has no sudo on the VM; inside its container a session may use `sudo`.
+
+## What the single VM does not provide (yet)
+
+- **No web login or dashboard.** The only web pages are `/setup` (behind `SETUP_TOKEN`, closed once setup is done) and `/healthz`; there is no per-person sign-in.
+- **Sessions start only from Slack.** No API, CLI or browser entry point, and one Slack workspace per instance.
+- **No way to remove a person.** People are added in `SP_PEOPLE` and a restart; taking someone out of it does not revoke their access (see [People](#people)).
+- **No high availability.** One gateway, one host, one SQLite file on one VM. If the VM is down, so is the instance; Slack retries an event a few times, then drops it.
+- **No automatic backups.** Back up `gateway.db`, `.env` and `/data` yourself ([Back up and restore](#back-up-and-restore)).
+- **No egress allowlist.** Sessions reach the whole internet; restrict it with your own firewall or proxy if you need to.
+- **No automatic updates.** Neither the gateway nor the host agent updates itself; follow [Upgrade](#upgrade).
+- **No previews.** Sessions cannot publish a URL for a server they run.
+- **amd64 Ubuntu only.** `host-install.sh` supports Ubuntu 24.04 on amd64 (22.04 only with a newer Podman from an added repository).
 
 ## Upgrade
 

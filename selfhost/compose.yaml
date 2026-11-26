@@ -1,6 +1,6 @@
-# Single-VM self-host: the containers. Run as the oc-gateway user (made by
-# host-install.sh), never as agent, from a copy of this directory and
-# ../computer that it owns. selfhost/CONTRACT.md is the host <-> gateway contract.
+# Single-VM self-host: the containers. Run as the dedicated oc-gateway user
+# (made by host-install.sh), never as agent (the sessions' user), from a copy
+# of this directory and ../computer that it owns. selfhost/CONTRACT.md is the host <-> gateway contract.
 #
 #   cp .env.example .env    # fill it in
 #   podman compose up -d                      # gateway only (bring your own tunnel)
@@ -47,6 +47,8 @@ services:
       GITHUB_ORG: ${GITHUB_ORG:-}
       SLACK_APP_NAME: ${SLACK_APP_NAME:-Computer}
       PERMISSION_MODE: ${PERMISSION_MODE:-bypassPermissions}
+      # 1 reopens /setup after setup is complete (repair, rotate); leave unset otherwise.
+      SP_SETUP_OPEN: ${SP_SETUP_OPEN:-}
       # Model credentials: optional here, /setup can store a Claude credential instead.
       MODEL_PROFILE: ${MODEL_PROFILE:-}
       MODEL_TOKEN: ${MODEL_TOKEN:-}
