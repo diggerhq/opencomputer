@@ -30,21 +30,12 @@ import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
-import {
-  type CalvinApiError,
-  type CalvinGatewayToHost,
-  type CalvinHarness,
-  type CalvinHostToGatewayV4,
-  type CalvinJournalReport,
-  type CalvinMode,
-  type CalvinPerson,
-  type CalvinRoleSpec,
-  type CalvinSessionReport,
-  type CalvinSessionSpec,
-  type SessionSecret,
-  personForMember,
-  sessionKey,
-} from "../../host-protocol/protocol.js";
+import type { CalvinApiError, CalvinJournalReport } from "../../host-protocol/api-shapes.js";
+import type { CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
+import { type CalvinPerson, personForMember } from "../../host-protocol/person.js";
+import type { SessionSecret } from "../../host-protocol/secrets.js";
+import { sessionKey } from "../../host-protocol/session-key.js";
+import type { CalvinHarness, CalvinMode, CalvinRoleSpec, CalvinSessionReport, CalvinSessionSpec } from "../../host-protocol/session.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "../session-log/contract.js";
 import { isId, isMemberId } from "../../ids/session-ids.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./held-for-org/keys/tickets.js";

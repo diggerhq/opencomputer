@@ -112,25 +112,15 @@ import { ComputerPreviews } from "./previews.js";
 import { ComputerKeys, type SyncedKey } from "./held-for-org/keys/keys.js";
 import { type ApiOp, type ApiRequest, type ApiReply, type ApiRow, ComputerSessionsApi } from "./session-drain.js";
 import type { PreviewComputerState } from "../../previews/worker.js";
-import {
-  CALVIN_PROTOCOL_VERSION,
-  UPGRADE_REQUIRED,
-  type CalvinGatewayToHost,
-  type CalvinGitHubToken,
-  type CalvinHostToGateway,
-  type CalvinMode,
-  type CalvinPerson,
-  type CalvinSessionReport,
-  type CalvinPreviewConfig,
-  type CalvinHarness,
-  type ModelProfile,
-  type ModelRoute,
-  type SecretRequest,
-  type SessionSecret,
-  type WorkspaceDefinition,
-  parseSessionKey,
-  personFor,
-} from "../../host-protocol/protocol.js";
+import type { CalvinGitHubToken } from "../../host-protocol/credentials.js";
+import { CALVIN_PROTOCOL_VERSION, UPGRADE_REQUIRED, type CalvinGatewayToHost, type CalvinHostToGateway } from "../../host-protocol/frames.js";
+import type { ModelProfile, ModelRoute } from "../../host-protocol/model.js";
+import { type CalvinPerson, personFor } from "../../host-protocol/person.js";
+import type { CalvinPreviewConfig } from "../../host-protocol/previews.js";
+import type { SecretRequest, SessionSecret } from "../../host-protocol/secrets.js";
+import { parseSessionKey } from "../../host-protocol/session-key.js";
+import type { CalvinMode, CalvinSessionReport, CalvinHarness } from "../../host-protocol/session.js";
+import type { WorkspaceDefinition } from "../../host-protocol/workspace.js";
 import { type SubmittedView, parseSecretCommand } from "./held-for-org/secrets/secrets.js";
 import { parseVariableCommand } from "./held-for-org/secrets/variables.js";
 import { type SecretsApiOp, SecretsStore } from "./held-for-org/secrets/secrets-store.js";

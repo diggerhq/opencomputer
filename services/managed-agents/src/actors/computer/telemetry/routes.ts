@@ -4,7 +4,7 @@
 // the rest (telemetry/computer.ts).
 
 import type { ComputerEdgeEnv } from "../config.js";
-import type { CalvinTraceContext } from "../../../host-protocol/protocol.js";
+import type { CalvinTraceContext } from "../../../host-protocol/trace.js";
 import type { SlackMessageJob } from "../../../slack-api/web-api.js";
 import { uuidv7 } from "../../../telemetry/envelope.js";
 import { type GatewayTelemetry, SURFACE, gatewayTelemetry, mintTrace, traceFields } from "../../../telemetry/gateway.js";

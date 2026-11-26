@@ -20,7 +20,7 @@ import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpcAdded } from "../session-log/contract.js";
 import { type SlackRpc } from "../slack/contract.js";
-import { computerSessionId } from "../../host-protocol/protocol.js";
+import { computerSessionId } from "../../host-protocol/session-key.js";
 import { memberId } from "../../ids/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";

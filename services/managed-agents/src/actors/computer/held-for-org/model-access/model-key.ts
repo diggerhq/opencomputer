@@ -32,7 +32,8 @@
 
 import { hmacSha256Hex } from "../../../../edge/runtime-usage.js";
 import { sha256Hex } from "../../../../crypto/seal.js";
-import type { CalvinHostCredentials, ModelProfile, ModelRoute } from "../../../../host-protocol/protocol.js";
+import type { CalvinHostCredentials } from "../../../../host-protocol/credentials.js";
+import type { ModelProfile, ModelRoute } from "../../../../host-protocol/model.js";
 
 export const MANAGED_MODEL_PROVIDER = "openrouter";
 /**

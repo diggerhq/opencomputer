@@ -23,7 +23,8 @@ import { isRecord } from "../../encoding/canonical-json.js";
 import type { SlackModalReply } from "../computer/contract.js";
 import type { Origin } from "../../api-objects/objects.js";
 import { seal, sha256Hex, unseal } from "../../crypto/seal.js";
-import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../../host-protocol/protocol.js";
+import { type CalvinPerson, COMPUTER_GIT_NAME, noReplyGitEmail, personFor } from "../../host-protocol/person.js";
+import { decodeCalvinActionId, parseSessionKey, sessionKey } from "../../host-protocol/session-key.js";
 import {
   ACCESS_USAGE,
   answeredPost,
