@@ -147,6 +147,9 @@ jobs:
           # posts with the computer project, whose routes test expects none.
           - name: Computer telemetry
             projects: --project computer-telemetry
+          # Tracks and threads: the Org actor (with the real Computer for adoption).
+          - name: Org
+            projects: --project org
           - name: Workerd memory
             projects: --project workerd-memory
           - name: Memory integrated
