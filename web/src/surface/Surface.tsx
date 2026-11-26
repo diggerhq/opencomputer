@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -51,7 +58,7 @@ const THREAD: Record<Mode, string> = {
   new: 'basis-0 grow-0 opacity-0',
 }
 
-function Shell() {
+function Shell({ account }: { account?: ReactNode }) {
   const surface = useSurface()
   const root = useRef<HTMLDivElement>(null)
   const loc = useS((s) => s.loc)
@@ -123,6 +130,11 @@ function Shell() {
             >
               {/* The window's own buttons sit at the left in the Mac app. */}
               {desktop && <span className="flex-1" />}
+              {account && (
+                <div className="flex min-w-0 flex-1 items-center">
+                  {account}
+                </div>
+              )}
               {sideButton}
             </div>
             <Button
@@ -211,7 +223,15 @@ function Shell() {
   )
 }
 
-export function Surface({ host }: { host: Host }) {
+// `account`: what the host shows of who and where the person is (the web
+// tab's organization and its switcher).
+export function Surface({
+  host,
+  account,
+}: {
+  host: Host
+  account?: ReactNode
+}) {
   // Made in an effect: a closed surface is never reused (StrictMode mounts twice).
   const [surface, setSurface] = useState<SurfaceApi | null>(null)
   useEffect(() => {
@@ -230,7 +250,7 @@ export function Surface({ host }: { host: Host }) {
   if (!surface) return null
   return (
     <SurfaceContext.Provider value={surface}>
-      <Shell />
+      <Shell account={account} />
     </SurfaceContext.Provider>
   )
 }
