@@ -28,7 +28,7 @@ use crate::api::types::{Event, Session};
 use crate::cmd::Ctx;
 use crate::error::{Error, Result};
 use crate::telemetry::{self, Control};
-use crate::wire::{Attach, Wire, WireEvent, WireHandle, WireOptions};
+use crate::wire::{Attach, From, Wire, WireEvent, WireHandle, WireOptions};
 
 /// Keys pressed this soon after an ask takes the keyboard are ignored.
 const ASK_GUARD_MS: i64 = 300;
@@ -155,9 +155,10 @@ struct App<'a> {
     key_base: String,
     /// Messages waiting for the connection or the create: (out id, queue).
     unsent: Vec<(u64, bool)>,
-    log_epoch: Option<u64>,
+    /// The cursor after the last event received: opaque, kept with the
+    /// cache and sent back as it came.
+    cursor: Option<String>,
     cache_writes: bool,
-    pending_truncate: Option<u64>,
     batch: Vec<Event>,
     me: Option<String>,
     reattach: bool,
@@ -253,9 +254,11 @@ impl<'a> App<'a> {
             create,
             key_base: start.create.as_ref().map(|c| c.key.clone()).unwrap_or_else(crate::ids::idempotency_key),
             unsent: Vec::new(),
-            log_epoch: None,
+            cursor: match &start.attach.from {
+                From::Cursor(c, _) => Some(c.clone()),
+                _ => None,
+            },
             cache_writes: start.cache_writes,
-            pending_truncate: None,
             batch: Vec::new(),
             me: None,
             reattach: false,
@@ -358,7 +361,6 @@ impl<'a> App<'a> {
                 }
                 Step::Tick => {}
             }
-            self.flush_cache();
             if let Some(e) = self.exit.take() {
                 return Ok(e);
             }
@@ -375,8 +377,6 @@ impl<'a> App<'a> {
             url,
             key: self.ctx.require_key()?.to_string(),
             deltas: true,
-            resume: !start.read_only,
-            read_only: start.read_only,
             give_up: None,
         };
         let attaches = match &self.create {
@@ -412,13 +412,13 @@ impl<'a> App<'a> {
                         self.timing.attached = Some(self.timing.launched.elapsed());
                         crate::timing::get().mark_ready();
                     }
-                    if let Some(from) = self.pending_truncate.take() {
-                        crate::cache::truncate_events(&id, info.log_epoch, from);
-                    }
-                    self.log_epoch = Some(info.log_epoch);
                     let first = !self.m.attached_once;
                     self.m.attached(&info, now);
                     if first {
+                        // Attaching to work on a suspended session wakes it.
+                        if info.session.status == "suspended" && !self.m.read_only {
+                            self.call("sessions.resume", json!({}), None);
+                        }
                         if let Some(t) = info.earlier_turns.as_ref().filter(|_| self.show_earlier) {
                             self.m.earlier(t);
                         }
@@ -456,15 +456,27 @@ impl<'a> App<'a> {
                 }
                 self.m.delta(&d, now)
             }
-            WireEvent::EpochReset { session_id, epoch_start_seq } if session_id == id => {
+            WireEvent::Cursor { session_id, cursor, .. } if session_id == id => {
+                self.cursor = Some(cursor);
                 self.flush_cache();
-                self.m.epoch_reset(epoch_start_seq);
-                self.pending_truncate = Some(epoch_start_seq);
+            }
+            WireEvent::Reset { session_id, seq, cursor } if session_id == id => {
+                // Events above `seq` no longer exist: here, and in the cache.
+                self.batch.clear();
+                self.m.reset(seq);
+                if self.cache_writes {
+                    crate::cache::truncate_events(&id, seq, cursor.as_deref());
+                }
+                self.cursor = cursor;
             }
             WireEvent::Detached { session_id, reason } if session_id == id => {
                 self.m.error(&format!("the server stopped sending this session's events ({reason}); attaching again"));
                 if let Some(w) = &self.wire {
-                    w.attach(Attach { session_id: id, after: Some(self.m.last_seq), tail_turns: None, log_epoch: self.log_epoch });
+                    let from = match &self.cursor {
+                        Some(c) => From::Cursor(c.clone(), Some(self.m.last_seq)),
+                        None => From::Start,
+                    };
+                    w.attach(Attach { session_id: id, from });
                 }
             }
             WireEvent::Fatal(e) => return Err(e),
@@ -495,14 +507,15 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Writes the events received to the cache with the cursor after them
+    /// (called when that cursor arrives: it follows its events at once).
     fn flush_cache(&mut self) {
         if self.batch.is_empty() {
             return;
         }
+        let Some(cursor) = &self.cursor else { return };
         let batch = std::mem::take(&mut self.batch);
-        if let Some(epoch) = self.log_epoch.filter(|_| self.pending_truncate.is_none()) {
-            crate::cache::append_events(&self.m.session_id, epoch, &batch);
-        }
+        crate::cache::append_events(&self.m.session_id, &batch, cursor);
     }
 
     /// The full plan goes into the transcript once, when it is asked.
@@ -606,7 +619,7 @@ impl<'a> App<'a> {
     fn start_create(&mut self, c: Create, out: Option<u64>, input: Option<String>) {
         self.create = CreateState::Creating(c.clone());
         if let Some(w) = &self.wire {
-            w.attach(Attach { session_id: self.id(), after: Some(0), tail_turns: None, log_epoch: None });
+            w.attach(Attach { session_id: self.id(), from: From::Start });
         }
         let ctx = self.ctx;
         self.futs.push(Box::pin(async move {
@@ -671,12 +684,12 @@ impl<'a> App<'a> {
                     self.tel.set_session(&real);
                     if let Some(w) = &self.wire {
                         w.detach(&old);
-                        w.attach(Attach { session_id: real.clone(), after: Some(0), tail_turns: None, log_epoch: None });
+                        w.attach(Attach { session_id: real.clone(), from: From::Start });
                     }
                 } else if self.reattach
                     && let Some(w) = &self.wire
                 {
-                    w.attach(Attach { session_id: self.id(), after: Some(0), tail_turns: None, log_epoch: None });
+                    w.attach(Attach { session_id: self.id(), from: From::Start });
                 }
                 crate::cache::set_last_session(&self.id());
                 for n in notes {

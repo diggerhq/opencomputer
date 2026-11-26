@@ -212,19 +212,19 @@ opc wait tn_4m8q2x7c1v9b --wait-subagents --json | jq -r '.subagents[].id' |
 ```bash
 opc watch cs_7f3a9k2m4q8r1t6v
 opc watch cs_7f3a9k2m4q8r1t6v --output-format stream-json | jq -c 'select(.type == "tool.started")'
-opc watch cs_7f3a9k2m4q8r1t6v --after 1184 --follow --output-format stream-json
+opc watch cs_7f3a9k2m4q8r1t6v --after "$cursor" --follow --output-format stream-json
 ```
 
-Prints a session's events as they happen, read-only, and exits as `opc wait` does. `--after <seq>` prints the recorded events after that `seq` first, then live ones, with no gap and no repeat; `--from-start` is `--after 0`. `--follow` keeps watching across turns until interrupted. `--output-format json` prints the Result of the last turn it saw end. Several ids are followed over one connection; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
+Prints a session's events as they happen, read-only, and exits as `opc wait` does. `--after <cursor>` prints the recorded events after that cursor first, then live ones, with no gap and no repeat; `--from-start` prints the whole history first. A cursor is an opaque string: `opc watch --output-format stream-json` prints `{"type": "cursor", "sessionId", "cursor"}` lines and `opc log --json` returns `cursor`; pass one back unchanged. `--follow` keeps watching across turns until interrupted. `--output-format json` prints the Result of the last turn it saw end. Several ids are followed over one connection; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
 
 ## Read the history: `opc log`
 
 ```bash
 opc log cs_7f3a9k2m4q8r1t6v
-opc log cs_7f3a9k2m4q8r1t6v --after 1184 --types 'tool.*' --output-format stream-json
+opc log cs_7f3a9k2m4q8r1t6v --after "$cursor" --types 'tool.*' --output-format stream-json
 ```
 
-Prints what happened and exits. The default is one line per message, tool call and answer; `--details` prints everything. `--after <seq>`, `--turn <tn_…>` and `--types <glob>` narrow it. `--output-format stream-json` prints the recorded [events](/api/reference/events), one per line, and `json` prints `{ events, lastSeq, hasMore }`.
+Prints what happened and exits. The default is one line per message, tool call and answer; `--details` prints everything. `--after <cursor>`, `--turn <tn_…>` and `--types <glob>` narrow it. `--output-format stream-json` prints the recorded [events](/api/reference/events), one per line, and `json` prints `{ events, lastSeq, hasMore, cursor }`.
 
 `opc log`, `opc watch` and `opc wait` never resume a suspended session: they read the log as it is.
 

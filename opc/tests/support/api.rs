@@ -662,7 +662,7 @@ fn update(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
 }
 
 async fn events_list(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
-    let after = c.qn("after", 0, u64::MAX)?;
+    let after = c.q("after");
     let tail = c.qn("tailTurns", 1, 50)?;
     if after.is_some() && tail.is_some() {
         return Err(ApiErr::bad("tailTurns", "tailTurns cannot be combined with after"));
@@ -671,12 +671,12 @@ async fn events_list(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
     let wait = c.qn("waitMs", 0, 60000)?.unwrap_or(0);
     let turn_id = c.q("turnId");
     let types: Option<Vec<String>> = c.q("types").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect());
-    let after_n = after.unwrap_or(0);
-    let last = sh.read(|w| w.sess(c.sid()).map(|s| s.last_seq()))?;
-    if after_n > last {
-        let session = sh.read(|w| w.sess(c.sid()).map(|s| s.to_json()))?;
-        return Err(ApiErr::new(409, "cursor_ahead", format!("after {after_n} is past lastSeq {last}")).with("session", session));
-    }
+    // A void cursor is answered `reset`: where to go on from, and what to drop.
+    let reset = |(cursor, seq): (Value, Value)| ApiErr::new(409, "reset", "the cursor is void; drop what is above seq and read on from cursor").with("cursor", cursor).with("seq", seq);
+    let after_n = match &after {
+        Some(a) => sh.read(|w| w.sess(c.sid()).map(|s| s.seq_of(a)))?.map_err(reset)?,
+        None => 0,
+    };
     let matches = move |ev: &Value| -> bool {
         turn_id.as_ref().is_none_or(|t| ev["turnId"] == t.as_str())
             && types.as_ref().is_none_or(|l| {
@@ -690,10 +690,14 @@ async fn events_list(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
     if wait > 0 && tail.is_none() {
         let sid = c.sid().to_string();
         let m = matches.clone();
-        sh.wait_until(Some(Duration::from_millis(wait)), move |w| w.sess(&sid).is_ok_and(|s| s.events.iter().skip(after_n as usize).any(&m))).await;
+        let epoch = sh.read(|w| w.sess(c.sid()).map(|s| s.epoch))?;
+        sh.wait_until(Some(Duration::from_millis(wait)), move |w| w.sess(&sid).is_ok_and(|s| s.epoch != epoch || s.events.iter().skip(after_n as usize).any(&m))).await;
     }
     let v = sh.read(|w| -> ApiResult<Value> {
         let s = w.sess(c.sid())?;
+        if let Some(a) = &after {
+            s.seq_of(a).map_err(reset)?;
+        }
         let (from_seq, earlier) = match tail {
             Some(n) => tail_split(s, n as usize),
             None => (after_n + 1, Value::Null),
@@ -701,7 +705,9 @@ async fn events_list(sh: &Arc<Shared>, c: &Call) -> ApiResult<(u16, Value)> {
         let candidates: Vec<&Value> = s.events.iter().skip(from_seq.saturating_sub(1) as usize).filter(|e| matches(e)).collect();
         let has_more = candidates.len() > limit;
         let events: Vec<Value> = candidates.into_iter().take(limit).cloned().collect();
-        Ok(json!({"events": events, "earlierTurns": earlier, "lastSeq": s.last_seq(), "hasMore": has_more}))
+        // The cursor stands after the last event returned, or at the end of the log.
+        let at = if has_more { events.last().and_then(|e| e["seq"].as_u64()).unwrap_or(after_n) } else { s.last_seq() };
+        Ok(json!({"events": events, "earlierTurns": earlier, "lastSeq": s.last_seq(), "hasMore": has_more, "cursor": s.cursor_at(at)}))
     })?;
     validate("method:events.list", &v);
     Ok((200, v))

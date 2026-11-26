@@ -5,10 +5,14 @@
 import { harnessOnProfile } from "./harnesses.js";
 import type { ModelAccess } from "./model-access.js";
 import { webOwner } from "./model-access.js";
-import type { CalvinApiError, CalvinGatewayToHost, CalvinSessionSpec, ModelProfile } from "./protocol.js";
+import type { CalvinApiError, CalvinGatewayToHost, CalvinSessionSpec, ModelProfile, ModelRoute } from "./protocol.js";
 import { workOsUserOf } from "./session-ids.js";
 
-export type RoutedApiSession = { session: CalvinSessionSpec; error?: CalvinApiError };
+/** `model`: the route an `api` or `start` frame carries (protocol 6). `refused`: the route itself was `refuse`. */
+export type RoutedApiSession = { session: CalvinSessionSpec; error?: CalvinApiError; model?: ModelRoute; refused?: true };
+
+/** The Slack user of a `slack:<team>:<user>` subject. */
+const slackUserOf = (subject: string | undefined): string | undefined => (subject?.startsWith("slack:") ? subject.split(":").pop() : undefined);
 
 /** The Slack user a dashboard member (`usr_…`) linked (work 083), if any. */
 export function linkedSlackUser(access: ModelAccess, member: string | undefined): string | undefined {
@@ -43,9 +47,9 @@ export async function routeApiSession(
     ? { session, error: { code: "model_unavailable", status: 403, message: "This model requires a linked Codex connection." } }
     : { session };
   deps.access.models.setHarness(session.key, wanted);
-  const poster = !member || member === session.owner.userId ? owner : ownerOf(member) ?? webOwner(member);
+  const poster = !member || member === session.owner.userId ? owner : slackUserOf(member) ?? ownerOf(member) ?? webOwner(member);
   const { route } = await deps.access.models.forDelivery({ key: session.key, ownerId: owner }, poster);
-  if (route.mode === "refuse") return { session, error: { code: "model_unavailable", status: 403, message: route.reason } };
+  if (route.mode === "refuse") return { session, refused: true, error: { code: "model_unavailable", status: 403, message: route.reason } };
   const harness = route.mode === "subscription"
     ? route.provider === "chatgpt" ? "codex" : "claude"
     : route.mode === "profile" ? harnessOnProfile(deps.profiles(), route.profile, wanted) : "claude";
@@ -59,5 +63,5 @@ export async function routeApiSession(
     return { session, error: { code: "computer_unavailable", status: 503, message: "The computer disconnected. Retry the request.", retryable: true } };
   }
   deps.access.models.noteSent(session.key, route);
-  return { session: { ...session, harness } };
+  return { session: { ...session, harness }, model: route };
 }

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { modelKey } from "../src/computer/model-key.js";
-import { CALVIN_MODEL_PROTOCOL, CALVIN_PROTOCOL_VERSION } from "../src/computer/protocol.js";
+import { CALVIN_MODEL_PROTOCOL } from "../src/computer/protocol.js";
 
 /**
  * Work 097, protocol 5 (design C2 and C8), in the real ComputerDurableObject:
@@ -152,27 +152,4 @@ describe("a host at protocol 5", () => {
     expect(await harnesses()).toEqual(["claude", "codex"]);
     first.socket.close();
   });
-});
-
-describe("a host at protocol 4, after one at 5", () => {
-  it("gets protocol 4's welcome and delivery: the key in its credentials, no route", async () => {
-    const ORG = "org_profiles_back";
-    const TEAM = "T0PROFBACK";
-    const stub = await organization(ORG, TEAM);
-
-    const five = await connect(ORG, { protocol: CALVIN_MODEL_PROTOCOL, profiles: PROFILES });
-    expect(five.welcome.models).toEqual({ claude: await route("anthropic-key", SHARED_KEY) });
-    five.socket.close();
-
-    const four = await connect(ORG, { protocol: CALVIN_PROTOCOL_VERSION, features: ["model-proxy"] });
-    expect(four.welcome.protocol).toBe(CALVIN_PROTOCOL_VERSION);
-    expect(four.welcome.credentials.anthropicApiKey).toBe(SHARED_KEY);
-    expect(four.welcome).not.toHaveProperty("models");
-    const frame = await deliver(stub, ORG, TEAM, four.socket, "501.1");
-    expect(frame.credentials.anthropicApiKey).toBe(SHARED_KEY);
-    expect(frame).not.toHaveProperty("model");
-    // The profiles went with the host that listed them.
-    expect(await inside(stub, (instance) => instance.setting("hostProfiles"))).toBeUndefined();
-    four.socket.close();
-  }, 20_000);
 });

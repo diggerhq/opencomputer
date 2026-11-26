@@ -26,7 +26,7 @@ const ownerOrRole = (p: Principal, t: TrackRec): boolean => ownerOnly(p, t) || h
 // ------------------------------------------------------------------ track.create (40.7)
 
 const trackCreate: MutationFn = (tx, p, args) => {
-  const { tid, agentSessionId, sid, name, firstInput } = args;
+  const { tid, agentSessionId, sid, name, firstInput, person } = args as typeof args & { person?: { name: string | null; email: string | null } };
   if (!isTid(tid)) return refuse("invalid_request", "tid");
   if (!isSid(agentSessionId)) return refuse("invalid_request", "agentSessionId");
   if (!optStr(name, 200)) return refuse("invalid_request", "name");
@@ -97,8 +97,9 @@ const trackCreate: MutationFn = (tx, p, args) => {
     id: agentSessionId,
     trackId: tid,
     owner,
-    ownerName: source?.owner_name ?? null,
-    ownerEmail: source?.owner_email ?? null,
+    // A thread it comes from names its owner; from a person with none, the edge's name for them.
+    ownerName: source?.owner_name ?? (p.kind !== "agent" ? (person?.name ?? null) : null),
+    ownerEmail: source?.owner_email ?? (p.kind !== "agent" ? (person?.email ?? null) : null),
     origin,
     machine: source?.machine ?? firstMachine(tx),
     by,

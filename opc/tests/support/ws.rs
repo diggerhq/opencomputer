@@ -1,10 +1,10 @@
-//! The `opc.v1` WebSocket: upgrade, `ready`, attaches in the URL and by
-//! method, JSON-RPC methods over the shared operations, event and delta
-//! forwarding by cursor, terminals over binary frames, and the drop knobs.
+//! The `opc.v1` WebSocket: upgrade, `ready`, JSON-RPC methods over the
+//! shared operations, terminals over binary frames, and the drop knobs.
+//! Watching a session is the live socket's (`live.rs`).
 
 use super::api::{self, Call};
-use super::http::{Resp, key_ok, parse_query, request_actor, request_key, take_failure};
-use super::model::{ApiErr, Out, Shared, capabilities, new_id};
+use super::http::{Resp, key_ok, request_actor, request_key, take_failure};
+use super::model::{ApiErr, Shared, new_id};
 use super::schema::validate;
 use super::{Dir, WsFrame, pattern_matches, workspace};
 use bytes::Bytes;
@@ -80,13 +80,12 @@ pub async fn upgrade(sh: Arc<Shared>, req: Request<Incoming>, headers: Vec<(Stri
     } else {
         refuse_knob
     };
-    let query = req.uri().query().unwrap_or("").to_string();
     let actor = request_actor(&headers);
     let sh2 = sh.clone();
     tokio::spawn(async move {
         if let Ok(up) = hyper::upgrade::on(req).await {
             let ws = WebSocketStream::from_raw_socket(TokioIo::new(up), Role::Server, None).await;
-            run(sh2, ws, query, refuse, drop_after, actor).await;
+            run(sh2, ws, refuse, drop_after, actor).await;
         }
     });
     let mut b = Response::builder().status(101).header("upgrade", "websocket").header("connection", "Upgrade").header("sec-websocket-accept", derive_accept_key(key.as_bytes()));
@@ -94,13 +93,6 @@ pub async fn upgrade(sh: Arc<Shared>, req: Request<Incoming>, headers: Vec<(Stri
         b = b.header("sec-websocket-protocol", "opc.v1");
     }
     b.body(Full::new(Bytes::new())).unwrap()
-}
-
-struct Att {
-    deltas: bool,
-    read_only: bool,
-    /// The last seq sent.
-    cursor: u64,
 }
 
 struct Term {
@@ -119,7 +111,6 @@ struct Conn {
     conn: u64,
     sink: SplitSink<Ws, Message>,
     tx: mpsc::UnboundedSender<Message>,
-    atts: HashMap<String, Att>,
     sent: usize,
     drop_after: Option<usize>,
     terms: HashMap<String, Term>,
@@ -167,83 +158,6 @@ impl Conn {
         self.send_json(&json!({"jsonrpc": "2.0", "id": id, "error": e})).await
     }
 
-    async fn forward(&mut self, out: Out) -> Sent {
-        match out {
-            Out::Event(sid, ev) => {
-                let Some(att) = self.atts.get_mut(&sid) else { return Ok(()) };
-                let seq = ev["seq"].as_u64().unwrap_or(0);
-                if seq <= att.cursor {
-                    return Ok(());
-                }
-                att.cursor = seq;
-                self.notify("event", (*ev).clone()).await
-            }
-            Out::Delta(sid, d) => {
-                if !self.atts.get(&sid).is_some_and(|a| a.deltas) {
-                    return Ok(());
-                }
-                self.notify("delta", (*d).clone()).await
-            }
-        }
-    }
-
-    /// Attaches; returns the attach result and the events to replay after it.
-    async fn attach(&mut self, p: &Value) -> Result<(Value, Vec<Value>), ApiErr> {
-        let started = Instant::now();
-        let sid = p["sessionId"].as_str().unwrap_or("").to_string();
-        let after = p["after"].as_u64();
-        let tail = p["tailTurns"].as_u64();
-        if after.is_some() && tail.is_some() {
-            return Err(ApiErr::bad("tailTurns", "tailTurns cannot be combined with after"));
-        }
-        if !self.atts.contains_key(&sid) && self.atts.len() >= 20 {
-            return Err(ApiErr::new(409, "too_many_attached", "20 sessions are already attached"));
-        }
-        // A session being created at the same moment is waited for, up to 2 seconds.
-        let s2 = sid.clone();
-        self.sh.wait_until(Some(Duration::from_secs(2)), move |w| w.sess(&s2).is_ok()).await;
-        if p["resume"] == true {
-            self.sh.with(|w| {
-                if let Ok(s) = w.sess(&sid)
-                    && s.suspended
-                    && !s.starting
-                {
-                    w.begin_resume(&sid);
-                }
-            });
-        }
-        let (session, events, earlier, last) = self.sh.read(|w| -> Result<_, ApiErr> {
-            let s = w.sess(&sid)?;
-            let last = s.last_seq();
-            if let Some(a) = after
-                && a > last
-            {
-                return Err(ApiErr::new(409, "cursor_ahead", format!("after {a} is past lastSeq {last}")).with("session", s.to_json()));
-            }
-            let (from, earlier) = match (after, tail) {
-                (Some(a), _) => (a + 1, Value::Null),
-                (None, Some(n)) => api::tail_split(s, n as usize),
-                (None, None) => (last + 1, Value::Null),
-            };
-            let events: Vec<Value> = s.events.iter().skip(from.saturating_sub(1) as usize).cloned().collect();
-            Ok((s.to_json(), events, earlier, last))
-        })?;
-        self.atts.insert(sid.clone(), Att { deltas: p["deltas"] == true, read_only: p["readOnly"] == true, cursor: last });
-        let result = json!({
-            "session": session, "logEpoch": 1, "epochStartSeq": 1, "capabilities": capabilities(),
-            "earlierTurns": earlier, "timing": {"serverUs": started.elapsed().as_micros() as u64},
-        });
-        validate("method:sessions.attach", &result);
-        Ok((result, events))
-    }
-
-    async fn replay(&mut self, events: Vec<Value>) -> Sent {
-        for e in events {
-            self.notify("event", e).await?;
-        }
-        Ok(())
-    }
-
     async fn handle_text(&mut self, text: &str) -> Sent {
         let v: Value = match serde_json::from_str(text) {
             Ok(v) => v,
@@ -255,9 +169,6 @@ impl Conn {
         };
         let params = v.get("params").cloned().unwrap_or(json!({}));
         let Some(id) = id else {
-            if method == "sessions.ack" {
-                validate("client:sessions.ack", &params);
-            }
             return Ok(());
         };
         let delays: Vec<Duration> = self.sh.knobs.lock().unwrap().delays.iter().filter(|(p, _)| pattern_matches(p, "ws", &method)).map(|(_, d)| *d).collect();
@@ -271,19 +182,6 @@ impl Conn {
         let started = Instant::now();
         match method.as_str() {
             "ping" => self.result(&id, "ping", json!({"timing": {"serverUs": 5}})).await,
-            "sessions.attach" => match self.attach(&params).await {
-                Ok((r, events)) => {
-                    self.result(&id, "sessions.attach", r).await?;
-                    self.replay(events).await
-                }
-                Err(e) => self.send(respond(&id, &method, Err(e), started)).await,
-            },
-            "sessions.detach" => {
-                if let Some(s) = params["sessionId"].as_str() {
-                    self.atts.remove(s);
-                }
-                self.result(&id, "sessions.detach", json!({})).await
-            }
             m if m.starts_with("terminals.") => {
                 let r = self.terminal(m, &params).await;
                 self.send(respond(&id, &method, r, started)).await
@@ -324,9 +222,6 @@ impl Conn {
             None => None,
         };
         let write = WRITES.contains(&m);
-        if write && self.atts.get(&sid).is_some_and(|a| a.read_only) {
-            return Err(ApiErr::new(403, "forbidden", "this session is attached read-only").with("reason", "read_only"));
-        }
         let mut rest = Map::new();
         for (k, v) in p {
             if k == "sessionId" || k == "idempotencyKey" || Some(k.as_str()) == sub_key {
@@ -486,7 +381,6 @@ fn respond(id: &Value, method: &str, r: Result<Value, ApiErr>, started: Instant)
     let v = match r {
         Ok(mut result) => {
             if let Value::Object(m) = &mut result
-                && method != "sessions.detach"
                 && !method.starts_with("terminals.")
                 && !m.contains_key("timing")
             {
@@ -504,25 +398,23 @@ fn respond(id: &Value, method: &str, r: Result<Value, ApiErr>, started: Instant)
     Message::text(v.to_string())
 }
 
-async fn run(sh: Arc<Shared>, ws: Ws, query: String, refuse: Option<(u16, String)>, drop_after: Option<usize>, actor: Value) {
+async fn run(sh: Arc<Shared>, ws: Ws, refuse: Option<(u16, String)>, drop_after: Option<usize>, actor: Value) {
     let conn = {
         let mut c = sh.ws_connections.lock().unwrap();
         *c += 1;
         *c
     };
-    // Subscribe before reading any state, so nothing falls between a snapshot and live events.
-    let mut bus = sh.bus.subscribe();
     let mut ctl = sh.ctl.subscribe();
     let (sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    let mut c = Conn { sh: sh.clone(), conn, sink, tx, atts: HashMap::new(), sent: 0, drop_after, terms: HashMap::new(), next_channel: 1, actor };
+    let mut c = Conn { sh: sh.clone(), conn, sink, tx, sent: 0, drop_after, terms: HashMap::new(), next_channel: 1, actor };
 
     if let Some((code, reason)) = refuse {
         let _ = c.sink.send(Message::Close(Some(CloseFrame { code: CloseCode::from(code), reason: reason.into() }))).await;
         let _ = c.sink.close().await;
         return;
     }
-    if run_inner(&mut c, &mut stream, &mut rx, &mut bus, &mut ctl, &query).await.is_err() {
+    if run_inner(&mut c, &mut stream, &mut rx, &mut ctl).await.is_err() {
         // Dropped without a close frame: the socket just goes away.
     }
 }
@@ -531,9 +423,7 @@ async fn run_inner(
     c: &mut Conn,
     stream: &mut futures_util::stream::SplitStream<Ws>,
     rx: &mut mpsc::UnboundedReceiver<Message>,
-    bus: &mut tokio::sync::broadcast::Receiver<Out>,
     ctl: &mut tokio::sync::broadcast::Receiver<(u16, String)>,
-    query: &str,
 ) -> Sent {
     c.notify(
         "ready",
@@ -543,50 +433,6 @@ async fn run_inner(
         }),
     )
     .await?;
-
-    // Attaches in the URL: each after/tailTurns pairs with the attach before it.
-    let q = parse_query(query);
-    let deltas = q.iter().any(|(k, v)| k == "deltas" && v == "1");
-    let resume = q.iter().any(|(k, v)| k == "resume" && v == "1");
-    let mut wanted: Vec<Map<String, Value>> = vec![];
-    for (k, v) in &q {
-        match k.as_str() {
-            "attach" => {
-                let mut m = Map::new();
-                m.insert("sessionId".into(), v.clone().into());
-                m.insert("deltas".into(), deltas.into());
-                m.insert("resume".into(), resume.into());
-                wanted.push(m);
-            }
-            "after" | "tailTurns" => {
-                if let (Some(last), Ok(n)) = (wanted.last_mut(), v.parse::<u64>()) {
-                    last.insert(k.clone(), n.into());
-                }
-            }
-            _ => {}
-        }
-    }
-    for p in wanted.into_iter().take(20) {
-        let p = Value::Object(p);
-        let sid = p["sessionId"].as_str().unwrap_or("").to_string();
-        // `fail_next("ws attach <sid>", ..)` fails one session's URL attach.
-        let r = match take_failure(&c.sh, "ws", &format!("attach {sid}")) {
-            Some(f) => Err(f.to_err()),
-            None => c.attach(&p).await,
-        };
-        match r {
-            Ok((mut r, events)) => {
-                r["sessionId"] = sid.into();
-                r["error"] = Value::Null;
-                c.notify("sessions.attached", r).await?;
-                c.replay(events).await?;
-            }
-            Err(e) => {
-                let params = json!({"sessionId": sid, "error": err_data(&e), "session": null, "logEpoch": null, "epochStartSeq": null, "capabilities": null, "earlierTurns": null, "timing": null});
-                c.notify("sessions.attached", params).await?;
-            }
-        }
-    }
 
     loop {
         tokio::select! {
@@ -613,11 +459,6 @@ async fn run_inner(
                     // Pings are answered by tungstenite on the next write; flush so it goes now.
                     let _ = c.sink.flush().await;
                 }
-            },
-            ev = bus.recv() => match ev {
-                Ok(out) => c.forward(out).await?,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(_) => return Ok(()),
             },
             k = ctl.recv() => {
                 if let Ok((code, reason)) = k {
