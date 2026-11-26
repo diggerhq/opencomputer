@@ -10,20 +10,45 @@
 //   ...
 //   await stack.close()
 
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { SignJWT } from "jose";
 import { unstable_startWorker } from "wrangler";
 import WebSocket from "ws";
 
-import type { Principal } from "../../src/actor/principal.js";
-import { API_SCOPES } from "../../src/computer/api-types.js";
-import { hostToken } from "../../src/computer/host-token.js";
 import { fakeComputerOutbound, fakeComputerPlatform } from "./computer-fakes.mjs";
+
+// This file imports nothing of src/: the SDK, web and desktop typecheck it with their own settings.
+
+/** The principal the edge asserts (src/actor/principal.ts), as this fixture makes them. */
+export interface Principal {
+  org: string;
+  subject: string;
+  kind: "member" | "agent";
+  via: "app" | "agent";
+  scopes: string[];
+  audiences: string[];
+  session?: string;
+  admin: boolean;
+  credential: { id: string; expiresAt: number | null };
+}
+
+/** Every scope (src/computer/api-types.ts `API_SCOPES`). */
+const SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals", "work:read", "work:write"];
+
+/** The organization's host token (src/computer/host-token.ts): `sph_` + base64url(HMAC-SHA256(key, "calvin-host:" + org)). */
+async function hostToken(key: string, org: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const hmac = await crypto.subtle.importKey("raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", hmac, encoder.encode(`calvin-host:${org}`));
+  return `sph_${Buffer.from(mac).toString("base64url")}`;
+}
 
 const SECRET = "stack-test-assertion-secret";
 const HOST_KEY = "stack-test-host-token-key";
-const root = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url).href);
+// Not `new URL(…, import.meta.url)`: Vite, which runs web's tests, would take it for an asset.
+const root = (path: string) => resolve(dirname(fileURLToPath(import.meta.url)), "../..", path);
 
 /** A caller of the API: its principal, and a fetch and a socket as it. */
 export interface Caller {
@@ -123,13 +148,13 @@ export async function startStack(): Promise<Stack> {
     member(org, name) {
       const subject = `usr_${name}`;
       return caller({
-        org, subject, kind: "member", via: "app", scopes: [...API_SCOPES],
+        org, subject, kind: "member", via: "app", scopes: SCOPES,
         audiences: ["org", `member:${subject}`], admin: false, credential: { id: `ck:${org}:${name}`, expiresAt: null },
       });
     },
     agent(org, session) {
       return caller({
-        org, subject: session, kind: "agent", via: "agent", session, scopes: [...API_SCOPES],
+        org, subject: session, kind: "agent", via: "agent", session, scopes: SCOPES,
         audiences: [], admin: false, credential: { id: `agent:${session}`, expiresAt: null },
       });
     },
@@ -277,6 +302,8 @@ export interface Host {
   ask(sessionId: string, ask: { kind: "question" | "approval"; question?: unknown; approval?: unknown }): string;
   /** The turn ends: completed, or failed with `failed` as its error. */
   end(sessionId: string, o?: { failed?: string }): void;
+  /** The computer names the session, as the runner does after a turn (work 093). */
+  name(sessionId: string, from: string, to: string): void;
   close(): void;
 }
 
@@ -421,6 +448,9 @@ async function connectHost(url: string, org: string, token: string): Promise<Hos
     end(sessionId, o = {}) {
       if (o.failed) end(sessionId, "turn.failed", { error: { code: "agent_failed", message: o.failed } });
       else end(sessionId, "turn.completed", {});
+    },
+    name(sessionId, from, to) {
+      append(sessionId, "session.updated", { changes: { title: { from, to } } });
     },
     close() {
       ws.close();

@@ -1,10 +1,9 @@
 // The wire contract of tracks and threads, as a client sees it: spec sections 35 (rows), 37 (HTTP),
-// 38 (socket), 39 (mutations) and 42.1 (this SDK). Shared by the client, the fake server and the
-// surface's store. No runtime code here. The review summary (`GET`/`PUT /work/results/{id}/review`, S9)
+// 38 (socket), 39 (mutations) and 42.1 (this SDK). Shared by the client and the surface's store.
+// No runtime code here. The review summary (`GET`/`PUT /work/results/{id}/review`, S9)
 // is a schema with its types, in review.ts.
 
 import type { MutationArgs, MutationName } from "./mutation-table.js";
-import type { ReviewPart } from "./review.js";
 
 // ---------- the session API's objects (services/managed-agents/src/computer/api-types.ts) ----------
 
@@ -308,7 +307,19 @@ export interface CreateSessionBody {
   turnId?: string;
   trackId?: string | null;
   role?: "start";
-  settings?: Partial<Session["settings"]>;
+  model?: string;
+  effort?: string;
+  mode?: string;
+}
+
+/** A change of a session's model, effort or mode (`PATCH /sessions/{id}`, spec 19.1). */
+export type SettingsPatch = { model?: string; effort?: string; mode?: string };
+
+/** `GET /capabilities`: what a session may be started with or changed to. */
+export interface Capabilities {
+  models: { id: string; name: string; efforts: string[]; default: boolean }[];
+  modes: string[];
+  features: { steer: boolean };
 }
 
 // ---------- mutations (section 39; routes in section 37.3): the server's table, copied ----------
@@ -399,7 +410,8 @@ export type Pending =
   | { key: string; kind: "turn"; sessionId: string; turnId: string; input: string; ifBusy?: IfBusy; at: number }
   | { key: string; kind: "answer"; sessionId: string; askId: string; answer: Answer; at: number }
   | { key: string; kind: "dismiss"; sessionId: string; askId: string; at: number }
-  | { key: string; kind: "interrupt"; sessionId: string; at: number };
+  | { key: string; kind: "interrupt"; sessionId: string; at: number }
+  | { key: string; kind: "settings"; sessionId: string; settings: SettingsPatch; at: number };
 
 /** A write the server refused: its optimistic copy is gone and the person is told (R42). */
 export interface Failure {
@@ -461,6 +473,12 @@ export interface Client {
   answer(sessionId: string, askId: string, answer: Answer): { settled: Promise<void> };
   dismiss(sessionId: string, askId: string): { settled: Promise<void> };
   interrupt(sessionId: string): { settled: Promise<void> };
+  settings(sessionId: string, settings: SettingsPatch): { settled: Promise<void> };
+  /**
+   * Puts a secret in the session's sealed store (`PUT /sessions/{id}/secrets/{name}`). Sent at once
+   * and never queued, so the value is never stored; throws `Refused` on an error reply.
+   */
+  setSecret(sessionId: string, name: string, secret: { value: string; file: boolean }): Promise<void>;
   pending(): Signal<Pending[]>;
   failures: Stream<Failure>;
   /** A read that is not a stream (`/work/threads`, `/work/search`, a review, a diff). Throws `Refused` on an error body. */

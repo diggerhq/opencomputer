@@ -189,6 +189,15 @@ export function createClient(o: ClientOptions): Client {
     answer: (sessionId, askId, answer) => ({ settled: queue.add({ kind: "answer", sessionId, askId, answer }).settled }),
     dismiss: (sessionId, askId) => ({ settled: queue.add({ kind: "dismiss", sessionId, askId }).settled }),
     interrupt: (sessionId) => ({ settled: queue.add({ kind: "interrupt", sessionId }).settled }),
+    settings: (sessionId, settings) => ({ settled: queue.add({ kind: "settings", sessionId, settings }).settled }),
+    async setSecret(sessionId, name, secret) {
+      const reply = await ctx.request(`/sessions/${encodeURIComponent(sessionId)}/secrets/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(secret),
+      });
+      if (reply.status >= 300) throw refusal(reply);
+    },
     pending: () => queue.pending,
     failures: {
       subscribe(cb) {

@@ -1,23 +1,35 @@
 // @vitest-environment happy-dom
 // The review's summary as the agent wrote it (S9): a real surface over the
-// SDK's fake server, whose agent opens a pull request and saves a summary
-// through `review.save`; the diff library is replaced by a plain drawing of
-// the hunks it is handed and the lines it is asked to mark.
+// managed-agents Worker run locally (services/managed-agents/test/fixtures/
+// stack.ts). The test is the agent: it opens a pull request and saves a
+// summary through `review.save`. The diff, which the server fetches from
+// GitHub, is a recorded one; the diff library is replaced by a plain drawing
+// of the hunks it is handed and the lines it is asked to mark.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { memoryStorage } from '@opencomputer/sdk/computer'
 import {
-  createFakeServer,
-  type FakeServer,
-} from '@opencomputer/sdk/computer/fake'
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
+import { makeId, memoryStorage } from '@opencomputer/sdk/computer'
 import type { FileDiffMetadata, SelectedLineRange } from '@pierre/diffs'
 import type { Host } from '../host'
 import { NOWHERE } from '../host'
 import { SurfaceContext } from '../hooks'
 import { createSurface, type Surface } from '../store'
+import {
+  startStack,
+  type Caller,
+  type Stack,
+} from '../../../../services/managed-agents/test/fixtures/stack'
 
 vi.mock('@pierre/diffs/react', () => ({
   FileDiff: ({
@@ -53,20 +65,66 @@ const { default: Review } = await import('./Review')
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function settle(until: () => boolean, label: string) {
-  for (let i = 0; i < 200; i += 1) {
+  for (let i = 0; i < 2000; i += 1) {
     if (until()) return
     await act(() => sleep(5))
   }
   throw new Error(`Timed out waiting for ${label}`)
 }
 
-function open(fake: FakeServer): Surface {
+const FILES = ['src/handler.ts', 'src/rows.ts', 'src/rows.test.ts']
+// What GitHub answered for the pull request.
+const DIFF = FILES.map(
+  (f, i) =>
+    `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -${10 + i},3 +${10 + i},4 @@\n const org = session.org\n-const rows = await each(ids, loadRow)\n+const rows = await loadRows(org)\n+rows.sort(byPosition)\n return rows\n`,
+).join('')
+const PARTS = [
+  {
+    title: 'Rows load in one query',
+    claim:
+      '`loadRows` asks once for every row of the organization, instead of once per row.',
+    points: ['The loop over ids is gone; nothing else called `loadRow`.'],
+    files: [
+      { path: FILES[0], note: 'Calls `loadRows` and sorts by position.' },
+      { path: FILES[1] },
+    ],
+    excerpts: [
+      {
+        path: FILES[0],
+        start: 10,
+        end: 13,
+        why: 'The one query, and the sort that keeps the order.',
+      },
+    ],
+    eye: [
+      {
+        text: 'The order of the rows now comes from the query, not from the loop.',
+        path: FILES[0],
+        line: 12,
+      },
+    ],
+  },
+  {
+    title: 'The test covers both orders',
+    claim: 'One test for an empty organization, one for sixty rows.',
+    files: [{ path: FILES[2] }],
+  },
+]
+
+let stack: Stack
+beforeAll(async () => {
+  stack = await startStack()
+}, 60_000)
+afterAll(() => stack?.close())
+
+function open(me: Caller): Surface {
   let loc = NOWHERE
+  const net = me.net()
   const host: Host = {
     platform: 'web',
-    principal: fake.principal,
-    api: { fetch: (path, init) => fake.fetch(path, init) },
-    connect: () => fake.connect(),
+    principal: { org: me.principal.org, subject: me.principal.subject },
+    api: { fetch: (path, init) => net.fetch(path, init) },
+    connect: () => net.connect(),
     notify: () => {},
     badge: () => {},
     openExternal: () => {},
@@ -77,7 +135,13 @@ function open(fake: FakeServer): Surface {
       onChange: () => () => {},
     },
   }
-  return createSurface({ host, storage: memoryStorage(), visible: () => true })
+  const s = createSurface({
+    host,
+    storage: memoryStorage(),
+    visible: () => true,
+  })
+  s.diff = () => Promise.resolve(DIFF)
+  return s
 }
 
 describe('Review summary', () => {
@@ -101,10 +165,36 @@ describe('Review summary', () => {
   })
 
   it('shows the claim, points, excerpts, eye items and file notes the agent wrote', async () => {
-    const fake = createFakeServer({ seed: 'empty', pace: 0, latency: 0 })
-    s = open(fake)
+    const org = `org_review${Math.random().toString(36).slice(2, 8)}`
+    const computer = await stack.host(org)
+    s = open(await stack.member(org, 'ada'))
     await settle(() => s.get().ready && s.get().synced, 'the surface')
     const sid = s.start('Open a PR for the slow query', { open: false })
+    // The agent's turn: the pull request, its review, and ready.
+    await computer.turn(sid)
+    const agent = await stack.agent(org, sid)
+    const put = async (path: string, body: unknown) => {
+      const r = await agent.fetch(path, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+        headers: { 'idempotency-key': `idem_${makeId('op').slice(3)}` },
+      })
+      if (r.status >= 300) throw new Error(`${path}: ${await r.text()}`)
+    }
+    const resultId = makeId('res')
+    await put(`/work/results/${resultId}`, {
+      sid,
+      kind: 'pr',
+      ref: 'https://github.com/acme/console/pull/1',
+      title: 'PR #1',
+    })
+    await put(`/work/results/${resultId}/review`, {
+      head: 'h1a91c7',
+      parts: PARTS,
+    })
+    await put(`/work/threads/${sid}/ready`, { what: 'PR #1 is open', resultId })
+    computer.say(sid, 'Done, and up as PR #1.')
+    computer.end(sid)
     const pr = () =>
       s
         .list()
@@ -154,5 +244,5 @@ describe('Review summary', () => {
     // Only the excerpt is drawn as code: a summary with excerpts lists the
     // other files rather than opening each.
     expect(container.querySelectorAll('[data-testid="diff"]')).toHaveLength(1)
-  })
+  }, 30_000)
 })

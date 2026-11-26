@@ -5,6 +5,7 @@ import {
   Refused,
   type Answer,
   type ApiEvent,
+  type Capabilities,
   type Client,
   type Delta,
   type EventsUpdate,
@@ -17,6 +18,7 @@ import {
   type Review,
   type Row,
   type SearchReply,
+  type SettingsPatch,
   type Storage,
   type ThreadsPage,
 } from '@opencomputer/sdk/computer'
@@ -367,7 +369,9 @@ export function createSurface(o: SurfaceOptions) {
         ? (SAID[e.name] ?? 'That did not go through')
         : e.kind === 'turn' || e.kind === 'session'
           ? 'Your message was not sent'
-          : 'That did not go through'
+          : e.kind === 'settings'
+            ? 'Could not change the settings'
+            : 'That did not go through'
     toast({ text: `${what}: ${f.reason || f.code}`, tone: 'error' })
   }
 
@@ -552,8 +556,8 @@ export function createSurface(o: SurfaceOptions) {
 
     // -- talking --
     // A1, A22: the agent decides what this becomes; `open` lands on it.
-    start(input: string, opt: { open: boolean }) {
-      const r = client.createSession({ input, role: 'start' })
+    start(input: string, opt: { open: boolean; settings?: SettingsPatch }) {
+      const r = client.createSession({ input, role: 'start', ...opt.settings })
       settle(r)
       if (opt.open) go({ ...NOWHERE, thread: r.id })
       return r.id
@@ -571,6 +575,24 @@ export function createSurface(o: SurfaceOptions) {
     },
     stop(sid: string) {
       settle(client.interrupt(sid))
+    },
+    // The model, effort or mode of an open session (spec 19.1).
+    setSettings(sid: string, settings: SettingsPatch) {
+      settle(client.settings(sid, settings))
+    },
+    // A secret goes to the session's sealed store, never through the
+    // conversation; the agent's next message then closes its ask.
+    async setSecret(sid: string, name: string, secret: { value: string; file: boolean }) {
+      await client.setSecret(sid, name, secret)
+      // Queued, not steered: a turn still running finishes before it reads this.
+      const st = get().rows.session.get(sid)?.status
+      settle(
+        client.send(
+          sid,
+          `Secret $${name} is set for this session. It is available in your next command${secret.file ? ' as the path of a file holding it' : ''}. Continue.`,
+          { ifBusy: st === 'running' || st === 'starting' ? 'queue' : undefined },
+        ),
+      )
     },
 
     // -- threads --
@@ -667,7 +689,7 @@ export function createSurface(o: SurfaceOptions) {
       if (now) onto(now)
       for (let tries = 0; ; tries++) {
         const row = get().rows.doc.get(tid)
-        const spans = docSpans(row, from.text, ours, me)
+        const spans = docSpans(row, from.text, ours, `user:${me}`)
         try {
           await mutate('doc.save', { tid, baseRev: from.rev, text: ours, spans }).settled
           break
@@ -736,8 +758,12 @@ export function createSurface(o: SurfaceOptions) {
       addUnder(reply.rows)
       return reply.rows
     },
-    review(resultId: string) {
-      return client.read<Review>(`/work/results/${resultId}/review`)
+    async review(resultId: string) {
+      return (await client.read<{ review: Review }>(`/work/results/${resultId}/review`)).review
+    },
+    // What a session may be started with or changed to (the model, effort and mode pickers).
+    async capabilities() {
+      return (await client.read<{ capabilities: Capabilities }>('/capabilities')).capabilities
     },
     async diff(resultId: string) {
       return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff
