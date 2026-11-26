@@ -7,14 +7,20 @@ import {
   type ReactNode,
 } from 'react'
 import type { Ask } from '@opencomputer/sdk/computer'
+import { ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
-import type { Item } from '../store/transcript'
+import type { Item, Step } from '../store/transcript'
 import { ACTS, BLOCK, I, Mk, Rich } from './bits'
 
-// The conversation of a thread or of a track's agent: messages, steps as
-// single lines, structural lines with their Undo, and asks as blocks.
+// The conversation of a thread or of a track's agent: messages, a turn's
+// steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
 
 const PAGE = 200
 // Where the reader was in each conversation, for when they return (R44).
@@ -302,6 +308,56 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
   )
 }
 
+// ---- steps: listed while the turn runs, one line once it has ended ----
+
+function StepLine({ step }: { step: Step }) {
+  return (
+    <div
+      className={cn(
+        'text-muted-foreground flex max-w-180 items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        step.status === 'failed' && WARN,
+      )}
+    >
+      {step.status === 'running' ? (
+        <Mk mark="working" small />
+      ) : step.status === 'done' ? (
+        I.check
+      ) : (
+        <span>×</span>
+      )}
+      <span>
+        <Rich text={step.title} />
+        {step.status === 'failed' ? ' · failed' : ''}
+      </span>
+    </div>
+  )
+}
+
+function Steps({ item }: { item: Extract<Item, { kind: 'steps' }> }) {
+  const lines = (
+    <div className="flex flex-col gap-1.5">
+      {item.steps.map((st) => (
+        <StepLine key={st.key} step={st} />
+      ))}
+    </div>
+  )
+  if (!item.settled) return lines
+  const n = item.steps.length
+  const failed = item.steps.filter((st) => st.status === 'failed').length
+  return (
+    <Collapsible className="-my-1 max-w-180">
+      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex items-center gap-1 rounded-sm text-[12.5px] outline-none">
+        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
+        Ran {n} {n === 1 ? 'step' : 'steps'}
+        {failed > 0 && <span className={WARN}>· {failed} failed</span>}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-1.5 ml-1.5 border-l pl-3">
+        {lines}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 // ---- one item ----
 
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
@@ -343,27 +399,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
           <Rich text={item.text} />
         </div>
       )
-    case 'step':
-      return (
-        <div
-          className={cn(
-            'text-muted-foreground -my-1.5 flex max-w-180 items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
-            item.status === 'failed' && WARN,
-          )}
-        >
-          {item.status === 'running' ? (
-            <Mk mark="working" small />
-          ) : item.status === 'done' ? (
-            I.check
-          ) : (
-            <span>×</span>
-          )}
-          <span>
-            <Rich text={item.title} />
-            {item.status === 'failed' ? ' · failed' : ''}
-          </span>
-        </div>
-      )
+    case 'steps':
+      return <Steps item={item} />
     case 'ask':
       return <AskBlock ask={item.ask} />
     case 'line':

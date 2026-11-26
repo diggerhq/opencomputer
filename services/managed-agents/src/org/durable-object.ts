@@ -51,14 +51,21 @@ import {
 } from "../actor/index.js";
 import type { OrgForDelivery } from "../delivery/contract.js";
 import { computerSessionId } from "../computer/protocol.js";
-import type { Repository, RepositoryChoice, WorkIndexRpc } from "../computer/work/index-contract.js";
 import * as feeds from "./feed.js";
+import * as repositories from "./repository.js";
+import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";
 import { STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf, readSession, trackOfAgent, type PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
-export type OrgEnv = ActorEnv & { SERVERLESS_AGENTS_DB?: D1Database; WORK_INDEX?: DurableObjectNamespace };
+export type OrgEnv = ActorEnv & {
+  SERVERLESS_AGENTS_DB?: D1Database;
+  /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
+  ACCOUNTS?: DurableObjectNamespace;
+  /** The retired Work board's object, read once while adopting (org/work-index.ts). */
+  WORK_INDEX?: DurableObjectNamespace;
+};
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
@@ -69,7 +76,11 @@ export interface OrgOut {
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
   created(sessionId: string, createdAt: number): Promise<void>;
-  workIndex(): Pick<WorkIndexRpc, "repository" | "setRepository"> | null;
+  /** The knowledge repository setting the retired Work board held, read once while adopting. */
+  boardRepository(): Promise<StoredRepository | null>;
+  /** The organization's Account object, or null where it is not bound. */
+  account(): TokenMinter | null;
+  fetch: Fetch;
 }
 
 const AGE_EVERY_MS = 60 * 60 * 1_000;
@@ -96,7 +107,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
         .bind(computerSessionId(sessionId), this.org, new Date(createdAt).toISOString())
         .run();
     },
-    workIndex: () => (this.env.WORK_INDEX ? (this.env.WORK_INDEX.getByName(this.org) as unknown as WorkIndexRpc) : null),
+    boardRepository: async () =>
+      this.env.WORK_INDEX ? ((this.env.WORK_INDEX.getByName(this.org) as unknown as { repository(): Promise<StoredRepository | null> }).repository()) : null,
+    account: () => (this.env.ACCOUNTS ? (this.env.ACCOUNTS.getByName(this.org) as unknown as TokenMinter) : null),
+    fetch: (url, init) => fetch(url, init),
   };
 
   /** The object's SQL, migrated on first use. */
@@ -233,9 +247,9 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
     try {
       while (!work.adopted(sql)) {
         const page = await this.out.computer(org).exportSessions(work.adoptAfter(sql), work.ADOPT_PAGE);
-        // The knowledge repository, read before the last page marks the adoption done.
-        const repository = page.next === null ? ((await this.out.workIndex()?.repository(org)) ?? null) : null;
-        work.adoptPage(sql, Date.now(), org, page, repository ? `${repository.owner}/${repository.name}` : null);
+        // The knowledge repository the Work board held, read before the last page marks the adoption done.
+        const repository = page.next === null ? await this.out.boardRepository() : null;
+        work.adoptPage(sql, Date.now(), org, page, repository ? JSON.stringify(repository) : null);
       }
       alarms.clear(sql, "adopt");
       alarms.set(sql, "age", Date.now() + AGE_EVERY_MS);
@@ -410,21 +424,32 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
     return sessions.forHost(this.sql, machine);
   }
 
+  // ------------------------------------------------------------------ the knowledge repository (org/repository.ts)
+
   async repository(p: Principal): Promise<Repository | null> {
     await this.ready(p);
-    return (await this.out.workIndex()?.repository(this.org)) ?? null;
+    return repositories.shown(repositories.storedRepository(this.sql));
   }
 
   async setRepository(p: Principal, body: RepositoryChoice): Promise<Reply<{ repository: Repository }>> {
     const busy = await this.gate(p);
     if (busy) return busy;
     if (p.kind !== "member" && p.kind !== "key") return { ok: false, code: "forbidden", status: 403 };
-    const index = this.out.workIndex();
-    if (!index) return { ok: false, code: "unavailable", status: 503, message: "The Work index is not bound." };
-    const result = await index.setRepository(this.org, body, { member: p.subject, name: null, email: null });
-    if (!result.ok) return result;
-    if (work.setKnowledge(this.sql, Date.now(), `${result.value.owner}/${result.value.name}`)) this.flush();
-    return { ok: true, repository: result.value };
+    const account = this.out.account();
+    if (!account) return { ok: false, code: "unavailable", status: 503, message: "GitHub is not configured." };
+    const checked = await repositories.checkChoice(account, this.out.fetch, body);
+    if (!checked.ok) return checked;
+    repositories.storeRepository(this.sql, checked.repository);
+    this.flush();
+    return { ok: true, repository: repositories.shown(checked.repository)! };
+  }
+
+  /** What the organization's GitHub installations grant, for the picker. */
+  async repositories(p: Principal, q: RepositoriesQuery): Promise<Reply<{ installations: GrantingInstallation[] }>> {
+    await this.ready(p);
+    const account = this.out.account();
+    if (!account) return { ok: false, code: "unavailable", status: 503, message: "GitHub is not configured.", retryAfterMs: 5_000 };
+    return repositories.listGranted(account, this.out.fetch, q);
   }
 
   async linkPerson(from: string, to: string): Promise<void> {

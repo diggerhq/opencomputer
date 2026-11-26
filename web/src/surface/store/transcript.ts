@@ -7,10 +7,14 @@ import type { ApiEvent, Ask, InboxEntry, OpRow, Pending } from '@opencomputer/sd
 export type Item =
   | { kind: 'user'; key: string; text: string; author: string | null; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
   | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
-  | { kind: 'step'; key: string; title: string; status: 'running' | 'done' | 'failed'; at: string }
+  // A turn's steps, where its first step was: listed while the turn runs,
+  // folded into one line once it has ended (the settled pattern).
+  | { kind: 'steps'; key: string; steps: Step[]; settled: boolean; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
+
+export type Step = { key: string; title: string; status: 'running' | 'done' | 'failed' }
 
 export type OpenBlock = { blockId: string; type: string; turnId: string; text: string }
 
@@ -22,8 +26,24 @@ const withoutSlackHeader = (text: string | null): string | null =>
 // `me`: the person looking; their own messages carry no name.
 export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[] {
   const items: Item[] = []
-  const steps = new Map<string, Extract<Item, { kind: 'step' }>>()
+  const steps = new Map<string, Step>()
+  type Group = Extract<Item, { kind: 'steps' }>
+  // Each turn's runs of steps, in order.
+  const turns = new Map<string, Group[]>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
+  // A turn that has ended: its steps fold, and one still running is not.
+  const settle = (turnId: string | null | undefined) => {
+    const runs = turns.get(turnId ?? '')
+    if (!runs?.length || runs[0].settled) return
+    const [first, ...rest] = runs
+    first.settled = true
+    for (const r of rest) {
+      first.steps.push(...r.steps)
+      items.splice(items.indexOf(r), 1)
+    }
+    turns.set(turnId ?? '', [first])
+    for (const st of first.steps) if (st.status === 'running') st.status = 'done'
+  }
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>
     switch (e.type) {
@@ -52,11 +72,21 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         const callId = str(d.callId) ?? e.id
         const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
         const have = steps.get(callId)
-        if (have) have.status = status
+        if (have) {
+          have.status = status
+          break
+        }
+        const step: Step = { key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
+        steps.set(callId, step)
+        const turn = e.turnId ?? ''
+        const runs = turns.get(turn) ?? []
+        const last = runs[runs.length - 1]
+        if (last && runs[0].settled) runs[0].steps.push(step)
+        else if (last && items[items.length - 1] === last) last.steps.push(step)
         else {
-          const step = { kind: 'step' as const, key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status, at: e.createdAt } as Extract<Item, { kind: 'step' }>
-          steps.set(callId, step)
-          items.push(step)
+          const g: Group = { kind: 'steps', key: `steps-${callId}`, steps: [step], settled: false, at: e.createdAt }
+          turns.set(turn, [...runs, g])
+          items.push(g)
         }
         break
       }
@@ -79,19 +109,22 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         break
       }
       case 'turn.failed': {
+        settle(e.turnId)
         const err = d.error as { message?: unknown } | undefined
         items.push({ kind: 'line', key: e.id, text: str(err?.message) ?? 'The turn failed.', tone: 'error', at: e.createdAt })
         break
       }
       case 'turn.cancelled':
+        settle(e.turnId)
         items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
         break
       case 'turn.completed':
+        settle(e.turnId)
+        break
       case 'turn.started':
         break
     }
   }
-  // A step still running in a turn that has ended is not running.
   return items
 }
 
