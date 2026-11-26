@@ -122,6 +122,18 @@ describe("owed", () => {
       expect(owed.has(sql, "summary")).toBe(false);
     });
   });
+  it("a debounced call folds in what comes before it is due, and not once it is due or tried", async () => {
+    await withSql("owed-debounce", async (sql) => {
+      const later = Date.now() + 20_000;
+      const merge = (to: number) => (pending: unknown) => ({ ...(pending as object), to });
+      owed.debounce(sql, { group: "wake:a", call: "wake", body: { from: 1, to: 1 }, at: later }, merge(1));
+      owed.debounce(sql, { group: "wake:a", call: "wake", body: { from: 2, to: 2 }, at: later + 5_000 }, merge(2));
+      expect(sql.exec("SELECT body, at FROM _owed")).toEqual([{ body: JSON.stringify({ from: 1, to: 2 }), at: later }]);
+      sql.exec("UPDATE _owed SET at = 0");
+      owed.debounce(sql, { group: "wake:a", call: "wake", body: { from: 3, to: 3 }, at: later }, merge(3));
+      expect(sql.exec("SELECT body FROM _owed ORDER BY n")).toEqual([{ body: JSON.stringify({ from: 1, to: 2 }) }, { body: JSON.stringify({ from: 3, to: 3 }) }]);
+    });
+  });
   it("a caller's schedule ends in the dead list", async () => {
     await withSql("owed-dead", async (sql) => {
       owed.add(sql, { group: "g", call: "hook", at: 0, schedule: [0] });

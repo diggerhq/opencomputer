@@ -159,6 +159,18 @@ export const owed = {
     );
     alarms.set(tx, OWED_PURPOSE, at);
   },
+  /**
+   * A debounced call, in the caller's transaction: while its group's newest call is not yet due and
+   * not yet tried, that call takes `merge(its body)` and keeps its time; else this one is added, due at `o.at`.
+   */
+  debounce(tx: Sql, o: Owed & { at: number }, merge: (pending: unknown) => unknown): void {
+    const row = tx.exec<{ n: number; body: string | null; at: number; tries: number }>("SELECT n, body, at, tries FROM _owed WHERE grp = ? ORDER BY n DESC LIMIT 1", o.group)[0];
+    if (row && row.tries === 0 && row.at > Date.now()) {
+      tx.exec("UPDATE _owed SET body = ? WHERE n = ?", JSON.stringify(merge(row.body === null ? undefined : JSON.parse(row.body))), row.n);
+      return;
+    }
+    owed.add(tx, o);
+  },
   /** Drop the rows of a group (its subject is gone) or the row of a key. */
   drop(tx: Sql, which: { group: string } | { key: string }): void {
     if ("group" in which) tx.exec("DELETE FROM _owed WHERE grp = ?", which.group);

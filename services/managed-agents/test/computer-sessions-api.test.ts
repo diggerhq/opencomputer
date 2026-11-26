@@ -535,7 +535,6 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
         void t.flush();
       },
       surfaceOf: () => "cli",
-      slackQueue: () => ({ rows: 1, oldestMs: 250 }),
     });
     return { telemetry, events, names: () => events.filter((e) => e.event_name !== "telemetry.dropped").map((e) => e.event_name as string) };
   }
@@ -550,7 +549,7 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     await tick();
     // The gap's 4010 is reported as it closes the socket, before its batch's append event.
     expect(r.names()).toEqual(["sessionlog.append", "sessionlog.recovery", "sessionlog.append"]);
-    expect(r.events[0]!.data).toMatchObject({ events: 40, slack_queue_rows: 1, slack_queue_oldest_ms: 250 });
+    expect(r.events[0]!.data).toMatchObject({ events: 40 });
     expect(r.events[0]!.data).toHaveProperty("do_ack_ms");
     expect(r.events[0]!.data).toHaveProperty("do_pre_ms");
     expect(r.events[1]!.data).toMatchObject({ kind: "gap_4010", epoch: 1 });

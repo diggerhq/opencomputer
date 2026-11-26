@@ -22,7 +22,7 @@ import { DEFAULT_HARNESS } from "./harnesses.js";
 import { MANAGED_MODEL_NAME } from "./model-key.js";
 import type { PoolProbeResult } from "./pool.js";
 import type { CalvinGatewayToHost, CalvinHarness, ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "./protocol.js";
-import type { SlackResult } from "./slack.js";
+import type { SlackResult } from "../slack/slack-api.js";
 import type { SubscriptionEventName } from "./telemetry/catalog.js";
 import type { EventFields } from "./telemetry/emitter.js";
 

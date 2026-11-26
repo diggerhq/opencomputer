@@ -99,7 +99,7 @@ import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, helloProfiles, profileHarnesses } from "./harnesses.js";
 import { type SealPurpose, seal, unseal } from "./crypto.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
-import { LOOKUP_FAILED_TEXT, ThreadAccess } from "./threads.js";
+import { LOOKUP_FAILED_TEXT } from "../slack/threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
 import { hostToken } from "./host-token.js";
 import { type AdoptedComputer, ComputerLifecycle, type ComputerState, type LifecycleReply } from "./lifecycle.js";
@@ -171,14 +171,7 @@ import { ApiTelemetry, surfaceOfOrigin } from "./telemetry/api.js";
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { ComputerTelemetry, type HostAttachment } from "./telemetry/computer.js";
 import type { GatewayTelemetry } from "./telemetry/gateway.js";
-import { SLACK_QUEUE_STATE_INDEX, slackQueueNow } from "./slack-queue-gauge.js";
-import {
-  type SlackInteraction,
-  type SlackMessageJob,
-  type SlackResult,
-  slackApi,
-  slackThreadUrl,
-} from "./slack.js";
+import { type SlackInteraction, type SlackMessageJob, type SlackResult, slackThreadUrl } from "../slack/slack-api.js";
 
 /** What the edge's AccountDurableObject offers the computer. */
 interface AccountStub {
@@ -361,9 +354,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     slack: () => slackOf(this.env, this.accountId()),
     live: () => liveOf(this.env, this.accountId()),
   };
-  /** The Slack actor's credentials for the host (`forHost`), in memory only. */
-  private slackHost: { botToken: string; botUserId: string; teamId: string } | null = null;
-  private slackAsked = false;
   private readonly lifecycle: ComputerLifecycle;
   private readonly secrets: SecretsStore;
   /**
@@ -375,8 +365,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    */
   private readonly access: ModelAccess;
   private readonly connections: ComputerConnections;
-  /** The principal each Slack user last asked as (`command`, `interaction`), in memory only: what they do next is done as them. */
-  private readonly askers = new Map<string, Principal>();
   private readonly billing: ComputerRuntimeBilling;
   /** Work 054: the gateway's telemetry events (telemetry/computer.ts); sends nothing unless configured. */
   private readonly telemetry: ComputerTelemetry;
@@ -405,8 +393,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   /** The size reconciliation and the billing tick in flight: run off the alarm's path, never twice at once. */
   private reconciling?: Promise<void>;
   private billingRun?: Promise<void>;
-  /** Slack thread access (work 049 L3, threads.ts), for the linked workspace; its caches hold no message text. */
-  private threadAccess?: { teamId: string; access: ThreadAccess };
 
   constructor(ctx: DurableObjectState, env: ComputerEdgeEnv) {
     super(ctx, env);
@@ -481,8 +467,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         // Already there.
       }
     }
-    // The telemetry's Slack queue gauge reads waiting rows per journal batch: index-only (slack-queue-gauge.ts).
-    sql.exec(SLACK_QUEUE_STATE_INDEX);
     this.lifecycle = new ComputerLifecycle({
       sql,
       cloud: () => {
@@ -510,7 +494,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.secrets = new SecretsStore({
       sql,
       encryptionKey: () => env.BLUE_CHANNEL_ENCRYPTION_KEY,
-      member: (userId) => this.threads().member(userId),
+      member: async (userId) => (await this.actors.slack().principal(userId)) !== null,
       instructs: (key, userId) => this.instructs(key, userId),
       slack: (method, body) => this.slack(method, body),
       session: (key) => this.runnerSession(key),
@@ -536,14 +520,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       // Lazy: `this.telemetry` is built below.
       telemetry: (name, fields) => this.telemetry.subscription(name, fields),
       slackInstalled: () => {
-        const installed = !!(this.setting("slackTeamId") && this.setting("slackBotToken"));
+        const installed = !!this.setting("slackTeamId");
         const teamName = this.setting("slackTeamName");
         return { installed, ...(teamName ? { teamName } : {}) };
       },
       poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
-      slackUserName: (userId) => this.threads().name(userId),
+      slackUserName: (userId) => this.actors.slack().userName(userId),
       connectCodeIndex: {
         put: (hash, expiresAt) => this.computerObject(connectCodeIndexName(hash)).indexConnectCode(hash, this.accountId(), expiresAt),
         forget: (hash) => this.computerObject(connectCodeIndexName(hash)).forgetConnectCode(hash),
@@ -598,7 +582,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       emit: (write) => batch.emit(write),
       surfaceOf: (sessionId) =>
         surfaceOfOrigin([...sql.exec<{ o: string | null }>("SELECT origin_type AS o FROM sessions WHERE session_id = ?", sessionId)][0]?.o),
-      slackQueue: () => slackQueueNow(sql),
     });
     this.keys = new ComputerKeys({
       sql,
@@ -870,15 +853,14 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     }
   }
 
-  /** The Slack actor's part: people and the bot's credentials (kept in memory, never stored here). Never throws. */
+  /** The Slack actor's part: people and the bot's credentials (passed to the host, never kept here). Never throws. */
   private async readSlack(changed = false): Promise<void> {
     try {
       const got = await this.actors.slack().forHost();
-      this.slackHost = got.slack;
       await this.slackChanged(got.slack, changed);
       if (!this.socket()) return;
       if (got.people.length) this.send({ t: "people", people: got.people });
-      if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials()) });
+      if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials(undefined, got.slack)) });
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", event: "computer.slack_read_failed", message: errorText(error) }));
     }
@@ -896,7 +878,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       // What the dashboard's overview shows of the link.
       this.put("slackBotSeen", slack.botUserId);
       this.put("slackNameSeen", slack.teamName ?? "");
-      // What this object's own Slack calls and session keys read; the token is the Slack actor's (`slackBotToken`).
+      // What this object's session keys read; the token is the Slack actor's alone.
       this.put("slackTeamId", slack.teamId);
       this.put("slackBotUserId", slack.botUserId);
       if (slack.teamName) this.put("slackTeamName", slack.teamName);
@@ -982,7 +964,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     // A linked person's subject is their member id: the Slack user is the one linked to it.
     const userId = p.subject.startsWith("slack:") ? p.subject.slice(p.subject.lastIndexOf(":") + 1) : this.access.agents.view(p.subject).linkedSlackUser?.id;
     if (!userId) return { reply: "This command works from Slack." };
-    this.askers.set(userId, p);
     const row = c.sessionId
       ? [...this.ctx.storage.sql.exec<{ key: string; channelId: string; threadTs: string; ownerId: string | null }>(
           "SELECT runner_key AS key, channel_id AS channelId, thread_ts AS threadTs, owner_id AS ownerId FROM sessions WHERE session_id = ?",
@@ -1373,7 +1354,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     // Warn: a DM to whoever installed the Slack app; nobody known, the warning is skipped and the clock still runs.
     // A known installer the DM did not reach is warned again on the next check; the VM stays until one gets through.
     const installer = this.setting("slackInstallerUserId");
-    const reachable = Boolean(installer && this.setting("slackBotToken"));
+    const reachable = Boolean(installer && this.setting("slackTeamId"));
     const sent = act && reachable ? await this.directMessage(installer!, unpaidWarning(publicOrigin(this.env))) : false;
     console.log(JSON.stringify({ level: "info", event: "computer.unpaid_warning", ...log, installer: installer !== undefined, sent }));
     if (act && unpaidWarningGiven({ reachable, sent })) this.put("unpaidWarnedAt", String(now));
@@ -2061,14 +2042,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return true;
   }
 
-  private threads(): ThreadAccess {
-    const teamId = this.setting("slackTeamId") ?? "";
-    if (this.threadAccess?.teamId !== teamId) {
-      this.threadAccess = { teamId, access: new ThreadAccess((method, body) => this.slack(method, body), teamId) };
-    }
-    return this.threadAccess.access;
-  }
-
   private storedAdmission(): StoredAdmission | null {
     try {
       const raw = this.setting("admission");
@@ -2137,7 +2110,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const userId = interaction.user?.id;
     if (!userId || (p.subject.startsWith("slack:") && !p.subject.endsWith(`:${userId}`))) return {};
     if (interaction.team?.id !== (this.setting("slackSeen") ? this.setting("slackLinked") : this.setting("slackTeamId"))) return {};
-    this.askers.set(userId, p);
     const action = interaction.actions?.[0];
     if (c.sessionId && action?.action_id?.startsWith("v:")) {
       const key = [...this.ctx.storage.sql.exec<{ key: string }>("SELECT runner_key AS key FROM sessions WHERE session_id = ?", c.sessionId)][0]?.key;
@@ -2152,7 +2124,6 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     const named = this.ctx.id.name;
     if (!this.setting("accountId") && named && !named.startsWith("computer-")) this.bind(named);
     if (!this.setting("accountId")) return;
-    this.threads().forget(slackUserId);
     await this.access.models.memberRemoved(slackUserId);
   }
 
@@ -2577,19 +2548,19 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * none. `credentials.resolved` on `t` (or its own emitter), with where the
    * model key came from.
    */
-  private async hostCredentials(telemetry?: GatewayTelemetry): Promise<Pick<Extract<CalvinGatewayToHost, { t: "credentials" }>, "credentials" | "models">> {
+  private async hostCredentials(telemetry?: GatewayTelemetry, known?: Awaited<ReturnType<SlackRpc["forHost"]>>["slack"]): Promise<Pick<Extract<CalvinGatewayToHost, { t: "credentials" }>, "credentials" | "models">> {
     return this.telemetry.within(telemetry, async (t) => {
       const span = t.start("credentials.resolved");
       try {
-        const teamId = this.setting("slackTeamId");
         const { key, source } = await this.organizationModelKey();
         const model = await this.managedModel(key);
         if (model.fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
-        const slack = this.slackHost;
+        // The bot token is the Slack actor's: asked for each time, never kept here.
+        const slack = known !== undefined ? known : await this.slackForHost();
         const credentials = {
-          slackBotToken: slack?.botToken ?? (await this.slackBotToken()),
-          slackBotUserId: slack?.botUserId ?? this.setting("slackBotUserId") ?? "",
-          ...(slack?.teamId ?? teamId ? { teamId: slack?.teamId ?? teamId } : {}),
+          slackBotToken: slack?.botToken ?? "",
+          slackBotUserId: slack?.botUserId ?? "",
+          ...(slack?.teamId ? { teamId: slack.teamId } : {}),
           ...model.credentials,
         };
         span.end({ outcome: "completed", data: { source } });
@@ -2623,26 +2594,13 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return value;
   }
 
-  private async slackBotToken(): Promise<string> {
-    // The Slack actor holds the token (read once per lifetime of this object, then on `changed("slack")`);
-    // the one stored here is from before it did, until the import.
-    if (!this.slackHost && !this.slackAsked) {
-      this.slackAsked = true;
-      try {
-        this.slackHost = (await this.actors.slack().forHost()).slack;
-      } catch {
-        this.slackAsked = false;
-      }
-    }
-    if (this.slackHost) return this.slackHost.botToken;
-    const teamId = this.setting("slackTeamId");
-    const sealed = this.setting("slackBotToken");
-    if (!teamId || !sealed) return "";
+  /** The Slack actor's credentials for the host; none when it cannot be asked (the host keeps what it had until the next `credentials`). */
+  private async slackForHost(): Promise<Awaited<ReturnType<SlackRpc["forHost"]>>["slack"]> {
     try {
-      return await this.unsealCached(sealed, "slack-bot-token", `${this.accountId()}\0${teamId}`);
-    } catch {
-      console.error(JSON.stringify({ level: "error", event: "computer.slack_token_undecryptable" }));
-      return "";
+      return (await this.actors.slack().forHost()).slack;
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.slack_read_failed", message: errorText(error) }));
+      return null;
     }
   }
 
@@ -2727,10 +2685,13 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     this.ctx.waitUntil(this.provisioningModelKey);
   }
 
+  /** Slack's Web API, through the Slack actor (it holds the token); a call that did not reach it is Slack's failure. */
   private async slack(method: string, body: Record<string, unknown>): Promise<SlackResult> {
-    const token = await this.slackBotToken();
-    if (!token) return { ok: false, error: "not_linked" };
-    return slackApi(token, method, body);
+    try {
+      return await this.actors.slack().api(method, body);
+    } catch (error) {
+      return { ok: false, error: errorText(error) };
+    }
   }
 
   private person(slackUserId: string): CalvinPerson {
@@ -2775,7 +2736,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   /**
    * Whether this Slack user may write to the session behind a runner key: Org's
-   * access record decides (spec 35.2), read as the principal they last asked as.
+   * access record decides (spec 35.2), read as their principal (the Slack actor's).
    * A session Org has no record of is as before for one without an owner: allowed.
    */
   private async instructs(key: string, userId: string): Promise<boolean> {
@@ -2783,7 +2744,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     if (!sessionId) return true;
     const access = await this.actors.org().access(sessionId);
     if (!access) return true;
-    const p = this.askers.get(userId);
+    const p = await this.actors.slack().principal(userId);
     if (access.writers === "members") return !!p && (p.kind === "member" || p.kind === "key");
     return !!p && access.writers.includes(byOf(p));
   }
@@ -2794,8 +2755,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    */
   private async wakeSession(session: { key: string }, userId: string, text: string, ts: string): Promise<void> {
     const sessionId = this.sessionIdOf(session.key);
-    const p = this.askers.get(userId);
-    if (!sessionId || !p) return;
+    if (!sessionId) return;
+    const p = await this.actors.slack().principal(userId);
+    if (!p) return;
     await this.actors.log(sessionId).accept(p, {
       id: await turnIdFor(session.key, `${ts}\0wake`),
       kind: "turn",
