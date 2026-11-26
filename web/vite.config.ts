@@ -111,6 +111,9 @@ export default defineConfig({
         new URL('../sdks/typescript/src/computer/index.ts', import.meta.url),
       ),
     },
+    // The SDK's source imports zod (its review schema); take this app's copy, so a build
+    // needs only web/'s packages installed.
+    dedupe: ['zod'],
   },
   server: {
     port: 3000,

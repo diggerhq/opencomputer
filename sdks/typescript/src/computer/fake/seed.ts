@@ -1,7 +1,8 @@
 // The seeds: `demo` is the prototype's organization (seed-data.ts), `empty` a new one (S8).
 // The prototype's "now" (Wed 25 Nov, 17:00) is the server's now; every time is counted back from it.
 
-import type { MachineRow, PlaceRow, ProposalRow, ReadRow, ResultRow, Review, SessionRow, TrackRow } from "../types.js";
+import type { MachineRow, PlaceRow, ProposalRow, ReadRow, ResultRow, SessionRow, TrackRow } from "../types.js";
+import type { Review, ReviewPart } from "../review.js";
 import { agentActor, personActor, type Ctx } from "./ctx.js";
 import { DEMO, type DemoMsg, type DemoReview, type DemoThread, type DemoTrack } from "./seed-data.js";
 
@@ -223,7 +224,7 @@ class Seeder {
   }
 
   private review(resultId: string, key: string, r: DemoReview): void {
-    const review: Review = { resultId, head: `${key}0a1b2c3d`, parts: r.parts.map((p) => ({ title: p.title, note: p.note, files: p.files.map((f) => f.path), weight: p.weight === "eye" ? "eye" : "rote" })) };
+    const review: Review = { resultId, head: `${key}0a1b2c3d`, parts: r.parts.map(demoPart) };
     this.ctx.org.reviews.set(resultId, review);
     let diff = "";
     for (const f of r.parts.flatMap((p) => p.files)) {
@@ -308,4 +309,28 @@ class Seeder {
       this.earlier(title, track, k, at, p.icon === "pr" ? "rule:pr-merged" : this.me, `Done: ${p.title}. ${p.detail}.`, p);
     }
   }
+}
+
+const EYE = /^\*\*Worth your eye\.\*\*\s*/;
+
+/** A demo part as an agent would write it: the note's first point is the claim, its "Worth your eye" points the eye items, and the opening lines of its first files the excerpts. */
+function demoPart(p: DemoReview["parts"][number]): ReviewPart {
+  const said = (p.note ?? "").split("\n").map((l) => l.replace(/^- /, "").trim()).filter(Boolean);
+  const plain = said.filter((l) => !EYE.test(l));
+  const eye = said.filter((l) => EYE.test(l)).map((l) => ({ text: l.replace(EYE, "") }));
+  const excerpts = p.files
+    .filter((f) => f.lines.some((l) => l[1] !== "-"))
+    .slice(0, 2)
+    .map((f) => {
+      const news = f.lines.filter((l) => l[1] !== "-").length;
+      return { path: f.path, start: f.lines[0][0], end: f.lines[0][0] + Math.min(news, 12) - 1 };
+    });
+  return {
+    title: p.title,
+    claim: plain[0] ?? p.title,
+    ...(plain.length > 1 ? { points: plain.slice(1) } : {}),
+    files: p.files.map((f) => ({ path: f.path })),
+    ...(excerpts.length ? { excerpts } : {}),
+    ...(eye.length ? { eye } : {}),
+  };
 }

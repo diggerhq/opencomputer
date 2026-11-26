@@ -8,9 +8,19 @@ import {
   type RefObject,
 } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { parsePatchFiles, type FileDiffMetadata } from '@pierre/diffs'
+import {
+  parsePatchFiles,
+  type FileDiffMetadata,
+  type SelectedLineRange,
+} from '@pierre/diffs'
 import { FileDiff, Virtualizer } from '@pierre/diffs/react'
-import type { ResultRow, Review as Written } from '@opencomputer/sdk/computer'
+import {
+  ReviewSummary,
+  type ResultRow,
+  type Review as Written,
+  type ReviewExcerpt,
+  type ReviewEye,
+} from '@opencomputer/sdk/computer'
 import { useS, useSurface, useThread } from '../hooks'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
@@ -60,9 +70,23 @@ function parseDiff(text: string): {
   }
 }
 
-// The opening of a file's change: its first hunks, up to about a screenful.
-// Not a judgement of what matters (the agent's summary does not yet name
-// excerpts), only the start of the diff, with the rest one click away.
+// A file's diff cut to some of its hunks, numbered as in the whole file.
+function cut(
+  meta: FileDiffMetadata,
+  hunks: FileDiffMetadata['hunks'],
+): FileDiffMetadata {
+  const last = hunks[hunks.length - 1]
+  return {
+    ...meta,
+    hunks,
+    unifiedLineCount: last.unifiedLineStart + last.unifiedLineCount,
+    splitLineCount: last.splitLineStart + last.splitLineCount,
+  }
+}
+
+// The opening of a file's change, for a summary that names no excerpts: its
+// first hunks, up to about a screenful. Not a judgement of what matters, only
+// the start of the diff, with the rest one click away.
 const SNIP = 16
 function opening(meta: FileDiffMetadata): FileDiffMetadata | null {
   const hunks: FileDiffMetadata['hunks'] = []
@@ -73,23 +97,28 @@ function opening(meta: FileDiffMetadata): FileDiffMetadata | null {
     rows += h.unifiedLineCount
   }
   if (hunks.length === meta.hunks.length) return null
-  const last = hunks[hunks.length - 1]
-  return {
-    ...meta,
-    hunks,
-    unifiedLineCount: last.unifiedLineStart + last.unifiedLineCount,
-    splitLineCount: last.splitLineStart + last.splitLineCount,
-  }
+  return cut(meta, hunks)
 }
 
-// A summary the agent wrote, if it is one this view can read: `parts` an array
-// of parts that each name their files. Anything else reads as none written.
+// The hunks an excerpt the agent named falls in: its lines, on its side.
+function excerpted(
+  meta: FileDiffMetadata,
+  x: ReviewExcerpt,
+): FileDiffMetadata | null {
+  const old = x.side === 'old'
+  const hunks = meta.hunks.filter((h) => {
+    const from = old ? h.deletionStart : h.additionStart
+    const n = old ? h.deletionCount : h.additionCount
+    return from <= x.end && x.start < from + Math.max(n, 1)
+  })
+  return hunks.length ? cut(meta, hunks) : null
+}
+
+// A summary the agent wrote, if it fits the summary's schema (the SDK's, the
+// one Org saves it by). Anything else reads as none written.
 function readable(r: Written | null | undefined): Written | null {
-  if (!r || !Array.isArray(r.parts)) return null
-  const parts = r.parts.filter(
-    (p) => p && typeof p.title === 'string' && Array.isArray(p.files),
-  )
-  return parts.length ? { ...r, parts } : null
+  const s = ReviewSummary.safeParse({ head: r?.head, parts: r?.parts })
+  return r && s.success ? { ...s.data, resultId: r.resultId } : null
 }
 
 // ---- what is held, so reopening is instant ----
@@ -114,10 +143,21 @@ function useChange(resultId: string) {
 
 // ---- parts: the agent's reading order over the files of the diff ----
 
+// An excerpt with its file and the hunks it falls in (null: not in the diff).
+interface Excerpt {
+  x: ReviewExcerpt
+  file: DiffFile | undefined
+  meta: FileDiffMetadata | null
+}
+
 interface Part {
   title: string
-  note: string | null
-  eye: boolean
+  claim: string | null
+  points: string[]
+  eye: ReviewEye[]
+  excerpts: Excerpt[]
+  // What the agent said of a file, by path.
+  notes: Map<string, string>
   // How many files the agent listed, for before the diff arrives.
   listed: number
   files: DiffFile[]
@@ -125,14 +165,28 @@ interface Part {
   del: number
 }
 
+const bare = (title: string, files: DiffFile[]): Part => ({
+  title,
+  claim: null,
+  points: [],
+  eye: [],
+  excerpts: [],
+  notes: new Map(),
+  listed: files.length,
+  files,
+  add: 0,
+  del: 0,
+})
+
 function group(
   review: Written | null | undefined,
   files: DiffFile[] | undefined,
 ): Part[] {
-  const byPath = new Map((files ?? []).map((f) => [f.path, f]))
+  const all = new Map((files ?? []).map((f) => [f.path, f]))
+  const byPath = new Map(all)
   const parts: Part[] = (review?.parts ?? []).map((p) => {
     const own: DiffFile[] = []
-    for (const path of p.files) {
+    for (const { path } of p.files) {
       const f = byPath.get(path)
       if (!f) continue
       // A file named in two parts is read in the first.
@@ -140,25 +194,24 @@ function group(
       own.push(f)
     }
     return {
-      title: p.title,
-      note: p.note,
-      eye: p.weight === 'eye',
+      ...bare(p.title, own),
+      claim: p.claim,
+      points: p.points ?? [],
+      eye: p.eye ?? [],
+      excerpts: (p.excerpts ?? []).map((x) => {
+        const file = all.get(x.path)
+        return { x, file, meta: file ? excerpted(file.meta, x) : null }
+      }),
+      notes: new Map(
+        p.files.flatMap((f) => (f.note ? [[f.path, f.note]] : [])),
+      ),
       listed: p.files.length,
-      files: own,
-      add: 0,
-      del: 0,
     }
   })
   if (byPath.size)
-    parts.push({
-      title: parts.length ? 'Everything else' : '',
-      note: null,
-      eye: false,
-      listed: byPath.size,
-      files: [...byPath.values()],
-      add: 0,
-      del: 0,
-    })
+    parts.push(
+      bare(parts.length ? 'Everything else' : '', [...byPath.values()]),
+    )
   for (const p of parts) {
     p.add = p.files.reduce((k, f) => k + f.add, 0)
     p.del = p.files.reduce((k, f) => k + f.del, 0)
@@ -225,7 +278,16 @@ const PATH =
   'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-left [direction:rtl]'
 
 // One file's diff, drawn by the library, in the dashboard's light or dark.
-function Diff({ meta, header }: { meta: FileDiffMetadata; header?: boolean }) {
+function Diff({
+  meta,
+  header,
+  lines,
+}: {
+  meta: FileDiffMetadata
+  header?: boolean
+  // Lines to mark: an excerpt the agent named.
+  lines?: SelectedLineRange
+}) {
   const { dark } = useTheme()
   const options = useMemo(
     () => ({
@@ -238,7 +300,7 @@ function Diff({ meta, header }: { meta: FileDiffMetadata; header?: boolean }) {
     }),
     [dark, header],
   )
-  return <FileDiff fileDiff={meta} options={options} />
+  return <FileDiff fileDiff={meta} options={options} selectedLines={lines} />
 }
 
 // A scrolling pane whose diffs the library virtualises (R41): only what is
@@ -366,6 +428,128 @@ function PartFiles({
   )
 }
 
+// A file's path, cut from the left when long.
+function PathText({ path }: { path: string }) {
+  return (
+    <span className={PATH}>
+      {'‎'}
+      {path}
+    </span>
+  )
+}
+
+// An excerpt the agent named: where it is, what to see in it, and the hunks
+// it falls in with its lines marked; the file in the full diff one click away.
+function ExcerptCard({
+  ex: { x, file, meta },
+  toFull,
+}: {
+  ex: Excerpt
+  toFull: (file?: string) => void
+}) {
+  const lines = useMemo<SelectedLineRange>(() => {
+    const side = x.side === 'old' ? 'deletions' : 'additions'
+    return {
+      start: x.start,
+      end: Math.max(x.start, x.end),
+      side,
+      endSide: side,
+    }
+  }, [x])
+  const where =
+    x.end > x.start
+      ? `lines ${nf(x.start)}–${nf(x.end)}`
+      : `line ${nf(x.start)}`
+  return (
+    <div
+      className="bg-card ring-border mb-3 overflow-clip rounded-[10px] ring-1"
+      data-excerpt={x.path}
+    >
+      <button
+        className="bg-sidebar text-muted-foreground hover:text-foreground border-border/60 flex w-full flex-col gap-0.5 border-b px-3 py-2 text-left text-xs transition-colors"
+        title="Open in the full diff"
+        onClick={() => toFull(x.path)}
+      >
+        <span className="flex w-full gap-2.5 font-mono tabular-nums">
+          <PathText path={x.path} />
+          <span className="text-muted-foreground/70 ml-auto flex-none">
+            {x.side === 'old' ? `${where} before` : where}
+          </span>
+        </span>
+        {x.why && (
+          <span className="text-foreground text-[12.5px]">
+            <Rich text={x.why} />
+          </span>
+        )}
+      </button>
+      {meta ? (
+        <Diff meta={meta} lines={lines} />
+      ) : (
+        <p className="text-muted-foreground px-3 py-2 text-xs">
+          {file
+            ? 'These lines are not in the change.'
+            : 'This file is not in the diff.'}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// A part's files as a list: each with what the agent said of it, and the
+// file in the full diff one click away.
+function FileList({
+  part,
+  toFull,
+}: {
+  part: Part
+  toFull: (file?: string) => void
+}) {
+  const [all, setAll] = useState(false)
+  const shown = all ? part.files : part.files.slice(0, FEW * 2)
+  return (
+    <div className="ring-border mb-3 overflow-clip rounded-[10px] ring-1">
+      {shown.map((f) => {
+        const note = part.notes.get(f.path)
+        return (
+          <button
+            className="hover:bg-accent border-border/60 flex w-full flex-col gap-0.5 border-b px-3 py-1.5 text-left transition-colors last:border-b-0"
+            data-path={f.path}
+            key={f.path}
+            title="Open in the full diff"
+            onClick={() => toFull(f.path)}
+          >
+            <span className="text-muted-foreground flex w-full gap-2.5 font-mono text-xs tabular-nums">
+              <PathText path={f.path} />
+              {f.tag && (
+                <span className="text-muted-foreground/70 flex-none">
+                  {f.tag}
+                </span>
+              )}
+              <Pm add={f.add} del={f.del} a="ml-auto" />
+            </span>
+            {note && (
+              <span className="text-[12.5px] leading-[1.5]">
+                <Rich text={note} />
+              </span>
+            )}
+          </button>
+        )
+      })}
+      {part.files.length > shown.length && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground w-full justify-start gap-2 rounded-none px-3 text-[12.5px] font-normal [&_svg]:-rotate-90"
+          onClick={() => setAll(true)}
+        >
+          {I.chev}
+          Show {filesWord(part.files.length - shown.length)} more
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // ---- Summary ----
 
 function Summary({
@@ -392,7 +576,10 @@ function Summary({
   const [cur, setCur] = useState(0)
   const named = parts.length > 0 && parts[0].title !== ''
   const max = Math.max(1, ...parts.map((p) => p.add + p.del))
-  const eyes = parts.map((p, i) => ({ p, i })).filter((x) => x.p.eye)
+  const eyes = parts.flatMap((p, i) => p.eye.map((e) => ({ e, i })))
+  // The agent named excerpts: they are what the summary shows of the code.
+  // Otherwise, each file's opening.
+  const excerpts = parts.some((p) => p.excerpts.length > 0)
 
   const secs = () => [
     ...scroller.current!.querySelectorAll<HTMLElement>('[data-pt]'),
@@ -441,7 +628,7 @@ function Summary({
               <span className={ON_N}>{i + 1}</span>
               <span className="min-w-0 flex-1">
                 {p.title}
-                {p.eye && (
+                {p.eye.length > 0 && (
                   <>
                     {' '}
                     <Mk mark="blocked" small className="ml-1 align-[1px]" />
@@ -485,14 +672,28 @@ function Summary({
                 {eyes.length === 1 ? 'One thing' : `${eyes.length} things`}{' '}
                 worth your eye
               </b>
-              {eyes.map(({ p, i }) => (
+              {eyes.map(({ e, i }, k) => (
                 <button
                   className="hover:bg-accent focus-visible:bg-accent active:bg-row-selected mt-2 -ml-1 flex w-full items-baseline gap-2.5 rounded-md px-1 py-0.5 text-left transition-colors outline-none"
-                  key={i}
-                  onClick={() => go(i)}
+                  key={k}
+                  title={e.path ? 'Open in the full diff' : undefined}
+                  onClick={() => (e.path ? toFull(e.path) : go(i))}
                 >
                   <Mk mark="blocked" small className="-translate-y-px" />
-                  <span>{p.title}</span>
+                  <span className="min-w-0 flex-1">
+                    <Rich text={e.text} />
+                    {e.path && (
+                      <span className="text-muted-foreground ml-2 font-mono text-[11.5px] whitespace-nowrap">
+                        {e.path}
+                        {e.line ? `:${e.line}` : ''}
+                      </span>
+                    )}
+                  </span>
+                  {named && (
+                    <span className="text-muted-foreground/70 flex-none font-mono text-[11px]">
+                      {i + 1}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -513,7 +714,7 @@ function Summary({
                     <h3 className="text-[17px] font-[650] tracking-[-0.01em]">
                       {p.title}
                     </h3>
-                    {p.eye && (
+                    {p.eye.length > 0 && (
                       <span className="text-status-pending flex-none text-[11.5px] whitespace-nowrap">
                         worth your eye
                       </span>
@@ -531,15 +732,35 @@ function Summary({
                       </>
                     )}
                   </div>
-                  {p.note && (
-                    <div className="mb-4 ml-6 max-w-[620px] leading-[1.6] text-pretty">
-                      <Rich text={p.note} />
+                  {p.claim && (
+                    <div className="mb-3 ml-6 max-w-[620px] leading-[1.6] text-pretty">
+                      <Rich text={p.claim} />
                     </div>
+                  )}
+                  {p.points.length > 0 && (
+                    <ul className="mb-4 ml-6 max-w-[620px] list-disc space-y-1 pl-5 leading-[1.55] text-pretty">
+                      {p.points.map((t, k) => (
+                        <li key={k}>
+                          <Rich text={t} />
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </>
               )}
               <div className={cn(named && 'ml-6')}>
-                <PartFiles files={p.files} toFull={toFull} />
+                {excerpts ? (
+                  <>
+                    {p.excerpts.map((x, k) => (
+                      <ExcerptCard ex={x} key={k} toFull={toFull} />
+                    ))}
+                    {p.files.length > 0 && (
+                      <FileList part={p} toFull={toFull} />
+                    )}
+                  </>
+                ) : (
+                  <PartFiles files={p.files} toFull={toFull} />
+                )}
               </div>
             </section>
           ))}
@@ -687,12 +908,12 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
                 {i + 1} · {p.title}
               </div>
             ),
-            p.title && p.note && (
+            p.title && p.claim && (
               <div
                 className="text-muted-foreground mb-3 max-w-[720px]"
                 key={`n${i}`}
               >
-                <Rich text={p.note} />
+                <Rich text={p.claim} />
               </div>
             ),
             p.files.map((f) => (

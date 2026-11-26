@@ -1,5 +1,8 @@
 // `result.add` and `review.save` (spec 39): an agent's own session only (19.2).
 
+import { Validator, type Schema } from "@cfworker/json-schema";
+// The review summary's schema: defined in the SDK (sdks/typescript/src/computer/review.ts), copied here by its `npm run schema`.
+import reviewSchema from "../review.v1.json" with { type: "json" };
 import { isOwnSession, readSession, type Tx } from "../tx.js";
 import type { Principal } from "../../actor/principal.js";
 import { byFor, isSid, isStr, optStr } from "./common.js";
@@ -44,11 +47,19 @@ const resultAdd: MutationFn = (tx, p, args) => {
   return applied({ resultId: id });
 };
 
+const review = new Validator(reviewSchema as Schema, "2020-12", false);
+
 const reviewSave: MutationFn = (tx: Tx, p, args) => {
   const { resultId, head, parts } = args;
   if (!isRid(resultId)) return refuse("invalid_request", "resultId");
-  if (!isStr(head, 200)) return refuse("invalid_request", "head");
-  if (typeof parts !== "object" || parts === null || JSON.stringify(parts).length > 500_000) return refuse("invalid_request", "parts");
+  const checked = review.validate({ head, parts });
+  if (!checked.valid) {
+    // The deepest errors say what is wrong; the rest only say that a parent is.
+    const why = checked.errors.filter((e) => !checked.errors.some((o) => o !== e && o.instanceLocation.startsWith(`${e.instanceLocation}/`)));
+    const at = why[0]?.instanceLocation.split("/")[1] === "head" ? "head" : "parts";
+    return refuse("invalid_request", at, { message: `The review summary does not fit its schema: ${why.slice(0, 5).map((e) => `${e.instanceLocation.slice(1) || "body"}: ${e.error}`).join("; ")}` });
+  }
+  if (JSON.stringify(parts).length > 500_000) return refuse("invalid_request", "parts");
   const r = tx.sql.exec<{ session_id: string }>("SELECT session_id FROM result WHERE id = ?", resultId)[0];
   if (!r || !ownAgent(p, r.session_id)) return refuse("not_found");
   tx.sql.exec("INSERT OR REPLACE INTO review (result_id, head, parts) VALUES (?, ?, ?)", resultId, head, JSON.stringify(parts));

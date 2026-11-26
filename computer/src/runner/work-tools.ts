@@ -8,6 +8,7 @@
 // refusal is told, never worked around; every write carries the tool call's id.
 
 import { z } from 'zod';
+import reviewJson from '../../schema/review.v1.json' with { type: 'json' };
 import { CloudError } from './cloud.js';
 import { trackOf } from './spawn.js';
 import { sessionOf } from './threads.js';
@@ -15,6 +16,9 @@ import { tool, type CalvinTool } from './tool.js';
 import { answer, keyOf, notFor, said, TID, type Work, workId } from './work.js';
 
 const MAX_LIST_CHARS = 60_000;
+
+/** `{ head, parts }` of a review summary: the SDK's schema (sdks/typescript/src/computer/review.ts), from the copy its `npm run schema` writes here. */
+export const reviewSummary = z.fromJSONSchema(reviewJson as z.core.JSONSchema.JSONSchema) as z.ZodObject;
 
 /** Org refused for a thread or a choice that is not this agent's: the case a proposal is for. */
 const notMine = (e: unknown) => e instanceof CloudError && ['refused', 'not_found', 'forbidden'].includes(e.code);
@@ -126,11 +130,16 @@ export function workTools(w: Work): CalvinTool[] {
     ),
     tool(
       'review_summary',
-      'Write the summary a person reads when they review a result of this thread: `head` is the commit it describes, `parts` the summary by part (for each: what changed and why, what to look at).',
-      { result: z.string().describe('The result\'s id (res_…)'), head: z.string().min(1).max(200).describe('The commit the summary describes'), parts: z.record(z.string(), z.unknown()).describe('The summary, by part') },
-      ({ result, head, parts }, call) =>
+      'Write the summary a person reads first when they review a pull request this thread made (add_result with kind `pr`); the full diff is one key away from it. ' +
+        'Read the change as a few parts, in the order a reviewer should take them, the part that carries the change first and rote parts (renames, generated files, ' +
+        'tests that follow) last; every file of the diff in one part. For each part: a claim of what changed and why that the reader can check, short points only ' +
+        'where they add to the claim, the excerpts (file and line range of the hunks worth reading, not whole files), a note on a file whose change is not obvious, ' +
+        'and what deserves the reviewer\'s eye: a risk, a judgement call, a behaviour that changed, something you did not test. Leave out what is merely true. ' +
+        'Write it from the diff at `head`, and again when you push a new head.',
+      { result: z.string().describe('The result\'s id (res_…) of the pull request'), ...reviewSummary.shape },
+      ({ result, ...summary }, call) =>
         answer('summary not saved', async () => {
-          await w.api.call('PUT', `/work/results/${result}/review`, { body: { head, parts }, key: keyOf(call) });
+          await w.api.call('PUT', `/work/results/${result}/review`, { body: summary, key: keyOf(call) });
           return 'Saved the review summary.';
         }),
     ),

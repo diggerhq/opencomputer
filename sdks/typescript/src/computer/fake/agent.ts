@@ -19,7 +19,8 @@
 //   "tell"                  passes the message to every open thread of the track
 //   anything else           is noted in the Doc.
 
-import type { Ask, ReviewPart, TrackRow } from "../types.js";
+import type { ReviewPart } from "../review.js";
+import type { Ask, TrackRow } from "../types.js";
 import type { FakeAgent } from "./api.js";
 import { agentActor, isPerson, Refusal, type Ctx } from "./ctx.js";
 import type { Turn } from "./log.js";
@@ -137,8 +138,15 @@ export class Agents {
       a.mutate(sid, "result.add", { resultId, sid, kind: "pr", ref: `https://github.com/acme/console/pull/${number}`, title: `PR #${number}`, meta: { number, repo: "acme/console", title, state: "open", checks: "passed", head, add: 41, del: 9, files: 3 } });
       a.mutate(sid, "result.add", { resultId: this.ctx.id("res"), sid, kind: "changes", ref: `changes:${sid}`, title: "3 files changed", meta: { add: 41, del: 9, files: 3 } });
       const parts: ReviewPart[] = [
-        { title: "Rows load in one query", note: "- `loadRows` asks once for every row of the organization.\n- **Worth your eye.** The order of the rows now comes from the query, not from the loop.", files: files.slice(0, 2), weight: "eye" },
-        { title: "The test covers both orders", note: "- One test for an empty organization, one for sixty rows.", files: files.slice(2), weight: "rote" },
+        {
+          title: "Rows load in one query",
+          claim: "`loadRows` asks once for every row of the organization, instead of once per row.",
+          points: ["The loop over ids is gone; nothing else called `loadRow`."],
+          files: [{ path: files[0], note: "Calls `loadRows` and sorts by position." }, { path: files[1] }],
+          excerpts: [{ path: files[0], start: 10, end: 13, why: "The one query, and the sort that keeps the order." }],
+          eye: [{ text: "The order of the rows now comes from the query, not from the loop.", path: files[0], line: 12 }],
+        },
+        { title: "The test covers both orders", claim: "One test for an empty organization, one for sixty rows.", files: [{ path: files[2] }] },
       ];
       a.mutate(sid, "review.save", { resultId, head, parts });
       org.diffs.set(

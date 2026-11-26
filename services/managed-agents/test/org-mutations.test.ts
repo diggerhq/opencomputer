@@ -7,6 +7,8 @@ import { STEPS } from "../src/org/schema.js";
 import { emptySummary, transact } from "../src/org/tx.js";
 import { mutate } from "../src/org/feed.js";
 import { doc as docRow } from "../src/org/work.js";
+import orgReviewSchema from "../src/org/review.v1.json" with { type: "json" };
+import sdkReviewSchema from "../../../sdks/typescript/schema/review.v1.json" with { type: "json" };
 
 /** Org's mutations (spec 19.2, 39), on a real Durable Object's storage. */
 
@@ -459,13 +461,43 @@ describe("read, pref, result, review", () => {
       expect(ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000002", ...pr, title: "Fix login redirect" })).value).toEqual({ resultId: "res_0000000000000001" });
       expect(sql.exec("SELECT id, title FROM result")).toEqual([{ id: "res_0000000000000001", title: "Fix login redirect" }]);
       expect(occurrences(sql)).toEqual(["result.changed", "result.changed"]);
-      ok(run(sql, agent(sid(1)), "review.save", { resultId: "res_0000000000000001", head: "abc123", parts: [{ title: "Redirect" }] }));
-      expect(sql.exec("SELECT head FROM review")).toEqual([{ head: "abc123" }]);
+      ok(run(sql, agent(sid(1)), "review.save", { resultId: "res_0000000000000001", head: "abc123", parts: [part] }));
+      expect(sql.exec("SELECT head, parts FROM review")).toEqual([{ head: "abc123", parts: JSON.stringify([part]) }]);
       expect(run(sql, A, "result.add", { resultId: "res_0000000000000003", ...pr })).toMatchObject({ ok: false, code: "not_found" });
-      expect(run(sql, agent(sid(2)), "review.save", { resultId: "res_0000000000000001", head: "x", parts: [] })).toMatchObject({ ok: false, code: "not_found" });
+      expect(run(sql, agent(sid(2)), "review.save", { resultId: "res_0000000000000001", head: "x", parts: [part] })).toMatchObject({ ok: false, code: "not_found" });
     });
   });
+
+  it("review.save takes only a summary that fits its schema, and says what does not", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1));
+      ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000001", sid: sid(1), kind: "pr", ref: "https://github.com/o/r/pull/1", title: "Fix login" }));
+      const save = (head: unknown, parts: unknown) => run(sql, agent(sid(1)), "review.save", { resultId: "res_0000000000000001", head, parts });
+      // The shape the live tool sent before: parts as an object.
+      expect(save("abc", { Redirect: "why" })).toMatchObject({ ok: false, code: "invalid_request", reason: "parts" });
+      expect(save("abc", [])).toMatchObject({ ok: false, code: "invalid_request", reason: "parts" });
+      expect(save("abc", [{ title: "Redirect", note: "no claim", files: ["src/login.ts"] }])).toMatchObject({ ok: false, code: "invalid_request", reason: "parts" });
+      const bad = save("abc", [{ ...part, excerpts: [{ path: "src/login.ts", start: 0, end: 3 }] }]);
+      expect(bad).toMatchObject({ ok: false, code: "invalid_request", reason: "parts" });
+      expect(bad).toMatchObject({ message: expect.stringContaining("parts/0/excerpts/0/start") });
+      expect(save("", [part])).toMatchObject({ ok: false, code: "invalid_request", reason: "head" });
+      expect(sql.exec("SELECT head FROM review")).toEqual([]);
+    });
+  });
+
+  it("checks the review summary against the SDK's schema, copied unchanged (sdks/typescript: npm run schema)", () => {
+    expect(orgReviewSchema).toEqual(sdkReviewSchema);
+  });
 });
+
+const part = {
+  title: "Redirect after login",
+  claim: "Login returns to the page it was opened from.",
+  points: ["The return path is checked against the origin."],
+  files: [{ path: "src/login.ts", note: "Reads and checks `next`." }],
+  excerpts: [{ path: "src/login.ts", start: 12, end: 20, why: "The check." }],
+  eye: [{ text: "An open redirect if the check is wrong.", path: "src/login.ts", line: 14 }],
+};
 
 describe("proposals", () => {
   const pid = (n: number) => `prp_${String(n).padStart(16, "0")}`;
