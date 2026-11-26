@@ -8,22 +8,24 @@ import { useList, useS, useSurface, useThread, useTrack } from '../hooks'
 import type { Layout } from '../store'
 import type { ThreadView } from '../store/views'
 import {
-  ACTS,
-  BLOCK,
-  COMPOSER,
   Composer,
-  HD,
-  I,
-  IN,
   MenuButton,
   Rich,
   ResultIcon,
   Tip,
+  type MenuItem,
+} from './bits'
+import {
+  ACTS,
+  BLOCK,
+  COMPOSER,
+  HD,
+  I,
+  IN,
   resultDetail,
   resultTitle,
   useConfirm,
-  type MenuItem,
-} from './bits'
+} from './kit'
 import { Conversation } from './Conversation'
 
 // S3: the thread pane.

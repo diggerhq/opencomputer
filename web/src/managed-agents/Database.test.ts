@@ -3,7 +3,7 @@ import { ApiError } from '@/api/client'
 import {
   isUnprovisionedDatabaseError,
   quoteDatabaseIdentifier,
-} from './Database'
+} from './database-sql'
 
 describe('quoteDatabaseIdentifier', () => {
   it('quotes table names', () => {

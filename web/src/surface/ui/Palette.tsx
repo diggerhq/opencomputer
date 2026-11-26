@@ -15,7 +15,8 @@ import {
 import { Kbd } from '@/components/ui/kbd'
 import { useList, useS, useSurface } from '../hooks'
 import type { Mark } from '../store/views'
-import { Mk, oneLayer } from './bits'
+import { Mk } from './bits'
+import { oneLayer } from './kit'
 
 interface Hit {
   kind: 'thread' | 'track'

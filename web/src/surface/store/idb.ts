@@ -15,7 +15,7 @@ export function idbStorage(p: Principal): Storage & { drop(): Promise<void> } {
         req.result.onclose = () => (db = null)
         resolve(req.result)
       }
-      req.onerror = () => reject(req.error)
+      req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'))
     }))
   const run = async <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T> => {
     const attempt = async () => {
@@ -23,7 +23,7 @@ export function idbStorage(p: Principal): Storage & { drop(): Promise<void> } {
       return new Promise<T>((resolve, reject) => {
         const req = fn(tx.objectStore('kv'))
         tx.oncomplete = () => resolve((req ? req.result : undefined) as T)
-        tx.onerror = tx.onabort = () => reject(tx.error)
+        tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'))
       })
     }
     try {
@@ -45,19 +45,23 @@ export function idbStorage(p: Principal): Storage & { drop(): Promise<void> } {
         new Promise<IDBValidKey[]>((res, rej) => {
           const r = s.getAllKeys(range)
           r.onsuccess = () => res(r.result)
-          r.onerror = () => rej(r.error)
+          r.onerror = () => rej(r.error ?? new Error('IndexedDB read failed'))
         }),
         new Promise<unknown[]>((res, rej) => {
           const r = s.getAll(range)
           r.onsuccess = () => res(r.result)
-          r.onerror = () => rej(r.error)
+          r.onerror = () => rej(r.error ?? new Error('IndexedDB read failed'))
         }),
       ])
-      return keys.map((k, i) => [String(k), values[i]] as [string, unknown])
+      // Every key is a string: put() is only ever given one.
+      return keys.map((k, i) => [k as string, values[i]] as [string, unknown])
     },
     batch: (ops) =>
       run('readwrite', (s) => {
-        for (const op of ops) 'put' in op ? s.put(op.value, op.put) : s.delete(op.delete)
+        for (const op of ops) {
+          if ('put' in op) s.put(op.value, op.put)
+          else s.delete(op.delete)
+        }
       }),
     async drop() {
       ;(await open()).close()

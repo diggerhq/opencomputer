@@ -7,7 +7,7 @@ import { buildTranscript } from './transcript'
 
 let seq = 0
 const ev = (type: string, turnId: string, data: Record<string, unknown> = {}): ApiEvent =>
-  ({ id: `ev${++seq}`, seq, type, turnId, sessionId: 'cs_1', createdAt: new Date(seq * 1000).toISOString(), data, actor: null }) as unknown as ApiEvent
+  ({ id: `ev${++seq}`, seq, type, turnId, sessionId: 'cs_1', createdAt: new Date(seq * 1000).toISOString(), data, actor: null })
 
 describe('steps', () => {
   const running = [
