@@ -113,8 +113,8 @@
       { "name": "SLACK", "class_name": "SlackDurableObject" },
       { "name": "DELIVERY", "class_name": "DeliveryDurableObject" },
       // Tracks and threads 18.8: the fan-out actor, owned by the `opencomputer-live` Worker
-      // (wrangler.live.jsonc; deploy it first). LIVE_KEY, the same secret there, signs the
-      // principal on a socket upgrade. Local and test configs leave it unbound (`liveOf` is null).
+      // (wrangler.live.jsonc; deploy it first). Local and test configs leave it unbound (`liveOf`
+      // is null).
       { "name": "LIVE", "class_name": "LiveDurableObject", "script_name": "opencomputer-live" },
       // Work 074: preview names, owned by the `previews` Worker (deploy it
       // first). Previews stay off until PREVIEW_PLATFORM_KEY,

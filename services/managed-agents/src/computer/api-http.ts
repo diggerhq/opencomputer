@@ -18,7 +18,7 @@ import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, computerOf, cursor, deliveryOf, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
-import { eventsStream, type LiveUpgrade, PRINCIPAL_HEADER, signPrincipal } from "../live/contract.js";
+import { eventsStream, type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { API_SCOPES } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
@@ -1242,16 +1242,12 @@ async function indexInstallation(env: ComputerEdgeEnv, org: string, installation
 
 // ------------------------------------------------------------------ slice 3: the socket, PATCH, agents' routes, webhooks, diffs
 
-/** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal signed. */
+/** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal verified here. */
 async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal, out: Reply): Promise<Response> {
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return out.error(426, "upgrade_required", "GET /live is a WebSocket.");
   const live = liveOf(env, p.org) as unknown as LiveUpgrade | null;
-  const key = (env as { LIVE_KEY?: string }).LIVE_KEY;
-  if (!live || !key) return out.error(503, "unavailable", "Live is not available.", { retryAfterMs: 60_000 });
-  const headers = new Headers(request.headers);
-  headers.delete("x-opencomputer-agent-token");
-  headers.set(PRINCIPAL_HEADER, await signPrincipal(key, p));
-  return live.fetch(new Request(request.url, { method: "GET", headers }));
+  if (!live) return out.error(503, "unavailable", "Live is not available.", { retryAfterMs: 60_000 });
+  return live.fetch(liveRequest(request, p));
 }
 
 /**

@@ -1,14 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import {
-  LIVE_SUBPROTOCOL,
-  type LiveAttachment,
-  PRINCIPAL_HEADER,
-  type Principal,
-  type ServerFrame,
-  signPrincipal,
-} from "../src/live/contract.js";
+import { LIVE_SUBPROTOCOL, PRINCIPAL_HEADER, type LiveAttachment, type Principal, type ServerFrame } from "../src/live/contract.js";
 import type { LiveDurableObject } from "../src/live/durable-object.js";
 import type { FakeComputer, FakeSessionLog } from "./fixtures/live-test-worker.js";
 
@@ -16,7 +9,6 @@ const bindings = env as unknown as {
   LIVE: DurableObjectNamespace<LiveDurableObject>;
   SESSION_LOG: DurableObjectNamespace<FakeSessionLog>;
   COMPUTERS: DurableObjectNamespace<FakeComputer>;
-  LIVE_KEY: string;
 };
 
 const events = (...seqs: number[]): never => seqs.map((seq) => ({ seq })) as never;
@@ -95,9 +87,9 @@ class Client {
   }
 }
 
-async function upgrade(org: string, principal: Principal | null, header?: string): Promise<Response> {
+async function upgrade(org: string, principal: Principal | null): Promise<Response> {
   const headers: Record<string, string> = { upgrade: "websocket", "sec-websocket-protocol": LIVE_SUBPROTOCOL };
-  if (principal) headers[PRINCIPAL_HEADER] = header ?? (await signPrincipal(bindings.LIVE_KEY, principal));
+  if (principal) headers[PRINCIPAL_HEADER] = JSON.stringify(principal);
   return liveOf(org).fetch(new Request("https://live/v3/live", { headers }));
 }
 
@@ -111,11 +103,9 @@ async function connect(org: string, principal: Principal = member(org), clientId
 }
 
 describe("Live: the socket", () => {
-  it("refuses an upgrade without a principal the edge signed", async () => {
+  it("refuses an upgrade without the principal the edge verified", async () => {
     expect((await upgrade("org_auth", null)).status).toBe(401);
-    expect((await upgrade("org_auth", member("org_auth"), "e30.bad")).status).toBe(401);
-    const stale = await signPrincipal(bindings.LIVE_KEY, member("org_auth"), Date.now() - 120_000);
-    expect((await upgrade("org_auth", member("org_auth"), stale)).status).toBe(401);
+    expect((await upgrade("org_auth", { org: "org_auth" } as Principal)).status).toBe(401);
     // A principal of another organization does not reach this one's Live.
     expect((await upgrade("org_auth", member("org_other"))).status).toBe(403);
   });
