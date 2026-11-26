@@ -1,6 +1,6 @@
 // The harnesses a computer can run (work 082), as data.
 //
-// A harness is the coding agent a session runs (protocol.ts CalvinHarness).
+// A harness is the coding agent a session runs (host-protocol/session.ts CalvinHarness).
 // What this computer can run comes from the features its host listed in its
 // latest hello, which the ComputerDO keeps across park and disconnect: each
 // harness needs one feature, or none (HARNESS_REQUIRES). A computer whose host

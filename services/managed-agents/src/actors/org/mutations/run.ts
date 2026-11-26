@@ -1,7 +1,7 @@
 // Org's mutations (spec 19.2, 39): one function per name, in `MUTATIONS`.
 //
 // The shape: `(tx, p, args) => MutationOutcome`.
-// - `tx` is the transaction (`../tx.ts`): read through `tx.sql` and the readers there, write and
+// - `tx` is the transaction (`../tx.ts`): read through `tx.sql` and the readers (`../records.ts`), write and
 //   then `tx.stamp(table, ...key)`, `tx.remove`, `tx.op` (the undo row, when section 39 gives an
 //   inverse), `tx.occur` / `tx.occurFor`, and the owed calls (`tx.sendAccess`, `tx.interrupt`, …).
 // - `p` is the caller. The function's first act is its authorization (19.2's table): a row the

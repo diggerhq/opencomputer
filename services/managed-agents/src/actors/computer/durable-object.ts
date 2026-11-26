@@ -2,7 +2,7 @@
 // accountId), holding everything about the organization's computer:
 //
 //   - the computer row and its lifecycle (lifecycle.ts), parking (parking.ts)
-//   - the host WebSocket (hibernatable), Calvin's protocol (protocol.ts)
+//   - the host WebSocket (hibernatable), Calvin's protocol (host-protocol/frames.ts)
 //   - the dispatch queue, sessions and people
 //   - session secrets (secrets-store.ts), and the linked Slack workspace's bot token
 //   - the Slack event queue: dedup, conversations, owner, acknowledge
