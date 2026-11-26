@@ -2233,6 +2233,10 @@ export async function runCommand(
       const connection = await findConnection(target, service);
       const resolved = service ?? serviceOfConnection(connection);
       if (action === "grant") {
+        // The computer reaches GitHub through its own app, never a person's.
+        if (resolved === "github") {
+          throw new Error("GitHub connections cannot be granted to the computer");
+        }
         const attachment = await client.grantComputerServiceConnection(
           connection.id,
         );
