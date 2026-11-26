@@ -12,7 +12,7 @@
 //   `welcome`, so a relay that restarts starts from the current state.
 // - A terminal belongs to the relay connection that opened it: when that
 //   connection drops, its terminals are hung up.
-// - The host checks again what the relay checked (owner or admin for a
+// - The host checks again what the relay checked (owner or a named person for a
 //   terminal; the session is one this host runs), so a confused relay cannot
 //   open a shell in someone else's session.
 // - terminal.opened / terminal.closed / files.pushed are recorded through
@@ -116,7 +116,7 @@ export async function serveWireLink(hooks: WireLinkHooks, o: { dir?: string; gro
         const ws = await hooks.workspace(m.sessionId);
         if (!ws) return { error: (await hooks.known?.(m.sessionId)) ? sessionNotRunning() : sessionNotFound() };
         const a = access.get(m.sessionId);
-        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member, new Set(admins)))) return { error: apiError('forbidden', "Only the session's owner, someone it is shared with, or an admin of an organization-wide session can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
+        if (m.member !== ws.owner && !(a && mayOpenTerminal(a, m.member))) return { error: apiError('forbidden', "Only the session's owner or someone it is shared with by name can open a terminal.", 403, { reason: 'terminal_owner_only' }) };
         // A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (C13).
         if (ws.sandbox && !ws.sandbox.running) return { error: sessionNotRunning() };
         const r = await o.terminals.open(

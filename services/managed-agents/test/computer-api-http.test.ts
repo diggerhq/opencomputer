@@ -291,7 +291,6 @@ describe("the session directory through Org", () => {
 });
 
 describe("session access through Org (docs/api/sessions.mdx#access)", () => {
-  const outside = { session: null, access: { mode: "owner", people: [] }, canManageAccess: true };
   const admin = { ...member, ocPrincipal: { ...memberP, admin: true } } as RequestIdentity;
 
   it("POST /sessions passes access to Org as given", async () => {
@@ -301,31 +300,42 @@ describe("session access through Org (docs/api/sessions.mdx#access)", () => {
     expect(org.createSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ access: { mode: "people", people: ["sam@example.com"] } }));
   });
 
-  it("PATCH /sessions/{id} with access: Org's session, or for an admin outside it only the access", async () => {
+  it("PATCH /sessions/{id} with access: Org's answer, owner_only for one who is not the owner (owner first)", async () => {
     const org = {
-      patchSession: vi.fn(async (p: Principal) => (p.admin ? { ok: true, ...outside } : { ok: true, session: row() })),
+      patchSession: vi.fn(async (p: Principal) => (p.admin ? { ok: false, code: "forbidden", status: 403, reason: "owner_only" } : { ok: true, session: row() })),
       getSession: vi.fn(async () => ({ ok: true, session: row() })),
     };
     const { call } = setup({ org });
     expect(await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } })).toEqual({ status: 200, body: { session: row() } });
     expect(org.patchSession).toHaveBeenCalledWith(expect.objectContaining({ subject: MEMBER }), SID, { access: { mode: "org" } });
-    expect(await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "owner" } }, identity: admin })).toEqual({ status: 200, body: outside });
+    const refused = await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "owner" } }, identity: admin });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "forbidden", reason: "owner_only" });
     org.patchSession.mockResolvedValueOnce({ ok: false, code: "forbidden", status: 403, reason: "access_in_slack" } as never);
     const slack = await call("PATCH", `/sessions/${SID}`, { body: { access: { mode: "org" } } });
     expect(slack.status).toBe(403);
     expect(slack.body.error).toMatchObject({ code: "forbidden", reason: "access_in_slack" });
   });
 
-  it("GET /sessions/{id}: an admin outside the session reads its access; anyone else 404", async () => {
-    const org = {
-      getSession: vi.fn(async () => ({ ok: false, code: "session_not_found", status: 404 })),
-      sessionAccess: vi.fn(async () => ({ ok: true, ...outside })),
-    };
+  it("GET /sessions/{id}: an admin outside the session gets 404 like anyone else (owner first)", async () => {
+    const org = { getSession: vi.fn(async () => ({ ok: false, code: "session_not_found", status: 404 })) };
     const log = { summary: vi.fn(async () => ({ ok: false, error: "not_found" })) };
     const { call } = setup({ org, log });
-    expect(await call("GET", `/sessions/${SID}`, { identity: admin })).toEqual({ status: 200, body: outside });
+    expect((await call("GET", `/sessions/${SID}`, { identity: admin })).status).toBe(404);
     expect((await call("GET", `/sessions/${SID}`)).status).toBe(404);
-    expect(org.sessionAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST /tickets names only sessions the caller may use: one Org will not show is refused at the mint", async () => {
+    const org = { getSession: vi.fn(async (_p: Principal, id: string) => (id === SID ? { ok: true, session: row() } : { ok: false, code: "session_not_found", status: 404 })) };
+    const { call, stub } = setup({ org });
+    (stub.computerApi as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 200, body: { ticket: "t" } });
+    const keyed = key(["sessions:read"]);
+    expect(await call("POST", "/tickets", { body: { sessionIds: [SID] }, identity: keyed })).toEqual({ status: 200, body: { ticket: "t" } });
+    expect(await call("POST", "/tickets", { body: {}, identity: keyed })).toEqual({ status: 200, body: { ticket: "t" } });
+    const refused = await call("POST", "/tickets", { body: { sessionIds: [SID, OTHER] }, identity: keyed });
+    expect(refused.status).toBe(404);
+    expect(refused.body.error).toMatchObject({ code: "session_not_found" });
+    expect(stub.computerApi).toHaveBeenCalledTimes(2);
   });
 
   it("GET and PATCH /settings are Org's; PATCH needs sessions:write and is refused to a non-admin", async () => {

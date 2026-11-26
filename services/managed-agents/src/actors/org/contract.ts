@@ -85,8 +85,6 @@ export interface SettingsEntry {
   body: { model?: string; effort?: string; mode?: string; speed?: "fast" | "standard" };
   trace?: string;
 }
-/** What one who manages a session's access but may not use it reads of it (an admin outside it). */
-export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };
 /** The organization's settings for the session API (spec 36.1). */
 /** Who drives a new Slack session: everyone in its thread (`open`, the default) or only its owner. */
 export type SlackAccessDefault = "open" | "owner";
@@ -174,11 +172,9 @@ export interface OrgRpc {
   // the directory
   createSession(p: Principal, body: CreateSession): Promise<Reply<{ session: SessionRow; place: PlaceRow | null; duplicate: boolean }>>;
   getSession(p: Principal, id: string): Promise<Reply<{ session: SessionRow }>>;
-  /** `session` is null when `p` manages its access but may not use it (an admin outside it): only `access` changed. */
-  patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow } | OutsideAccess>>;
+  /** Owner first (spec 36.1): only the owner changes anything of it; one it is shared with gets `owner_only`, anyone else `session_not_found`. */
+  patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>>;
   listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>>;
-  /** A session's access for one who manages it but may not use it (an admin outside it); anyone else `session_not_found`. */
-  sessionAccess(p: Principal, id: string): Promise<Reply<OutsideAccess>>;
   settings(p: Principal): Promise<OrgSettings>;
   /** Admins only (`admin_required`). */
   setSettings(p: Principal, patch: Partial<OrgSettings>): Promise<Reply<{ settings: OrgSettings }>>;

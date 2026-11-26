@@ -5,7 +5,7 @@ import type { ActorEnv } from "../../actors/addresses.js";
 import type { OrgRpc, SessionPatch, SettingsEntry } from "../../actors/org/contract.js";
 import { checkSettings } from "../../api-objects/capabilities.js";
 import type { Principal } from "../../auth/principal.js";
-import { refusalOf, strip, type Reply } from "./reply.js";
+import { refusalOf, type Reply } from "./reply.js";
 import { bodyOf } from "./request-body.js";
 import { timedDo } from "./request-facts.js";
 import { entryId, sendEntry } from "./session-entry.js";
@@ -90,8 +90,6 @@ export async function patchSession(request: Request, env: ActorEnv, p: Principal
   };
   const r = await timedDo(out.facts, org().patchSession(p, sessionId, changes));
   if (!r.ok) return refusalOf(out, r);
-  // An admin outside the session changes its access and nothing else, and learns nothing more (sessions.mdx#access).
-  if (r.session === null) return out.send(200, strip(r));
   if (!settings) return out.send(200, { session: r.session });
   const sent = await sendEntry(env, p, sessionId, { id: settings.id, kind: "settings", body: settings.body }, trace, out);
   if ("response" in sent) return sent.response;

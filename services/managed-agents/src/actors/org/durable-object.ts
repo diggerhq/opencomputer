@@ -15,7 +15,7 @@ import { platformPrincipal, type Access, type Principal } from "../../auth/princ
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
 import { type ComputerRpc, type StartSpec } from "../computer/contract.js";
-import { type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
+import { type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
 import { type SessionLogRpc } from "../session-log/contract.js";
@@ -252,7 +252,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     return sessions.getSession(this.sql, p, id);
   }
 
-  async patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow } | OutsideAccess>> {
+  async patchSession(p: Principal, id: string, patch: SessionPatch): Promise<Reply<{ session: SessionRow }>> {
     this.seen(p);
     if (patch.access !== undefined) patch = { ...patch, access: await memberIds(patch.access) };
     const out = sessions.patchSession(this.sql, Date.now(), p, id, patch);
@@ -263,11 +263,6 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async listSessions(p: Principal, q: ListQuery): Promise<Reply<SessionPage>> {
     this.seen(p);
     return sessions.listSessions(this.sql, p, q);
-  }
-
-  async sessionAccess(p: Principal, id: string): Promise<Reply<OutsideAccess>> {
-    this.seen(p);
-    return sessions.sessionAccess(this.sql, p, id);
   }
 
   async settings(p: Principal): Promise<OrgSettings> {

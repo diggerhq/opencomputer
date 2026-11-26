@@ -278,7 +278,7 @@ describe("Org: session access (spec 36.2)", () => {
     });
   });
 
-  it("shares with people: they read, list and drive it, and may change its access", async () => {
+  it("shares with people: they read, list and drive it, but only the owner changes its access (owner first)", async () => {
     await withActor("access-people", async (org, fakes) => {
       const a = member("usr_a", "access-people");
       const b = member("usr_b", "access-people");
@@ -292,16 +292,23 @@ describe("Org: session access (spec 36.2)", () => {
       const made = await org.createSession(a, { id: SID, access: { mode: "people", people: ["usr_b", "cy@example.com", "usr_a"] } });
       expect(made).toMatchObject({ ok: true, session: { access: { mode: "people", people: ["usr_b", "usr_c"] }, canManageAccess: true } });
       expect(await org.access(SID)).toMatchObject({ audience: "member:usr_a", writers: ["user:usr_a", "user:usr_b", "user:usr_c"], readers: ["user:usr_b", "user:usr_c"] });
-      expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { canManageAccess: true } });
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { canManageAccess: false } });
       expect((await org.listSessions(b, { owner: "anyone" })) as { sessions: { id: string }[] }).toMatchObject({ sessions: [{ id: SID }] });
       const d = member("usr_d", "access-people");
       expect(await org.getSession(d, SID)).toMatchObject({ ok: false, code: "session_not_found" });
       expect(((await org.listSessions(d, { owner: "anyone" })) as { sessions: unknown[] }).sessions).toEqual([]);
       expect(await org.patchSession(d, SID, { access: { mode: "org" } })).toMatchObject({ ok: false, code: "session_not_found" });
 
-      // A person it is shared with changes it (Q7); dropping themselves, they learn only its access.
+      // A person it is shared with uses it but changes nothing of it: not its access, title, archive, metadata or settings.
+      expect(await org.patchSession(b, SID, { access: { mode: "org" } })).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "owner_only" });
+      const settings = { id: "ie_0123456789abcdee", body: { model: "claude-opus-5-5" } };
+      for (const patch of [{ title: "Mine" }, { archived: true }, { metadata: { a: "b" } }, { settings }]) {
+        expect(await org.patchSession(b, SID, patch)).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "owner_only" });
+      }
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { access: { mode: "people", people: ["usr_b", "usr_c"] }, archived: false, canManageAccess: false } });
+      // The owner removing them locks them out.
       fakes.calls.length = 0;
-      expect(await org.patchSession(b, SID, { access: { mode: "people", people: ["usr_c", "usr_d"] } })).toMatchObject({ ok: true, session: null, access: { mode: "people", people: ["usr_c", "usr_d"] }, canManageAccess: false });
+      expect(await org.patchSession(a, SID, { access: { mode: "people", people: ["usr_c", "usr_d"] } })).toMatchObject({ ok: true, session: { access: { mode: "people", people: ["usr_c", "usr_d"] }, canManageAccess: true } });
       await org.drain();
       expect(fakes.calls.map((call) => call[0])).toEqual(expect.arrayContaining(["Computer.setAccess", "SessionLog.setAccess"]));
       expect(await org.getSession(b, SID)).toMatchObject({ ok: false, code: "session_not_found" });
@@ -309,7 +316,7 @@ describe("Org: session access (spec 36.2)", () => {
     });
   });
 
-  it("moves the rows when the audience changes, and lets an admin outside change only the access", async () => {
+  it("moves the rows when the audience changes; an admin has no power in someone else's session (owner first)", async () => {
     await withActor("access-move", async (org) => {
       const a = member("usr_a", "access-move");
       const b = member("usr_b", "access-move");
@@ -318,7 +325,12 @@ describe("Org: session access (spec 36.2)", () => {
       const before = frameOf(await org.feed(b, {}));
       expect(kindsOf(before).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
       // Someone who uses it but does not manage it.
-      expect(await org.patchSession(b, SID, { access: { mode: "owner" } })).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "not_member" });
+      expect(await org.patchSession(b, SID, { access: { mode: "owner" } })).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "owner_only" });
+      // In an org-wide session an admin is a member: uses it, changes nothing of it.
+      expect(await org.getSession(admin, SID)).toMatchObject({ ok: true, session: { canManageAccess: false } });
+      for (const patch of [{ access: { mode: "owner" as const } }, { access: { mode: "people" as const, people: ["usr_boss"] } }, { title: "Mine" }, { archived: true }, { metadata: { a: "b" } }]) {
+        expect(await org.patchSession(admin, SID, patch)).toMatchObject({ ok: false, code: "forbidden", status: 403, reason: "owner_only" });
+      }
 
       expect(await org.patchSession(a, SID, { access: { mode: "owner" } })).toMatchObject({ ok: true, session: { access: { mode: "owner" } } });
       const after = frameOf(await org.feed(b, { after: before.to }));
@@ -326,13 +338,15 @@ describe("Org: session access (spec 36.2)", () => {
       expect(after.gone.map((g) => g.kind).sort()).toEqual(["place", "session"]);
       expect(kindsOf(frameOf(await org.feed(a, { after: before.to }))).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
 
-      // The admin is outside: they read and change its access, nothing else.
+      // Owner-only now: the admin cannot see, share or add themselves to it; they ask the owner.
       expect(await org.getSession(admin, SID)).toMatchObject({ ok: false, code: "session_not_found" });
-      expect(await org.sessionAccess(admin, SID)).toEqual({ ok: true, session: null, access: { mode: "owner", people: [] }, canManageAccess: true });
-      expect(await org.sessionAccess(b, SID)).toMatchObject({ ok: false, code: "session_not_found" });
-      expect(await org.patchSession(admin, SID, { title: "Mine", access: { mode: "org" } })).toMatchObject({ ok: false, code: "session_not_found" });
-      expect(await org.patchSession(admin, SID, { access: { mode: "people", people: ["usr_boss"] } })).toMatchObject({ ok: true, session: { id: SID, access: { mode: "people", people: ["usr_boss"] } } });
-      expect(await org.patchSession(admin, SID, { access: { mode: "org" } })).toMatchObject({ ok: true, session: { access: { mode: "org" } } });
+      for (const access of [{ mode: "people" as const, people: ["usr_boss"] }, { mode: "org" as const }]) {
+        expect(await org.patchSession(admin, SID, { access })).toMatchObject({ ok: false, code: "session_not_found", status: 404 });
+      }
+      expect(await org.patchSession(admin, SID, { title: "Mine" })).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(((await org.listSessions(admin, { owner: "anyone" })) as { sessions: unknown[] }).sessions).toEqual([]);
+      expect(await org.getSession(a, SID)).toMatchObject({ ok: true, session: { access: { mode: "owner" } } });
+      expect(await org.patchSession(a, SID, { access: { mode: "org" } })).toMatchObject({ ok: true, session: { access: { mode: "org" } } });
       expect(kindsOf(frameOf(await org.feed(b, { after: before.to }))).map((k) => k.split(":")[0])).toEqual(["place", "session"]);
     });
   });
@@ -348,6 +362,9 @@ describe("Org: session access (spec 36.2)", () => {
       expect(await org.mutate(a, { name: "thread.writers", args: { sid: SID, writers: ["user:usr_a", "user:usr_b"] }, idem: "w1" })).toMatchObject({ protocol: 1 });
       expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { access: { mode: "owner", people: [] }, canManageAccess: false } });
       expect(await org.access(SID)).toMatchObject({ audience: "member:usr_a", readers: ["user:usr_b"] });
+      // Its owner still renames or archives it.
+      expect(await org.patchSession(a, SID, { title: "Mine" })).toMatchObject({ ok: true, session: { title: "Mine" } });
+      expect(await org.patchSession(b, SID, { title: "Theirs" })).toMatchObject({ ok: false, code: "forbidden", reason: "owner_only" });
     });
   });
 

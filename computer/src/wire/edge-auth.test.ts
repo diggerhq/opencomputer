@@ -3,18 +3,17 @@ import { mayAttach, mayOpenTerminal } from './edge-auth.js';
 
 describe('session access', () => {
   const slack = { sessionId: 'cs_a', owner: 'usr_owner', members: ['usr_owner'] };
-  it('a terminal is the owner’s, a listed person’s, or an admin’s (host list or access frame) where they may attach', () => {
-    expect(mayOpenTerminal(slack, 'usr_owner', new Set())).toBe(true);
-    // CTO-37 Q4: being an admin lets no one into a session that is not open to them.
-    expect(mayOpenTerminal(slack, 'usr_admin', new Set(['usr_admin']))).toBe(false);
-    expect(mayOpenTerminal({ ...slack, admins: ['usr_admin'] }, 'usr_admin', new Set())).toBe(false);
+  it('a terminal is the owner’s or a listed person’s, never by role (owner first)', () => {
+    expect(mayOpenTerminal(slack, 'usr_owner')).toBe(true);
+    expect(mayOpenTerminal({ ...slack, admins: ['usr_admin'] }, 'usr_admin')).toBe(false);
     const shared = { sessionId: 'cs_b', owner: 'usr_owner', members: ['usr_pat'] };
-    expect(mayOpenTerminal(shared, 'usr_pat', new Set())).toBe(true);
-    expect(mayOpenTerminal(shared, 'usr_admin', new Set(['usr_admin']))).toBe(false);
+    expect(mayOpenTerminal(shared, 'usr_pat')).toBe(true);
+    expect(mayOpenTerminal({ ...shared, admins: ['usr_admin'] }, 'usr_admin')).toBe(false);
     const org = { sessionId: 'cs_c', owner: 'usr_owner', members: null };
-    expect(mayOpenTerminal(org, 'usr_pat', new Set())).toBe(false);
-    expect(mayOpenTerminal(org, 'usr_admin', new Set(['usr_admin']))).toBe(true);
-    expect(mayOpenTerminal({ ...org, admins: ['usr_admin'] }, 'usr_admin', new Set())).toBe(true);
+    expect(mayOpenTerminal(org, 'usr_owner')).toBe(true);
+    expect(mayOpenTerminal(org, 'usr_pat')).toBe(false);
+    // An admin in an organization-wide session attaches like any member, but gets no shell by role.
+    expect(mayOpenTerminal({ ...org, admins: ['usr_admin'] }, 'usr_admin')).toBe(false);
   });
   it('admins in the access frame do not widen who may attach', () => {
     expect(mayAttach({ ...slack, admins: ['usr_admin'] }, 'usr_admin')).toBe(false);
