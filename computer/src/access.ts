@@ -9,7 +9,7 @@
 //
 // An org admin is a flag on a person, not a role: they may replace `drivers`
 // on any session and nothing else. The gateway decides every Slack event with
-// `can`; the runner learns the sender's role from `Delivery.role` only to know
+// `can`; the runner learns the sender's role (`Session.send`'s `role`) only to know
 // who may answer a prompt.
 //
 // Pure: no I/O, no Slack client, no SQL. Byte-identical in calvin

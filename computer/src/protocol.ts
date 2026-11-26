@@ -39,7 +39,7 @@ export * from './protocol-workspace.js';
 // lists `profiles` in place of `features`; the earlier route modes, `probe`/`probed` and
 // `model-health` are gone. A host at 5 speaks nothing older about models.
 // 6 (work 118, tracks and threads): one number on both sides and nothing older spoken. Work reaches a
-// host only as `api` frames (with the `secrets` and `model` a `deliver` carried); `watch` and `block`
+// host only as `api` frames, with the session's `secrets` and `model`; `watch` and `block`
 // come in and `delta` goes out (protocol-api.ts); `start` carries the session's `role`. A host whose
 // `welcome` says another number closes the link and asks for its self-update (host/release.ts).
 export const PROTOCOL_VERSION = 6;
@@ -122,39 +122,6 @@ export interface SessionSpec {
 
 /** A session's role (work 118): a track's own session, or the one a person's start box opened. */
 export type RoleSpec = { name: 'track'; trackId: string } | { name: 'start' };
-
-/** One Slack message delivered into a session. Text is already decoded and the mention stripped. */
-export interface Delivery {
-  userId: string;
-  text: string;
-  /** The message's own ts, for reactions. */
-  ts: string;
-  /** Fetched by the runner with the bot token, never by the gateway. */
-  files?: SlackFile[];
-  /**
-   * A person's message in the conversation: whether it @mentions the bot. The
-   * agent sees who wrote it and this, and may stay silent when it is not
-   * addressed to it. Unset for synthetic deliveries (a spawned thread's brief).
-   */
-  mentioned?: boolean;
-  /**
-   * The bot is @mentioned only mid-message ("ask @bot to check"), not at the
-   * start: maybe a request, maybe a remark about it. Older runners ignore it.
-   */
-  mentionedInline?: boolean;
-  /**
-   * Slack permalinks in the text, read by the gateway when the security model
-   * allows it, else the reason (work 049). Older runners ignore it.
-   */
-  linked?: Linked[];
-  /**
-   * Work 112: the sender's role in the session, as the gateway decided it (access.ts).
-   * `participant` only on `!stop`, `!esc`, `!help`, `!status`. A runner remembers a
-   * `driver`'s message so only they or the owner answer the prompts it causes.
-   * Absent (an older gateway, the API, a synthetic delivery): as before, anyone answers.
-   */
-  role?: 'owner' | 'driver' | 'participant';
-}
 
 /**
  * Telemetry trace context (work 054): minted by the gateway per message and
@@ -344,20 +311,13 @@ export type HostToGateway =
   | { t: 'disk'; totalBytes: number; freeBytes: number }
   /** A GitHub token for git/gh inside a session (credential helper → host → gateway). */
   | { t: 'token'; id: string; sessionKey?: string; repos?: string[]; kind?: TokenKind }
-  /** Session `from` starts a new thread (work 047); answered by `spawned`. */
-  | { t: 'spawn'; id: string; from: string; req: SpawnRequest }
   /** Session `from` asks its person for a secret; answered by `secret-asked`. */
   | { t: 'secret-request'; id: string; from: string; req: SecretRequest }
-  /** Session `from` reads a Slack thread (work 049 L3); answered by `thread`, a refusal being a `Linked` that is not ok. */
-  | { t: 'read'; id: string; from: string; req: ReadThreadRequest }
-  /** Session `from` posts into a Slack thread for its owner; answered by `posted`. */
-  | { t: 'post'; id: string; from: string; req: PostThreadRequest }
   /** Session `from` registers a port's public URL, or releases a name (work 074); both answered by `previewed`. */
   | { t: 'preview'; id: string; from: string; req: PreviewRequest }
   | { t: 'unpreview'; id: string; from: string; req: { name: string } }
   /** The model provider refused session `sessionKey`'s turn for credits (a 402): the gateway tells the thread how to get more. */
   | { t: 'out-of-credits'; sessionKey: string }
-  | { t: 'reply'; id: string; ok: boolean; error?: string }
   | HostToGatewayModel
   | HostToGatewayV4;
 
@@ -393,32 +353,14 @@ export type GatewayToHost =
   | { t: 'assign'; organizationId: string; hostToken: string; gatewayUrl: string }
   /** Credentials changed (fresh Slack install, a new model credential): replaces the welcome's; the host forwards the Slack ones to runners and rebinds sessions on changed `models`. */
   | { t: 'credentials'; credentials: HostCredentials; models?: ModelRoutes }
-  /** Start the runner if needed (fork if no forkPath, resume if sdkSessionId), then deliver. */
-  /** Per-delivery credentials let a multi-tenant gateway keep workspace tokens scoped to one session. */
-  /** `model` (work 097): the session's route; absent: the one it had, else `models[harness]`. */
-  /** Work 084: `epoch` and `lastSeq` seed the session's journal as on `start` (absent: 1 and 0, or the local journal's). */
-  | { t: 'deliver'; id: string; session: SessionSpec; msg: Delivery; credentials?: HostCredentials; secrets?: SessionSecret[]; trace?: TraceContext;
-      model?: ModelRoute; epoch?: number; lastSeq?: number }
   /** A session's secrets changed: the host passes them to its runner, if one is running. */
   | { t: 'secrets'; sessionKey: string; secrets: SessionSecret[] }
-  /**
-   * A button click on a prompt the session's runner posted. `role` (work 112): the clicker's, `owner`
-   * or `driver`; a runner refuses a driver's click on a prompt another's message caused, with the
-   * reply error `not-asked` (NOT_ASKED). Absent: handled as before.
-   */
-  | { t: 'action'; id: string; sessionKey: string; promptId: string; value: string; userId: string; role?: 'owner' | 'driver' }
-  /** Slack's stop button or !stop: interrupt the running turn. */
-  | { t: 'stop'; id: string; sessionKey: string }
   /** A push to a repository: fetch it in every workspace that has it (D4). */
   | { t: 'pushed'; repo: string; ref: string }
   | { t: 'token'; id: string; result?: GitHubToken; error?: string }
-  | { t: 'spawned'; id: string; result?: SpawnResult; error?: string }
-  | { t: 'thread'; id: string; result?: Linked; error?: string }
-  | { t: 'posted'; id: string; result?: PostThreadResult; error?: string }
   /** Answers `preview` and `unpreview`; `error` is a sentence for the model. */
   | { t: 'previewed'; id: string; result?: PreviewResult; error?: string }
   | { t: 'secret-asked'; id: string; error?: string }
-  | { t: 'reply'; id: string; ok: boolean; error?: string }
   | GatewayToHostModel
   | GatewayToHostV4;
 

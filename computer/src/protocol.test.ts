@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeAccessId, encodeAccessId } from './action-ids.js';
-import { decodeActionId, encodeActionId, type GatewayToHost, type TraceContext } from './protocol.js';
+import { decodeActionId, encodeActionId, type TraceContext } from './protocol.js';
 import fixture from './telemetry/deliver-trace.fixture.json' with { type: 'json' };
 
 describe('action ids', () => {
@@ -64,9 +64,7 @@ describe('access ids (work 112)', () => {
 
 describe('telemetry trace context (work 054)', () => {
   it('matches the contract fixture the backend also checks', () => {
-    const m = fixture as GatewayToHost;
-    if (m.t !== 'deliver') throw new Error('fixture is not a deliver');
-    const trace: TraceContext | undefined = m.trace;
+    const trace: TraceContext | undefined = (fixture as { trace?: TraceContext }).trace;
     expect(trace).toMatchObject({ id: expect.any(String), sentAt: expect.any(Number), receivedAt: expect.any(Number), surface: 'slack' });
     expect(trace!.receivedAt).toBeGreaterThanOrEqual(trace!.sentAt);
   });

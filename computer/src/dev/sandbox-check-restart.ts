@@ -52,7 +52,7 @@ export interface T {
   workspace: string;
   registry(repo: string): string;
   branch: string;
-  deliver(): Promise<{ reply?: { ok: boolean; error?: string }; ms: number }>;
+  start(): Promise<{ reply?: { ok: boolean; error?: string }; ms: number }>;
   inspect(format: string): Promise<string>;
   inside(script: string, as_?: string): Promise<string>;
   pid(): Promise<number>;
@@ -104,12 +104,12 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
   const table = () => (JSON.parse(readFileSync(path.join(x.data, 'state', 'previews.json'), 'utf8')) as { entries: { id: string; name?: string }[] }).entries;
   /** Threads delivered to every 8 s: none of them leaves for idleness, and none is idle beyond retention. */
   const kept = new Set<T>();
-  const keeping = setInterval(() => void Promise.all([...kept].map((t) => t.deliver())), 8000);
+  const keeping = setInterval(() => void Promise.all([...kept].map((t) => t.start())), 8000);
   /** One more delivery to each, and none after: a runner counts its idle time from here, across the restart. */
   const quiesce = async () => {
     const last = [...kept];
     kept.clear();
-    await Promise.all(last.map((t) => t.deliver()));
+    await Promise.all(last.map((t) => t.start()));
   };
   const [X, F, V, W, D, U, R] = Array.from({ length: 7 }, () => randomBytes(8).toString('hex'));
   const dir = (id: string) => sandboxRunFor(x.run, id);
@@ -122,7 +122,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
   try {
     // ---- previews after a stop and a resume: the runner is told its ports again
     const asked = k.asked.length;
-    const [dB, dC] = await Promise.all([B.deliver(), C.deliver()]);
+    const [dB, dC] = await Promise.all([B.start(), C.start()]);
     times.resume_ms = dB.ms;
     check(!!dB.reply?.ok && !!dC.reply?.ok, `the stopped thread resumes in ${dB.ms} ms, and a new one starts in ${dC.ms} ms (${dB.reply?.error ?? ''}${dC.reply?.error ?? ''})`);
     const [a, b, c] = [reach('A', A), reach('B', B), reach('C', C)];
@@ -167,7 +167,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
       `it took both back (${times.adopt_a_ms} and ${times.adopt_b_ms} ms from the inventory) and neither container was restarted: same process, same start time`);
     const hello = x.events.filter((e): e is Extract<HostToGateway, { t: 'hello' }> => e.t === 'hello').at(-1);
     check(hello?.sessions.map((s) => s.key).sort().join() === [A.key, B.key].sort().join(), `its hello names those two sessions and no other: ${hello?.sessions.map((s) => s.key).join()}`);
-    const [rA, rB] = await Promise.all([A.deliver(), B.deliver()]);
+    const [rA, rB] = await Promise.all([A.start(), B.start()]);
     check(!!rA.reply?.ok && !!rB.reply?.ok && (await same(A, was.A)) && (await same(B, was.B)), `a delivery reaches each (${rA.ms} and ${rB.ms} ms), in the same containers`);
     kept.add(A).add(B);
     check((await A.askToken()).startsWith('ghs_fake') && said(await viaProxy(k, port('s9-b')), 'inside B') && k.asked.length === asked + 1,
@@ -176,7 +176,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
       "the container whose socket reported A's thread was not taken back: it is stopped, and its record stays");
     check(existsSync(planted) && !existsSync(`${planted}.dialed`), `the listener planted in ${path.dirname(planted)} was never dialed`);
     const qid = Q.id();
-    const [rQ, rC, rE] = await Promise.all([Q.deliver(), C.deliver(), E.deliver()]);
+    const [rQ, rC, rE] = await Promise.all([Q.start(), C.start(), E.start()]);
     check(!!rQ.reply?.ok && Q.record()?.id === qid && (await status(Q)) === 'running', `the thread that was stopped across the restart resumes in ${rQ.ms} ms (${rQ.reply?.error ?? ''})`);
     check(!!rC.reply?.ok && (await C.inside('cat /opt/s8-layer')) === 'layer', `and the stopped one answers again as its own thread in ${rC.ms} ms, with what root wrote outside its home before the stop (${rC.reply?.error ?? ''})`);
     check(!!rE.reply?.ok && !!E.record()?.repos?.hello, `a fifth thread starts in ${rE.ms} ms, to be pruned while a message for it arrives (${rE.reply?.error ?? ''})`);
@@ -210,7 +210,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
       await sleep(300);
     }
     times.restart_locked_hello_ms = await x.start({ SP_SWEEP_AGE_MS: String(SWEEP_AGE_MS), SP_FORK_RETENTION_DAYS: String(RETENTION_DAYS) });
-    const [rB2, rQ2] = await Promise.all([B.deliver(), Q.deliver()]);
+    const [rB2, rQ2] = await Promise.all([B.start(), Q.start()]);
     kept.add(B).add(Q);
     const back = !!rB2.reply?.ok && (await same(B, wasB)) && tookBack(B, mark) !== undefined;
     if (canLock) check((times.restart_locked_hello_ms ?? 0) >= LOCK_S * 1000 - 1500 && back,
@@ -252,7 +252,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
         const r = E.record();
         if (r?.repos?.hello && r.id === eid) continue;
         seen = r ? 'its record had lost its repositories' : 'its record was gone';
-        return E.deliver();
+        return E.start();
       }
     })();
     // A changed definition starts a housekeeping pass, unless one is running: asked again until it shows.
@@ -274,7 +274,7 @@ export async function restarts(x: Rig, A: T, B: T, Q: T, C: T, E: T) {
     check(!!A.record() && !(await has('container', containerName(aid))) && (await has('volume', volumeName(aid))) && existsSync(A.workspace) && /kept: /.test(row?.problem ?? ''),
       `the thread with unsaved work loses only its container; housekeeping reports: ${row?.problem}`);
     check(x.names.has('s9-none') && table().some((e) => e.id === aid && e.name === 's9-none'), 'and its preview stays');
-    const rA3 = await A.deliver();
+    const rA3 = await A.start();
     const inA = await A.inside('cat /home/agent/sandbox-check-marker; git -C /workspace/hello log --format=%s -1');
     check(!!rA3.reply?.ok && A.record()?.id === aid && inA === 'kept\nfrom the terminal', `its next message creates the container again in ${rA3.ms} ms, with its home and its commit (${JSON.stringify(inA)} ${rA3.reply?.error ?? ''})`);
     check((await whole(B)) && (await whole(Q)), 'the threads in use were not pruned');
