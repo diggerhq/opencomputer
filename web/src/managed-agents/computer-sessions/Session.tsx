@@ -270,7 +270,7 @@ function Header({
         variant={sidebar ? 'secondary' : 'ghost'}
         aria-pressed={sidebar}
         aria-label={sidebar ? 'Hide the sidebar' : 'Show the sidebar'}
-        title="Terminal, browser and desktop of this session's computer"
+        title="The terminal of this session's computer"
         onClick={onSidebar}
       >
         <PanelRight />

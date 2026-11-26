@@ -2,7 +2,7 @@
 import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { Globe, SquareTerminal } from 'lucide-react'
+import { NotebookText, SquareTerminal } from 'lucide-react'
 import { SessionSidebar } from './SessionSidebar'
 import {
   DEFAULT_SIDEBAR_PREFS,
@@ -29,26 +29,29 @@ function FakeTerminal({ sessionId }: SidebarTabProps) {
   return <p>shell in {sessionId}</p>
 }
 
-const TABS: SidebarTab[] = [
-  {
-    id: 'terminal',
-    label: 'Terminal',
-    icon: SquareTerminal,
-    available: true,
-    hint: 'A shell',
-    component: FakeTerminal,
-  },
-  {
-    id: 'browser',
-    label: 'Browser',
-    icon: Globe,
-    available: false,
-    hint: 'Coming soon',
-  },
-]
+const TERMINAL: SidebarTab = {
+  id: 'terminal',
+  label: 'Terminal',
+  icon: SquareTerminal,
+  hint: 'A shell',
+  component: FakeTerminal,
+}
+const NOTES: SidebarTab = {
+  id: 'notes',
+  label: 'Notes',
+  icon: NotebookText,
+  hint: 'Notes',
+  component: () => <p>notes</p>,
+}
 
 // The session page in miniature: a toggle and the sidebar, sharing saved prefs.
-function Page({ user = 'usr_a' }: { user?: string }) {
+function Page({
+  user = 'usr_a',
+  tabs = [TERMINAL],
+}: {
+  user?: string
+  tabs?: SidebarTab[]
+}) {
   const [prefs, set] = useSidebarPrefs(user)
   return (
     <>
@@ -59,7 +62,7 @@ function Page({ user = 'usr_a' }: { user?: string }) {
         sessionId="cs_1"
         prefs={prefs}
         onChange={set}
-        tabs={TABS}
+        tabs={tabs}
       />
     </>
   )
@@ -80,8 +83,8 @@ afterEach(() => {
   container.remove()
 })
 
-const render = (user?: string) => {
-  act(() => root.render(<Page user={user} />))
+const render = (user?: string, tabs?: SidebarTab[]) => {
+  act(() => root.render(<Page user={user} tabs={tabs} />))
 }
 const remount = (user?: string) => {
   act(() => root.unmount())
@@ -101,15 +104,15 @@ const click = (el: Element) => {
 const saved = (user = 'usr_a') =>
   JSON.parse(localStorage.getItem(sidebarKey(user)) ?? 'null') as unknown
 
-it('starts closed and opens on the Terminal tab', () => {
+it('starts closed and opens on the Terminal, with no tab strip for one tab', () => {
   render()
   expect(aside()).toBeNull()
   click(button('toggle'))
   expect(aside()!.hidden).toBe(false)
   expect(container.textContent).toContain('shell in cs_1')
-  expect(
-    container.querySelector('[role=tab][aria-selected=true]')!.textContent,
-  ).toBe('Terminal')
+  expect(container.querySelector('[role=tablist]')).toBeNull()
+  expect(container.querySelector('[role=tabpanel]')).toBeNull()
+  expect(aside()!.textContent).toContain('Terminal')
 })
 
 it('hides on close without ending the shell, and remembers it per user', () => {
@@ -127,22 +130,18 @@ it('hides on close without ending the shell, and remembers it per user', () => {
   expect(aside()).toBeNull()
 })
 
-it('shows placeholder tabs it cannot switch to', () => {
-  render()
+it('shows a tab strip for several tabs and keeps the shell when switching', () => {
+  render(undefined, [TERMINAL, NOTES])
   click(button('toggle'))
-  const browser = [...container.querySelectorAll('[role=tab]')].find((t) =>
-    t.textContent?.startsWith('Browser'),
-  ) as HTMLButtonElement
-  expect(browser.disabled).toBe(true)
-  expect(browser.textContent).toContain('Soon')
-  click(browser)
-  expect(saved()).toMatchObject({ tab: 'terminal' })
-  // The real registry: Terminal works, Browser and Desktop are to come.
-  expect(SIDEBAR_TABS.map((t) => [t.id, t.available])).toEqual([
-    ['terminal', true],
-    ['browser', false],
-    ['desktop', false],
-  ])
+  const tabs = [...container.querySelectorAll('[role=tab]')]
+  expect(tabs.map((t) => t.textContent)).toEqual(['Terminal', 'Notes'])
+  click(tabs[1])
+  expect(saved()).toMatchObject({ tab: 'notes' })
+  expect(container.textContent).toContain('notes')
+  click(tabs[0])
+  expect(mounts).toBe(1)
+  // The real registry: only the terminal for now.
+  expect(SIDEBAR_TABS.map((t) => t.id)).toEqual(['terminal'])
 })
 
 it('resizes from its left edge and keeps the width within bounds', () => {
@@ -189,9 +188,7 @@ it('survives a broken or out-of-range saved entry', () => {
     width: SIDEBAR_MIN_WIDTH,
     tab: 'desktop',
   })
-  // A remembered tab that is not available yet falls back to Terminal.
+  // A remembered tab that no longer exists falls back to Terminal.
   render()
-  expect(
-    container.querySelector('[role=tab][aria-selected=true]')!.textContent,
-  ).toBe('Terminal')
+  expect(container.textContent).toContain('shell in cs_1')
 })

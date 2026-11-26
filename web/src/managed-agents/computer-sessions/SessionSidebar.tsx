@@ -9,7 +9,7 @@ import { activeTab, SIDEBAR_TABS, type SidebarTab } from './sidebar-tabs'
 const KEY_STEP = 32
 
 // The session page's right-hand sidebar: tabs onto the session's computer
-// (Terminal now; Browser and Desktop later). Its left edge drags to resize.
+// (only Terminal so far, so no tab strip yet). Its left edge drags to resize.
 // Closing it or switching tabs only hides a tab, so a shell outlives both.
 export function SessionSidebar({
   sessionId,
@@ -70,36 +70,40 @@ export function SessionSidebar({
         }}
         className="hover:bg-primary/40 focus-visible:bg-primary/60 absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize outline-none"
       ></button>
-      <div
-        role="tablist"
-        aria-label="Session computer"
-        className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 px-2"
-      >
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            type="button"
-            aria-selected={t.id === current.id}
-            aria-disabled={!t.available}
-            disabled={!t.available}
-            title={t.hint}
-            onClick={() => onChange({ tab: t.id })}
-            className={cn(
-              'flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-[#c2bcae]',
-              t.id === current.id && 'bg-white/10 text-[#e6e1d8]',
-              t.available
-                ? 'hover:bg-white/5'
-                : 'cursor-not-allowed opacity-50',
-            )}
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 px-2">
+        {tabs.length > 1 ? (
+          <div
+            role="tablist"
+            aria-label="Session computer"
+            className="flex items-center gap-1"
           >
-            <t.icon className="size-3.5" aria-hidden />
-            {t.label}
-            {t.available ? null : (
-              <span className="rounded bg-white/10 px-1 text-[10px]">Soon</span>
-            )}
-          </button>
-        ))}
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                type="button"
+                aria-selected={t.id === current.id}
+                title={t.hint}
+                onClick={() => onChange({ tab: t.id })}
+                className={cn(
+                  'flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-[#c2bcae] hover:bg-white/5',
+                  t.id === current.id && 'bg-white/10 text-[#e6e1d8]',
+                )}
+              >
+                <t.icon className="size-3.5" aria-hidden />
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span
+            title={current.hint}
+            className="flex h-7 items-center gap-1.5 px-2 text-xs text-[#e6e1d8]"
+          >
+            <current.icon className="size-3.5" aria-hidden />
+            {current.label}
+          </span>
+        )}
         <Button
           size="icon-sm"
           variant="ghost"
@@ -116,33 +120,20 @@ export function SessionSidebar({
         .map((t) => (
           <div
             key={t.id}
-            role="tabpanel"
+            role={tabs.length > 1 ? 'tabpanel' : undefined}
             aria-label={t.label}
             hidden={t.id !== current.id}
             className="flex min-h-0 flex-1 flex-col"
           >
-            {t.component ? (
-              <Suspense
-                fallback={
-                  <Loader2 className="m-3 size-4 animate-spin text-[#c2bcae]" />
-                }
-              >
-                <t.component sessionId={sessionId} />
-              </Suspense>
-            ) : (
-              <ComingSoon tab={t} />
-            )}
+            <Suspense
+              fallback={
+                <Loader2 className="m-3 size-4 animate-spin text-[#c2bcae]" />
+              }
+            >
+              <t.component sessionId={sessionId} />
+            </Suspense>
           </div>
         ))}
     </aside>
-  )
-}
-
-function ComingSoon({ tab }: { tab: SidebarTab }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-[#c2bcae]">
-      <tab.icon className="size-5" aria-hidden />
-      <p>{tab.label} is coming soon.</p>
-    </div>
   )
 }
