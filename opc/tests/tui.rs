@@ -393,6 +393,11 @@ fn telemetry_measures_enter_to_first_output_once_per_turn() {
     assert_eq!(conns.len(), 1, "{conns:?}");
     assert_eq!(conns[0]["data"]["close_code"], 1000);
     assert!(conns[0]["data"]["frames"].as_u64().unwrap() > 0);
+    // What was typed never rides along.
+    for f in fake.ws_frames().iter().filter(|f| f.dir == support::Dir::In) {
+        let t = f.text.clone().unwrap_or_default();
+        assert!(!(t.contains("\"telemetry\"") && t.contains("typed and sent")), "content in telemetry: {t}");
+    }
 }
 
 #[test]

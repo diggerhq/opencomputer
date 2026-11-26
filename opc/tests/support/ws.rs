@@ -60,7 +60,7 @@ fn plain(status: u16, body: &str) -> Resp {
 pub async fn upgrade(sh: Arc<Shared>, req: Request<Incoming>, headers: Vec<(String, String)>) -> Resp {
     let (enabled, refuse_knob, drop_after) = {
         let mut k = sh.knobs.lock().unwrap();
-        (k.ws_enabled, k.ws_refuse.clone(), k.ws_drop_after.take())
+        (k.wire_enabled, k.wire_refuse.clone().or_else(|| k.ws_refuse.clone()), k.ws_drop_after.take())
     };
     if !enabled {
         return plain(404, r#"{"error":{"code":"not_found","message":"no WebSocket here","retryable":false}}"#);

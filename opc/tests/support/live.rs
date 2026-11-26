@@ -27,14 +27,11 @@ type Ws = WebSocketStream<TokioIo<Upgraded>>;
 type Sent = Result<(), ()>;
 
 pub async fn upgrade(sh: Arc<Shared>, req: Request<Incoming>, headers: Vec<(String, String)>) -> Resp {
-    let (enabled, refuse_knob, drop_after) = {
+    let (refuse_knob, drop_after) = {
         let mut k = sh.knobs.lock().unwrap();
-        (k.ws_enabled, k.ws_refuse.clone(), k.live_drop_after.take())
+        (k.ws_refuse.clone(), k.live_drop_after.take())
     };
     let json = |status: u16, body: &str| Response::builder().status(status).header("content-type", "application/json").body(Full::new(Bytes::from(body.to_string()))).unwrap();
-    if !enabled {
-        return json(404, r#"{"error":{"code":"not_found","message":"no WebSocket here","retryable":false}}"#);
-    }
     let get = |n: &str| headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
     let Some(key) = get("sec-websocket-key") else {
         return json(400, r#"{"error":{"code":"invalid_request","message":"not a WebSocket upgrade","retryable":false}}"#);
