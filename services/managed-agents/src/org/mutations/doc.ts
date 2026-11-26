@@ -6,7 +6,8 @@
 // the server then moves the span to where they are. An agent's own lines are not marked.
 
 import type { Principal } from "../../actor/principal.js";
-import { holdsTrack, isMember, isPerson, mint, ownsTrack, parse, readSession, readTrack, seesSession, seesTrack, type Tx } from "../tx.js";
+import { crockfordId } from "../../actor/helpers.js";
+import { holdsTrack, isMember, isPerson, ownsTrack, parse, readSession, readTrack, seesSession, seesTrack, type Tx } from "../tx.js";
 import { anchorOf, byFor, isBy, isSid, isStr, isTid } from "./common.js";
 import { applied, refuse, refuseKeeping, type MutationFn } from "./outcome.js";
 
@@ -92,7 +93,7 @@ const docSave: MutationFn = (tx, p, args) => {
   if (p.kind === "agent") {
     const moved = relocate(doc.text, parse<Span[]>(doc.spans, []), text);
     if (!moved.kept) {
-      const proposalId = typeof args.proposalId === "string" && /^prp_[0-9A-Za-z]{4,40}$/.test(args.proposalId) ? args.proposalId : mint("prp");
+      const proposalId = typeof args.proposalId === "string" && /^prp_[0-9A-Za-z]{4,40}$/.test(args.proposalId) ? args.proposalId : crockfordId("prp");
       return refuseKeeping("refused", "proposed", { proposalId }, (k) =>
         openProposal(k, { id: proposalId, kind: "edit", target: tid, by, what: "A change to lines you wrote in the Doc", args: { baseRev: doc.rev, text, spans: moved.spans } }),
       );

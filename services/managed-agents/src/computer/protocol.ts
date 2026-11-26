@@ -9,6 +9,9 @@
 // (carrying `role`) and written to with `api` frames (carrying what the runner needs: `secrets`,
 // `model`); `watch` and `block` go to the host, `delta` comes from it; model traffic goes through
 // the host's model proxy by profile.
+
+import { base64url } from "../actor/helpers.js";
+
 export const CALVIN_PROTOCOL_VERSION = 6;
 /** The close code of a host below CALVIN_PROTOCOL_VERSION: it runs its self-update at once. */
 export const UPGRADE_REQUIRED = 4426;
@@ -654,10 +657,6 @@ export function parseSessionKey(key: string): { teamId: string; channelId: strin
 export function decodeCalvinActionId(actionId: string): { sessionKey: string; promptId: string; value: string } | null {
   const match = actionId.match(/^p:([A-Za-z0-9_-]+):([^:]+):(.*)$/);
   if (!match?.[1] || !match[2] || match[3] === undefined) return null;
-  const encoded = match[1].replace(/-/g, "+").replace(/_/g, "/");
-  try {
-    return { sessionKey: atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")), promptId: match[2], value: match[3] };
-  } catch {
-    return null;
-  }
+  const sessionKey = base64url.text(match[1]);
+  return sessionKey === null ? null : { sessionKey, promptId: match[2], value: match[3] };
 }

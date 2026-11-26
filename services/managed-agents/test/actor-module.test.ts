@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { alarms, canonicalJson, cursor, type Emitter, hashOf, idem, migrate, owed, sqlOf, type Sql } from "../src/actor/index.js";
+import { alarms, base64url, canonicalJson, cursor, type Emitter, hashOf, idem, migrate, owed, crockfordId, sqlOf, type Sql } from "../src/actor/index.js";
 
 /** The shared actor module (spec 36.7), on a real Durable Object's storage. */
 
@@ -240,5 +240,33 @@ describe("cursor", () => {
   });
   it("canonical JSON sorts keys and drops undefined", () => {
     expect(canonicalJson({ b: 1, a: { d: undefined, c: [1, { z: 1, y: 2 }] } })).toBe('{"a":{"c":[1,{"y":2,"z":1}]},"b":1}');
+  });
+});
+
+describe("base64url", () => {
+  it("round-trips bytes of every padding length and UTF-8 text, unpadded", () => {
+    for (let n = 0; n <= 6; n++) {
+      const bytes = Uint8Array.from({ length: n }, (_, i) => 250 + i);
+      const text = base64url.encode(bytes);
+      expect(text).toMatch(/^[A-Za-z0-9_-]*$/);
+      expect(text.length).toBe(Math.ceil((n * 4) / 3));
+      expect(base64url.decode(text)).toEqual(bytes);
+    }
+    expect(base64url.encode("é🙂 ?>")).toBe("w6nwn5mCID8-");
+    expect(base64url.text("w6nwn5mCID8-")).toBe("é🙂 ?>");
+    expect(base64url.encode(new Uint8Array([0xfb, 0xff]))).toBe("-_8");
+  });
+  it("is null for what is not base64url or not UTF-8", () => {
+    for (const bad of ["a", "abcde", "ab=", "ab+/", "a b", "ab\n"]) expect(base64url.decode(bad)).toBeNull();
+    expect(base64url.text(base64url.encode(new Uint8Array([0xff, 0xfe])))).toBeNull();
+  });
+});
+
+describe("crockfordId", () => {
+  it("is the prefix and lowercase Crockford base32 of the length asked for", () => {
+    const ids = new Set(Array.from({ length: 200 }, () => crockfordId("op")));
+    expect(ids.size).toBe(200);
+    for (const id of ids) expect(id).toMatch(/^op_[0-9a-hjkmnp-tv-z]{16}$/);
+    expect(crockfordId("req", 12)).toMatch(/^req_[0-9a-hjkmnp-tv-z]{12}$/);
   });
 });

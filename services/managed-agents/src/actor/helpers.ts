@@ -6,33 +6,13 @@ const decoder = new TextDecoder();
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Equal strings, in time independent of where they differ. */
-export function constantTimeEqual(a: string, b: string): boolean {
-  const left = encoder.encode(a);
-  const right = encoder.encode(b);
-  let difference = left.length ^ right.length;
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
-  }
-  return difference === 0;
-}
-
+/** base64url without padding, on the platform's Buffer (nodejs_compat). */
 export const base64url = {
-  encode(input: string | Uint8Array): string {
-    const bytes = typeof input === "string" ? encoder.encode(input) : input;
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  },
+  encode: (input: string | Uint8Array): string => Buffer.from(input).toString("base64url"),
   /** The bytes, or null when `text` is not base64url. */
   decode(text: string): Uint8Array | null {
-    if (!/^[A-Za-z0-9_-]*$/.test(text)) return null;
-    try {
-      const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
-      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    } catch {
-      return null;
-    }
+    if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return null;
+    return new Uint8Array(Buffer.from(text, "base64url"));
   },
   /** The UTF-8 text, or null. */
   text(text: string): string | null {
@@ -45,6 +25,15 @@ export const base64url = {
     }
   },
 };
+
+const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
+
+/** `<prefix>_` and `length` lowercase Crockford base32 characters of `bytes` (5 bits of each), random by default (spec 34.1). */
+export function crockfordId(prefix: string, length = 16, bytes: Uint8Array = crypto.getRandomValues(new Uint8Array(length))): string {
+  let id = `${prefix}_`;
+  for (let i = 0; i < length; i++) id += CROCKFORD[bytes[i]! & 31];
+  return id;
+}
 
 /** JSON with object keys sorted at every depth and `undefined` fields left out: equal values, equal text. */
 export function canonicalJson(value: unknown): string {
