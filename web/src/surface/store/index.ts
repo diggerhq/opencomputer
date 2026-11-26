@@ -22,7 +22,7 @@ import {
 import type { Host, Location } from '../host'
 import { NOWHERE } from '../host'
 import { overlay } from './overlay'
-import { applyFrame, Draft, emptyRows, type Rows } from './rows'
+import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
 import type { OpenBlock } from './transcript'
 import { askLine, listView, threadView, type Counts, type ListView } from './views'
 
@@ -241,7 +241,7 @@ export function createSurface(o: SurfaceOptions) {
     const sid = s.loc.thread
     if (sid && visible() && !s.loc.result) {
       const row = s.rows.session.get(sid)
-      const read = s.rows.read.get(`${me}:${sid}`)?.readSeq ?? 0
+      const read = readRow((id) => s.rows.read.get(id), me, sid)?.readSeq ?? 0
       if (row && row.lastSeq > read && s.base.session.has(sid)) mutate('read.set', { sid, seq: row.lastSeq })
     }
     // An agent wrapped the open thread in a new track (J3): its row stays in sight.

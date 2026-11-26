@@ -56,7 +56,7 @@ export interface Ask {
   answer: unknown;
   /** `{ toolName, title, command?, … }` for an approval. */
   approval: Record<string, unknown> | null;
-  /** `{ questions: [{ id, question, options: [{ label, description? }], multiSelect? }] }`. */
+  /** `{ questions: [{ id, header, text, options: [{ label, description? }], multiSelect? }] }`. */
   question: Record<string, unknown> | null;
   secret: Record<string, unknown> | null;
 }
@@ -369,7 +369,7 @@ export type StreamName = string;
 
 export type ClientFrame =
   | { t: "hello"; protocol: 1; clientId: string }
-  | { t: "sub"; stream: StreamName; after?: string | null; kinds?: string[] }
+  | { t: "sub"; stream: StreamName; after?: string; kinds?: string[] }
   | { t: "unsub"; stream: StreamName }
   | { t: "block"; session: string; blockId: string }
   | { t: "auth"; token: string }

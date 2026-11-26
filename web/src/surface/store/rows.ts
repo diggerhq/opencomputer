@@ -63,3 +63,8 @@ export function applyFrame(rows: Rows, frame: FeedFrame): Rows {
     if (g.kind in rows) d.delete(g.kind as RowKind, g.id)
   return d.done()
 }
+
+/** A feed holds one member's read rows: the API ids each by its session, the fake by `<member>:<session>`. */
+export function readRow<T>(get: (id: string) => T | undefined, me: string, sid: string): T | undefined {
+  return get(sid) ?? get(`${me}:${sid}`)
+}
