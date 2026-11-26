@@ -1,9 +1,4 @@
-import type {
-  Channel,
-  ClientFrame,
-  Principal,
-  ServerFrame,
-} from '@opencomputer/sdk/computer'
+import type { Channel, ClientFrame, Principal, ServerFrame } from '@opencomputer/sdk/computer'
 import type { Host, Location } from './host'
 import { NOWHERE } from './host'
 
@@ -11,12 +6,7 @@ import { NOWHERE } from './host'
 // channel and never a socket or a token; API requests go to `/api/…` on the
 // app's own origin, where the main process adds the credential.
 
-type Target = {
-  threadId?: string
-  trackId?: string
-  askId?: string
-  new?: boolean
-}
+type Target = { threadId?: string; trackId?: string; askId?: string; new?: boolean }
 type FromMain =
   | { t: 'chan.frame'; frame: ServerFrame }
   | { t: 'chan.state'; state: 'open' | 'closed' }
@@ -42,11 +32,7 @@ export function desktopHost(oc: Bridge): Host {
   let frame: (f: ServerFrame) => void = () => {}
   let state: (s: 'open' | 'closed') => void = () => {}
   let open: (t: Target) => void = () => {}
-  let answer: (a: {
-    threadId: string
-    askId: string
-    choice: string
-  }) => void = () => {}
+  let answer: (a: { threadId: string; askId: string; choice: string }) => void = () => {}
   let linked: 'open' | 'closed' = 'closed'
   const reads = new Map<string, (d: Uint8Array | null) => void>()
   const moved = new Set<(l: Location) => void>()
@@ -114,17 +100,8 @@ export function desktopHost(oc: Bridge): Host {
       get: () => loc,
       set(l) {
         loc = l
-        const path = l.thread
-          ? `/t/${l.thread}`
-          : l.track
-            ? `/k/${l.track}`
-            : l.start
-              ? '/new'
-              : '/'
-        oc.send({
-          t: 'location',
-          path: l.result ? `${path}?r=${l.result}` : path,
-        })
+        const path = l.thread ? `/t/${l.thread}` : l.track ? `/k/${l.track}` : l.start ? '/new' : '/'
+        oc.send({ t: 'location', path: l.result ? `${path}?r=${l.result}` : path })
       },
       onChange(cb) {
         moved.add(cb)

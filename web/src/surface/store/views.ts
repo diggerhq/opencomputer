@@ -116,23 +116,15 @@ function index(rows: Rows): Index {
   for (const p of rows.proposal.values())
     if (p.state === 'open') push(ix.proposals, p.target, p)
   for (const p of rows.place.values()) push(ix.byTrack, p.trackId, p)
-  for (const l of ix.byTrack.values())
-    l.sort((a, b) => b.position - a.position || (a.id < b.id ? 1 : -1))
+  for (const l of ix.byTrack.values()) l.sort((a, b) => b.position - a.position || (a.id < b.id ? 1 : -1))
   indexes.set(rows, ix)
   return ix
 }
 
 const NONE: never[] = []
-const threadCache = new WeakMap<
-  SessionRow,
-  { key: unknown[]; view: ThreadView }
->()
+const threadCache = new WeakMap<SessionRow, { key: unknown[]; view: ThreadView }>()
 
-export function threadView(
-  rows: Rows,
-  me: string,
-  sid: string,
-): ThreadView | undefined {
+export function threadView(rows: Rows, me: string, sid: string): ThreadView | undefined {
   const session = rows.session.get(sid)
   const place = rows.place.get(sid)
   if (!session || !place) return undefined
@@ -148,15 +140,8 @@ export function threadView(
   const working = session.status === 'running' || session.status === 'starting'
   // Opening a thread clears the ring of a done proposal (R7); a suggestion's stays until answered (A5).
   const ready =
-    (place.readySeq ?? -1) > readSeq ||
-    proposals.some((p) => p.type !== 'done' || (p.atSeq ?? -1) > readSeq)
-  const mark: Mark = session.blocked
-    ? 'blocked'
-    : working
-      ? 'working'
-      : ready
-        ? 'ready'
-        : null
+    (place.readySeq ?? -1) > readSeq || proposals.some((p) => p.type !== 'done' || (p.atSeq ?? -1) > readSeq)
+  const mark: Mark = session.blocked ? 'blocked' : working ? 'working' : ready ? 'ready' : null
   const ask = session.asks.find((a) => a.status === 'open') ?? null
   const view: ThreadView = {
     id: sid,
@@ -167,9 +152,7 @@ export function threadView(
     line:
       place.attention ??
       (ask ? askLine(ask) : null) ??
-      (session.lastTurn?.status === 'failed'
-        ? (session.lastTurn.error?.message ?? 'The turn failed')
-        : null) ??
+      (session.lastTurn?.status === 'failed' ? (session.lastTurn.error?.message ?? 'The turn failed') : null) ??
       (ready ? place.readyWhat : null) ??
       firstLine(session.lastText),
     trackId: place.trackId,
@@ -191,13 +174,7 @@ export function threadView(
   return view
 }
 
-function trackView(
-  rows: Rows,
-  me: string,
-  track: TrackRow,
-  open: string | null,
-  trackEarlier: number,
-): TrackView {
+function trackView(rows: Rows, me: string, track: TrackRow, open: string | null, trackEarlier: number): TrackView {
   const ix = index(rows)
   const threads: ThreadView[] = []
   const earlierThreads: ThreadView[] = []
@@ -214,9 +191,7 @@ function trackView(
     ? 'blocked'
     : proposals.length
       ? 'ready'
-      : agent &&
-          (agent.status === 'running' || agent.status === 'starting') &&
-          !threads.length
+      : agent && (agent.status === 'running' || agent.status === 'starting') && !threads.length
         ? 'working'
         : null
   const mark = strongest([own, ...threads.map((t) => t.mark)])
@@ -241,27 +216,10 @@ function trackView(
 
 export type Counts = { earlier: number; trackEarlier: Record<string, number> }
 
-let lastList: {
-  rows: Rows
-  me: string
-  open: string | null
-  counts: Counts
-  view: ListView
-} | null = null
+let lastList: { rows: Rows; me: string; open: string | null; counts: Counts; view: ListView } | null = null
 
-export function listView(
-  rows: Rows,
-  me: string,
-  open: string | null,
-  counts: Counts,
-): ListView {
-  if (
-    lastList &&
-    lastList.rows === rows &&
-    lastList.me === me &&
-    lastList.open === open &&
-    lastList.counts === counts
-  )
+export function listView(rows: Rows, me: string, open: string | null, counts: Counts): ListView {
+  if (lastList && lastList.rows === rows && lastList.me === me && lastList.open === open && lastList.counts === counts)
     return lastList.view
   const ix = index(rows)
   const tracks: TrackView[] = []
@@ -299,13 +257,7 @@ export function listView(
   return view
 }
 
-export function findTrack(
-  list: ListView,
-  id: string | null,
-): TrackView | undefined {
+export function findTrack(list: ListView, id: string | null): TrackView | undefined {
   if (!id) return undefined
-  return (
-    list.tracks.find((t) => t.id === id) ??
-    list.earlierTracks.find((t) => t.id === id)
-  )
+  return list.tracks.find((t) => t.id === id) ?? list.earlierTracks.find((t) => t.id === id)
 }

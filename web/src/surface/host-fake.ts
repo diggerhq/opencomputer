@@ -1,7 +1,4 @@
-import {
-  createFakeServer,
-  type FakeServer,
-} from '@opencomputer/sdk/computer/fake'
+import { createFakeServer, type FakeServer } from '@opencomputer/sdk/computer/fake'
 import type { Host } from './host'
 import { browserParts, urlLocation } from './host-web'
 
@@ -14,16 +11,8 @@ declare global {
   }
 }
 
-export function fakeHost(o: {
-  base: string
-  seed?: 'demo' | 'empty'
-  platform?: Host['platform']
-}): Host {
-  const fake = createFakeServer({
-    seed: o.seed ?? 'demo',
-    pace: 30,
-    latency: 40,
-  })
+export function fakeHost(o: { base: string; seed?: 'demo' | 'empty'; platform?: Host['platform'] }): Host {
+  const fake = createFakeServer({ seed: o.seed ?? 'demo', pace: 30, latency: 40 })
   // Tests and the console drive the agents through this.
   window.__fake = fake
   return {

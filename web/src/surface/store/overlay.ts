@@ -66,11 +66,7 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
       broughtBackAt: c.at,
     }),
   'thread.keep': (d, a) =>
-    d.patch(
-      'place',
-      a.sid,
-      a.keep ? { keep: true, earlierAt: null } : { keep: false },
-    ),
+    d.patch('place', a.sid, a.keep ? { keep: true, earlierAt: null } : { keep: false }),
   'thread.ready': (d, a) =>
     d.patch('place', a.sid, {
       readySeq: d.get('session', a.sid)?.lastSeq ?? 0,
@@ -106,15 +102,7 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
       outcome: null,
       createdBy: c.me,
     })
-    d.set({
-      kind: 'doc',
-      id: a.tid,
-      version: 0,
-      trackId: a.tid,
-      rev: 0,
-      text: '',
-      spans: [],
-    })
+    d.set({ kind: 'doc', id: a.tid, version: 0, trackId: a.tid, rev: 0, text: '', spans: [] })
     if (a.sid) d.patch('place', a.sid, { trackId: a.tid, placedBy: c.me })
   },
   'track.rename': (d, a, c) =>
@@ -150,24 +138,10 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
   'read.set': (d, a, c) => {
     const have = readRow((id) => d.get('read', id), c.me, a.sid)
     if (have && have.readSeq >= a.seq) return
-    d.set({
-      kind: 'read',
-      id: have?.id ?? a.sid,
-      version: have?.version ?? 0,
-      member: c.me,
-      sessionId: a.sid,
-      readSeq: a.seq,
-    })
+    d.set({ kind: 'read', id: have?.id ?? a.sid, version: have?.version ?? 0, member: c.me, sessionId: a.sid, readSeq: a.seq })
   },
   'pref.set': (d, a, c) =>
-    d.set({
-      kind: 'pref',
-      id: `${c.me}:${a.key}`,
-      version: 0,
-      member: c.me,
-      key: a.key,
-      value: a.value,
-    }),
+    d.set({ kind: 'pref', id: `${c.me}:${a.key}`, version: 0, member: c.me, key: a.key, value: a.value }),
   'doc.save': (d, a) =>
     d.patch('doc', a.tid, { rev: a.baseRev + 1, text: a.text, spans: a.spans }),
   'result.add': () => {},
@@ -182,11 +156,7 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
       if (d.get('track', p.target)) TABLE['track.done'](d, { tid: p.target }, c)
       else TABLE['thread.done'](d, { sid: p.target }, c)
     } else if (p.type === 'move') {
-      TABLE['thread.place'](
-        d,
-        { sid: p.target, trackId: (args.trackId as string) ?? null },
-        c,
-      )
+      TABLE['thread.place'](d, { sid: p.target, trackId: (args.trackId as string) ?? null }, c)
     } else if (p.type === 'edit' && typeof args.text === 'string') {
       const doc = d.get('doc', p.target)
       if (doc) d.patch('doc', doc.id, { text: args.text, rev: doc.rev + 1 })
@@ -199,10 +169,7 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
   undo: (d, a, c) => d.patch('op', a.opId, { undoneBy: c.me }),
 }
 
-const newSession = (
-  p: Extract<Pending, { kind: 'session' }>,
-  me: string,
-): [SessionRow, PlaceRow] => {
+const newSession = (p: Extract<Pending, { kind: 'session' }>, me: string): [SessionRow, PlaceRow] => {
   const at = new Date(p.at).toISOString()
   return [
     {
@@ -282,22 +249,14 @@ export function overlay(rows: Rows, pending: Pending[], me: string): Rows {
         d.patch('session', s.id, { status: 'running' })
       const place = d.get('place', p.sessionId)
       if (place?.doneAt || place?.earlierAt || place?.attention)
-        d.patch('place', place.id, {
-          doneAt: null,
-          outcome: null,
-          doneBy: null,
-          earlierAt: null,
-          attention: null,
-        })
+        d.patch('place', place.id, { doneAt: null, outcome: null, doneBy: null, earlierAt: null, attention: null })
     } else if (p.kind === 'answer' || p.kind === 'dismiss') {
       const s = d.get('session', p.sessionId)
       if (s) {
         const asks = s.asks.filter((a) => a.id !== p.askId)
         d.patch('session', s.id, {
           asks,
-          blocked:
-            asks.some((a) => a.status === 'open') ||
-            !!d.get('place', s.id)?.attention,
+          blocked: asks.some((a) => a.status === 'open') || !!d.get('place', s.id)?.attention,
           status: p.kind === 'answer' ? 'running' : s.status,
         })
       }

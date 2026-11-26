@@ -1,4 +1,9 @@
-import type { FeedFrame, Row, RowKind, RowOf } from '@opencomputer/sdk/computer'
+import type {
+  FeedFrame,
+  Row,
+  RowKind,
+  RowOf,
+} from '@opencomputer/sdk/computer'
 import { ROW_KINDS } from '@opencomputer/sdk/computer'
 
 // Rows as last received from the feed: a map per kind, keyed by id. Maps are
@@ -60,10 +65,6 @@ export function applyFrame(rows: Rows, frame: FeedFrame): Rows {
 }
 
 /** A feed holds one member's read rows: the API ids each by its session, the fake by `<member>:<session>`. */
-export function readRow<T>(
-  get: (id: string) => T | undefined,
-  me: string,
-  sid: string,
-): T | undefined {
+export function readRow<T>(get: (id: string) => T | undefined, me: string, sid: string): T | undefined {
   return get(sid) ?? get(`${me}:${sid}`)
 }

@@ -19,27 +19,16 @@ async function makeHost(): Promise<Host> {
   // id): every feed frame carries it, and the client drops frames that differ.
   const [feed, me] = await Promise.all([
     fetch(`${API}/feed?kinds=pref`, { credentials: 'include' }),
-    fetch('/api/dashboard/me', { credentials: 'include' }).then(
-      (r) => (r.ok ? r.json() : null),
-      () => null,
-    ),
+    fetch('/api/dashboard/me', { credentials: 'include' }).then((r) => (r.ok ? r.json() : null), () => null),
   ])
   if (feed.status === 401) {
     location.assign('/auth/login')
     return new Promise(() => {})
   }
-  const { org, subject } = (await feed.json()) as {
-    org: string
-    subject: string
-  }
+  const { org, subject } = (await feed.json()) as { org: string; subject: string }
   const email = (me as { email?: string } | null)?.email
   const { webHost } = await import('./host-web')
-  return webHost({
-    principal: { org, subject },
-    name: email?.split('@')[0],
-    api: API,
-    base: BASE,
-  })
+  return webHost({ principal: { org, subject }, name: email?.split('@')[0], api: API, base: BASE })
 }
 
 // Made once for the page: StrictMode runs the effect twice, and a second fake
