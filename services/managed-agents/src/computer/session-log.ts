@@ -1231,7 +1231,7 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
     } else {
       // The legacy internal path: a seq.
       after = Math.max(0, Math.floor(query.after ?? 0));
-      if (after > this.meta.ack) return { ok: false, error: "cursor_ahead", lastSeq: this.meta.ack, logEpoch: this.meta.logEpoch };
+      if (after > this.meta.ack) return { ok: false, error: "reset", cursor: this.head(), seq: this.meta.ack };
       given = cursor.encode("e", [this.meta.logEpoch, after]);
     }
     const limit = clamp(query.limit, EVENTS_DEFAULT_LIMIT, 1, EVENTS_MAX_LIMIT);

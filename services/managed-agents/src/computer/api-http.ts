@@ -648,7 +648,7 @@ function hostErrorOf(out: Reply, error: NonNullable<Extract<DrainResult, { state
 /** A SessionLog read's refusal: `reset` is 409 with its cursor; one the caller may not see is `not_found`. */
 function logRefusalOf(out: Reply, r: LogRefused): Response {
   if (r.error === "reset") return out.error(409, "reset", "The cursor's position no longer exists.", { cursor: r.cursor ?? null, ...(r.seq !== undefined ? { seq: r.seq } : {}) });
-  if (r.error === "invalid_cursor" || r.error === "cursor_ahead") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
+  if (r.error === "invalid_cursor") return out.error(409, "reset", "The cursor cannot be read.", { cursor: null });
   if (r.error === "unavailable") return out.error(503, "unavailable", "The session has not reached minSeq yet.", { retryAfterMs: r.retryAfterMs ?? 1_000 });
   if (r.error === "forbidden" || r.error === "not_found") return out.error(404, "not_found", "No such session.");
   return out.error(404, r.error, `No such ${r.error.replace(/_not_found$/, "")}.`);

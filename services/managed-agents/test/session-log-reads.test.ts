@@ -72,7 +72,7 @@ describe("the events read", () => {
     expect(await log.stub.events({ after: rest.cursor }, member())).toMatchObject({ ok: true, events: [], cursor: at(1, 5) });
     // The internal path's seq still works, and its answer carries the cursor too.
     expect(await log.stub.events({ after: 3 })).toMatchObject({ ok: true, cursor: at(1, 5) });
-    expect(await log.stub.events({ after: 9 })).toMatchObject({ ok: false, error: "cursor_ahead" });
+    expect(await log.stub.events({ after: 9 })).toMatchObject({ ok: false, error: "reset", seq: 5 });
   });
 
   it("answers reset for what is no cursor, and for one past the log's end", async () => {
