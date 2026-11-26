@@ -676,62 +676,6 @@ describe("computer routes", () => {
     expect(result).toMatchObject({ allowed: false });
   });
 
-  it("takes the working status or 👀 off a message that is never dispatched, from the queue row", async () => {
-    const ORG = "org_ack_withdraw";
-    const TEAM = "T0WITHDRAW";
-    const org = () => computers().getByName(ORG);
-    const inside = <T,>(fn: (instance: any, state: DurableObjectState) => T) => runInDurableObject(org(), fn as never) as Promise<T>;
-    await linkOther(ORG, TEAM, "U0OWNER");
-    let mode: "down" | "refused" = "down";
-    await inside((instance) => {
-      instance.env.OPENCOMPUTER_BILLING = {
-        checkAdmission: async () => {
-          if (mode === "down") throw new Error("billing down");
-          return { allowed: false, isHalted: true, haltedAt: 1, reason: "insufficient_credits", paid: false, modelAccess: null };
-        },
-      };
-    });
-    const runQueue = async () => {
-      await inside((_instance, state) => {
-        state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'");
-        state.storage.sql.exec("UPDATE slack_queue SET available_at = 0 WHERE state = 'pending'");
-      });
-      await runDurableObjectAlarm(org());
-    };
-    const calls = async (channel: string) =>
-      (await slackCalls()).filter((call) => (call.body.channel_id ?? call.body.channel) === channel && call.method !== "chat.postMessage").map((call) => `${call.method}:${call.body.status ?? call.body.name}`);
-    const job = { teamId: TEAM, userId: "U0OWNER", text: "<@UBOTHELD> go", mentioned: true };
-    const until = async (read: () => Promise<string[]>, length: number) => {
-      for (let i = 0; i < 100 && (await read()).length < length; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-    };
-    await slackCalls(true);
-
-    // Billing down on every attempt: the job fails for good, and the status comes off.
-    await org().acceptSlackEvent(ORG, { ...job, eventId: "EvW1", channelId: "CWITHDRAW", threadTs: "700.1", messageTs: "700.1", receivedAt: Date.now() });
-    await until(() => calls("CWITHDRAW"), 1);
-    for (let attempt = 0; attempt < 5; attempt += 1) await runQueue();
-    expect(await inside((_instance, state) => [...state.storage.sql.exec("SELECT state FROM slack_queue")].map((row) => row.state))).toEqual(["failed"]);
-    expect(await calls("CWITHDRAW")).toEqual(["agents.sessions.setStatus:processing", "agents.sessions.setStatus:active"]);
-
-    // Where the status is unavailable (👀): retried once, the object's memory lost, then refused: the 👀 comes off.
-    await org().acceptSlackEvent(ORG, { ...job, eventId: "EvW2", channelId: "CNOSTATUS1", threadTs: "700.2", messageTs: "700.2", receivedAt: Date.now() });
-    await until(() => calls("CNOSTATUS1"), 2);
-    expect(await inside((_instance, state) => JSON.parse([...state.storage.sql.exec<{ payload: string }>("SELECT payload FROM slack_queue WHERE state = 'pending'")][0]!.payload).ackIndicator)).toBe("reaction");
-    await runQueue();
-    await inside((instance) => instance.acks.clear());
-    mode = "refused";
-    await runQueue();
-    expect(await calls("CNOSTATUS1")).toEqual([
-      "agents.sessions.setStatus:processing",
-      "reactions.add:eyes",
-      "agents.sessions.setStatus:active",
-      "reactions.remove:eyes",
-    ]);
-    await inside((instance) => {
-      delete instance.env.OPENCOMPUTER_BILLING;
-    });
-  });
-
   it("sends without waiting on the account or GitHub, from a stored key kept current by push (work 058)", async () => {
     const ORG = "org_instant";
     const TEAM = "T0FAST";

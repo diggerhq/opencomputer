@@ -1158,7 +1158,12 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
           }
         }),
       ...SLACK_TABLES.map((table) => (o: number, l: number): ExportedSlackRow[] =>
-        [...sql.exec(`SELECT * FROM ${table} ORDER BY rowid LIMIT ? OFFSET ?`, l, o)].map((row) => ({ type: "row" as const, table, row: row as Record<string, unknown> })),
+        [...sql.exec(`SELECT * FROM ${table} ORDER BY rowid LIMIT ? OFFSET ?`, l, o)].map((row) => ({
+          type: "row" as const,
+          table,
+          // A queue row this object was running is the Slack actor's to run: it arrives waiting, not held by a drain that is not there.
+          row: (table === "slack_queue" && row.state === "running" ? { ...row, state: "pending", started_at: null } : row) as Record<string, unknown>,
+        })),
       ),
     ];
     // A stage's page is counted by what it read, not by what it yielded (a person with no link yields nothing).
