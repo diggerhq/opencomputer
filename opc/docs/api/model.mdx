@@ -9,12 +9,12 @@ Read [Concepts](/concepts) first for what sessions, turns and asks are to a pers
 
 Everything that happens in a session is appended to its **event log**, and each event gets the next `seq`: 1, 2, 3, with no gaps. The [session object](/api/reference/objects#session) is a snapshot of that log, and its `lastSeq` says how far the snapshot goes.
 
-So a client can always build an exact view in two steps:
+So a client can always build an exact view:
 
-1. Read the session. It is correct as of `lastSeq`.
-2. Apply events with `seq` greater than `lastSeq`, from [`GET /events?after=`](/api/http/events) or a WebSocket [attach](/api/websocket/methods#attach).
+1. Read the events over [HTTP](/api/http/events) until `hasMore` is `false`, keeping the page's `cursor`. A cursor is opaque: store it, send it back, never build one.
+2. Follow on [Live](https://docs.opencomputer.dev/api/live) from that cursor, and read over HTTP again whenever a pushed range does not start at it.
 
-Events are never changed or removed. An event with a `seq` at or below one you applied is a repeat: skip it. That makes reconnecting safe: attach again with `after` set to the last `seq` you applied, and you get exactly what you missed.
+Events are never changed or removed, except when [a computer is lost](#if-a-computer-is-lost). An event with a `seq` at or below one you applied is a repeat: skip it. That makes reconnecting safe: subscribe again with your last cursor, and you get exactly what you missed.
 
 ### One writer
 
@@ -22,20 +22,20 @@ Each session's log is written in one place, on the computer, also while the sess
 
 ### If a computer is lost
 
-A session's log is numbered in epochs by its `logEpoch`. It changes only when the computer running a session is lost in the middle of a turn. Then the turn's open tool calls end as `tool.failed`, the turn as `turn.failed` with `runtime_lost`, and the session as `runtime.suspended`, all recorded in the new epoch, starting at the session's `epochStartSeq`.
+When the computer running a session is lost in the middle of a turn, the turn's open tool calls end as `tool.failed`, the turn as `turn.failed` with `runtime_lost`, and the session as `runtime.suspended`. These are recorded from a point in the log, replacing what came after it.
 
-If `logEpoch` differs from the one you stored, discard what you applied at or after `epochStartSeq` and read again from `epochStartSeq - 1`. This only happens if a computer is lost mid-turn.
+A cursor past that point gets a reset: `409 reset` over HTTP, a `reset` frame on Live. Each carries `seq`, the last event to keep, and `cursor`, where to read on. Discard what you applied above `seq` and read on from `cursor`. This only happens if a computer is lost mid-turn.
 
 ### Deltas are not in the log
 
-While the agent writes, its text also streams as **deltas**: `message.delta`, `reasoning.delta` and `tool.delta`, with `tool.preparing` while a call's input is being written, `session.compacting` when a compaction starts, and a subagent's progress as `subagent.progress`, sent only over a WebSocket that asked for them, as `delta` notifications rather than `event`. Deltas have no `seq` and are not stored. They are a preview of a block whose complete text arrives in the matching `message.completed`, `reasoning.completed` or `tool.completed` event, which replaces whatever deltas you drew.
+While the agent writes, its text also streams as **deltas**: `message.delta`, `reasoning.delta` and `tool.delta`, with `tool.preparing` while a call's input is being written, `session.compacting` when a compaction starts, and a subagent's progress as `subagent.progress`, sent only on Live, to a client subscribed to the session's `deltas:` stream. Deltas have no `seq` and are not stored. They are a preview of a block whose complete text arrives in the matching `message.completed`, `reasoning.completed` or `tool.completed` event, which replaces whatever deltas you drew.
 
 - Text and reasoning deltas are tied to their block by `blockId`, tool output by `callId`. Both are unique in the session, not only in the turn.
 - A delta never arrives after its block's completed event. Ignore any delta for a `blockId` or `callId` you have already seen complete.
 
 `tool.preparing` is followed by the call's `tool.started`, and `session.compacting` by `session.compacted`. `subagent.progress` has no completed event: its latest values are folded into the [Subagent](/api/reference/objects#subagent) on every read.
 
-A client that misses deltas, because it connected late, reconnected or was too slow, loses nothing but the preview. See [Flow control](/api/websocket/flow-control).
+A client that misses deltas, because it connected late, reconnected or was too slow, loses nothing but the preview.
 
 ## Sessions
 
@@ -134,7 +134,7 @@ Every event caused by a person carries an `actor`: who, and through which client
 ## Consistency
 
 - **One writer.** Each session's log is written in one place, [on the computer](#one-writer), so every client sees the same events in the same order.
-- **Read your writes.** A successful response means the change is in the log. On the same transport, a later read includes it. Across transports, such as a send over the WebSocket followed by an HTTP read, pass the write's `seq` as `minSeq` on the read: it waits up to 2 seconds for the change, or fails with `503 unavailable` and `retryAfterMs`. `opc` does this for you.
-- **Live is not slower than the log.** Over the WebSocket, an event reaches attached clients when it is appended, not after a poll.
+- **Read your writes.** Every write is HTTP, and a successful response means the change is in the log. A later read can lag behind it: pass the write's `seq` as `minSeq` on the read, and until the read has the change it fails with `503 unavailable` and `retryAfterMs`. `opc` does this for you.
+- **Live is not slower than the log.** On Live, an event reaches subscribed clients when it is appended, not after a poll.
 - **Lists may lag.** A session in a list can be a few seconds behind its log.
 - **A read by id is current as of its `lastSeq`.** The session's `syncedAt` says when its copy last heard from the computer. When the computer is not reachable, it shows how old the snapshot is.

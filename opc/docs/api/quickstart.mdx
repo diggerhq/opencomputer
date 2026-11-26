@@ -56,14 +56,16 @@ curl -s "$API/sessions/$id/turns/$turn" -H "x-api-key: $OPENCOMPUTER_API_KEY" | 
 
 ## Stream it instead
 
-Waiting is fine for scripts. To show the agent's work as it happens, open a WebSocket. With `websocat`:
+Waiting is fine for scripts. To show the agent's work as it happens, open [Live](https://docs.opencomputer.dev/api/live), a WebSocket on the API. With `websocat`:
 
 ```bash
-websocat -H "x-api-key: $OPENCOMPUTER_API_KEY" --protocol opc.v1 \
-  "wss://wire.opencomputer.dev/v1?attach=$id&deltas=1"
+websocat --protocol "oc.live.v1, oc.bearer.$OPENCOMPUTER_API_KEY" "${API/https/wss}/live"
+{"t":"hello","protocol":1}
+{"t":"sub","stream":"events:cs_7f3a9k2m4q8r1t6v"}
+{"t":"sub","stream":"deltas:cs_7f3a9k2m4q8r1t6v"}
 ```
 
-The connection attaches to the session in the same request and sends its events as they happen, with text as it is written. In a browser, which cannot send the key, connect with a [ticket](/api/http/tickets) instead. See [Connecting](/api/websocket/connect).
+Live pushes the session's new events as they are recorded, and with `deltas:` its text as it is written. It holds no history: read earlier events over [HTTP](/api/http/events) and pass the page's `cursor` as `after` in `sub`.
 
 ## Next
 

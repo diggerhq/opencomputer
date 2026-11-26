@@ -11,7 +11,7 @@ The Slack side is in [Subagents](/slack/subagents). A subagent's id is `sa_` fol
 | --- | --- |
 | `subagent.started`, `subagent.ended` | The whole object. In events and lists a long `result` is cut and `resultTruncated` is true |
 | `tool.started`, `tool.completed`, `tool.failed` with `subagentId` set | Tool calls made inside the subagent |
-| `subagent.progress` [deltas](/api/events#deltas) | `activity`, `toolCalls` and `tokens`, on a WebSocket attached with `deltas: true` |
+| `subagent.progress` [deltas](/api/live#deltas) | `activity`, `toolCalls` and `tokens`, on a Live `deltas:` subscription |
 | `Session` object | Running subagents in its `subagents` list |
 
 A subagent with `background: true` can outlive the turn that launched it. When it ends after its turn did, the harness starts a new turn for the result, with `trigger: "subagent"`, the `subagentId`, and no `author`.

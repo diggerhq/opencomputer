@@ -38,7 +38,7 @@ The response is `202`, or `200` for a repeated `Idempotency-Key`:
 | `duplicate` | `true` when the key was already used for this request. Nothing new was sent, and `turn` is that turn as it is now. |
 | `seq` | The `seq` of the last event the send recorded. Pass it as `minSeq` to read your own write elsewhere. |
 
-Every route that sends a message returns this shape: here, [creating a session](/api/http/sessions#create-a-session) with `input`, and [compacting](/api/http/control#compact). Over the WebSocket the same operation is `turns.send`. It is named for sending rather than creating because a message may join a running turn instead of starting one.
+Every route that sends a message returns this shape: here, [creating a session](/api/http/sessions#create-a-session) with `input`, and [compacting](/api/http/control#compact). It is named for sending rather than creating because a message may join a running turn instead of starting one.
 
 | `delivery` | Means | Recorded as |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ This needs your computer to be up. When it is down or starting, the send records
 
 ### Idempotency
 
-Send an `Idempotency-Key` to make retries safe. Keys are per member and per operation, and this route and the WebSocket's `turns.send` are one operation: a send retried over the other transport with the same key is a repeat, not a second message. See [Idempotency](/api/reference/idempotency).
+Send an `Idempotency-Key` to make retries safe. Keys are per member and per operation. See [Idempotency](/api/reference/idempotency).
 
 ### Errors
 
@@ -98,7 +98,7 @@ GET /sessions/{id}/turns
 | `status` | One status, or several separated by commas. An unknown status matches nothing. |
 | `limit` | 1 to 100. Default 20. |
 | `cursor` | The `nextCursor` from the previous page |
-| `minSeq` | Wait up to 2 seconds until the list includes this `seq`. See [Consistency](/api/model#consistency). |
+| `minSeq` | Answer only once the list includes this `seq`: until then, `503 unavailable` with `retryAfterMs`. See [Consistency](/api/model#consistency). |
 
 Returns `{ "turns": [Turn…], "nextCursor" }`, newest first. Each is a [Turn](/api/reference/objects#turn).
 
@@ -110,18 +110,18 @@ GET /sessions/{id}/turns/{turnId}
 
 | Query | Meaning |
 | --- | --- |
-| `minSeq` | Wait up to 2 seconds until the turn includes this `seq`. See [Consistency](/api/model#consistency). |
+| `minSeq` | Answer only once the turn includes this `seq`: until then, `503 unavailable` with `retryAfterMs`. See [Consistency](/api/model#consistency). |
 
 Returns `{ "turn": Turn }`. `404 turn_not_found` when the turn is not in this session.
 
-The route answers at once; it never holds the request open. To wait for a turn without a WebSocket, call it every few seconds until `status` is `completed`, `failed` or `cancelled`:
+The route answers at once; it never holds the request open. To wait for a turn over HTTP alone, call it every few seconds until `status` is `completed`, `failed` or `cancelled`:
 
 ```bash
 until curl -s "$API/sessions/$id/turns/$turn" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
   | jq -e '.turn.status | IN("completed", "failed", "cancelled")' >/dev/null; do sleep 5; done
 ```
 
-To see the moment a turn ends, [attach over a WebSocket](/api/websocket/methods#attach) instead.
+To see the moment a turn ends, watch the session on [Live](https://docs.opencomputer.dev/api/live) instead.
 
 ## Cancel a queued turn
 

@@ -36,7 +36,7 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 | `400` | `invalid_cursor` | | The cursor is unreadable, or was made with other filters |
 | `401` | `unauthenticated` | | No key, an unknown key, an expired key or a revoked one |
 | `402` | `insufficient_credits` | | Your organization is out of credits |
-| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a session attached read-only, or a connection opened with a read-only ticket; `owner_only` when someone the session is shared with changes its access, title, settings, archive state or metadata, which only its owner may do; `terminal_owner_only` when someone other than the session's owner or a person it is shared with by name opens a [terminal](/api/websocket/terminals) (an org-wide session's members and admins included); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route; `not_session_owner` when someone other than the session's owner sets, replaces or deletes one of its [secrets or variables](/api/http/secrets#a-sessions-own-secrets) (older servers said `not_secret_owner`). |
+| `403` | `forbidden` | `reason` | The credential may not do this. `reason` says why: `project_key` for a project-scoped key; `missing_scope`, with `scope`, for a key without that [scope](/api/authentication#scopes); `read_only` for a connection opened with a read-only ticket; `owner_only` when someone the session is shared with changes its access, title, settings, archive state or metadata, which only its owner may do; `terminal_owner_only` when someone other than the session's owner or a person it is shared with by name opens a [terminal](/api/websocket/terminals) (an org-wide session's members and admins included); `computer_principal` when a session's own key calls a [secrets](/api/http/secrets) route; `not_session_owner` when someone other than the session's owner sets, replaces or deletes one of its [secrets or variables](/api/http/secrets#a-sessions-own-secrets) (older servers said `not_secret_owner`). |
 | `403` | `admin_required` | | Only admins can do this |
 | `404` | `not_found` | | No such route |
 | `404` | `session_not_found` | | No such session, or you cannot see it |
@@ -48,7 +48,7 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 | `409` | `session_busy` | | A turn is running, and the action needs none |
 | `409` | `turn_not_cancellable` | | Only a `queued` turn can be cancelled |
 | `409` | `queue_full` | `retryAfterMs` | 20 turns are already queued |
-| `409` | `cursor_ahead` | `session` | `after` is greater than the session's `lastSeq`. `session` is the session now. |
+| `409` | `reset` | `cursor`, `seq` | An events `after` whose position no longer exists. Read on from `cursor`, or from the start when it is `null`. See [Reset](/api/http/events#reset). |
 | `409` | `path_exists` | | An upload's name exists and was not uploaded |
 | `409` | `limit_reached` | | The organization has 200 [secrets](/api/http/secrets) and variables |
 | `409` | `feature_unavailable` | `feature` | The session's `capabilities.features` lacks it |
@@ -57,7 +57,7 @@ Over the WebSocket, the same object is the `data` of a JSON-RPC error, with `sta
 | `429` | `rate_limited` | `retryAfterMs` | Too many requests. HTTP also sends `Retry-After`. Over the 600 a minute per key, both say one minute. See [Limits](/api/reference/limits#rates). |
 | `500` | `internal` | | Our fault. Retry with the same idempotency key. |
 | `503` | `computer_unavailable` | `retryAfterMs` | Your computer is starting, being updated or down, and nothing was recorded. Retry with the same idempotency key. |
-| `503` | `unavailable` | `retryAfterMs` | A temporary failure, a read with `minSeq` that the server's copy of the log did not reach within 2 seconds, or a computer your organization has not set up yet (`retryAfterMs: 60000`; finish setup on the dashboard). Retry. |
+| `503` | `unavailable` | `retryAfterMs` | A temporary failure, a read with `minSeq` that the server's copy of the log has not reached yet, or a computer your organization has not set up yet (`retryAfterMs: 60000`; finish setup on the dashboard). Retry. |
 
 ### WebSocket only
 
@@ -66,8 +66,6 @@ These codes come only from WebSocket methods that no HTTP route has:
 | Status | Code | Means |
 | --- | --- | --- |
 | `404` | `terminal_not_found` | The `terminalId` is not open on this connection |
-| `409` | `too_far_behind` | `sessions.attach` with an `after` more than 10,000 events back. Read them over [HTTP](/api/http/events) first. |
-| `409` | `too_many_attached` | This connection already has 20 sessions attached |
 | `409` | `too_many_terminals` | 8 terminals are already open in this session |
 
 Invalid params are JSON-RPC `-32602`, whose `data` is always `{ "code": "invalid_request", "status": 400, "field": "…" }`.

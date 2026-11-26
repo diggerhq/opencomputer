@@ -23,7 +23,7 @@ A recorded event:
 | Field | Meaning |
 | --- | --- |
 | `id` | Unique, `ev_` and 16 characters |
-| `seq` | Position in the session's log: 1, 2, 3, with no gaps. The cursor for [reading](/api/http/events) and [attaching](/api/websocket/methods#attach). |
+| `seq` | Position in the session's log: 1, 2, 3, with no gaps. For ordering; to read on, use the page's [cursor](/api/http/events). |
 | `createdAt` | When it was recorded, by the computer's clock |
 | `sessionId` | The session |
 | `turnId` | The turn it belongs to, or `null` for session-level events |
@@ -39,7 +39,7 @@ A **delta** is streamed, not recorded. It has no `id`, `seq` or `createdAt`, and
 { "type": "message.delta", "sessionId": "cs_7f3a9k2m4q8r1t6v", "turnId": "tn_4m8q2x7c1v9b", "data": { "blockId": "b7", "parentCallId": null, "text": "The flake comes from" } }
 ```
 
-Deltas reach WebSocket clients that attached with `deltas: true`, and nowhere else. See [the model](/api/model#deltas-are-not-in-the-log).
+Deltas reach clients subscribed to a session's `deltas:` stream on [Live](https://docs.opencomputer.dev/api/live), and nowhere else. See [the model](/api/model#deltas-are-not-in-the-log).
 
 **Reading rules.** Treat an unknown `type` as informational and keep going. Treat unknown `data` fields the same. Every field listed below is present on every event of its type, `null` when it does not apply. That holds for events recorded before a field was added too: they are filled in when read, on every route.
 
@@ -158,4 +158,4 @@ For one turn, recorded events come in this order:
 
 Nothing is recorded in a turn after its ending event, except the events of its background subagents: their tool calls and `subagent.ended`. Events of different turns do not interleave, except `message.received` and `turn.queued` for messages queued while another turn runs.
 
-If the computer running a turn is lost, the server records the turn's end for it: `tool.failed` with `settledBy` for each open call, `turn.failed` with `runtime_lost`, then `runtime.suspended` with `reason: "lost"`. These start a new `logEpoch`. See [If a computer is lost](/api/model#if-a-computer-is-lost).
+If the computer running a turn is lost, the server records the turn's end for it: `tool.failed` with `settledBy` for each open call, `turn.failed` with `runtime_lost`, then `runtime.suspended` with `reason: "lost"`. A client holding a cursor past the point where this was recorded gets a [reset](/api/http/events#reset). See [If a computer is lost](/api/model#if-a-computer-is-lost).
