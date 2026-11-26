@@ -2,6 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
+import { HOST_DIAL_MS } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
 
 /**
@@ -98,6 +99,41 @@ async function readySmall(org: string): Promise<Stub> {
   expect((await row(stub))?.size).toBe(SMALL);
   return stub;
 }
+
+describe("a start is bounded by the host's dial", () => {
+  it("rebuilds the VM of a ready machine whose host never dialed, once, then reports the waiting entries", async () => {
+    const stub = await readySmall("org_never_dialed");
+    const late = () => inside(stub, (instance) => instance.put("hostAwaitedAt", String(Date.now() - HOST_DIAL_MS - 1)));
+    await inside(stub, (instance) => {
+      instance.api.owe("drainOwed", "cs_00000000000000000000000001");
+      instance.failedWakes = 0;
+      instance.api.wakeFailed = async () => void (instance.failedWakes += 1);
+    });
+    // Within the bound nothing happens, however often the alarm runs.
+    await runAlarms(stub, 2);
+    expect((await row(stub))?.state).toBe("ready");
+    // Past it: the VM goes and comes back, for the session that waits.
+    await late();
+    await runAlarms(stub);
+    expect((await row(stub))?.state).toBe("parking");
+    await settle(stub, "ready");
+    expect(await inside(stub, (instance) => [instance.lifecycle.row().wakes, instance.failedWakes])).toEqual([1, 0]);
+    // No dial again: the entries are reported and the machine stays parked until a drain wakes it.
+    await runAlarms(stub);
+    await late();
+    await runAlarms(stub);
+    await settle(stub, "parked");
+    expect(await inside(stub, (instance) => instance.failedWakes)).toBe(1);
+    // A host that dials ends the wait.
+    expect(await stub.ensureComputer("org_never_dialed")).toEqual({ status: 202 });
+    await settle(stub, "ready");
+    const socket = await connectHost("org_never_dialed");
+    await late();
+    await runAlarms(stub, 2);
+    expect((await row(stub))?.state).toBe("ready");
+    socket.close();
+  });
+});
 
 describe("computer size follows the usage plan", () => {
   it("creates a max organization's computer on the big size, and Pro's on the default", async () => {
