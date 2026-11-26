@@ -46,7 +46,6 @@ export async function fakeHost(o: { key?: string | null; access?: SessionAccess[
         if (!access.has(m.sessionId)) return void writeLine(peer, { t: 'result', id: m.id, error: { code: 'session_not_found', message: 'no', status: 404 } });
         return void writeLine(peer, { t: 'result', id: m.id, result: { socket: `/fake/${m.sessionId}.api.sock`, token: 'tok', writer: 'host', epoch: 1 } });
       }
-      if (m.t === 'resume') return void writeLine(peer, { t: 'result', id: m.id, result: { status: 'starting' } });
       writeLine(peer, { t: 'result', id: m.id, error: { code: 'internal', message: 'fake host: unhandled', status: 500 } });
     });
   });

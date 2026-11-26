@@ -10,15 +10,15 @@
 //
 // Telemetry (work 084 instrumentation, Q3/Q4): one `httpapi.request` per request, after the
 // response is made, sent through the caller's `waitUntil` (never awaited here). Facts only: the
-// route family and op, status, error code, time in the Computer DO and the SessionLog, a long-poll's
-// wait and whether it came back empty, the events delivered and their age. Never a path, query,
+// route family and op, status, error code, time in the Computer DO and the SessionLog, whether an
+// events read came back empty, the events delivered and their age. Never a path, query,
 // body or key.
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
 import { base64url, computerOf, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
-import { eventsStream, type LiveUpgrade, liveRequest } from "../live/contract.js";
+import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
@@ -195,8 +195,6 @@ interface RequestFacts {
   /** Time awaiting the Computer DO / the SessionLog, ms. */
   doMs: number;
   logMs: number;
-  /** A long-poll's requested wait, ms. */
-  waitMs?: number;
   /** events.list: events returned, and now − createdAt of the first and last. */
   events?: number;
   oldestAgeMs?: number;
@@ -349,7 +347,6 @@ function requestFact(env: ComputerEdgeEnv, identity: RequestIdentity, method: st
         status,
         do_ms: Math.round(f.doMs),
         log_ms: Math.round(f.logMs),
-        ...(f.waitMs !== undefined ? { wait_ms: f.waitMs } : {}),
         ...(f.events !== undefined ? { events: f.events, empty: f.events === 0 } : {}),
         ...(f.oldestAgeMs !== undefined ? { oldest_age_ms: f.oldestAgeMs } : {}),
         ...(f.newestAgeMs !== undefined ? { newest_age_ms: f.newestAgeMs } : {}),
@@ -562,9 +559,6 @@ const ACTOR_OPS = new Set([
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
-const ENDED_TURNS = new Set(["completed", "failed", "cancelled"]);
-/** How long `GET /sessions/{id}?minSeq` waits for the log without `waitMs`. */
-const MIN_SEQ_WAIT_MS = 10_000;
 const TRACE = /^[\x21-\x7e]{1,64}$/;
 const ENTRY_KINDS = {
   "turns.send": "turn", "asks.answer": "answer", "asks.dismiss": "dismiss", "sessions.interrupt": "interrupt",
@@ -682,27 +676,6 @@ async function sendEntry(env: ComputerEdgeEnv, p: Principal, sessionId: string, 
   if (outcome?.state === "delivered") return { delivered: outcome.result ?? null };
   if (outcome?.state === "refused") return { response: hostErrorOf(out, { ...outcome.error, requestId: trace ?? "", retryable: false }) };
   return { waking: true };
-}
-
-/**
- * The wait rule (spec 37.1): the owner was read and had nothing new; wait on Live's stream from
- * `after` (empty: from wherever Live's head is), read the owner again, until `done` or the time is
- * up. Live takes the session's lease.
- */
-async function waitFor<T>(env: ComputerEdgeEnv, p: Principal, stream: string, after: string, waitMs: number, first: T, read: () => Promise<T>, done: (r: T) => boolean): Promise<T> {
-  const live = liveOf(env, p.org);
-  const deadline = Date.now() + waitMs;
-  let r = first;
-  let head = after;
-  while (!done(r)) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    const waited = await live.wait(p, stream, head, remaining).catch(() => null);
-    if (!waited?.moved || waited.head === null) break;
-    head = waited.head;
-    r = await read();
-  }
-  return r;
 }
 
 type CreateInput = CreateSession & { turnId?: string };
@@ -881,18 +854,13 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
   if (minSeq === null) return out.error(400, "invalid_request", "minSeq must be a non-negative integer.", { field: "minSeq" });
 
   if (route.op === "get") {
-    const waitMs = intParam(query, "waitMs", 0, 60_000);
-    if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
-    const readSummary = () => timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null);
-    let [got, summary] = await Promise.all([timedDo(out.facts, org().getSession(p, sessionId)), readSummary()]);
+    const [got, summary] = await Promise.all([
+      timedDo(out.facts, org().getSession(p, sessionId)),
+      timedLog(out.facts, readsOf(env, sessionId).summary(minSeq, p)).catch(() => null),
+    ]);
     if (!got.ok) return refusalOf(out, got);
-    // With minSeq, until the log has it (spec 37.1's wait rule).
-    const behind = (r: typeof summary) => !!r && !r.ok && r.error === "unavailable";
-    if (behind(summary)) {
-      out.facts.waitMs = waitMs ?? MIN_SEQ_WAIT_MS;
-      summary = await waitFor(env, p, eventsStream(sessionId), "", waitMs ?? MIN_SEQ_WAIT_MS, summary, readSummary, (r) => !behind(r));
-      if (summary && !summary.ok && behind(summary)) return logRefusalOf(out, summary);
-    }
+    // With minSeq the log has not reached: 503 with retryAfterMs, as every read (spec 37.1).
+    if (summary && !summary.ok && summary.error === "unavailable") return logRefusalOf(out, summary);
     return out.send(200, { session: withSummary(got.session, summary?.ok ? summary.summary : null) });
   }
 
@@ -940,9 +908,8 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       // A cursor the module cannot read (a bare seq of the old API included) is reset with no cursor.
       if (after !== undefined && !cursor.read("e", after)) return out.error(409, "reset", "after is not a cursor of this session's events.", { cursor: null });
       const lim = limit(500);
-      const waitMs = intParam(query, "waitMs", 0, 60_000);
       const tailTurns = intParam(query, "tailTurns", 1, 50);
-      for (const [name, v] of [["limit", lim], ["waitMs", waitMs], ["tailTurns", tailTurns]] as const) {
+      for (const [name, v] of [["limit", lim], ["tailTurns", tailTurns]] as const) {
         if (v === null) return out.error(400, "invalid_request", `${name} is out of range.`, { field: name });
       }
       if (tailTurns !== undefined && after !== undefined) return out.error(400, "invalid_request", "tailTurns cannot be sent with after.", { field: "tailTurns" });
@@ -956,13 +923,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
         ...(turnId ? { turnId } : {}),
         ...(minSeq !== undefined ? { minSeq } : {}),
       };
-      const read = () => timedLog(out.facts, log.events(q, p));
-      let r = await read();
-      if (waitMs && r.ok && !r.events.length) {
-        out.facts.waitMs = waitMs;
-        const head = r.cursor ?? after;
-        r = await waitFor(env, p, eventsStream(sessionId), head ?? "", waitMs, r, read, (n) => !n.ok || n.events.length > 0);
-      }
+      const r = await timedLog(out.facts, log.events(q, p));
       if (r.ok) delivered(out.facts, r.events);
       return answer(r);
     }
@@ -972,23 +933,8 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       const status = query.get("status")?.split(",").filter(Boolean);
       return answer(await timedLog(out.facts, log.turns({ ...(lim !== undefined ? { limit: lim } : {}), ...(pageCursor ? { cursor: pageCursor } : {}), ...(status ? { status } : {}), ...(minSeq !== undefined ? { minSeq } : {}) }, p)));
     }
-    case "turns.get": {
-      const waitMs = intParam(query, "waitMs", 0, 60_000);
-      if (waitMs === null) return out.error(400, "invalid_request", "waitMs is 0 to 60000.", { field: "waitMs" });
-      const status = query.get("status") ?? undefined;
-      const read = () => timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p));
-      // Until the turn leaves `status`, or ends; the edge waits, not the log (spec 37.1).
-      const done = (r: LogPage | LogRefused) => {
-        const turnStatus = r.ok ? (r.turn as { status?: string } | undefined)?.status : undefined;
-        return !r.ok || turnStatus === undefined || (status ? turnStatus !== status : ENDED_TURNS.has(turnStatus));
-      };
-      let r = await read();
-      if (waitMs && !done(r)) {
-        out.facts.waitMs = waitMs;
-        r = await waitFor(env, p, eventsStream(sessionId), "", waitMs, r, read, done);
-      }
-      return answer(r, "turn");
-    }
+    case "turns.get":
+      return answer(await timedLog(out.facts, log.turn(route.sub!, { ...(minSeq !== undefined ? { minSeq } : {}) }, p)), "turn");
     case "asks.list": {
       const lim = limit(100);
       if (lim === null) return out.error(400, "invalid_request", "limit is 1 to 100.", { field: "limit" });

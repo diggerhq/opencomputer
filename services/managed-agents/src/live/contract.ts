@@ -16,7 +16,6 @@ export const MAX_WATCHED_SESSIONS = 32;
 export const MAX_ATTACHMENT_BYTES = 2_048;
 export const MAX_FRAME_BYTES = 64_000;
 export const REVALIDATE_MS = 5 * 60_000;
-export const MAX_WAIT_MS = 60_000;
 /** Feed kinds a principal without `work:read` may subscribe to (section 18.4). */
 export const CORE_KINDS = ["session", "machine"];
 
@@ -74,8 +73,6 @@ export function upgradePrincipal(request: Request): Principal | null {
 }
 
 export const feedStream = "feed";
-export const eventsStream = (sessionId: string): string => `events:${sessionId}`;
-export const deltasStream = (sessionId: string): string => `deltas:${sessionId}`;
 
 // ---------------------------------------------------------------- what Live calls
 

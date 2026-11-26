@@ -329,7 +329,6 @@ export type DeltaPush = { epoch: number; deltas: { type: string; turnId: string;
 export interface LiveRpc {
   /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. The reply is the head Live now holds. */
   publish(stream: string, frame: FeedPush | EventPush | DeltaPush | { head: string }): Promise<{ head: string }>;
-  wait(p: Principal, stream: string, after: string, timeoutMs: number): Promise<{ moved: boolean; head: string | null }>;
   revoke(credentialId: string): Promise<void>;
 }
 

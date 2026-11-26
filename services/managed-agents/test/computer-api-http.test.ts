@@ -44,7 +44,6 @@ interface Fakes {
   org?: Record<string, unknown>;
   log?: Record<string, unknown>;
   computer?: Record<string, unknown>;
-  live?: Record<string, unknown>;
 }
 
 function setup(f: Fakes) {
@@ -52,7 +51,6 @@ function setup(f: Fakes) {
     ORGS: ns(() => f.org ?? {}),
     SESSION_LOG: ns(() => f.log ?? {}),
     COMPUTERS: ns(() => f.computer ?? {}),
-    ...(f.live ? { LIVE: ns(() => f.live) } : {}),
   };
   const stub: ComputerApiStub = { computerApi: vi.fn() };
   const call = async (method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; identity?: RequestIdentity } = {}) => {
@@ -439,29 +437,20 @@ describe("the session reads (spec 37.1)", () => {
     expect(r.body.error.code).toBe("not_found");
   });
 
-  it("the wait rule: nothing new, then Live's wait, then one more read", async () => {
+  it("reads answer at once: no long-poll, and minSeq not reached is 503 with retryAfterMs", async () => {
     const log = {
-      events: vi.fn()
-        .mockResolvedValueOnce({ ok: true, events: [], lastSeq: 4, cursor: "e1.2.4" })
-        .mockResolvedValueOnce({ ok: true, events: [event(5)], lastSeq: 5, cursor: "e1.2.5" }),
+      events: vi.fn(async () => ({ ok: true, events: [], lastSeq: 4, cursor: "e1.2.4" })),
+      summary: vi.fn(async () => ({ ok: false, error: "unavailable", lastSeq: 4, retryAfterMs: 500 })),
     };
-    const live = { wait: vi.fn(async () => ({ moved: true, head: "e1.2.5" })) };
-    const { call } = setup({ log, live });
+    const org = { getSession: vi.fn(async () => ({ ok: true, session: row() })) };
+    const { call } = setup({ log, org });
     const r = await call("GET", `/sessions/${SID}/events?after=e1.2.4&waitMs=20000`);
-    expect(r.body.cursor).toBe("e1.2.5");
-    expect(live.wait).toHaveBeenCalledWith(expect.objectContaining({ subject: MEMBER }), `events:${SID}`, "e1.2.4", 20_000);
-    expect(log.events).toHaveBeenCalledTimes(2);
-
-    // Something new at once: no wait.
-    log.events.mockResolvedValueOnce({ ok: true, events: [event(6)], lastSeq: 6, cursor: "e1.2.6" });
-    await call("GET", `/sessions/${SID}/events?after=e1.2.5&waitMs=20000`);
-    expect(live.wait).toHaveBeenCalledTimes(1);
-    // Timed out: the first, empty answer.
-    log.events.mockResolvedValueOnce({ ok: true, events: [], lastSeq: 6, cursor: "e1.2.6" });
-    live.wait.mockResolvedValueOnce({ moved: false, head: "e1.2.6" });
-    const empty = await call("GET", `/sessions/${SID}/events?after=e1.2.6&waitMs=1000`);
-    expect(empty.body).toEqual({ events: [], lastSeq: 6, cursor: "e1.2.6" });
-    expect(log.events).toHaveBeenCalledTimes(4);
+    expect(r.body).toEqual({ events: [], lastSeq: 4, cursor: "e1.2.4" });
+    expect(log.events).toHaveBeenCalledTimes(1);
+    const behind = await call("GET", `/sessions/${SID}?minSeq=9`);
+    expect(behind.status).toBe(503);
+    expect(behind.body.error).toMatchObject({ code: "unavailable", retryAfterMs: 500 });
+    expect(log.summary).toHaveBeenCalledTimes(1);
   });
 
   it("turns, asks and subagents read the log as the principal", async () => {

@@ -497,7 +497,11 @@ fn interrupt_cancels_the_running_turn() {
     });
     let o = run(&fake, &["interrupt", "-s", &sid]);
     assert_eq!(o.code, 0, "{}", o.stderr);
-    assert!(fake.wait_turn(&sid, &tid, T));
+    // It follows the session until the turn ends, then reads it once: no long-poll.
+    assert!(o.stdout.contains(&format!("{tid} cancelled")), "{}", o.stdout);
+    let reads = fake.requests_to("GET /sessions/*/turns/*");
+    assert_eq!(reads.len(), 1);
+    assert!(!reads[0].query.contains("waitMs"), "{}", reads[0].query);
     assert_eq!(fake.turn(&sid, &tid)["status"], "cancelled");
 }
 

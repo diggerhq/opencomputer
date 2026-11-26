@@ -11,14 +11,14 @@ describe('managed agents navigation', () => {
       computerEnabled: true,
     })
     expect(nav.map((group) => group.items.map((item) => item.label))).toEqual([
-      ['Computer', 'Sessions', 'Secrets', 'Automations'],
+      ['Computer', 'Work', 'Secrets', 'Automations'],
       ['Connections'],
     ])
     expect(nav[0]?.items[0]).toMatchObject({
       to: '/computer',
       label: 'Computer',
     })
-    expect(nav[0]?.items[1]).toMatchObject({ to: '/computer/sessions' })
+    expect(nav[0]?.items[1]).toMatchObject({ to: '/computer/work' })
     expect(nav[0]?.items[2]).toMatchObject({ to: '/computer/secrets' })
     expect(nav[0]?.items[3]).toMatchObject({ to: '/automations' })
     expect(nav[1]?.items[0]).toMatchObject({
@@ -34,7 +34,7 @@ describe('managed agents navigation', () => {
         group.items.map((item) => item.label),
       ),
     ).toEqual([
-      ['Computer', 'Sessions', 'Secrets', 'Automations'],
+      ['Computer', 'Work', 'Secrets', 'Automations'],
       ['Connections'],
     ])
   })
