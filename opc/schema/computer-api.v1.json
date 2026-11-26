@@ -1530,6 +1530,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "idle",
+                "access_lost"
+              ]
             }
           },
           "required": [
