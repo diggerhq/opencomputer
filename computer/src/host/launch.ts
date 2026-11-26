@@ -19,19 +19,19 @@ import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { HOST_RUN, type RunnerSpec } from '../protocol.js';
 import { definitionFile } from '../workspaces/index.js';
-import { systemdRunPrefix } from './runner-limits.js';
+import type { LaunchMode } from './host-config.js';
 import { runnerUser } from './runner-user.js';
 import { runnerVars } from '../runner-env.js';
 import { PODMAN, type PodmanError, runBounded } from './sandbox/podman.js';
 import { startArgs, unitName } from './sandbox/podman-args.js';
 
-export type LaunchMode = 'systemd' | 'podman' | 'detached';
-
-const SYSTEMD_RUN = systemdRunPrefix(os.totalmem());
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** The command that starts a runner from the release at `root`. */
-export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, has: (p: string) => boolean = existsSync) {
+/**
+ * The command that starts a runner from the release at `root`. `systemdRun`: the prefix of its unit
+ * (host-config.ts: SP_SYSTEMD_RUN, else sized from the machine and SP_RUNNER_MEMORY_MAX).
+ */
+export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, systemdRun: string, has: (p: string) => boolean = existsSync) {
   if (how === 'podman') {
     // The container exists already (sandbox/containers.ts); its unit only holds `podman start --attach`.
     const as = runnerUser(env);
@@ -39,7 +39,7 @@ export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: Nod
     const boot = path.join(root, 'dist/runner-boot.mjs');
     if (!has(boot)) throw new Error(`podman launch: ${boot} is absent, and a container has no tsx fallback`);
     if (!rs.id) throw new Error('podman launch: a runner without an id');
-    const [cmd, ...pre] = [...as.sudo, '--', ...(env.SP_SYSTEMD_RUN || SYSTEMD_RUN).trim().split(/\s+/)];
+    const [cmd, ...pre] = [...as.sudo, '--', ...systemdRun.trim().split(/\s+/)];
     const args = [...pre, '-p', 'Delegate=yes', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=20', '-p', 'StandardOutput=null', '-p', 'StandardError=journal',
       `--unit=${unitName(rs.id).replace(/\.service$/, '')}`, '--collect', '--quiet', '--', PODMAN, ...startArgs(rs.id)];
     return { cmd, args, env: env as Record<string, string>, detached: false };
@@ -56,7 +56,7 @@ export function launchCommand(rs: RunnerSpec, how: LaunchMode | string, env: Nod
   if (how === 'systemd') {
     const as = runnerUser(env);
     Object.assign(vars, as?.env);
-    const [cmd, ...pre] = [...(as?.sudo ?? []), ...(env.SP_SYSTEMD_RUN || SYSTEMD_RUN).trim().split(/\s+/)];
+    const [cmd, ...pre] = [...(as?.sudo ?? []), ...systemdRun.trim().split(/\s+/)];
     const unit = `sp-runner-${rs.id ?? createHash('sha1').update(rs.session!.key).digest('hex').slice(0, 12)}`;
     const args = [...pre, `--unit=${unit}`, '--collect', '--quiet', `--working-directory=${workingDirectory(rs, { ...env, ...as?.env })}`,
       ...Object.entries(vars).map(([k, v]) => `--setenv=${k}=${v}`), '--', ...node];
@@ -91,8 +91,8 @@ export const unitFailure = (e: Partial<PodmanError>, timeoutMs: number) =>
   e.timedOut ? `no answer in ${timeoutMs} ms` : String(e.stderr ?? '').trim().split('\n').pop() || `exit ${e.code ?? 'by a signal'}`;
 
 /** Start the runner; resolves once it was spawned (not yet listening). `timeoutMs` bounds each try of a unit's start. */
-export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, timeoutMs?: number) {
-  const c = launchCommand(rs, how, env, root);
+export async function launch(rs: RunnerSpec, how: LaunchMode | string, env: NodeJS.ProcessEnv, root: string, systemdRun: string, timeoutMs?: number) {
+  const c = launchCommand(rs, how, env, root, systemdRun);
   if (!c.detached) {
     // A unit's name repeats (a session's before work 069, a thread's container since work 103): one may still be held by a runner that just quit.
     // cwd: the runners' user cannot enter every directory the host runs in, and sudo keeps it.

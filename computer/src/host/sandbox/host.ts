@@ -58,7 +58,13 @@ import { sandboxUses } from './use.js';
 import { sandboxWorkspaces } from './workspace.js';
 
 export interface SandboxHostDeps {
+  /** The host's environment: the runners' user and the variables passed to runners (runner-env.ts). */
   env: NodeJS.ProcessEnv;
+  /** SP_IMAGE and SP_IMAGE_ABI of the host's release (host-config.ts). */
+  image?: string;
+  abi?: string;
+  /** The prefix of the containers' units (host-config.ts). */
+  systemdRun: string;
   /** HOST_RUN and HOST_DATA. */
   run: string;
   data: string;
@@ -93,7 +99,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   const { env } = d;
   const user = runnerUser(env);
   if (!user) throw new Error('SP_LAUNCH=podman needs a runner user (SP_RUNNER_USER): this host would run sessions as itself. deploy/vm/sp-host.sh sets one up.');
-  const { SP_IMAGE: image, SP_IMAGE_ABI: abi } = env;
+  const { image, abi } = d;
   if (!image || !abi) throw new Error("SP_LAUNCH=podman needs SP_IMAGE and SP_IMAGE_ABI; the release's .sp-version.env sets both");
   const runRoot = (id: string) => sandboxRunFor(d.run, id);
   const records = sandboxRecords(path.join(d.data, 'state', 'sandboxes'));
@@ -108,7 +114,7 @@ export function sandboxHost(d: SandboxHostDeps) {
   });
   const all = containers({
     as, runRoot, dataDir: d.data, root: d.root, image, abi, modelSocket: d.modelSocket,
-    start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, ms),
+    start: (id, ms) => launch({ id, socket: socketFor(runRoot(id), id), version: d.version }, 'podman', env, d.root, d.systemdRun, ms),
     vars: () => runnerVars(env), definition: definitionFile,
     serveTokens,
     removed: (id) => {

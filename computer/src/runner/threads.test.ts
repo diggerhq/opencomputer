@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CloudError } from './cloud.js';
-import { MAX_POSTS, MAX_POST_CHARS, slackLink, threadTools, transcript } from './threads.js';
+import { MAX_POST_CHARS, slackLink, threadTools, transcript } from './threads.js';
 import type { Work } from './work.js';
 
 const URL = 'https://acme.slack.com/archives/C0PUB/p1700000001000100';
@@ -64,12 +64,11 @@ describe('post_thread', () => {
     expect(r.content[0].text).toBe('Posted (ts 1700000002.000200).');
   });
 
-  it('is refused for a session not started in Slack, for a long text, and after the limit', async () => {
+  it('is refused for a session not started in Slack and for a long text; there is no cap on posts', async () => {
     expect((await rig(undefined, '').post.handler({ thread: URL, text: 'x' })).content[0].text).toMatch(/only a session started in Slack/);
     const t = rig();
     expect((await t.post.handler({ thread: URL, text: 'x'.repeat(MAX_POST_CHARS + 1) })).isError).toBe(true);
-    for (let i = 0; i < MAX_POSTS; i++) await t.post.handler({ thread: URL, text: 'x' });
-    expect((await t.post.handler({ thread: URL, text: 'x' })).content[0].text).toMatch(/already posted 20 times/);
-    expect(t.calls).toHaveLength(MAX_POSTS);
+    for (let i = 0; i < 25; i++) expect((await t.post.handler({ thread: URL, text: 'x' })).isError).toBeUndefined();
+    expect(t.calls).toHaveLength(25);
   });
 });

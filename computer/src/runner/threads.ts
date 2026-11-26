@@ -17,10 +17,7 @@ import { refusal, SID, said, type Work } from './work.js';
 
 export const READ_THREAD_TOOL = 'mcp__calvin__read_thread';
 export const POST_THREAD_TOOL = 'mcp__calvin__post_thread';
-/** Bounds per runner, which matter in bypass mode where nobody approves each call and reads never prompt. */
-export const MAX_POSTS = 20;
 export const MAX_POST_CHARS = 4_000;
-export const MAX_READS = 40;
 const MAX_READ_CHARS = 60_000;
 
 /** A Slack link's `channel:ts`, the thread's when the link names one. */
@@ -56,8 +53,6 @@ export function transcript(events: Array<{ type?: string; data?: any; at?: strin
 }
 
 export function threadTools(w: Work) {
-  let posts = 0;
-  let reads = 0;
   const read = tool(
     'read_thread',
     'Read another thread: what was sent to it and what its agent said over its last 20 turns, text only. Give its session id (cs_…), ' +
@@ -65,8 +60,6 @@ export function threadTools(w: Work) {
       'an earlier message, or to see what one you started has done. Only threads you may read; otherwise it says why not.',
     { thread: z.string().describe('A session id (cs_…) or a Slack thread link (https://<workspace>.slack.com/archives/<channel>/p<ts>)') },
     async ({ thread }) => {
-      if (reads >= MAX_READS) return said(`this session already read ${MAX_READS} threads; ask the person before reading more`, true);
-      reads++;
       try {
         const id = await sessionOf(w, thread);
         const r = await w.api.call('GET', `/sessions/${id}/events`, { query: { tailTurns: 20 } });
@@ -94,7 +87,6 @@ export function threadTools(w: Work) {
     async ({ thread, text: body }) => {
       const own = w.session().slackThread;
       if (!own) return said('not posted: only a session started in Slack posts to a Slack thread', true);
-      if (posts >= MAX_POSTS) return said(`this session already posted ${MAX_POSTS} times to other threads; ask the person before posting more`, true);
       if (body.length > MAX_POST_CHARS) return said(`text is ${body.length} characters; at most ${MAX_POST_CHARS}`, true);
       const to = slackLink(thread.trim());
       if (!to) return said('not posted: give the thread\'s Slack link', true);
@@ -102,10 +94,8 @@ export function threadTools(w: Work) {
       try {
         // No Idempotency-Key: the route takes none, so a failed call is not sent again here.
         const r = await w.api.call('POST', `/slack/threads/${encodeURIComponent(key)}/messages`, { body: { text: body } });
-        posts++;
         return said(`Posted${r?.ts ? ` (ts ${r.ts})` : ''}.`);
       } catch (e) {
-        posts++;
         return said(`not posted: ${refusal(e)}`, true);
       }
     },

@@ -977,3 +977,39 @@ fn streamed_text_follows_utf16_offsets() {
     assert_eq!(streamed, text, "{}", o.stdout);
     fake.assert_no_panics();
 }
+
+#[test]
+fn shell_wakes_a_suspended_session_then_opens() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(o.stderr.contains("waking session…"), "{}", o.stderr);
+    assert_eq!(fake.requests_to("POST /sessions/*/resume").len(), 1);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn shell_on_a_running_session_does_not_wake_it() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("awake"));
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(!o.stderr.contains("waking"), "{}", o.stderr);
+    assert!(fake.requests_to("POST /sessions/*/resume").is_empty());
+}
+
+#[test]
+fn shell_says_why_a_session_cannot_wake() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    fake.fail_next("POST /sessions/*/resume", 1, Failure::insufficient_credits());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 6, "{}", o.stderr);
+    assert!(o.stderr.contains("not running, and could not be woken"), "{}", o.stderr);
+    assert!(o.stderr.contains("opc send"), "{}", o.stderr);
+    assert!(!o.stderr.contains("No such session"), "{}", o.stderr);
+    assert_eq!(o.stdout, "");
+}

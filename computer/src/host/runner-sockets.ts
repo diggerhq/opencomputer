@@ -56,13 +56,14 @@ export function dialSocket(socket: string, check: SocketCheck = {}): Promise<net
   });
 }
 
-export interface LaunchOptions { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; f?: Dimensions }
+/** `systemdRun`: the prefix of a runner's unit (host-config.ts). */
+export interface LaunchOptions { tm: Telemetry; mode: string; env: NodeJS.ProcessEnv; root: string; systemdRun: string; f?: Dimensions }
 
 /** Launch a runner's process (`runner.launched`); resolves once it was spawned, with when the launch began. */
 export async function launchProcess(rs: RunnerSpec, o: LaunchOptions): Promise<number> {
   const t0 = Date.now();
   const launched = o.tm.start('runner.launched', { ...o.f, data: { launch_mode: o.mode } });
-  await launch(rs, o.mode, o.env, o.root).catch((e) => {
+  await launch(rs, o.mode, o.env, o.root, o.systemdRun).catch((e) => {
     launched.end({ outcome: 'failed', error_type: 'launch' });
     throw e;
   });

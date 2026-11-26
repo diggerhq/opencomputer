@@ -20,7 +20,7 @@
     "light": "#dfdfdf",
     "dark": "#131311"
   },
-  "favicon": "/images/favicon.svg",
+  "favicon": "/images/favicon-docs.svg",
   "navigation": {
     "groups": [
       {
@@ -56,7 +56,8 @@
           "self-hosting/overview",
           "self-hosting/azure",
           "self-hosting/aws",
-          "self-hosting/gcp"
+          "self-hosting/gcp",
+          "self-hosting/enterprise"
         ]
       },
       {
