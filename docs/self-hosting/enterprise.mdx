@@ -1,0 +1,38 @@
+---
+title: "Enterprise Edition"
+description: "What the Enterprise Edition adds to a self-hosted @computer, and how to get a license"
+---
+
+The Community Edition (CE) is the deployment described in [Start here](/self-hosting/overview): you run it yourself, with one Computer VM per organization and sign-in through WorkOS. The Enterprise Edition (EE) runs the same stack and adds what a larger team needs:
+
+| | Community Edition | Enterprise Edition |
+| --- | --- | --- |
+| Computer VMs | One VM per organization, sized by you | A pool of VMs per organization that grows and shrinks with the number of sessions |
+| Where sessions run | VMs in Azure, AWS or Google Cloud | Those clouds, plus machines in your own data center |
+| Sign-in | WorkOS | WorkOS, or your identity provider directly: Okta, Microsoft Entra ID, or any SAML 2.0 or OIDC provider |
+| Images | Built from this repository | Prebuilt images that need a license key |
+| Support | GitHub issues | A named contact and an agreed response time |
+
+## Sessions on a pool of VMs
+
+In CE every session of an organization runs on its one VM, so the size of that VM caps how many sessions run at once. In EE an organization has a pool of VMs: a new session is placed on a VM with room for it, the pool adds VMs when they are full and removes idle ones, and you set the smallest and largest number of VMs and their size.
+
+## Sandboxes on your own machines
+
+Heavy builds, large monorepos and work that must not leave your network can run on machines you own. An on-premises machine runs the same Computer release as a cloud VM and, like it, connects out to the gateway: it needs outbound HTTPS and no inbound access. You choose per organization which sessions go to the cloud pool and which to your machines.
+
+## Sign-in with your identity provider
+
+EE signs people in through your identity provider with SAML 2.0 or OIDC, and can create and remove users from it with SCIM. Group membership in the provider decides who belongs to which organization.
+
+## Get a license
+
+The EE images run only with a license key. [Talk to us](mailto:hello@opencomputer.dev) to get one: we set up a proof of concept with you, give you access to the images and a key, and go through the deployment together.
+
+A license covers:
+
+- An agreed number of users or concurrent sessions
+- Access to the EE images and their updates for the term of the license
+- Support
+
+{/* Draft for the POC scoping call. Product decisions behind this page are still open: see the pull request. */}

@@ -56,7 +56,8 @@
           "self-hosting/overview",
           "self-hosting/azure",
           "self-hosting/aws",
-          "self-hosting/gcp"
+          "self-hosting/gcp",
+          "self-hosting/enterprise"
         ]
       },
       {
