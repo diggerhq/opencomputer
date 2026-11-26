@@ -27,7 +27,7 @@ Slack reaches the gateway only through the tunnel. The host agent dials the gate
 
 ## Install
 
-Run everything from a checkout of the repository on the VM.
+Clone the repository on the VM as your own sudo user. The containers then run as `oc-gateway`, a user `host-install.sh` creates for them, from a copy it owns. [`selfhost/CONTRACT.md`](https://github.com/diggerhq/opencomputer/blob/main/selfhost/CONTRACT.md) is the full contract between the host and the gateway.
 
 <Steps>
 <Step title="Pick the public hostname">
@@ -39,20 +39,37 @@ Decide the hostname Slack will call, for example `computer.example.com`. It beco
 sudo selfhost/host-install.sh
 ```
 
-It installs rootless Podman, the session image, the host agent and the model proxy as systemd services. Give the host agent the gateway's address and a host token (generate one with `openssl rand -hex 32`):
+It installs rootless Podman, the session image, the host agent and the model proxy as systemd services, and podman-compose. It also creates the `oc-gateway` user (home `/var/lib/oc-gateway`) with its own rootless Podman, lingering and `podman-restart.service`. The host agent stays stopped until it has a host token.
+</Step>
+
+<Step title="Copy the stack to oc-gateway">
+Compose builds the gateway from `../computer`, so copy both directories:
 
 ```bash
-SP_GATEWAY_URL=ws://127.0.0.1:8080/host
-SP_HOST_TOKEN=<the token>
+sudo mkdir -p /var/lib/oc-gateway/opencomputer
+sudo cp -r selfhost computer /var/lib/oc-gateway/opencomputer/
+sudo chown -R oc-gateway:oc-gateway /var/lib/oc-gateway/opencomputer
 ```
 
-The same token goes in the gateway's `SP_HOST_TOKENS` below. The host agent retries until the gateway is up, so the order of the next steps does not matter to it.
+Run every `podman compose` command on this page as `oc-gateway`, from that copy:
+
+```bash
+sudo -iu oc-gateway
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+cd ~/opencomputer/selfhost
+```
+
+<Warning>
+Never run the stack as the `agent` user. Sessions run tools as `agent` without asking for permission, and as `agent`, `podman inspect` shows the gateway's environment: every secret it holds.
+</Warning>
 </Step>
 
 <Step title="Configure the containers">
+As `oc-gateway`:
+
 ```bash
-cd selfhost
 cp .env.example .env
+chmod 600 .env
 ```
 
 Fill in at least:
@@ -62,7 +79,7 @@ Fill in at least:
 | `SP_ORIGIN` | `https://<your hostname>` |
 | `SETUP_TOKEN` | `openssl rand -hex 32`; opens the `/setup` pages |
 | `SP_STORE_KEY` | `openssl rand -hex 32`; encrypts the secrets kept in SQLite. Back it up: without it they are unreadable |
-| `SP_HOST_TOKENS` | the host token from the previous step |
+| `SP_HOST_TOKENS` | the host token (next step) |
 | `SP_PEOPLE` | who may use the instance (see [People](#people)) |
 | `GITHUB_ORG` | the GitHub organization that will own the GitHub App |
 | `CLOUDFLARE_TUNNEL_TOKEN`, or `NGROK_AUTHTOKEN` and `NGROK_URL` | the tunnel you chose |
@@ -72,6 +89,21 @@ Every variable is described in `.env.example`.
 <Warning>
 Compose takes a variable from your shell's environment before `.env`. If your shell exports `ANTHROPIC_API_KEY` or another variable of the same name, the container gets that value. Unset it, or run compose from a clean shell.
 </Warning>
+</Step>
+
+<Step title="Set the host token">
+Generate one value and put it in two places:
+
+```bash
+openssl rand -hex 32
+```
+
+| File | Line |
+| --- | --- |
+| `/var/lib/oc-gateway/opencomputer/selfhost/.env` (the gateway) | `SP_HOST_TOKENS=<the value>` |
+| `/etc/opencomputer/selfhost.env` (the host agent; root, mode 0600) | `SP_HOST_TOKEN=<the value>` |
+
+`selfhost.env` already sets `SP_GATEWAY_URL=ws://127.0.0.1:8080/host`; change its port only if you changed `GATEWAY_PORT`. Then start the host agent with `sudo systemctl restart slack-presence-host`. It retries until the gateway is up, so the order of these steps does not matter to it.
 </Step>
 
 <Step title="Start the containers">
@@ -93,14 +125,14 @@ Open `https://<your hostname>/setup?token=<SETUP_TOKEN>`. The page walks through
 
 ### Start on boot
 
-The gateway's restart policy is `unless-stopped`. Rootless Podman restarts such containers on boot only through its user service, and runs healthchecks only with a systemd user session, so enable both for the user that runs compose:
+The containers' restart policy is `always`: Ubuntu 24.04's Podman (4.9) brings back only `always` containers at boot, through the `podman-restart.service` user unit. `host-install.sh` enables lingering and that unit for `oc-gateway`, which also gives Podman the systemd user session it needs to run healthchecks. To set it up by hand for another user:
 
 ```bash
-sudo loginctl enable-linger "$USER"
-systemctl --user enable --now podman-restart.service
+sudo loginctl enable-linger <user>
+systemctl --user enable --now podman-restart.service   # as that user
 ```
 
-Docker needs nothing extra.
+Docker needs nothing extra. `podman compose stop` stops the containers until the next reboot; `podman compose down` removes them.
 
 ## Slack app
 
@@ -161,7 +193,7 @@ When something is off, `podman compose logs -f gateway` shows what the gateway i
 
 ## How the containers and the host connect
 
-These are the names both halves of the install rely on. Until `selfhost/CONTRACT.md` exists, this table is the assumption the containers are built on.
+These are the names both halves of the install rely on. [`selfhost/CONTRACT.md`](https://github.com/diggerhq/opencomputer/blob/main/selfhost/CONTRACT.md) has the full contract.
 
 | | Value |
 | --- | --- |
@@ -169,15 +201,18 @@ These are the names both halves of the install rely on. Until `selfhost/CONTRACT
 | Host agent's gateway URL | `SP_GATEWAY_URL=ws://127.0.0.1:8080/host` |
 | Host authentication | The host agent sends `Authorization: Bearer $SP_HOST_TOKEN`; the gateway accepts tokens in `SP_HOST_TOKENS` and tokens issued on `/setup` (`sph_…`) |
 | Model proxy | Reached only by the host agent and sessions on the VM; the gateway sends hosts the model credentials and never calls the proxy |
-| The VM from inside the gateway container | `host.containers.internal` and `host.docker.internal` (both mapped to `host-gateway`) |
+| Users | Compose runs as `oc-gateway`; sessions as `agent`. Never run the stack as `agent` |
 | Gateway state | SQLite at `SP_DB=/data/gateway.db` on the volume `opencomputer_gateway-data` |
 
 ## Upgrade
 
-From a source checkout:
+From your checkout, copy the new code to `oc-gateway` (its `.env` is kept), then rebuild as `oc-gateway`:
 
 ```bash
 git pull
+sudo cp -r selfhost computer /var/lib/oc-gateway/opencomputer/
+sudo chown -R oc-gateway:oc-gateway /var/lib/oc-gateway/opencomputer
+# as oc-gateway, in ~/opencomputer/selfhost:
 podman compose build gateway
 podman compose up -d
 ```

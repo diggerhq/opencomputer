@@ -1,5 +1,6 @@
-# Single-VM self-host: the containers. Run from this directory, after
-# host-install.sh has set up the host agent and the model proxy on the VM:
+# Single-VM self-host: the containers. Run as the oc-gateway user (made by
+# host-install.sh), never as agent, from a copy of this directory and
+# ../computer that it owns. selfhost/CONTRACT.md is the host <-> gateway contract.
 #
 #   cp .env.example .env    # fill it in
 #   podman compose up -d                      # gateway only (bring your own tunnel)
@@ -27,7 +28,9 @@ services:
       dockerfile: Dockerfile
       args:
         SP_VERSION: ${SP_VERSION:-dev}
-    restart: unless-stopped
+    # `always`, not `unless-stopped`: Podman 4.9's podman-restart.service
+    # (Ubuntu 24.04) revives only `always` containers after a reboot.
+    restart: always
     # Loopback only: the host agent dials here, the tunnel reaches the
     # gateway over the compose network. Nothing else should.
     ports:
@@ -60,13 +63,6 @@ services:
       SLACK_TEAM_ID: ${SLACK_TEAM_ID:-}
     volumes:
       - gateway-data:/data
-    # host.containers.internal (podman's name) and host.docker.internal
-    # (docker's) both resolve to the VM, for anything in the gateway that has
-    # to reach a service on the host. `host-gateway` works on Docker 20.10+
-    # and Podman 4.x.
-    extra_hosts:
-      - "host.containers.internal:host-gateway"
-      - "host.docker.internal:host-gateway"
     healthcheck:
       # The image has no curl; node's fetch against the gateway's own /healthz.
       # A shell string, not exec form: podman-compose re-quotes exec form.
@@ -81,7 +77,7 @@ services:
   cloudflared:
     image: docker.io/cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
     profiles: ["cloudflared"]
-    restart: unless-stopped
+    restart: always
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
@@ -92,7 +88,7 @@ services:
   ngrok:
     image: docker.io/ngrok/ngrok:${NGROK_VERSION:-latest}
     profiles: ["ngrok"]
-    restart: unless-stopped
+    restart: always
     command: ["http", "--url", "${NGROK_URL:-}", "gateway:8080"]
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
