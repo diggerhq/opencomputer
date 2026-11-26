@@ -37,6 +37,8 @@ export const EVENT_DATA = {
     interruptedTurnIds: Schema.Array(TurnId),
     /** The open asks a steer declined (each closes `declined`, its answer naming this event's seq); empty otherwise. */
     declinedAskIds: Schema.Array(AskId),
+    /** A steer's own id, when its sender named one (`turns.send`'s `turnId`; the cloud's inbox entry): a redelivery of it is a duplicate. */
+    messageId: Schema.optionalKey(TurnId),
   }),
   /** `trigger` as on the Turn; `subagentId`: the background subagent whose end started the turn (`trigger` `subagent`), else null. */
   'turn.queued': Schema.Struct({ position: Count, trigger: TurnTrigger, subagentId: Schema.NullOr(SubagentId) }),
