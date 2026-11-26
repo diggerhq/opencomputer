@@ -51,7 +51,7 @@ export function parseVariableCommand(text: string): VariableCommand | null {
   }
   const assignment = /^(?:set|add)\s/i.test(body) ? body.replace(/^\S+\s+/, '') : body;
   const [, name = '', raw = ''] = /^([^\s=]+)\s*=?\s*([\s\S]*)$/.exec(assignment) ?? [];
-  const problem = secretNameProblem(name);
+  const problem = secretNameProblem(name, { variable: true });
   if (problem) return { kind: 'bad', reason: `can't use \`${name}\`: ${problem}` };
   let value = raw.trim();
   let scope: SecretScope | undefined;

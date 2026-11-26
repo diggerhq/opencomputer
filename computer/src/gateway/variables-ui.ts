@@ -7,9 +7,12 @@
 // A value that looks like a credential (credentialHint) is not kept until the
 // person clicks "Set it anyway": the button carries the command, and the click
 // runs it again, checks and all, except that one.
+// A base URL (`*_BASE_URL`, `*_API_BASE`) at session scope is set only by the
+// session's owner: it would send the owner's keys wherever it points.
 
 import type { KnownBlock, WebClient } from '@slack/web-api';
 import type { SlackPerson, SecretScope, SlackSessionSpec } from '../protocol.js';
+import { isBaseUrlName } from '../secret-names.js';
 import { credentialHint, parseVariableCommand, showValue, VARIABLE_HELP, type VariableCommand } from '../variables.js';
 import type { Store } from './db.js';
 import type { Hub } from './hosts.js';
@@ -97,6 +100,8 @@ export function createVariablesUi({ store, vault, hub }: { store: Store; vault: 
     const scope: SecretScope = cmd.scope ?? (spec ? 'session' : 'user');
     if (scope === 'session' && !spec) return 'Not in a session: add `me` or `workspace`.';
     if (scope === 'workspace' && !person.admin) return 'Only admins can set or remove workspace variables.';
+    if (cmd.kind === 'set' && scope === 'session' && isBaseUrlName(cmd.name) && spec!.owner.slackUserId !== me)
+      return `Only the session's owner, <@${spec!.owner.slackUserId}>, can set \`${cmd.name}\` here: a base URL decides where the session's keys are sent.`;
     const owner = scope === 'session' ? spec!.key : scope === 'user' ? me : '';
     const where = label(scope, owner, me);
     const existing = cmd.name ? vault.list([{ scope, owner }]).find((r) => r.name === cmd.name) : undefined;

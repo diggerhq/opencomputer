@@ -74,3 +74,10 @@ describe('credentialHint', () => {
       expect(credentialHint(n, v)).toBeUndefined();
   });
 });
+
+describe('parseVariableCommand: names', () => {
+  it('accepts a base URL (a variable is shown to everyone) but not a redirecting name', () => {
+    expect(parseVariableCommand('!var OPENAI_BASE_URL https://proxy.example')).toEqual({ kind: 'set', name: 'OPENAI_BASE_URL', value: 'https://proxy.example' });
+    expect(parseVariableCommand('!var PIP_INDEX_URL https://pypi.example')).toMatchObject({ kind: 'bad' });
+  });
+});
