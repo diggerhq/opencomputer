@@ -56,6 +56,10 @@ const LAST_USED_EVERY_MS = 60_000;
 /** Events one history read returns, newest first. */
 const EVENTS_PAGE = 100;
 
+/** Why a Slack user may not change organization secrets or variables. */
+const ORG_ADMINS_ONLY = "only organization admins can set or remove those (in Slack: a full member of this workspace linked to an admin's dashboard account).";
+const ORG_ADMINS_ONLY_SENTENCE = "Only organization admins can set organization secrets (in Slack: a full member of this workspace linked to an admin's dashboard account).";
+
 /** Who changed a secret, for the row and `secret_events`: a Slack user id, or an organization member (`usr_…`). */
 export interface SecretActor {
   id: string;
@@ -71,7 +75,8 @@ export type SecretsApiOp =
   | { op: "secrets.list" }
   | { op: "secrets.put"; name: string; body: unknown }
   | { op: "secrets.delete"; name: string }
-  | { op: "secrets.events"; name: string };
+  | { op: "secrets.events"; name: string }
+  | { op: "secrets.history" };
 
 const iso = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString() : null);
 const actorOf = (id: string | null, name: string | null) =>
@@ -97,10 +102,10 @@ export interface SecretsStoreDeps {
   sql: SqlStorage;
   encryptionKey: () => string | undefined;
   /**
-   * Whether a person is a full member of the linked Slack workspace: who may
-   * set and remove organization secrets (2026-10-11: they are trusted). Not
+   * Whether a person is a full member of the linked Slack workspace. Not
    * guests, people from other organizations in shared channels, bots or
-   * deactivated accounts. Throws when Slack could not be asked.
+   * deactivated accounts. Organization secrets also need an admin (orgAdmin).
+   * Throws when Slack could not be asked.
    */
   member(userId: string): Promise<boolean>;
   /** Whether a person may write to a session (work 112: `can(instruct)`). Throws when Slack could not be asked. */
@@ -317,7 +322,7 @@ export class SecretsStore {
       return `\`${name}\` is set in several scopes (${where}); say which: \`!secret rm ${name} <${where.replaceAll(", ", "|")}>\``;
     }
     const [scope, owner] = present[0]!;
-    if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return `\`${name}\` is an organization secret; only full members of this Slack workspace can remove it.`;
+    if (scope === "workspace" && !(await this.orgAdmin(ctx.userId))) return `\`${name}\` is an organization secret; ${ORG_ADMINS_ONLY}`;
     if (scope === "session") {
       const refused = await this.sessionSecretRefusal(owner, name, this.slackWriter(ctx.userId));
       if (refused) return refused;
@@ -386,7 +391,7 @@ export class SecretsStore {
     }
     const scope: SecretScope = cmd.scope ?? (ctx.session ? "session" : "user");
     if (scope === "session" && !ctx.session) return "Not in a session: add `me` or `org`.";
-    if (scope === "workspace" && !(await this.deps.member(ctx.userId))) return "Only full members of this Slack workspace can set or remove organization variables.";
+    if (scope === "workspace" && !(await this.orgAdmin(ctx.userId))) return `Not changed: ${ORG_ADMINS_ONLY}`;
     const owner = scope === "session" ? ctx.session!.key : scope === "user" ? ctx.userId : "*";
     const where = scopeLabel(scope, owner, ctx.userId);
     const existing = cmd.name ? this.meta([[scope, owner]]).find((m) => m.name === cmd.name) : undefined;
@@ -421,9 +426,9 @@ export class SecretsStore {
     const d = decodeButtonId(actionId);
     if (!d) return;
     const session = d.k ? this.deps.session(d.k) : undefined;
-    let member: boolean;
+    let admin: boolean;
     try {
-      member = await this.deps.member(ctx.userId);
+      admin = await this.orgAdmin(ctx.userId);
     } catch {
       return this.ephemeral(ctx, LOOKUP_FAILED_TEXT);
     }
@@ -436,7 +441,7 @@ export class SecretsStore {
     const view = secretModal(d, meta, {
       session: !!session,
       ...(session && session.ownerId !== ctx.userId ? { otherOwner: session.ownerId } : {}),
-      member,
+      admin,
     });
     const r = await this.deps.slack("views.open", { trigger_id: triggerId, view });
     if (!r.ok) console.error("secret_modal_failed", { error: r.error });
@@ -455,7 +460,7 @@ export class SecretsStore {
     try {
       // A secret set from a session's thread is a write to that session (work 112), as `!secret` there is.
       if (session && !(await this.deps.instructs(session.key, userId))) return { errors: { scope: driversCommandText("secret") } };
-      if (s.scope === "workspace" && !(await this.deps.member(userId))) return { errors: { scope: "Only full members of this Slack workspace can set organization secrets." } };
+      if (s.scope === "workspace" && !(await this.orgAdmin(userId))) return { errors: { scope: ORG_ADMINS_ONLY_SENTENCE } };
     } catch {
       return { errors: { scope: LOOKUP_FAILED_TEXT } };
     }
@@ -511,15 +516,19 @@ export class SecretsStore {
 
   /**
    * The Computer API: organization secrets and writes to a session authorized by the caller.
-   * Any member may list, set, replace and delete organization secrets
-   * (2026-11-01); a session secret is replaced or deleted only by its creator or an admin (sessionSecretRefusal). api-http.ts has already refused session keys and checked scopes.
+   * Any member may list organization secrets and their history; only an organization admin or owner may set,
+   * replace or delete one (2026-11-26, replacing 2026-11-01's "any member"). A session secret is replaced or deleted only by its creator or an admin (sessionSecretRefusal). api-http.ts has already refused session keys and checked scopes.
    * Values go in, never out; variables are listed with theirs, as `!vars` shows them.
    */
   async api(caller: ApiCaller, op: SecretsApiOp, sessionKey?: string): Promise<ApiReply> {
     if (op.op.startsWith("secrets.session.") && !sessionKey) return apiError(404, "session_not_found", "No such session.");
-    if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows() } };
+    if (op.op === "secrets.list") return { status: 200, body: { secrets: await this.orgRows(), canManage: !!caller.admin } };
     if (op.op === "secrets.session.list") return { status: 200, body: { secrets: this.sessionRows(sessionKey!, op.sessionId) } };
     if (op.op === "secrets.events") return { status: 200, body: { events: this.orgEvents(op.name) } };
+    if (op.op === "secrets.history") return { status: 200, body: { events: this.orgEvents() } };
+    if ((op.op === "secrets.put" || op.op === "secrets.delete") && !caller.admin) {
+      return apiError(403, "forbidden", "Only an organization admin can set, replace or delete organization secrets.", { reason: "admin_required" });
+    }
     const actor: SecretActor = { id: caller.member, name: caller.name ?? caller.email, surface: caller.via };
     const recent = this.deps.sql.exec<{ n: number }>(
       "SELECT COUNT(*) AS n FROM secret_events WHERE actor = ? AND ts > ?",
@@ -639,6 +648,15 @@ export class SecretsStore {
     return `Only the person who set ${name}${who ? ` (${who})` : ""} or an organization admin can replace or delete it.`;
   }
 
+  /**
+   * Whether a Slack user may set, replace or remove organization secrets and variables (2026-11-26, replacing
+   * 2026-11-01's "any full member"): a full member of the workspace who linked an organization admin. Throws when
+   * Slack could not be asked.
+   */
+  private async orgAdmin(slackUserId: string): Promise<boolean> {
+    return (await this.deps.member(slackUserId)) && this.slackWriter(slackUserId).admin;
+  }
+
   /** A Slack user as a writer of session secrets: the member they linked, an admin only through it. */
   private slackWriter(slackUserId: string): { member?: string; admin: boolean } {
     const member = this.deps.linkOfSlack?.(slackUserId);
@@ -664,13 +682,24 @@ export class SecretsStore {
     }));
   }
 
-  /** The organization layer's history for one name, newest first. */
-  private orgEvents(name: string) {
-    return [...this.deps.sql.exec<{ ts: number; actor: string; actorName: string | null; surface: string; action: string; variable: number }>(
-      `SELECT ts, actor, actor_name AS actorName, surface, action, variable FROM secret_events
-       WHERE scope = 'workspace' AND name = ? ORDER BY ts DESC LIMIT ?`,
-      name,
+  /**
+   * The organization layer's history, newest first: one name's, or every name's (`name` in each event), which the
+   * dashboard shows as its notice of changes (no organization notification channel exists). Never a value.
+   */
+  private orgEvents(name?: string) {
+    const rows = this.deps.sql.exec<{ ts: number; actor: string; actorName: string | null; surface: string; action: string; variable: number; name: string }>(
+      `SELECT ts, actor, actor_name AS actorName, surface, action, variable, name FROM secret_events
+       WHERE scope = 'workspace'${name === undefined ? "" : " AND name = ?"} ORDER BY ts DESC LIMIT ?`,
+      ...(name === undefined ? [] : [name]),
       EVENTS_PAGE,
-    )].map((e) => ({ at: iso(e.ts), action: e.action, kind: e.variable ? "variable" : "secret", actor: actorOf(e.actor, e.actorName), via: e.surface }));
+    );
+    return [...rows].map((e) => ({
+      at: iso(e.ts),
+      ...(name === undefined ? { name: e.name } : {}),
+      action: e.action,
+      kind: e.variable ? "variable" : "secret",
+      actor: actorOf(e.actor, e.actorName),
+      via: e.surface,
+    }));
   }
 }

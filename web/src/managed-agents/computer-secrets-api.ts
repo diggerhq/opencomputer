@@ -36,15 +36,47 @@ export const orgSecretsQueryKey = ['managed-computer', 'secrets'] as const
 
 const PREFIX = '/managed-agents/computer'
 
+/** The organization's secrets, and whether the caller may change them (organization admins only). */
 export async function getOrgSecrets() {
+  return apiFetch(
+    `${PREFIX}/secrets`,
+    undefined,
+    z.object({
+      secrets: z.array(orgSecretSchema),
+      // Missing from an older server: show the page read-only.
+      canManage: z.boolean().optional().default(false),
+    }),
+    '/api',
+  )
+}
+
+export const orgSecretEventSchema = z.object({
+  at: z.string().nullable(),
+  name: z.string(),
+  action: z.enum(['set', 'replace', 'delete']),
+  kind: z.enum(['secret', 'variable']),
+  actor: actorSchema.nullable(),
+  via: z.string(),
+})
+
+export type OrgSecretEvent = z.infer<typeof orgSecretEventSchema>
+
+export const orgSecretEventsQueryKey = [
+  'managed-computer',
+  'secrets',
+  'events',
+] as const
+
+/** Every change to the organization's secrets, newest first: who and when, never a value. */
+export async function getOrgSecretEvents() {
   return (
     await apiFetch(
-      `${PREFIX}/secrets`,
+      `${PREFIX}/secrets/events`,
       undefined,
-      z.object({ secrets: z.array(orgSecretSchema) }),
+      z.object({ events: z.array(orgSecretEventSchema) }),
       '/api',
     )
-  ).secrets
+  ).events
 }
 
 /** Sets or replaces an organization secret or variable. */
