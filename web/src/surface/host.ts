@@ -33,6 +33,8 @@ export interface Host {
       threadId?: string
       trackId?: string
       askId?: string
+      // The hotkey and File > New Thread: the start box.
+      new?: boolean
     }) => void,
   ): void
   // A button pressed on a permission's notification (desktop only).

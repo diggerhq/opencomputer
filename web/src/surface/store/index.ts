@@ -164,6 +164,7 @@ export function createSurface(o: SurfaceOptions) {
 
   // Rows read by query (Earlier's pages, search): beneath the feed's.
   let under: Rows = emptyRows()
+  const answered = new Map<string, Extract<Pending, { kind: 'answer' | 'dismiss' }>>()
   const compose = (base: Rows, pending: Pending[]): Rows => {
     const d = new Draft(base)
     for (const kind of ['session', 'place', 'track', 'result'] as const)
@@ -171,18 +172,40 @@ export function createSurface(o: SurfaceOptions) {
         const have = d.get(kind, row.id)
         if (!have || have.version < row.version) d.set(row)
       }
-    return overlay(d.done(), pending, me)
+    // An answer leaves `pending` on its 2xx reply, which can come before the
+    // feed's row: until that row says the ask is closed the answer stays on
+    // top, so the dot does not come back and is not announced again.
+    for (const p of pending) if (p.kind === 'answer' || p.kind === 'dismiss') answered.set(p.key, p)
+    const held: Pending[] = []
+    for (const [key, p] of answered) {
+      if (pending.some((x) => x.key === key)) continue
+      if (base.session.get(p.sessionId)?.asks.some((x) => x.id === p.askId && x.status === 'open')) held.push(p)
+      else answered.delete(key)
+    }
+    return overlay(d.done(), held.length ? [...pending, ...held] : pending, me)
   }
   const recompose = (change: Partial<State> = {}) => {
     const s = { ...get(), ...change }
     set({ ...change, rows: compose(s.base, s.pending) })
     after()
   }
+  // The server counts every thread under Earlier; the ones read by query are
+  // then held as rows too, so the count shown leaves those out.
+  let served = NO_COUNTS
+  const counted = (base: Rows): Counts => {
+    const c: Counts = { earlier: served.earlier, trackEarlier: { ...served.trackEarlier } }
+    for (const p of under.place.values()) {
+      if (p.earlierAt === null || base.place.has(p.id)) continue
+      if (p.trackId) c.trackEarlier[p.trackId] = Math.max(0, (c.trackEarlier[p.trackId] ?? 0) - 1)
+      else c.earlier = Math.max(0, c.earlier - 1)
+    }
+    return c
+  }
   const addUnder = (rows: Row[]) => {
     const d = new Draft(under)
     for (const row of rows) d.set(row)
     under = d.done()
-    recompose()
+    recompose({ counts: counted(get().base) })
   }
 
   const stops: (() => void)[] = []
@@ -190,10 +213,12 @@ export function createSurface(o: SurfaceOptions) {
     const s = get()
     // The pending copies this frame confirms have already left `pending()`
     // (the SDK drops them in the same step), so one set shows neither twice.
+    const base = applyFrame(s.base, frame)
+    if (frame.counts) served = frame.counts
     set({
-      base: applyFrame(s.base, frame),
+      base,
       pending: client.pending().get(),
-      counts: frame.counts ?? s.counts,
+      counts: frame.counts ? counted(base) : s.counts,
       synced: s.synced || s.status === 'online',
     })
     for (const sid of watching.keys()) begin(sid)
@@ -219,6 +244,9 @@ export function createSurface(o: SurfaceOptions) {
       const read = s.rows.read.get(`${me}:${sid}`)?.readSeq ?? 0
       if (row && row.lastSeq > read && s.base.session.has(sid)) mutate('read.set', { sid, seq: row.lastSeq })
     }
+    // An agent wrapped the open thread in a new track (J3): its row stays in sight.
+    const around = sid ? s.rows.place.get(sid)?.trackId : null
+    if (around && s.openTracks[around] === undefined) set({ openTracks: { ...s.openTracks, [around]: true } })
     // The thread that was open is gone: a start-box thread that became a track
     // lands on the track (J5), anything else on the start box.
     if (sid && s.synced && !s.rows.session.has(sid)) {
@@ -282,7 +310,8 @@ export function createSurface(o: SurfaceOptions) {
     }),
   )
   host.onOpen((t) => {
-    if (t.threadId) {
+    if (t.new) go({ ...NOWHERE, start: true })
+    else if (t.threadId) {
       // A track's agent has no row of its own: open its track.
       const s = get()
       for (const k of s.rows.track.values())
@@ -325,6 +354,7 @@ export function createSurface(o: SurfaceOptions) {
     undo: 'Could not undo that',
   }
   const onFailure = (f: Failure) => {
+    answered.delete(f.entry.key)
     sync()
     const e = f.entry
     if (e.kind === 'mutation' && e.name === 'read.set') return
@@ -462,8 +492,8 @@ export function createSurface(o: SurfaceOptions) {
       go({ ...NOWHERE, start: true })
     },
     openResult(r: ResultRow) {
-      // A preview is a new tab on the web (spec 25).
-      if (r.type === 'preview' && host.platform === 'web') return host.openExternal(r.ref)
+      // A preview opens in the browser: the app's shell allows no frames (spec 24.2).
+      if (r.type === 'preview') return host.openExternal(r.ref)
       if (r.type === 'file' || r.type === 'document') {
         if (/^https?:/.test(r.ref)) host.openExternal(r.ref)
         return
@@ -588,9 +618,10 @@ export function createSurface(o: SurfaceOptions) {
       for (const p of get().rows.place.values()) if (p.trackId === tid) stopIfWorking(p.id)
     },
     // A11: lands on the start box.
-    trackDone(tid: string) {
+    trackDone(tid: string, proposalId?: string) {
       actions.stopAll(tid)
-      mutate('track.done', { tid })
+      if (proposalId) mutate('proposal.accept', { proposalId })
+      else mutate('track.done', { tid })
       const s = get()
       const open = s.loc.thread ? place(s.loc.thread)?.trackId : s.loc.track
       if (open === tid) go({ ...NOWHERE, start: true })
@@ -632,6 +663,8 @@ export function createSurface(o: SurfaceOptions) {
     // -- suggestions and undo --
     accept(proposalId: string) {
       const p = get().rows.proposal.get(proposalId)
+      // G8 accepted is A11.
+      if (p?.type === 'done' && get().rows.track.has(p.target)) return actions.trackDone(p.target, proposalId)
       mutate('proposal.accept', { proposalId })
       if (p?.type === 'done') toast({ text: 'Marked done', undo: () => mutate('thread.reopen', { sid: p.target }) })
     },

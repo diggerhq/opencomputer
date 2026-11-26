@@ -537,7 +537,12 @@ export class Mutations {
   replied(sid: string): void {
     const { org } = this.ctx;
     const p = org.place(sid);
-    if (!p) return;
+    if (!p) {
+      // A message to a done track's agent reopens the track (T12).
+      const t = org.trackOfAgent(sid);
+      if (t?.doneAt != null) this.track$reopen("rule:reply", { tid: t.id });
+      return;
+    }
     org.tx(() => {
       if (p.attention) {
         p.attention = null;

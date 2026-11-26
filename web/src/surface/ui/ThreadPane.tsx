@@ -116,6 +116,14 @@ export function ThreadPane({ sid }: { sid: string }) {
   const working = status === 'running' || status === 'starting'
   const pos = LAYOUTS.findIndex((l) => l.v === layout)
 
+  // A typed reply to a single open question is its answer (T3).
+  const reply = (text: string) => {
+    const ask = thread.ask
+    const qs = ask?.kind === 'question' ? ((ask.question?.questions ?? []) as { id?: string }[]) : []
+    if (ask && qs.length === 1) surface.answer(sid, ask.id, { answers: [{ questionId: qs[0].id ?? '0', choices: [], text }] })
+    else surface.send(sid, text)
+  }
+
   const menu = (): MenuItem[] => {
     const others = tracks.filter((k) => k.id !== trackId)
     const items: MenuItem[] = [{ label: 'Rename', onSelect: () => setRenaming(sid) }]
@@ -212,7 +220,7 @@ export function ThreadPane({ sid }: { sid: string }) {
           <Proposal key={p.id} p={p} thread={thread} />
         ))}
       </Conversation>
-      <Composer draftKey={`t:${sid}`} placeholder="Reply in this thread…" onSend={(text) => surface.send(sid, text)} />
+      <Composer draftKey={`t:${sid}`} placeholder="Reply in this thread…" onSend={reply} />
     </div>
   )
 }
