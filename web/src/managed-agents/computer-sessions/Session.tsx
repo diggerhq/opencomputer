@@ -1,7 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, ArchiveRestore, ArrowUp, Loader2, Square } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowUp,
+  Loader2,
+  Building2,
+  Lock,
+  Square,
+  Users,
+} from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
@@ -15,12 +24,17 @@ import {
   sendTurn,
   sessionKeys,
   updateSession,
+  updateSessionAccess,
+  type AccessInput,
   type IfBusy,
+  type Session,
   type SessionEvent,
   type SessionSettings,
 } from '../computer-sessions-api'
+import { accessLabel, explainAccessError } from './access'
+import { AccessPicker } from './AccessPicker'
 import { Item } from './conversation'
-import { useMemberEmails } from './members'
+import { useMemberEmails, useMyMemberId, useOrgPeople } from './members'
 import { SessionWork } from '../work/SessionWork'
 import { AskCard, SettingsPickers, StatusDot } from './parts'
 import {
@@ -79,6 +93,7 @@ function useSessionEvents(id: string, onSessionEvent: () => void) {
             setEvents([])
             continue
           }
+          // Gone, or not shared with the caller: nothing to follow.
           if (e instanceof ApiError && e.status === 404) {
             setLoaded(true)
             return
@@ -128,10 +143,13 @@ function SessionPage({ id }: { id: string }) {
     if (el && pinned.current) el.scrollTop = el.scrollHeight
   }, [items.length, events.length, s?.asks.length])
 
+  // Gone, or not shared with the caller: the API doesn't say which (CTO-37).
+  // Being an admin changes nothing here: only the owner shares a session.
   if (session.error instanceof ApiError && session.error.status === 404) {
     return (
       <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-sm">
         <p>This session does not exist or is not shared with you.</p>
+        <p>To get in, ask its owner to share it with you.</p>
         <Link to="/computer/sessions" className="text-primary hover:underline">
           Start a new session
         </Link>
@@ -187,6 +205,74 @@ function SessionPage({ id }: { id: string }) {
   )
 }
 
+function useUpdateAccess(id: string) {
+  const qc = useQueryClient()
+  const people = useOrgPeople()
+  const nameOf = (pid: string) => {
+    const p = people?.find((x) => x.ids.includes(pid))
+    return p ? p.name || p.email : undefined
+  }
+  return useMutation({
+    mutationFn: (access: AccessInput) => updateSessionAccess(id, access),
+    onSuccess: (r) => {
+      if (r.session) qc.setQueryData(sessionKeys.one(id), r.session)
+      void qc.invalidateQueries({ queryKey: sessionKeys.all })
+    },
+    onError: (e) =>
+      notifyError(
+        'Could not change who has access',
+        explainAccessError(e, nameOf),
+      ),
+  })
+}
+
+// Who can see and drive the session. Only its owner changes it (owner first:
+// not the people it is shared with, not an admin); anyone else sees who has
+// access but gets no control.
+function SessionAccess({ session: s }: { session: Session }) {
+  const me = useMyMemberId()
+  const update = useUpdateAccess(s.id)
+  const people = useOrgPeople()
+  if (!s.access) return null
+  const isOwner = !!me && s.owner?.id === me
+  if (isOwner && s.canManageAccess)
+    return (
+      <AccessPicker
+        value={s.access}
+        isOwner
+        ownerIds={s.owner?.id ? [s.owner.id] : []}
+        onSave={(next) => update.mutateAsync(next)}
+        pending={update.isPending}
+        className="shrink-0"
+      />
+    )
+  const nameOf = (pid: string) => {
+    const p = people?.find((x) => x.ids.includes(pid))
+    return p ? p.name || p.email : 'someone'
+  }
+  const Icon =
+    s.access.mode === 'org'
+      ? Building2
+      : s.access.mode === 'people'
+        ? Users
+        : Lock
+  return (
+    <span
+      className="text-muted-foreground flex shrink-0 items-center gap-1.5 px-2 text-xs"
+      title={
+        s.origin.type === 'slack'
+          ? 'This session runs in Slack: change who has access in its thread, with !access.'
+          : isOwner
+            ? 'Who can access this session'
+            : 'Only the owner can change who has access.'
+      }
+    >
+      <Icon className="size-3.5" aria-hidden />
+      {accessLabel(s.access, { isOwner, nameOf })}
+    </span>
+  )
+}
+
 function Header({ id }: { id: string }) {
   const qc = useQueryClient()
   const { data: s } = useQuery({
@@ -198,6 +284,9 @@ function Header({ id }: { id: string }) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: sessionKeys.all }),
     onError: (e) => notifyError('Could not update the session', e),
   })
+  const me = useMyMemberId()
+  // Archiving is the owner's, as is renaming (owner first).
+  const isOwner = !!s && !!me && s.owner?.id === me
   const slackUrl = s?.origin.slack?.url
   return (
     <header className="border-border flex h-12 shrink-0 items-center gap-3 border-b px-4">
@@ -218,6 +307,7 @@ function Header({ id }: { id: string }) {
         ) : null}
         <SessionWork id={id} />
       </div>
+      {s ? <SessionAccess session={s} /> : null}
       {slackUrl ? (
         <Button asChild size="sm" variant="ghost">
           <a href={slackUrl} target="_blank" rel="noreferrer">
@@ -226,7 +316,7 @@ function Header({ id }: { id: string }) {
           </a>
         </Button>
       ) : null}
-      {s ? (
+      {s && isOwner ? (
         <Button
           size="icon-sm"
           variant="ghost"

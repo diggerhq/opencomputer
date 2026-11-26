@@ -54,10 +54,11 @@ import {
 } from '@/components/ui/dialog'
 import { getManagedRuntimeProfile } from '@/managed-agents/api'
 import { KnowledgeRepositorySection } from '@/managed-agents/work/KnowledgeRepository'
+import { SessionAccessDefaultSection } from '@/managed-agents/computer-sessions/AccessDefaultSetting'
 
 // The organization's settings, one calm column of sections in the settings
-// anatomy (components/settings.tsx): Organization, Knowledge repository
-// (with Computer), Members, Agent environment.
+// anatomy (components/settings.tsx): Organization, Knowledge repository and
+// Session access (with Computer), Members, Agent environment.
 
 export default function Settings() {
   const { user } = useAuth()
@@ -75,6 +76,9 @@ export default function Settings() {
         <Organization />
         {user?.computerEnabled ? (
           <KnowledgeRepositorySection id="work-repository" />
+        ) : null}
+        {user?.computerEnabled ? (
+          <SessionAccessDefaultSection id="session-access" />
         ) : null}
         {user?.capabilities?.manageMembers !== false ? <Members /> : null}
         <AgentEnvironment />

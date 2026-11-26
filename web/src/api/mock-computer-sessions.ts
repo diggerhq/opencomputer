@@ -68,6 +68,8 @@ function session(
           : null,
     },
     settings,
+    access: { mode: 'org', people: [] },
+    canManageAccess: true,
     metadata: {},
     activeTurnId: null,
     queued: [],
@@ -754,6 +756,14 @@ const wait = <T>(ms: number, value: () => T) =>
 
 const PREFIX = '/managed-agents/computer'
 
+const orgSettings: Json = { apiAccessDefault: 'owner' }
+
+function accessOf(v: unknown): Json | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const a = v as Json
+  return { mode: a.mode, people: Array.isArray(a.people) ? a.people : [] }
+}
+
 // Returns undefined for paths it does not serve.
 export function computerSessionsMock(
   path: string,
@@ -769,6 +779,12 @@ export function computerSessionsMock(
   ) as Json
 
   if (rest === '/capabilities') return { capabilities }
+  if (rest === '/me') return { person }
+  if (rest === '/settings') {
+    if (method === 'PATCH')
+      Object.assign(orgSettings, pick(input, ['apiAccessDefault']))
+    return { settings: orgSettings }
+  }
 
   // The old dashboard list shares the path without a query; leave it alone.
   if (rest === '/sessions' && method === 'GET' && search) {
@@ -792,6 +808,10 @@ export function computerSessionsMock(
       null,
     )
     s.settings = { ...settings, ...pick(input, ['model', 'effort', 'mode']) }
+    s.access = accessOf(input.access) ?? {
+      mode: orgSettings.apiAccessDefault,
+      people: [],
+    }
     emit(s, 'message.received', { input: text, delivery: 'started' }, me)
     playTurn(s, text)
     return { session: view(s) }
@@ -813,6 +833,7 @@ export function computerSessionsMock(
   if (sub === '' && method === 'GET') return { session: view(s) }
   if (sub === '' && method === 'PATCH') {
     Object.assign(s, pick(input, ['title', 'archived']))
+    s.access = accessOf(input.access) ?? s.access
     s.settings = {
       ...(s.settings as Json),
       ...pick(input, ['model', 'effort', 'mode']),

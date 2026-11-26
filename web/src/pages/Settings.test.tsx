@@ -35,6 +35,17 @@ vi.mock('@/managed-agents/work/api', async (importOriginal) => ({
   getRepositories: vi.fn().mockResolvedValue([]),
 }))
 
+const sessionsApi = vi.hoisted(() => ({
+  getOrganizationSettings: vi.fn(),
+  updateOrganizationSettings: vi.fn(),
+}))
+vi.mock('@/managed-agents/computer-sessions-api', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('@/managed-agents/computer-sessions-api')
+  >()),
+  ...sessionsApi,
+}))
+
 const { default: Settings } = await import('./Settings')
 
 const org = {
@@ -109,6 +120,9 @@ beforeEach(() => {
   client.getBilling.mockResolvedValue({ plan: 'trial' })
   client.getOrgMembers.mockResolvedValue(members)
   client.getInvitations.mockResolvedValue(invitations)
+  sessionsApi.getOrganizationSettings.mockResolvedValue({
+    apiAccessDefault: 'owner',
+  })
 })
 
 afterEach(() => {
@@ -164,6 +178,7 @@ describe('settings', () => {
     expect(titles()).toEqual([
       'Organization',
       'Knowledge repository',
+      'Session access',
       'Members',
       'Agent environment',
     ])
@@ -256,6 +271,7 @@ describe('settings', () => {
     expect(titles()).toEqual([
       'Organization',
       'Knowledge repository',
+      'Session access',
       'Agent environment',
     ])
   })
@@ -264,5 +280,40 @@ describe('settings', () => {
     await render(true, false)
     expect(titles()).toEqual(['Organization', 'Members', 'Agent environment'])
     expect(container.querySelector('section#work-repository')).toBeNull()
+    expect(sessionsApi.getOrganizationSettings).not.toHaveBeenCalled()
+  })
+
+  it('lets an admin pick the default access for web, opc and API sessions', async () => {
+    await render()
+    const section = container.querySelector('section#session-access')!
+    expect(section.textContent).toContain('web, opc or the API')
+    expect(section.textContent).toContain('Slack sessions keep their own')
+    expect(section.querySelector('#api-access-default')?.textContent).toContain(
+      'Only its owner',
+    )
+  })
+
+  it('shows members the default access without a control', async () => {
+    client.getOrgMembers.mockResolvedValue([
+      { ...members[0], role: 'member' },
+      members[1],
+    ])
+    sessionsApi.getOrganizationSettings.mockResolvedValue({
+      apiAccessDefault: 'org',
+    })
+    await render()
+    const section = container.querySelector('section#session-access')!
+    expect(section.querySelector('#api-access-default')).toBeNull()
+    expect(section.textContent).toContain('Whole organization')
+    expect(section.textContent).toContain('admins change this')
+  })
+
+  it('leaves out session access where the backend has no such setting', async () => {
+    const { ApiError } = await import('@/api/errors')
+    sessionsApi.getOrganizationSettings.mockRejectedValue(
+      new ApiError('Not found', 404),
+    )
+    await render()
+    expect(titles()).not.toContain('Session access')
   })
 })

@@ -18,6 +18,7 @@ import {
   KeyRound,
   Loader2,
   LogOut,
+  Lock,
   MessagesSquare,
   Moon,
   Plus,
@@ -537,6 +538,12 @@ function SessionRow({ session: s }: { session: Session }) {
           origin={s.origin}
           className="text-muted-foreground/70 shrink-0"
         />
+        {s.access && s.access.mode !== 'org' ? (
+          <Lock
+            className="text-muted-foreground/70 size-3 shrink-0"
+            aria-label="Not shared with the whole organization"
+          />
+        ) : null}
         <span className="text-muted-foreground shrink-0 text-[11px] tabular-nums">
           {timeAgo(s.lastActiveAt ?? s.createdAt)}
         </span>
