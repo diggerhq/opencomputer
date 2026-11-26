@@ -10,7 +10,7 @@
 //   scope      applies to                          owner        set by
 //   session    one thread's session                runner key   anyone in it
 //   user       every session the person owns       user id      that person
-//   workspace  every session of the organization   '*'         organization admins (in Slack: a full member linked to an admin)
+//   workspace  every session of the organization   '*'         any member creates; its creator or an admin replaces/removes
 //
 // The `workspace` scope keeps Calvin's protocol name; people see it as the
 // organization's (one organization links one Slack workspace).
@@ -116,7 +116,7 @@ export const HELP = [
   "`!secret NAME`: set or replace `$NAME` through a private form (`!secret NAME file` for a file; `$NAME` is its path)",
   "`!secret`: names this session gets, by scope",
   "`!secret rm NAME [session|me|org]`: remove one",
-  "Scopes: *this session*; *just me* (all your sessions); *organization* (every session of your organization; organization admins only). The narrowest wins.",
+  "Scopes: *this session*; *just me* (all your sessions); *organization* (every session of your organization; full members, not guests, add new names; only the person who set one or an organization admin replaces or removes it). The narrowest wins.",
   "Values that are not secret (an org name, a hostname): `!var help`.",
 ].join("\n");
 
@@ -217,8 +217,8 @@ export interface ModalChoices {
   session: boolean;
   /** The session's owner, when it is not the person opening the form. */
   otherOwner?: string;
-  /** An organization admin (secrets-store.ts orgAdmin), who may set workspace secrets. */
-  admin: boolean;
+  /** A full member of the workspace, who may set workspace secrets. */
+  member: boolean;
 }
 
 export function secretModal(d: ButtonData, meta: ModalData, c: ModalChoices): Record<string, unknown> {
@@ -229,7 +229,7 @@ export function secretModal(d: ButtonData, meta: ModalData, c: ModalChoices): Re
       text: "Just me",
       description: c.otherOwner ? `All your sessions (not this one: it is <@${c.otherOwner}>'s)` : "All your sessions, until you remove it",
     },
-    ...(c.admin ? [{ value: "workspace", text: "Organization", description: "Every session of your organization" }] : []),
+    ...(c.member ? [{ value: "workspace", text: "Organization", description: "Every session of your organization" }] : []),
   ].map((o) => ({ value: o.value, text: { type: "plain_text", text: o.text }, description: { type: "mrkdwn", text: o.description } }));
   const fileOption = {
     value: "file",

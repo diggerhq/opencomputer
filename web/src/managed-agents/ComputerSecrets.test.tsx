@@ -30,10 +30,12 @@ const row = {
   updatedBy: { member: 'usr_1', name: 'Ayush' },
   lastUsedAt: null,
   overriddenIn: { threads: 1, people: 0 },
+  canChange: true,
 }
+/** Someone else's: the viewer is neither its creator nor an admin. */
+const others = { ...row, name: 'SHARED_TOKEN', canChange: false }
 
-const admin = (secrets: (typeof row)[]) => ({ secrets, canManage: true })
-const member = (secrets: (typeof row)[]) => ({ secrets, canManage: false })
+const list = (secrets: (typeof row)[]) => ({ secrets })
 
 let container: HTMLDivElement
 let root: Root
@@ -101,7 +103,7 @@ async function flush() {
 
 describe('computer secrets page', () => {
   it('lists organization secrets by name only', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(admin([row]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     await render()
     expect(container.textContent).toContain('EXECUTOR_API_KEY')
     expect(container.textContent).not.toContain('Ayush')
@@ -109,14 +111,14 @@ describe('computer secrets page', () => {
   })
 
   it('offers to add the first secret when there are none', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(admin([]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([]))
     await render()
     expect(container.textContent).toContain('No secrets yet')
     expect(button('Add secret')).toBeTruthy()
   })
 
   it('adds a secret and shows a refused name next to the field', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(admin([]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([]))
     secretsApi.putOrgSecret.mockRejectedValueOnce(
       new ApiError(
         "Can't use this name: PATH is reserved.",
@@ -147,7 +149,7 @@ describe('computer secrets page', () => {
   })
 
   it('replaces without showing or prefilling the old value', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(admin([row]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     secretsApi.putOrgSecret.mockResolvedValue(row)
     await render()
     act(() => button('Replace').click())
@@ -166,7 +168,7 @@ describe('computer secrets page', () => {
   })
 
   it('deletes after a confirm that names the organization layer', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(admin([row]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row]))
     secretsApi.deleteOrgSecret.mockResolvedValue(undefined)
     await render()
     act(() => button('Delete').click())
@@ -183,29 +185,34 @@ describe('computer secrets page', () => {
     )
   })
 
-  it('shows a member the names but no way to add, replace or delete', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(member([row]))
+  it('offers Replace and Delete only on the rows the viewer may change', async () => {
+    secretsApi.getOrgSecrets.mockResolvedValue(list([row, others]))
     await render()
-    expect(container.textContent).toContain('EXECUTOR_API_KEY')
-    expect(container.textContent).toContain('Only organization admins')
+    expect(container.textContent).toContain('SHARED_TOKEN')
+    expect(container.textContent).toContain(
+      'only whoever added it or an admin can replace or delete it',
+    )
+    const rows = [...container.querySelectorAll('tbody tr')]
+    const labels = (el: Element) =>
+      [...el.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels(rows[0])).toEqual(['Replace', 'Delete'])
+    expect(labels(rows[1])).toEqual([])
+    expect(button('Add secret')).toBeTruthy()
+  })
+
+  it('lets a member who may change none still add one', async () => {
+    secretsApi.getOrgSecrets.mockResolvedValue(list([others]))
+    await render()
     const labels = [...document.querySelectorAll('button')].map((el) =>
       el.textContent?.trim(),
     )
-    expect(labels).not.toContain('Add secret')
+    expect(labels).toContain('Add secret')
     expect(labels).not.toContain('Replace')
     expect(labels).not.toContain('Delete')
   })
 
-  it('tells a member with no secrets that an admin adds them', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(member([]))
-    await render()
-    expect(container.textContent).toContain('No secrets yet')
-    expect(container.textContent).toContain('An organization admin can add')
-    expect(() => button('Add secret')).toThrow()
-  })
-
   it('lists recent changes to organization secrets, without values', async () => {
-    secretsApi.getOrgSecrets.mockResolvedValue(member([row]))
+    secretsApi.getOrgSecrets.mockResolvedValue(list([others]))
     secretsApi.getOrgSecretEvents.mockResolvedValue([
       {
         at: '2026-11-26T10:00:00.000Z',

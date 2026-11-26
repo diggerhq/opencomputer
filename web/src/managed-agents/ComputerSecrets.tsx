@@ -41,9 +41,9 @@ import {
 } from './computer-secrets-api'
 
 // The computer's organization secrets (serverless-agents-ws work 095, v1):
-// names only, set and replaced from here by organization admins; members see
-// the names and the recent changes. Personal and thread secrets stay in Slack
-// for now.
+// names only. Any member adds one; its creator or an organization admin
+// replaces or deletes it (the server's `canChange`); everyone sees the names and
+// the recent changes. Personal and thread secrets stay in Slack for now.
 
 export default function ComputerSecretsPage() {
   const auth = useContext(AuthContext)
@@ -61,7 +61,6 @@ export function ComputerSecrets() {
   })
   const [editing, setEditing] = useState<Editing | null>(null)
   const [deleting, setDeleting] = useState<OrgSecret | null>(null)
-  const canManage = secrets.data?.canManage ?? false
   const list = secrets.data?.secrets
 
   const add = (
@@ -75,8 +74,8 @@ export function ComputerSecrets() {
     <div>
       <PageHeader
         title="Secrets"
-        description="Every session on your computer gets these as environment variables. Only organization admins can set or delete them; values can't be read back."
-        actions={list?.length && canManage ? add : null}
+        description="Every session on your computer gets these as environment variables. Anyone in the organization can add one; only whoever added it or an admin can replace or delete it. Values can't be read back."
+        actions={list?.length ? add : null}
       />
       <Panel>
         {secrets.isLoading ? (
@@ -102,22 +101,14 @@ export function ComputerSecrets() {
           <EmptyState
             icon={KeyRound}
             title="No secrets yet"
-            description={
-              canManage
-                ? 'Add an API key or token once, and every session can use it.'
-                : 'An organization admin can add an API key or token once, and every session can use it.'
-            }
-            action={canManage ? add : undefined}
+            description="Add an API key or token once, and every session can use it."
+            action={add}
           />
         ) : (
           <SecretsTable
             secrets={list}
-            onReplace={
-              canManage
-                ? (secret) => setEditing({ mode: 'replace', secret })
-                : undefined
-            }
-            onDelete={canManage ? setDeleting : undefined}
+            onReplace={(secret) => setEditing({ mode: 'replace', secret })}
+            onDelete={setDeleting}
           />
         )}
       </Panel>
@@ -141,16 +132,17 @@ function SecretsTable({
   onDelete,
 }: {
   secrets: OrgSecret[]
-  /** Absent for members: only admins change organization secrets. */
-  onReplace?: (secret: OrgSecret) => void
-  onDelete?: (secret: OrgSecret) => void
+  /** Offered on the rows the viewer may change (`canChange`). */
+  onReplace: (secret: OrgSecret) => void
+  onDelete: (secret: OrgSecret) => void
 }) {
+  const actions = secrets.some((s) => s.canChange)
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead className="pl-4">Name</TableHead>
-          {onReplace || onDelete ? (
+          {actions ? (
             <TableHead className="pr-4 text-right">
               <span className="sr-only">Actions</span>
             </TableHead>
@@ -163,10 +155,10 @@ function SecretsTable({
             <TableCell className="py-3 pl-4 font-mono text-sm font-medium">
               {secret.name}
             </TableCell>
-            {onReplace || onDelete ? (
+            {actions ? (
               <TableCell className="py-2 pr-4 text-right">
-                <div className="flex justify-end gap-1">
-                  {onReplace ? (
+                {secret.canChange ? (
+                  <div className="flex justify-end gap-1">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -174,8 +166,6 @@ function SecretsTable({
                     >
                       Replace
                     </Button>
-                  ) : null}
-                  {onDelete ? (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -184,8 +174,8 @@ function SecretsTable({
                     >
                       Delete
                     </Button>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </TableCell>
             ) : null}
           </TableRow>

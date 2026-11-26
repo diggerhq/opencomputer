@@ -30,7 +30,7 @@ export const VARIABLE_HELP = [
   "`!vars`: names and values this session gets, by scope",
   "`!var rm NAME [session|me|org]`: remove one",
   "For API keys and passwords use `!secret NAME` instead. A secret and a variable cannot share a name in one scope.",
-  "`org` is for organization admins only.",
+  "An `org` variable is replaced or removed only by the person who set it or an organization admin.",
 ].join("\n");
 
 /** `!var …` / `!vars`, or null when the text is not one. `text` is already decoded from Slack's escaping. */
