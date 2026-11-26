@@ -190,14 +190,16 @@ export function createSession(
     }
 
     const role = body.role ?? null;
-    // Who may use it (spec 36.2): as asked, else the organization's default; a Slack or role session is its owner's.
+    // Who may use it (spec 36.2): an agent's thread its parent's; else as asked, else the organization's
+    // default; a Slack or role session is its owner's, driven by `writers`.
     let rows = { audience: audienceOf(owner, origin, role), writers: body.writers ?? ("members" as "members" | string[]) };
-    if (origin.type !== "slack" && role === null) {
-      let wanted: SessionAccess | Refusal = { mode: settings(sql).apiAccessDefault, people: [] };
-      if (body.access !== undefined) wanted = isMember(p) ? parseAccess(sql, body.access) : refusal("invalid_request", 400, "access is set by a member.", { field: "access" });
+    if (body.access !== undefined && (!isMember(p) || origin.type === "slack" || role !== null)) return refusal("invalid_request", 400, "access is a member's, for a session not from Slack and without a role.", { field: "access" });
+    if (parent) rows = { audience: parent.audience, writers: parse<"members" | string[]>(parent.writers, "members") };
+    else if (origin.type !== "slack" && role === null) {
+      const wanted = body.access !== undefined ? parseAccess(sql, body.access) : { mode: settings(sql).apiAccessDefault, people: [] };
       if ("ok" in wanted) return wanted;
       rows = accessRows(owner, { mode: wanted.mode, people: wanted.people.filter((m) => m !== owner) });
-    } else if (body.access !== undefined) return refusal("invalid_request", 400, "A Slack or role session is its owner's.", { field: "access" });
+    }
     const summary = emptySummary({ model: body.model, effort: body.effort, mode: body.mode, speed: body.speed }, body.title === undefined && body.input ? titleFrom(body.input) : null);
     const session = tx.addSession({
       id,

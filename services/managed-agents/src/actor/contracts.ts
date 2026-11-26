@@ -83,7 +83,9 @@ export interface SessionPatch {
   archived?: boolean;
   metadata?: Record<string, string | null>;
   /** `PUT`/`DELETE …/aside`: the ask the session is set aside for, or null. */
-  aside?: string | null;  access?: AccessInput;
+  aside?: string | null;
+  /** `PATCH` with `access`: Org checks it (org/sessions.ts `parseAccess`). */
+  access?: AccessInput;
 }
 /** What one who manages a session's access but may not use it reads of it (an admin outside it). */
 export type OutsideAccess = { session: null; access: SessionAccess; canManageAccess: boolean };

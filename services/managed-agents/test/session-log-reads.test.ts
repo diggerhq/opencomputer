@@ -45,7 +45,7 @@ describe("a principal's reads", () => {
     expect((await log.stub.events({}, member("usr_stranger"))).ok).toBe(false);
     // Stopping it: a person who reads it; not one who does not.
     expect(await log.stub.accept(member(MATE_ID), { id: "in_mate", kind: "interrupt", body: {} })).toMatchObject({ ok: true });
-    expect(await log.stub.accept(member("usr_stranger"), { id: "in_stranger", kind: "interrupt", body: {} })).toEqual({ ok: false, code: "forbidden" });
+    expect(await log.stub.accept(member("usr_stranger"), { id: "in_stranger", kind: "interrupt", body: {} })).toEqual({ ok: false, code: "not_found" });
   });
 
   it("answer not_found for a session Org does not have", async () => {

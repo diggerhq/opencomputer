@@ -110,7 +110,7 @@ Access is HTTP only. `sessions.update` over the WebSocket does not take it.
 
 ### Organization default
 
-`GET /settings` returns `{"settings":{"apiAccessDefault":"owner"}}`. `apiAccessDefault` is the access of new sessions started from the dashboard, opc or the API without `access`, and of sessions agents start: `owner` (the default) or `org`. An organization admin changes it with `PATCH /settings` and `{"apiAccessDefault":"org"}`. Anyone else gets `403 admin_required`. Slack sessions keep their own default, set in Slack.
+`GET /settings` returns `{"settings":{"apiAccessDefault":"owner"}}`. `apiAccessDefault` is the access of new sessions started from the dashboard, opc or the API without `access`: `owner` (the default) or `org`. A session an agent starts takes the access of the session that started it. An organization admin changes it with `PATCH /settings` and `{"apiAccessDefault":"org"}`. Anyone else gets `403 admin_required`. Slack sessions keep their own default, set in Slack.
 
 ## Set aside
 

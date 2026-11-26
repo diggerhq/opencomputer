@@ -239,6 +239,26 @@ describe("Org: session access (spec 36.2)", () => {
       const a = member("usr_a", "access-slack");
       await org.createSession(a, { id: SID, origin: { type: "slack", client: null, slack: null } });
       expect(await org.patchSession(a, SID, { access: { mode: "org" } })).toMatchObject({ ok: false, code: "forbidden", reason: "access_in_slack" });
+      // Its drivers (`!access`, `thread.writers`) read it as its owner does; the API still shows `owner`.
+      const b = member("usr_b", "access-slack");
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: false, code: "session_not_found" });
+      expect(await org.mutate(a, { name: "thread.writers", args: { sid: SID, writers: ["user:usr_a", "user:usr_b"] }, idem: "w1" })).toMatchObject({ protocol: 1 });
+      expect(await org.getSession(b, SID)).toMatchObject({ ok: true, session: { access: { mode: "owner", people: [] }, canManageAccess: false } });
+      expect(await org.access(SID)).toMatchObject({ audience: "member:usr_a", readers: ["user:usr_b"] });
+    });
+  });
+
+  it("gives an agent's thread its parent's access, whatever the default", async () => {
+    await withActor("access-child", async (org) => {
+      const a = member("usr_a", "access-child");
+      const b = member("usr_b", "access-child");
+      const child = "cs_0000000000000035";
+      const other = "cs_0000000000000036";
+      await org.createSession(a, { id: SID, access: { mode: "people", people: ["usr_b"] } });
+      const agent: Principal = { ...a, subject: SID, kind: "agent", via: "agent", audiences: [], session: SID };
+      expect(await org.createSession(agent, { id: child, input: "Look into it" })).toMatchObject({ ok: true, session: { access: { mode: "people", people: ["usr_b"] } } });
+      expect(await org.getSession(b, child)).toMatchObject({ ok: true });
+      expect(await org.createSession(agent, { id: other, access: { mode: "org" } })).toMatchObject({ ok: false, code: "invalid_request", field: "access" });
     });
   });
 });

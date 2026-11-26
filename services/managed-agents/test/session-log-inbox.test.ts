@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AGENT_TURNS_MAX, INBOX_KEEP_MS, INBOX_MAX_WAITING } from "../src/computer/session-log.js";
-import { accessOf, agent, MACHINE, MATE_ID, member, openLog, platform } from "./session-log-kit.js";
+import { accessOf, agent, MACHINE, MATE_ID, member, openLog, OWNER_ID, platform } from "./session-log-kit.js";
 
 /** Tracks and threads, spec 36.2 and 40.2: the log's access, its inbox, and the drain it owes its machine. */
 
@@ -61,6 +61,38 @@ describe("accept", () => {
     expect(await log.stub.accept(mate, { id: "m_set", kind: "settings", body: { model: "x" } })).toMatchObject({ ok: true });
     expect(await log.stub.accept(agent("cs_parent"), { id: "a_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
     expect(await log.stub.accept(platform, { id: "p_set", kind: "settings", body: { model: "x" } })).toEqual({ ok: false, code: "forbidden" });
+  });
+
+  it("answers not_found to a person who may neither read nor write it, as the session API does", async () => {
+    // Owner only (`owner` access): the owner's audience, written by the owner.
+    const log = await openLog({ access: accessOf({ audience: `member:${OWNER_ID}`, writers: [`user:${OWNER_ID}`] }) });
+    expect(await log.stub.accept(member(), turn("tn_owner"))).toMatchObject({ ok: true });
+    for (const kind of ["turn", "answer", "dismiss", "interrupt", "settings"] as const) {
+      expect(await log.stub.accept(member(MATE_ID), { id: `m_${kind}`, kind, body: {} })).toEqual({ ok: false, code: "not_found" });
+    }
+    // Granted (`people`): the person writes it; revoked, not_found again.
+    await log.stub.setAccess(accessOf({ revision: 2, audience: `member:${OWNER_ID}`, writers: [`user:${OWNER_ID}`, `user:${MATE_ID}`], readers: [`user:${MATE_ID}`] }));
+    expect(await log.stub.accept(member(MATE_ID), turn("tn_mate"))).toMatchObject({ ok: true });
+    expect(await log.stub.accept(member(MATE_ID), { id: "m_set2", kind: "settings", body: { model: "x" } })).toMatchObject({ ok: true });
+    await log.stub.setAccess(accessOf({ revision: 3, audience: `member:${OWNER_ID}`, writers: [`user:${OWNER_ID}`] }));
+    expect(await log.stub.accept(member(MATE_ID), turn("tn_mate2"))).toEqual({ ok: false, code: "not_found" });
+    // A person who reads it but may not write it is told so.
+    await log.stub.setAccess(accessOf({ revision: 4, audience: "org", writers: [`user:${OWNER_ID}`] }));
+    expect(await log.stub.accept(member(MATE_ID), turn("tn_mate3"))).toEqual({ ok: false, code: "forbidden" });
+  });
+
+  it("lets everyone in a Slack thread its members write drive it, and no one else outside its audience", async () => {
+    // A Slack session: the owner's audience, written by members (who are in the thread).
+    const log = await openLog({ access: accessOf({ audience: `member:${OWNER_ID}`, writers: "members" }) });
+    const fromSlack = member(MATE_ID, { via: "slack" });
+    const unlinked = member("slack:T1:U1", { via: "slack", audiences: [] });
+    expect(await log.stub.accept(fromSlack, turn("tn_slack"))).toMatchObject({ ok: true });
+    expect(await log.stub.accept(unlinked, turn("tn_unlinked"))).toMatchObject({ ok: true });
+    expect(await log.stub.accept(member(), turn("tn_owner"))).toMatchObject({ ok: true });
+    // The same person from the dashboard, opc or the API does not see it, so cannot drive it.
+    expect(await log.stub.accept(member(MATE_ID), turn("tn_api"))).toEqual({ ok: false, code: "not_found" });
+    expect(await log.stub.accept(member(MATE_ID, { kind: "key", via: "api" }), turn("tn_key"))).toEqual({ ok: false, code: "not_found" });
+    expect((await log.stub.events({}, member(MATE_ID))).ok).toBe(false);
   });
 
   it("lets in the agent that started a thread its members write: a member-owned track's agent starts a thread (spec 40.7)", async () => {

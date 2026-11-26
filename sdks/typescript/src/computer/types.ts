@@ -79,12 +79,30 @@ export interface ApiEvent {
   data: unknown;
 }
 
+/**
+ * Who may use a session (docs/api/sessions.mdx#access): `owner` only its owner, `org` every member,
+ * `people` the owner and the listed members (`usr_…`). A Slack session reads `owner`.
+ */
+export interface SessionAccess {
+  mode: "owner" | "org" | "people";
+  people: string[];
+}
+
+/** `access` of a create or `PATCH /sessions/{id}`: `people` as member ids, WorkOS user ids or emails. */
+export interface AccessInput {
+  mode: SessionAccess["mode"];
+  people?: string[];
+}
+
 export interface Session {
   id: string;
   title: string;
   status: SessionStatus;
   archived: boolean;
   aside?: boolean;
+  access?: SessionAccess;
+  /** Whether the caller may change `access`: its owner, someone in `people`, or an admin. Not on a feed row. */
+  canManageAccess?: boolean;
   owner: Person;
   origin: Origin;
   settings: { model: string | null; effort: string | null; mode: string; speed: string | null };
@@ -309,6 +327,8 @@ export interface CreateSessionBody {
   trackId?: string | null;
   role?: "start";
   settings?: Partial<Session["settings"]>;
+  /** Absent: the organization's `apiAccessDefault`. */
+  access?: AccessInput;
 }
 
 // ---------- mutations (section 39; routes in section 37.3) ----------
