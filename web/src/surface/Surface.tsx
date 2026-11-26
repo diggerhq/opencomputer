@@ -84,6 +84,16 @@ function Shell({
     () => (root.current ? bindKeys(root.current, surface) : undefined),
     [surface],
   )
+  // On a phone the list covers the panes: what is opened from it comes in
+  // front, and the list button brings the list back.
+  const where = `${loc.thread}|${loc.track}|${loc.result}|${loc.start}`
+  const lastWhere = useRef(where)
+  useEffect(() => {
+    if (lastWhere.current === where) return
+    lastWhere.current = where
+    if (!listHidden && window.matchMedia('(max-width: 700px)').matches)
+      surface.toggleList()
+  }, [where, listHidden, surface])
   // The tab says when something is blocked on the person (R27).
   useEffect(() => {
     document.title = `${blocked ? '● ' : ''}OpenComputer`
