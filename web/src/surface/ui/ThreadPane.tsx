@@ -162,6 +162,8 @@ export function ThreadPane({ sid }: { sid: string }) {
               {I.check}
               {thread.outcome ?? 'done'}
             </span>
+          ) : thread.waiting ? (
+            thread.waiting
           ) : track && layout === 'L3' ? (
             `in ${track.name}`
           ) : (
