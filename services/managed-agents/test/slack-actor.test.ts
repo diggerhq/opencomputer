@@ -236,6 +236,38 @@ describe("the Slack actor: commands, buttons, held messages", () => {
   });
 });
 
+describe("the Slack actor: post_thread", () => {
+  it("wakes the session in the thread it posts into, as its owner, and no other", async () => {
+    const org = "org_post_wake";
+    await linked(org);
+    const here = "T1:C1:810.1";
+    const there = "T1:C2:820.1";
+    await slackOf(org).accept(message({ text: "lane 1", ts: "810.1" }));
+    await slackOf(org).accept(message({ text: "lane 2", ts: "820.1", channel: "C2" }));
+    await settled(org);
+    const [poster, target] = [await sessionIdFor(here), await sessionIdFor(there)];
+    const agent = { org, subject: poster, kind: "agent", via: "agent", scopes: [], audiences: [], session: poster, admin: false, credential: { id: "k", expiresAt: null } };
+
+    const posted = await slackOf(org).post(agent as never, there, "!secret X go ahead with the plan");
+    expect(posted).toMatchObject({ ok: true });
+    await settled(org);
+    const woke = (await callsOf(logOf(target))).slice(1);
+    expect(woke).toHaveLength(1);
+    expect(woke[0]!.args[0]).toMatchObject({ subject: "slack:T1:U1" });
+    expect(woke[0]!.args[1]).toMatchObject({
+      id: await turnIdFor(there, (posted as { ts: string }).ts),
+      kind: "turn",
+      body: { input: "Posted here for <@U1> by the session in <https://app.slack.com/client/T1/C1/thread/C1-810.1|another thread>:\n!secret X go ahead with the plan" },
+    });
+    // Not a command, and nothing back into the session that posted, nor into its own thread.
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "command")).toEqual([]);
+    expect(await callsOf(logOf(poster))).toHaveLength(1);
+    await slackOf(org).post(agent as never, here, "a note to myself");
+    await settled(org);
+    expect(await callsOf(logOf(poster))).toHaveLength(1);
+  });
+});
+
 describe("the Slack actor: install, unlink, import", () => {
   it("imports Computer's Slack state in two pages, once", async () => {
     const org = "org_import";

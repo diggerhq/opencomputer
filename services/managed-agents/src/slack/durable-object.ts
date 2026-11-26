@@ -837,7 +837,41 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (!readable.ok) return { ok: false, code: "not_found", status: 404 };
     const posted = await this.slack("chat.postMessage", { channel: where.channelId, thread_ts: where.threadTs, text: neutralizeBroadcasts(text).slice(0, MAX_POST_CHARS) });
     if (!posted.ok || !posted.ts) return { ok: false, code: "unavailable", status: 503 };
+    if (p.session !== sid) this.wakeThread(p, where, readable.session, neutralizeBroadcasts(text).slice(0, MAX_POST_CHARS), posted.ts);
     return { ok: true, ts: posted.ts };
+  }
+
+  /**
+   * A post into another session's thread reaches that session as its owner's message (Slack's copy is
+   * the app's, which accept drops): queued like a typed one, so it goes through the inbox as any Slack
+   * turn. The first line says where it came from, and keeps the text from reading as a `!` command or a
+   * `+tier` run with the owner's authority.
+   */
+  private wakeThread(p: Principal, where: { channelId: string; threadTs: string }, session: unknown, body: string, ts: string): void {
+    const teamId = settings.get(this.sql, "slackTeamId");
+    const owner = isRecord(session) && isRecord(session.owner) && typeof session.owner.id === "string" ? this.slackIdOf(session.owner.id) : undefined;
+    if (!teamId || !owner || !/^[UW][A-Z0-9]+$/.test(owner)) return;
+    const from = p.session ? threads.keyOf(this.sql, p.session) : undefined;
+    const fromWhere = from ? parseSessionKey(from) : null;
+    const source = fromWhere ? slackThreadUrl(teamId, fromWhere.channelId, fromWhere.threadTs) : null;
+    const job: MessageJob = {
+      eventId: `post_thread:${where.channelId}:${ts}`,
+      teamId,
+      channelId: where.channelId,
+      threadTs: where.threadTs,
+      messageTs: ts,
+      userId: owner,
+      text: `Posted here for <@${owner}> by the session in ${source ? `<${source}|another thread>` : "another thread"}:\n${body}`,
+      mentioned: false,
+      channelType: "channel",
+      receivedAt: Date.now(),
+    };
+    const now = Date.now();
+    this.sql.transaction(() => {
+      this.sql.exec("INSERT INTO slack_queue (payload, available_at, thread_key) VALUES (?, ?, ?)", JSON.stringify(job), now, `${where.channelId}:${where.threadTs}`);
+      alarms.set(this.sql, QUEUE, now + FALLBACK_MS);
+    });
+    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.drain_failed", message: errorText(error) }))));
   }
 
   // ------------------------------------------------------------------ the install (moved from Computer)
