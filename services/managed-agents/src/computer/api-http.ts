@@ -16,7 +16,7 @@
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
-import { base64url, computerOf, cursor, deliveryOf, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
+import { base64url, computerOf, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, DrainResult, InboxKind, ListQuery, MutateReply, OrgRpc, Principal, Refusal, SessionRow } from "../actor/index.js";
 import { eventsStream, type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
@@ -130,12 +130,6 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
   if (is("POST", 2) && p[0] === "feed" && p[1] === "mismatch") return { op: "feed.mismatch" };
   if (is("GET", 1) && p[0] === "occurrences") return { op: "occurrences" };
   if (is("GET", 1) && p[0] === "live") return { op: "live" };
-  if (p[0] === "webhooks") {
-    if (is("GET", 1)) return { op: "webhooks.list" };
-    if (is("PUT", 2)) return { op: "webhooks.put", sub: p[1] };
-    if (is("DELETE", 2)) return { op: "webhooks.delete", sub: p[1] };
-    return null;
-  }
   if (is("POST", 4) && p[0] === "slack" && p[1] === "threads" && p[3] === "messages") return { op: "slack.post", sub: p[2] };
   // The Work API (spec 37): tracks and threads, and the knowledge repository setting, all Org's.
   if (p[0] === "work") {
@@ -184,7 +178,7 @@ function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put") return "secrets:write";
   if (op === "secrets.events") return "sessions:read";
-  if (op === "work.repository.put" || op === "mutate" || op === "work.tell" || op.startsWith("webhooks.")) return "work:write";
+  if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
   if (op === "live") return "sessions:read";
   if (op === "feed" || op === "feed.mismatch" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
@@ -318,7 +312,7 @@ export function routeFamily(op: string): string {
   if (op.startsWith("subagents.")) return "subagents";
   if (op === "ticket") return "tickets";
   if (op === "secrets" || op.startsWith("secrets.")) return "secrets";
-  if (op.startsWith("work.") || op === "mutate" || op.startsWith("webhooks.")) return "work";
+  if (op.startsWith("work.") || op === "mutate") return "work";
   if (op === "feed" || op === "feed.mismatch" || op === "occurrences" || op === "live") return "feed";
   return "other";
 }
@@ -564,7 +558,7 @@ const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
   "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "slack.post", "webhooks.list", "webhooks.put", "webhooks.delete",
+  "live", "work.tell", "work.diff", "slack.post",
 ]);
 
 const TRACK_ID = /^trk_[0-9a-hjkmnp-tv-z]{16}$/;
@@ -870,10 +864,6 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
       return resultDiff(request, env, p, route.sub!, org, out);
     case "slack.post":
       return slackPost(request, env, p, route.sub!, out);
-    case "webhooks.list":
-    case "webhooks.put":
-    case "webhooks.delete":
-      return webhooks(request, env, p, route, out);
   }
   if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
@@ -1210,7 +1200,7 @@ async function indexInstallation(env: ComputerEdgeEnv, org: string, installation
   }
 }
 
-// ------------------------------------------------------------------ slice 3: the socket, PATCH, agents' routes, webhooks, diffs
+// ------------------------------------------------------------------ slice 3: the socket, PATCH, agents' routes, diffs
 
 /** `GET /live` (spec 38): the upgrade, passed to the organization's Live with the principal verified here. */
 async function liveUpgrade(request: Request, env: ComputerEdgeEnv, p: Principal, out: Reply): Promise<Response> {
@@ -1298,54 +1288,6 @@ async function slackPost(request: Request, env: ComputerEdgeEnv, p: Principal, k
   if ("error" in text) return out.error(...text.error);
   const r = await timedDo(out.facts, slackOf(env, p.org).post(p, threadKey, text.value));
   return r.ok ? out.send(200, { ts: r.ts }) : refusalOf(out, r);
-}
-
-/** Delivery's webhook endpoints (spec 37.1), as that actor's lane adds them. */
-interface WebhookEndpoints {
-  listEndpoints(p: Principal): Promise<unknown>;
-  setEndpoint(p: Principal, id: string, body: Record<string, unknown>): Promise<unknown>;
-  removeEndpoint(p: Principal, id: string): Promise<unknown>;
-}
-const WEBHOOK_ID = /^wh_[0-9a-hjkmnp-tv-z]{16}$/;
-
-/** An `https:` URL on port 443, without credentials. */
-function webhookUrl(value: unknown): boolean {
-  if (typeof value !== "string" || value.length > 2_048) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && (url.port === "" || url.port === "443") && !url.username && !url.password;
-  } catch {
-    return false;
-  }
-}
-
-/** `GET /webhooks`, `PUT`/`DELETE /webhooks/{id}`: a member or a key, never an agent. */
-async function webhooks(request: Request, env: ComputerEdgeEnv, p: Principal, route: Route, out: Reply): Promise<Response> {
-  if (p.kind === "agent") return out.error(403, "forbidden", "Sessions cannot manage webhooks.", { reason: "computer_principal" });
-  if (route.sub !== undefined && !WEBHOOK_ID.test(route.sub)) return out.error(404, "not_found", "No such webhook.");
-  let body: Record<string, unknown> | null = null;
-  if (route.op === "webhooks.put") {
-    const parsed = await bodyOf(request);
-    if ("error" in parsed) return out.error(...parsed.error);
-    body = asObject(parsed.value);
-    if (!body) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
-    if (!webhookUrl(body.url)) return out.error(400, "invalid_request", "url is an https: URL on port 443.", { field: "url" });
-  }
-  let r: unknown;
-  try {
-    const delivery = deliveryOf(env, p.org, "webhook") as unknown as WebhookEndpoints;
-    r = await timedDo(out.facts,
-      route.op === "webhooks.list" ? delivery.listEndpoints(p)
-      : route.op === "webhooks.put" ? delivery.setEndpoint(p, route.sub!, body!)
-      : delivery.removeEndpoint(p, route.sub!));
-  } catch {
-    return out.error(503, "unavailable", "Webhooks are not available yet.", { retryAfterMs: 60_000 });
-  }
-  const reply = asObject(r);
-  if (reply?.ok === false) return refusalOf(out, reply as unknown as Refusal);
-  if (route.op === "webhooks.delete") return out.send(204, null);
-  const { ok: _ok, ...rest } = reply ?? {};
-  return out.send(200, Array.isArray(r) ? { endpoints: r } : rest);
 }
 
 const PULL_URL = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})\/pull\/([1-9]\d{0,9})\/?$/;

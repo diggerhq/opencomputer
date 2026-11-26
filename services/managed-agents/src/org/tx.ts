@@ -33,11 +33,10 @@ export const RETAIN_MS = 30 * DAY_MS;
 export const IDEM_TTL_MS = DAY_MS;
 export const AGENT_THREADS_MAX = 10;
 
-/** Which Delivery actors react to an occurrence kind (spec 40.6): `webhook` to every kind. */
+/** Which Delivery actors react to an occurrence kind (spec 40.6). */
 const WAKE_KINDS = new Set(["turn.completed", "turn.failed", "ask.opened", "result.changed", "thread.done", "thread.placed", "track.quiet"]);
 const SLACK_KINDS = new Set(["turn.refused", "machine.changed"]);
-export const deliveryKindsOf = (kind: string): ("wake" | "webhook" | "slack")[] => [
-  "webhook",
+export const deliveryKindsOf = (kind: string): ("wake" | "slack")[] => [
   ...(WAKE_KINDS.has(kind) ? (["wake"] as const) : []),
   ...(SLACK_KINDS.has(kind) ? (["slack"] as const) : []),
 ];
