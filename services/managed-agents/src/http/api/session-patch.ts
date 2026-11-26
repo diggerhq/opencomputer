@@ -1,5 +1,14 @@
-// `PATCH /sessions/{id}`'s body (spec 37.2), checked at the edge before Org is asked: which fields,
-// their types and lengths. Org checks what needs its rows (access, the metadata it merges into).
+// `PATCH /sessions/{id}` (spec 37.2). Its body is checked here before Org is asked: which fields, their
+// types and lengths. Org checks what needs its rows (access, the metadata it merges into).
+
+import type { ActorEnv } from "../../actors/addresses.js";
+import type { OrgRpc, SessionPatch, SettingsEntry } from "../../actors/org/contract.js";
+import { checkSettings } from "../../api-objects/capabilities.js";
+import type { Principal } from "../../auth/principal.js";
+import { refusalOf, strip, type Reply } from "./reply.js";
+import { bodyOf } from "./request-body.js";
+import { timedDo } from "./request-facts.js";
+import { entryId, sendEntry } from "./session-entry.js";
 
 type Invalid = [status: 400, code: "invalid_request", message: string, extra: { field: string }];
 const invalid = (field: string, message: string): { error: Invalid } => ({ error: [400, "invalid_request", message, { field }] });
@@ -52,4 +61,39 @@ export function validatePatch(body: unknown): { value: PatchInput } | { error: I
   }
   if (input.access !== undefined) value.access = input.access;
   return { value };
+}
+
+/**
+ * `PATCH /sessions/{id}` (spec 37.2): one `Org.patchSession`, which applies every field or none (the
+ * settings ones as one `settings` inbox entry it owes). The entry's id is derived from the request's
+ * Idempotency-Key, so a retry is the same entry; accepting it again here waits for its delivery.
+ */
+export async function patchSession(request: Request, env: ActorEnv, p: Principal, sessionId: string, idem: string | undefined, trace: string | undefined, org: () => OrgRpc, out: Reply): Promise<Response> {
+  const parsed = await bodyOf(request);
+  if ("error" in parsed) return out.error(...parsed.error);
+  const patch = validatePatch(parsed.value);
+  if ("error" in patch) return out.error(...patch.error);
+  const { title, archived, metadata, model, effort, mode, speed, access } = patch.value;
+  const checked = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
+  if (!checked.ok) return out.error(400, checked.code, checked.message, { field: checked.field });
+  let settings: SettingsEntry | undefined;
+  if (model !== undefined || effort !== undefined || mode !== undefined || speed !== undefined) {
+    const body = { ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}), ...(speed !== undefined ? { speed } : {}) };
+    settings = { id: await entryId("ie", 16, idem ? ["settings", p.org, p.subject, sessionId, idem] : undefined), body, ...(trace ? { trace } : {}) };
+  }
+  const changes: SessionPatch = {
+    ...(title !== undefined ? { title } : {}),
+    ...(archived !== undefined ? { archived } : {}),
+    ...(metadata ? { metadata } : {}),
+    ...(access !== undefined ? { access: access as SessionPatch["access"] } : {}),
+    ...(settings ? { settings } : {}),
+  };
+  const r = await timedDo(out.facts, org().patchSession(p, sessionId, changes));
+  if (!r.ok) return refusalOf(out, r);
+  // An admin outside the session changes its access and nothing else, and learns nothing more (sessions.mdx#access).
+  if (r.session === null) return out.send(200, strip(r));
+  if (!settings) return out.send(200, { session: r.session });
+  const sent = await sendEntry(env, p, sessionId, { id: settings.id, kind: "settings", body: settings.body }, trace, out);
+  if ("response" in sent) return sent.response;
+  return "waking" in sent ? out.send(202, { accepted: true, id: settings.id, session: r.session }) : out.send(200, { session: r.session });
 }
