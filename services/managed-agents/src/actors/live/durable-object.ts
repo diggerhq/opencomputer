@@ -29,7 +29,10 @@ import {
   feedStream,
   upgradePrincipal,
 } from "./contract.js";
-import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../../actor/contracts.js";
+import type { DeltaPush, LiveRpc } from "./contract.js";
+import type { EventPush } from "../session-log/contract.js";
+import type { FeedPush } from "../org/contract.js";
+import type { Principal } from "../../auth/principal.js";
 import { cursor } from "../../durable/cursor.js";
 
 export interface LiveEnv {

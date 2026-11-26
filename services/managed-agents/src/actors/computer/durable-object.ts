@@ -61,7 +61,8 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "../../ids/session-ids.js";
-import type { ComputerRpcAdded, SlackCarry, SlackModalReply, SlackRpc, StartSpec } from "../../actor/contracts.js";
+import type { ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
+import type { SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
 import { type Dead, OWED_PURPOSE } from "../../durable/outbox.js";
 import { alarms } from "../../durable/alarms.js";
@@ -340,7 +341,7 @@ export const ASSIGN_ACK_MS = 3 * 60_000;
 const POOL_KICK_INTERVAL_MS = 5 * 60_000;
 
 export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implements ComputerRpcAdded {
-  /** The other actors of tracks and threads (actor/stubs.ts); fields, so a test puts its own. */
+  /** The other actors of tracks and threads (actors/addresses.ts); fields, so a test puts its own. */
   actors = {
     log: (sessionId: string) => logOf(this.env, sessionId),
     org: () => orgOf(this.env, this.accountId()),
@@ -368,7 +369,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   private readonly apiTelemetry: ApiTelemetry;
   /** Work 084: the session API, its rows and the host's v4 frames (sessions-api.ts). */
   private readonly api: ComputerSessionsApi;
-  /** This object's storage as the shared actor module's `Sql` (actor/store.ts). */
+  /** This object's storage as the shared actor module's `Sql` (durable/sql.ts). */
   private readonly store: Sql;
   private pool?: ComputerPool;
   /** The organization's managed model key, in memory only (never stored here, never logged). */

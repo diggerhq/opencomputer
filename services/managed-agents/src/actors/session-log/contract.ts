@@ -2,8 +2,7 @@
 // `cs_` id (`SESSION_LOG.getByName(sessionId)`). The Computer DO is its only writer (journal
 // batches from the host, recovery); the routes read it directly. Implemented in session-log.ts.
 
-import type { EventsReset, Summary } from "../../actor/contracts.js";
-import type { Principal } from "../../auth/principal.js";
+import type { Access, Principal } from "../../auth/principal.js";
 import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "../../api-objects/objects.js";
 
 export interface SessionLogIdentity {
@@ -174,4 +173,59 @@ export interface SessionLogRpc {
    * other than the log's or a subagent that is not running.
    */
   progress(identity: SessionLogIdentity, epoch: number, progress: SubagentProgress[]): Promise<void>;
+}
+
+// ------------------------------------------------------------------ SessionLog (36.2)
+
+/** What an inbox entry asks of the session's writer; every write reaches a host this way (spec 36.3). */
+export type InboxKind = "turn" | "answer" | "dismiss" | "interrupt" | "settings" | "compact" | "suspend" | "resume" | "cancel" | "stop";
+export interface InboxEntry {
+  id: string;
+  kind: InboxKind;
+  body: unknown;
+  /** `by` of who sent it (spec 34.1). */
+  by: string;
+  /** The principal it was accepted from, less its credential: what the host records as the actor. */
+  actor: { subject: string; kind: Principal["kind"]; via: Principal["via"]; admin: boolean };
+  trace: string | null;
+  at: number;
+}
+export type Inbox = { entries: InboxEntry[]; epoch: number; lastSeq: number };
+export type AcceptResult =
+  /** `outcome`: the entry's as `accept` returned (`waiting` unless it waited and the drain was done). */
+  | { ok: true; id: string; duplicate: boolean; outcome: EntryOutcome }
+  | { ok: false; code: "not_found" | "forbidden" | "idempotency_conflict" | "inbox_full" | "agent_turns" };
+/** A refused entry's error as the host (or the drain) gave it: its HTTP `status` when it has one, and its other fields (`turn`, `feature`, …). */
+export type EntryError = { code: string; message: string; status?: number; [field: string]: unknown };
+export type DeliveredOutcome = { ok: true; result?: unknown } | ({ ok: false } & EntryError);
+/** One inbox entry's outcome, whichever drain delivered it (spec 40.2 steps 4 to 6). */
+export type EntryOutcome = { state: "waiting" } | { state: "delivered"; result: unknown } | { state: "refused"; error: EntryError };
+/** What SessionLog publishes to Live on `events:<cs_…>` (spec 40.4). */
+export type EventPush = { from: string; to: string; events: ApiEvent[] };
+/** The events read's answers (spec 37.1): a page with the cursor after its last event, or `reset`. */
+export type EventsReset = { ok: false; error: "reset"; cursor: string | null; seq?: number };
+
+/** Added to the existing `SessionLogRpc` (session-log-contract.ts), whose methods keep their signatures. */
+export interface SessionLogRpcAdded {
+  /** Kept only if `access.revision` is newer. */
+  setAccess(access: Access): Promise<void>;
+  /** `wait`: the drain is awaited (bounded) and `outcome` is the entry's after it; the API's writes. */
+  accept(p: Principal, entry: { id: string; kind: InboxKind; body: unknown; trace?: string }, opts?: { wait?: boolean }): Promise<AcceptResult>;
+  /** The entries that are `waiting`, in order. */
+  inbox(): Promise<Inbox>;
+  delivered(id: string, outcome: DeliveredOutcome): Promise<void>;
+  /** The events cursor of the log's end; null when `p` may not read. */
+  watch(p: Principal, until: number): Promise<{ head: string; machine: string } | null>;
+  destroy(): Promise<void>;
+}
+
+/** What SessionLog hands Org (spec 35.2): today's summary and four fields. */
+export interface Summary extends LogSummary {
+  /** Counts changes to this summary; never reused, also across epochs. */
+  revision: number;
+  /** seq of the newest message.completed, ask.opened, turn.completed or turn.failed. */
+  lastAgentSeq: number;
+  agentTitle: string | null;
+  /** The entries that are `waiting` or `refused`. `text` is the first 280 characters of a turn's input. */
+  inbox: { id: string; kind: string; by: string; at: string; text: string | null; error: string | null }[];
 }

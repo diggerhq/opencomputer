@@ -17,7 +17,9 @@
 
 import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, SessionStatus } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS } from "../../api-objects/capabilities.js";
-import type { Access, PlaceRow, Row, SessionRow, Summary } from "../../actor/contracts.js";
+import type { Access } from "../../auth/principal.js";
+import type { PlaceRow, Row, SessionRow } from "./contract.js";
+import type { Summary } from "../session-log/contract.js";
 import { byOf, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";
 import type { Sql } from "../../durable/sql.js";

@@ -15,7 +15,10 @@
 //   - Slack sessions are unchanged for users: they get a `cs_` id lazily on delivery, their
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
-import type { Access, DeliveredOutcome, DeltaPush, Inbox, InboxEntry, InboxKind, LiveRpc, SessionLogRpcAdded, StartSpec } from "../../actor/contracts.js";
+import type { Access } from "../../auth/principal.js";
+import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind, SessionLogRpcAdded } from "../session-log/contract.js";
+import type { DeltaPush, LiveRpc } from "../live/contract.js";
+import type { StartSpec } from "./contract.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "../../http/api/model-route.js";
 import type { Principal } from "../../auth/principal.js";

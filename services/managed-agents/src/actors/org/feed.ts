@@ -1,7 +1,8 @@
 // Org's feed, occurrence stream, mutation envelope and summary slot (spec 37.1, 37.3, 40.3, 40.4).
 // Pure functions over `Sql`.
 
-import type { FeedFrame, FeedPush, MutateReply, MutateRequest, Occurrence, Row, Summary, SummaryPub } from "../../actor/contracts.js";
+import type { FeedFrame, FeedPush, MutateReply, MutateRequest, Occurrence, Row, SummaryPub } from "./contract.js";
+import type { Summary } from "../session-log/contract.js";
 import { cursor } from "../../durable/cursor.js";
 import { platformPrincipal, type Principal } from "../../auth/principal.js";
 import type { Sql } from "../../durable/sql.js";

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { migrate } from "../src/durable/migrations.js";
 import { sqlOf, type Sql } from "../src/durable/sql.js";
 import { type Principal } from "../src/auth/principal.js";
-import type { Summary } from "../src/actor/contracts.js";
+import type { Summary } from "../src/actors/session-log/contract.js";
 import { runMutation, type MutationOutcome } from "../src/actors/org/mutations/run.js";
 import { STEPS } from "../src/actors/org/schema.js";
 import { emptySummary, transact } from "../src/actors/org/tx.js";

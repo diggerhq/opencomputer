@@ -87,7 +87,8 @@ describe("Org's transaction", () => {
 
 // ------------------------------------------------------------------ the actor, with fakes for the others
 
-import type { FeedFrame, FeedPush, Summary, SummaryPub } from "../src/actor/contracts.js";
+import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract.js";
+import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
 

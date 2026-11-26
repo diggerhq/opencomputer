@@ -2,9 +2,11 @@
 // the edge and a client know of the fan-out actor. Nothing here imports `cloudflare:workers`, so
 // `managed-agents` can import it without pulling the class into its bundle.
 
-import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../../actor/contracts.js";
+import type { Principal } from "../../auth/principal.js";
+import type { FeedPush } from "../org/contract.js";
+import type { EventPush } from "../session-log/contract.js";
 
-export type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal };
+export type { EventPush, FeedPush, Principal };
 
 // ---------------------------------------------------------------- constants (section 44)
 
@@ -26,8 +28,8 @@ export const CLOSE_PROTOCOL = 4400;
 
 // ---------------------------------------------------------------- publishers
 
-// The push shapes and `LiveRpc` are in ../actor/contracts.ts; a publisher names a Live with
-// `liveOf` of ../actor/stubs.ts, the only place its key is read (section 18.8).
+// The push shapes and `LiveRpc` are below; a publisher names a Live with
+// `liveOf` of ../addresses.ts, the only place its key is read (section 18.8).
 
 /** "The head is now N": what a publish too large to send, or a retried one, carries. */
 export interface HeadPush {
@@ -146,4 +148,15 @@ export interface LiveAttachment {
   w: Record<string, 1 | 2 | 3>;
   /** When the edge last confirmed the credential, in seconds: kept here because Live's memory does not outlive hibernation. */
   v: number;
+}
+
+// ------------------------------------------------------------------ Live (36.4), lane 2's
+
+/** A delta as the host sends it (`C/protocol-api.ts`'s `JournalDelta` plus `offset`), with its session's epoch. */
+export type DeltaPush = { epoch: number; deltas: { type: string; turnId: string; data: unknown; offset: number; whole?: boolean }[] };
+
+export interface LiveRpc {
+  /** Streams: `feed`, `events:<cs_…>`, `deltas:<cs_…>`. The reply is the head Live now holds. */
+  publish(stream: string, frame: FeedPush | EventPush | DeltaPush | { head: string }): Promise<{ head: string }>;
+  revoke(credentialId: string): Promise<void>;
 }

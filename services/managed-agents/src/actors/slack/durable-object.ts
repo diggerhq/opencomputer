@@ -5,7 +5,10 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import { type AcceptResult, type SlackEcho, type SlackGrant, type SlackRpc, type Reply } from "../../actor/contracts.js";
+import { type AcceptResult } from "../session-log/contract.js";
+import { type SlackEcho } from "../org/contract.js";
+import { type SlackGrant, type SlackRpc } from "./contract.js";
+import { type Reply } from "../../durable/rpc-reply.js";
 import { type ActorEnv, logOf, orgOf, slackOf, computerOf } from "../addresses.js";
 import { alarms } from "../../durable/alarms.js";
 import { emitter } from "../../telemetry/log-emitter.js";
@@ -16,7 +19,7 @@ import { type Principal, platformPrincipal } from "../../auth/principal.js";
 import { type Sql, sqlOf } from "../../durable/sql.js";
 import { unavailable } from "../../http/unavailable.js";
 import { isRecord } from "../../encoding/canonical-json.js";
-import type { SlackModalReply } from "../../actor/contracts.js";
+import type { SlackModalReply } from "../computer/contract.js";
 import type { Origin } from "../../api-objects/objects.js";
 import { seal, sha256Hex, unseal } from "../../crypto/seal.js";
 import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../../host-protocol/protocol.js";

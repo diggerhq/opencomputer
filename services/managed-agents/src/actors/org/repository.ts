@@ -11,7 +11,7 @@
 //   check, `metadata: read` for the listing. Nothing is held between calls.
 
 import type { GitHubTokenMint } from "../../protocol.js";
-import type { Refusal, Reply } from "../../actor/contracts.js";
+import type { Refusal, Reply } from "../../durable/rpc-reply.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
 

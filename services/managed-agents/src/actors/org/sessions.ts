@@ -3,7 +3,9 @@
 
 import type { Origin, SessionAccess } from "../../api-objects/objects.js";
 import { isSessionId, mintId } from "../../ids/session-ids.js";
-import type { Access, CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, Reply, Refusal, SessionPage, SessionPatch, SessionRow } from "../../actor/contracts.js";
+import type { Access } from "../../auth/principal.js";
+import type { CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, SessionPage, SessionPatch, SessionRow } from "./contract.js";
+import type { Reply, Refusal } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
 import { byOf, type Principal } from "../../auth/principal.js";
 import type { Sql } from "../../durable/sql.js";

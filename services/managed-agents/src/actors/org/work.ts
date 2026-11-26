@@ -1,7 +1,7 @@
 // Org's arrows in from the machine and GitHub, the work reads, the digest, the Slack echo
 // and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9). Pure functions over `Sql`.
 
-import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "../../actor/contracts.js";
+import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "./contract.js";
 import { cursor } from "../../durable/cursor.js";
 import { platformPrincipal, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";

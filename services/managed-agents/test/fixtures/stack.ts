@@ -21,7 +21,7 @@ import { fakeComputerOutbound, fakeComputerPlatform } from "./computer-fakes.mjs
 
 // This file imports nothing of src/: the SDK, web and desktop typecheck it with their own settings.
 
-/** The principal the edge asserts (src/actor/principal.ts), as this fixture makes them. */
+/** The principal the edge asserts (src/auth/principal.ts), as this fixture makes them. */
 export interface Principal {
   org: string;
   subject: string;
