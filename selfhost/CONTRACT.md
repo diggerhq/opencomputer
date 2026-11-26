@@ -127,13 +127,13 @@ The VM's firewall needs no inbound port besides SSH.
 
 | User | uid | Runs |
 |---|---|---|
-| `agent` | 1500 (fixed: the image and `podman-args.ts` use 1500) | session containers, rootless Podman. Has subuid/subgid, lingering, no sudo, never in group docker |
+| `agent` | 1500 (fixed: the image and `podman-args.ts` use 1500) | the user sessions run as inside their rootless Podman containers, and the owner of those containers on the host. Has subuid/subgid, lingering, no sudo on the host (sessions may use sudo inside their container), never in group docker. Never runs the compose stack |
 | `sp-host` | system | the host agent. May run commands as `agent` (sudoers); cannot read `selfhost.env` (systemd passes it in) |
 | `modelproxy` | system | oc-modelproxy |
 | `oc-gateway` (`GATEWAY_USER`) | system, made by `host-install.sh`, home `/var/lib/oc-gateway` (0750) | the compose stack: rootless Podman of its own, subuid/subgid above every other range, lingering, `podman-restart.service` enabled. Its Podman config is its own (`~/.config/containers/storage.conf` and `containers.conf`, rewritten only while they start with `# host-install.sh`): storage under its home, not the system-wide `/data/containers/storage` that is the agent's; networks in `/srv/oc-gateway/networks`, because rootless Podman 4.9 hides `/var/lib` behind a tmpfs in its network namespace; container logs to files (`k8s-file`), since a system user cannot read its journald logs. No sudo, not in groups `agent` or `sp-host`. An existing login user may be named instead; never `agent`, `sp-host` or root |
 | `node` | in the container | the gateway |
 
-The stack must not run as `agent`. Sessions run tools as `agent` with no permission prompts, and as `agent`, `podman inspect` would show the gateway's environment: every secret it holds.
+The compose stack runs as the dedicated `oc-gateway` user (or the one `GATEWAY_USER` names), never as `agent`, `sp-host` or root. `agent` (uid 1500) is only the sessions' user. Sessions run tools as `agent` with no permission prompts, so whatever `agent` can read, a session can read: as `agent`, `podman inspect` would show the gateway's environment, every secret it holds.
 
 ## 7. Compose tooling (installed by `host-install.sh`)
 

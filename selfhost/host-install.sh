@@ -41,10 +41,11 @@
 #                   anyway. Anyone who can push a branch to the repository can
 #                   move a tag; the digest check is what rules that out.
 #   GO_SERIES       Go series for oc-modelproxy (default 1.27, as its go.mod)
-#   GATEWAY_USER    the user that runs the compose stack (default oc-gateway, made
-#                   here); an existing login user works too. Never agent, sp-host
-#                   or root: sessions run tools as agent with no prompts, and the
-#                   gateway holds every secret
+#   GATEWAY_USER    the dedicated user that runs the compose stack (default
+#                   oc-gateway, made here); an existing login user works too.
+#                   Never agent (uid 1500: only the sessions' user, inside their
+#                   containers), sp-host or root: sessions run tools as agent with
+#                   no prompts, and the gateway holds every secret
 #   PODMAN_COMPOSE_VERSION  podman-compose from PyPI (default 1.6.0; >= 1.1.0)
 #   NODE_MAJOR      Node.js major (default 24)
 #
@@ -168,10 +169,13 @@ free_subids() {
   awk -F: 'BEGIN { end = 100000 } NF == 3 && $2 + $3 > end { end = $2 + $3 } END { print end }' "$1"
 }
 
-podman_version_ok() {   # <version>: >= 4.4 (--userns=keep-id:uid=,gid= and pasta)
+# >= 4.7: sessions need 4.4 (--userns=keep-id:uid=,gid= and pasta); the
+# `podman compose` command the stack is run with arrived in 4.7. Ubuntu 24.04
+# ships 4.9.3, the tested version.
+podman_version_ok() {   # <version>
   local maj min
   IFS=. read -r maj min _ <<<"${1%%[-+~]*}"
-  [[ $maj =~ ^[0-9]+$ && $min =~ ^[0-9]+$ ]] && (( maj > 4 || (maj == 4 && min >= 4) ))
+  [[ $maj =~ ^[0-9]+$ && $min =~ ^[0-9]+$ ]] && (( maj > 4 || (maj == 4 && min >= 7) ))
 }
 
 # ------------------------------------------------------------------ preflight
@@ -195,7 +199,7 @@ preflight() {
       apt-get update -q >/dev/null 2>&1 || true
       cand="$(apt-cache policy podman 2>/dev/null | sed -n 's/^ *Candidate: //p')"
       if ! podman_version_ok "${cand#*:}" || ! apt-cache policy passt 2>/dev/null | sed -n 's/^ *Candidate: //p' | grep -qv none; then
-        die "Ubuntu 22.04: apt offers podman '${cand:-none}' and no passt; sessions need Podman >= 4.4 with pasta. Use Ubuntu 24.04"
+        die "Ubuntu 22.04: apt offers podman '${cand:-none}' and no passt; this needs Podman >= 4.7 with pasta. Use Ubuntu 24.04"
       fi
       warn "Ubuntu 22.04 with podman $cand from an added repository: untested" ;;
     *) die "Ubuntu 24.04 (or 22.04 with a newer Podman) only, not $OS_VERSION" ;;
@@ -488,6 +492,8 @@ release() {
 sandbox() {
   log "rootless Podman for $AGENT_USER"
   AGENT_USER="$AGENT_USER" AGENT_UID="$AGENT_UID" SP_DATA="$DATA" bash "$RELEASE/deploy/vm/sandbox.sh" install
+  local pv; pv="$(podman --version 2>/dev/null | awk '{print $NF}')"
+  podman_version_ok "$pv" || die "podman ${pv:-not found}: this needs Podman >= 4.7"
   if [[ $BUILD_IMAGE == 1 ]] && ! as_agent podman image exists "$IMAGE"; then
     log "building $IMAGE as $AGENT_USER (computer/deploy/image; 20 minutes or more)"
     local args=() line ctx
