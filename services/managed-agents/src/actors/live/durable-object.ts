@@ -44,6 +44,21 @@ export interface LiveEnv {
 
 const EVENTS = 1;
 const DELTAS = 2;
+/** The most lease renewals one alarm sends, well under an invocation's subrequest limit. */
+const LEASE_CALLS_MAX = 400;
+/** Storage key: the last renewal the previous alarm sent, when they take turns. */
+const LEASE_CURSOR = "leaseCursor";
+
+/** One renewal: a session's events lease as one principal (`principal`), or its deltas watch on the Computer. */
+interface LeaseCall {
+  key: string;
+  sessionId: string;
+  org: string;
+  principal: Principal | null;
+  sockets: WebSocket[];
+  /** The streams it keeps: events and deltas for a lease, deltas for a watch. */
+  bits: number;
+}
 const encoder = new TextEncoder();
 
 /** `events:<id>` or `deltas:<id>`. */
@@ -82,6 +97,8 @@ function principalOf(a: LiveAttachment): Principal {
 export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc {
   // All of it rebuilt from attachments or relearned from pushes: a cache, never a fact.
   private readonly sockets = new Map<WebSocket, LiveAttachment>();
+  /** LEASE_CALLS_MAX; tests lower it. */
+  leaseCallsMax = LEASE_CALLS_MAX;
   private readonly subscribers = new Map<string, Set<WebSocket>>();
   private readonly heads = new Map<string, string>();
   private readonly machines = new Map<string, string>();
@@ -343,32 +360,67 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     await this.arm();
   }
 
-  /** Each subscriber's lease is renewed as that subscriber, so one who lost the right to a session stops receiving it. */
+  /**
+   * Leases are renewed once per session and principal (a session's events lease as each distinct
+   * subscriber, so one who lost the right stops receiving it) and once per session watched for deltas,
+   * never once per socket. At most LEASE_CALLS_MAX calls go out per alarm: past that the calls take
+   * turns, from where the last alarm stopped (kept in storage), and the alarm comes round sooner. A
+   * renewal that fails detaches its streams as `unavailable`, so the clients subscribe again rather
+   * than wait on a lease that lapsed.
+   */
   private async renewLeases(now: number): Promise<void> {
     const until = now + LEASE_MS;
-    const deltas = new Map<string, string>();
-    const renewals: Promise<void>[] = [];
-    for (const [socket, a] of [...this.sockets]) {
+    const all = this.leaseCalls();
+    if (all.length === 0) return;
+    const after = all.length > this.leaseCallsMax ? ((await this.ctx.storage.get<string>(LEASE_CURSOR)) ?? "") : "";
+    const from = all.findIndex((call) => call.key > after);
+    const ordered = from <= 0 ? all : [...all.slice(from), ...all.slice(0, from)];
+    const calls = ordered.slice(0, this.leaseCallsMax);
+    if (all.length > this.leaseCallsMax) await this.ctx.storage.put(LEASE_CURSOR, calls[calls.length - 1]!.key);
+    await Promise.all(
+      calls.map(async (call) => {
+        let lease: { head: string; machine: string } | null | void;
+        try {
+          lease = call.principal
+            ? await this.env.SESSION_LOG.getByName(call.sessionId).watch(call.principal, until)
+            : await this.computer(call.org, call.sessionId).watch(call.sessionId, until);
+        } catch {
+          return this.detach(call, "unavailable");
+        }
+        if (lease === null) this.detach(call, "forbidden");
+      }),
+    );
+  }
+
+  /** The renewals the sockets need now, in a stable order: per session and principal for events, per session for deltas. */
+  private leaseCalls(): LeaseCall[] {
+    const calls = new Map<string, LeaseCall>();
+    for (const [socket, a] of this.sockets) {
       for (const [sessionId, bits] of Object.entries(a.w)) {
-        if (bits & DELTAS) deltas.set(sessionId, a.p.org);
-        renewals.push(
-          this.env.SESSION_LOG.getByName(sessionId)
-            .watch(principalOf(a), until)
-            .then((lease) => {
-              if (lease) return;
-              for (const bit of [EVENTS, DELTAS] as const) {
-                if (!(bits & bit)) continue;
-                this.drop(socket, sessionId, bit);
-                this.send(socket, { t: "detached", stream: `${bit === EVENTS ? "events" : "deltas"}:${sessionId}`, reason: "forbidden" });
-              }
-            })
-            // An owner that cannot be reached: the lease lapses and the next renewal takes it again.
-            .catch(() => undefined),
-        );
+        const lease = `${sessionId}\u0000l\u0000${a.p.subject}\u0000${a.p.cred}`;
+        let call = calls.get(lease);
+        if (!call) calls.set(lease, (call = { key: lease, sessionId, org: a.p.org, principal: principalOf(a), sockets: [], bits: EVENTS | DELTAS }));
+        call.sockets.push(socket);
+        if (!(bits & DELTAS)) continue;
+        const deltas = `${sessionId}\u0000d`;
+        let watch = calls.get(deltas);
+        if (!watch) calls.set(deltas, (watch = { key: deltas, sessionId, org: a.p.org, principal: null, sockets: [], bits: DELTAS }));
+        watch.sockets.push(socket);
       }
     }
-    for (const [sessionId, org] of deltas) renewals.push(this.computer(org, sessionId).watch(sessionId, until).catch(() => undefined));
-    await Promise.all(renewals);
+    return [...calls.values()].sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
+  }
+
+  /** A renewal that did not take: its sockets' streams of that session are dropped and they are told. */
+  private detach(call: LeaseCall, reason: "forbidden" | "unavailable"): void {
+    for (const socket of call.sockets) {
+      const bits = this.attachment(socket)?.w[call.sessionId] ?? 0;
+      for (const bit of [EVENTS, DELTAS] as const) {
+        if (!(bits & bit & call.bits)) continue;
+        this.drop(socket, call.sessionId, bit);
+        this.send(socket, { t: "detached", stream: `${bit === EVENTS ? "events" : "deltas"}:${call.sessionId}`, reason });
+      }
+    }
   }
 
   private async revalidate(now: number): Promise<void> {
@@ -393,8 +445,11 @@ export class LiveDurableObject extends DurableObject<LiveEnv> implements LiveRpc
     if (this.sockets.size === 0) return this.ctx.storage.deleteAlarm();
     const now = Date.now();
     let next = Infinity;
+    const leases = this.leaseCalls().length;
+    // More renewals than one alarm sends: the alarm comes round often enough that each is renewed every LEASE_RENEW_MS.
+    const every = leases > this.leaseCallsMax ? Math.max(1_000, Math.floor(LEASE_RENEW_MS / Math.ceil(leases / this.leaseCallsMax))) : LEASE_RENEW_MS;
     for (const a of this.sockets.values()) {
-      if (Object.keys(a.w).length > 0) next = Math.min(next, now + LEASE_RENEW_MS);
+      if (Object.keys(a.w).length > 0) next = Math.min(next, now + every);
       if (a.p.exp) next = Math.min(next, a.p.exp);
       next = Math.min(next, a.v * 1000 + REVALIDATE_MS);
     }

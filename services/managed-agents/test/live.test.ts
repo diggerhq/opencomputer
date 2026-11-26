@@ -318,6 +318,81 @@ describe("Live: a session", () => {
     expect(await granted.next("events")).toMatchObject({ from: "e1.1.2", to: "e1.1.3" });
   });
 
+  it("renews a lease once per session and principal, not once per socket", async () => {
+    const org = "org_renew";
+    const live = liveOf(org);
+    const log = bindings.SESSION_LOG.getByName("cs_renew");
+    const one = await connect(org);
+    const two = await connect(org);
+    const other = await connect(org, member(org, { subject: "user_2", credential: { id: "cred_2", expiresAt: null } }));
+    for (const client of [one, two, other]) {
+      client.send({ t: "sub", stream: "events:cs_renew" });
+      await client.next("subd");
+    }
+    one.send({ t: "sub", stream: "deltas:cs_renew" });
+    two.send({ t: "sub", stream: "deltas:cs_renew" });
+    await one.next("subd");
+    await two.next("subd");
+    const leases = (await log.calls()).length;
+    const watches = (await bindings.COMPUTERS.getByName(org).calls()).length;
+
+    expect(await runDurableObjectAlarm(live)).toBe(true);
+    // Two principals: two leases. Two sockets on the deltas: one watch.
+    expect((await log.calls()).slice(leases).map((c) => c.subject).sort()).toEqual(["user_1", "user_2"]);
+    expect((await bindings.COMPUTERS.getByName(org).calls()).length).toBe(watches + 1);
+  });
+
+  it("detaches as unavailable when a renewal fails, so the client subscribes again", async () => {
+    const org = "org_unreachable";
+    const live = liveOf(org);
+    const log = bindings.SESSION_LOG.getByName("cs_unreachable");
+    const client = await connect(org);
+    client.send({ t: "sub", stream: "events:cs_unreachable" });
+    await client.next("subd");
+    client.send({ t: "sub", stream: "deltas:cs_unreachable" });
+    await client.next("subd");
+
+    await log.set({ fail: true });
+    expect(await runDurableObjectAlarm(live)).toBe(true);
+    const detached = [await client.next("detached"), await client.next("detached")];
+    expect(detached.map((f) => f.stream).sort()).toEqual(["deltas:cs_unreachable", "events:cs_unreachable"]);
+    expect(detached.every((f) => f.reason === "unavailable")).toBe(true);
+    await live.publish("events:cs_unreachable", { from: "e1.1.0", to: "e1.1.1", events: events(1) });
+    await client.sync();
+    expect(client.frames.filter((f) => f.t === "events")).toHaveLength(0);
+
+    // The log is back: subscribing again takes the lease again.
+    await log.set({ fail: false });
+    client.send({ t: "sub", stream: "events:cs_unreachable" });
+    await client.next("subd");
+  });
+
+  it("sends a bounded number of renewals per alarm, taking turns and coming round sooner", async () => {
+    const org = "org_many";
+    const live = liveOf(org);
+    const sessions = ["cs_many_0", "cs_many_1", "cs_many_2", "cs_many_3", "cs_many_4", "cs_many_5"];
+    const client = await connect(org);
+    for (const sessionId of sessions) {
+      client.send({ t: "sub", stream: `events:${sessionId}` });
+      await client.next("subd");
+    }
+    // Four calls per alarm, for six leases.
+    await runInDurableObject(live, async (o: LiveDurableObject) => {
+      o.leaseCallsMax = 4;
+    });
+    const renewed = async (): Promise<number[]> => Promise.all(sessions.map(async (id) => (await bindings.SESSION_LOG.getByName(id).calls()).length - 1));
+
+    expect(await runDurableObjectAlarm(live)).toBe(true);
+    expect(await renewed()).toEqual([1, 1, 1, 1, 0, 0]);
+    // More renewals than one alarm sends: the next alarm comes sooner than every 20 s.
+    const next = await runInDurableObject(live, async (_o, state) => state.storage.getAlarm());
+    expect(next! - Date.now()).toBeLessThanOrEqual(10_000);
+
+    // The next alarm starts where this one stopped (kept in storage), and wraps round.
+    expect(await runDurableObjectAlarm(live)).toBe(true);
+    expect(await renewed()).toEqual([2, 2, 1, 1, 1, 1]);
+  });
+
   it("watches at most 32 sessions on one connection", async () => {
     const client = await connect("org_cap");
     for (let i = 0; i < 32; i += 1) client.send({ t: "sub", stream: `events:cs_cap_${String(i).padStart(22, "0")}` });

@@ -157,7 +157,7 @@ const event = (seq: number, sessionId = SID): ApiEvent => ({
   data: {},
 });
 
-function fixture(options: { protocol?: number | null; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
+function fixture(options: { protocol?: number | null; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; wireUrl?: string; events?: Record<string, any>[]; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
   const sql = sqlStorage();
   sql.exec(`
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -184,6 +184,9 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
   const env = {
     SESSION_LOG: { getByName: (id: string) => logOf(id) },
     ...(options.ticketKey ? { WIRE_TICKET_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" } : {}),
+    ...(options.wireUrl ? { WIRE_PUBLIC_URL: options.wireUrl } : {}),
+    // The catalog events to calvin_events, posted to `options.events`.
+    ...(options.events ? { TINYBIRD_API_URL: "https://tb.test", TINYBIRD_APPEND_TOKEN: "p.append" } : {}),
   } as never;
   const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
   /** The host answers each `api` frame with this (by method). */
@@ -232,6 +235,14 @@ function fixture(options: { protocol?: number | null; status?: "ready" | "asleep
     remove: (key) => void settings.delete(key),
     now: () => clock,
     ...(options.telemetry ? { telemetry: options.telemetry } : {}),
+    ...(options.events
+      ? {
+          telemetryFetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+            for (const line of String(init?.body).split("\n")) options.events!.push(JSON.parse(line));
+            return new Response(null, { status: 202 });
+          }) as typeof fetch,
+        }
+      : {}),
   });
   const slackRow = (key: string, owner = "U1") =>
     sql.exec(
@@ -448,6 +459,45 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
   });
 });
 
+describe("the drain's alert events (no-host, dark dispatch, held writes)", () => {
+  const sent = async (f: ReturnType<typeof fixture>, events: Record<string, any>[], n: number) => {
+    for (let i = 0; i < 300 && events.length < n; i++) {
+      await Promise.all(f.pending());
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return events;
+  };
+
+  it("sends dispatch.parked while there is no host, then dispatch.sent and dispatch.replied per entry", async () => {
+    const events: Record<string, any>[] = [];
+    const f = fixture({ events });
+    await created(f);
+    f.answers.set("sessions.suspend", () => ({ result: {} }));
+    f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "no", status: 409, retryable: false } }));
+    // The start's drain is still in flight (it read an empty inbox) when the host goes and this drain is owed:
+    // its re-owe must not push this one out, so the entries are reported parked now, not at the next hello.
+    f.state.protocol = null;
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
+    await f.api.drain(SID);
+    f.state.protocol = 6;
+    f.api.onHello([]);
+    await sent(f, events, 6);
+    const of = (name: string) => events.filter((e) => e.event_name === name);
+    // The no-host rule's two sides, keyed by the inbox entry.
+    expect(of("dispatch.parked").map((e) => e.dispatch_id)).toEqual(["ie_0000000000000001", "ie_0000000000000002"]);
+    expect(of("dispatch.parked")[0]).toMatchObject({ org_id: ORG, session_key: SID });
+    expect(of("dispatch.sent").map((e) => [e.dispatch_id, JSON.parse(e.data).method])).toEqual([
+      ["ie_0000000000000001", "sessions.suspend"],
+      ["ie_0000000000000002", "turns.cancel"],
+    ]);
+    expect(of("dispatch.replied").map((e) => [e.dispatch_id, e.outcome])).toEqual([
+      ["ie_0000000000000001", "completed"],
+      ["ie_0000000000000002", "failed"],
+    ]);
+    expect(JSON.parse(of("dispatch.replied")[1]!.data)).toMatchObject({ code: "turn_not_cancellable" });
+  });
+});
+
 describe("recovery: a lost writer", () => {
   it("host connected, runner stopped mid-turn and the log silent 60 s: recovered, and the host told at once", async () => {
     const f = fixture();
@@ -567,9 +617,14 @@ describe("hello and tickets", () => {
   });
 
   it("/me names the wire and the credential", async () => {
-    const f = fixture();
+    const f = fixture({ wireUrl: "wss://wire.example/v1" });
     const me = await f.api.handle(caller(), { op: "me" });
-    expect(me.body).toMatchObject({ person: { id: OWNER }, credential: { kind: "login" }, computer: { status: "ready", wireUrl: "wss://wire.opencomputer.dev/v1" }, defaults: { model: "claude-opus-5-5" } });
+    expect(me.body).toMatchObject({ person: { id: OWNER }, credential: { kind: "login" }, computer: { status: "ready", wireUrl: "wss://wire.example/v1" }, defaults: { model: "claude-opus-5-5" } });
+  });
+
+  it("/me names no wire where WIRE_PUBLIC_URL is not set, rather than another deployment's", async () => {
+    const me = await fixture().api.handle(caller(), { op: "me" });
+    expect(me.body).toMatchObject({ computer: { status: "ready", wireUrl: null } });
   });
 });
 

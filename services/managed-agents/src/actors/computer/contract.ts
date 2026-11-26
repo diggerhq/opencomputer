@@ -1,5 +1,5 @@
-// Computer's contract, the part tracks and threads added (spec 36.3): its RPC methods and their values.
-// Types only; nothing here runs.
+// Computer's contract (spec 36.3): the RPC methods the other actors call on a machine's Computer, and
+// their values. Implemented in durable-object.ts. Types only; nothing here runs.
 
 import type { SessionSettings } from "../../api-objects/objects.js";
 import type { Access, Principal } from "../../auth/principal.js";
@@ -24,18 +24,30 @@ export interface AccessCarry {
   apiAccessDefault: "owner" | "org" | null;
 }
 
-export interface ComputerRpcAdded {
+/** Every RPC method of Computer, grouped by its caller. */
+export interface ComputerRpc {
+  // ---------------------------------------------------------------- Org
   start(spec: StartSpec): Promise<void>;
   stop(sessionId: string): Promise<void>;
-  /** SessionLog's owed `drain` only: the session's drain is owed here; resolves once delivered, or waiting for the host. */
+  /** Relayed as the host's `access` frame. */
+  setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
+  /** Once: the organization's default access as this Computer held it (settings `accessDefault`, `apiAccessDefault`); null where it held none. */
+  accessCarry(): Promise<AccessCarry>;
+  /** Org: the knowledge repository; Slack: people or credentials. */
+  changed(source: "org" | "slack"): Promise<void>;
+
+  // ---------------------------------------------------------------- SessionLog
+  /** Its owed `drain` only: the session's drain is owed here; resolves once delivered, or waiting for the host. */
   drain(sessionId: string): Promise<void>;
+
+  // ---------------------------------------------------------------- Live
   watch(sessionId: string, until: number): Promise<void>;
   /** "Send this block so far." */
   block(sessionId: string, blockId: string): Promise<void>;
-  /** Org only; relayed as the host's `access` frame. */
-  setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
+
+  // ---------------------------------------------------------------- the Slack actor
   /**
-   * The Slack actor only. `args`: the command's text after its name; for `grant`, the clicked button's action
+   * `args`: the command's text after its name; for `grant`, the clicked button's action
    * id, with Slack's `triggerId`. `channelId` and `threadTs`: where the command was sent (absent: the
    * session's thread). `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user
    * it linked the Slack person to.
@@ -44,20 +56,16 @@ export interface ComputerRpcAdded {
     p: Principal,
     c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
   ): Promise<{ reply: string; member?: string }>;
-  /** Org: the knowledge repository; Slack: people or credentials. */
-  changed(source: "org" | "slack"): Promise<void>;
-  /** The Slack actor only, once: spec 43.1. */
+  /** Once: spec 43.1. */
   slackCarry(): Promise<SlackCarry>;
-  /** Org only, once: the organization's default access as this Computer held it (settings `accessDefault`, `apiAccessDefault`); null where it held none. */
-  accessCarry(): Promise<AccessCarry>;
   /**
-   * The Slack actor only: an interaction whose state is Computer's (secret, variable, connection and
+   * An interaction whose state is Computer's (secret, variable, connection and
    * subscription modals and their buttons: a `view_submission`, `s:`, `cn:`, `v:`, `mc:connect`,
    * `md:disconnect`, `cx:connect`, `cx:disconnect`). `sessionId`: a `v:` button's session. The reply is
    * the modal's answer: `errors` keep it open, `view` replaces it.
    */
   interaction(p: Principal, c: { interaction: unknown; sessionId?: string }): Promise<SlackModalReply>;
-  /** The Slack actor only: a person left the workspace, was deactivated or became a guest; their subscriptions go. */
+  /** A person left the workspace, was deactivated or became a guest; their subscriptions go. */
   memberLeft(slackUserId: string): Promise<void>;
 }
 

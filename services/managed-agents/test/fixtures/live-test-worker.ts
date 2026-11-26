@@ -10,13 +10,16 @@ export { LiveDurableObject } from "../../src/actors/live/durable-object.js";
 export class FakeSessionLog extends DurableObject {
   private head = "e1.1.0";
   private allowed = true;
+  /** Set by `set({ fail: true })`: watches throw, as an owner that cannot be reached. */
+  private failing = false;
   private machine: string | undefined;
   private watches: { subject: string; until: number }[] = [];
   /** Set by `set({ hold: true })`: watches wait for `release()` before they answer. */
   private held: Promise<void> | null = null;
   private release_: (() => void) | null = null;
 
-  async set(next: { head?: string; allowed?: boolean; machine?: string; hold?: boolean }): Promise<void> {
+  async set(next: { head?: string; allowed?: boolean; machine?: string; hold?: boolean; fail?: boolean }): Promise<void> {
+    if (next.fail !== undefined) this.failing = next.fail;
     if (next.head !== undefined) this.head = next.head;
     if (next.allowed !== undefined) this.allowed = next.allowed;
     if (next.machine !== undefined) this.machine = next.machine;
@@ -32,6 +35,7 @@ export class FakeSessionLog extends DurableObject {
   async watch(p: Principal, until: number): Promise<{ head: string; machine?: string } | null> {
     this.watches.push({ subject: p.subject, until });
     if (this.held) await this.held;
+    if (this.failing) throw new Error("The log could not be reached.");
     if (!this.allowed) return null;
     return { head: this.head, ...(this.machine ? { machine: this.machine } : {}) };
   }

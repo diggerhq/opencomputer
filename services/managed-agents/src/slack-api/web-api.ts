@@ -290,6 +290,7 @@ const FORM_METHODS = new Set([
   "chat.getPermalink",
   "conversations.info",
   "conversations.replies",
+  "conversations.history",
   "conversations.members",
   "auth.test",
   "auth.revoke",
@@ -298,6 +299,8 @@ const FORM_METHODS = new Set([
 export interface SlackResult {
   ok: boolean;
   error?: string;
+  /** Rate limited (HTTP 429): Slack's `Retry-After`, ms, when it sent one. */
+  retryAfterMs?: number;
   ts?: string;
   permalink?: string;
   channel?: { id?: string };
@@ -324,6 +327,11 @@ export function slackTokenDead(result: SlackResult): boolean {
   return !result.ok && DEAD_TOKEN_ERRORS.has(result.error ?? "");
 }
 
+/** Slack refused the call for its rate limit (HTTP 429, or `ratelimited` in the body): worth trying again later. */
+export function slackRateLimited(result: SlackResult): boolean {
+  return !result.ok && (result.error === "http_429" || result.error === "ratelimited" || result.error === "rate_limited");
+}
+
 export async function slackApi(
   botToken: string,
   method: string,
@@ -342,6 +350,10 @@ export async function slackApi(
         ? new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)]))
         : JSON.stringify(body),
     });
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get("retry-after"));
+      return { ok: false, error: "http_429", ...(Number.isFinite(seconds) && seconds > 0 ? { retryAfterMs: seconds * 1_000 } : {}) };
+    }
     if (!response.ok) return { ok: false, error: `http_${response.status}` };
     return (await response.json()) as SlackResult;
   } catch (error) {

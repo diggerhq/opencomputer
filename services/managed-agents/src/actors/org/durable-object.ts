@@ -7,17 +7,18 @@ import { DurableObject } from "cloudflare:workers";
 import { alarms } from "../../durable/alarms.js";
 import { computerOf, liveOf, logOf, slackOf, type ActorEnv } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
+import type { TelemetryEnv } from "../../telemetry/gateway.js";
 import { hashOf } from "../../encoding/canonical-json.js";
 import { migrate } from "../../durable/migrations.js";
 import { owed, type Dead } from "../../durable/outbox.js";
 import { platformPrincipal, type Access, type Principal } from "../../auth/principal.js";
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
-import { type ComputerRpcAdded, type StartSpec } from "../computer/contract.js";
+import { type ComputerRpc, type StartSpec } from "../computer/contract.js";
 import { type CreateSession, type DocRev, type FeedFrame, type GrantingInstallation, type RepositoriesQuery, type Repository, type RepositoryChoice, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
-import { type SessionLogRpcAdded } from "../session-log/contract.js";
+import { type SessionLogRpc } from "../session-log/contract.js";
 import { type SlackRpc } from "../slack/contract.js";
 import { computerSessionId } from "../../host-protocol/protocol.js";
 import { memberId } from "../../ids/session-ids.js";
@@ -29,7 +30,7 @@ import * as sessions from "./sessions.js";
 import { accessOf, readSession, trackOfAgent, type PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
-export type OrgEnv = ActorEnv & {
+export type OrgEnv = ActorEnv & TelemetryEnv & {
   SERVERLESS_AGENTS_DB?: D1Database;
   /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
   ACCOUNTS?: DurableObjectNamespace;
@@ -46,8 +47,8 @@ async function memberIds(access: unknown): Promise<CreateSession["access"]> {
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
-  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
-  log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
+  computer(machine: string): Pick<ComputerRpc, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
+  log(sessionId: string): Pick<SessionLogRpc, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */
@@ -68,7 +69,7 @@ const AGE_EVERY_MS = 60 * 60 * 1_000;
 
 export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   private store: Sql | null = null;
-  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }));
+  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }), { env: () => this.env, waitUntil: (promise) => this.ctx.waitUntil(promise) });
 
   /** The organization's id: the object's name, else what the first principal said. */
   get org(): string {

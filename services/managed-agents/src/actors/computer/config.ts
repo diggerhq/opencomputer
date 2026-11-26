@@ -5,15 +5,14 @@
 
 import type { ManagedAgentBillingService } from "../../edge/billing-admission.js";
 import { ZONES, standsIn, validSize, validZone } from "./machine/placement.js";
+import type { ActorEnv } from "../addresses.js";
 import type { PreviewsEnv } from "./previews.js";
 import type { PublicComputerState } from "./contract.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
-export interface ComputerEdgeEnv extends PreviewsEnv {
+export interface ComputerEdgeEnv extends PreviewsEnv, ActorEnv {
   /** The managed-agent session index (session_creations), read by oc-usage-chart. */
   SERVERLESS_AGENTS_DB?: D1Database;
-  /** One ComputerDurableObject per organization, plus `computer-slack-team:<teamId>` link objects. */
-  COMPUTERS?: DurableObjectNamespace;
   ACCOUNTS: DurableObjectNamespace;
   /** The platform Worker (service binding): owns the cloud credentials. */
   RUNTIMES?: Fetcher;
@@ -84,16 +83,10 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   TELEMETRY_COLLECTOR_URL?: string;
   /** The Worker version stamped on telemetry (version_metadata binding); absent: `dev`. */
   CF_VERSION_METADATA?: { id?: string };
-  /** Work 084: one SessionLogDurableObject per session (`getByName(cs_…)`): the API's copy of its event log. */
-  SESSION_LOG?: DurableObjectNamespace;
   /** The retired Work board's object, its knowledge repository setting read by Org once (org/work-index.ts); removed with its class. */
   WORK_INDEX?: DurableObjectNamespace;
-  /** Tracks and threads: Org and Slack, one per organization; Delivery, one per organization and kind. */
-  ORGS?: DurableObjectNamespace;
-  SLACK?: DurableObjectNamespace;
+  /** Delivery, one per organization and kind. */
   DELIVERY?: DurableObjectNamespace;
-  /** The opencomputer-live script's class (tracks and threads, spec 36.4), bound by script_name. */
-  LIVE?: DurableObjectNamespace;
   /** Work 084: the SessionLog's large payloads and sealed segments (`<org>/<session>/…`). */
   SESSION_LOG_BLOBS?: R2Bucket;
   /** Work 084: `h:<sha256(key)>` → the wire's key record, `k:<keyId>` → its hash; written by keys.ts, read by the wire Worker. */
@@ -134,7 +127,6 @@ export function selfManagedVms(env: ComputerEdgeEnv): boolean {
  */
 export function missingEdgeConfig(env: ComputerEdgeEnv): string[] {
   const missing: string[] = [];
-  if (!env.COMPUTERS) missing.push("COMPUTERS");
   if (!selfManagedVms(env)) {
     if (!env.RUNTIMES) missing.push("RUNTIMES");
     if (!env.COMPUTER_HOST_GATEWAY_URL) missing.push("COMPUTER_HOST_GATEWAY_URL");
