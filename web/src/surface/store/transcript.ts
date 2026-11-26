@@ -29,7 +29,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
     switch (e.type) {
       case 'message.received': {
         // Input the platform writes is not drawn as a message (R15).
-        if (e.actor?.via === 'platform') break
+        if (e.actor?.via === 'platform' || e.actor?.id === 'platform') break
         const text = withoutSlackHeader(str(d.input))
         const name = e.actor?.name
         if (!text) break

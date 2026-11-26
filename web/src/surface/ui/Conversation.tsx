@@ -28,11 +28,11 @@ function dayLabel(iso: string): string {
 
 // ---- asks ----
 
-type Question = { id: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean }
+type Question = { id: string; text: string; options: { label: string; description?: string }[]; multiSelect?: boolean }
 
 const questionsOf = (ask: Ask): Question[] => {
   const qs = (ask.question?.questions ?? []) as Partial<Question>[]
-  return qs.map((q, i) => ({ id: q.id ?? String(i), question: q.question ?? '', options: q.options ?? [], multiSelect: q.multiSelect }))
+  return qs.map((q, i) => ({ id: q.id ?? String(i), text: q.text ?? '', options: q.options ?? [], multiSelect: q.multiSelect }))
 }
 
 // What a closed ask shows in place of its buttons (R33).
@@ -93,7 +93,7 @@ function AskBlock({ ask }: { ask: Ask }) {
       <div className={open ? 'blk ask' : 'blk'} style={open ? undefined : INERT}>
         {qs.map((q, i) => (
           <div key={q.id} style={i ? { marginTop: 12 } : undefined}>
-            <Rich text={q.question} />
+            <Rich text={q.text} />
             {open && (
               <div className="acts">
                 {q.options.map((o) => (
