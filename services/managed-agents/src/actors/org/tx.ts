@@ -160,7 +160,7 @@ export function titleFrom(input: string): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line || "Untitled";
 }
 
-/** The oldest open ask's id: what `aside` is compared with (as `sessions-api.ts`). */
+/** The oldest open ask's id: what `aside` is compared with (as in `session-drain.ts`). */
 export function attentionRef(asks: readonly Ask[]): string | null {
   let oldest: Ask | null = null;
   for (const a of asks) if (a.status === "open" && (!oldest || a.createdAt < oldest.createdAt)) oldest = a;

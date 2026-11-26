@@ -87,7 +87,7 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   SESSION_LOG?: DurableObjectNamespace;
   /** The retired Work board's object, its knowledge repository setting read by Org once (org/work-index.ts); removed with its class. */
   WORK_INDEX?: DurableObjectNamespace;
-  /** Tracks and threads: Org and Slack, one per organization; Delivery, one per organization and kind. */
+  /** Tracks and threads: Org and Slack, one per organization. `DELIVERY` is unused: the Delivery actor is gone. */
   ORGS?: DurableObjectNamespace;
   SLACK?: DurableObjectNamespace;
   DELIVERY?: DurableObjectNamespace;

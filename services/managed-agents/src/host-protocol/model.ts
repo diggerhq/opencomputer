@@ -54,8 +54,7 @@ export interface ModelUsage {
   sevenDayReset?: number;
 }
 
-// ---------------------------------------------------------------- v5 (work 097)
-// Mirrors calvin src/protocol.ts at 5 (design C2). The gateway knows a profile by its name and
+// The model proxy (work 097): mirrors calvin src/protocol.ts (design C2). The gateway knows a profile by its name and
 // the harnesses it serves; everything else about it is the proxy's configuration.
 
 /** A profile as the proxy's hello lists it; the host forwards it unread. */

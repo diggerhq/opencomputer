@@ -406,7 +406,7 @@ export interface ModelAccessDeps {
   waitUntil(task: Promise<unknown>): void;
   /** A Slack user's display name, best effort. */
   slackUserName(userId: string): Promise<string | undefined>;
-  /** The connect-code routing record in the `computer-connect-codes:<x>` objects (connect-code-index.ts). */
+  /** The connect-code routing record in the `computer-connect-codes:<x>` objects (actors/connect-codes/codes.ts). */
   connectCodeIndex: { put(hash: string, expiresAt: number): Promise<void>; forget(hash: string): Promise<void> };
 }
 

@@ -1,8 +1,7 @@
 // The public API's shapes as the host protocol carries them: actors, errors, journals, deltas.
 
-// ---------------------------------------------------------------- v4 (work 084)
-// Mirrors calvin src/protocol-api.ts (gateway ⇄ host part). Bodies (`params`, `result`,
-// `event.data`) are the public API's shapes (api-types.ts); here they are opaque.
+// Work 084. Mirrors calvin src/protocol-api.ts (gateway ⇄ host part). Bodies (`params`, `result`,
+// `event.data`) are the public API's shapes (api-objects/objects.ts); here they are opaque.
 
 /** Who acted (API `Actor`). */
 export interface CalvinApiActor {

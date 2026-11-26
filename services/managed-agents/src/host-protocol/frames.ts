@@ -38,13 +38,13 @@ export type CalvinGatewayToHost =
       preview?: CalvinPreviewConfig;
       /** Work 084: the relay's edge key. Absent: the wire is off on this computer. */
       wire?: CalvinWireConfig;
-      /** Protocol 5: the route of a session whose own delivery carries none, by harness. */
+      /** The route of a session whose own delivery carries none, by harness. */
       models?: Partial<Record<CalvinHarness, ModelRoute>>;
     }
   /** Work 074: the previews config changed (tunnel provisioned, a port registered or released). Sent before the `previewed` it causes. */
   | { t: "previews"; preview: CalvinPreviewConfig }
   | { t: "people"; people: CalvinPerson[] }
-  /** Protocol 5: `models` replaces the whole map of the `welcome`. */
+  /** `models` replaces the whole map of the `welcome`. */
   | { t: "credentials"; credentials: CalvinHostCredentials; models?: Partial<Record<CalvinHarness, ModelRoute>> }
   | { t: "secrets"; sessionKey: string; secrets: SessionSecret[] }
   /** Work 077: a live session's model route changed. The host ignores sessions it does not run. */
@@ -73,7 +73,7 @@ export type CalvinGatewayToHost =
 export type CalvinHostToGateway =
   /** `features`: what this host can do; `model-proxy` (work 077) means subscription routes may go to it. */
   /** `journals` (work 084): every session journal on the host's disk, so the gateway sends `epoch` for the ones it is ahead on. */
-  /** `profiles` (protocol 5): the model proxy's, while the host is connected to it; a change re-sends the hello. */
+  /** `profiles` (work 097): the model proxy's, while the host is connected to it; a change re-sends the hello. */
   | {
       t: "hello";
       protocol: number;

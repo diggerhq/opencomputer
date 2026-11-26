@@ -9,7 +9,7 @@
 // - Writes run one at a time (`exclusive`): an append may await R2 before its transaction (data too big
 //   to hold inline, below), and the input gate opens across that await, so a second append must not
 //   interleave.
-// - `turns`, `asks` and `tools` (open calls) are derived incrementally on append by session-fold.ts;
+// - `turns`, `asks` and `tools` (open calls) are derived incrementally on append by fold.ts;
 //   reads are indexed, never a refold. Only an epoch bump that truncates stored events refolds the
 //   log (a computer lost mid-flush: rare).
 // - Event `data` over 8 KiB of JSON lives in R2 (`sessions/<org>/<session>/events/<epoch>-<seq>.json`),

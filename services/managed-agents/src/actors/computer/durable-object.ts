@@ -355,7 +355,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   /** Work 084: the organization's API keys as the wire knows them (keys.ts). */
   private readonly keys: ComputerKeys;
   private readonly apiTelemetry: ApiTelemetry;
-  /** Work 084: the session API, its rows and the host's v4 frames (sessions-api.ts). */
+  /** Work 084: the session API, its rows and the host's session frames (session-drain.ts). */
   private readonly api: ComputerSessionsApi;
   /** This object's storage as the shared actor module's `Sql` (durable/sql.ts). */
   private readonly store: Sql;
@@ -1749,7 +1749,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   // ------------------------------------------------------------------ session API (work 084)
 
-  /** One session API operation (api-http.ts resolved the caller); never throws for a refusal. */
+  /** One session API operation (http/api/dispatch.ts resolved the caller); never throws for a refusal. */
   async computerApi(accountId: string, caller: ApiRequest, op: ApiOp | SecretsApiOp): Promise<ApiReply> {
     this.bind(accountId);
     if (op.op === "secrets.session.put" || op.op === "secrets.session.list" || op.op === "secrets.session.delete") {
@@ -2327,7 +2327,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
           this.send({ t: "previewed", id: event.id, error: errorText(error) });
         }
         return;
-      // Work 084: the session API's frames (sessions-api.ts).
+      // Work 084: the session API's frames (session-drain.ts).
       case "journal":
       case "subagent-progress":
       case "api-result":
@@ -2530,7 +2530,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   /**
    * What a `welcome` or a `credentials` frame carries: the host's credentials
-   * and, at protocol 5, `models`, the route of a session whose delivery names
+   * and `models`, the route of a session whose delivery names
    * none. `credentials.resolved` on `t` (or its own emitter), with where the
    * model key came from.
    */

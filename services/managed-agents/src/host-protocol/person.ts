@@ -2,8 +2,7 @@
 
 export interface CalvinPerson {
   /**
-   * The member's Slack id. Work 084: an `opc`-only person has none; the gateway then sends
-   * `slackUserId: ""` to a v3 host (which never runs such a session) and omits it for v4.
+   * The member's Slack id. Work 084: an `opc`-only person has none (`""`).
    */
   slackUserId: string;
   /** Work 084: the member, `usr_…` (the API's Person.id, the wire's member). */
