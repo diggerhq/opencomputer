@@ -1,6 +1,6 @@
 # Calvin telemetry: Grafana
 
-Seven dashboards and the alert rules
+Operational and public dashboards, plus the alert rules,
 (work 054, "Dashboards and alerts"),
 generated from `dashboards.mjs`, `rules.mjs`, `sql.mjs` and
 `../thresholds.json`. Never edit the JSON by hand:
@@ -17,6 +17,37 @@ node telemetry/grafana/render.mjs --check   # CI: fails when stale or a threshol
 3. Import `dashboards/*.json` (Dashboards → Import); choose that data source for `$datasource`.
 4. Provision `alerting/rules.json` (file provisioning, or `POST /api/v1/provisioning/alert-rules` per rule) into a folder named `Calvin`.
 5. Contact points: a Slack channel of your choice (`#<alerts-channel>`) for every rule with `team=calvin`, and email in addition for rules labelled `email=true` (the absence rules: canary, host silent, gateway down, pipeline silent), since Slack is also the product's frontend.
+
+## Public latency dashboard
+
+`public-latency.mjs` generates `dashboards/public-latency.json`, an aggregate-only
+dashboard suitable for Grafana's externally shared dashboards. It has no
+variables, private dashboard links, or customer, machine, session or trace
+identifiers. Its fixed data source UID is `calvin-tinybird`; configure that
+data source before importing it.
+
+Import the dashboard, then use Share → Share externally to enable a public
+link. Share only this dashboard publicly: the operational dashboards contain
+identifiers and individual traces. Validate the public link without signing in.
+
+The dashboard refreshes every 30 seconds. Latency charts use six-hour UTC
+buckets and hide p95 below 20 measurements; the daily summary includes sample
+counts. First content excludes the opening placeholder but may include
+thinking or progress updates. Coverage refers to completed Slack turns, and
+the host chart counts reporting machines rather than the expected inventory.
+Alert rules and notification routing are provisioned separately.
+
+`public-collection.mjs` adds public views for Speed, Cold path, Models,
+Reliability, Machine health, Trace timings and Computer API. Machine labels
+are stable hashes; trace timings are aggregates, not individual waterfalls.
+Their public links live in `public-links.json`. The public directory and the
+navigation on every public dashboard are generated from that manifest.
+
+To publish a collection, import the public dashboards and enable external
+sharing on each, add their public URLs to the manifest, regenerate, then
+import the updated dashboards and `public-directory.json`. Verify the
+directory and each destination without signing in. Public sharing permissions
+are Grafana state and are not changed by the renderer.
 
 ## Computer API (work 084)
 

@@ -1,0 +1,672 @@
+{
+  "uid": "opencomputer-public-latency",
+  "title": "OpenComputer · Live response latency",
+  "description": "Aggregate response latency across reporting machines. Customer, machine and trace identities are excluded.",
+  "tags": [
+    "opencomputer",
+    "latency",
+    "public"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "editable": false,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ]
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Live response latency",
+      "url": "https://opencomputer.grafana.net/public-dashboards/04826d8266c44db095c5029bf7965421",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Speed",
+      "url": "https://opencomputer.grafana.net/public-dashboards/003d2946a46041659cce0e34278afc07",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Cold path",
+      "url": "https://opencomputer.grafana.net/public-dashboards/9820b7d2a0ff4cd4b8ba7c46ad634597",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Models and harnesses",
+      "url": "https://opencomputer.grafana.net/public-dashboards/c4f492431622456bae32b134ef784150",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Reliability",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8bfcbf94b711457b97b93260a39cf976",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Machine health",
+      "url": "https://opencomputer.grafana.net/public-dashboards/55b07db24aa241c4be0c196fbc4150f4",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Trace timings",
+      "url": "https://opencomputer.grafana.net/public-dashboards/834035649f5846b792b765e9d474d1ee",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Computer API",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8ee8e3892d2e49ada9f36fc29847bfc1",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Dashboard directory",
+      "url": "https://opencomputer.grafana.net/public-dashboards/3849ee69a9bc48289a3ae2bc7aec0ffc",
+      "type": "link",
+      "targetBlank": false
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to read this dashboard",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Live, aggregate Slack response timings across reporting machines. **First content** excludes the opening “Started” placeholder, but can include a thinking/progress update. It is not time to a finished answer. Refreshes every 30 seconds as telemetry arrives.\n\nCharts use six-hour UTC buckets; p95 appears only with **20+ measurements**. The current bucket and current day are partial. Missing measurements are shown in coverage, not counted as zero latency. Traffic and model mix can change."
+      }
+    },
+    {
+      "id": 2,
+      "title": "First content · median",
+      "description": "",
+      "type": "stat",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT if(count(first_content_ms) > 0, quantile(0.5)(first_content_ms), NULL) AS value FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "title": "First content · p95",
+      "description": "Selected time range; at least 20 measured turns.",
+      "type": "stat",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT if(count(first_content_ms) >= 20, quantile(0.95)(first_content_ms), NULL) AS value FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Measured responses",
+      "description": "",
+      "type": "stat",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT count(first_content_ms) AS value FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Response timing coverage",
+      "description": "Completed Slack turns with a first-content timestamp / all completed Slack turns. Silent, failed and incomplete turns are excluded.",
+      "type": "stat",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT if(count() > 0, count(first_content_ms) / count(), NULL) AS value FROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "First content · median and p95",
+      "description": "Completed Slack turns across reporting machines, in six-hour UTC buckets. Median needs one measurement; p95 needs at least 20. Gaps mean insufficient measurements. The latest bucket is partial.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time,\n  if(count(first_content_ms) > 0, quantile(0.5)(first_content_ms), NULL) AS median,\n  if(count(first_content_ms) >= 20, quantile(0.95)(first_content_ms), NULL) AS p95\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Recorded model first-token wait · median and p95",
+      "description": "Completed Slack turns across reporting machines, in six-hour UTC buckets. Median needs one measurement; p95 needs at least 20. Gaps mean insufficient measurements. The latest bucket is partial. This is the runner-recorded initial model wait; harness startup and model differences affect it.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time,\n  if(count(ttft_ms) > 0, quantile(0.5)(ttft_ms), NULL) AS median,\n  if(count(ttft_ms) >= 20, quantile(0.95)(ttft_ms), NULL) AS p95\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Platform overhead · median and p95",
+      "description": "Completed Slack turns across reporting machines, in six-hour UTC buckets. Median needs one measurement; p95 needs at least 20. Gaps mean insufficient measurements. The latest bucket is partial. Derived startup and output-delivery overhead; not the entire response time.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time,\n  if(count(overhead_ms) > 0, quantile(0.5)(overhead_ms), NULL) AS median,\n  if(count(overhead_ms) >= 20, quantile(0.95)(overhead_ms), NULL) AS p95\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "First content by startup path · median",
+      "description": "Six-hour buckets, split by startup path to help distinguish traffic-mix changes. Each point needs at least one measurement; small samples can vary widely.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time, path,\n  quantile(0.5)(first_content_ms) AS median\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) WHERE first_content_ms IS NOT NULL AND path IN ('warm', 'new', 'prewarmed', 'resume')\nGROUP BY time, path ORDER BY time, path"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 2,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Response timing coverage over time",
+      "description": "Coverage of first-content measurements among completed Slack turns. This does not measure coverage of the full machine inventory.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(sent_at, INTERVAL 6 HOUR) AS time,\n  count(first_content_ms) / count() AS coverage\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Machines reporting health",
+      "description": "Distinct machines sending health samples in each five-minute bucket. This is a reporting count, not the number of machines expected to be online. The current bucket is partial.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfInterval(occurred_at, INTERVAL 5 MINUTE) AS time,\n  uniqExact(host_id) AS machines\nFROM calvin_events WHERE $__timeFilter(occurred_at) AND event_name = 'host.sample' AND host_id != ''\nGROUP BY time ORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Daily response summary · UTC",
+      "description": "Milliseconds. Partial days reflect only the selected range. p95 requires 20 measurements.",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "calvin-tinybird"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "calvin-tinybird"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT toStartOfDay(sent_at) AS day,\n  count() AS completed_turns, count(first_content_ms) AS measured_turns,\n  if(count(first_content_ms) > 0, round(quantile(0.5)(first_content_ms)), NULL) AS median_ms,\n  if(count(first_content_ms) >= 20, round(quantile(0.95)(first_content_ms)), NULL) AS p95_ms\nFROM (SELECT * FROM turns WHERE $__timeFilter(sent_at) AND surface = 'slack' AND outcome = 'completed' AND NOT synthetic LIMIT 1 BY turn_id) GROUP BY day ORDER BY day"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

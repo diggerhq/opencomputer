@@ -1,0 +1,104 @@
+{
+  "uid": "opencomputer-public-directory",
+  "title": "OpenComputer · Dashboard directory",
+  "schemaVersion": 39,
+  "tags": [
+    "opencomputer",
+    "public"
+  ],
+  "timezone": "utc",
+  "editable": false,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "hidden": true
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Live response latency",
+      "url": "https://opencomputer.grafana.net/public-dashboards/04826d8266c44db095c5029bf7965421",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Speed",
+      "url": "https://opencomputer.grafana.net/public-dashboards/003d2946a46041659cce0e34278afc07",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Cold path",
+      "url": "https://opencomputer.grafana.net/public-dashboards/9820b7d2a0ff4cd4b8ba7c46ad634597",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Models and harnesses",
+      "url": "https://opencomputer.grafana.net/public-dashboards/c4f492431622456bae32b134ef784150",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Reliability",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8bfcbf94b711457b97b93260a39cf976",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Machine health",
+      "url": "https://opencomputer.grafana.net/public-dashboards/55b07db24aa241c4be0c196fbc4150f4",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Trace timings",
+      "url": "https://opencomputer.grafana.net/public-dashboards/834035649f5846b792b765e9d474d1ee",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Computer API",
+      "url": "https://opencomputer.grafana.net/public-dashboards/8ee8e3892d2e49ada9f36fc29847bfc1",
+      "type": "link",
+      "targetBlank": false
+    },
+    {
+      "title": "Dashboard directory",
+      "url": "https://opencomputer.grafana.net/public-dashboards/3849ee69a9bc48289a3ae2bc7aec0ffc",
+      "type": "link",
+      "targetBlank": false
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Dashboard directory",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 18
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "# OpenComputer dashboards\n\nLive dashboards — no login required. Refreshes every 30 seconds as telemetry arrives.\n\n- **[Live response latency](https://opencomputer.grafana.net/public-dashboards/04826d8266c44db095c5029bf7965421)** — Response median and p95, model waits, platform overhead and coverage.\n\n- **[Speed](https://opencomputer.grafana.net/public-dashboards/003d2946a46041659cce0e34278afc07)** — Acknowledgement, first output, first content, overhead and silence.\n\n- **[Cold path](https://opencomputer.grafana.net/public-dashboards/9820b7d2a0ff4cd4b8ba7c46ad634597)** — Workspace setup, runner launch and startup stages.\n\n- **[Models and harnesses](https://opencomputer.grafana.net/public-dashboards/c4f492431622456bae32b134ef784150)** — Model first-token waits, cache hit rates and sample counts.\n\n- **[Reliability](https://opencomputer.grafana.net/public-dashboards/8bfcbf94b711457b97b93260a39cf976)** — Turn outcomes, dispatch trouble, frontend errors and telemetry loss.\n\n- **[Machine health](https://opencomputer.grafana.net/public-dashboards/55b07db24aa241c4be0c196fbc4150f4)** — CPU, memory, disk and runner load across anonymized machines.\n\n- **[Trace timings](https://opencomputer.grafana.net/public-dashboards/834035649f5846b792b765e9d474d1ee)** — Aggregate event durations; individual traces remain private.\n\n- **[Computer API](https://opencomputer.grafana.net/public-dashboards/8ee8e3892d2e49ada9f36fc29847bfc1)** — API latency, response statuses and journal performance.\n\nAll views use UTC. Latency p95 needs at least 20 measurements per bucket. Public views exclude customer and individual trace identifiers; machine labels are anonymized."
+      }
+    }
+  ]
+}
