@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
 import { ComputerKeys } from "../src/computer/keys.js";
 import type { LogSummary } from "../src/api-objects/objects.js";
-import type { AppendResult } from "../src/computer/session-log-contract.js";
+import type { AppendResult } from "../src/actors/session-log/contract.js";
 import { ApiTelemetry, type EmitTelemetry, surfaceOfOrigin } from "../src/computer/telemetry/api.js";
 import { BATCH_MS, TelemetryBatch } from "../src/computer/telemetry/batch.js";
 import { gatewayTelemetry } from "../src/telemetry/gateway.js";

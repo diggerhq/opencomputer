@@ -2,9 +2,9 @@
 // `cs_` id (`SESSION_LOG.getByName(sessionId)`). The Computer DO is its only writer (journal
 // batches from the host, recovery); the routes read it directly. Implemented in session-log.ts.
 
-import type { EventsReset, Summary } from "../actor/contracts.js";
-import type { Principal } from "../auth/principal.js";
-import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "../api-objects/objects.js";
+import type { EventsReset, Summary } from "../../actor/contracts.js";
+import type { Principal } from "../../auth/principal.js";
+import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "../../api-objects/objects.js";
 
 export interface SessionLogIdentity {
   sessionId: string;

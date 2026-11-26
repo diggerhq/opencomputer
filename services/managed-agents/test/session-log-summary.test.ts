@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Actor } from "../src/api-objects/objects.js";
-import { SLOT_REFRESH_MS } from "../src/computer/session-log.js";
+import { SLOT_REFRESH_MS } from "../src/actors/session-log/durable-object.js";
 import { member, openLog, OWNER_ID } from "./session-log-kit.js";
 
 /** Tracks and threads, spec 35.2 and 40.3: the summary slot the log owes Org, and the occurrences that go with it. */

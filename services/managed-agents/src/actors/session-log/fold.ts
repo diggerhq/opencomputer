@@ -35,7 +35,7 @@ import type {
   TurnStatus,
   TurnSummary,
   TurnUsage,
-} from "../api-objects/objects.js";
+} from "../../api-objects/objects.js";
 
 export const TURN_ENDINGS = new Set(["turn.completed", "turn.failed", "turn.cancelled"]);
 export const ENDED_TURN_STATUSES = new Set<TurnStatus>(["completed", "failed", "cancelled"]);

@@ -19,7 +19,7 @@
 // - Ids only (org, cs_, turn, key id); never content, a key's secret or hash, or a ticket.
 // - The only state: when the current outage's first 503 went (a timestamp, not a counter).
 
-import type { AppendResult } from "../session-log-contract.js";
+import type { AppendResult } from "../../actors/session-log/contract.js";
 import type { EventName } from "../../telemetry/catalog.js";
 import type { EventFields, Telemetry } from "../../telemetry/emitter.js";
 

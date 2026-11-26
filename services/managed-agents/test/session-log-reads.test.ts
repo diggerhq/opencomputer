@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { cursor } from "../src/durable/cursor.js";
-import type { Blobs } from "../src/computer/session-log.js";
+import type { Blobs } from "../src/actors/session-log/durable-object.js";
 import { accessOf, agent, MATE_ID, member, openLog, OWNER_ID, platform } from "./session-log-kit.js";
 
 /** Tracks and threads, spec 36.2, 37.1, 40.4, 40.10: who may read a log, the events cursor and `reset`, the publish to Live. */

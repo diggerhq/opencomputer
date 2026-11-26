@@ -2,7 +2,7 @@ import { Validator, type Schema } from "@cfworker/json-schema";
 import { describe, expect, it } from "vitest";
 
 import type { Actor, ApiEvent } from "../src/api-objects/objects.js";
-import { addDecimal, foldEvents, publicTurn } from "../src/computer/session-fold.js";
+import { addDecimal, foldEvents, publicTurn } from "../src/actors/session-log/fold.js";
 import schema from "./fixtures/calvin/computer-api.v1.json" with { type: "json" };
 
 /** Work 084: the session log's pure fold, events → Turns, Asks and the LogSummary, checked against the schema. */

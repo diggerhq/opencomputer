@@ -5,7 +5,7 @@ import type { ApiEvent, LogSummary } from "../src/api-objects/objects.js";
 import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
 import { ComputerKeys } from "../src/computer/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/host-protocol/protocol.js";
-import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/computer/session-log-contract.js";
+import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/actors/session-log/contract.js";
 import {
   type ApiRequest,
   ComputerSessionsApi,

@@ -315,7 +315,7 @@ import {
   computerGrantedConnections,
   computerReachableConnections,
 } from "./computer-grants.js";
-import { SessionLogDurableObject } from "../computer/session-log.js";
+import { SessionLogDurableObject } from "../actors/session-log/durable-object.js";
 // Kept for the class that exists in production; removed with a deleted_classes migration (org/work-index.ts).
 import { WorkIndexDurableObject } from "../actors/org/work-index.js";
 import { OrgDurableObject } from "../actors/org/durable-object.js";

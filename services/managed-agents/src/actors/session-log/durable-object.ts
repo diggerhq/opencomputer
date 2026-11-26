@@ -22,24 +22,24 @@
 // - Every read takes the reader's principal, and `minSeq` answers `unavailable` at once when `ack` has
 //   not reached it. Nothing waits: a client follows over Live (spec 37.1).
 
-import { TelemetryBatch } from "./telemetry/batch.js";
-import { gatewayTelemetry, type TelemetryEnv } from "../telemetry/gateway.js";
+import { TelemetryBatch } from "../../computer/telemetry/batch.js";
+import { gatewayTelemetry, type TelemetryEnv } from "../../telemetry/gateway.js";
 import { DurableObject } from "cloudflare:workers";
 
-import { alarms } from "../durable/alarms.js";
-import { byOf, mayRead, type Access, type Principal } from "../auth/principal.js";
-import { computerOf, liveOf, orgOf, type ActorEnv } from "../actors/addresses.js";
-import { emitter } from "../telemetry/log-emitter.js";
-import { cursor } from "../durable/cursor.js";
-import { hashOf } from "../encoding/canonical-json.js";
-import { migrate } from "../durable/migrations.js";
-import { owed, OWED_PURPOSE } from "../durable/outbox.js";
-import { sqlOf, type Sql } from "../durable/sql.js";
-import { type AcceptResult, type ComputerRpcAdded, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type LiveRpc, type OrgRpc, type SessionLogRpcAdded, type Summary, type SummaryPub } from "../actor/contracts.js";
-import type { FoldSummary } from "./session-fold.js";
-import { decodeCursor, encodeCursor } from "../api-objects/list-cursor.js";
-import { crockfordId } from "../ids/crockford.js";
-import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "../api-objects/objects.js";
+import { alarms } from "../../durable/alarms.js";
+import { byOf, mayRead, type Access, type Principal } from "../../auth/principal.js";
+import { computerOf, liveOf, orgOf, type ActorEnv } from "../addresses.js";
+import { emitter } from "../../telemetry/log-emitter.js";
+import { cursor } from "../../durable/cursor.js";
+import { hashOf } from "../../encoding/canonical-json.js";
+import { migrate } from "../../durable/migrations.js";
+import { owed, OWED_PURPOSE } from "../../durable/outbox.js";
+import { sqlOf, type Sql } from "../../durable/sql.js";
+import { type AcceptResult, type ComputerRpcAdded, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type LiveRpc, type OrgRpc, type SessionLogRpcAdded, type Summary, type SummaryPub } from "../../actor/contracts.js";
+import type { FoldSummary } from "./fold.js";
+import { decodeCursor, encodeCursor } from "../../api-objects/list-cursor.js";
+import { crockfordId } from "../../ids/crockford.js";
+import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "../../api-objects/objects.js";
 import {
   applyEvent,
   foldEvents,
@@ -54,7 +54,7 @@ import {
   type OpenToolCall,
   type SubagentRecord,
   type TurnRecord,
-} from "./session-fold.js";
+} from "./fold.js";
 import {
   type AppendResult,
   type AppendStats,
@@ -77,7 +77,7 @@ import {
   type TurnResult,
   type TurnsPage,
   type TurnsQuery,
-} from "./session-log-contract.js";
+} from "./contract.js";
 
 export interface SessionLogEnv extends TelemetryEnv, ActorEnv {
   SESSION_LOG_BLOBS?: R2Bucket;

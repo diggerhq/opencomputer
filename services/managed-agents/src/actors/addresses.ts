@@ -1,6 +1,6 @@
 // How one actor reaches another (spec 17): a typed stub by name. The only place a binding is read.
 
-import type { SessionLogRpc } from "../computer/session-log-contract.js";
+import type { SessionLogRpc } from "./session-log/contract.js";
 import type { ComputerRpcAdded, LiveRpc, OrgRpc, SessionLogRpcAdded, SlackRpc } from "../actor/contracts.js";
 
 export interface ActorEnv {

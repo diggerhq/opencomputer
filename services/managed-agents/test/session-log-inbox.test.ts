@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_TURNS_MAX, INBOX_KEEP_MS, INBOX_MAX_WAITING } from "../src/computer/session-log.js";
+import { AGENT_TURNS_MAX, INBOX_KEEP_MS, INBOX_MAX_WAITING } from "../src/actors/session-log/durable-object.js";
 import { accessOf, agent, MACHINE, MATE_ID, member, openLog, OWNER_ID, platform } from "./session-log-kit.js";
 
 /** Tracks and threads, spec 36.2 and 40.2: the log's access, its inbox, and the drain it owes its machine. */

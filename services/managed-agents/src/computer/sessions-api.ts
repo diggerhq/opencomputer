@@ -42,7 +42,7 @@ import {
   personForMember,
   sessionKey,
 } from "../host-protocol/protocol.js";
-import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
+import type { AppendResult, EpochTail, SessionLogRpc } from "../actors/session-log/contract.js";
 import { isId, isMemberId } from "../ids/session-ids.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
