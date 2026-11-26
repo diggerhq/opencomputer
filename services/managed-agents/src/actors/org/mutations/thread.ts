@@ -3,24 +3,12 @@
 // change is `not_found`.
 
 import { byOf, type Principal } from "../../../auth/principal.js";
-import {
-  agentArranges,
-  isMember,
-  isOwnSession,
-  isPerson,
-  ownsSession,
-  ownsTrack,
-  holdsTrack,
-  parse,
-  readPlace,
-  readSession,
-  readTrack,
-  seesSession,
-  summaryOf,
-  type PlaceRec,
-  type SessionRec,
-  type Tx,
-} from "../tx.js";
+import { isPerson } from "../audience.js";
+import { parse } from "../parse-json.js";
+import { readPlace, readSession, readTrack, type PlaceRec, type SessionRec } from "../records.js";
+import { summaryOf } from "../summary.js";
+import type { Tx } from "../tx.js";
+import { agentArranges, isMember, isOwnSession, ownsSession, ownsTrack, holdsTrack, seesSession } from "../who-may.js";
 import { byFor, isSid, isStr, isTid, optStr } from "./args.js";
 import { Changes } from "./changes.js";
 import { markDone } from "./done.js";

@@ -6,7 +6,10 @@
 // reversal dissolves a track whose agent started threads (T8u), `threads: 'keep' | 'stop'` is the
 // choice; without it, `refused` `choose_threads`. The reversal is itself an op, named `undo`.
 
-import { isMember, parse, readSession, readTrack, type Tx } from "../tx.js";
+import { parse } from "../parse-json.js";
+import { readSession, readTrack } from "../records.js";
+import type { Tx } from "../tx.js";
+import { isMember } from "../who-may.js";
 import type { Principal } from "../../../auth/principal.js";
 import { byFor } from "./args.js";
 import { Changes, type OpFields, type OpInverse, type Table, type Values } from "./changes.js";

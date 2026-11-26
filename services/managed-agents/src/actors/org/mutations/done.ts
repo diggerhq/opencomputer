@@ -1,6 +1,7 @@
 // Marking a thread done, and accepting the open proposals a change answers.
 
-import type { PlaceRec, Tx } from "../tx.js";
+import type { PlaceRec } from "../records.js";
+import type { Tx } from "../tx.js";
 import type { Changes } from "./changes.js";
 
 /** The thread-done fields of spec 39 (`thread.done`), and the open `done` proposal on it accepted. */

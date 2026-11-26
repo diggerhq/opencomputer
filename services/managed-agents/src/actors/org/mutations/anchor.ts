@@ -1,6 +1,8 @@
 // The audience and anchors of the row an op or proposal names.
 
-import { readPlace, readSession, readTrack, summaryOf, type Tx } from "../tx.js";
+import { readPlace, readSession, readTrack } from "../records.js";
+import { summaryOf } from "../summary.js";
+import type { Tx } from "../tx.js";
 
 /** The audience and anchors of a row an op or proposal names: a session or a track. */
 export function anchorOf(tx: Tx, target: string): { audience: string; sessionId: string | null; trackId: string | null; owner: string; atSeq: number | null } | null {

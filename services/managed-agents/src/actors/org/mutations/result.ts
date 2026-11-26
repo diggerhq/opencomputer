@@ -3,7 +3,9 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
 // The review summary's schema: defined in the SDK (sdks/typescript/src/computer/review.ts), copied here by its `npm run schema`.
 import reviewSchema from "../review.v1.json" with { type: "json" };
-import { isOwnSession, readSession, type Tx } from "../tx.js";
+import { readSession } from "../records.js";
+import type { Tx } from "../tx.js";
+import { isOwnSession } from "../who-may.js";
 import type { Principal } from "../../../auth/principal.js";
 import { byFor, isSid, isStr, optStr } from "./args.js";
 import { applied, refuse, type MutationFn } from "./outcome.js";

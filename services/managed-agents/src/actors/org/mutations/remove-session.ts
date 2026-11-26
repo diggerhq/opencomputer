@@ -1,7 +1,8 @@
 // Removing a session and every row that names it.
 
 import { owed } from "../../../durable/outbox.js";
-import type { SessionRec, Tx } from "../tx.js";
+import type { SessionRec } from "../records.js";
+import type { Tx } from "../tx.js";
 
 /**
  * Remove a session and every row that names it (spec 39, `thread.delete`): its place, results and

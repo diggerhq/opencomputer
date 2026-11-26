@@ -1,7 +1,9 @@
 // A track's agent session, and the machine it runs on by default.
 
 import type { Origin } from "../../../api-objects/objects.js";
-import { emptySummary, type SessionRec, type Tx } from "../tx.js";
+import type { SessionRec } from "../records.js";
+import { emptySummary } from "../summary.js";
+import type { Tx } from "../tx.js";
 
 /** The organization's first machine: its id is the organization's (spec 34.1). */
 export const firstMachine = (tx: Tx): string => tx.sql.exec<{ org: string | null }>("SELECT org FROM meta WHERE k = 1")[0]?.org ?? "";

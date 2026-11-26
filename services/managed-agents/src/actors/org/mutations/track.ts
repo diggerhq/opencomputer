@@ -3,7 +3,12 @@
 
 import type { Principal } from "../../../auth/principal.js";
 import type { Origin } from "../../../api-objects/objects.js";
-import { isPerson, ownsSession, ownsTrack, holdsTrack, isOwnSession, parse, readSession, readTrack, seesTrack, summaryOf, type TrackRec, type Tx } from "../tx.js";
+import { isPerson } from "../audience.js";
+import { parse } from "../parse-json.js";
+import { readSession, readTrack, type TrackRec } from "../records.js";
+import { summaryOf } from "../summary.js";
+import type { Tx } from "../tx.js";
+import { ownsSession, ownsTrack, holdsTrack, isOwnSession, seesTrack } from "../who-may.js";
 import { byFor, isSid, isStr, isTid, optStr } from "./args.js";
 import { Changes } from "./changes.js";
 import { acceptOpenProposals, markDone } from "./done.js";
