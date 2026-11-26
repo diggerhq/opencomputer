@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { lazy, Suspense, useState, type ReactNode } from 'react'
 import type {
   Answer,
   Ask,
@@ -7,7 +7,6 @@ import type {
 } from '@opencomputer/sdk/computer'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
 import { askLine, type ThreadView, type TrackView } from '../store/views'
@@ -31,6 +30,10 @@ import {
 } from './bits'
 import { AgentMarkdown } from '@/managed-agents/AgentMarkdown'
 import { Conversation } from './Conversation'
+
+const DocEditor = lazy(() =>
+  import('./DocEditor').then((m) => ({ default: m.DocEditor })),
+)
 
 // A clickable row in the pane: quiet until hovered or focused.
 const ROW =
@@ -435,9 +438,11 @@ function Doc({ track }: { track: TrackView }) {
   const layout = useS((s) => s.layout[tid] ?? 'L1')
   // Unsaved text found here means the editor was left open.
   const [editing, setEditing] = useState(draft !== undefined)
-  // The revision the edit started from, so a save over a newer Doc is refused.
-  const [base, setBase] = useState(doc?.rev ?? 0)
-  const [clash, setClash] = useState(false)
+  // The Doc the edit started from: a save over a newer one is merged with it.
+  const [base, setBase] = useState({
+    rev: doc?.rev ?? 0,
+    text: doc?.text ?? '',
+  })
   const edits = track.proposals.filter((p) => p.type === 'edit')
 
   const proposals = edits.map((p) => (
@@ -466,27 +471,25 @@ function Doc({ track }: { track: TrackView }) {
 
   const text = draft ?? doc.text
   const start = (d: DocRow) => {
-    setBase(d.rev)
-    setClash(false)
+    setBase({ rev: d.rev, text: d.text })
     setEditing(true)
   }
   const close = () => {
     surface.setDraft(key, '')
-    setClash(false)
     setEditing(false)
   }
+  // The agent wrote to the Doc since the edit began: the save merges.
+  const moved = doc.rev !== base.rev
   const save = () => {
-    if (text === doc.text) return close()
-    // Shown at once; the editor comes back only if the server refuses.
+    if (text === base.text) return close()
+    // Shown at once; the editor comes back only if the save fails.
     setEditing(false)
-    setClash(false)
     surface.saveDoc(tid, text, base).then(
       () => {
         if (surface.get().drafts[key] === text) surface.setDraft(key, '')
       },
       () => {
         if (surface.get().drafts[key] === undefined) surface.setDraft(key, text)
-        setClash(true)
         setEditing(true)
       },
     )
@@ -535,37 +538,19 @@ function Doc({ track }: { track: TrackView }) {
       </div>
       {editing ? (
         <>
-          {clash && (
-            <div className="text-status-pending mb-2 flex items-center gap-2 text-[12.5px]">
-              The Doc changed while you were editing
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => {
-                  surface.setDraft(key, '')
-                  start(doc)
-                }}
-              >
-                Use theirs
-              </Button>
-            </div>
+          {moved && (
+            <p className="text-muted-foreground mb-2 max-w-180 text-[12.5px]">
+              The agent changed the Doc while you were editing. Saving keeps
+              both; where you both changed the same lines, yours are kept.
+            </p>
           )}
-          <Textarea
-            ref={focus}
-            className="bg-card min-h-0 w-full max-w-180 flex-1 resize-none px-3.5 py-3 font-mono text-[12.5px] leading-relaxed md:text-[12.5px]"
-            spellCheck={false}
-            aria-label="Doc"
-            data-draft={key}
-            value={text}
-            onChange={(e) => surface.setDraft(key, e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-                e.preventDefault()
-                save()
-              }
-              e.stopPropagation()
-            }}
-          />
+          <Suspense fallback={null}>
+            <DocEditor
+              value={text}
+              onChange={(v) => surface.setDraft(key, v)}
+              onSave={save}
+            />
+          </Suspense>
         </>
       ) : (
         <>

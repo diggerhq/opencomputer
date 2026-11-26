@@ -2,6 +2,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
   createClient,
   makeId,
+  Refused,
   type Answer,
   type ApiEvent,
   type Client,
@@ -21,6 +22,7 @@ import {
 } from '@opencomputer/sdk/computer'
 import type { Host, Location } from '../host'
 import { NOWHERE } from '../host'
+import { docSpans, mergeDoc } from './doc'
 import { overlay } from './overlay'
 import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
 import type { OpenBlock } from './transcript'
@@ -350,7 +352,7 @@ export function createSurface(o: SurfaceOptions) {
     'thread.place': 'Could not move it',
     'thread.rename': 'Could not rename it',
     'track.create': 'Could not make the track',
-    'doc.save': 'The Doc changed while you were editing',
+    'doc.save': 'Could not save the Doc',
     undo: 'Could not undo that',
   }
   const onFailure = (f: Failure) => {
@@ -358,6 +360,8 @@ export function createSurface(o: SurfaceOptions) {
     sync()
     const e = f.entry
     if (e.kind === 'mutation' && e.name === 'read.set') return
+    // saveDoc merges and saves again.
+    if (e.kind === 'mutation' && e.name === 'doc.save' && f.code === 'conflict') return
     const what =
       e.kind === 'mutation'
         ? (SAID[e.name] ?? 'That did not go through')
@@ -645,19 +649,47 @@ export function createSurface(o: SurfaceOptions) {
       if (open === tid) go({ ...NOWHERE, start: true })
       mutate('track.delete', { tid })
     },
-    saveDoc(tid: string, text: string, baseRev: number) {
-      const doc = get().rows.doc.get(tid)
-      // What the person changed is theirs; the agent does not rewrite it (S4).
-      const before = (doc?.text ?? '').split('\n')
-      const lines = text.split('\n')
-      const spans: { from: number; to: number; by: string }[] = []
-      lines.forEach((line, i) => {
-        if (before.includes(line)) return
-        const last = spans[spans.length - 1]
-        if (last && last.to === i) last.to = i + 1
-        else spans.push({ from: i, to: i + 1, by: me })
-      })
-      return mutate('doc.save', { tid, baseRev, text, spans }).settled
+    // `base` is the Doc the person started editing from. When the Doc moved
+    // meanwhile, the save is merged three ways and sent again (spec 22.3);
+    // overlapping lines keep the person's, and the track's agent is told.
+    async saveDoc(tid: string, text: string, base: { rev: number; text: string }): Promise<{ conflicts: number }> {
+      let from = base
+      let ours = text
+      let conflicts = 0
+      const onto = (theirs: { rev: number; text: string }) => {
+        if (theirs.rev === from.rev) return
+        const m = mergeDoc(from.text, ours, theirs.text)
+        ours = m.text
+        conflicts += m.conflicts
+        from = { rev: theirs.rev, text: theirs.text }
+      }
+      const now = get().rows.doc.get(tid)
+      if (now) onto(now)
+      for (let tries = 0; ; tries++) {
+        const row = get().rows.doc.get(tid)
+        const spans = docSpans(row, from.text, ours, me)
+        try {
+          await mutate('doc.save', { tid, baseRev: from.rev, text: ours, spans }).settled
+          break
+        } catch (e) {
+          const d = e instanceof Refused && e.code === 'conflict' ? (e.detail as { rev?: number; text?: string } | undefined) : undefined
+          if (tries >= 3 || typeof d?.rev !== 'number' || typeof d.text !== 'string') {
+            if (e instanceof Refused && e.code === 'conflict') toast({ text: 'The Doc kept changing while saving; your edit is still open', tone: 'error' })
+            throw e
+          }
+          onto({ rev: d.rev, text: d.text })
+        }
+      }
+      if (conflicts) {
+        const agent = get().rows.track.get(tid)?.agentSession
+        if (agent)
+          actions.send(
+              agent,
+              `I edited the Doc while you were changing it. Where we both changed the same lines (${conflicts === 1 ? 'one place' : `${conflicts} places`}), I kept mine.`,
+          )
+        toast({ text: 'Saved. Where you and the agent changed the same lines, yours were kept' })
+      }
+      return { conflicts }
     },
 
     // -- suggestions and undo --
