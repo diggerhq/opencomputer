@@ -345,6 +345,8 @@ export interface SlackGrant {
 export interface SlackRpc {
   /** Deduplicated, queued; the edge acknowledges Slack after it. */
   accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void>;
+  /** An interaction, answered while Slack waits: a modal's or its button's goes to Computer; any other is `accept`ed. */
+  interact(id: string, interaction: unknown): Promise<SlackModalReply>;
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
   /** Computer only. */
