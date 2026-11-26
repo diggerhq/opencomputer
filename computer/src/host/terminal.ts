@@ -98,7 +98,7 @@ export interface TerminalsOptions {
 }
 
 /** A terminal is a shell in the session's container: none while it is stopped, and opening one never starts it (work 103, C13). */
-export const sessionNotRunning = () => apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first.', 409, { reason: 'session_not_running' });
+export const sessionNotRunning = () => apiError('conflict', 'The session is not running, so it has no terminal. Resume the session first (sessions.resume, or send it a message), then open the terminal again.', 409, { reason: 'session_not_running' });
 
 interface Helper {
   proc: ChildProcess;
