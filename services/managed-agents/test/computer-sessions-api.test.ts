@@ -6,8 +6,8 @@ import { matchApiRoute, writeParams } from "../src/http/api/dispatch.js";
 import { ComputerKeys } from "../src/actors/computer/held-for-org/keys/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/host-protocol/protocol.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/actors/session-log/contract.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import {
-  type ApiRequest,
   ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
   RECOVER_AFTER_MS,

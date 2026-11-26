@@ -4,6 +4,7 @@
 import type { SessionSettings } from "../../api-objects/objects.js";
 import type { Access, Principal } from "../../auth/principal.js";
 import type { RoleSpec, SessionRow } from "../org/contract.js";
+import type { AssertedApiKey } from "../../edge/auth.js";
 
 // ------------------------------------------------------------------ Computer (36.3)
 
@@ -65,3 +66,39 @@ export interface SlackModalReply {
   errors?: Record<string, string>;
   view?: Record<string, unknown>;
 }
+
+// ------------------------------------------------------------------ the Computer's own routes (computerApi)
+
+/**
+ * A request to the Computer's own routes: who asks is the one principal (spec 34.3); the rest
+ * are facts of the request (the person's name and email, the key a ticket names).
+ */
+export interface ApiRequest {
+  principal: Principal;
+  name: string | null;
+  email: string | null;
+  client: string | null;
+  apiKey?: AssertedApiKey;
+  requestId: string;
+  userAgent?: string | null;
+}
+
+export type ApiOp =
+  | { op: "me" }
+  | { op: "ticket"; body: unknown };
+
+export interface ApiErrorReply {
+  code: string;
+  message: string;
+  retryable?: boolean;
+  [field: string]: unknown;
+}
+
+export interface ApiReply {
+  status: number;
+  body?: unknown;
+  error?: ApiErrorReply;
+}
+
+/** What the dashboard shows of a machine's state; Org's `MachineState`. */
+export type PublicComputerState = "provisioning" | "ready" | "parked" | "waking" | "failed" | "deleting";

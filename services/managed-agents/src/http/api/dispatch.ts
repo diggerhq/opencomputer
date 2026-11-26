@@ -21,7 +21,7 @@ import { crockfordId } from "../../ids/crockford.js";
 import { cursor } from "../../durable/cursor.js";
 import { hashOf } from "../../encoding/canonical-json.js";
 import { liveOf, logOf, orgOf, slackOf } from "../../actors/addresses.js";
-import type { CreateSession, ListQuery, MutateReply, OrgRpc, OrgSettings, SessionPatch, SessionRow, SettingsEntry } from "../../actors/org/contract.js";
+import { matchMutation, type CreateSession, type ListQuery, type MutateReply, type OrgRpc, type OrgSettings, type SessionPatch, type SessionRow, type SettingsEntry } from "../../actors/org/contract.js";
 import type { EntryError, InboxKind } from "../../actors/session-log/contract.js";
 import type { Refusal } from "../../durable/rpc-reply.js";
 import type { Principal } from "../../auth/principal.js";
@@ -30,12 +30,12 @@ import type { ApiScope, LogSummary } from "../../api-objects/objects.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "../../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "../../actors/computer/config.js";
 import { firstTurnId, isId, isSessionId } from "../../ids/session-ids.js";
-import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "../../actors/computer/session-drain.js";
+import type { ApiOp, ApiReply, ApiRequest } from "../../actors/computer/contract.js";
+import { validatePatch } from "./session-patch.js";
 import { type ComputerInstallation, selectTokenTarget } from "../../actors/computer/held-for-org/github.js";
 import type { GitHubTokenMint } from "../../protocol.js";
 import type { SecretsApiOp } from "../../actors/computer/held-for-org/secrets/secrets-store.js";
-import { repositoriesQuery, repositoryChoice } from "../../actors/org/repository.js";
-import { matchMutation } from "../../actors/org/mutations/table.js";
+import { repositoriesQuery, repositoryChoice } from "./repository-request.js";
 import { gatewayTelemetry } from "../../telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
@@ -1114,7 +1114,7 @@ async function patchSession(request: Request, env: ComputerEdgeEnv, p: Principal
   const parsed = await bodyOf(request);
   if ("error" in parsed) return out.error(...parsed.error);
   const patch = validatePatch(parsed.value);
-  if ("error" in patch) return out.of(patch.error);
+  if ("error" in patch) return out.error(...patch.error);
   const { title, archived, metadata, model, effort, mode, speed, access } = patch.value;
   const checked = checkSettings({ ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(mode !== undefined ? { mode } : {}) });
   if (!checked.ok) return out.error(400, checked.code, checked.message, { field: checked.field });

@@ -110,7 +110,8 @@ import { POOL_OBJECT, isPoolId } from "../../ids/computer-names.js";
 import { ComputerPool, type PoolClaim, type PoolProbeResult, type PoolSlot, type PoolSlotStatus, SLOT_PROBE_TIMEOUT_MS, poolSize } from "../computer-pool/pool.js";
 import { ComputerPreviews } from "./previews.js";
 import { ComputerKeys, type SyncedKey } from "./held-for-org/keys/keys.js";
-import { type ApiOp, type ApiRequest, type ApiReply, type ApiRow, ComputerSessionsApi } from "./session-drain.js";
+import { type ApiRow, ComputerSessionsApi } from "./session-drain.js";
+import type { ApiOp, ApiReply, ApiRequest } from "./contract.js";
 import type { PreviewComputerState } from "../../previews/worker.js";
 import {
   CALVIN_PROTOCOL_VERSION,

@@ -38,7 +38,7 @@ import { driversCommandText } from "../../copied/access.js";
 import { LOOKUP_FAILED_TEXT } from "../../../../slack-api/threads.js";
 import { type VariableCommand, VARIABLE_HELP, credentialHint, parseVariableCommand, showValue } from "./variables.js";
 import type { Principal } from "../../../../auth/principal.js";
-import type { ApiReply, ApiRequest } from "../../session-drain.js";
+import type { ApiReply, ApiRequest } from "../../contract.js";
 
 /** Slack's limit on a button's value, which carries the `!var` command for "Set it anyway". */
 const BUTTON_VALUE_MAX = 2000;

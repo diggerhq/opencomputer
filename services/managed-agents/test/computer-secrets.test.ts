@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/actors/computer/held-for-org/secrets/secrets.js";
 import { SecretsStore } from "../src/actors/computer/held-for-org/secrets/secrets-store.js";
 import type { Principal } from "../src/auth/principal.js";
-import type { ApiRequest } from "../src/actors/computer/session-drain.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import { credentialHint, parseVariableCommand } from "../src/actors/computer/held-for-org/secrets/variables.js";
 import { secretNameProblem } from "../src/actors/computer/held-for-org/secrets/secrets.js";
 import type { SlackResult } from "../src/slack-api/web-api.js";

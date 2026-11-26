@@ -6,6 +6,7 @@
 import type { ManagedAgentBillingService } from "../../edge/billing-admission.js";
 import { ZONES, standsIn, validSize, validZone } from "./machine/placement.js";
 import type { PreviewsEnv } from "./previews.js";
+import type { PublicComputerState } from "./contract.js";
 
 /** Preview URLs (work 074, previews.ts): off unless all of PreviewsEnv is set. */
 export interface ComputerEdgeEnv extends PreviewsEnv {
@@ -205,8 +206,6 @@ export function publicOrigin(env: ComputerEdgeEnv): string {
 export function slackRedirectUri(env: ComputerEdgeEnv): string {
   return `${publicOrigin(env)}/api/managed-agents/computer/slack/callback`;
 }
-
-export type PublicComputerState = "provisioning" | "ready" | "parked" | "waking" | "failed" | "deleting";
 
 /** The dashboard's `Computer` (work 052, API contract): no cloud, region, size or host names. */
 export interface PublicComputer {
