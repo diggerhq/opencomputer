@@ -76,6 +76,7 @@ function workRoute(method: string, s: string[]): Route | null {
       if (is("PUT", 3) && TRACK_MARKS[c!]) return m(TRACK_MARKS[c!]!, { tid: b! });
       if (is("DELETE", 3) && c === "done") return m("track.reopen", { tid: b! });
       if (is("POST", 3) && c === "dissolve") return m("track.dissolve", { tid: b! });
+      if (is("GET", 3) && c === "doc") return { op: "work.doc", sub: b! };
       if (method === "GET" && c === "doc" && d === "revisions" && (n === 4 || n === 5)) return { op: "work.doc.revisions", sub: b!, ...(n === 5 ? { args: { rev: s[4]! } } : {}) };
       return null;
     case "tell-track":
@@ -351,7 +352,7 @@ const OPS = new Set([
   "turns.send", "turns.list", "turns.get", "turns.cancel", "events.list",
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
-  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc.revisions", "work.review", "work.search",
+  "feed", "feed.mismatch", "occurrences", "mutate", "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */
@@ -451,7 +452,11 @@ async function routeApi(
   if (claimed !== null && claimed !== `${p.org}/${p.subject}`) {
     return out.error(403, "principal_mismatch", "x-oc-principal is not this credential's principal.");
   }
-  if (ACTOR_OPS.has(route.op)) return actorRoute(request, env, p, route, out);
+  if (ACTOR_OPS.has(route.op)) {
+    // `Session.owner`'s name and email: the credential's, for a person or their key.
+    const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
+    return actorRoute(request, env, p, person, route, out);
+  }
   // The Computer's own routes (secrets, tickets, repositories, compact/suspend/resume, turn cancel, subagent stop) keep today's caller and scopes.
   const caller = await callerOf(request, identity, out.requestId);
   if (!caller) return out.error(403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
@@ -582,7 +587,7 @@ const ACTOR_OPS = new Set([
   "turns.send", "asks.answer", "asks.dismiss", "sessions.interrupt",
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "feed.mismatch", "occurrences", "mutate",
-  "work.threads", "work.overview", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put",
+  "work.threads", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put",
   "live", "work.tell", "work.diff", "slack.post", "webhooks.list", "webhooks.put", "webhooks.delete",
 ]);
 
@@ -828,7 +833,7 @@ function withSummary(session: SessionRow, summary: LogSummary | null): SessionRo
 }
 
 /** A route of spec 37 served by the actors, as the principal. */
-async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, route: Route, out: Reply): Promise<Response> {
+async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, person: CreateSession["person"], route: Route, out: Reply): Promise<Response> {
   const scope = scopeOf(route.op);
   if (scope && !p.scopes.includes(scope)) {
     return out.error(403, "forbidden", `This key does not have the ${scope} scope.`, { reason: "missing_scope", scope });
@@ -859,6 +864,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     const made = await timedDo(out.facts, org().createSession(p, {
       ...create,
       ...(id ? { id } : {}),
+      ...(person ? { person } : {}),
       ...(p.kind === "agent" && p.session ? { parent: p.session } : {}),
     }));
     if (!made.ok) return refusalOf(out, made);
@@ -892,7 +898,7 @@ async function actorRoute(request: Request, env: ComputerEdgeEnv, p: Principal, 
     case "webhooks.delete":
       return webhooks(request, env, p, route, out);
   }
-  if (!route.sessionId) return orgRoute(request, env, p, route, query, idem, trace, org, out);
+  if (!route.sessionId) return orgRoute(request, env, p, person, route, query, idem, trace, org, out);
 
   const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "not_found", "No such session.");
@@ -1056,6 +1062,7 @@ async function orgRoute(
   request: Request,
   env: ComputerEdgeEnv,
   p: Principal,
+  person: CreateSession["person"],
   route: Route,
   query: URLSearchParams,
   idem: string | undefined,
@@ -1134,6 +1141,7 @@ async function orgRoute(
         args: { ...body, ...route.args },
         ...(client ? { client } : idem ? { idem } : {}),
         ...(trace ? { trace } : {}),
+        ...(person ? { person } : {}),
       }));
       return mutateReplyOf(out, r);
     }
@@ -1156,6 +1164,10 @@ async function orgRoute(
     }
     case "work.overview":
       return out.send(200, { protocol: PROTOCOL, ...(await timed(org().overview(p))) });
+    case "work.doc": {
+      const doc = await timed(org().doc(p, route.sub!));
+      return doc ? out.send(200, { protocol: PROTOCOL, doc }) : out.error(404, "not_found", "No such track.");
+    }
     case "work.doc.revisions": {
       const rev = route.args?.rev;
       const revisions = await timed(org().docRevisions(p, route.sub!, rev !== undefined ? Number(rev) : undefined));

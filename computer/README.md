@@ -588,7 +588,7 @@ src/
     format.ts         terminal-style tool titles and output tails
     agents.ts         the subagents panel
     attachments.ts    Slack uploads → model input
-    spawn.ts          the spawn_thread tool
+    spawn.ts          the start_thread tool
     threads.ts        the read_thread and post_thread tools
     preview.ts        the preview and unpreview tools: public URLs for a session's servers
     preview-socket.ts the socket that lets the host's preview proxy into a container's previewed ports

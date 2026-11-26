@@ -60,6 +60,10 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
+import { isSessionId } from "./session-ids.js";
+import type { ComputerRpcAdded, DrainResult, ExportedSession, ExportedSlackRow, SlackRpc, StartSpec } from "../actor/contracts.js";
+import type { Access, Principal } from "../actor/principal.js";
+import { liveOf, logOf, orgOf, slackOf } from "../actor/stubs.js";
 import { DurableObject } from "cloudflare:workers";
 
 import type { GitHubInstallation, GitHubTokenMint } from "../protocol.js";
@@ -115,6 +119,7 @@ import {
   CALVIN_API_PROTOCOL,
   CALVIN_MODEL_PROTOCOL,
   CALVIN_PROTOCOL_VERSION,
+  UPGRADE_REQUIRED,
   type CalvinGatewayToHost,
   type CalvinTraceContext,
   type CalvinGitHubToken,
@@ -183,7 +188,7 @@ import {
 import { createModelAccess } from "./model-access-impl.js";
 import { ConnectCodeIndex, connectCodeIndexName } from "./connect-code-index.js";
 import { ApiTelemetry, surfaceOfOrigin } from "./telemetry/api.js";
-import { computerApiEnabled, GATED_PROTOCOL } from "./api-gate.js";
+import { GATED_PROTOCOL } from "./api-gate.js";
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { type Acknowledgement, ComputerTelemetry, type HostAttachment } from "./telemetry/computer.js";
 import type { GatewayTelemetry } from "./telemetry/gateway.js";
@@ -383,7 +388,20 @@ const KNOWLEDGE_TIMEOUT_MS = 2_000;
 /** How often a delivery may re-read the organization's repositories (work 052). */
 const DEFINITION_RECHECK_MS = 60_000;
 
-type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover";
+type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "migrate";
+
+/** How soon a refused `Org.acceptMachine` is tried again. */
+const MACHINE_RETRY_MS = 30_000;
+/** How soon a failed `Org.adopt` or `Slack.import` is tried again. */
+const MIGRATE_RETRY_MS = 5 * 60_000;
+/** The settings the Slack actor imports (spec 43.1); the bot token is exported sealed. */
+const SLACK_SETTINGS = ["slackTeamId", "slackTeamName", "slackBotUserId", "slackBotToken", "slackInstallerUserId"];
+/** The tables the Slack actor imports whole. */
+const SLACK_TABLES = ["slack_messages", "slack_queue", "install_nonces", "people", "join_requests", "notices", "billing_warnings", "session_context", "access_requests"];
+
+function count(sql: SqlStorage, query: string): number {
+  return [...sql.exec<{ n: number }>(query)][0]?.n ?? 0;
+}
 
 /** How soon an upsize that is waiting (host not connected yet, a session working) looks again. */
 export const SIZE_RECHECK_MS = 60_000;
@@ -400,7 +418,16 @@ export const ASSIGN_ACK_MS = 3 * 60_000;
 /** How often an organization's object reminds the pool to look at itself. */
 const POOL_KICK_INTERVAL_MS = 5 * 60_000;
 
-export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
+export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implements ComputerRpcAdded {
+  /** The other actors of tracks and threads (actor/stubs.ts); fields, so a test puts its own. */
+  actors = {
+    log: (sessionId: string) => logOf(this.env, sessionId),
+    org: () => orgOf(this.env, this.accountId()),
+    slack: () => slackOf(this.env, this.accountId()),
+    live: () => liveOf(this.env, this.accountId()),
+  };
+  /** The Slack actor's credentials for the host (`forHost`), in memory only. */
+  private slackHost: { botToken: string; botUserId: string; teamId: string } | null = null;
   private readonly lifecycle: ComputerLifecycle;
   private readonly secrets: SecretsStore;
   /**
@@ -682,6 +709,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       put: (key, value) => this.put(key, value),
       remove: (key) => this.remove(key),
       telemetry: this.apiTelemetry,
+      log: (sessionId) => this.actors.log(sessionId),
+      live: () => this.actors.live(),
+      chooseHarness: (row, harness) => this.chooseHarness(row.key, row.ownerId ?? row.ownerUserId ?? "", harness),
+      slackOfMember: (member) => this.access.agents.view(member).linkedSlackUser?.id,
+      transaction: (fn) => ctx.storage.transactionSync(fn),
     });
     // The Work API's stamp (work tracking 3.10): after the sessions table has the API's columns.
     workStampSetup(sql);
@@ -807,7 +839,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   /** Work 084 rollout gate: whether this organization's host is spoken to at v4 (api-gate.ts). */
   private apiEnabled(): boolean {
-    return computerApiEnabled(this.env.COMPUTER_API_ORGS, this.setting("accountId"));
+    return true;
   }
 
   /**
@@ -893,6 +925,267 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
 
   // ------------------------------------------------------------------ alarms
 
+  // ------------------------------------------------------------------ tracks and threads (spec 36.3)
+
+  async start(spec: StartSpec): Promise<void> {
+    this.bind(spec.session.machine);
+    await this.api.start(spec);
+    this.ctx.waitUntil(this.publishMachine());
+  }
+
+  async stop(sessionId: string): Promise<void> {
+    await this.api.stop(sessionId);
+  }
+
+  async drain(sessionId: string, opts: { wait: boolean }): Promise<DrainResult> {
+    return this.api.drain(sessionId, opts);
+  }
+
+  async watch(sessionId: string, until: number): Promise<void> {
+    this.api.watch(sessionId, until);
+  }
+
+  async block(sessionId: string, blockId: string): Promise<void> {
+    this.api.block(sessionId, blockId);
+  }
+
+  async setAccess(sessionId: string, access: Access, admins: string[]): Promise<void> {
+    this.api.setAccess(sessionId, access, admins);
+  }
+
+  async changed(source: "org" | "slack"): Promise<void> {
+    // An organization whose first act is the Slack install: this object is named by its id and not bound yet.
+    const named = this.ctx.id.name;
+    if (!this.setting("accountId") && named && !named.startsWith("computer-")) this.bind(named);
+    if (!this.setting("accountId")) return;
+    await (source === "org" ? this.readOrg() : this.readSlack(true));
+  }
+
+  async exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }> {
+    return this.api.exportSessions(after, limit);
+  }
+
+  /** Org's part of what the host holds: each session's access, the admins, the knowledge repository. Never throws. */
+  private async readOrg(): Promise<void> {
+    try {
+      const got = await this.actors.org().forHost(this.accountId());
+      const before = this.setting("knowledge") ?? "";
+      this.put("knowledge", got.knowledge ?? "");
+      this.put("knowledgeOrg", "1");
+      for (const session of got.sessions) this.api.setAccess(session.sessionId, session.access, got.admins);
+      if ((got.knowledge ?? "") !== before) await this.refreshDefinition();
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.org_read_failed", message: errorText(error) }));
+    }
+  }
+
+  /** The Slack actor's part: people and the bot's credentials (kept in memory, never stored here). Never throws. */
+  private async readSlack(changed = false): Promise<void> {
+    try {
+      const got = await this.actors.slack().forHost();
+      this.slackHost = got.slack;
+      await this.slackChanged(got.slack, changed);
+      if (!this.socket()) return;
+      if (got.people.length) this.send({ t: "people", people: got.people });
+      if (got.slack) this.send({ t: "credentials", ...(await this.hostCredentials()) });
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.slack_read_failed", message: errorText(error) }));
+    }
+  }
+
+  /**
+   * The Slack actor said its link changed. Linked: the machine starts (installing Slack is the moment someone
+   * means to use it) and the installer's model access moves from their dashboard id to their Slack id;
+   * unlinked: it moves back. `slackLinked` is the link this Computer last saw, so each happens once.
+   */
+  private async slackChanged(slack: Awaited<ReturnType<SlackRpc["forHost"]>>["slack"], start: boolean): Promise<void> {
+    const before = this.setting("slackLinked");
+    this.put("slackSeen", "1");
+    if (slack) {
+      // What the dashboard's overview shows of the link.
+      this.put("slackBotSeen", slack.botUserId);
+      this.put("slackNameSeen", slack.teamName ?? "");
+      const installer = slack.installer;
+      if (before !== slack.teamId) {
+        this.put("slackLinked", slack.teamId);
+        if (installer?.member) await this.access.agents.rekey(installer.member, installer.slackUser);
+        if (installer) this.put("slackLinkedInstaller", installer.slackUser);
+        else this.remove("slackLinkedInstaller");
+      }
+      if (start) await this.ensureComputerOnInstall(this.accountId());
+    } else if (before) {
+      await this.access.agents.unrekey(this.setting("slackLinkedInstaller"));
+      this.remove("slackLinked", "slackLinkedInstaller", "slackBotSeen", "slackNameSeen");
+    }
+  }
+
+  /**
+   * The machine's slot in Org (spec 36.3): its lifecycle state and previews, under a revision that moves when
+   * either changes. A refused or failed call is retried from the alarm table. Never throws.
+   */
+  private async publishMachine(): Promise<void> {
+    try {
+      const machine = this.setting("accountId");
+      const view = this.lifecycle.view();
+      if (!machine || isPoolId(machine) || !view) return;
+      const domain = this.previews.config()?.domain;
+      const previews = domain
+        ? [...this.ctx.storage.sql.exec<{ name: string; sessionId: string }>(
+            "SELECT p.name AS name, s.session_id AS sessionId FROM previews p JOIN sessions s ON s.runner_key = p.session WHERE s.session_id IS NOT NULL ORDER BY p.name",
+          )].map((row) => ({ sessionId: row.sessionId, name: row.name, url: `https://${row.name}.${domain}` }))
+        : [];
+      const body = JSON.stringify({ state: view.state, previews });
+      if (body === this.setting("machineSent")) return;
+      if (body !== this.setting("machineBody")) {
+        this.put("machineBody", body);
+        this.put("machineRevision", String(Number(this.setting("machineRevision") ?? 0) + 1));
+      }
+      const newestCreatedAt = [...this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MAX(created_at) AS at FROM sessions")][0]?.at ?? 0;
+      try {
+        await this.actors.org().acceptMachine({ machine, revision: Number(this.setting("machineRevision")), state: view.state, previews, newestCreatedAt });
+        this.put("machineSent", body);
+      } catch (error) {
+        console.warn(JSON.stringify({ level: "warn", event: "computer.machine_publish_failed", message: errorText(error) }));
+        await this.schedule("machine", Date.now() + MACHINE_RETRY_MS);
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.machine_publish_failed", message: errorText(error) }));
+    }
+  }
+
+  /** Spec 43.1, owed once each: Org adopts this Computer's sessions, the Slack actor imports its Slack state. */
+  private async migrate(): Promise<void> {
+    const machine = this.setting("accountId");
+    if (!machine || isPoolId(machine)) return;
+    try {
+      if (!this.setting("adopted")) {
+        await this.actors.org().adopt();
+        this.put("adopted", String(Date.now()));
+      }
+      if (!this.setting("imported")) {
+        await this.actors.slack().import();
+        this.put("imported", String(Date.now()));
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.migrate_failed", message: errorText(error) }));
+      await this.schedule("migrate", Date.now() + MIGRATE_RETRY_MS);
+    }
+  }
+
+  /**
+   * The Slack actor's commands that are this Computer's: `!secret`, `!var`, `!claude`, `!codex` and a
+   * connection grant. The existing handlers answer in Slack themselves (ephemerals, modals): `reply` is empty.
+   */
+  async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string; member?: string }> {
+    this.bind(p.org);
+    if (!p.subject.startsWith("slack:")) return { reply: "This command works from Slack." };
+    const userId = p.subject.slice(p.subject.lastIndexOf(":") + 1);
+    const row = c.sessionId
+      ? [...this.ctx.storage.sql.exec<{ key: string; channelId: string; threadTs: string; ownerId: string | null }>(
+          "SELECT runner_key AS key, channel_id AS channelId, thread_ts AS threadTs, owner_id AS ownerId FROM sessions WHERE session_id = ?",
+          c.sessionId,
+        )][0]
+      : undefined;
+    // Where the handlers answer: the command's channel, the session's thread, else the person (a direct message).
+    const channelId = c.channelId ?? (row?.channelId || userId);
+    const threadTs = c.threadTs ?? (row?.threadTs || undefined);
+    const here = { userId, channelId, ...(threadTs ? { threadTs } : {}) };
+    const ctx = { ...here, ...(row?.ownerId ? { session: { key: row.key, ownerId: row.ownerId } } : {}) };
+    if (c.name === "grant") {
+      if (c.triggerId) await this.connections.open(c.args, c.triggerId, here);
+      return { reply: "" };
+    }
+    const text = `!${c.name} ${c.args}`.trim();
+    const slack = this.access.slack;
+    if (c.name === "secret") {
+      const command = parseSecretCommand(text);
+      if (command) await this.secrets.command(command, ctx);
+    } else if (c.name === "var") {
+      const command = parseVariableCommand(text);
+      if (command) await this.secrets.variableCommand(command, ctx, text);
+    } else if (c.name === "link") {
+      const command = parseLinkCommand(text);
+      if (command && slack) await slack.link.command(command, here);
+      const member = this.access.agents.linkOfSlack(userId);
+      return { reply: "", ...(member ? { member } : {}) };
+    } else if (c.name === "claude") {
+      const command = parseClaudeCommand(text);
+      if (command && slack) await slack.claude.command(command, ctx);
+    } else {
+      const command = parseCodexCommand(text);
+      if (command && slack) await slack.codex.command(command, ctx);
+    }
+    return { reply: "" };
+  }
+
+  /**
+   * Spec 43.1: what the Slack actor imports, a page at a time under one cursor `<stage>:<offset>`: the Slack
+   * settings (the bot token sealed, as stored), the linked people, each Slack thread's session, the pending
+   * dispatches as inbox entries, then the Slack tables' rows.
+   */
+  async exportSlack(after: string | null, limit: number): Promise<{ rows: ExportedSlackRow[]; next: string | null }> {
+    const sql = this.ctx.storage.sql;
+    const n = Math.max(1, Math.min(Number.isInteger(limit) ? limit : 200, 500));
+    let [stage, offset] = (after ?? "0:0").split(":").map(Number) as [number, number];
+    const rows: ExportedSlackRow[] = [];
+    const teamId = this.setting("slackTeamId") ?? "";
+    const stages: Array<(offset: number, limit: number) => ExportedSlackRow[]> = [
+      (o, l) =>
+        SLACK_SETTINGS.slice(o, o + l).flatMap((key) => {
+          const value = this.setting(key);
+          return value === undefined ? [] : [{ type: "setting" as const, key, value }];
+        }),
+      (o, l) =>
+        [...sql.exec<{ id: string }>("SELECT slack_user_id AS id FROM people ORDER BY slack_user_id LIMIT ? OFFSET ?", l, o)].flatMap((row) => {
+          const member = this.access.agents.linkOfSlack(row.id);
+          return member ? [{ type: "link" as const, slackUser: row.id, member }] : [];
+        }),
+      (o, l) =>
+        [...sql.exec<{ key: string; sessionId: string }>(
+          "SELECT runner_key AS key, session_id AS sessionId FROM sessions WHERE origin_type = 'slack' AND session_id IS NOT NULL ORDER BY runner_key LIMIT ? OFFSET ?", l, o,
+        )].map((row) => ({ type: "thread" as const, key: row.key, sessionId: row.sessionId })),
+      (o, l) =>
+        [...sql.exec<{ id: string; payload: string; sessionId: string }>(
+          `SELECT d.id AS id, d.payload AS payload, s.session_id AS sessionId FROM dispatches d JOIN sessions s ON s.runner_key = d.runner_key
+           WHERE d.state IN ('pending', 'sent') AND s.session_id IS NOT NULL ORDER BY d.created_at, d.id LIMIT ? OFFSET ?`, l, o,
+        )].flatMap((row) => {
+          try {
+            const d = JSON.parse(row.payload) as { text?: unknown; userId?: unknown };
+            if (typeof d.text !== "string" || typeof d.userId !== "string") return [];
+            return [{ type: "dispatch" as const, sessionId: row.sessionId, entry: { id: row.id, kind: "turn" as const, body: { input: d.text }, by: `user:slack:${teamId}:${d.userId}` } }];
+          } catch {
+            return [];
+          }
+        }),
+      ...SLACK_TABLES.map((table) => (o: number, l: number): ExportedSlackRow[] =>
+        [...sql.exec(`SELECT * FROM ${table} ORDER BY rowid LIMIT ? OFFSET ?`, l, o)].map((row) => ({
+          type: "row" as const,
+          table,
+          // A queue row this object was running is the Slack actor's to run: it arrives waiting, not held by a drain that is not there.
+          row: (table === "slack_queue" && row.state === "running" ? { ...row, state: "pending", started_at: null } : row) as Record<string, unknown>,
+        })),
+      ),
+    ];
+    // A stage's page is counted by what it read, not by what it yielded (a person with no link yields nothing).
+    const sizes: Array<() => number> = [
+      () => SLACK_SETTINGS.length,
+      () => count(sql, "SELECT COUNT(*) AS n FROM people"),
+      () => count(sql, "SELECT COUNT(*) AS n FROM sessions WHERE origin_type = 'slack' AND session_id IS NOT NULL"),
+      () => count(sql, "SELECT COUNT(*) AS n FROM dispatches d JOIN sessions s ON s.runner_key = d.runner_key WHERE d.state IN ('pending', 'sent') AND s.session_id IS NOT NULL"),
+      ...SLACK_TABLES.map((table) => () => count(sql, `SELECT COUNT(*) AS n FROM ${table}`)),
+    ];
+    let room = n;
+    while (stage < stages.length && room > 0) {
+      const left = sizes[stage]!() - offset;
+      const take = Math.min(room, Math.max(left, 0));
+      if (take > 0) rows.push(...stages[stage]!(offset, take));
+      room -= take;
+      if (take >= left) (stage += 1), (offset = 0);
+      else offset += take;
+    }
+    return { rows, next: stage < stages.length ? `${stage}:${offset}` : null };
+  }
+
   /** A store's `schedule(at)` for one alarm purpose: `at` arms it, null disarms it. */
   private purposeScheduler(purpose: AlarmPurpose): (at: number | null) => Promise<void> {
     return async (at) => {
@@ -937,7 +1230,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         this.wakeDrain?.();
         await this.scheduleSlack(now + SLACK_STRANDED_MS).catch(failed("slack"));
       } else {
-        await this.drain().catch(failed("slack"));
+        await this.drainSlack().catch(failed("slack"));
       }
     }
     for (const purpose of due) {
@@ -946,6 +1239,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
           const before = this.lifecycle.row()?.state;
           await this.lifecycle.tick();
           this.noteUnpaidPark(before);
+          // A wake that failed for good (spec 36.3): the waiting entries are reported, not kept.
+          if (this.lifecycle.row()?.state === "failed" && this.api.owes()) await this.api.wakeFailed();
         }
         else if (purpose === "idle") await this.idleCheck();
         else if (purpose === "pool") {
@@ -955,6 +1250,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         else if (purpose === "model") await this.access.models.expire();
         else if (purpose === "agent") await this.access.agents.expire();
         else if (purpose === "recover") await this.api.recoverTick();
+        else if (purpose === "migrate") await this.migrate();
       } catch (error) {
         failed(purpose)(error);
       }
@@ -962,6 +1258,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     // Periodic, idempotent and unordered against the queue: after it, off the alarm's path.
     if (due.includes("billing")) this.ctx.waitUntil(this.billingTick().catch(failed("billing")));
     if (due.includes("size")) this.ctx.waitUntil(this.reconcileSize().catch(failed("size")));
+    // Tracks and threads: Org hears a changed state or preview list; the first alarm owes the adoption (spec 43.1).
+    this.ctx.waitUntil(this.publishMachine());
+    if (!due.includes("migrate") && !(this.setting("adopted") && this.setting("imported"))) this.ctx.waitUntil(this.migrate().catch(failed("migrate")));
     // A ready computer is always being watched for idleness (pool computers never park).
     const row = this.lifecycle.row();
     if (row?.state === "ready" && !isPoolId(row.organizationId) && !selfManagedVms(this.env) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
@@ -1205,13 +1504,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
   async overview(accountId: string, userId?: string): Promise<ComputerOverview> {
     this.bind(accountId);
     this.kickPool();
-    const teamId = this.setting("slackTeamId");
-    const teamName = this.setting("slackTeamName");
-    const botUserId = this.setting("slackBotUserId");
+    // The link is the Slack actor's: what it last told this object, or this object's own until it has.
+    const seen = this.setting("slackSeen");
+    const teamId = seen ? this.setting("slackLinked") : this.setting("slackBotToken") ? this.setting("slackTeamId") : undefined;
+    const teamName = seen ? this.setting("slackNameSeen") : this.setting("slackTeamName");
+    const botUserId = seen ? this.setting("slackBotSeen") : this.setting("slackBotUserId");
     return {
       computer: this.lifecycle.view(),
       slack:
-        teamId && this.setting("slackBotToken")
+        teamId
           ? { installed: true, teamId, ...(teamName ? { teamName } : {}), ...(botUserId ? { botUserId } : {}) }
           : { installed: false },
       plan: await this.plan(),
@@ -1350,7 +1651,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * when the session is not live here, so the key reaches only grants for everyone.
    */
   async grantAudience(sessionKey: string): Promise<{ sessionKey: string; ownerId: string } | null> {
-    const key = this.liveSessionKey(sessionKey);
+    // A key of tracks and threads is minted for the session's `cs_…` id: its runner's key is the row's.
+    const runner = isSessionId(sessionKey)
+      ? [...this.ctx.storage.sql.exec<{ key: string }>("SELECT runner_key AS key FROM sessions WHERE session_id = ?", sessionKey)][0]?.key
+      : sessionKey;
+    const key = this.liveSessionKey(runner);
     const ownerId = key ? this.runnerSession(key)?.ownerId : undefined;
     return key && ownerId ? { sessionKey: key, ownerId } : null;
   }
@@ -2058,7 +2363,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       Date.now() + SLACK_FALLBACK_MS,
     );
     this.inlineRows.add(sequence);
-    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
+    this.ctx.waitUntil(this.drainSlack().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
     await this.armAlarm();
     return { accepted: true };
   }
@@ -2077,7 +2382,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       "INSERT INTO alarms (purpose, at) VALUES ('slack', ?) ON CONFLICT(purpose) DO UPDATE SET at = MIN(at, excluded.at)",
       Date.now() + SLACK_FALLBACK_MS,
     );
-    this.ctx.waitUntil(this.drain().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
+    this.ctx.waitUntil(this.drainSlack().catch((error) => console.error(JSON.stringify({ level: "error", event: "computer.slack_drain_failed", message: errorText(error) }))));
     this.ctx.waitUntil(this.armAlarm());
   }
 
@@ -2145,7 +2450,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * new thread's row starts its chain at once, not when a running chain
    * ends).
    */
-  private drain(): Promise<void> {
+  private drainSlack(): Promise<void> {
     if (this.draining) {
       this.wakeDrain?.();
       return this.draining;
@@ -3160,7 +3465,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         try {
           const result =
             event.kind === "opencomputer"
-              ? await mintOpenComputerKey(this.env, this.accountId(), this.liveSessionKey(event.sessionKey))
+              ? await mintOpenComputerKey(this.env, this.accountId(), this.keySession(event.sessionKey))
               : event.kind === "automation-repo"
                 ? await this.automationPushCredential()
                 : await this.mintToken(event.repos);
@@ -3231,6 +3536,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         try {
           const result = event.t === "preview" ? await this.previews.register(event.from, event.req) : await this.previews.unregister(event.req.name);
           this.send({ t: "previewed", id: event.id, result });
+          this.ctx.waitUntil(this.publishMachine());
         } catch (error) {
           this.send({ t: "previewed", id: event.id, error: errorText(error) });
         }
@@ -3241,6 +3547,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       case "api-result":
       case "started":
       case "wake":
+      case "delta":
         await this.api.onHostFrame(event);
         return;
       default:
@@ -3259,9 +3566,16 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     // No host, no working session: stop billing now.
     this.billing.closeAll("host_disconnected", Date.now());
     await this.scheduleBilling();
+    this.ctx.waitUntil(this.publishMachine());
   }
 
   private async hello(ws: WebSocket, event: Extract<CalvinHostToGateway, { t: "hello" }>): Promise<void> {
+    // Protocol 6 (tracks and threads): one number on both sides; a host that says less upgrades first.
+    if (!(typeof event.protocol === "number" && event.protocol >= CALVIN_PROTOCOL_VERSION)) {
+      console.warn(JSON.stringify({ level: "warn", event: "computer.host_upgrade_required", hostId: event.hostId, version: event.version, protocol: event.protocol }));
+      ws.close(UPGRADE_REQUIRED, "upgrade required");
+      return;
+    }
     // A reconnect replaces the host's old socket, which may be half-open.
     const previous = this.telemetry.previousConnection(ws, this.ctx.getWebSockets());
     for (const socket of this.ctx.getWebSockets()) if (socket !== ws) socket.close(4001, "replaced");
@@ -3329,6 +3643,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
     if (this.previews.config()) this.ctx.waitUntil(this.previews.ensureTunnel().then(() => this.keys.rewriteAll()));
     // Work 084: the relay's access lists, and a look for writers lost while the host was away.
     this.api.onHello(event.journals);
+    // Tracks and threads: Org's access lists and knowledge repository, the Slack actor's people and credentials.
+    this.ctx.waitUntil(this.readOrg());
+    this.ctx.waitUntil(this.readSlack());
+    this.ctx.waitUntil(this.publishMachine());
+    if (!(this.setting("adopted") && this.setting("imported"))) this.ctx.waitUntil(this.migrate().catch(() => undefined));
     this.ctx.storage.sql.exec("UPDATE dispatches SET state = 'pending' WHERE state = 'sent'");
     // The host starts over: what it reports working now is billed from now;
     // whatever the previous socket left open ends here.
@@ -3426,7 +3745,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
       sessionUrl: slackThreadUrl(session.teamId, session.channelId, session.threadTs),
     });
     console.log(JSON.stringify({ level: "info", event: "computer.thread_posted" }));
-    return posted;
+    return { ts: posted.ts, url: posted.url };
   }
 
   /**
@@ -3595,10 +3914,11 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
         const { key, source } = await this.organizationModelKey();
         const model = await this.managedModel(key);
         if (model.fallback) console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_fallback", accountId: this.setting("accountId") }));
+        const slack = this.slackHost;
         const credentials = {
-          slackBotToken: await this.slackBotToken(),
-          slackBotUserId: this.setting("slackBotUserId") ?? "",
-          ...(teamId ? { teamId } : {}),
+          slackBotToken: slack?.botToken ?? (await this.slackBotToken()),
+          slackBotUserId: slack?.botUserId ?? this.setting("slackBotUserId") ?? "",
+          ...(slack?.teamId ?? teamId ? { teamId: slack?.teamId ?? teamId } : {}),
           ...model.credentials,
         };
         span.end({ outcome: "completed", data: { source } });
@@ -3844,6 +4164,15 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * this organization's workspace (work 080). The host vouches for which of its
    * sessions asked; the gateway vouches that the session exists here.
    */
+  /**
+   * The `cs_…` id of the session a host names (by its runner's key) for an OpenComputer key: the key's
+   * `session_key`, which the edge makes an agent principal of that session. Undefined: no session here.
+   */
+  private keySession(key: unknown): string | undefined {
+    if (typeof key !== "string") return undefined;
+    return [...this.ctx.storage.sql.exec<{ id: string }>("SELECT session_id AS id FROM sessions WHERE runner_key = ? AND session_id IS NOT NULL", key)][0]?.id;
+  }
+
   private liveSessionKey(key: unknown): string | undefined {
     if (typeof key !== "string" || !this.runnerSession(key)) return undefined;
     const status = this.session(key)?.status;
@@ -3961,6 +4290,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> {
    * time keeps the last answer, so the definition does not flap.
    */
   private async knowledge(): Promise<string | undefined> {
+    // Org's, once it has answered `forHost` (tracks and threads); the Work index before that.
+    if (this.setting("knowledgeOrg")) return this.setting("knowledge") || undefined;
     try {
       const repository = await Promise.race([
         knowledgeRepository(this.env, this.accountId()),

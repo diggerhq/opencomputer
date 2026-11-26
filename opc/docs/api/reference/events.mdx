@@ -1,0 +1,161 @@
+---
+title: "Events"
+description: "Every event a session records or streams, and its fields."
+---
+
+## Shape
+
+A recorded event:
+
+```json
+{
+  "id": "ev_3k8m2q7x9c1v4b6n",
+  "seq": 1184,
+  "createdAt": "2026-10-26T09:14:51.007Z",
+  "sessionId": "cs_7f3a9k2m4q8r1t6v",
+  "turnId": "tn_4m8q2x7c1v9b",
+  "type": "tool.started",
+  "actor": null,
+  "data": { "toolName": "Bash", "callId": "toolu_01AbC", "parentCallId": null, "subagentId": null, "title": "npm test -- segment", "input": { "command": "npm test -- segment" }, "inputTruncated": false }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Unique, `ev_` and 16 characters |
+| `seq` | Position in the session's log: 1, 2, 3, with no gaps. The cursor for [reading](/api/http/events) and [attaching](/api/websocket/methods#attach). |
+| `createdAt` | When it was recorded, by the computer's clock |
+| `sessionId` | The session |
+| `turnId` | The turn it belongs to, or `null` for session-level events |
+| `type` | One of the types below |
+| `actor` | The [person](/api/reference/objects#actor) who caused it, or `null` when the agent or the computer did |
+| `data` | Fields for the type |
+
+Over the WebSocket, recorded events arrive as `event` notifications.
+
+A **delta** is streamed, not recorded. It has no `id`, `seq` or `createdAt`, and arrives as a `delta` notification, never as `event`:
+
+```json
+{ "type": "message.delta", "sessionId": "cs_7f3a9k2m4q8r1t6v", "turnId": "tn_4m8q2x7c1v9b", "data": { "blockId": "b7", "parentCallId": null, "text": "The flake comes from" } }
+```
+
+Deltas reach WebSocket clients that attached with `deltas: true`, and nowhere else. See [the model](/api/model#deltas-are-not-in-the-log).
+
+**Reading rules.** Treat an unknown `type` as informational and keep going. Treat unknown `data` fields the same. Every field listed below is present on every event of its type, `null` when it does not apply. That holds for events recorded before a field was added too: they are filled in when read, on every route.
+
+## Session
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `session.created` | Always the first event | `title`, `origin`, `settings` |
+| `session.status_changed` | The [status](/api/model#sessions) changed | `from`, `to` |
+| `session.updated` | Someone changed the title, settings, `archived` or `metadata`, or allowing a plan changed the mode | `changes`: `{ field: { from, to } }` for each changed field |
+| `session.compacting` | A compaction started. A delta, not recorded, sent when the agent reports it. | `{}` |
+| `session.compacted` | The conversation was summarized | `beforeTokens`, `afterTokens`, `auto`: `true` when the agent compacted on its own |
+
+## Messages and turns
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `message.received` | A message was accepted. Recorded before anything runs. | `input`, `ifBusy`, `delivery`, `interruptedTurnIds`: the turns this message interrupted, empty unless it was sent with `interrupt`; `declinedAskIds`: the asks it [declined](/api/model#messages-while-an-ask-is-open), empty unless it was steered while an ask was open |
+| `turn.queued` | A new turn waits behind others | `position`: 1 for next |
+| `turn.steered` | The agent took a steered message into the running turn, which is the event's `turnId`. Recorded when the agent reads it, not when it is accepted. | `messageSeq`: the `seq` of the message's `message.received` |
+| `turn.started` | The agent began the turn | `model`, `effort`, `mode`, `trigger`, `subagentId`: as on the [Turn](/api/reference/objects#turn) |
+| `turn.status_changed` | The turn moved to a status that has no event of its own, such as `cancelling` | `from`, `to` |
+| `turn.completed` | The turn finished | `text`: the agent's last message, `durationMs`, `silent`: `true` when the agent chose not to reply, and `text` is `null` |
+| `turn.failed` | The turn stopped with an error | `error`: a [turn failure](/api/reference/errors#turn-failures) |
+| `turn.cancelled` | The turn was interrupted, was queued when an interrupt came, or was cancelled while queued | `reason`: `interrupted` or `withdrawn`; `forced`: `true` when the agent process had to be restarted to stop it; `input`: the message, so a client can offer it again |
+
+`message.received` is in the turn it started or joined: for a `steered` message, the running turn's `turnId`. A steered message whose turn ends before the agent reads it starts a new turn, with `turn.queued` or `turn.started` under a new `turnId`.
+
+A turn the agent starts because a background subagent ended has no `message.received`. It begins with `turn.queued` or `turn.started`, with `trigger: "subagent"` and the `subagentId`, right after that subagent's `subagent.ended`.
+
+## Text
+
+| Type | Recorded | When | `data` |
+| --- | --- | --- | --- |
+| `message.delta` | No | The agent wrote more of a message | `blockId`, `parentCallId`, `text`: the new fragment |
+| `message.completed` | Yes | A message is complete | `blockId`, `parentCallId`, `text`: all of it |
+| `reasoning.delta` | No | The model reasoned further | `blockId`, `parentCallId`, `text` |
+| `reasoning.completed` | Yes | A reasoning block is complete | `blockId`, `parentCallId`, `text`, `redacted`: `true` when the model returned no readable reasoning, `durationMs` |
+
+A turn writes several blocks: text, then tool calls, then more text. `blockId` ties a block's deltas to its completed event. It is unique within the session. Concatenate the deltas of one `blockId` in arrival order. When the completed event arrives, replace them with its `text`, and ignore any later delta for that `blockId`.
+
+## Tools
+
+| Type | Recorded | When | `data` |
+| --- | --- | --- | --- |
+| `tool.preparing` | No | The agent is still writing a call's input, such as the content of a file. Up to 4 a second per call. | `callId`, `toolName`, `subagentId`, `path`: the file, when known; `description`: the command's description, when known; `lines`: lines of input written so far |
+| `tool.started` | Yes | The agent called a tool | `toolName`, `callId`, `parentCallId`, `subagentId`, `title`, `input`, `inputTruncated` |
+| `tool.delta` | No | A running tool produced output, for harnesses that stream it. Claude Code does not: a command's output arrives with `tool.completed`. | `callId`, `text` |
+| `tool.completed` | Yes | The tool returned | `toolName`, `callId`, `subagentId`, `title`, `output`, `outputTruncated`, `fileChanges`, `durationMs` |
+| `tool.failed` | Yes | The tool returned an error, or its turn ended before it did | `toolName`, `callId`, `subagentId`, `title`, `message`, `settledBy` |
+
+- `toolName` is the tool's name, such as `Bash`, `Edit`, `Read` or `mcp__linear__create_issue`. `title` is one line for display, such as the command or the file.
+- `subagentId` is `null`, or the [subagent](/api/reference/objects#subagent) the call was made inside. `parentCallId` is `null`, or the `callId` of the call that started that subagent. Nest a subagent's calls by `subagentId`; it is set even when the subagent's `callId` is not known.
+- Text and reasoning events carry `parentCallId` too, but with Claude Code it is always `null`: Claude Code does not stream a subagent's text or reasoning, only its tool calls. A subagent's final answer is its `result`.
+- `fileChanges` lists the files the call changed, as `[{ "path": "src/a.ts", "status": "modified", "added": 12, "removed": 3 }]`, with `status` one of `added`, `modified` or `deleted`. It is the same for every harness and tool that edits files, and `null` for a call that changed none. Changes a command made, such as `Bash` running a formatter, are not tracked.
+- `input` and `output` are JSON values, never JSON text. Each is cut at 64 KiB. `inputTruncated` and `outputTruncated` are `true` when it was, else `false`.
+- `callId` is the harness's id for the call, such as `toolu_01AbC`. Treat it as an opaque string.
+- Every `tool.started` is followed by exactly one `tool.completed` or `tool.failed` with its `callId`, before the turn's last event. When a turn ends with a call still open, `tool.failed` is recorded with `settledBy` naming the turn's ending event, such as `turn.cancelled`. Otherwise `settledBy` is `null`.
+- `tool.preparing` comes before the call's `tool.started`, with the same `callId`, while the model is still writing a long input. A client can show `writing… 212 lines` instead of nothing. Ignore one that arrives after `tool.started`.
+- A `tool.delta` that arrives after its call's `tool.completed` or `tool.failed` is stale. Ignore it.
+
+## Asks
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `ask.opened` | The agent raised an ask | `ask`: the [Ask](/api/reference/objects#ask) |
+| `ask.closed` | It was answered, dismissed, declined or interrupted | `ask`: the Ask as it closed. The `actor` is who answered, dismissed or declined it. |
+
+## Subagents
+
+| Type | Recorded | When | `data` |
+| --- | --- | --- | --- |
+| `subagent.started` | Yes | The agent started a [subagent](/api/reference/objects#subagent) | `subagent`: the Subagent |
+| `subagent.progress` | No | It did more work | `subagentId`, `activity`, `toolCalls`, `tokens` |
+| `subagent.ended` | Yes | It ended: `completed`, `failed` or `stopped` | `subagent`: the Subagent as it ended, with `result` and `error`. The `actor` is who stopped it, if someone did. |
+
+A subagent's events carry the `turnId` of the turn that started it. For a background subagent they keep arriving after that turn ended.
+
+## Model
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `usage.recorded` | A model call finished | `model`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedTokens`, `cacheWriteTokens`, `costUsd`, `firstTokenMs`, `durationMs`, `usedTokens`, `windowTokens` |
+| `model.rate_limited` | The model provider asked to wait. The call is retried. | `model`, `retryAfterMs`, `attempt` |
+
+`costUsd` is a decimal string, such as `"0.0312"`, or `null` when your organization uses its own model account. `usedTokens` of `windowTokens` is how full the model's context window is after the call; the session's `context` is the latest of them.
+
+`firstTokenMs` is from the computer sending the request to the model's first token, as the computer measured it. `opc --timing` shows it as `of which model`.
+
+## Runtime
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `runtime.starting` | Something has to start before the agent can work | `phase`: `computer` when the computer was asleep, `agent` when only the agent process starts |
+| `runtime.connected` | The agent process is ready | `warm`: `true` when a pre-started process was used, `resumed`: `true` when a suspended session was resumed, `durationMs`: from start to ready |
+| `runtime.suspended` | The agent process stopped | `reason`: `idle`, `requested`, or `lost` when the computer running it was lost |
+
+## Files and terminals
+
+| Type | When | `data` |
+| --- | --- | --- |
+| `files.pushed` | Someone uploaded files into the workspace | `path`, `files`, `bytes`, `replaced` |
+| `terminal.opened` | Someone opened a [terminal](/api/websocket/terminals) | `terminalId`, `command`: `null` for an interactive shell |
+| `terminal.closed` | It ended | `terminalId`, `exitCode` |
+
+What is typed in a terminal and what it prints are not recorded.
+
+## Order within a turn
+
+For one turn, recorded events come in this order:
+
+1. `message.received`, then `turn.queued` or `turn.started`. A turn with `trigger: "subagent"` has no `message.received`.
+2. Blocks and tool calls, in the order the agent produced them, with `ask.*`, `turn.steered`, `turn.status_changed` and `usage.recorded` among them
+3. `tool.failed` with `settledBy` for any call still open
+4. Exactly one of `turn.completed`, `turn.failed` or `turn.cancelled`, last
+
+Nothing is recorded in a turn after its ending event, except the events of its background subagents: their tool calls and `subagent.ended`. Events of different turns do not interleave, except `message.received` and `turn.queued` for messages queued while another turn runs.
+
+If the computer running a turn is lost, the server records the turn's end for it: `tool.failed` with `settledBy` for each open call, `turn.failed` with `runtime_lost`, then `runtime.suspended` with `reason: "lost"`. These start a new `logEpoch`. See [If a computer is lost](/api/model#if-a-computer-is-lost).

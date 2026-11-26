@@ -1,0 +1,40 @@
+---
+title: "Telemetry"
+description: "The usage timings opc sends, what it never sends, and how to turn it off."
+---
+
+`opc` sends a few timings and error classes about itself, so we can see whether it gets slower or fails, by version and operating system. It never sends what you type, what the agent writes, file names, paths, commands or anything else from your sessions.
+
+## Turning it off
+
+Any one of these turns it off:
+
+```sh
+opc config telemetry off      # kept in ~/.opencomputer/opc/settings.json
+export OPC_TELEMETRY=0        # this shell only
+export DO_NOT_TRACK=1         # the cross-tool convention
+```
+
+`opc config telemetry` prints whether it is on and why. `opc config telemetry on` turns it back on. The environment wins over the file: `OPC_TELEMETRY=1` turns it on even after `opc config telemetry off`. When it is off, `opc` records nothing and sends nothing.
+
+## How it is sent
+
+Only on the connection `opc` already has open to your computer, as a `telemetry` notification. `opc` never opens a connection or makes a request just to send telemetry, and sends nothing when it uses only HTTP. Events wait in memory for about a second so a few go in one message, at most 6 messages a minute. If more than 60 are waiting, the oldest are dropped and only their count is sent. On exit `opc` waits at most 200 ms to send what is left, and only while the connection is open.
+
+The server checks every event against a closed list of names, keys and values and drops anything else. It adds your member id from the connection itself (never from what `opc` sends) and stores the events with OpenComputer's other service telemetry, where OpenComputer's engineers use them to find slow and failing paths.
+
+## What is sent
+
+Each message carries `opc`'s version, the operating system (`darwin`, `linux`, `windows` or `other`) and the processor (`arm64`, `x64` or `other`). Each event carries its time, and the session and turn ids where it has one. Every other value is a number, a yes or no, or a word from a fixed list:
+
+| Event | Sent | Values |
+| --- | --- | --- |
+| `cli.turn` | Once for each turn started by pressing Enter (or by `opc "…"` and `opc -p`): when its first output is shown, or when it ends without any | Milliseconds from Enter to the turn's first event, to its first output arriving and to that output drawn; whether it was interrupted first |
+| `cli.attach` | Each time a session is attached, including after a reconnect | Milliseconds from the connection opening to the session drawn, and to the connection open; whether it was a reconnect, how long the session was disconnected, how many events were replayed |
+| `cli.control` | Each steer, interrupt, ask answer and cancel of a queued message | Its kind; milliseconds until the server answered and until the session showed it applied; whether it succeeded |
+| `cli.render` | Each time new output waited 100 ms or more to be drawn | How long it waited; how long drawing took |
+| `cli.connection` | Each time a connection ends | How long it was open, messages and bytes received, its close code, whether it was a reconnect |
+| `cli.error` | Each failure | Its class: `ws_closed`, `auth`, `ticket`, `rate_limited`, `protocol`, `render`, `crash`, `timeout` or `other`; a close code |
+| `cli.overflow` | When events were dropped | How many |
+
+A crash leaves an empty marker file, `telemetry-crash`, in `opc`'s state directory; the next run reports it as a `crash` and deletes it. Nothing about the crash itself is sent.

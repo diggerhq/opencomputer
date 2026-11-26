@@ -1,45 +1,18 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { ApiError } from '@/api/errors'
 import {
-  getOpenItems,
   getRepositories,
   getRepository,
-  keepOpenItems,
   useOrg,
   workKeys,
   workRetryDelay,
-  type OpenItemsPoll,
 } from './api'
-import { OPEN_POLL_MS } from './board'
 
 // The queries more than one screen reads, so they share one cache entry.
 
-/** Retry twice, except a 404: the routes, or the item, are not there. */
+/** Retry twice, except a 404: the routes are not there. */
 export const notThereYet = (count: number, error: Error) =>
   !(error instanceof ApiError && error.status === 404) && count < 2
-
-/**
- * The open items, polled with the last ETag: the board's data, and on the
- * settings page how fresh the index is (`asOf`, `head`, `building`).
- */
-export function useOpenItems() {
-  const qc = useQueryClient()
-  const key = workKeys.open(useOrg())
-  return useQuery({
-    queryKey: key,
-    queryFn: async () => {
-      const prev = qc.getQueryData<OpenItemsPoll>(key)
-      const next = await getOpenItems(prev?.etag ?? null)
-      if (prev) return keepOpenItems(prev, next)
-      if (!('notModified' in next)) return next
-      // A 304 with nothing cached cannot happen (no ETag was sent); ask again.
-      return (await getOpenItems(null)) as OpenItemsPoll
-    },
-    refetchInterval: OPEN_POLL_MS,
-    retry: notThereYet,
-    retryDelay: workRetryDelay,
-  })
-}
 
 /** The chosen repository, with its problem when it cannot be read. */
 export function useRepository() {

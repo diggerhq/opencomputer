@@ -1,0 +1,56 @@
+---
+title: "Environment and files"
+description: "Environment variables, the configuration file and what opc keeps on your machine."
+---
+
+## Environment variables
+
+| Variable | Does |
+| --- | --- |
+| `OPENCOMPUTER_API_KEY` | The credential to use. Takes precedence over the configuration file. |
+| `OPENCOMPUTER_API_URL` | The API's base URL. Default `https://app.opencomputer.dev`. |
+| `OPENCOMPUTER_CONFIG` | Path of the configuration file. Default `~/.opencomputer/config.json`. |
+| `OPC_WIRE_URL` | The WebSocket URL of your computer's connection. Default `wss://wire.opencomputer.dev/v1`; with another `OPENCOMPUTER_API_URL`, the one that API gives. |
+| `OPC_STATE_DIR` | Where `opc` keeps its own state. Default `~/.opencomputer/opc`. |
+| `OPC_LOG` | `error`, `warn`, `info` or `debug`. Logs go to standard error. Default `warn`. |
+| `NO_COLOR` | Any value turns colors off |
+| `OPC_TELEMETRY` | `0` turns [telemetry](/reference/telemetry) off, `1` on. Wins over `opc config telemetry`. `DO_NOT_TRACK=1` also turns it off. |
+| `OPC_NOTIFY` | `0` turns off [notifications](/terminal/session-screen#when-you-look-away) |
+| `VISUAL`, `EDITOR` | The editor for `Ctrl+X Ctrl+E` |
+| `PAGER`, `LESS` | The pager for `opc diff` and long details. Default `less`, with `LESS=FRX` when `LESS` is unset. |
+| `BROWSER` | The program `opc login` and `opc open` open links with. Several commands separated by `:` are tried in turn; `%s` in one stands for the link. |
+| `HTTPS_PROXY`, `NO_PROXY` | An HTTP proxy for every connection `opc` makes: API requests and the session's WebSocket connection, both tunnelled with `CONNECT`. `NO_PROXY` lists hosts to reach directly; CIDR ranges in it are not matched. `ALL_PROXY` is used only when it is an `http://` proxy. The [timing targets](/reference/timing#what-to-expect) do not include a proxy. |
+
+`OPENCOMPUTER_*` variables are shared with the `opencomputer` CLI.
+
+## The configuration file
+
+`~/.opencomputer/config.json`, shared with the `opencomputer` CLI, written with permissions `0600`:
+
+```json
+{
+  "apiUrl": "https://app.opencomputer.dev",
+  "apiKey": "…",
+  "login": { "credentialId": "cred_…", "keyPrefix": "…", "name": "ada-mbp" }
+}
+```
+
+`opc login` writes it and `opc logout` clears it. There is nothing in it to edit by hand.
+
+## What opc keeps on your machine
+
+Under `~/.opencomputer/opc/`, or `OPC_STATE_DIR`:
+
+| File | Holds | Safe to delete |
+| --- | --- | --- |
+| `state.json` | The last session created or attached on this machine, for `opc a -`, `push`, `pull` and `shell` | Yes |
+| `sessions.json` | The session list from the last `opc ls` or picker, so `opc ls`, the picker and completions open instantly | Yes |
+| `sessions/<id>.jsonl` | The recorded events of each session you opened on this machine, `0600`, so attaching draws at once and fetches only what is new | Yes |
+| `settings.json` | `opc`'s own settings, written by `opc config`: `{ "telemetry": false }` | Yes: the settings go back to their defaults |
+| `telemetry-crash` | Empty. Left by a crash, so the next run reports it, then deleted | Yes |
+| `history` | What you typed at the prompt line, for `↑` and `Ctrl+R`. At most 10,000 entries. | Yes |
+| `.lock` | Empty. The file lock that lets several `opc` processes share these files. | Yes |
+
+Several `opc` processes can run at once: they share these files safely, with file locks. Deleting any of them only makes the next launch fetch again.
+
+`opc` never writes anywhere else. It sends usage timings and error classes, never content, on its connection to your computer; see [Telemetry](/reference/telemetry) to turn them off. What the agent wrote is kept on your machine only in the session cache under `sessions/`. The server records which client a request came from, such as `opc/0.1.0`, as every API does.

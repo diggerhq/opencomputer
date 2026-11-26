@@ -66,6 +66,8 @@ export type CreateSession = CreateSessionBody & {
   role?: "start";
   writers?: "members" | string[];
   slackThread?: string;
+  /** The creating member's name and email, for `Session.owner`: the edge's, from its credential. An agent's child takes its parent's. */
+  person?: { name: string | null; email: string | null };
 };
 export interface SessionPatch {
   title?: string;
@@ -79,7 +81,10 @@ export interface ListQuery {
   owner?: string;
   status?: string[];
   origin?: string[];
-  archived?: boolean;
+  /** Absent: false. `all`: both. */
+  archived?: boolean | "all";
+  /** `metadata[key]=value` filters. */
+  metadata?: Record<string, string>;
   q?: string;
   order?: "active" | "created";
   limit?: number;
@@ -122,7 +127,15 @@ export type FeedPush = {
   mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[];
 };
 export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string };
-export type MutateRequest = { name: string; args: unknown; client?: { id: string; n: number }; idem?: string; trace?: string };
+export type MutateRequest = {
+  name: string;
+  args: unknown;
+  client?: { id: string; n: number };
+  idem?: string;
+  trace?: string;
+  /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
+  person?: { name: string | null; email: string | null };
+};
 export type MutateReply =
   | { protocol: 1; lastMutation?: number; value?: unknown }
   | { error: { code: "refused" | "not_found" | "taken" | "conflict" | "out_of_order" | "principal_mismatch" | "idempotency_conflict" | "invalid_request" | "forbidden"; message?: string; reason?: string; lastMutation?: number; [field: string]: unknown } };
@@ -161,6 +174,8 @@ export interface OrgRpc {
   overview(p: Principal): Promise<Overview>;
   /** tell_track: the agent session of the caller's track. */
   trackAgent(p: Principal): Promise<string | null>;
+  /** A track's `doc` row (doc_read): its agent cannot read it from the feed. */
+  doc(p: Principal, trackId: string): Promise<Row | null>;
   docRevisions(p: Principal, trackId: string, rev?: number): Promise<DocRev[]>;
   review(p: Principal, resultId: string): Promise<ReviewRow | null>;
   mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void>;
@@ -266,8 +281,16 @@ export interface ComputerRpcAdded {
   block(sessionId: string, blockId: string): Promise<void>;
   /** Org only; relayed as the host's `access` frame. */
   setAccess(sessionId: string, access: Access, admins: string[]): Promise<void>;
-  /** The Slack actor only. `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user it linked the Slack person to. */
-  command(p: Principal, c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string }): Promise<{ reply: string; member?: string }>;
+  /**
+   * The Slack actor only. `args`: the command's text after its name; for `grant`, the clicked button's action
+   * id, with Slack's `triggerId`. `channelId` and `threadTs`: where the command was sent (absent: the
+   * session's thread). `link`: `!link <code>`, whose code ModelAccess holds; `member` is the dashboard user
+   * it linked the Slack person to.
+   */
+  command(
+    p: Principal,
+    c: { name: "secret" | "var" | "claude" | "codex" | "grant" | "link"; args: string; sessionId?: string; channelId?: string; threadTs?: string; triggerId?: string },
+  ): Promise<{ reply: string; member?: string }>;
   /** Org: the knowledge repository; Slack: people or credentials. */
   changed(source: "org" | "slack"): Promise<void>;
   exportSessions(after: string | null, limit: number): Promise<{ rows: ExportedSession[]; next: string | null; newestCreatedAt: number }>;
@@ -310,7 +333,11 @@ export interface SlackRpc {
   install(p: Principal, grant: SlackGrant): Promise<void>;
   unlink(p: Principal): Promise<void>;
   /** Computer only. */
-  forHost(): Promise<{ people: CalvinPerson[]; slack: { botToken: string; botUserId: string; teamId: string } | null }>;
+  /** `installer`: who installed the app and the member they are, for Computer's model access (its rekey on install and unlink). */
+  forHost(): Promise<{
+    people: CalvinPerson[];
+    slack: { botToken: string; botUserId: string; teamId: string; teamName?: string; installer?: { slackUser: string; member: string | null } } | null;
+  }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
   /** Delivery(slack) only. */

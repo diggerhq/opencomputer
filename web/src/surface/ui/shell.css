@@ -1,0 +1,18 @@
+.surface{
+  position:fixed;inset:0;
+  .row.old .wh,.wh{color:var(--faint);font-size:12px;flex:none}
+  .fold[role=button]{cursor:pointer}
+  .fold.more{padding-left:25px}
+  .foot .off{margin-left:8px;color:var(--faint)}
+  .side{position:relative}
+  .belowp{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);height:26px;padding:0 10px;border-radius:13px;background:var(--card);box-shadow:var(--shadow);font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;z-index:4}
+}
+.surface{
+  .msg ul,.notes ul,.blk ul{list-style:disc;padding-left:20px;margin:6px 0}
+  .msg ol,.notes ol,.blk ol{list-style:decimal;padding-left:20px;margin:6px 0}
+}
+/* The Mac app has no title bar: the top bars drag the window (spec 24). */
+.surface[data-platform=desktop]{
+  .top,.hd{-webkit-app-region:drag}
+  .top button,.top a,.top input,.hd button,.hd a,.hd input,.hd .seg,.hd .url{-webkit-app-region:no-drag}
+}
