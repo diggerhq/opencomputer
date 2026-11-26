@@ -284,6 +284,39 @@ describe("Live: a session", () => {
     expect(client.frames.filter((f) => f.t === "events")).toHaveLength(0);
   });
 
+  it("delivers nothing of a session before its lease is granted", async () => {
+    const org = "org_pending";
+    const live = liveOf(org);
+    const log = bindings.SESSION_LOG.getByName("cs_pending");
+    const agent = member(org, { subject: "cs_agent", kind: "agent", via: "agent", audiences: [], session: "cs_agent" });
+
+    // Refused: what is published while the lease is being asked for never reaches the socket.
+    await log.set({ allowed: false, hold: true });
+    const refused = await connect(org, agent);
+    refused.send({ t: "sub", stream: "events:cs_pending" });
+    refused.send({ t: "sub", stream: "deltas:cs_pending" });
+    await expect.poll(async () => (await log.calls()).length).toBe(2);
+    await live.publish("events:cs_pending", { from: "e1.1.0", to: "e1.1.1", events: events(1) });
+    await live.publish("deltas:cs_pending", { epoch: 1, deltas: [{ type: "text", turnId: "tn_1", data: { blockId: "b1", text: "secret" }, offset: 0 }] });
+    await live.publish("events:cs_pending", { head: "e1.1.1" });
+    await log.release();
+    expect(await refused.next("detached")).toMatchObject({ reason: "forbidden" });
+    expect(await refused.next("detached")).toMatchObject({ reason: "forbidden" });
+    await refused.sync();
+    expect(refused.frames.filter((f) => f.t === "events" || f.t === "delta" || f.t === "behind")).toEqual([]);
+
+    // Granted: the head moved meanwhile, and `subd` carries it, so the reader catches up over HTTP.
+    await log.set({ allowed: true, hold: true, head: "e1.1.1" });
+    const granted = await connect(org);
+    granted.send({ t: "sub", stream: "events:cs_pending", after: "e1.1.1" });
+    await expect.poll(async () => (await log.calls()).length).toBe(3);
+    await live.publish("events:cs_pending", { from: "e1.1.1", to: "e1.1.2", events: events(2) });
+    await log.release();
+    expect(await granted.next("subd")).toEqual({ t: "subd", stream: "events:cs_pending", head: "e1.1.2" });
+    await live.publish("events:cs_pending", { from: "e1.1.2", to: "e1.1.3", events: events(3) });
+    expect(await granted.next("events")).toMatchObject({ from: "e1.1.2", to: "e1.1.3" });
+  });
+
   it("watches at most 32 sessions on one connection", async () => {
     const client = await connect("org_cap");
     for (let i = 0; i < 32; i += 1) client.send({ t: "sub", stream: `events:cs_cap_${String(i).padStart(22, "0")}` });

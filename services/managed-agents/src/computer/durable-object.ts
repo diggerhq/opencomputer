@@ -2793,13 +2793,9 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
   }
 
   /**
-   * The session a host names for a key, kept only when it is a live session of
-   * this organization's workspace (work 080). The host vouches for which of its
-   * sessions asked; the gateway vouches that the session exists here.
-   */
-  /**
    * The `cs_…` id of the session a host names (by its runner's key) for an OpenComputer key: the key's
-   * `session_key`, which the edge makes an agent principal of that session. Undefined: no session here.
+   * `session_key`, which the edge makes an agent principal of that session. Undefined: no session here,
+   * and no key is minted.
    */
   private keySession(key: unknown): string | undefined {
     if (typeof key !== "string") return undefined;
