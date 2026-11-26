@@ -10,6 +10,7 @@
 use super::{Ctx, resolve};
 use crate::cli::ShellArgs;
 use crate::error::{Error, Result, exit};
+use crate::http::{Http, session_path};
 use crate::wire::{WireEvent, WireHandle};
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -19,6 +20,8 @@ use tokio::sync::{mpsc, watch};
 
 /// Terminal frames carry at most 64 KiB, the channel included.
 const MAX_INPUT_CHUNK: usize = 32 * 1024;
+/// How long a shell waits for a session it woke to be running.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Input over 1 MiB a second per terminal is dropped by the server.
 const INPUT_RATE: usize = 1 << 20;
 /// A size is sent once it has held this long, so dragging a window's edge
@@ -81,6 +84,20 @@ fn exit_code(v: &Value) -> i32 {
         _ => None,
     };
     n.map_or(1, |n| 128 + n as i32)
+}
+
+/// `terminals.open` on a session whose agent is not running (idle for
+/// hours, or suspended): it must be woken first.
+fn not_running(e: &Error) -> bool {
+    e.extra.get("reason").and_then(Value::as_str) == Some("session_not_running")
+}
+
+/// A line on standard error, which may be a terminal in raw mode (`/shell`).
+fn notice(msg: &str) {
+    let nl = if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) { "\r\n" } else { "\n" };
+    let mut err = std::io::stderr().lock();
+    let _ = write!(err, "opc: {msg}{nl}");
+    let _ = err.flush();
 }
 
 fn open_error(e: Error) -> Error {
@@ -278,12 +295,57 @@ fn write_all(mut w: impl Write, data: &[u8]) -> std::io::Result<()> {
 
 async fn open(ctx: &Ctx, session_id: &str, command: Option<&str>, tty: bool) -> Result<i32> {
     let (wire, mut events) = ctx.open_wire(vec![], false).await?;
-    let result = session(&wire, &mut events, session_id, command, tty).await;
+    let result = session(&ctx.http, &wire, &mut events, session_id, command, tty).await;
     wire.close();
     result
 }
 
+/// One `terminals.open`, keeping the terminal events that come before its
+/// result.
+async fn call_open(wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireEvent>, params: &Value, early: &mut Vec<WireEvent>) -> Result<Value> {
+    let call = wire.call("terminals.open", params.clone());
+    tokio::pin!(call);
+    loop {
+        tokio::select! {
+            r = &mut call => return r,
+            ev = events.recv() => match ev {
+                Some(WireEvent::Fatal(e)) => return Err(e),
+                None => return Err(Error::unreachable("the connection to your computer closed")),
+                Some(e @ (WireEvent::Binary { .. } | WireEvent::TerminalExited(_))) => early.push(e),
+                Some(_) => {}
+            },
+        }
+    }
+}
+
+/// Wakes a session that is not running, as a message would (`POST
+/// /sessions/{id}/resume`: session writes go over HTTP), and opens the
+/// terminal once it is.
+async fn wake(http: &Http, wire: &WireHandle, events: &mut mpsc::UnboundedReceiver<WireEvent>, session_id: &str, params: &Value, early: &mut Vec<WireEvent>) -> Result<Value> {
+    notice("waking session…");
+    let key = crate::ids::idempotency_key();
+    if let Err(e) = http.post(&session_path(session_id, "/resume"), &json!({}), Some(&key)).await {
+        let message = format!("the session is not running, and could not be woken: {}", e.message);
+        return Err(Error { message, ..e }.hint(format!("send it a message (opc send -s {session_id} …) to wake it, then run opc shell again")));
+    }
+    let deadline = Instant::now() + WAKE_TIMEOUT;
+    let mut pause = Duration::from_millis(250);
+    loop {
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(Duration::from_secs(1));
+        match call_open(wire, events, params, early).await {
+            Err(e) if not_running(&e) && Instant::now() < deadline => {}
+            Err(e) if not_running(&e) => {
+                let message = format!("the session is not running: it did not wake within {} seconds", WAKE_TIMEOUT.as_secs());
+                return Err(Error::new("timeout", message).with("reason", "session_not_running").hint("run opc shell again in a moment"));
+            }
+            r => return r.map_err(open_error),
+        }
+    }
+}
+
 async fn session(
+    http: &Http,
     wire: &WireHandle,
     events: &mut mpsc::UnboundedReceiver<WireEvent>,
     session_id: &str,
@@ -295,18 +357,9 @@ async fn session(
 
     // Output can arrive before the result: hold it until we know our channel.
     let mut early: Vec<WireEvent> = Vec::new();
-    let call = wire.call("terminals.open", params);
-    tokio::pin!(call);
-    let opened = loop {
-        tokio::select! {
-            r = &mut call => break r.map_err(open_error)?,
-            ev = events.recv() => match ev {
-                Some(WireEvent::Fatal(e)) => return Err(e),
-                None => return Err(Error::unreachable("the connection to your computer closed")),
-                Some(e @ (WireEvent::Binary { .. } | WireEvent::TerminalExited(_))) => early.push(e),
-                Some(_) => {}
-            },
-        }
+    let opened = match call_open(wire, events, &params, &mut early).await {
+        Err(e) if not_running(&e) => wake(http, wire, events, session_id, &params, &mut early).await?,
+        r => r.map_err(open_error)?,
     };
     let t = opened.get("terminal").unwrap_or(&opened);
     let terminal_id = t.get("id").and_then(Value::as_str).unwrap_or_default().to_string();

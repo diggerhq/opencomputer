@@ -24,6 +24,8 @@ const projectsApi = vi.hoisted(() => ({
   addManagedGitHubConnection: vi.fn(),
 }))
 vi.mock('./api', () => projectsApi)
+const capture = vi.hoisted(() => vi.fn())
+vi.mock('posthog-js', () => ({ default: { capture } }))
 
 const { default: ComputerPage } = await import('./Computer')
 const { AuthContext } = await import('@/hooks/useAuth')
@@ -141,6 +143,7 @@ describe('Computer page', () => {
     for (const fn of [
       ...Object.values(computerApi),
       ...Object.values(projectsApi),
+      capture,
     ]) {
       fn.mockReset()
     }
@@ -171,6 +174,7 @@ describe('Computer page', () => {
                 <Route path="getting-started" element={<ProjectsHome />} />
                 <Route path="automations" element={<ProjectsHome list />} />
                 <Route path="computer" element={<ComputerPage />} />
+                <Route path="computer/sessions/new" element={<div />} />
                 <Route path="computer/sessions/:id" element={<div />} />
               </Routes>
               <Location />
@@ -285,7 +289,8 @@ describe('Computer page', () => {
       [...container.querySelectorAll('button')].map((b) => b.textContent),
     ).toEqual(['Connect GitHub', 'Skip for now'])
     // The last step is named, not offered yet.
-    expect(container.textContent).toContain('Add OpenComputer to Slack')
+    expect(container.textContent).toContain('Give it its first task')
+    expect(container.textContent).not.toContain('Start your first session')
     expect(container.querySelector('textarea')).toBeNull()
     // Projects are a side door.
     expect(container.querySelector('a[href="/new"]')?.textContent).toContain(
@@ -321,7 +326,7 @@ describe('Computer page', () => {
       'start step',
     )
     const current = container.querySelector('li[aria-current="step"]')!
-    expect(current.textContent).toContain('Add OpenComputer to Slack')
+    expect(current.textContent).toContain('Give it its first task')
     expect(container.textContent).toContain('Skipped for now')
     expect(localStorage.getItem('computer.setup.githubSkipped')).toBe('1')
     // Still nothing created: the first session does that.
@@ -338,7 +343,45 @@ describe('Computer page', () => {
     )
   })
 
-  it('leads with Slack, the web only on request, when Slack is not in', async () => {
+  it('leads with the first session on the web when Slack is not in', async () => {
+    localStorage.setItem('computer.setup.githubSkipped', '1')
+    computerApi.getComputer.mockResolvedValue(empty)
+
+    render('/computer')
+    await settle(
+      () => container.textContent?.includes('Step 2 of 2') === true,
+      'start step',
+    )
+    const current = container.querySelector('li[aria-current="step"]')!
+    expect(current.textContent).toContain('Give it its first task')
+    // One call to action, straight to the web; no Slack pitch beside it.
+    const start = current.querySelector<HTMLAnchorElement>(
+      'a[href="/computer/sessions/new"]',
+    )!
+    expect(start.textContent).toBe('Start your first session')
+    expect(
+      [...current.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Or add it to Slack'])
+    expect(current.querySelector('textarea')).toBeNull()
+    expect(container.textContent).not.toContain('Better with your team')
+    expect(container.textContent).not.toContain('Prefer to start on the web?')
+    // Nothing to wait for in Slack.
+    expect(current.textContent).not.toContain('Waiting for its first task')
+
+    act(() => start.click())
+    await settle(
+      () => location() === '/computer/sessions/new',
+      'the new session composer',
+    )
+    expect(capture).toHaveBeenCalledWith(
+      'computer.setup.start_session_clicked',
+      { via: 'web' },
+    )
+    // The first session creates the computer, not the click.
+    expect(computerApi.createComputer).not.toHaveBeenCalled()
+  })
+
+  it('keeps Slack on offer, quietly, in the first-session step', async () => {
     localStorage.setItem('computer.setup.githubSkipped', '1')
     computerApi.getComputer.mockResolvedValue(empty)
     computerApi.startComputerSlackInstall.mockReturnValue(new Promise(() => {}))
@@ -349,28 +392,21 @@ describe('Computer page', () => {
       'start step',
     )
     const current = container.querySelector('li[aria-current="step"]')!
-    expect(current.textContent).toContain('Add OpenComputer to Slack')
-    expect(current.textContent).toContain('Coding is more fun with your team')
-    // The text box waits to be asked for, so Slack stays the way in.
-    expect(current.querySelector('textarea')).toBeNull()
-    expect(current.textContent).toContain('Prefer to start on the web?')
-    expect(current.textContent).toContain('Not a Slack admin?')
-    // Nothing to wait for in Slack yet.
-    expect(current.textContent).not.toContain('Waiting for its first task')
-    const invite = [...current.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Add to Slack',
+    const slack = [...current.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Or add it to Slack',
     )!
-    act(() => invite.click())
+    act(() => slack.click())
     await settle(
       () => computerApi.startComputerSlackInstall.mock.calls.length === 1,
       'Slack install started',
     )
-    expect(computerApi.createComputer).not.toHaveBeenCalled()
+    expect(capture).toHaveBeenCalledWith('computer.setup.slack_clicked')
+    expect(slack.disabled).toBe(true)
   })
 
   it('starts the first task here, waiting while the computer comes to life', async () => {
-    localStorage.setItem('computer.setup.githubSkipped', '1')
-    computerApi.getComputer.mockResolvedValue(empty)
+    computerApi.getComputer.mockResolvedValue(onboarded)
+    computerApi.getComputerSessions.mockResolvedValue([])
     // The first answer says the computer is starting; the second waits.
     let answer: (response: Response) => void = () => {}
     const answers = [

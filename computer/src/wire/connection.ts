@@ -163,6 +163,16 @@ export class Connection {
     this.teardown();
   }
 
+  /** The host pushed a new access list: hang up terminals the member may no longer open. */
+  accessChanged(access: SessionAccess) {
+    this.terminals.recheck((sid) => (sid === access.sessionId ? access : this.deps.host.access(sid)));
+  }
+
+  /** After a host `welcome`: every open terminal is checked against the new lists (absent: lost). */
+  recheckAccess(get: (sessionId: string) => SessionAccess | undefined) {
+    this.terminals.recheck(get);
+  }
+
   revoked(keyId: string) {
     if (keyId === this.keyId) this.close(4001, 'credential revoked');
   }

@@ -270,9 +270,13 @@ impl Conn {
 
     async fn open_terminal(&mut self, p: &Value) -> Result<Value, ApiErr> {
         let sid = p["sessionId"].as_str().unwrap_or("").to_string();
-        let owner = self.sh.read(|w| w.sess(&sid).map(|s| s.owner["id"].clone()))?;
+        let (owner, stopped) = self.sh.read(|w| w.sess(&sid).map(|s| (s.owner["id"].clone(), s.suspended || s.starting)))?;
         if owner != self.actor["id"] {
             return Err(ApiErr::new(403, "forbidden", "only the session's owner can open a terminal").with("reason", "terminal_owner_only"));
+        }
+        // A terminal runs in the session's container, which runs only with the agent.
+        if stopped {
+            return Err(ApiErr::new(409, "conflict", "the session is not running").with("reason", "session_not_running"));
         }
         let open = self.terms.values().filter(|t| t.sid == sid && !t.exited.load(Ordering::SeqCst)).count();
         if open >= 8 {

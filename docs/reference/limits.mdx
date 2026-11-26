@@ -13,7 +13,7 @@ title: "Limits and defaults"
 | Runners | Idle time before a runner exits | 2 hours | `src/host/main.ts` | `SP_IDLE_MS` |
 | Runners | Spare runners kept for new sessions | 2 | `src/host/main.ts` | `SP_POOL_SIZE` |
 | Runners | Gateway's wait for the host to start a runner | 30 s | `src/gateway/hosts.ts` | No |
-| Memory | One runner, `MemoryHigh` / `MemoryMax` | 60% / 75% of RAM, at most 12G / 16G | `src/host/runner-limits.ts` | `SP_SYSTEMD_RUN` |
+| Memory | One runner, `MemoryHigh` / `MemoryMax` | 60% / 75% of RAM, at most 12G / 16G | `src/host/runner-limits.ts` | `SP_RUNNER_MEMORY_MAX` (the 16G cap; 12G follows at 75% of it), `SP_SYSTEMD_RUN` |
 | Memory | All runners together, `MemoryMax` | 93% of (RAM minus a reserve of 10% of RAM, at least 1024 MiB) | `deploy/vm/limits.sh` | No |
 | Memory | All runners together, `MemoryHigh` | 93% of its `MemoryMax` | `deploy/vm/limits.sh` | No |
 | Memory | Everything the agent user runs (`user-1500.slice`), `MemoryMax` | RAM minus a reserve of 10% of RAM, at least 1024 MiB | `deploy/vm/limits.sh` | No |

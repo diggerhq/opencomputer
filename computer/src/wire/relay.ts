@@ -61,9 +61,16 @@ export async function startRelay(o: RelayOptions): Promise<Relay> {
   const refusals = new TokenBucket(10, 10);
 
   const hostLink = connectHost(o.socket, o.version, {
-    welcome: () => {},
-    access: () => {},
-    admins: () => {},
+    welcome: () => {
+      for (const c of conns) c.recheckAccess((sid) => hostLink.access(sid));
+    },
+    access: (a) => {
+      for (const c of conns) c.accessChanged(a);
+    },
+    // A demotion can take away terminals (an admin's in an organization-wide session).
+    admins: () => {
+      for (const c of conns) c.recheckAccess((sid) => hostLink.access(sid));
+    },
     revoked: (keyId) => {
       for (const c of [...conns]) c.revoked(keyId);
     },
