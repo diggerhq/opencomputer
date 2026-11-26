@@ -24,7 +24,7 @@ import type { FileDiffMetadata, SelectedLineRange } from '@pierre/diffs'
 import type { Host } from '../host'
 import { NOWHERE } from '../host'
 import { SurfaceContext } from '../hooks'
-import { createSurface, type Surface } from '../store'
+import { createSurface, type Surface } from '../store/surface-store'
 import {
   startStack,
   type Caller,

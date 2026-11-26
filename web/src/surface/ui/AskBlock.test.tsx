@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Ask } from '@opencomputer/sdk/computer'
 import { SurfaceContext } from '../hooks'
-import type { Surface } from '../store'
+import type { Surface } from '../store/surface-store'
 import { AskBlock } from './AskBlock'
 
 const ask = (over: Partial<Ask>): Ask => ({

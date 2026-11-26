@@ -1,5 +1,5 @@
 import { tinykeys } from 'tinykeys'
-import type { Surface } from '../store'
+import type { Surface } from '../store/surface-store'
 
 // Spec section 12: one key per frequent action. Letters act only while the
 // person is not typing; Escape always closes one layer.

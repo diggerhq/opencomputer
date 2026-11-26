@@ -20,7 +20,7 @@ import {
   useS,
   useSurface,
 } from './hooks'
-import { createSurface, type Surface as SurfaceApi } from './store'
+import { createSurface, type Surface as SurfaceApi } from './store/surface-store'
 import { idbStorage } from './store/idb'
 import { I } from './ui/icons'
 import { DRAG } from './ui/pane-classes'
