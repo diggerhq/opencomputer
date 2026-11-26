@@ -21,9 +21,8 @@ import { decodeDrivers } from "./access.js";
 import type { RoutedApiSession } from "./api-model-route.js";
 import type { AssertedApiKey } from "../edge/auth.js";
 import type { ApiScope, Ask, LogSummary, Origin, Person, Session, SessionStatus } from "./api-types.js";
-import { DEFAULT_MODE, MODELS, capabilities, checkSettings } from "./capabilities.js";
+import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
-import { sha256Hex } from "./crypto.js";
 import type { ComputerKeys } from "./keys.js";
 import {
   type CalvinApiActor,
@@ -37,13 +36,12 @@ import {
   type CalvinRoleSpec,
   type CalvinSessionReport,
   type CalvinSessionSpec,
-  CALVIN_API_PROTOCOL,
   type SessionSecret,
   personForMember,
   sessionKey,
 } from "./protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isId, isMemberId, isSessionId, memberId, mintId } from "./session-ids.js";
+import { isId, isMemberId, isSessionId, mintId } from "./session-ids.js";
 import { slackThreadUrl } from "./slack.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
@@ -55,14 +53,8 @@ export const HOST_CALL_TIMEOUT_MS = 15_000;
  */
 export const HOST_CALL_HELD_TIMEOUT_MS = 40_000;
 export const EPOCH_MOVING_MS = 30_000;
-/** A keyed write whose answer outlived the client's wait is kept this long for its retry to take (review r3 P2-2). */
-export const KEYED_CALL_KEEP_MS = 120_000;
 /** Waits before each retry of a failed `epochTail` read (review r3 P1-1). */
 export const EPOCH_TAIL_RETRY_MS = [250, 1_000, 4_000];
-/** `minSeq` waits this long for the SessionLog to reach it (model.mdx#consistency). */
-export const MIN_SEQ_WAIT_MS = 2_000;
-/** Idempotency records (create) are kept this long (idempotency.mdx). */
-export const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 /** A writer silent this long with a turn open, its runner gone, is lost. */
 export const RECOVER_AFTER_MS = 60_000;
 /** A recovery reads the log's epoch and tries at most this many times. */
@@ -79,8 +71,6 @@ const DRAIN_METHODS: Record<InboxKind, string> = {
 export const STALE_EPOCH_RESEND_MS = 5_000;
 /** Sessions whose last applied summary is kept in memory (applySummary's change check). */
 const APPLIED_MAX = 1_024;
-/** Expired idempotency records are swept at most this often (indexed by created_at). */
-const IDEMPOTENCY_SWEEP_MS = 60_000;
 /** A journal gap closes the host's socket (it reconnects and resends from the last ack) at most this often. */
 export const GAP_CLOSE_INTERVAL_MS = 30_000;
 const TICKETS_PER_MINUTE = 60;
@@ -107,14 +97,8 @@ export interface ApiCaller {
 
 export type ApiOp =
   | { op: "me" }
-  | { op: "create"; body: unknown; idempotencyKey?: string }
-  | { op: "list"; query: Array<[string, string]> }
-  | { op: "get"; sessionId: string; minSeq?: number }
   | { op: "access"; sessionId: string }
   | { op: "call"; sessionId: string; method: WriteMethod; params: Record<string, unknown>; idempotencyKey?: string }
-  | { op: "patch"; sessionId: string; body: unknown; idempotencyKey?: string }
-  | { op: "aside.set"; sessionId: string; body: unknown }
-  | { op: "aside.clear"; sessionId: string }
   | { op: "ticket"; body: unknown };
 
 export interface ApiErrorReply {
@@ -224,10 +208,8 @@ export interface SessionsApiDeps {
   sql: SqlStorage;
   env: ComputerEdgeEnv;
   organizationId: () => string;
-  /** The connected host's protocol; undefined when none is connected. */
-  host: () => { protocol: number } | undefined;
-  /** The rollout gate (api-gate.ts): false, and every operation but `me` answers 409 feature_unavailable. */
-  enabled: () => boolean;
+  /** The connected host, once welcomed; undefined when none is. */
+  host: () => object | undefined;
   send: (frame: CalvinGatewayToHost) => boolean;
   /** Resolves the owner's subscription and runner before starting or delivering a turn. */
   routeSession?: (session: CalvinSessionSpec, member?: string) => Promise<RoutedApiSession>;
@@ -269,18 +251,13 @@ type HostOutcome = { result?: unknown; error?: CalvinApiError };
 interface Pending {
   resolve: (outcome: HostOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
-  /** A keyed write's dedupe key (`keyed`). */
-  key?: string;
 }
 
 
 export class ComputerSessionsApi {
   private readonly now: () => number;
   private readonly pending = new Map<string, Pending>();
-  /** Keyed writes awaiting the host's answer, by session, member, method and idempotency key: a retry takes the original's answer. */
-  private readonly keyed = new Map<string, { id: string; result: Promise<HostOutcome> }>();
   private readonly chains = new Map<string, Promise<void>>();
-  private readonly waiters = new Map<string, Array<{ seq: number; done: () => void }>>();
   private readonly tickets = new Map<string, number[]>();
   private gapClosedAt = 0;
 
@@ -292,16 +269,6 @@ export class ComputerSessionsApi {
     sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS sessions_session_id ON sessions (session_id);
       CREATE INDEX IF NOT EXISTS sessions_last_active ON sessions (last_active_at);
-      CREATE TABLE IF NOT EXISTS api_idempotency (
-        member TEXT NOT NULL,
-        op TEXT NOT NULL,
-        key TEXT NOT NULL,
-        hash TEXT NOT NULL,
-        body TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (member, op, key)
-      );
-      CREATE INDEX IF NOT EXISTS api_idempotency_created ON api_idempotency (created_at);
     `);
   }
 
@@ -325,7 +292,7 @@ export class ComputerSessionsApi {
   }
 
   private v4Host(): boolean {
-    return (this.deps.host()?.protocol ?? 0) >= CALVIN_API_PROTOCOL;
+    return this.deps.host() !== undefined;
   }
 
   private log(sessionId: string): SessionLogRpc & SessionLogRpcAdded {
@@ -335,7 +302,10 @@ export class ComputerSessionsApi {
     return ns.getByName(sessionId) as unknown as SessionLogRpc & SessionLogRpcAdded;
   }
 
-  /** The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns. */
+  /**
+   * The Session object from the row as it was last written. Left for the Work API's context (work/briefs.ts)
+   * and the export; the session API reads Org. `fresh` (a writer's result) wins for what the log owns.
+   */
   compose(row: ApiRow, fresh?: Partial<Session>): Session {
     const summary = row.summary ? (JSON.parse(row.summary) as LogSummary) : null;
     const owner: Person = { id: row.ownerUserId ?? "", name: row.ownerName ?? "", email: row.ownerEmail };
@@ -428,33 +398,16 @@ export class ComputerSessionsApi {
   // ---------------------------------------------------------------- operations
 
   async handle(caller: ApiCaller, op: ApiOp): Promise<ApiReply> {
-    // Gated off, the organization is v3: nothing is observed, stored or sent to its host. `me` still answers (opc's login check).
-    if (op.op !== "me" && !this.deps.enabled()) {
-      return { status: 409, error: { code: "feature_unavailable", message: "The sessions API is not enabled for this organization yet.", feature: "sessions" } };
-    }
     if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.member);
-    if (caller.admin !== undefined) this.noteAdmin(caller.member, caller.admin);
     switch (op.op) {
       case "me":
         return this.me(caller);
-      case "create":
-        return this.create(caller, op.body, op.idempotencyKey);
-      case "list":
-        await this.attachLinked();
-        return this.list(caller, op.query);
-      case "get":
-        return this.get(caller, op.sessionId, op.minSeq);
       case "access": {
         const row = this.visible(caller, op.sessionId);
-        return row ? { status: 200, body: { sessionId: row.sessionId, lastSeq: row.lastSeq } } : notFound();
+        return row ? { status: 200, body: { sessionId: row.sessionId } } : notFound();
       }
       case "call":
         return this.call(caller, op.sessionId, op.method, op.params, op.idempotencyKey);
-      case "patch":
-        return this.patch(caller, op.sessionId, op.body, op.idempotencyKey);
-      case "aside.set":
-      case "aside.clear":
-        return this.aside(caller, op);
       case "ticket":
         return this.ticket(caller, op.body);
     }
@@ -477,146 +430,6 @@ export class ComputerSessionsApi {
     };
   }
 
-  private async create(caller: ApiCaller, body: unknown, idempotencyKey?: string): Promise<ApiReply> {
-    const input = validateCreate(body);
-    if ("error" in input) return input.error;
-    const hash = await sha256Hex(stableJson(input.value));
-    const v = input.value;
-    if (idempotencyKey) {
-      const record = this.idempotency(caller.member, "create", idempotencyKey);
-      if (record) {
-        if (record.hash !== hash) return conflict("idempotency_conflict", "This Idempotency-Key was used with a different body.");
-        const stored = JSON.parse(record.body) as { sessionId: string; turn: unknown; delivery: unknown; seq: number };
-        const row = this.row(stored.sessionId);
-        if (row) {
-          // The operation's result now (idempotency.mdx): the turn as the log has it, else as first answered.
-          const turnId = (stored.turn as { id?: unknown } | null)?.id;
-          const now = typeof turnId === "string" ? await this.log(stored.sessionId).turn(turnId, {}) : null;
-          const turn = now?.ok ? now.turn : stored.turn;
-          return { status: 200, body: { session: this.compose(row), turn, delivery: stored.delivery, duplicate: true, seq: stored.seq } };
-        }
-      }
-    }
-    const id = v.id ?? mintId("cs");
-    let row = this.row(id);
-    // The same create again (same id, body and member, e.g. a retry whose key the edge dropped): finish it.
-    const repeat = row !== undefined && row.createHash === hash && row.ownerUserId === caller.member;
-    if (row && !repeat) return conflict("id_conflict", `${id} belongs to another session.`);
-    // No computer yet: the first session started outside Slack brings it to life (unavailable() wakes, which creates it),
-    // so a web user need not install Slack first. Only past the credit check, so an org that cannot run boots no VM.
-    const firstComputer = this.deps.computerStatus() === "not_set_up";
-    if (v.input !== undefined || firstComputer) {
-      const refused = await this.admission();
-      if (refused) return refused;
-    }
-    if (!this.v4Host()) return this.unavailable();
-
-    if (!row) {
-      const now = this.now();
-      const title = v.title ?? (v.input ? titleFrom(v.input) : "Untitled");
-      this.deps.sql.exec(
-        `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, mode, model, created_at, updated_at,
-           session_id, origin_type, origin_client, owner_user_id, owner_name, owner_email, effort, speed, metadata, create_hash,
-           api_status, last_active_at)
-         VALUES (?, '', '', '', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?)`,
-        id,
-        title,
-        v.mode ?? DEFAULT_MODE,
-        v.model ?? MODELS[0]!.id,
-        now,
-        now,
-        id,
-        caller.via,
-        caller.client,
-        caller.member,
-        caller.name,
-        caller.email,
-        v.effort ?? null,
-        v.speed ?? null,
-        v.metadata ? JSON.stringify(v.metadata) : null,
-        hash,
-        now,
-      );
-      row = this.row(id)!;
-      this.sendAccess({ sessionId: id, originType: "api", ownerUserId: caller.member });
-    }
-
-    let turn: unknown = null;
-    let delivery: unknown = null;
-    let seq = row.lastSeq;
-    let duplicate = false;
-    if (v.input !== undefined) {
-      const outcome = await this.hostCall({
-        t: "api",
-        id: crypto.randomUUID(),
-        sessionId: id,
-        method: "turns.send",
-        params: { sessionId: id, input: v.input, ifBusy: "queue" },
-        actor: this.actor(caller),
-        member: caller.member,
-        // One turn per create, whatever retries: the writer's idempotency keeps it.
-        idempotencyKey: idempotencyKey ?? `create:${id}`,
-        requestId: caller.requestId,
-        session: this.spec(row),
-        epoch: row.logEpoch,
-        lastSeq: row.lastSeq,
-      });
-      if (outcome.error) return hostError(outcome.error);
-      const result = outcome.result as { turn: unknown; delivery: unknown; seq: number; duplicate?: boolean };
-      ({ turn, delivery, seq } = result);
-      duplicate = repeat && result.duplicate === true;
-    } else if (!repeat) {
-      const outcome = await this.startSession(row);
-      if (outcome.error) return hostError(outcome.error);
-    } else {
-      duplicate = true;
-    }
-    if (idempotencyKey) this.remember(caller.member, "create", idempotencyKey, hash, { sessionId: id, turn, delivery, seq });
-    return { status: duplicate ? 200 : 201, body: { session: this.compose(this.row(id) ?? row), turn, delivery, duplicate, seq } };
-  }
-
-  /** The host has no spec of the session: `start`, after an epoch send in flight (the host adopts the epoch first), with the row as it is then. */
-  private async wake(sessionId: string): Promise<void> {
-    await this.epochSends.get(sessionId);
-    const row = this.row(sessionId);
-    if (row) await this.startSession(row);
-  }
-
-  /**
-   * A session with no first message, or one the host's writer woke for a queued turn (`wake`): the host claims a
-   * spare and forks for it (answered by `started`).
-   */
-  private async startSession(row: ApiRow): Promise<HostOutcome> {
-    const id = crypto.randomUUID();
-    const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
-    if (routed?.error) return { error: routed.error };
-    // With the runner, as a Slack delivery's: a later `secrets` frame finds no runner to take it (host/main.ts).
-    const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
-    const sent = this.deps.send({
-      t: "start", id, session: routed?.session ?? this.spec(row), epoch: row.logEpoch, lastSeq: row.lastSeq, ...(secrets ? { secrets } : {}),
-    });
-    if (!sent) return { error: hostLost() };
-    // Nobody waits for it; a refusal is logged (the session stays `starting` until a send).
-    this.pending.set(id, {
-      resolve: (outcome) => {
-        if (outcome.error) console.warn(JSON.stringify({ level: "warn", event: "computer.api_start_failed", sessionId: row.sessionId, code: outcome.error.code }));
-      },
-      timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS),
-    });
-    return {};
-  }
-
-  private async get(caller: ApiCaller, sessionId: string, minSeq?: number): Promise<ApiReply> {
-    let row = this.visible(caller, sessionId);
-    if (!row) return notFound();
-    if (minSeq !== undefined && row.lastSeq < minSeq) {
-      await this.waitSeq(sessionId, minSeq, MIN_SEQ_WAIT_MS);
-      row = this.row(sessionId)!;
-      if (row.lastSeq < minSeq) return { status: 503, error: { code: "unavailable", message: `The session has not reached seq ${minSeq} yet.`, retryAfterMs: 500 } };
-    }
-    return { status: 200, body: { session: this.compose(row) } };
-  }
-
   private async call(caller: ApiCaller, sessionId: string, method: WriteMethod, params: Record<string, unknown>, idempotencyKey?: string): Promise<ApiReply> {
     const row = this.visible(caller, sessionId);
     if (!row) return notFound();
@@ -625,7 +438,7 @@ export class ComputerSessionsApi {
       if (refused) return refused;
     }
     if (!this.v4Host()) return this.unavailable();
-    const before = row.lastSeq;
+    const at = await this.log(sessionId).inbox();
     const outcome = await this.hostCall({
       t: "api",
       id: crypto.randomUUID(),
@@ -637,116 +450,15 @@ export class ComputerSessionsApi {
       ...(idempotencyKey ? { idempotencyKey } : {}),
       requestId: caller.requestId,
       session: this.spec(row),
-      epoch: row.logEpoch,
-      lastSeq: row.lastSeq,
+      epoch: at.epoch,
+      lastSeq: at.lastSeq,
     });
     if (outcome.error) return hostError(outcome.error);
     const result = { ...(outcome.result as Record<string, unknown>) };
-    // A new message brings an archived session back (sessions.mdx#update-a-session).
-    if (method === "turns.send" && row.archived) this.deps.sql.exec("UPDATE sessions SET archived = 0 WHERE session_id = ?", sessionId);
-    if (result.session && typeof result.session === "object") result.session = this.compose(this.row(sessionId) ?? row, result.session as Partial<Session>);
     let status = 200;
     if (method === "turns.send" || method === "sessions.compact") status = result.duplicate === true ? 200 : 202;
-    else if (ACTS.has(method)) status = typeof result.seq === "number" && result.seq > before ? 202 : 200;
+    else if (ACTS.has(method)) status = typeof result.seq === "number" && result.seq > at.lastSeq ? 202 : 200;
     return { status, body: result };
-  }
-
-  private async patch(caller: ApiCaller, sessionId: string, body: unknown, idempotencyKey?: string): Promise<ApiReply> {
-    const row = this.visible(caller, sessionId);
-    if (!row) return notFound();
-    const parsed = validatePatch(body);
-    if ("error" in parsed) return parsed.error;
-    const p = parsed.value;
-    const settings = checkSettings(
-      { ...(p.model !== undefined ? { model: p.model } : {}), ...(p.effort !== undefined ? { effort: p.effort } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) },
-      { model: row.model, effort: row.effort },
-    );
-    if (!settings.ok) return { status: 400, error: { code: settings.code, message: settings.message, field: settings.field } };
-    let metadata: Record<string, string> | undefined;
-    if (p.metadata) {
-      metadata = parseMetadata(row.metadata);
-      for (const [k, value] of Object.entries(p.metadata)) {
-        if (value === null) delete metadata[k];
-        else metadata[k] = value;
-      }
-      if (Object.keys(metadata).length > 20) return invalid("metadata", "At most 20 metadata keys.");
-    }
-    const effort = settings.effort;
-    const forWriter = p.title !== undefined || p.model !== undefined || p.effort !== undefined || p.mode !== undefined || p.speed !== undefined;
-    let fresh: Partial<Session> | undefined;
-    let seq = row.lastSeq;
-    if (this.v4Host()) {
-      const outcome = await this.hostCall({
-        t: "api",
-        id: crypto.randomUUID(),
-        sessionId,
-        method: "sessions.update",
-        params: {
-          sessionId,
-          ...(p.title !== undefined ? { title: p.title } : {}),
-          ...(p.model !== undefined ? { model: p.model } : {}),
-          ...(effort !== undefined && effort !== null ? { effort } : {}),
-          ...(p.mode !== undefined ? { mode: p.mode } : {}),
-          ...(p.speed !== undefined ? { speed: p.speed } : {}),
-          ...(p.archived !== undefined ? { archived: p.archived } : {}),
-          ...(p.metadata ? { metadata: p.metadata } : {}),
-        },
-        actor: this.actor(caller),
-        member: caller.member,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-        requestId: caller.requestId,
-        session: this.spec(row),
-        epoch: row.logEpoch,
-        lastSeq: row.lastSeq,
-      });
-      if (outcome.error) return hostError(outcome.error);
-      const result = outcome.result as { session?: Partial<Session>; seq?: number };
-      fresh = result.session;
-      if (typeof result.seq === "number") seq = result.seq;
-    } else if (forWriter) {
-      return this.unavailable();
-    }
-    // The row follows at once (lists read it); the summary confirms it later, monotonically.
-    const isSlack = row.originType === "slack";
-    this.applied.delete(sessionId);
-    this.deps.sql.exec(
-      `UPDATE sessions SET title = COALESCE(?, title), model = COALESCE(?, model), mode = COALESCE(?, mode),
-         effort = CASE WHEN ? THEN ? ELSE effort END, speed = COALESCE(?, speed), archived = COALESCE(?, archived),
-         metadata = COALESCE(?, metadata)
-       WHERE session_id = ?`,
-      isSlack ? null : (p.title ?? null),
-      isSlack ? null : (p.model ?? null),
-      isSlack ? null : (p.mode ?? null),
-      isSlack || effort === undefined ? 0 : 1,
-      effort ?? null,
-      isSlack ? null : (p.speed ?? null),
-      p.archived === undefined ? null : p.archived ? 1 : 0,
-      metadata ? JSON.stringify(metadata) : null,
-      sessionId,
-    );
-    return { status: 200, body: { session: this.compose(this.row(sessionId)!, fresh), seq } };
-  }
-
-  /**
-   * Set aside (work-tracking 3.8): the owner parks the session's current ask in triage. Only the
-   * row's column: no journal event, no host call, last activity unmoved. A newer ask has another
-   * ref, so the session comes back by itself.
-   */
-  private aside(caller: ApiCaller, op: Extract<ApiOp, { op: "aside.set" | "aside.clear" }>): ApiReply {
-    const row = this.visible(caller, op.sessionId);
-    if (!row) return notFound();
-    if (row.ownerUserId !== caller.member) {
-      return { status: 403, error: { code: "forbidden", message: "Only the session's owner can set it aside.", reason: "aside_owner_only" } };
-    }
-    let ref: string | null = null;
-    if (op.op === "aside.set") {
-      const input = op.body;
-      const value = input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>).ref : undefined;
-      if (typeof value !== "string" || !/^[\x21-\x7e]{1,255}$/.test(value)) return invalid("ref", "ref is the id of what is set aside: 1 to 255 printable characters.");
-      ref = value;
-    }
-    this.deps.sql.exec("UPDATE sessions SET aside_ref = ? WHERE session_id = ?", ref, op.sessionId);
-    return { status: 200, body: { session: this.compose(this.row(op.sessionId)!) } };
   }
 
   private async ticket(caller: ApiCaller, body: unknown): Promise<ApiReply> {
@@ -798,89 +510,6 @@ export class ComputerSessionsApi {
     }
   }
 
-  private list(caller: ApiCaller, query: Array<[string, string]>): ApiReply {
-    const q = new Map<string, string>();
-    const metadata: Array<[string, string]> = [];
-    for (const [name, value] of query) {
-      const m = /^metadata\[(.{1,40})\]$/.exec(name);
-      if (m) metadata.push([m[1]!, value]);
-      else q.set(name, value);
-    }
-    for (const name of q.keys()) {
-      if (!["owner", "status", "origin", "archived", "q", "order", "limit", "cursor"].includes(name)) return invalid(name, `Unknown query parameter ${name}.`);
-    }
-    const where = ["session_id IS NOT NULL", "(origin_type != 'slack' OR owner_user_id = ?)"];
-    const args: SqlStorageValue[] = [caller.member];
-    const owner = q.get("owner") ?? "me";
-    if (owner === "me") {
-      where.push("owner_user_id = ?");
-      args.push(caller.member);
-    } else if (owner !== "anyone") {
-      if (!/^usr_[0-9a-z]{1,64}$/.test(owner)) return invalid("owner", "owner is me, anyone or a member id.");
-      where.push("owner_user_id = ?");
-      args.push(owner);
-    }
-    const csv = (name: string, allowed: readonly string[]): string[] | ApiReply => {
-      const values = (q.get(name) ?? "").split(",").filter(Boolean);
-      const bad = values.find((x) => !allowed.includes(x));
-      return bad ? invalid(name, `${name} must be among ${allowed.join(", ")}.`) : values;
-    };
-    const statuses = csv("status", ["starting", "running", "waiting", "idle", "suspended"]);
-    if (!Array.isArray(statuses)) return statuses;
-    if (statuses.length) {
-      // The status compose shows: the API's, else the runner's (statusOfRunner).
-      where.push(`${STATUS_SQL} IN (${statuses.map(() => "?").join(",")})`);
-      args.push(...statuses);
-    }
-    const origins = (q.get("origin") ?? "").split(",").filter(Boolean);
-    if (origins.length) {
-      where.push(`origin_type IN (${origins.map(() => "?").join(",")})`);
-      args.push(...origins);
-    }
-    const archived = q.get("archived") ?? "false";
-    if (archived === "false" || archived === "true") {
-      where.push("archived = ?");
-      args.push(archived === "true" ? 1 : 0);
-    } else if (archived !== "all") return invalid("archived", "archived is false, true or all.");
-    for (const [k, value] of metadata) {
-      where.push("json_extract(metadata, ?) = ?");
-      args.push(`$."${k.replace(/["\\]/g, "")}"`, value);
-    }
-    const text = q.get("q");
-    if (text) {
-      where.push("title LIKE ? ESCAPE '\\'");
-      args.push(`%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
-    }
-    const order = q.get("order") ?? "active";
-    if (order !== "active" && order !== "created") return invalid("order", "order is active or created.");
-    const column = order === "active" ? "COALESCE(last_active_at, updated_at)" : "created_at";
-    const limit = q.has("limit") ? Number(q.get("limit")) : 20;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) return invalid("limit", "limit is 1 to 100.");
-    // The cursor binds the filters it was made under (sessions.mdx: another set is invalid_cursor).
-    const filter = fnv1a(
-      JSON.stringify([owner, [...statuses].sort(), [...origins].sort(), archived, [...metadata].sort(), text ?? ""]),
-    );
-    const cursor = q.get("cursor");
-    if (cursor) {
-      const c = decodeCursor(cursor, order, filter);
-      if (!c) return { status: 400, error: { code: "invalid_cursor", message: "The cursor is not valid for this list." } };
-      where.push(`(${column} < ? OR (${column} = ? AND session_id < ?))`);
-      args.push(c.at, c.at, c.id);
-    }
-    const rows = [
-      ...this.deps.sql.exec<Record<string, SqlStorageValue>>(
-        `${ROW_SELECT} WHERE ${where.join(" AND ")} ORDER BY ${column} DESC, session_id DESC LIMIT ?`,
-        ...args,
-        limit + 1,
-      ),
-    ] as unknown as ApiRow[];
-    const page = rows.slice(0, limit);
-    const last = page[page.length - 1];
-    const nextCursor =
-      rows.length > limit && last ? encodeCursor(order, order === "active" ? (last.lastActiveAt ?? last.updatedAt) : last.createdAt, last.sessionId, filter) : null;
-    return { status: 200, body: { sessions: page.map((row) => this.compose(row)), nextCursor } };
-  }
-
   // ---------------------------------------------------------------- tracks and threads (spec 36.3)
 
   /** One drain per session at a time; `again` is the one follow-up queued behind it. */
@@ -913,10 +542,10 @@ export class ComputerSessionsApi {
     } else {
       this.deps.sql.exec(
         `INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, mode, model, effort, speed, metadata, role,
-           created_at, updated_at, session_id, origin_type, origin_client, owner_user_id, owner_name, owner_email, api_status, last_active_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?)`,
+           created_at, updated_at, session_id, origin_type, origin_client, owner_user_id, owner_name, owner_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         key, slack?.teamId ?? "", slack?.channelId ?? "", slack?.threadTs ?? "", slackUser,
-        ...set, now, now, s.id, s.origin.type, s.origin.client, member, s.owner.name || null, s.owner.email, now,
+        ...set, now, now, s.id, s.origin.type, s.origin.client, member, s.owner.name || null, s.owner.email,
       );
     }
     const row = this.row(s.id)!;
@@ -1250,15 +879,8 @@ export class ComputerSessionsApi {
   }
 
   private async hostCallNow(frame: Extract<CalvinGatewayToHost, { t: "api" }>, note?: HostCallNote): Promise<HostOutcome> {
-    const key = frame.idempotencyKey ? [frame.sessionId, frame.member ?? "", frame.method, frame.idempotencyKey].join("\n") : undefined;
-    const earlier = key ? this.keyed.get(key) : undefined;
-    if (earlier) {
-      if (note) (note.replayed = true), (note.wait = this.answerWait(frame.sessionId, false));
-      return this.awaitAnswer(earlier.result, frame.sessionId, false);
-    }
     let resolve!: (outcome: HostOutcome) => void;
     const result = new Promise<HostOutcome>((r) => (resolve = r));
-    if (key) this.keyed.set(key, { id: frame.id, result });
     const moving = this.epochSends.get(frame.sessionId);
     if (moving) {
       // The host hears the new epoch from `epoch` first; this frame then carries the row as it is now.
@@ -1266,7 +888,10 @@ export class ComputerSessionsApi {
       await moving;
       if (note) (note.held = true), (note.heldMs = performance.now() - heldAt);
       const row = this.row(frame.sessionId);
-      if (row) frame = { ...frame, epoch: row.logEpoch, lastSeq: row.lastSeq, ...(frame.session ? { session: this.spec(row) } : {}) };
+      if (row) {
+        const at = await this.log(frame.sessionId).inbox();
+        frame = { ...frame, epoch: at.epoch, lastSeq: at.lastSeq, ...(frame.session ? { session: this.spec(row) } : {}) };
+      }
     }
     const wait = this.answerWait(frame.sessionId, moving !== undefined);
     if (note) note.wait = wait;
@@ -1274,7 +899,6 @@ export class ComputerSessionsApi {
       const routed = await this.deps.routeSession(frame.session, frame.member).catch(() => ({ session: frame.session!, error: hostLost() }));
       if (routed.error) {
         const outcome = { error: routed.error };
-        if (key && this.keyed.get(key)?.id === frame.id) this.keyed.delete(key);
         resolve(outcome);
         return outcome;
       }
@@ -1282,13 +906,9 @@ export class ComputerSessionsApi {
     }
     const sent = this.deps.send(frame);
     if (note) note.sentAt = performance.now();
-    if (!sent) {
-      if (key && this.keyed.get(key)?.id === frame.id) this.keyed.delete(key);
-      return { error: hostLost() };
-    }
-    // Unkeyed: the pending entry is the client's wait. Keyed: it outlives it, for a retry to take.
-    this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost() }), key ? KEYED_CALL_KEEP_MS : wait), ...(key ? { key } : {}) });
-    return key ? this.awaitAnswer(result, frame.sessionId, moving !== undefined, wait) : result;
+    if (!sent) return { error: hostLost() };
+    this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost() }), wait) });
+    return result;
   }
 
   private answerWait(sessionId: string, held: boolean): number {
@@ -1296,22 +916,11 @@ export class ComputerSessionsApi {
     return moving ? HOST_CALL_HELD_TIMEOUT_MS : HOST_CALL_TIMEOUT_MS;
   }
 
-  private async awaitAnswer(result: Promise<HostOutcome>, sessionId: string, held: boolean, wait = this.answerWait(sessionId, held)): Promise<HostOutcome> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<HostOutcome>((r) => (timer = setTimeout(() => r({ error: hostLost() }), wait)));
-    try {
-      return await Promise.race([result, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   private settle(id: string, outcome: HostOutcome): void {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
     clearTimeout(pending.timer);
-    if (pending.key && this.keyed.get(pending.key)?.id === id) this.keyed.delete(pending.key);
     pending.resolve(outcome);
   }
 
@@ -1328,7 +937,11 @@ export class ComputerSessionsApi {
         await this.journal(frame.sessionId, frame.epoch, frame.events);
         return true;
       case "wake":
-        void this.wake(frame.sessionId);
+        // The host has no spec of the session: owed a start, as one sent while it was away.
+        if (this.hasRow(frame.sessionId)) {
+          this.owe("startOwed", frame.sessionId);
+          this.deps.waitUntil(this.started(frame.sessionId).catch(() => undefined));
+        }
         return true;
       case "delta": {
         // Never acknowledged, never stored; dropped for a session with no runner row here (spec 36.3).
@@ -1340,8 +953,8 @@ export class ComputerSessionsApi {
         return true;
       }
       case "subagent-progress": {
-        const row = this.row(frame.sessionId);
-        if (row && frame.epoch === row.logEpoch && Array.isArray(frame.progress)) {
+        // The log fences an older epoch itself.
+        if (this.hasRow(frame.sessionId) && Array.isArray(frame.progress)) {
           this.deps.waitUntil(
             this.log(frame.sessionId)
               .progress({ sessionId: frame.sessionId, organizationId: this.deps.organizationId() }, frame.epoch, frame.progress)
@@ -1403,7 +1016,7 @@ export class ComputerSessionsApi {
 
   private appended(sessionId: string, epoch: number, result: AppendResult): void {
     if (result.ok) {
-      this.applySummary(sessionId, result.summary);
+      this.mirror(sessionId, result.summary);
       this.deps.send({ t: "journal-ack", sessionId, epoch, seq: result.ack });
       return;
     }
@@ -1423,114 +1036,32 @@ export class ComputerSessionsApi {
     }
   }
 
-  /**
-   * What applySummary last wrote per session: the row's epoch and the summary minus its per-batch
-   * fields. Most batches change only lastSeq (and lastActiveAt); those take a 4-column UPDATE.
-   * Dropped wherever the row's mirrored columns are written outside applySummary. Bounded.
-   */
-  private readonly applied = new Map<string, { epoch: number; epochStartSeq: number; body: string }>();
-
   /** Whether this Computer holds the session's runner row: a read by the unique index. */
   private hasRow(sessionId: string): boolean {
     return typeof sessionId === "string" && [...this.deps.sql.exec("SELECT 1 FROM sessions WHERE session_id = ?", sessionId)].length > 0;
   }
 
-  private identity(sessionId: string): { sessionId: string; organizationId: string } {
-    return { sessionId, organizationId: this.deps.organizationId() };
-  }
-
-  /** The row follows the log, never backwards in (epoch, seq). */
-  applySummary(sessionId: string, s: LogSummary): void {
-    const now = this.now();
-    const lastActive = s.lastActiveAt ? Date.parse(s.lastActiveAt) : null;
-    const { lastSeq: _seq, lastActiveAt: _at, syncedAt: _synced, ...content } = s;
-    const body = JSON.stringify(content);
-    const prior = this.applied.get(sessionId);
-    if (prior && prior.epoch === s.logEpoch && prior.epochStartSeq === s.epochStartSeq && prior.body === body) {
-      // Same summary but for the cursor: the stored summary's lastSeq/lastActiveAt are never read (compose takes the columns).
-      this.deps.sql.exec(
-        `UPDATE sessions SET last_seq = ?, last_active_at = COALESCE(?, last_active_at), synced_at = ?, updated_at = MAX(updated_at, ?)
-         WHERE session_id = ? AND log_epoch = ? AND last_seq <= ?`,
-        s.lastSeq,
-        lastActive,
-        now,
-        lastActive ?? 0,
-        sessionId,
-        s.logEpoch,
-        s.lastSeq,
-      );
-      this.reached(sessionId, s.lastSeq);
-      return;
-    }
+  /** The runner's facts the log's summary carries (spec 35.4): the open turn and the settings. Nothing else is kept here. */
+  private mirror(sessionId: string, s: LogSummary): void {
     const settings = s.settings;
-    const written = this.deps.sql.exec(
-      `UPDATE sessions SET summary = ?, last_seq = ?, log_epoch = ?, epoch_start_seq = ?,
-         api_status = COALESCE(?, api_status), active_turn_id = ?, subagents = MAX(subagents, ?),
-         last_active_at = COALESCE(?, last_active_at), synced_at = ?, updated_at = MAX(updated_at, ?),
-         title = CASE WHEN origin_type != 'slack' AND ? IS NOT NULL THEN ? ELSE title END,
-         model = CASE WHEN origin_type != 'slack' AND ? IS NOT NULL THEN ? ELSE model END,
-         mode = CASE WHEN origin_type != 'slack' AND ? IS NOT NULL THEN ? ELSE mode END,
-         effort = CASE WHEN origin_type != 'slack' AND ? THEN ? ELSE effort END,
-         speed = CASE WHEN origin_type != 'slack' AND ? IS NOT NULL THEN ? ELSE speed END
-       WHERE session_id = ? AND (log_epoch < ? OR (log_epoch = ? AND last_seq <= ?))`,
-      JSON.stringify(s),
-      s.lastSeq,
-      s.logEpoch,
-      s.epochStartSeq,
-      s.status,
+    this.deps.sql.exec(
+      `UPDATE sessions SET active_turn_id = ?, updated_at = ?,
+         model = COALESCE(?, model), mode = COALESCE(?, mode), speed = COALESCE(?, speed),
+         effort = CASE WHEN ? THEN ? ELSE effort END
+       WHERE session_id = ?`,
       s.activeTurnId,
-      0,
-      lastActive,
-      now,
-      lastActive ?? 0,
-      s.title,
-      s.title,
-      settings?.model ?? null,
+      this.now(),
       settings?.model ?? null,
       settings?.mode ?? null,
-      settings?.mode ?? null,
+      settings?.speed ?? null,
       settings ? 1 : 0,
       settings?.effort ?? null,
-      settings?.speed ?? null,
-      settings?.speed ?? null,
       sessionId,
-      s.logEpoch,
-      s.logEpoch,
-      s.lastSeq,
-    ).rowsWritten;
-    if (written > 0) {
-      if (!prior && this.applied.size >= APPLIED_MAX) this.applied.delete(this.applied.keys().next().value!);
-      this.applied.set(sessionId, { epoch: s.logEpoch, epochStartSeq: s.epochStartSeq, body });
-    } else {
-      this.applied.delete(sessionId);
-    }
-    this.reached(sessionId, s.lastSeq);
+    );
   }
 
-  /** Wakes the `minSeq` waiters `reached` satisfies. */
-  private reached(sessionId: string, reached: number): void {
-    const list = this.waiters.get(sessionId);
-    if (!list) return;
-    const left = list.filter((w) => {
-      if (w.seq > reached) return true;
-      w.done();
-      return false;
-    });
-    if (left.length) this.waiters.set(sessionId, left);
-    else this.waiters.delete(sessionId);
-  }
-
-  private waitSeq(sessionId: string, seq: number, ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(done, ms);
-      function done() {
-        clearTimeout(timer);
-        resolve();
-      }
-      const list = this.waiters.get(sessionId) ?? [];
-      list.push({ seq, done });
-      this.waiters.set(sessionId, list);
-    });
+  private identity(sessionId: string): { sessionId: string; organizationId: string } {
+    return { sessionId, organizationId: this.deps.organizationId() };
   }
 
   /** The host's socket closed: what waits on it fails now; a writer silent past RECOVER_AFTER_MS is recovered. */
@@ -1540,59 +1071,6 @@ export class ComputerSessionsApi {
     }
     if (!this.deps.setting("hostGoneAt")) this.deps.put("hostGoneAt", String(this.now()));
     if (this.activeCount() > 0) this.deps.waitUntil(this.deps.scheduleRecover(this.now() + RECOVER_AFTER_MS));
-  }
-
-  /**
-   * The organization's admins (`usr_…`), as last seen on their own API calls (the edge asserts each caller's role;
-   * blue has no membership list). A promotion or demotion takes effect on that member's next call.
-   */
-  private adminsCache: string[] | null = null;
-
-  private admins(): string[] {
-    if (!this.adminsCache) {
-      try {
-        const parsed: unknown = JSON.parse(this.deps.setting("apiAdmins") ?? "[]");
-        this.adminsCache = Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
-      } catch {
-        this.adminsCache = [];
-      }
-    }
-    return this.adminsCache;
-  }
-
-  /** Whether organization member `member` (`usr_…`) is an admin, as last seen on the dashboard (work 112: session roles). */
-  isAdmin(member: string): boolean {
-    return this.admins().includes(member);
-  }
-
-  /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
-  private noteAdmin(member: string, admin: boolean): void {
-    const admins = this.admins();
-    if (admins.includes(member) === admin) return;
-    this.adminsCache = admin ? [...admins, member].sort() : admins.filter((m) => m !== member);
-    this.deps.put("apiAdmins", JSON.stringify(this.adminsCache));
-    if (this.v4Host()) this.sendAllAccess();
-  }
-
-  /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
-  private sendAccess(row: { sessionId: string; originType: string; ownerUserId: string | null }): void {
-    const admins = this.admins();
-    const extra = admins.length ? { admins } : {};
-    if (row.originType !== "slack") this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: null, ...extra } });
-    else if (row.ownerUserId) this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId, members: [row.ownerUserId], ...extra } });
-  }
-
-  /**
-   * Every session's access list, one frame each (the v4 contract after `welcome`; the host keeps them in
-   * memory only). Rows that make no frame (Slack sessions with no linked owner, most of a busy
-   * workspace's threads) are left out by the query, not read and skipped.
-   */
-  private sendAllAccess(): void {
-    const rows = this.deps.sql.exec<{ sessionId: string; originType: string; ownerUserId: string | null }>(
-      `SELECT session_id AS sessionId, origin_type AS originType, owner_user_id AS ownerUserId FROM sessions
-       WHERE session_id IS NOT NULL AND (origin_type != 'slack' OR owner_user_id IS NOT NULL)`,
-    );
-    for (const row of rows) this.sendAccess(row);
   }
 
   /**
@@ -1610,7 +1088,6 @@ export class ComputerSessionsApi {
       if (!this.hasRow(j.sessionId)) continue;
       this.helloEpoch(j.sessionId, j.epoch, Number.isInteger(j.lastSeq) ? j.lastSeq : 0);
     }
-    this.sendAllAccess();
     this.helloOwed();
     if (this.activeCount() > 0) this.deps.waitUntil(this.deps.scheduleRecover(this.now() + RECOVER_AFTER_MS));
   }
@@ -1643,9 +1120,8 @@ export class ComputerSessionsApi {
   reported(report: CalvinSessionReport): void {
     const subagents = typeof report.subagents === "number" && report.subagents > 0 ? Math.floor(report.subagents) : 0;
     this.deps.sql.exec(
-      `UPDATE sessions SET subagents = ?, api_status = CASE WHEN summary IS NULL AND session_id IS NOT NULL THEN ? ELSE api_status END WHERE runner_key = ?`,
+      "UPDATE sessions SET subagents = ? WHERE runner_key = ?",
       subagents,
-      statusOfRunner(report.status),
       report.key,
     );
     if (report.status === "stopped" || report.status === "error") {
@@ -1658,7 +1134,7 @@ export class ComputerSessionsApi {
     return (
       [
         ...this.deps.sql.exec<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM sessions WHERE session_id IS NOT NULL AND (active_turn_id IS NOT NULL OR api_status IN ('starting', 'running', 'waiting'))`,
+          `SELECT COUNT(*) AS n FROM sessions WHERE session_id IS NOT NULL AND active_turn_id IS NOT NULL`,
         ),
       ][0]?.n ?? 0
     );
@@ -1682,7 +1158,7 @@ export class ComputerSessionsApi {
       if (now - goneAt < RECOVER_AFTER_MS) return void (await this.deps.scheduleRecover(goneAt + RECOVER_AFTER_MS));
       rows = [
         ...this.deps.sql.exec<Record<string, SqlStorageValue>>(
-          `${ROW_SELECT} WHERE session_id IS NOT NULL AND (active_turn_id IS NOT NULL OR api_status IN ('starting', 'running', 'waiting'))`,
+          `${ROW_SELECT} WHERE session_id IS NOT NULL AND active_turn_id IS NOT NULL`,
         ),
       ] as unknown as ApiRow[];
     } else {
@@ -1692,11 +1168,11 @@ export class ComputerSessionsApi {
           `${ROW_SELECT} WHERE session_id IS NOT NULL AND active_turn_id IS NOT NULL AND (status IS NULL OR status IN ('stopped', 'error'))`,
         ),
       ] as unknown as ApiRow[];
-      const later = rows.filter((r) => Math.max(r.syncedAt ?? 0, r.updatedAt) > now - RECOVER_AFTER_MS);
+      const later = rows.filter((r) => r.updatedAt > now - RECOVER_AFTER_MS);
       rows = rows.filter((r) => !later.includes(r));
       deferred = later.length;
       if (later.length) {
-        const next = Math.min(...later.map((r) => Math.max(r.syncedAt ?? 0, r.updatedAt))) + RECOVER_AFTER_MS + 1;
+        const next = Math.min(...later.map((r) => r.updatedAt)) + RECOVER_AFTER_MS + 1;
         await this.deps.scheduleRecover(next);
       }
     }
@@ -1749,7 +1225,7 @@ export class ComputerSessionsApi {
       });
       if (!result.ok) continue;
       // The `epoch` frame in the same turn as the answer: no frame carrying the new epoch can go before it.
-      this.applySummary(row.sessionId, result.summary);
+      this.mirror(row.sessionId, result.summary);
       if (this.v4Host()) {
         this.sendEpoch(row.sessionId, result.tail);
         this.deps.telemetry?.recovery("epoch_sent", { sessionId: row.sessionId, reason: "recover", ok: true, data: { epoch: result.tail.epoch, events: result.tail.tail.length, attempt: 0 } });
@@ -1834,117 +1310,7 @@ export class ComputerSessionsApi {
       }
     }
   }
-
-  /**
-   * A Slack delivery's API fields (v4 host only): the session's `cs_` id, minted on its first
-   * delivery, its owner's member id once they linked the dashboard, and the log's (epoch, lastSeq).
-   */
-  async slackDelivery(key: string, ownerSlackId: string): Promise<{ sessionId: string; userId?: string; epoch: number; lastSeq: number } | null> {
-    if (!this.v4Host()) return null;
-    let row = this.rowByKey(key);
-    if (!row) return null;
-    const moving = row.sessionId ? this.epochSends.get(row.sessionId) : undefined;
-    if (moving) {
-      // The host hears the new epoch from `epoch` before this delivery carries it.
-      await moving;
-      row = this.rowByKey(key);
-      if (!row) return null;
-    }
-    const minted = !row.sessionId;
-    const linked = !row.ownerUserId ? this.deps.linkOfSlack(ownerSlackId) : undefined;
-    if (minted || linked) {
-      const member = linked ? await memberId(linked) : row.ownerUserId;
-      const { name, email } = this.slackOwner(ownerSlackId);
-      this.deps.sql.exec(
-        `UPDATE sessions SET session_id = COALESCE(session_id, ?), origin_type = 'slack', owner_user_id = COALESCE(owner_user_id, ?),
-           owner_name = COALESCE(owner_name, ?), owner_email = COALESCE(owner_email, ?) WHERE runner_key = ?`,
-        mintId("cs"),
-        member ?? null,
-        name,
-        email,
-        key,
-      );
-      row = this.rowByKey(key)!;
-      this.sendAccess({ sessionId: row.sessionId, originType: "slack", ownerUserId: row.ownerUserId });
-    }
-    return { sessionId: row.sessionId, ...(row.ownerUserId ? { userId: row.ownerUserId } : {}), epoch: row.logEpoch, lastSeq: row.lastSeq };
-  }
-
-  /** A Slack person as a session's owner names them: no " via Computer", no placeholder email. */
-  private slackOwner(slackUserId: string): { name: string | null; email: string | null } {
-    const person = this.deps.slackPerson(slackUserId);
-    const name = person.name ?? (person.gitName.endsWith(" via Computer") ? person.gitName.slice(0, -" via Computer".length) : null);
-    return { name, email: person.gitEmail.endsWith("@users.noreply.opencomputer.dev") ? null : person.gitEmail };
-  }
-
-  /**
-   * Slack sessions whose owner linked a dashboard user after their last message become that user's,
-   * as their next delivery would make them (slackDelivery): a link reaches back to the threads before it.
-   * Runs before each list; it reads one row per Slack person with unowned sessions, so it stays cheap.
-   */
-  private async attachLinked(): Promise<void> {
-    const unowned = [
-      ...this.deps.sql.exec<{ ownerId: string }>(
-        `SELECT DISTINCT owner_id AS ownerId FROM sessions
-         WHERE session_id IS NOT NULL AND origin_type = 'slack' AND owner_user_id IS NULL AND owner_id IS NOT NULL`,
-      ),
-    ];
-    for (const { ownerId } of unowned) {
-      const linked = this.deps.linkOfSlack(ownerId);
-      if (!linked) continue;
-      const member = await memberId(linked);
-      const { name, email } = this.slackOwner(ownerId);
-      const unownedOf = `owner_id = ? AND owner_user_id IS NULL AND session_id IS NOT NULL AND origin_type = 'slack'`;
-      const rows = [...this.deps.sql.exec<{ sessionId: string }>(`SELECT session_id AS sessionId FROM sessions WHERE ${unownedOf}`, ownerId)];
-      this.deps.sql.exec(
-        `UPDATE sessions SET owner_user_id = ?, owner_name = COALESCE(owner_name, ?), owner_email = COALESCE(owner_email, ?) WHERE ${unownedOf}`,
-        member,
-        name,
-        email,
-        ownerId,
-      );
-      if (this.v4Host()) for (const { sessionId } of rows) this.sendAccess({ sessionId, originType: "slack", ownerUserId: member });
-    }
-  }
-
-  // ---------------------------------------------------------------- idempotency
-
-  private idempotency(member: string, op: string, key: string): { hash: string; body: string } | undefined {
-    return [
-      ...this.deps.sql.exec<{ hash: string; body: string }>(
-        "SELECT hash, body FROM api_idempotency WHERE member = ? AND op = ? AND key = ? AND created_at > ?",
-        member,
-        op,
-        key,
-        this.now() - IDEMPOTENCY_TTL_MS,
-      ),
-    ][0];
-  }
-
-  private remember(member: string, op: string, key: string, hash: string, body: unknown): void {
-    const now = this.now();
-    this.deps.sql.exec(
-      "INSERT INTO api_idempotency (member, op, key, hash, body, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET hash = excluded.hash, body = excluded.body, created_at = excluded.created_at",
-      member,
-      op,
-      key,
-      hash,
-      JSON.stringify(body),
-      now,
-    );
-    if (now - this.sweptAt < IDEMPOTENCY_SWEEP_MS) return;
-    this.sweptAt = now;
-    this.deps.sql.exec("DELETE FROM api_idempotency WHERE created_at < ?", now - IDEMPOTENCY_TTL_MS);
-  }
-
-  private sweptAt = 0;
 }
-
-// ---------------------------------------------------------------- helpers
-
-/** statusOfRunner in SQL, behind api_status: the list's status filter matches what compose shows. */
-const STATUS_SQL =
-  "COALESCE(api_status, CASE status WHEN 'busy' THEN 'running' WHEN 'idle' THEN 'idle' WHEN 'starting' THEN 'starting' ELSE 'suspended' END)";
 
 /** Why an `epoch` frame is sent (sessionlog.recovery `reason`). */
 type EpochCause = "recover" | "stale" | "hello";
@@ -1967,13 +1333,6 @@ export function statusOfRunner(status: string | null): SessionStatus {
   return "suspended";
 }
 
-/** 32-bit FNV-1a, hex: a filter set's fingerprint in a cursor (not a security boundary). */
-function fnv1a(text: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
-  return (h >>> 0).toString(16);
-}
-
 function parseMetadata(raw: string | null): Record<string, string> {
   if (!raw) return {};
   try {
@@ -1981,11 +1340,6 @@ function parseMetadata(raw: string | null): Record<string, string> {
   } catch {
     return {};
   }
-}
-
-function titleFrom(input: string): string {
-  const line = input.trim().split("\n")[0] ?? "";
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line || "Untitled";
 }
 
 /** No answer from the host in time: retryable. */
@@ -2005,10 +1359,6 @@ export function attentionRef(asks: readonly Ask[]): string | null {
 
 function notFound(): ApiReply {
   return { status: 404, error: { code: "session_not_found", message: "No such session." } };
-}
-
-function conflict(code: string, message: string): ApiReply {
-  return { status: 409, error: { code, message } };
 }
 
 export function invalid(field: string, message: string, code = "invalid_request"): ApiReply {
@@ -2034,37 +1384,10 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function encodeCursor(order: string, at: number, id: string, filter: string): string {
-  return btoa(JSON.stringify({ o: order, a: at, i: id, f: filter })).replace(/=+$/, "");
-}
-
-function decodeCursor(cursor: string, order: string, filter: string): { at: number; id: string } | null {
-  try {
-    const c = JSON.parse(atob(cursor)) as { o?: unknown; a?: unknown; i?: unknown; f?: unknown };
-    if (c.o !== order || c.f !== filter || typeof c.a !== "number" || typeof c.i !== "string" || !isSessionId(c.i)) return null;
-    return { at: c.a, id: c.i };
-  } catch {
-    return null;
-  }
-}
-
 /** A session's speed: `fast` (the default, used when absent) or `standard`. */
 type Speed = "fast" | "standard";
 const isSpeed = (value: unknown): value is Speed => value === "fast" || value === "standard";
 const SPEED_MESSAGE = "speed must be fast or standard.";
-
-interface CreateInput {
-  id?: string;
-  input?: string;
-  title?: string;
-  model?: string;
-  effort?: string;
-  mode?: string;
-  speed?: Speed;
-  metadata?: Record<string, string>;
-}
-
-const CREATE_FIELDS = new Set(["id", "input", "title", "model", "effort", "mode", "speed", "metadata"]);
 
 function object(body: unknown): Record<string, unknown> | ApiReply {
   if (body === undefined || body === null) return {};
@@ -2090,38 +1413,6 @@ function metadataOf(value: unknown, nullable: boolean): Record<string, string | 
     if (!(typeof v === "string" && v.length <= 500) && !(nullable && v === null)) return invalid(`metadata.${k}`, "Metadata values are strings of at most 500 characters.");
   }
   return value as Record<string, string | null>;
-}
-
-export function validateCreate(body: unknown): { value: CreateInput } | { error: ApiReply } {
-  const input = object(body);
-  if (isReply(input)) return { error: input };
-  for (const field of Object.keys(input)) if (!CREATE_FIELDS.has(field)) return { error: invalid(field, `Unknown field ${field}.`) };
-  const value: CreateInput = {};
-  if (input.id !== undefined) {
-    if (!isSessionId(input.id)) return { error: invalid("id", "id must be cs_ and 16 lowercase Crockford base32 characters.") };
-    value.id = input.id;
-  }
-  for (const [field, min, max] of [["input", 1, 100_000], ["title", 0, 200], ["model", 1, 200], ["effort", 1, 50], ["mode", 1, 50]] as const) {
-    const s = str(input, field, min, max);
-    if (isReply(s)) return { error: s };
-    if (s !== undefined) value[field] = s;
-  }
-  if (input.speed !== undefined) {
-    if (!isSpeed(input.speed)) return { error: invalid("speed", SPEED_MESSAGE) };
-    value.speed = input.speed;
-  }
-  if (input.metadata !== undefined) {
-    const m = metadataOf(input.metadata, false);
-    if (isReply(m)) return { error: m };
-    value.metadata = m as Record<string, string>;
-  }
-  const settings = checkSettings({
-    ...(value.model !== undefined ? { model: value.model } : {}),
-    ...(value.effort !== undefined ? { effort: value.effort } : {}),
-    ...(value.mode !== undefined ? { mode: value.mode } : {}),
-  });
-  if (!settings.ok) return { error: { status: 400, error: { code: settings.code, message: settings.message, field: settings.field } } };
-  return { value };
 }
 
 interface PatchInput {

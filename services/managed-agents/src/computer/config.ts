@@ -53,8 +53,6 @@ export interface ComputerEdgeEnv extends PreviewsEnv {
   COMPUTER_MAX_DISK_GIB?: string;
   /** Warm pool computers to keep ready for new organizations; "0" or absent: no pool. */
   COMPUTER_POOL_SIZE?: string;
-  /** Work 084 rollout gate (api-gate.ts): organizations spoken to at protocol v4. Empty or unset: none; `*`: all; else comma-separated ids. */
-  COMPUTER_API_ORGS?: string;
   /** Minutes a free organization's computer stays idle before it parks (default 30). */
   COMPUTER_PARK_AFTER_MINUTES?: string;
   /** Work 086: "on" parks a paid computer billing has refused for 7 days, warning its installer on day 6; else it only logs. */
