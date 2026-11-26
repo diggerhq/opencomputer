@@ -17,6 +17,19 @@ afterEach(() => {
 });
 
 describe('SessionSecrets', () => {
+  it('drops a base URL that arrives as a secret or a redirecting name, keeps a base-URL variable', () => {
+    const s = secrets();
+    s.apply([
+      { name: 'OPENAI_BASE_URL', value: 'https://hidden.example', scope: 'session' },
+      { name: 'PIP_INDEX_URL', value: 'https://pypi.example', scope: 'session', variable: true },
+      { name: 'ANTHROPIC_API_BASE_X', value: 'x', scope: 'session', variable: true },
+      { name: 'MY_API_BASE', value: 'https://seen.example', scope: 'session', variable: true },
+    ]);
+    expect(s.names).toEqual(['MY_API_BASE']);
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined();
+    delete process.env.MY_API_BASE;
+  });
+
   it('redacts known values, and leaves short ones alone', () => {
     const s = secrets();
     s.apply([

@@ -69,7 +69,7 @@ export class SessionSecrets {
 
   /** The session's complete set of secrets, replacing the previous one. */
   apply(list: SessionSecret[]) {
-    const ok = list.filter((s) => !secretNameProblem(s.name));
+    const ok = list.filter((s) => !secretNameProblem(s.name, { variable: s.variable }));
     this.write(ok);
     for (const s of this.current) if (!ok.some((n) => n.name === s.name)) delete process.env[s.name];
     for (const s of ok) process.env[s.name] = s.file ? this.filePath(s.name) : s.value;
