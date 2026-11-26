@@ -1,0 +1,1231 @@
+{
+ "principal": {
+  "org": "org_demo",
+  "subject": "usr_igor"
+ },
+ "replies": {
+  "/feed": {
+   "protocol": 1,
+   "org": "org_demo",
+   "subject": "usr_igor",
+   "from": null,
+   "to": "f1.38",
+   "more": false,
+   "rows": [
+    {
+     "kind": "session",
+     "version": 7,
+     "id": "cs_0pmnvt9w0pba00an",
+     "title": "Why is the build slow?",
+     "status": "idle",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": null,
+     "queued": [],
+     "asks": [],
+     "subagents": [],
+     "lastTurn": {
+      "id": "tn_tpy239jy30dk",
+      "status": "completed",
+      "endedAt": "2026-11-26T18:14:49.519Z",
+      "text": null,
+      "error": null,
+      "reason": null,
+      "forced": null
+     },
+     "lastText": "The dependency cache is keyed on the lockfile’s mtime, so every run misses it. Keying it on the hash fixes it.",
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 6,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:49.313Z",
+     "lastActiveAt": "2026-11-26T18:14:49.519Z",
+     "syncedAt": "2026-11-26T18:14:49.590Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Why is the build slow?",
+     "lastAgentSeq": 5,
+     "blocked": false,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": "start"
+    },
+    {
+     "kind": "session",
+     "version": 31,
+     "id": "cs_zt3hr4eb8m5m5zp7",
+     "title": "Billing page",
+     "status": "idle",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": null,
+     "queued": [],
+     "asks": [],
+     "subagents": [],
+     "lastTurn": {
+      "id": "tn_zt3hr4eb8m5m",
+      "status": "completed",
+      "endedAt": "2026-11-26T18:14:50.308Z",
+      "text": null,
+      "error": null,
+      "reason": null,
+      "forced": null
+     },
+     "lastText": "Two threads are on it.",
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 6,
+     "logEpoch": 1,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:49.736Z",
+     "lastActiveAt": "2026-11-26T18:14:50.308Z",
+     "syncedAt": "2026-11-26T18:14:50.367Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": "agent:cs_1pvk8h0f02vysf6g",
+     "agentTitle": null,
+     "lastAgentSeq": 5,
+     "blocked": false,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": "track"
+    },
+    {
+     "kind": "session",
+     "version": 35,
+     "id": "cs_3pvsmyj1wb15ymvy",
+     "title": "Draft the billing page layout",
+     "status": "idle",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": null,
+     "queued": [],
+     "asks": [],
+     "subagents": [],
+     "lastTurn": {
+      "id": "tn_b98m3fcpv60f",
+      "status": "completed",
+      "endedAt": "2026-11-26T18:14:50.423Z",
+      "text": null,
+      "error": null,
+      "reason": null,
+      "forced": null
+     },
+     "lastText": "The layout is in PR #42: plan card, invoice table and the card form.",
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 8,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:49.969Z",
+     "lastActiveAt": "2026-11-26T18:14:50.423Z",
+     "syncedAt": "2026-11-26T18:14:50.479Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Draft the billing page layout",
+     "lastAgentSeq": 7,
+     "blocked": false,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": null
+    },
+    {
+     "kind": "session",
+     "version": 37,
+     "id": "cs_3spt93q49avhm70y",
+     "title": "Wire the billing API to Stripe",
+     "status": "waiting",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": "tn_bvfj4w8ynttk",
+     "queued": [],
+     "asks": [
+      {
+       "id": "ask_0001x29et7ku",
+       "status": "open",
+       "kind": "approval",
+       "approval": {
+        "toolName": "Bash",
+        "title": "Restart the billing service",
+        "command": "systemctl restart billing",
+        "input": {
+         "command": "systemctl restart billing"
+        }
+       },
+       "sessionId": "cs_3spt93q49avhm70y",
+       "turnId": "tn_bvfj4w8ynttk",
+       "createdAt": "2026-11-26T18:14:50.423Z",
+       "closedAt": null,
+       "closedBy": null,
+       "answer": null,
+       "question": null,
+       "secret": null
+      }
+     ],
+     "subagents": [],
+     "lastTurn": null,
+     "lastText": null,
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 7,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:50.143Z",
+     "lastActiveAt": "2026-11-26T18:14:50.423Z",
+     "syncedAt": "2026-11-26T18:14:50.529Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Wire the billing API to Stripe",
+     "lastAgentSeq": 6,
+     "blocked": true,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": null
+    },
+    {
+     "kind": "place",
+     "id": "cs_0pmnvt9w0pba00an",
+     "version": 1,
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "trackId": null,
+     "position": 1795716889313,
+     "placedBy": "user:usr_igor",
+     "parentSession": null,
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": null,
+     "readyWhat": null,
+     "readyResult": null,
+     "attention": null
+    },
+    {
+     "kind": "place",
+     "id": "cs_3spt93q49avhm70y",
+     "version": 24,
+     "sessionId": "cs_3spt93q49avhm70y",
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "position": 1795716890143,
+     "placedBy": "agent:cs_zt3hr4eb8m5m5zp7",
+     "parentSession": "cs_zt3hr4eb8m5m5zp7",
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": null,
+     "readyWhat": null,
+     "readyResult": null,
+     "attention": null
+    },
+    {
+     "kind": "place",
+     "id": "cs_3pvsmyj1wb15ymvy",
+     "version": 32,
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "position": 1795716889969,
+     "placedBy": "agent:cs_zt3hr4eb8m5m5zp7",
+     "parentSession": "cs_zt3hr4eb8m5m5zp7",
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": 3,
+     "readyWhat": "The layout PR is ready to review",
+     "readyResult": "res_vmzk5sz6fq7y6w60",
+     "attention": null
+    },
+    {
+     "kind": "track",
+     "id": "trk_f4kr1av82qwayd6t",
+     "version": 18,
+     "owner": "usr_igor",
+     "name": "Billing page",
+     "nameBy": "agent:cs_1pvk8h0f02vysf6g",
+     "formerNames": [],
+     "stand": "Layout drafted; wiring the API is waiting on a restart.",
+     "standAt": "2026-11-26T18:14:49.944Z",
+     "agentSession": "cs_zt3hr4eb8m5m5zp7",
+     "position": 1795716889736,
+     "keep": false,
+     "doneAt": null,
+     "outcome": null,
+     "createdBy": "agent:cs_1pvk8h0f02vysf6g"
+    },
+    {
+     "kind": "result",
+     "id": "res_vmzk5sz6fq7y6w60",
+     "version": 29,
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "type": "pr",
+     "ref": "https://github.com/acme/app/pull/42",
+     "title": "Billing page layout",
+     "state": null,
+     "stateAt": null,
+     "meta": null
+    },
+    {
+     "kind": "proposal",
+     "id": "prp_hf4gcyk5zyzd71d2",
+     "version": 33,
+     "type": "done",
+     "target": "cs_3pvsmyj1wb15ymvy",
+     "by": "agent:cs_3pvsmyj1wb15ymvy",
+     "what": "Opened the layout PR",
+     "args": {},
+     "state": "open",
+     "atSeq": 3
+    },
+    {
+     "kind": "doc",
+     "id": "trk_f4kr1av82qwayd6t",
+     "version": 14,
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "rev": 1,
+     "text": "## Goal\nA billing page: plan, invoices, card.\n\n## Plan\n- Page and layout\n- Stripe API wiring",
+     "spans": []
+    },
+    {
+     "kind": "read",
+     "id": "cs_0pmnvt9w0pba00an",
+     "version": 38,
+     "member": "usr_igor",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "readSeq": 1000000
+    },
+    {
+     "kind": "op",
+     "id": "op_xwp2h9c92rndb4gj",
+     "version": 12,
+     "at": "2026-11-26T18:14:49.736Z",
+     "by": "agent:cs_1pvk8h0f02vysf6g",
+     "name": "track.create",
+     "args": {
+      "tid": "trk_f4kr1av82qwayd6t",
+      "agentSessionId": "cs_zt3hr4eb8m5m5zp7",
+      "name": "Billing page",
+      "sid": null
+     },
+     "inverse": {
+      "rows": {},
+      "restore": [],
+      "dissolve": [
+       "trk_f4kr1av82qwayd6t"
+      ]
+     },
+     "fields": {
+      "rows": {},
+      "tracks": {
+       "trk_f4kr1av82qwayd6t": "present"
+      }
+     },
+     "sessionId": null,
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "atSeq": null,
+     "undoneBy": null
+    }
+   ],
+   "gone": [],
+   "version": 38,
+   "counts": {
+    "earlier": 0,
+    "trackEarlier": {}
+   }
+  },
+  "/sessions/cs_0pmnvt9w0pba00an/events": {
+   "events": [
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_1",
+     "seq": 1,
+     "createdAt": "2026-11-26T18:14:49.401Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "message.received",
+     "actor": {
+      "id": "usr_igor",
+      "name": null,
+      "via": "app",
+      "client": null
+     },
+     "data": {
+      "input": "Why is the build slow?",
+      "ifBusy": "queue",
+      "delivery": "queued",
+      "interruptedTurnIds": [],
+      "declinedAskIds": []
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_2",
+     "seq": 2,
+     "createdAt": "2026-11-26T18:14:49.401Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "idle",
+      "to": "running"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_3",
+     "seq": 3,
+     "createdAt": "2026-11-26T18:14:49.401Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "turn.started",
+     "actor": null,
+     "data": {
+      "turn": {
+       "trigger": "message"
+      }
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_4",
+     "seq": 4,
+     "createdAt": "2026-11-26T18:14:49.519Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "message.completed",
+     "actor": null,
+     "data": {
+      "text": "The dependency cache is keyed on the lockfile’s mtime, so every run misses it. Keying it on the hash fixes it."
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_5",
+     "seq": 5,
+     "createdAt": "2026-11-26T18:14:49.519Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "turn.completed",
+     "actor": null,
+     "data": {}
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_0_6",
+     "seq": 6,
+     "createdAt": "2026-11-26T18:14:49.519Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "running",
+      "to": "idle"
+     }
+    }
+   ],
+   "lastSeq": 6,
+   "hasMore": false,
+   "syncedAt": "2026-11-26T18:14:49.590Z",
+   "cursor": "e1.0.6",
+   "earlierTurns": []
+  },
+  "/sessions/cs_zt3hr4eb8m5m5zp7/events": {
+   "events": [
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_1",
+     "seq": 1,
+     "createdAt": "2026-11-26T18:14:49.799Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": "tn_zt3hr4eb8m5m",
+     "type": "message.received",
+     "actor": {
+      "id": "platform",
+      "name": null,
+      "via": "agent",
+      "client": null
+     },
+     "data": {
+      "input": "This track was made by the agent of thread cs_1pvk8h0f02vysf6g (agent:cs_1pvk8h0f02vysf6g), for usr_igor.\n\nIt has no thread yet.\n\nThe person's words:\n\nBuild the billing page, track it\n\nYou may start threads for the work it asks for.",
+      "ifBusy": "queue",
+      "delivery": "queued",
+      "interruptedTurnIds": [],
+      "declinedAskIds": []
+     }
+    },
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_2",
+     "seq": 2,
+     "createdAt": "2026-11-26T18:14:49.799Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "idle",
+      "to": "running"
+     }
+    },
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_3",
+     "seq": 3,
+     "createdAt": "2026-11-26T18:14:49.799Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": "tn_zt3hr4eb8m5m",
+     "type": "turn.started",
+     "actor": null,
+     "data": {
+      "turn": {
+       "trigger": "message"
+      }
+     }
+    },
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_4",
+     "seq": 4,
+     "createdAt": "2026-11-26T18:14:50.308Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": "tn_zt3hr4eb8m5m",
+     "type": "message.completed",
+     "actor": null,
+     "data": {
+      "text": "Two threads are on it."
+     }
+    },
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_5",
+     "seq": 5,
+     "createdAt": "2026-11-26T18:14:50.308Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": "tn_zt3hr4eb8m5m",
+     "type": "turn.completed",
+     "actor": null,
+     "data": {}
+    },
+    {
+     "id": "ev_cs_zt3hr4eb8m5m5zp7_1_6",
+     "seq": 6,
+     "createdAt": "2026-11-26T18:14:50.308Z",
+     "sessionId": "cs_zt3hr4eb8m5m5zp7",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "running",
+      "to": "idle"
+     }
+    }
+   ],
+   "lastSeq": 6,
+   "hasMore": false,
+   "syncedAt": "2026-11-26T18:14:50.367Z",
+   "cursor": "e1.1.6",
+   "earlierTurns": []
+  },
+  "/sessions/cs_3pvsmyj1wb15ymvy/events": {
+   "events": [
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_1",
+     "seq": 1,
+     "createdAt": "2026-11-26T18:14:50.052Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "message.received",
+     "actor": {
+      "id": "cs_zt3hr4eb8m5m5zp7",
+      "name": null,
+      "via": "agent",
+      "client": null
+     },
+     "data": {
+      "input": "Draft the billing page layout",
+      "ifBusy": "queue",
+      "delivery": "queued",
+      "interruptedTurnIds": [],
+      "declinedAskIds": []
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_2",
+     "seq": 2,
+     "createdAt": "2026-11-26T18:14:50.052Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "idle",
+      "to": "running"
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_3",
+     "seq": 3,
+     "createdAt": "2026-11-26T18:14:50.052Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "turn.started",
+     "actor": null,
+     "data": {
+      "turn": {
+       "trigger": "message"
+      }
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_4",
+     "seq": 4,
+     "createdAt": "2026-11-26T18:14:50.308Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "call_ndw5c26b",
+      "toolName": "bash",
+      "title": "Edit web/src/billing/Page.tsx"
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_5",
+     "seq": 5,
+     "createdAt": "2026-11-26T18:14:50.308Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "call_ndw5c26b",
+      "toolName": "bash",
+      "title": "Edit web/src/billing/Page.tsx"
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_6",
+     "seq": 6,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "message.completed",
+     "actor": null,
+     "data": {
+      "text": "The layout is in PR #42: plan card, invoice table and the card form."
+     }
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_7",
+     "seq": 7,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": "tn_b98m3fcpv60f",
+     "type": "turn.completed",
+     "actor": null,
+     "data": {}
+    },
+    {
+     "id": "ev_cs_3pvsmyj1wb15ymvy_0_8",
+     "seq": 8,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "running",
+      "to": "idle"
+     }
+    }
+   ],
+   "lastSeq": 8,
+   "hasMore": false,
+   "syncedAt": "2026-11-26T18:14:50.479Z",
+   "cursor": "e1.0.8",
+   "earlierTurns": []
+  },
+  "/sessions/cs_3spt93q49avhm70y/events": {
+   "events": [
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_1",
+     "seq": 1,
+     "createdAt": "2026-11-26T18:14:50.222Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": "tn_bvfj4w8ynttk",
+     "type": "message.received",
+     "actor": {
+      "id": "cs_zt3hr4eb8m5m5zp7",
+      "name": null,
+      "via": "agent",
+      "client": null
+     },
+     "data": {
+      "input": "Wire the billing API to Stripe",
+      "ifBusy": "queue",
+      "delivery": "queued",
+      "interruptedTurnIds": [],
+      "declinedAskIds": []
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_2",
+     "seq": 2,
+     "createdAt": "2026-11-26T18:14:50.222Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "idle",
+      "to": "running"
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_3",
+     "seq": 3,
+     "createdAt": "2026-11-26T18:14:50.222Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": "tn_bvfj4w8ynttk",
+     "type": "turn.started",
+     "actor": null,
+     "data": {
+      "turn": {
+       "trigger": "message"
+      }
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_4",
+     "seq": 4,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": "tn_bvfj4w8ynttk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "call_aes3gsl7",
+      "toolName": "bash",
+      "title": "Read services/billing/stripe.ts"
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_5",
+     "seq": 5,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": "tn_bvfj4w8ynttk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "call_aes3gsl7",
+      "toolName": "bash",
+      "title": "Read services/billing/stripe.ts"
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_6",
+     "seq": 6,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": "tn_bvfj4w8ynttk",
+     "type": "ask.opened",
+     "actor": null,
+     "data": {
+      "ask": {
+       "id": "ask_0001x29et7ku",
+       "status": "open",
+       "kind": "approval",
+       "approval": {
+        "toolName": "Bash",
+        "title": "Restart the billing service",
+        "command": "systemctl restart billing",
+        "input": {
+         "command": "systemctl restart billing"
+        }
+       }
+      }
+     }
+    },
+    {
+     "id": "ev_cs_3spt93q49avhm70y_0_7",
+     "seq": 7,
+     "createdAt": "2026-11-26T18:14:50.423Z",
+     "sessionId": "cs_3spt93q49avhm70y",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "running",
+      "to": "waiting"
+     }
+    }
+   ],
+   "lastSeq": 7,
+   "hasMore": false,
+   "syncedAt": "2026-11-26T18:14:50.529Z",
+   "cursor": "e1.0.7",
+   "earlierTurns": []
+  },
+  "/capabilities": {
+   "capabilities": {
+    "models": [
+     {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ],
+      "contextWindow": 1000000,
+      "default": true
+     },
+     {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ],
+      "contextWindow": 1000000,
+      "default": false
+     },
+     {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "efforts": [
+       "low",
+       "medium",
+       "high"
+      ],
+      "contextWindow": 200000,
+      "default": false
+     },
+     {
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ],
+      "contextWindow": 1000000,
+      "default": false
+     },
+     {
+      "id": "gpt-6.2-sol",
+      "name": "GPT-6.2 Sol (Codex)",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh"
+      ],
+      "contextWindow": 400000,
+      "default": false
+     },
+     {
+      "id": "gpt-6.2-astra",
+      "name": "GPT-6.2 Astra (Codex)",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh"
+      ],
+      "contextWindow": 400000,
+      "default": false
+     },
+     {
+      "id": "gpt-6.1-sol",
+      "name": "GPT-6.1 Sol (Codex)",
+      "efforts": [
+       "low",
+       "medium",
+       "high",
+       "xhigh"
+      ],
+      "contextWindow": 400000,
+      "default": false
+     }
+    ],
+    "modes": [
+     "default",
+     "acceptEdits",
+     "plan",
+     "bypassPermissions"
+    ],
+    "features": {
+     "steer": true,
+     "compact": true,
+     "terminal": true,
+     "workspace": true,
+     "reasoning": true,
+     "subagents": true
+    }
+   }
+  },
+  "/work/threads": {
+   "protocol": 1,
+   "rows": [
+    {
+     "kind": "session",
+     "version": 37,
+     "id": "cs_3spt93q49avhm70y",
+     "title": "Wire the billing API to Stripe",
+     "status": "waiting",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": "tn_bvfj4w8ynttk",
+     "queued": [],
+     "asks": [
+      {
+       "id": "ask_0001x29et7ku",
+       "status": "open",
+       "kind": "approval",
+       "approval": {
+        "toolName": "Bash",
+        "title": "Restart the billing service",
+        "command": "systemctl restart billing",
+        "input": {
+         "command": "systemctl restart billing"
+        }
+       },
+       "sessionId": "cs_3spt93q49avhm70y",
+       "turnId": "tn_bvfj4w8ynttk",
+       "createdAt": "2026-11-26T18:14:50.423Z",
+       "closedAt": null,
+       "closedBy": null,
+       "answer": null,
+       "question": null,
+       "secret": null
+      }
+     ],
+     "subagents": [],
+     "lastTurn": null,
+     "lastText": null,
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 7,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:50.143Z",
+     "lastActiveAt": "2026-11-26T18:14:50.423Z",
+     "syncedAt": "2026-11-26T18:14:50.529Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Wire the billing API to Stripe",
+     "lastAgentSeq": 6,
+     "blocked": true,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": null
+    },
+    {
+     "kind": "place",
+     "id": "cs_3spt93q49avhm70y",
+     "version": 24,
+     "sessionId": "cs_3spt93q49avhm70y",
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "position": 1795716890143,
+     "placedBy": "agent:cs_zt3hr4eb8m5m5zp7",
+     "parentSession": "cs_zt3hr4eb8m5m5zp7",
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": null,
+     "readyWhat": null,
+     "readyResult": null,
+     "attention": null
+    },
+    {
+     "kind": "session",
+     "version": 35,
+     "id": "cs_3pvsmyj1wb15ymvy",
+     "title": "Draft the billing page layout",
+     "status": "idle",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": null,
+     "queued": [],
+     "asks": [],
+     "subagents": [],
+     "lastTurn": {
+      "id": "tn_b98m3fcpv60f",
+      "status": "completed",
+      "endedAt": "2026-11-26T18:14:50.423Z",
+      "text": null,
+      "error": null,
+      "reason": null,
+      "forced": null
+     },
+     "lastText": "The layout is in PR #42: plan card, invoice table and the card form.",
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 8,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:49.969Z",
+     "lastActiveAt": "2026-11-26T18:14:50.423Z",
+     "syncedAt": "2026-11-26T18:14:50.479Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Draft the billing page layout",
+     "lastAgentSeq": 7,
+     "blocked": false,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": null
+    },
+    {
+     "kind": "place",
+     "id": "cs_3pvsmyj1wb15ymvy",
+     "version": 32,
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "trackId": "trk_f4kr1av82qwayd6t",
+     "position": 1795716889969,
+     "placedBy": "agent:cs_zt3hr4eb8m5m5zp7",
+     "parentSession": "cs_zt3hr4eb8m5m5zp7",
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": 3,
+     "readyWhat": "The layout PR is ready to review",
+     "readyResult": "res_vmzk5sz6fq7y6w60",
+     "attention": null
+    },
+    {
+     "kind": "session",
+     "version": 7,
+     "id": "cs_0pmnvt9w0pba00an",
+     "title": "Why is the build slow?",
+     "status": "idle",
+     "archived": false,
+     "aside": false,
+     "owner": {
+      "id": "usr_igor",
+      "name": "",
+      "email": null
+     },
+     "origin": {
+      "type": "app",
+      "client": null,
+      "slack": null
+     },
+     "settings": {
+      "model": "claude-opus-5-5",
+      "effort": null,
+      "mode": "bypassPermissions",
+      "speed": null
+     },
+     "metadata": {},
+     "activeTurnId": null,
+     "queued": [],
+     "asks": [],
+     "subagents": [],
+     "lastTurn": {
+      "id": "tn_tpy239jy30dk",
+      "status": "completed",
+      "endedAt": "2026-11-26T18:14:49.519Z",
+      "text": null,
+      "error": null,
+      "reason": null,
+      "forced": null
+     },
+     "lastText": "The dependency cache is keyed on the lockfile’s mtime, so every run misses it. Keying it on the hash fixes it.",
+     "context": {
+      "usedTokens": null,
+      "windowTokens": null
+     },
+     "lastSeq": 6,
+     "logEpoch": 0,
+     "epochStartSeq": 1,
+     "createdAt": "2026-11-26T18:14:49.313Z",
+     "lastActiveAt": "2026-11-26T18:14:49.519Z",
+     "syncedAt": "2026-11-26T18:14:49.590Z",
+     "urls": {
+      "dashboard": null
+     },
+     "titleBy": null,
+     "agentTitle": "Why is the build slow?",
+     "lastAgentSeq": 5,
+     "blocked": false,
+     "inbox": [],
+     "machine": "org_demo",
+     "role": "start"
+    },
+    {
+     "kind": "place",
+     "id": "cs_0pmnvt9w0pba00an",
+     "version": 1,
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "trackId": null,
+     "position": 1795716889313,
+     "placedBy": "user:usr_igor",
+     "parentSession": null,
+     "doneAt": null,
+     "outcome": null,
+     "doneBy": null,
+     "keep": false,
+     "broughtBackAt": null,
+     "earlierAt": null,
+     "readySeq": null,
+     "readyWhat": null,
+     "readyResult": null,
+     "attention": null
+    },
+    {
+     "kind": "result",
+     "id": "res_vmzk5sz6fq7y6w60",
+     "version": 29,
+     "sessionId": "cs_3pvsmyj1wb15ymvy",
+     "type": "pr",
+     "ref": "https://github.com/acme/app/pull/42",
+     "title": "Billing page layout",
+     "state": null,
+     "stateAt": null,
+     "meta": null
+    }
+   ],
+   "next": null
+  }
+ }
+}

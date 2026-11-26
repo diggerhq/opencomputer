@@ -15,7 +15,7 @@
 // and closed at once with the code, because a browser sees only 1006 for a
 // failed one.
 
-import { gatewayTelemetry } from "../computer/telemetry/gateway.js";
+import { gatewayTelemetry } from "../telemetry/gateway.js";
 import { WIRE_CLIENT, WIRE_SIGNATURE_TTL_MS, type WireScope, computerKey, signWireAuth } from "./auth.js";
 import { sha256Hex } from "./crypto.js";
 import { type WireKeyRecord, type WireKeysKv, recordByHash, recordByKeyId } from "./keys.js";

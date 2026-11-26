@@ -1,150 +1,295 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import type { Ask } from "../src/computer/api-types.js";
-import { type ComputerApiStub, matchApiRoute, routeComputerApi, writeParams } from "../src/computer/api-http.js";
-import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
+import type { DeliveredOutcome, InboxEntry, InboxKind } from "../src/actors/session-log/contract.js";
+import type { ApiEvent, LogSummary } from "../src/api-objects/objects.js";
+import { matchApiRoute } from "../src/http/api/route-table.js";
+import { writeParams } from "../src/http/api/session-input.js";
+import { ComputerKeys } from "../src/actors/computer/held-for-org/keys/keys.js";
+import type { CalvinGatewayToHost } from "../src/host-protocol/frames.js";
+import type { CalvinPerson } from "../src/host-protocol/person.js";
+import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/actors/session-log/contract.js";
+import type { ApiRequest } from "../src/actors/computer/contract.js";
 import {
-  EPOCH_TAIL_RETRY_MS,
+  ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
-  HOST_CALL_HELD_TIMEOUT_MS,
-  HOST_CALL_TIMEOUT_MS,
   RECOVER_AFTER_MS,
-  STALE_EPOCH_RESEND_MS,
-  validateCreate,
-  validatePatch,
-} from "../src/computer/sessions-api.js";
-import { ApiTelemetry } from "../src/computer/telemetry/api.js";
-import { createTelemetry } from "../src/computer/telemetry/emitter.js";
-import type { RequestIdentity } from "../src/edge/auth.js";
-import { routeApiSession } from "../src/computer/api-model-route.js";
-import { noModelAccess, type ResolvedRoute } from "../src/computer/model-access.js";
-import { caller, created, event, fixture, MO, ORG, OWNER, SID, summary } from "./fixtures/computer-sessions-api.js";
+} from "../src/actors/computer/session-drain.js";
+import { ApiTelemetry } from "../src/actors/computer/telemetry/api.js";
+import { createTelemetry } from "../src/telemetry/emitter.js";
+import type { SessionsApiDeps } from "../src/actors/computer/session-drain.js";
+import { sqlStorage } from "./fixtures/computer-sql.js";
+import type { Sql } from "../src/durable/sql.js";
+import { migrate } from "../src/durable/migrations.js";
+import { owed } from "../src/durable/outbox.js";
 
 /**
  * Work 084: the session API in the Computer DO against a fake v4 host and a fake SessionLog.
  * Epoch fencing, minSeq and the journal's order first; then create, writes, visibility, recovery
- * and the Slack path. Who may use and manage a session: computer-session-access.test.ts.
+ * and the Slack path.
  */
 
-describe("API model routing", () => {
-  function routed() {
-    const access = noModelAccess();
-    const view = access.agents.view("");
-    access.agents.view = vi.fn(() => ({ ...view, linkedSlackUser: { id: "U1", name: "Owner", teamName: "Team" } }));
-    access.models.setHarness = vi.fn();
-    access.models.noteSent = vi.fn();
-    access.models.forDelivery = vi.fn(async () => ({
-      route: { mode: "profile" as const, profile: "chatgpt", vars: {}, key: "seat" }, reason: "subscription" as const,
-    }));
-    const f = fixture({
-      routeSession: (session, member) => routeApiSession({
-        access,
-        profiles: () => [{ name: "chatgpt", vars: [], harness: { codex: {} } }],
-        send: (frame) => { f.sent.push(frame); return true; },
-      }, session, member),
-    });
-    return { ...f, access };
-  }
+const ORG = "org_sessions";
+const OWNER = "usr_01jabcdefghjkmnpqrstvwxyz0";
+const SID = "cs_7f3a9k2m4q8r1t6v";
 
-  it("starts the web session on the linked Slack Codex seat before launching its runner", async () => {
-    const f = routed();
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
-    expect(reply.status).toBe(201);
-    expect(f.access.models.setHarness).toHaveBeenCalledWith(SID, "codex");
-    expect(f.access.models.forDelivery).toHaveBeenCalledWith({ key: SID, ownerId: "U1" }, "U1");
-    expect(f.frames("start")[0]?.session).toMatchObject({ model: "gpt-6.2-sol", harness: "codex" });
-    expect(f.sent.findIndex((frame) => frame.t === "model")).toBeLessThan(f.sent.findIndex((frame) => frame.t === "start"));
-  });
-
-  it("routes the first input and re-resolves the connection before later inputs", async () => {
-    const f = routed();
-    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", input: "hi codo" } });
-    expect(reply.status).toBe(201);
-    expect(f.frames("api")[0]?.session?.harness).toBe("codex");
-    expect(f.sent.findIndex((frame) => frame.t === "model")).toBeLessThan(f.sent.findIndex((frame) => frame.t === "api"));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "again" } });
-    expect(f.access.models.forDelivery).toHaveBeenCalledTimes(2);
-    expect(f.frames("api")[1]?.session?.harness).toBe("codex");
-  });
-
-  it("returns a subscription refusal without delivering an input to Claude", async () => {
-    const f = routed();
-    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "refuse", reason: "Connect ChatGPT first." }, reason: "no_subscription" }));
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", input: "hi" } });
-    expect(reply.status).toBe(403);
-    expect(reply.error?.message).toBe("Connect ChatGPT first.");
-    expect(f.frames("api")).toHaveLength(0);
-    expect(f.frames("start")).toHaveLength(0);
-  });
-
-  it("does not send a GPT model through a managed Claude fallback", async () => {
-    const f = routed();
-    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "managed" }, reason: "limited" }));
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol" } });
-    expect(reply.status).toBe(403);
-    expect(f.frames("start")).toHaveLength(0);
-  });
-
-  it("keeps another driver's identity when resolving the owner's seat", async () => {
-    const f = routed();
-    const view = f.access.agents.view("");
-    f.access.agents.view = vi.fn((user) => ({ ...view, linkedSlackUser: { id: user === caller().userId ? "U1" : "U2", name: "Person", teamName: "Team" } }));
-    await f.api.handle(caller(), { op: "create", body: { id: SID, model: "gpt-6.2-sol", access: { mode: "org" } } });
-    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: {}, seq: 1 } }));
-    await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hello" } });
-    expect(f.access.models.forDelivery).toHaveBeenLastCalledWith({ key: SID, ownerId: "U1" }, "U2");
-  });
-
-  it("keeps managed Claude sessions working without a subscription", async () => {
-    const f = routed();
-    f.access.models.forDelivery = vi.fn(async (): Promise<ResolvedRoute> => ({ route: { mode: "managed" }, reason: "no_subscription" }));
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, model: "claude-opus-5-5" } });
-    expect(reply.status).toBe(201);
-    expect(f.frames("start")[0]?.session.harness).toBe("claude");
-    expect(f.frames("model")).toHaveLength(0);
-  });
-
-  it("preserves a Slack thread's explicit harness when it is driven through the API", async () => {
-    const f = routed();
-    await created(f);
-    const session = f.frames("start")[0]!.session;
-    f.access.models.harness = () => "codex";
-    const result = await routeApiSession({ access: f.access, profiles: () => [{ name: "chatgpt", vars: [], harness: { codex: {} } }], send: () => true }, {
-      ...session, kind: "thread", owner: { ...session.owner, slackUserId: "U1" }, model: "claude-opus-5-5",
-    }, OWNER);
-    expect(result.session.harness).toBe("codex");
-    expect(f.access.models.setHarness).toHaveBeenLastCalledWith(SID, "codex");
-  });
+const caller = (member = OWNER, { admin = false, ...extra }: Partial<ApiRequest> & { admin?: boolean } = {}): ApiRequest => ({
+  principal: {
+    org: ORG,
+    subject: member,
+    kind: "key",
+    via: "opc",
+    scopes: ["sessions:read", "sessions:write", "asks:answer"],
+    audiences: ["org", `member:${member}`],
+    admin,
+    credential: { id: "key_test", expiresAt: null },
+  },
+  name: member === OWNER ? "Owner" : "Mo",
+  email: null,
+  client: "opc/0.1.0",
+  requestId: "req_test0001",
+  ...extra,
 });
 
-describe("journal: single writer, no gaps, no duplicates", () => {
-  it("stores, mirrors and acks a batch; fences an older epoch", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    expect(f.frames("journal-ack")).toEqual([{ t: "journal-ack", sessionId: SID, epoch: 1, seq: 2 }]);
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 2, logEpoch: 1, title: "From the log" });
-    // A recovery moved the row to epoch 2: a stale writer's batch never reaches the log.
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    await f.api.journal(SID, 1, [event(3)]);
-    expect(f.logOf(SID).appends).toHaveLength(1);
-    expect(f.frames("journal-ack")).toHaveLength(1);
-  });
+function summary(_sessionId: string, lastSeq: number, logEpoch: number, extra: Partial<LogSummary> = {}): LogSummary {
+  return {
+    lastSeq,
+    logEpoch,
+    epochStartSeq: 1,
+    status: "idle",
+    title: null,
+    settings: null,
+    activeTurnId: null,
+    queued: [],
+    asks: [],
+    subagents: [],
+    lastTurn: null,
+    lastText: null,
+    context: { usedTokens: null, windowTokens: null },
+    lastActiveAt: null,
+    syncedAt: null,
+    ...extra,
+  };
+}
 
-  it("a batch whose summary changed only lastSeq writes only the per-batch columns", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1)]);
-    // A column the summary owns, changed behind the cache's back: the narrow update leaves it.
-    f.sql.exec("UPDATE sessions SET title = 'poked' WHERE session_id = ?", SID);
-    await f.api.journal(SID, 1, [event(2)]);
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 2, title: "poked" });
-    // A new epoch is a changed summary: the full update runs again.
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    await f.api.journal(SID, 2, [event(3)]);
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 3, logEpoch: 2, title: "From the log" });
+/** A SessionLog that keeps seqs contiguous per epoch, as session-log.ts does. */
+class FakeLog {
+  ack = 0;
+  epoch = 1;
+  appends: Array<{ epoch: number; seqs: number[] }> = [];
+  recovered: RecoverInput[] = [];
+  delay = 0;
+  constructor(readonly sessionId: string) {}
+  async append(_identity: unknown, epoch: number, events: ApiEvent[]): Promise<AppendResult> {
+    if (this.delay) await new Promise((r) => setTimeout(r, this.delay));
+    this.appends.push({ epoch, seqs: events.map((e) => e.seq) });
+    if (epoch < this.epoch) return { ok: false, reason: "stale_epoch", logEpoch: this.epoch, ack: this.ack };
+    const first = events[0]!.seq;
+    if (epoch > this.epoch) {
+      this.epoch = epoch;
+      this.ack = Math.min(this.ack, first - 1);
+    }
+    if (first > this.ack + 1) return { ok: false, reason: "gap", logEpoch: this.epoch, ack: this.ack };
+    this.ack = Math.max(this.ack, events[events.length - 1]!.seq);
+    return { ok: true, ack: this.ack, summary: summary(this.sessionId, this.ack, this.epoch, { title: "From the log" }) };
+  }
+  epochStartSeq = 1;
+  tailReads = 0;
+  /** Holds `recover` until it resolves (a cross-DO RPC in flight). */
+  gate: Promise<void> | null = null;
+  async recover(input: RecoverInput): Promise<RecoverResult> {
+    this.recovered.push(input);
+    if (this.gate) await this.gate;
+    if (input.epoch <= this.epoch) return { ok: false, reason: "stale_epoch", logEpoch: this.epoch, ack: this.ack };
+    this.epoch = input.epoch;
+    this.epochStartSeq = this.ack + 1;
+    this.ack += 2;
+    return {
+      ok: true,
+      ack: this.ack,
+      summary: summary(this.sessionId, this.ack, this.epoch, { status: "suspended", epochStartSeq: this.epochStartSeq }),
+      tail: this.tail(),
+    };
+  }
+  async epochTail(): Promise<EpochTail | null> {
+    this.tailReads++;
+    if (this.delay) await new Promise((r) => setTimeout(r, this.delay));
+    return this.tail();
+  }
+  private tail(): EpochTail {
+    const tail: ApiEvent[] = [];
+    for (let seq = this.epochStartSeq; seq <= this.ack; seq++) tail.push(event(seq, this.sessionId));
+    return { epoch: this.epoch, startSeq: this.epochStartSeq, lastSeq: this.ack, tail };
+  }
+  turns = new Map<string, unknown>();
+  async turn(turnId: string) {
+    const turn = this.turns.get(turnId);
+    return turn ? { ok: true as const, turn, lastSeq: this.ack } : { ok: false as const, error: "turn_not_found" as const };
+  }
+  async progress() {}
+  entries: InboxEntry[] = [];
+  outcomes: Array<{ id: string; outcome: DeliveredOutcome }> = [];
+  async inbox() {
+    return { entries: this.entries, epoch: this.epoch, lastSeq: this.ack };
+  }
+  async delivered(id: string, outcome: DeliveredOutcome) {
+    this.outcomes.push({ id, outcome });
+    this.entries = this.entries.filter((e) => e.id !== id);
+  }
+}
+
+const entry = (id: string, kind: InboxKind, body: unknown = {}): InboxEntry => ({
+  id,
+  kind,
+  body,
+  by: `user:${OWNER}`,
+  actor: { subject: OWNER, kind: "key", via: "opc", admin: false },
+  trace: null,
+  at: 0,
+});
+
+const event = (seq: number, sessionId = SID): ApiEvent => ({
+  id: `ev_${String(seq).padStart(16, "0")}`,
+  seq,
+  createdAt: new Date(1_800_000_000_000 + seq).toISOString(),
+  sessionId,
+  turnId: null,
+  type: "message.received",
+  actor: null,
+  data: {},
+});
+
+function fixture(options: { protocol?: number | null; status?: "ready" | "asleep" | "not_set_up"; admitted?: boolean | "throws"; ticketKey?: boolean; wireUrl?: string; events?: Record<string, any>[]; telemetry?: ApiTelemetry; routeSession?: SessionsApiDeps["routeSession"]; secretsFor?: SessionsApiDeps["secretsFor"] } = {}) {
+  const sql = sqlStorage();
+  sql.exec(`
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE alarms (purpose TEXT PRIMARY KEY, at INTEGER);
+    CREATE TABLE sessions (
+      runner_key TEXT PRIMARY KEY, team_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL,
+      owner_id TEXT, title TEXT NOT NULL, mode TEXT, model TEXT, sdk_session_id TEXT, fork_path TEXT, status TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+  `);
+  const logs = new Map<string, FakeLog>();
+  const logOf = (id: string) => {
+    let log = logs.get(id);
+    if (!log) logs.set(id, (log = new FakeLog(id)));
+    return log;
+  };
+  const sent: CalvinGatewayToHost[] = [];
+  const closed: Array<[number, string]> = [];
+  const recovers: number[] = [];
+  const pendingWork: Promise<unknown>[] = [];
+  let clock = 1_800_000_000_000;
+  const state = { protocol: options.protocol === undefined ? 6 : options.protocol, wakes: 0, admissions: [] as string[], otherOwed: [] as Array<[string, unknown]>, links: new Map<string, string>() };
+  const settings = new Map<string, string>();
+  const env = {
+    SESSION_LOG: { getByName: (id: string) => logOf(id) },
+    ...(options.ticketKey ? { WIRE_TICKET_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" } : {}),
+    ...(options.wireUrl ? { WIRE_PUBLIC_URL: options.wireUrl } : {}),
+    // The catalog events to calvin_events, posted to `options.events`.
+    ...(options.events ? { TINYBIRD_API_URL: "https://tb.test", TINYBIRD_APPEND_TOKEN: "p.append" } : {}),
+  } as never;
+  const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
+  /** The host answers each `api` frame with this (by method). */
+  const answers = new Map<string, (frame: Extract<CalvinGatewayToHost, { t: "api" }>) => { result?: unknown; error?: unknown } | null>();
+  // The shared actor module's tables on the same storage (the drains owed here).
+  const store: Sql = { exec: <T>(query: string, ...params: unknown[]) => sql.exec(query, ...params).toArray() as T[], transaction: (fn) => fn(), arm: () => {} };
+  migrate(store, []);
+  const api: ComputerSessionsApi = new ComputerSessionsApi({
+    sql,
+    store,
+    env,
+    organizationId: () => ORG,
+    host: () => (state.protocol === null ? undefined : {}),
+    routeSession: options.routeSession,
+    live: () => ({ publish: async () => ({ head: "" }) }) as never,
+    ...(options.secretsFor ? { secretsFor: options.secretsFor } : {}),
+    send: (frame) => {
+      if (state.protocol === null) return false;
+      sent.push(frame);
+      if (frame.t === "api") {
+        const answer = answers.get(frame.method)?.(frame);
+        if (answer) queueMicrotask(() => void api.onHostFrame({ t: "api-result", id: frame.id, ...answer } as never));
+      }
+      return true;
+    },
+    closeHost: (code, reason) => closed.push([code, reason]),
+    wake: async () => {
+      state.wakes++;
+    },
+    computerStatus: () => options.status ?? "ready",
+    admitted: async (row) => {
+      state.admissions.push(row.sessionId);
+      if (options.admitted === "throws") throw new Error("billing down");
+      return options.admitted ?? true;
+    },
+    sendOwed: async (call, body) => void state.otherOwed.push([call, body]),
+    slackPerson: (slackUserId): CalvinPerson => ({ slackUserId, name: "Owner", gitName: "Owner via Computer", gitEmail: "owner@example.com" }) as CalvinPerson,
+    linkOfSlack: (slackUserId) => state.links.get(slackUserId),
+    slackTeamId: () => "T1",
+    keys,
+    tunnelId: () => "tun",
+    waitUntil: (p) => void pendingWork.push(p),
+    scheduleRecover: async (at) => void recovers.push(at),
+    setting: (key) => settings.get(key),
+    put: (key, value) => void settings.set(key, value),
+    remove: (key) => void settings.delete(key),
+    now: () => clock,
+    ...(options.telemetry ? { telemetry: options.telemetry } : {}),
+    ...(options.events
+      ? {
+          telemetryFetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+            for (const line of String(init?.body).split("\n")) options.events!.push(JSON.parse(line));
+            return new Response(null, { status: 202 });
+          }) as typeof fetch,
+        }
+      : {}),
   });
+  const slackRow = (key: string, owner = "U1") =>
+    sql.exec(
+      "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, created_at, updated_at) VALUES (?, 'T1', 'C1', '1.2', ?, 'Slack thread', 'idle', ?, ?)",
+      key,
+      owner,
+      clock,
+      clock,
+    );
+  return {
+    api,
+    sql,
+    store,
+    sent,
+    closed,
+    recovers,
+    logs,
+    logOf,
+    answers,
+    state,
+    settings,
+    slackRow,
+    advance: (ms: number) => (clock += ms),
+    now: () => clock,
+    pending: () => pendingWork.splice(0),
+    frames: <T extends CalvinGatewayToHost["t"]>(t: T) => sent.filter((f): f is Extract<CalvinGatewayToHost, { t: T }> => f.t === t),
+  };
+}
+
+/** A session started here by Org (a `start`), owned by `member`. */
+async function created(f: ReturnType<typeof fixture>, id = SID, member = OWNER) {
+  const at = new Date(f.now()).toISOString();
+  const settings = { model: null, effort: null, mode: "auto", speed: null };
+  await f.api.start({
+    session: {
+      id, title: "A thread", status: "idle", archived: false,
+      owner: { id: member, name: member === OWNER ? "Owner" : "Mo", email: null },
+      origin: { type: "api", client: null, slack: null },
+      settings, metadata: {}, machine: ORG, role: null, createdAt: at, lastActiveAt: at,
+    },
+    settings,
+    role: null,
+  } as never);
+}
+
+describe("journal: single writer, no gaps, no duplicates", () => {
 
   it("appends one session's batches in arrival order, even when the log is slow", async () => {
     const f = fixture();
@@ -168,26 +313,6 @@ describe("journal: single writer, no gaps, no duplicates", () => {
     expect(f.closed).toHaveLength(2);
   });
 
-  it("a stale epoch from the log raises the row's epoch, so later frames carry it", async () => {
-    const f = fixture();
-    await created(f);
-    f.logOf(SID).epoch = 3;
-    await f.api.journal(SID, 1, [event(1)]);
-    expect(f.api.row(SID)!.logEpoch).toBe(3);
-    expect(f.frames("journal-ack")).toHaveLength(0);
-  });
-
-  it("the row never goes backwards in (epoch, seq)", async () => {
-    const f = fixture();
-    await created(f);
-    f.api.applySummary(SID, summary(SID, 10, 2));
-    f.api.applySummary(SID, summary(SID, 12, 1));
-    f.api.applySummary(SID, summary(SID, 9, 2));
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 10, logEpoch: 2 });
-    f.api.applySummary(SID, summary(SID, 3, 3, { epochStartSeq: 3 }));
-    expect(f.api.row(SID)).toMatchObject({ lastSeq: 3, logEpoch: 3, epochStartSeq: 3 });
-  });
-
   it("drops a batch for a session it does not know", async () => {
     const f = fixture();
     await f.api.journal("cs_0000000000000000", 1, [event(1, "cs_0000000000000000")]);
@@ -195,389 +320,186 @@ describe("journal: single writer, no gaps, no duplicates", () => {
   });
 });
 
-describe("minSeq", () => {
-  it("waits for the journal to reach it, then answers", async () => {
+describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", () => {
+  it("compact, suspend, resume, turn cancel and subagent stop are each their host method, keyed by the entry", async () => {
     const f = fixture();
     await created(f);
-    const pending = f.api.handle(caller(), { op: "get", sessionId: SID, minSeq: 2 });
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    const reply = await pending;
-    expect(reply.status).toBe(200);
-    expect((reply.body as { session: { lastSeq: number } }).session.lastSeq).toBe(2);
-  });
-
-  it("answers 503 unavailable with retryAfterMs when it is not reached in 2 s", async () => {
-    const f = fixture();
-    await created(f);
-    const started = Date.now();
-    const reply = await f.api.handle(caller(), { op: "get", sessionId: SID, minSeq: 5 });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
-    expect(reply).toMatchObject({ status: 503, error: { code: "unavailable", retryAfterMs: 500 } });
-  }, 5_000);
-});
-
-describe("POST /sessions", () => {
-  it("with input: one api turns.send carrying the session spec, the row's epoch and lastSeq, and a create key", async () => {
-    const f = fixture();
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "started", duplicate: false, seq: 3 } }));
-    const reply = await f.api.handle(caller(), { op: "create", body: { id: SID, input: "fix the flaky test\nplease", metadata: { ticket: "ENG-1" } } });
-    expect(reply.status).toBe(201);
-    expect(reply.body).toMatchObject({ session: { id: SID, title: "fix the flaky test", owner: { id: OWNER }, origin: { type: "opc", client: "opc/0.1.0" }, metadata: { ticket: "ENG-1" } }, delivery: "started", duplicate: false, seq: 3 });
-    const [access] = f.frames("access");
-    expect(access).toEqual({ t: "access", access: { sessionId: SID, owner: OWNER, members: [] } });
-    const [frame] = f.frames("api");
-    expect(frame).toMatchObject({ method: "turns.send", sessionId: SID, member: OWNER, idempotencyKey: `create:${SID}`, epoch: 1, lastSeq: 0, session: { kind: "api", sessionId: SID, origin: { type: "opc" } } });
-    expect(frame!.session!.owner.userId).toBe(OWNER);
-  });
-
-  it("is idempotent by key: the same body replays 200 duplicate, another body is 409", async () => {
-    const f = fixture();
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "started", duplicate: false, seq: 3 } }));
-    const body = { id: SID, input: "hi" };
-    expect((await f.api.handle(caller(), { op: "create", body, idempotencyKey: "k1" })).status).toBe(201);
-    const again = await f.api.handle(caller(), { op: "create", body, idempotencyKey: "k1" });
-    expect(again).toMatchObject({ status: 200, body: { duplicate: true, seq: 3, turn: { id: "tn_4m8q2x7c1v9b" } } });
-    expect(f.frames("api")).toHaveLength(1);
-    // Once the log has the turn, a replay answers it as it is now.
-    f.logOf(SID).turns.set("tn_4m8q2x7c1v9b", { id: "tn_4m8q2x7c1v9b", status: "completed" });
-    expect(await f.api.handle(caller(), { op: "create", body, idempotencyKey: "k1" })).toMatchObject({ body: { turn: { status: "completed" } } });
-    expect(await f.api.handle(caller(), { op: "create", body: { id: SID, input: "other" }, idempotencyKey: "k1" })).toMatchObject({ status: 409, error: { code: "idempotency_conflict" } });
-  });
-
-  it("the same id: the same body and member finish the create; anyone else gets 409 id_conflict", async () => {
-    const f = fixture();
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "started", duplicate: f.frames("api").length > 1, seq: 3 } }));
-    await f.api.handle(caller(), { op: "create", body: { id: SID, input: "hi" } });
-    const repeat = await f.api.handle(caller(), { op: "create", body: { id: SID, input: "hi" } });
-    expect(repeat).toMatchObject({ status: 200, body: { duplicate: true } });
-    expect(f.frames("api").map((a) => a.idempotencyKey)).toEqual([`create:${SID}`, `create:${SID}`]);
-    expect(await f.api.handle(caller(MO), { op: "create", body: { id: SID, input: "hi" } })).toMatchObject({ status: 409, error: { code: "id_conflict" } });
-    expect(await f.api.handle(caller(), { op: "create", body: { id: SID, input: "else" } })).toMatchObject({ status: 409, error: { code: "id_conflict" } });
-  });
-
-  it("without input: a start frame, 201 at seq 0", async () => {
-    const f = fixture();
-    const reply = await created(f);
-    expect(reply.body).toMatchObject({ turn: null, delivery: null, seq: 0, session: { title: "Untitled", status: "starting" } });
-    expect(f.frames("start")[0]).toMatchObject({ epoch: 1, lastSeq: 0, session: { kind: "api", sessionId: SID } });
-  });
-
-  it("a host's wake is answered with a start frame; an unknown session's with nothing", async () => {
-    const f = fixture();
-    await created(f);
-    expect(await f.api.onHostFrame({ t: "wake", sessionId: SID })).toBe(true);
-    await Promise.all(f.pending());
-    expect(f.frames("start")).toHaveLength(2);
-    expect(f.frames("start")[1]).toMatchObject({ epoch: 1, session: { kind: "api", sessionId: SID } });
-    await f.api.onHostFrame({ t: "wake", sessionId: "cs_0000000000000000" });
-    await Promise.all(f.pending());
-    expect(f.frames("start")).toHaveLength(2);
-  });
-
-  it("start carries the vault's secrets for the session (its key, no Slack owner, its dashboard owner), on create and on a host's wake", async () => {
-    const asked: unknown[] = [];
-    const secrets = [{ name: "ORG_TOKEN", value: "org-fixture", scope: "workspace" as const }];
-    const f = fixture({ secretsFor: async (row) => (asked.push({ key: row.key, ownerId: row.ownerId, ownerUserId: row.ownerUserId }), secrets) });
-    await created(f);
-    expect(f.frames("start")[0]).toMatchObject({ session: { kind: "api", sessionId: SID }, secrets });
-    expect(asked).toEqual([{ key: SID, ownerId: null, ownerUserId: OWNER }]);
-    // The host's writer queued a turn and asked for the runner (api-wake.ts): the start that brings it has them too.
-    await f.api.onHostFrame({ t: "wake", sessionId: SID });
-    await vi.waitFor(() => expect(f.frames("start")).toHaveLength(2));
-    expect(f.frames("start")[1]).toMatchObject({ session: { sessionId: SID }, secrets });
-  });
-
-  it("without a vault, start carries no secrets field", async () => {
-    const f = fixture();
-    await created(f);
-    expect(f.frames("start")[0]).not.toHaveProperty("secrets");
-  });
-
-  it("a wake waits for an in-flight epoch send: epoch goes first, and start carries the new epoch", async () => {
-    const f = fixture();
-    await created(f);
-    f.logOf(SID).epoch = 2;
-    f.logOf(SID).delay = 5;
-    f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    f.sent.length = 0;
-    await f.api.onHostFrame({ t: "wake", sessionId: SID });
-    await new Promise((r) => setTimeout(r, 20));
-    await Promise.all(f.pending());
-    expect(f.sent.map((x) => x.t).filter((t) => t === "epoch" || t === "start")).toEqual(["epoch", "start"]);
-    expect(f.frames("start")[0]).toMatchObject({ epoch: 2 });
-  });
-
-  it("no computer yet: the first create starts one (503 with a wake), only past the credit check", async () => {
-    for (const body of [{ input: "hi" }, {}]) {
-      const fresh = fixture({ status: "not_set_up", protocol: null });
-      expect(await fresh.api.handle(caller(), { op: "create", body })).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
-      expect(fresh.state.wakes).toBe(1);
-      expect(fresh.api.row(SID)).toBeUndefined();
-      const broke = fixture({ status: "not_set_up", protocol: null, admitted: false });
-      expect(await broke.api.handle(caller(), { op: "create", body })).toMatchObject({ status: 402, error: { code: "insufficient_credits" } });
-      expect(broke.state.wakes).toBe(0);
+    for (const method of ["sessions.compact", "sessions.suspend", "sessions.resume", "turns.cancel", "subagents.stop"]) {
+      f.answers.set(method, (frame) => ({ result: { method: frame.method } }));
     }
-  });
-
-  it("refusals: no credits 402, billing down 503, no v4 host 503 with a wake", async () => {
-    expect(await fixture({ admitted: false }).api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 402, error: { code: "insufficient_credits" } });
-    expect(await fixture({ admitted: "throws" }).api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 503, error: { code: "unavailable" } });
-    const old = fixture({ protocol: 3 });
-    expect(await old.api.handle(caller(), { op: "create", body: { input: "hi" } })).toMatchObject({ status: 503, error: { code: "computer_unavailable", retryAfterMs: 5_000 } });
-    expect(old.state.wakes).toBe(1);
-    expect(old.api.row(SID)).toBeUndefined();
-  });
-
-  it("validates the body", () => {
-    expect(validateCreate({ id: "nope" })).toMatchObject({ error: { status: 400, error: { field: "id" } } });
-    expect(validateCreate({ colour: 1 })).toMatchObject({ error: { error: { code: "invalid_request", field: "colour" } } });
-    expect(validateCreate({ model: "gpt-0" })).toMatchObject({ error: { error: { code: "unsupported_model", field: "model" } } });
-    expect(validateCreate({ mode: "yolo" })).toMatchObject({ error: { error: { code: "unsupported_mode" } } });
-    expect(validateCreate({ metadata: { k: "x".repeat(501) } })).toMatchObject({ error: { error: { field: "metadata.k" } } });
-    expect(validateCreate({ input: "hi", title: "t" })).toEqual({ value: { input: "hi", title: "t" } });
-    expect(validateCreate({ speed: "standard" })).toEqual({ value: { speed: "standard" } });
-    expect(validateCreate({ speed: "slow" })).toMatchObject({ error: { status: 400, error: { code: "invalid_request", field: "speed" } } });
-    expect(validatePatch({ speed: "fast" })).toEqual({ value: { speed: "fast" } });
-    expect(validatePatch({ speed: null })).toMatchObject({ error: { status: 400, error: { code: "invalid_request", field: "speed" } } });
-  });
-
-  it("speed: created with the session, in its settings and the spec; absent is null and not sent", async () => {
-    const f = fixture();
-    const plain = await created(f);
-    expect(plain.body).toMatchObject({ session: { settings: { speed: null } } });
-    expect(f.frames("start")[0]!.session).not.toHaveProperty("speed");
-    const id = "cs_0000000000000011";
-    const reply = await f.api.handle(caller(), { op: "create", body: { id, speed: "standard" } });
-    expect(reply).toMatchObject({ status: 201, body: { session: { settings: { speed: "standard" } } } });
-    expect(f.api.row(id)!.speed).toBe("standard");
-    expect(f.frames("start").at(-1)).toMatchObject({ session: { sessionId: id, speed: "standard" } });
-  });
-});
-
-describe("writes", () => {
-  it("send: 202, the session overlaid with the row; the writer's error keeps its status", async () => {
-    const f = fixture();
-    await created(f, SID, OWNER, { mode: "org" });
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 4 } }));
-    expect(await f.api.handle(caller(MO), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 202, body: { delivery: "queued" } });
-    expect(f.frames("api").at(-1)).toMatchObject({ member: MO, actor: { id: MO, via: "opc" }, params: { sessionId: SID, input: "x" } });
-    f.answers.set("turns.send", () => ({ error: { code: "queue_full", message: "full", status: 409, retryable: true, retryAfterMs: 1000 } }));
-    expect(await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } })).toEqual({
-      status: 409,
-      error: { code: "queue_full", message: "full", retryable: true, retryAfterMs: 1000 },
-    });
-  });
-
-  it("stop and interrupt: 202 when they acted, 200 when there was nothing to do", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    f.answers.set("subagents.stop", () => ({ result: { subagent: { id: "sa_000000000001" }, seq: 3 } }));
-    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "subagents.stop", params: { subagentId: "sa_000000000001" } })).status).toBe(202);
-    f.answers.set("subagents.stop", () => ({ result: { subagent: { id: "sa_000000000001" }, seq: 2 } }));
-    expect((await f.api.handle(caller(), { op: "call", sessionId: SID, method: "subagents.stop", params: { subagentId: "sa_000000000001" } })).status).toBe(200);
-  });
-
-  it("a host that disconnects fails the waiting call with 503 at once; a lost row is 404", async () => {
-    const f = fixture();
-    await created(f);
-    const pending = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "x" } });
-    await Promise.resolve();
-    await Promise.resolve();
-    f.api.onHostClosed();
-    expect(await pending).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
-    expect(await f.api.handle(caller(), { op: "call", sessionId: "cs_0000000000000000", method: "turns.send", params: { input: "x" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
-  });
-
-  it("PATCH: archive and metadata are the row's (no host needed); settings need the host", async () => {
-    const f = fixture();
-    await created(f);
-    f.state.protocol = null;
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { archived: true, metadata: { a: "1" } } })).toMatchObject({ status: 200, body: { session: { archived: true, metadata: { a: "1" } }, seq: 0 } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { metadata: { a: null, b: "2" } } })).toMatchObject({ body: { session: { metadata: { b: "2" } } } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "New" } })).toMatchObject({ status: 503, error: { code: "computer_unavailable" } });
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: {} })).toMatchObject({ status: 400 });
-    f.state.protocol = 4;
-    f.answers.set("sessions.update", () => ({ result: { session: { title: "New" }, seq: 1 } }));
-    expect(await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "New" } })).toMatchObject({ status: 200, body: { session: { title: "New", archived: true }, seq: 1 } });
-    expect(f.api.row(SID)!.title).toBe("New");
-  });
-
-  it("PATCH speed: forwarded to the writer and kept on the row", async () => {
-    const f = fixture();
-    await created(f);
-    f.answers.set("sessions.update", () => ({ result: { seq: 1 } }));
-    const reply = await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { speed: "standard" } });
-    expect(reply).toMatchObject({ status: 200, body: { session: { settings: { speed: "standard" } } } });
-    expect(f.frames("api").at(-1)).toMatchObject({ method: "sessions.update", params: { sessionId: SID, speed: "standard" } });
-    expect(f.api.row(SID)!.speed).toBe("standard");
-    await f.api.handle(caller(), { op: "patch", sessionId: SID, body: { title: "Other" } });
-    expect(f.frames("api").at(-1)).toMatchObject({ params: { title: "Other" }, session: { speed: "standard" } });
-    expect(f.frames("api").at(-1)!.params).not.toHaveProperty("speed");
-  });
-});
-
-describe("set aside (work-tracking 3.8)", () => {
-  const ask = (id: string, createdAt: string, status: Ask["status"] = "open"): Ask => ({
-    id, sessionId: SID, turnId: "tn_1", kind: "question", status, createdAt, closedAt: null, closedBy: null,
-    answer: null, approval: null, question: { questions: [] }, secret: null,
-  });
-
-  it("the owner's ref on the row: aside while it is the oldest open ask; no event, no host, last activity unmoved", async () => {
-    const f = fixture();
-    await created(f);
-    const get = async () => ((await f.api.handle(caller(), { op: "get", sessionId: SID })).body as { session: { aside: boolean; lastActiveAt: string } }).session;
-    f.api.applySummary(SID, summary(SID, 0, 1, { status: "waiting", asks: [ask("ak_new", "2026-11-19T10:05:00.000Z"), ask("ak_old", "2026-11-19T10:00:00.000Z")] }));
-    const before = await get();
-    expect(before.aside).toBe(false);
-    f.state.protocol = null; // the host is not needed
-    const sent = f.frames("api").length;
-    const put = (ref: unknown, member = OWNER) => f.api.handle(caller(member), { op: "aside.set", sessionId: SID, body: { ref } });
-    expect(await put("ak_old")).toMatchObject({ status: 200, body: { session: { aside: true } } });
-    expect(f.api.row(SID)!.asideRef).toBe("ak_old");
-    expect((await get()).lastActiveAt).toBe(before.lastActiveAt);
-    expect(f.api.row(SID)!.lastSeq).toBe(0);
-    expect(f.frames("api")).toHaveLength(sent);
-    // Another ref is not the current one.
-    expect(await put("ak_new")).toMatchObject({ status: 200, body: { session: { aside: false } } });
-    await put("ak_old");
-    // The ask is answered: the newer one is current, so the session is back by itself.
-    f.api.applySummary(SID, summary(SID, 1, 1, { status: "waiting", asks: [ask("ak_new", "2026-11-19T10:05:00.000Z"), ask("ak_old", "2026-11-19T10:00:00.000Z", "answered")] }));
-    expect((await get()).aside).toBe(false);
-    expect(await f.api.handle(caller(), { op: "aside.clear", sessionId: SID })).toMatchObject({ status: 200, body: { session: { aside: false } } });
-    expect(f.api.row(SID)!.asideRef).toBeNull();
-  });
-
-  it("only the owner; a ref is required; an unseen session is 404", async () => {
-    const f = fixture();
-    await created(f, SID, OWNER, { mode: "org" });
-    expect(await f.api.handle(caller(MO), { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } })).toMatchObject({ status: 403, error: { code: "forbidden", reason: "aside_owner_only" } });
-    expect(await f.api.handle(caller(MO), { op: "aside.clear", sessionId: SID })).toMatchObject({ status: 403 });
-    for (const body of [{}, { ref: "" }, { ref: 1 }, null, [], { ref: "a b" }]) {
-      expect(await f.api.handle(caller(), { op: "aside.set", sessionId: SID, body })).toMatchObject({ status: 400, error: { code: "invalid_request", field: "ref" } });
-    }
-    expect(await f.api.handle(caller(), { op: "aside.set", sessionId: "cs_0000000000000000", body: { ref: "ak_1" } })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
-    expect(f.api.row(SID)!.asideRef).toBeNull();
-  });
-
-  it("HTTP: PUT and DELETE reach the Computer DO with sessions:write, never the writer", async () => {
-    const seen: unknown[] = [];
-    const stub: ComputerApiStub = { computerApi: vi.fn(async (_a, _c, op) => (seen.push(op), { status: 200, body: {} })) };
-    const person = { kind: "user", organizationId: "org_1", userId: "user_1", role: "member" } as RequestIdentity;
-    const reader = { ...person, apiKey: { id: "key_1", hash: "a".repeat(64), name: "r", kind: "user" as const, expiresAt: null, createdAt: null, scopes: ["sessions:read"] } } as RequestIdentity;
-    const go = (identity: RequestIdentity, method: string, body?: string) =>
-      routeComputerApi(new Request(`https://blue.test/v1/computer/sessions/${SID}/aside`, { method, ...(body ? { body } : {}) }), {} as never, identity, "org_1", stub, `/sessions/${SID}/aside`);
-    expect((await go(person, "PUT", '{"ref":"ak_1"}')).status).toBe(200);
-    expect((await go(person, "DELETE")).status).toBe(200);
-    expect((await go(person, "PUT", "not json")).status).toBe(400);
-    expect((await go(reader, "PUT", '{"ref":"ak_1"}')).status).toBe(403);
-    expect(seen.filter((op) => (op as { op: string }).op !== "access")).toEqual([
-      { op: "aside.set", sessionId: SID, body: { ref: "ak_1" } },
-      { op: "aside.clear", sessionId: SID },
+    f.logOf(SID).entries = [
+      entry("ie_0000000000000001", "compact", { instructions: "short" }),
+      entry("ie_0000000000000002", "suspend", { ifIdle: true }),
+      entry("ie_0000000000000003", "resume"),
+      entry("ie_0000000000000004", "cancel", { turnId: "tn_4m8q2x7c1v9b" }),
+      entry("ie_0000000000000005", "stop", { subagentId: "sa_000000000001" }),
+    ];
+    await f.api.drain(SID);
+    expect(f.frames("api").map((frame) => [frame.method, frame.idempotencyKey, frame.params])).toEqual([
+      ["sessions.compact", "ie_0000000000000001", { instructions: "short", sessionId: SID }],
+      ["sessions.suspend", "ie_0000000000000002", { ifIdle: true, sessionId: SID }],
+      ["sessions.resume", "ie_0000000000000003", { sessionId: SID }],
+      ["turns.cancel", "ie_0000000000000004", { turnId: "tn_4m8q2x7c1v9b", sessionId: SID }],
+      ["subagents.stop", "ie_0000000000000005", { subagentId: "sa_000000000001", sessionId: SID }],
     ]);
-    expect(matchApiRoute("POST", `/sessions/${SID}/aside`)).toBeNull();
+    expect(f.logOf(SID).outcomes.map((o) => o.outcome)).toEqual([
+      { ok: true, result: { method: "sessions.compact" } },
+      { ok: true, result: { method: "sessions.suspend" } },
+      { ok: true, result: { method: "sessions.resume" } },
+      { ok: true, result: { method: "turns.cancel" } },
+      { ok: true, result: { method: "subagents.stop" } },
+    ]);
+  });
+
+  it("a host's error keeps its code, status and fields through the drain and the inbox", async () => {
+    const f = fixture();
+    await created(f);
+    const turn = { id: "tn_4m8q2x7c1v9b", status: "running" };
+    f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "the turn is running", status: 409, retryable: false, requestId: "rq", turn } }));
+    f.logOf(SID).entries = [entry("ie_0000000000000004", "cancel", { turnId: turn.id })];
+    await f.api.drain(SID);
+    expect(f.logOf(SID).outcomes.map((o) => o.outcome)).toEqual([{ ok: false, code: "turn_not_cancellable", message: "the turn is running", status: 409, turn }]);
+  });
+
+  it("only what spends (a turn, compact, resume) needs credits", async () => {
+    const f = fixture({ admitted: false });
+    await created(f);
+    f.answers.set("turns.cancel", () => ({ result: {} }));
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "compact"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" }), entry("ie_0000000000000003", "resume")];
+    await f.api.drain(SID);
+    expect(f.frames("api").map((frame) => frame.method)).toEqual(["turns.cancel"]);
+    expect(f.logOf(SID).outcomes.map((o) => (o.outcome.ok ? "ok" : o.outcome.code))).toEqual(["insufficient_credits", "insufficient_credits", "ok"]);
+  });
+
+  it("an organization out of credits is refused before its computer is woken (no host: nothing wakes)", async () => {
+    const f = fixture({ admitted: false, protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.state.admissions).toEqual([SID]);
+    expect(f.logOf(SID).outcomes).toEqual([{ id: "ie_0000000000000001", outcome: { ok: false, code: "insufficient_credits", message: "Your organization is out of credits." } }]);
+    expect(f.state.wakes).toBe(0);
+    expect(f.api.owes()).toBe(true); // the runner's `start` still waits for a host; it wakes nothing
+  });
+
+  it("refused turns leave the entries that spend nothing, and those still wake the machine", async () => {
+    const f = fixture({ admitted: false, protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" }), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.logOf(SID).outcomes.map((o) => [o.id, o.outcome.ok ? "ok" : o.outcome.code])).toEqual([["ie_0000000000000001", "insufficient_credits"]]);
+    expect(f.logOf(SID).entries.map((e) => e.id)).toEqual(["ie_0000000000000002"]);
+    expect(f.state.wakes).toBe(1);
+  });
+
+  it("billing unavailable: the turn waits, the drain stays owed, and nothing wakes", async () => {
+    const f = fixture({ admitted: "throws", protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" })];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.logOf(SID).outcomes).toEqual([]);
+    expect(f.logOf(SID).entries).toHaveLength(1);
+    expect(f.state.wakes).toBe(0);
+    expect(owed.has(f.store, `drain:${SID}`)).toBe(true);
+  });
+
+  it("an admitted turn with no host wakes the machine; admission is asked once per drain", async () => {
+    const f = fixture({ protocol: null, status: "asleep" });
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "turn", { input: "hi" }), entry("ie_0000000000000002", "compact")];
+    await f.api.drain(SID);
+    await Promise.all(f.pending());
+    expect(f.state.admissions).toEqual([SID]);
+    expect(f.state.wakes).toBe(1);
+    expect(f.logOf(SID).outcomes).toEqual([]);
+  });
+
+  it("the Computer's other owed calls share the outbox: sent through its own sender, and never taken for a drain", async () => {
+    const f = fixture({ protocol: null });
+    owed.add(f.store, { group: "slack-billing", key: "billing:admitted", call: "billing", body: { kind: "admitted" } });
+    expect(f.api.owes()).toBe(false);
+    await f.api.wakeFailed();
+    expect(owed.groups(f.store)).toEqual(["slack-billing"]);
+    await f.api.runOwed("slack-billing");
+    expect(f.state.otherOwed).toEqual([["billing", { kind: "admitted" }]]);
+    expect(owed.groups(f.store)).toEqual([]);
+  });
+
+  it("a host that disconnects mid-drain leaves the entry waiting and the drain owed here, the machine woken", async () => {
+    const f = fixture();
+    await created(f);
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend")];
+    const pending = f.api.drain(SID);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    f.api.onHostClosed();
+    await pending;
+    expect(f.logOf(SID).entries).toHaveLength(1);
+    expect(f.logOf(SID).outcomes).toEqual([]);
+    expect(f.api.owes()).toBe(true);
+    expect(f.store.exec("SELECT grp, tries FROM _owed")).toEqual([{ grp: SID, tries: 1 }]);
+  });
+
+  it("one path, one owner: a drain held for the host replaces none and doubles none; hello delivers it once", async () => {
+    const f = fixture();
+    await created(f);
+    f.answers.set("sessions.suspend", () => ({ result: {} }));
+    f.state.protocol = null;
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend")];
+    await f.api.drain(SID);
+    await f.api.drain(SID);
+    expect(f.store.exec("SELECT grp FROM _owed")).toEqual([{ grp: SID }]);
+    expect(f.settings.get("drainOwed")).toBeUndefined();
+    f.state.protocol = 6;
+    f.api.onHello([]);
+    await Promise.all(f.pending());
+    expect(f.frames("api").map((frame) => frame.idempotencyKey)).toEqual(["ie_0000000000000001"]);
+    expect(owed.groups(f.store)).toEqual([]);
   });
 });
 
-describe("visibility and lists", () => {
-  it("org-wide API sessions are visible to every member; a Slack session only to its linked owner", async () => {
-    const f = fixture();
-    await created(f, SID, OWNER, { mode: "org" });
-    f.slackRow("T1:C1:1.2");
-    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
-    const delivery = await f.api.slackDelivery("T1:C1:1.2", "U1");
-    expect(delivery).toMatchObject({ epoch: 1, lastSeq: 0, userId: OWNER });
-    const slackId = delivery!.sessionId;
-    expect(f.frames("access").at(-1)).toEqual({ t: "access", access: { sessionId: slackId, owner: OWNER, members: [OWNER] } });
-    expect((await f.api.handle(caller(MO), { op: "get", sessionId: SID })).status).toBe(200);
-    expect((await f.api.handle(caller(MO), { op: "get", sessionId: slackId })).status).toBe(404);
-    const viaSlack = await f.api.handle(caller(), { op: "get", sessionId: slackId });
-    expect(viaSlack.body).toMatchObject({ session: { origin: { type: "slack", slack: { channelId: "C1" } }, title: "Slack thread", status: "idle" } });
-    // The next delivery reuses the id and sends no new access frame.
-    const accesses = f.frames("access").length;
-    expect((await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId).toBe(slackId);
-    expect(f.frames("access")).toHaveLength(accesses);
-    const mine = await f.api.handle(caller(), { op: "list", query: [] });
-    expect((mine.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id).sort()).toEqual([SID, slackId].sort());
-    const mo = await f.api.handle(caller(MO), { op: "list", query: [["owner", "anyone"]] });
-    expect((mo.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)).toEqual([SID]);
-    // The status filter matches the status shown: the Slack row's runner says idle.
-    const idle = await f.api.handle(caller(), { op: "list", query: [["status", "idle"]] });
-    expect((idle.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)).toEqual([slackId]);
-  });
-
-  it("a link reaches back: Slack sessions from before it become the owner's on their next list", async () => {
-    const f = fixture();
-    f.slackRow("T1:C1:1.2");
-    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    const ids = async (who?: string) =>
-      ((await f.api.handle(caller(who), { op: "list", query: [] })).body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
-    expect(await ids()).toEqual([]);
-    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
-    expect(await ids(MO)).toEqual([]);
-    expect(f.frames("access").at(-1)).toEqual({ t: "access", access: { sessionId: slackId, owner: OWNER, members: [OWNER] } });
-    expect(await ids()).toEqual([slackId]);
-    // Once theirs, it is not attached again.
-    const accesses = f.frames("access").length;
-    await ids();
-    expect(f.frames("access")).toHaveLength(accesses);
-  });
-
-  it("a v3 host's Slack deliveries are unchanged (no id, no frames)", async () => {
-    const f = fixture({ protocol: 3 });
-    f.slackRow("T1:C1:1.2");
-    expect(await f.api.slackDelivery("T1:C1:1.2", "U1")).toBeNull();
-    expect(f.sent).toHaveLength(0);
-  });
-
-  it("pages with a keyset cursor and filters by metadata and text", async () => {
-    const f = fixture();
-    for (let i = 0; i < 5; i++) {
-      f.advance(1000);
-      await f.api.handle(caller(), { op: "create", body: { id: `cs_00000000000000${i}${i}`, title: `task ${i} 100%`, metadata: { n: String(i % 2) } } });
+describe("the drain's alert events (no-host, dark dispatch, held writes)", () => {
+  const sent = async (f: ReturnType<typeof fixture>, events: Record<string, any>[], n: number) => {
+    for (let i = 0; i < 300 && events.length < n; i++) {
+      await Promise.all(f.pending());
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    const first = await f.api.handle(caller(), { op: "list", query: [["limit", "2"], ["order", "created"]] });
-    const page = first.body as { sessions: Array<{ id: string }>; nextCursor: string };
-    expect(page.sessions.map((s) => s.id)).toEqual(["cs_0000000000000044", "cs_0000000000000033"]);
-    const second = await f.api.handle(caller(), { op: "list", query: [["limit", "2"], ["order", "created"], ["cursor", page.nextCursor]] });
-    expect((second.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)).toEqual(["cs_0000000000000022", "cs_0000000000000011"]);
-    const odd = await f.api.handle(caller(), { op: "list", query: [["metadata[n]", "1"]] });
-    expect((odd.body as { sessions: unknown[] }).sessions).toHaveLength(2);
-    const q = await f.api.handle(caller(), { op: "list", query: [["q", "3 100%"]] });
-    expect((q.body as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id)).toEqual(["cs_0000000000000033"]);
-    expect(await f.api.handle(caller(), { op: "list", query: [["cursor", page.nextCursor]] })).toMatchObject({ status: 400, error: { code: "invalid_cursor" } });
-    // A cursor is bound to its filters: the same order with another filter set is refused.
-    const other = [["limit", "2"], ["order", "created"], ["metadata[n]", "1"], ["cursor", page.nextCursor]] as Array<[string, string]>;
-    expect(await f.api.handle(caller(), { op: "list", query: other })).toMatchObject({ status: 400, error: { code: "invalid_cursor" } });
-    expect(await f.api.handle(caller(), { op: "list", query: [["bogus", "1"]] })).toMatchObject({ status: 400, error: { field: "bogus" } });
+    return events;
+  };
+
+  it("sends dispatch.parked while there is no host, then dispatch.sent and dispatch.replied per entry", async () => {
+    const events: Record<string, any>[] = [];
+    const f = fixture({ events });
+    await created(f);
+    f.answers.set("sessions.suspend", () => ({ result: {} }));
+    f.answers.set("turns.cancel", () => ({ error: { code: "turn_not_cancellable", message: "no", status: 409, retryable: false } }));
+    // The start's drain is still in flight (it read an empty inbox) when the host goes and this drain is owed:
+    // its re-owe must not push this one out, so the entries are reported parked now, not at the next hello.
+    f.state.protocol = null;
+    f.logOf(SID).entries = [entry("ie_0000000000000001", "suspend"), entry("ie_0000000000000002", "cancel", { turnId: "tn_4m8q2x7c1v9b" })];
+    await f.api.drain(SID);
+    f.state.protocol = 6;
+    f.api.onHello([]);
+    await sent(f, events, 6);
+    const of = (name: string) => events.filter((e) => e.event_name === name);
+    // The no-host rule's two sides, keyed by the inbox entry.
+    expect(of("dispatch.parked").map((e) => e.dispatch_id)).toEqual(["ie_0000000000000001", "ie_0000000000000002"]);
+    expect(of("dispatch.parked")[0]).toMatchObject({ org_id: ORG, session_key: SID });
+    expect(of("dispatch.sent").map((e) => [e.dispatch_id, JSON.parse(e.data).method])).toEqual([
+      ["ie_0000000000000001", "sessions.suspend"],
+      ["ie_0000000000000002", "turns.cancel"],
+    ]);
+    expect(of("dispatch.replied").map((e) => [e.dispatch_id, e.outcome])).toEqual([
+      ["ie_0000000000000001", "completed"],
+      ["ie_0000000000000002", "failed"],
+    ]);
+    expect(JSON.parse(of("dispatch.replied")[1]!.data)).toMatchObject({ code: "turn_not_cancellable" });
   });
 });
 
 describe("recovery: a lost writer", () => {
-  it("host gone 60 s with a turn open: the log is recovered under epoch + 1; the next host hears the new epoch", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', api_status = 'running' WHERE session_id = ?", SID);
-    f.state.protocol = null;
-    f.api.onHostClosed();
-    expect(f.recovers).toEqual([f.now() + RECOVER_AFTER_MS]);
-    await f.api.recoverTick();
-    expect(f.logOf(SID).recovered).toHaveLength(0);
-    f.advance(RECOVER_AFTER_MS);
-    await f.api.recoverTick();
-    expect(f.logOf(SID).recovered).toMatchObject([{ sessionId: SID, organizationId: ORG, epoch: 2 }]);
-    expect(f.api.row(SID)).toMatchObject({ logEpoch: 2, lastSeq: 4, apiStatus: "suspended" });
-    // The old writer's late batch is fenced; the new one continues at lastSeq + 1.
-    f.state.protocol = 4;
-    await f.api.journal(SID, 1, [event(3)]);
-    expect(f.frames("journal-ack")).toHaveLength(1);
-    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 6 } }));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "go on" } });
-    expect(f.frames("api").at(-1)).toMatchObject({ epoch: 2, lastSeq: 4 });
-  });
-
   it("host connected, runner stopped mid-turn and the log silent 60 s: recovered, and the host told at once", async () => {
     const f = fixture();
     await created(f);
@@ -608,98 +530,15 @@ describe("recovery: a lost writer", () => {
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 4 } }));
     await Promise.all([
       f.api.recoverTick(),
-      f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "go on" } }),
+      ((f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "go on" })]), f.api.drain(SID)),
     ]);
     const firstAtTwo = f.sent.findIndex((x) => "epoch" in x && (x as { epoch: number }).epoch === 2);
     expect(f.sent[firstAtTwo]!.t).toBe("epoch");
   });
 
-  it("a hello during the recover RPC still gets epoch, and a Slack delivery waits for it (review r2 P1-1)", async () => {
-    const f = fixture();
-    f.slackRow("T1:C1:1.2");
-    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    await f.api.journal(slackId, 1, [event(1, slackId), event(2, slackId)]);
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', api_status = 'running' WHERE session_id = ?", slackId);
-    f.state.protocol = null;
-    f.api.onHostClosed();
-    f.advance(RECOVER_AFTER_MS);
-    let release!: () => void;
-    f.logOf(slackId).gate = new Promise<void>((r) => (release = r));
-    const tick = f.api.recoverTick();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(f.logOf(slackId).recovered).toHaveLength(1);
-    // The host comes back while the recover RPC is in flight; its journal is at the old epoch, as is the row.
-    f.state.protocol = 4;
-    f.sent.length = 0;
-    f.api.onHello([{ sessionId: slackId, epoch: 1, lastSeq: 2 }]);
-    const delivery = f.api.slackDelivery("T1:C1:1.2", "U1");
-    await new Promise((r) => setTimeout(r, 0));
-    expect(f.frames("epoch")).toHaveLength(0);
-    release();
-    await tick;
-    const d = await delivery;
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: slackId, epoch: 2, startSeq: 3, lastSeq: 4 }]);
-    // The delivery was held until the frame went, and carries the committed epoch.
-    expect(d).toMatchObject({ sessionId: slackId, epoch: 2, lastSeq: 4 });
-    expect(f.logOf(slackId).tailReads).toBe(0);
-  });
-
-  it("a recover answered stale_epoch with the log ahead of the row sends epoch (review r3 P1-1)", async () => {
-    const f = fixture();
-    await created(f);
-    await f.api.journal(SID, 1, [event(1), event(2)]);
-    // An earlier recover committed epoch 2 in the log; its result never reached the row (an instance reset mid-RPC).
-    Object.assign(f.logOf(SID), { epoch: 2, ack: 4, epochStartSeq: 3 });
-    f.sql.exec("UPDATE sessions SET active_turn_id = 'tn_4m8q2x7c1v9b', status = 'stopped' WHERE session_id = ?", SID);
-    f.advance(RECOVER_AFTER_MS + 1);
-    f.sent.length = 0;
-    await f.api.recoverTick();
-    await Promise.all(f.pending());
-    expect(f.logOf(SID).recovered).toHaveLength(1);
-    expect(f.api.row(SID)).toMatchObject({ logEpoch: 2 });
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2, startSeq: 3, lastSeq: 4 }]);
-  });
-
-  it("a failed epochTail read is retried; when every read fails the stale resend is open again (review r3 P1-1)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const f = fixture();
-      await created(f);
-      Object.assign(f.logOf(SID), { epoch: 2, ack: 2, epochStartSeq: 1 });
-      const log = f.logOf(SID);
-      const real = log.epochTail.bind(log);
-      let failures = 1;
-      log.epochTail = async () => {
-        if (failures-- > 0) throw new Error("rpc reset");
-        return real();
-      };
-      f.sent.length = 0;
-      await f.api.journal(SID, 0, []);
-      await vi.advanceTimersByTimeAsync(EPOCH_TAIL_RETRY_MS[0]!);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2 }]);
-      // Every read fails: no frame, and the next stale batch (inside the 5 s limit) asks again.
-      f.sent.length = 0;
-      f.advance(STALE_EPOCH_RESEND_MS);
-      failures = 99;
-      await f.api.journal(SID, 1, [event(1)]);
-      await vi.advanceTimersByTimeAsync(EPOCH_TAIL_RETRY_MS.reduce((a, b) => a + b, 0));
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toHaveLength(0);
-      failures = 0;
-      await f.api.journal(SID, 1, [event(1)]);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 2 }]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("an empty journal batch under an older epoch asks for epoch (rate-limited); at the row's epoch it is nothing (calvin 424bd40)", async () => {
     const f = fixture();
     await created(f);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     Object.assign(f.logOf(SID), { epoch: 2, ack: 0, epochStartSeq: 1 });
     f.sent.length = 0;
     await f.api.journal(SID, 2, []);
@@ -716,75 +555,12 @@ describe("recovery: a lost writer", () => {
     expect(f.frames("epoch")).toHaveLength(2);
   });
 
-  it("a write held through an adoption is awaited past 15 s; a keyed retry takes the original's answer (review r3 P2-2)", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const f = fixture();
-      await created(f);
-      await f.api.journal(SID, 1, [event(1)]);
-      // Steady state: 15 s, then 503.
-      const plain = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hi" } });
-      await vi.advanceTimersByTimeAsync(HOST_CALL_TIMEOUT_MS);
-      expect((await plain).status).toBe(503);
-      // The epoch just moved: the host holds the write until it adopts (~20 s); the answer is still awaited.
-      Object.assign(f.logOf(SID), { epoch: 2, ack: 1, epochStartSeq: 2 });
-      f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-      await f.api.journal(SID, 1, []);
-      await Promise.all(f.pending());
-      expect(f.frames("epoch")).toHaveLength(1);
-      const held = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "held" } });
-      await vi.advanceTimersByTimeAsync(20_000);
-      const heldFrame = f.frames("api").at(-1)!;
-      await f.api.onHostFrame({ t: "api-result", id: heldFrame.id, result: { turnId: "tn_4m8q2x7c1v9b", duplicate: false } } as never);
-      expect((await held).status).toBe(202);
-      // Keyed: the client gives up at 40 s and retries with the same key; nothing new is sent, and the host's
-      // late answer to the original resolves the retry.
-      const first = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "keyed" }, idempotencyKey: "idem-1" });
-      await vi.advanceTimersByTimeAsync(HOST_CALL_HELD_TIMEOUT_MS);
-      expect((await first).status).toBe(503);
-      const sentBefore = f.frames("api").length;
-      const retry = f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "keyed" }, idempotencyKey: "idem-1" });
-      await vi.advanceTimersByTimeAsync(1);
-      expect(f.frames("api")).toHaveLength(sentBefore);
-      const original = f.frames("api").at(-1)!;
-      expect(original.idempotencyKey).toBe("idem-1");
-      await f.api.onHostFrame({ t: "api-result", id: original.id, result: { turnId: "tn_9z8y7x6w5v4u", duplicate: false } } as never);
-      expect(await retry).toMatchObject({ status: 202, body: { turnId: "tn_9z8y7x6w5v4u" } });
-      // Answered: a later repeat goes to the host again (whose writer dedupes by the key).
-      void f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "keyed" }, idempotencyKey: "idem-1" });
-      await vi.advanceTimersByTimeAsync(1);
-      expect(f.frames("api")).toHaveLength(sentBefore + 1);
-      f.api.onHostClosed();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("hello: a journal behind the log hears epoch first; one in step hears nothing", async () => {
-    const f = fixture();
-    await created(f);
-    await created(f, "cs_2222222222222222");
-    f.sql.exec("UPDATE sessions SET log_epoch = 3 WHERE session_id = ?", SID);
-    f.logOf(SID).epoch = 3;
-    f.logOf(SID).ack = 5;
-    f.logOf(SID).epochStartSeq = 5;
-    f.sent.length = 0;
-    f.api.onHello([
-      { sessionId: SID, epoch: 1, lastSeq: 7 },
-      { sessionId: "cs_2222222222222222", epoch: 1, lastSeq: 0 },
-    ]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toMatchObject([{ sessionId: SID, epoch: 3, startSeq: 5, lastSeq: 5 }]);
-    expect(f.logOf("cs_2222222222222222").tailReads).toBe(0);
-  });
-
   it("hello: a journal at the log's epoch but short of its stored events (or torn, epoch 0) hears epoch (calvin r2 P1-2)", async () => {
     const f = fixture();
     await created(f);
     await created(f, "cs_2222222222222222");
     await created(f, "cs_3333333333333333");
     for (const sid of [SID, "cs_2222222222222222", "cs_3333333333333333"]) {
-      f.sql.exec("UPDATE sessions SET log_epoch = 2, last_seq = 6 WHERE session_id = ?", sid);
       Object.assign(f.logOf(sid), { epoch: 2, ack: 6, epochStartSeq: 4 });
     }
     f.sent.length = 0;
@@ -800,86 +576,22 @@ describe("recovery: a lost writer", () => {
     ]);
   });
 
-  it("a batch under a fenced epoch: epoch again, at most once per session per 5 s", async () => {
-    const f = fixture();
-    await created(f);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
-    f.logOf(SID).epoch = 2;
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toHaveLength(1);
-    expect(f.logOf(SID).appends).toHaveLength(0);
-    f.advance(STALE_EPOCH_RESEND_MS);
-    await f.api.journal(SID, 1, [event(1)]);
-    await Promise.all(f.pending());
-    expect(f.frames("epoch")).toHaveLength(2);
-    // The log fencing a batch the row let through (the row was behind): the row follows, epoch goes.
-    const g = fixture();
-    await created(g);
-    g.logOf(SID).epoch = 4;
-    await g.api.journal(SID, 1, [event(1)]);
-    await Promise.all(g.pending());
-    expect(g.api.row(SID)!.logEpoch).toBe(4);
-    expect(g.frames("epoch")).toMatchObject([{ epoch: 4 }]);
-  });
-
-  it("an api call waits for an in-flight epoch send and carries the new epoch after it", async () => {
+  it("a drain waits for an in-flight epoch send and carries the new epoch after it", async () => {
     const f = fixture();
     await created(f);
     f.logOf(SID).epoch = 2;
     f.logOf(SID).delay = 5;
     f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 1 } }));
     f.api.onHello([{ sessionId: SID, epoch: 0, lastSeq: 0 }]);
-    f.sql.exec("UPDATE sessions SET log_epoch = 2 WHERE session_id = ?", SID);
     f.sent.length = 0;
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hi" } });
+    f.logOf(SID).entries = [entry("tn_4m8q2x7c1v9b", "turn", { input: "hi" })];
+    await f.api.drain(SID);
     expect(f.sent.map((x) => x.t).filter((t) => t === "epoch" || t === "api")).toEqual(["epoch", "api"]);
     expect(f.frames("api")[0]).toMatchObject({ epoch: 2 });
   });
 });
 
 describe("hello and tickets", () => {
-  it("hello sends access for API sessions and linked Slack ones only", async () => {
-    const f = fixture();
-    await created(f);
-    f.slackRow("T1:C1:9.9", "U2");
-    f.sql.exec("UPDATE sessions SET session_id = 'cs_1111111111111111' WHERE runner_key = 'T1:C1:9.9'");
-    // Many unlinked Slack threads: none is read for a frame it would not make.
-    for (let i = 0; i < 50; i++) {
-      f.slackRow(`T1:C1:${i}.1`, "U2");
-      f.sql.exec("UPDATE sessions SET session_id = ? WHERE runner_key = ?", `cs_8888888888888${100 + i}`, `T1:C1:${i}.1`);
-    }
-    f.sent.length = 0;
-    f.api.onHello();
-    expect(f.frames("access").map((a) => a.access.sessionId)).toEqual([SID]);
-  });
-
-  it("admins: a caller's admin role is remembered, but no access list carries it (owner first)", async () => {
-    const f = fixture();
-    await created(f);
-    f.slackRow("T1:C1:1.2");
-    f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
-    const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
-    expect(f.api.isAdmin(MO)).toBe(true);
-    expect(f.frames("access")).toHaveLength(0);
-    await created(f, "cs_2222222222222222");
-    f.sent.length = 0;
-    f.api.onHello();
-    expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
-      [
-        { sessionId: SID, owner: OWNER, members: [] },
-        { sessionId: slackId, owner: OWNER, members: [OWNER] },
-        { sessionId: "cs_2222222222222222", owner: OWNER, members: [] },
-      ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
-    );
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.api.isAdmin(MO)).toBe(false);
-  });
 
   it("tickets: API keys only, project keys refused, 60 a minute", async () => {
     const key = { id: "key_1", hash: "a".repeat(64), name: "laptop", kind: "user" as const, scopes: ["sessions:read"], expiresAt: null, createdAt: null };
@@ -892,10 +604,28 @@ describe("hello and tickets", () => {
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
   });
 
+  it("an agent's key mints no ticket and never reaches the wire", async () => {
+    const key = { id: "key_agent", hash: "b".repeat(64), name: "Computer session", kind: "user" as const, scopes: ["sessions:read", "sessions:write"], expiresAt: null, createdAt: null };
+    const f = fixture({ ticketKey: true });
+    const agent = (): ApiRequest => {
+      const c = caller(SID, { apiKey: key });
+      return { ...c, principal: { ...c.principal, kind: "agent", via: "agent", audiences: [], session: SID } };
+    };
+    expect(await f.api.handle(agent(), { op: "ticket", body: {} })).toMatchObject({ status: 403, error: { reason: "agent_key" } });
+    await f.api.handle(agent(), { op: "me" });
+    // The wire authorizes by a key's record; an agent's key has none, so it cannot be used there directly either.
+    expect([...f.sql.exec("SELECT key_id FROM wire_keys")]).toEqual([]);
+  });
+
   it("/me names the wire and the credential", async () => {
-    const f = fixture();
+    const f = fixture({ wireUrl: "wss://wire.example/v1" });
     const me = await f.api.handle(caller(), { op: "me" });
-    expect(me.body).toMatchObject({ person: { id: OWNER }, credential: { kind: "login" }, computer: { status: "ready", wireUrl: "wss://wire.opencomputer.dev/v1" }, defaults: { model: "claude-opus-5-5" } });
+    expect(me.body).toMatchObject({ person: { id: OWNER }, credential: { kind: "login" }, computer: { status: "ready", wireUrl: "wss://wire.example/v1" }, defaults: { model: "claude-opus-5-5" } });
+  });
+
+  it("/me names no wire where WIRE_PUBLIC_URL is not set, rather than another deployment's", async () => {
+    const me = await fixture().api.handle(caller(), { op: "me" });
+    expect(me.body).toMatchObject({ computer: { status: "ready", wireUrl: null } });
   });
 });
 
@@ -940,7 +670,6 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
         void t.flush();
       },
       surfaceOf: () => "cli",
-      slackQueue: () => ({ rows: 1, oldestMs: 250 }),
     });
     return { telemetry, events, names: () => events.filter((e) => e.event_name !== "telemetry.dropped").map((e) => e.event_name as string) };
   }
@@ -955,64 +684,19 @@ describe("telemetry hooks (work 084 instrumentation): one event per unit of work
     await tick();
     // The gap's 4010 is reported as it closes the socket, before its batch's append event.
     expect(r.names()).toEqual(["sessionlog.append", "sessionlog.recovery", "sessionlog.append"]);
-    expect(r.events[0]!.data).toMatchObject({ events: 40, slack_queue_rows: 1, slack_queue_oldest_ms: 250 });
+    expect(r.events[0]!.data).toMatchObject({ events: 40 });
     expect(r.events[0]!.data).toHaveProperty("do_ack_ms");
     expect(r.events[0]!.data).toHaveProperty("do_pre_ms");
     expect(r.events[1]!.data).toMatchObject({ kind: "gap_4010", epoch: 1 });
     expect(r.events[2]).toMatchObject({ outcome: "failed", error_code: "gap" });
   });
 
-  it("an API write is one computer.write; a ticket one ticket.minted", async () => {
+  it("a ticket is one ticket.minted", async () => {
     const r = recorded();
     const f = fixture({ telemetry: r.telemetry, ticketKey: true });
     await created(f);
-    f.answers.set("turns.send", () => ({ result: { turn: { id: "tn_4m8q2x7c1v9b" }, delivery: "queued", duplicate: false, seq: 4 } }));
-    await f.api.handle(caller(), { op: "call", sessionId: SID, method: "turns.send", params: { input: "hello there" } });
     await f.api.handle(caller(), { op: "ticket", body: {} });
     await tick();
-    const writes = r.events.filter((e) => e.event_name === "computer.write");
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({ session_key: SID, outcome: "completed", data: { method: "turns.send", held: false, replayed: false } });
-    expect(writes[0]!.data).toHaveProperty("do_ms");
     expect(r.events.filter((e) => e.event_name === "ticket.minted").map((e) => e.data.result)).toEqual(["api_key_required"]);
-    expect(JSON.stringify(r.events)).not.toContain("hello there");
-  });
-});
-
-describe("rollout gate (COMPUTER_API_ORGS)", () => {
-  it("parses: unset or empty is nobody, * is everybody, otherwise the listed organizations", () => {
-    expect(computerApiEnabled(undefined, ORG)).toBe(false);
-    expect(computerApiEnabled("", ORG)).toBe(false);
-    expect(computerApiEnabled(" , ", ORG)).toBe(false);
-    expect(computerApiEnabled("*", ORG)).toBe(true);
-    expect(computerApiEnabled("*", undefined)).toBe(true);
-    expect(computerApiEnabled(`org_other, ${ORG} `, ORG)).toBe(true);
-    expect(computerApiEnabled("org_other", ORG)).toBe(false);
-    expect(computerApiEnabled("org_other", undefined)).toBe(false);
-    expect(GATED_PROTOCOL).toBe(3);
-  });
-
-  it("gated off: every operation but /me answers 409 feature_unavailable; nothing is stored or sent", async () => {
-    const f = fixture({ enabled: false, ticketKey: true });
-    const ops = [
-      { op: "create", body: { id: SID, input: "hi" } },
-      { op: "list", query: [] },
-      { op: "get", sessionId: SID },
-      { op: "ticket", body: { sessionIds: [SID] } },
-    ] as const;
-    for (const op of ops) {
-      const reply = await f.api.handle(caller(MO, { admin: true }), op as never);
-      expect(reply).toEqual({ status: 409, error: { code: "feature_unavailable", message: expect.any(String), feature: "sessions" } });
-    }
-    expect((await f.api.handle(caller(), { op: "me" })).status).toBe(200);
-    expect(f.sent).toHaveLength(0);
-    expect(f.settings.has("apiAdmins")).toBe(false);
-    expect([...f.sql.exec("SELECT COUNT(*) AS n FROM sessions WHERE session_id IS NOT NULL")][0]).toEqual({ n: 0 });
-  });
-
-  it("gated on: the same calls go through", async () => {
-    const f = fixture({ enabled: true });
-    await created(f);
-    expect((await f.api.handle(caller(), { op: "list", query: [] })).status).toBe(200);
   });
 });

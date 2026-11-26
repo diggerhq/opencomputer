@@ -4,6 +4,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 import { fakeWorkerdRuntime } from "./test/fixtures/fake-workerd-runtime.mjs";
+import { fakeSlackOutbound } from "./test/fixtures/slack-fakes.mjs";
 import { fakeComputerOutbound, fakeComputerPlatform } from "./test/fixtures/computer-fakes.mjs";
 import { artifactBundle, mockModel } from "./test/fixtures/memory-integrated-fixture.mjs";
 import {
@@ -31,6 +32,21 @@ export default defineConfig({
   test: {
     exclude: ["**/.blue/**", "**/node_modules/**", "**/dist/**"],
     projects: [
+      {
+        // Tracks and threads: Live alone, with fakes of SessionLog, Computer and the edge.
+        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.live-test.jsonc" } })],
+        test: { name: "live", include: ["test/live.test.ts"] },
+      },
+      {
+        // Tracks and threads: the Slack actor alone, with fakes of Org, SessionLog, Computer and Slack's Web API.
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.slack-test.jsonc" },
+            miniflare: { outboundService: fakeSlackOutbound },
+          }),
+        ],
+        test: { name: "slack", include: ["test/slack-actor.test.ts"] },
+      },
       {
         plugins: [
           cloudflareTest({
@@ -270,7 +286,7 @@ export default defineConfig({
         ],
         test: {
           name: "computer",
-          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-spawn.test.ts", "test/computer-threads.test.ts", "test/computer-queue.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts", "test/computer-access-do.test.ts"],
+          include: ["test/computer-routes.test.ts", "test/computer-operator.test.ts", "test/computer-pool-probe-do.test.ts", "test/computer-agent-routes.test.ts", "test/computer-size.test.ts", "test/computer-self-managed.test.ts", "test/computer-disk.test.ts", "test/computer-model-access-do.test.ts", "test/computer-model-profiles-do.test.ts", "test/computer-hosted-do.test.ts", "test/computer-tracks.test.ts"],
         },
       },
       {
@@ -398,7 +414,21 @@ export default defineConfig({
         ],
         test: {
           name: "session-log",
-          include: ["test/session-log.test.ts", "test/actor-shells.test.ts"],
+          include: ["test/session-log*.test.ts", "test/actor-shells.test.ts", "test/actor-module.test.ts"],
+        },
+      },
+      {
+        // Tracks and threads: the Org Durable Object and its mutations, on their own instance.
+        plugins: [
+          cloudflareTest({
+            wrangler: {
+              configPath: "./wrangler.jsonc",
+            },
+          }),
+        ],
+        test: {
+          name: "org",
+          include: ["test/org*.test.ts"],
         },
       },
       {
@@ -417,12 +447,17 @@ export default defineConfig({
         },
       },
       {
+        // Tracks and threads: the HTTP API (spec 37) with fakes of the actors.
+        test: { name: "computer-api", environment: "node", include: ["test/computer-api-http*.test.ts"] },
+      },
+      {
         resolve: egressRegistryFixture,
         test: {
           name: "node",
           environment: "node",
           include: [
             "test/auth.test.ts",
+            "test/boundaries.test.ts",
             "test/computer-grants.test.ts",
             "test/computer-model-access.test.ts",
             "test/computer-model-profiles.test.ts",
@@ -467,7 +502,6 @@ export default defineConfig({
             "test/previews.test.ts",
             "test/computer-previews.test.ts",
             "test/computer-sessions-api.test.ts",
-            "test/computer-session-access.test.ts",
           "test/git-deploy.test.ts",
             "test/automation-repository.test.ts",
             "test/github-credential.test.ts",
@@ -496,9 +530,6 @@ export default defineConfig({
             "test/computer-pool-probe.test.ts",
             "test/computer-token-check.test.ts",
             "test/computer-secrets.test.ts", "test/computer-secrets-scopes.test.ts",
-            "test/work-item.test.ts",
-            "test/work-index.test.ts",
-            "test/work-api.test.ts",
             "test/computer-connections.test.ts",
             "test/computer-model-subscriptions.test.ts",
             "test/computer-codex-subscriptions.test.ts",
@@ -507,7 +538,6 @@ export default defineConfig({
             "test/computer-connect-codes.test.ts",
             "test/computer-units.test.ts",
             "test/computer-access.test.ts",
-            "test/computer-access-store.test.ts", "test/computer-access-flow.test.ts", "test/computer-access-ui.test.ts",
             "test/session-fold.test.ts",
             "test/computer-calvin-contract.test.ts",
             "test/computer-telemetry.test.ts",

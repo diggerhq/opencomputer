@@ -120,7 +120,10 @@ pub type ApiResult<T> = Result<T, ApiErr>;
 #[derive(Debug, Clone)]
 pub enum Out {
     Event(String, Arc<Value>),
-    Delta(String, Arc<Value>),
+    /// A delta and, for one of a block, the block's length before it in UTF-16 code units.
+    Delta(String, Arc<Value>, Option<u64>),
+    /// The session's log was rewritten above a seq: cursors made before it are void.
+    Reset(String),
 }
 
 /// Work to start once the lock is released.
@@ -166,6 +169,12 @@ pub struct Sess {
     pub open_calls: HashMap<String, Vec<Value>>,
     /// Steered messages the agent has not read yet, per turn: (input, author).
     pub unread: HashMap<String, Vec<(String, Value, u64)>>,
+    /// Which writing of the log this is; a cursor of another one is void.
+    pub epoch: u64,
+    /// The seq the log was last rewritten above.
+    pub rewritten_above: u64,
+    /// Streamed blocks so far: (delta type, turn, text).
+    pub blocks: HashMap<String, (String, Option<String>, String)>,
 }
 
 pub fn st(v: &Value, k: &str) -> String {
@@ -175,6 +184,27 @@ pub fn st(v: &Value, k: &str) -> String {
 impl Sess {
     pub fn last_seq(&self) -> u64 {
         self.events.len() as u64
+    }
+    /// The opaque cursor after `seq`. Clients must not read it; the fake does.
+    pub fn cursor_at(&self, seq: u64) -> String {
+        format!("c{}x{}", self.epoch, seq)
+    }
+    pub fn cursor(&self) -> String {
+        self.cursor_at(self.last_seq())
+    }
+    /// The seq a cursor stands after, or the `reset` that answers a void one:
+    /// `(cursor, seq)` to go on from.
+    pub fn seq_of(&self, cursor: &str) -> Result<u64, (Value, Value)> {
+        let parsed = cursor.strip_prefix('c').and_then(|c| c.split_once('x')).and_then(|(e, n)| Some((e.parse::<u64>().ok()?, n.parse::<u64>().ok()?)));
+        match parsed {
+            Some((e, n)) if e == self.epoch && n <= self.last_seq() => Ok(n),
+            Some((_, n)) => {
+                let keep = n.min(self.rewritten_above).min(self.last_seq());
+                Err((self.cursor_at(keep).into(), keep.into()))
+            }
+            // Not a cursor of this server (a bare integer of the old contract): from the start.
+            None => Err((Value::Null, Value::Null)),
+        }
     }
     pub fn turn(&self, tid: &str) -> Option<&Value> {
         self.turns.iter().find(|t| t["id"] == tid)
@@ -242,8 +272,6 @@ impl Sess {
             "lastText": self.last_text,
             "context": {"usedTokens": self.used_tokens, "windowTokens": WINDOW_TOKENS},
             "lastSeq": self.last_seq(),
-            "logEpoch": 1,
-            "epochStartSeq": 1,
             "createdAt": self.created_at,
             "lastActiveAt": self.last_active_at,
             "syncedAt": null,
@@ -268,6 +296,8 @@ pub struct World {
     pub jobs: Vec<Job>,
     pub bus: broadcast::Sender<Out>,
     pub interrupt_spares_background: bool,
+    /// Sessions whose deltas a live socket has subscribed to, ever: what the `streamed` script waits for.
+    pub delta_watched: HashSet<String>,
 }
 
 pub struct Idem {
@@ -308,11 +338,27 @@ impl World {
         seq
     }
 
-    /// Sends a delta (never recorded) to attaches that asked for deltas.
+    /// Sends a delta (never recorded) to connections subscribed to the session's deltas.
     pub fn delta(&mut self, sid: &str, turn_id: Option<&str>, ty: &str, data: Value) {
         let d = json!({"type": ty, "sessionId": sid, "turnId": turn_id, "data": data});
         validate("Delta", &d);
-        let _ = self.bus.send(Out::Delta(sid.to_string(), Arc::new(d)));
+        let offset = data["blockId"].as_str().map(|b| {
+            let held = self.s(sid).blocks.entry(b.to_string()).or_insert_with(|| (ty.to_string(), turn_id.map(str::to_string), String::new()));
+            let offset = held.2.encode_utf16().count() as u64;
+            held.2.push_str(data["text"].as_str().unwrap_or(""));
+            offset
+        });
+        let _ = self.bus.send(Out::Delta(sid.to_string(), Arc::new(d), offset));
+    }
+
+    /// Rewrites the log above `seq`: the events after it go, and every cursor
+    /// made so far is void (`reset`).
+    pub fn rewrite_above(&mut self, sid: &str, seq: u64) {
+        let s = self.s(sid);
+        s.events.truncate(seq as usize);
+        s.epoch += 1;
+        s.rewritten_above = seq;
+        let _ = self.bus.send(Out::Reset(sid.to_string()));
     }
 
     /// Records `session.status_changed` for every session whose status moved.
@@ -345,6 +391,9 @@ impl World {
             metadata,
             created_at: t.clone(),
             last_active_at: t,
+            epoch: 1,
+            rewritten_above: 0,
+            blocks: HashMap::new(),
             turns: vec![],
             asks: vec![],
             subagents: vec![],
@@ -662,6 +711,9 @@ pub struct Shared {
     pub knobs: Mutex<Knobs>,
     pub requests: Mutex<Vec<LoggedRequest>>,
     pub frames: Mutex<Vec<WsFrame>>,
+    /// Frames of the live socket (`GET /live`), both directions.
+    pub live_frames: Mutex<Vec<WsFrame>>,
+    pub live_connections: Mutex<u64>,
     pub handle: tokio::runtime::Handle,
     pub workspace_root: PathBuf,
     pub api_url: String,

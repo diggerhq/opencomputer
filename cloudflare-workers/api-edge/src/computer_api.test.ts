@@ -260,10 +260,6 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/work/repository"],
     ["PUT", "/computer/work/repository"],
     ["GET", "/computer/work/repositories"],
-    ["GET", "/computer/work/items"],
-    ["GET", "/computer/work/items/22"],
-    ["GET", "/computer/work/items/22/history"],
-    ["GET", "/computer/work/sessions/cs_01h/items"],
     ["GET", "/computer/sessions/cs_01h/workspace/archive"],
     ["PUT", "/computer/sessions/cs_01h/workspace/archive"],
     ["GET", "/computer/sessions/cs_01h/workspace/file"],
@@ -287,7 +283,14 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/slack/install"],
     ["PUT", "/computer/settings"],
     ["GET", "/computer/settings/apiAccessDefault"],
-    // Close and Reopen come with build step 5.
+    // No handler behind them in managed-agents.
+    ["GET", "/computer/work/items"],
+    ["GET", "/computer/work/items/22"],
+    ["GET", "/computer/work/items/22/history"],
+    ["GET", "/computer/work/sessions/cs_01h/items"],
+    ["GET", "/computer/webhooks"],
+    ["PUT", "/computer/webhooks/wh_1"],
+    ["DELETE", "/computer/webhooks/wh_1"],
     ["POST", "/computer/work/items/22/close"],
     ["DELETE", "/computer/work/repository"],
     ["PUT", "/computer/work/repositories"],
@@ -507,7 +510,6 @@ describe("computer API proxy to blue", () => {
       aud: "managedagents",
       org_id: ORG,
       user_id: USER,
-      role: "admin",
       key_id: `key-${keySeq}`,
       key_hash: await hashAPIKey(key),
       key_name: "laptop",
@@ -554,7 +556,9 @@ describe("computer API proxy to blue", () => {
     expect(url).toBe(`${BLUE}/v1/computer/sessions`);
     expect(headers.get("x-opencomputer-surface")).toBe("api");
     const payload = claims(headers.get("x-opencomputer-agent-token") ?? "");
-    expect(payload).toMatchObject({ org_id: ORG, user_id: USER, role: "admin" });
+    expect(payload).toMatchObject({ org_id: ORG, user_id: USER, oc_principal: { kind: "member", admin: true } });
+    // Who asks is the principal alone: no older role, principal or session claims.
+    for (const claim of ["role", "principal", "session_key"]) expect(payload[claim]).toBeUndefined();
     for (const claim of Object.keys(payload)) {
       expect(claim.startsWith("key_")).toBe(false);
     }
@@ -650,6 +654,8 @@ describe("computer API proxy to blue", () => {
     const { url, headers } = sent(fetchMock);
     expect(url).toBe(`${BLUE}/v1/computer/sessions`);
     expect(headers.get("x-opencomputer-surface")).toBeNull();
+    // The dashboard mount names the member's principal too (the Slack install and unlink need it).
+    expect(claims(headers.get("x-opencomputer-agent-token") ?? "").oc_principal).toMatchObject({ org: ORG, kind: "member", via: "dashboard" });
   });
 });
 
@@ -780,7 +786,7 @@ describe("computer API CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-allow-headers")).toBe(
-      "authorization, content-type, idempotency-key, x-request-id, if-none-match",
+      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal",
     );
     expect(res.headers.get("access-control-allow-methods")).toBe("GET, POST, PATCH, PUT, DELETE");
     expect(res.headers.get("access-control-max-age")).toBe("600");

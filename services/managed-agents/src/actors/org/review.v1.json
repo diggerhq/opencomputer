@@ -1,0 +1,168 @@
+{
+  "$id": "https://opencomputer.dev/schemas/review.v1.json",
+  "title": "Review summary",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "head": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "The commit the summary describes"
+    },
+    "parts": {
+      "minItems": 1,
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "What this part does, in a few words"
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "What changed in this part and why, in one or two sentences a reader can check against the excerpts"
+          },
+          "points": {
+            "description": "Short points that support or qualify the claim",
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          },
+          "files": {
+            "minItems": 1,
+            "maxItems": 300,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "description": "A file's path as the diff names it (its new path when renamed)"
+                },
+                "note": {
+                  "description": "One line: what changed in this file; omit for a file whose change is obvious from the part",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Every file of the diff that belongs to this part, each in one part only"
+          },
+          "excerpts": {
+            "description": "The hunks worth reading for this part, most telling first",
+            "maxItems": 6,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "description": "A file's path as the diff names it (its new path when renamed)"
+                },
+                "side": {
+                  "description": "`new` (the default): lines of the file after the change; `old`: before it, for code the change removes",
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "old"
+                  ]
+                },
+                "start": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991,
+                  "description": "The first line of the excerpt"
+                },
+                "end": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991,
+                  "description": "The last line of the excerpt (at least `start`); keep it short, a few to 30 lines"
+                },
+                "why": {
+                  "description": "One line: what to see in these lines",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                }
+              },
+              "required": [
+                "path",
+                "start",
+                "end"
+              ],
+              "additionalProperties": false,
+              "description": "Lines of the diff that show what the part claims: the hunk a reviewer should read, not the whole file"
+            }
+          },
+          "eye": {
+            "description": "What deserves the reviewer's eye in this part; omit when nothing does",
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400,
+                  "description": "What a reviewer should not miss and why: a risk, a judgement call, a behaviour that changed"
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "description": "A file's path as the diff names it (its new path when renamed)"
+                },
+                "line": {
+                  "description": "The line it is about, on the new side",
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false,
+              "description": "A thing worth the reviewer's eye"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "claim",
+          "files"
+        ],
+        "additionalProperties": false,
+        "description": "One part of the change: a piece a reviewer can read and judge on its own"
+      },
+      "description": "The change as a few parts, in the order a reviewer should read them: the part that carries the change first, rote parts (renames, generated files, tests that follow) last"
+    }
+  },
+  "required": [
+    "head",
+    "parts"
+  ],
+  "additionalProperties": false
+}

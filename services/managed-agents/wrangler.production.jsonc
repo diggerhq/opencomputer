@@ -26,9 +26,6 @@
     "COMPUTER_DEFAULT_DISK_GIB": "128",
     "COMPUTER_MAX_DISK_GIB": "1024",
     "COMPUTER_POOL_SIZE": "5",
-    // Work 084: the computer API's per-org rollout gate (canary and kill switch). Empty: every host
-    // is welcomed at protocol 3; "*": everybody at 4; otherwise comma-separated organization ids.
-    "COMPUTER_API_ORGS": "*",
     "COMPUTER_PUBLIC_ORIGIN": "https://app.example.com",
     "PREVIEW_DOMAIN": "example.app",
     // Work 084: where opc opens its WebSocket (GET /me computer.wireUrl) and the wire tunnel hostnames.
@@ -108,11 +105,12 @@
       { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject" },
       // Work tracking 3.6: one per organization, the projection of its knowledge repository.
       { "name": "WORK_INDEX", "class_name": "WorkIndexDurableObject" },
-      // Tracks and threads: the organization's directory of work, its Slack link, and the readers of
-      // its occurrence stream (`<org>:<kind>`).
+      // Tracks and threads: the organization's directory of work and its Slack link.
       { "name": "ORGS", "class_name": "OrgDurableObject" },
       { "name": "SLACK", "class_name": "SlackDurableObject" },
-      { "name": "DELIVERY", "class_name": "DeliveryDurableObject" },
+      // Tracks and threads 18.8: the fan-out actor, owned by the `opencomputer-live` Worker
+      // (wrangler.live.jsonc; deploy it first).
+      { "name": "LIVE", "class_name": "LiveDurableObject", "script_name": "opencomputer-live" },
       // Work 074: preview names, owned by the `previews` Worker (deploy it
       // first). Previews stay off until PREVIEW_PLATFORM_KEY,
       // PREVIEW_CF_API_TOKEN, PREVIEW_CF_ACCOUNT_ID and PREVIEW_CF_ZONE_ID are
@@ -169,7 +167,7 @@
     // Tracks and threads: the classes ship as shells first, so this migration deploys on its own.
     {
       "tag": "v8",
-      "new_sqlite_classes": ["OrgDurableObject", "SlackDurableObject", "DeliveryDurableObject"]
+      "new_sqlite_classes": ["OrgDurableObject", "SlackDurableObject"]
     }
   ],
   // Console output and exceptions go to Axiom (dataset oc-platform-edge)

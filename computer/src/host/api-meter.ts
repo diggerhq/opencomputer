@@ -20,13 +20,13 @@ import { lstat, readdir } from 'node:fs/promises';
 import { checkCliForward } from '../api/cli-telemetry.js';
 import { journalIn } from '../api/journal-dir.js';
 import { checkWireEvent } from '../api/wire-events.js';
+import { PROTOCOL_VERSION } from '../protocol.js';
 import { isSessionId } from '../session-ids.js';
 import type { Telemetry } from '../telemetry/emitter.js';
 import { MirrorMeter } from './mirror-meter.js';
 
 /** The api-host's gauges at sample time. */
 export interface ApiGauges {
-  v4: boolean;
   runnerWriters: number;
   hostWriters: number;
   heldFrames: number;
@@ -55,7 +55,7 @@ export interface ApiMeterOptions {
 
 export function apiMeter(t: Telemetry, o: ApiMeterOptions) {
   const now = o.now ?? Date.now;
-  let gauges: () => ApiGauges = () => ({ v4: false, runnerWriters: 0, hostWriters: 0, heldFrames: 0, mirrorSpooledBytes: 0 });
+  let gauges: () => ApiGauges = () => ({ runnerWriters: 0, hostWriters: 0, heldFrames: 0, mirrorSpooledBytes: 0 });
   const staleSeen = new Map<string, number>();
   /** Sessions whose held frames made the host ask for the epoch frame; cleared by the adoption. */
   const asked = new Set<string>();
@@ -122,14 +122,13 @@ export function apiMeter(t: Telemetry, o: ApiMeterOptions) {
     return Promise.race([read, late]);
   }
 
-  /** Gauges now, on a v4 host only. */
+  /** Gauges now. */
   async function sample() {
     const g = gauges();
-    if (!g.v4) return;
     const bytes = await journalBytes();
     t.emit('api.sample', {
       data: {
-        host_protocol: 4,
+        host_protocol: PROTOCOL_VERSION,
         open_journals: g.runnerWriters + g.hostWriters,
         runner_writers: g.runnerWriters,
         host_writers: g.hostWriters,

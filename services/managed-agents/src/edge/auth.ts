@@ -4,7 +4,10 @@ import {
 } from "jose";
 
 import type { ManagedAgentIdentity } from "../protocol.js";
-import { COMPUTER_PRINCIPAL } from "./computer-principal.js";
+import type { Principal } from "../auth/principal.js";
+import { API_SCOPES } from "../api-objects/objects.js";
+import { memberId } from "../ids/session-ids.js";
+import { COMPUTER_PRINCIPAL, principalClaim } from "./computer-principal.js";
 
 export interface ManagedAgentAuthEnv {
   BLUE_ACCOUNT_ID: string;
@@ -34,6 +37,8 @@ export interface RequestIdentity extends ManagedAgentIdentity {
   /** The key creator's name and email, when the edge loaded them. */
   userName?: string;
   userEmail?: string;
+  /** The caller's principal (spec 34.3), from the assertion's `oc_principal` claim when it has one. */
+  ocPrincipal?: Principal;
 }
 
 export interface AssertedApiKey {
@@ -186,6 +191,8 @@ export async function authenticateRequest(
       }
       const apiKey = assertedApiKey(verified.payload);
       if (apiKey === null) return null;
+      const ocPrincipal = principalClaim(verified.payload.oc_principal, accountId);
+      if (ocPrincipal === null) return null;
       const userName = verified.payload.user_name;
       const userEmail = verified.payload.user_email;
       return {
@@ -198,6 +205,7 @@ export async function authenticateRequest(
           ? { principal, ...(sessionKey ? { sessionKey } : {}) }
           : {}),
         ...(apiKey ? { apiKey } : {}),
+        ...(ocPrincipal ? { ocPrincipal } : {}),
         ...(typeof userName === "string" && userName ? { userName } : {}),
         ...(typeof userEmail === "string" && userEmail ? { userEmail } : {}),
       };
@@ -267,9 +275,21 @@ export async function authenticateRequest(
   } else if (env.BLUE_ENVIRONMENT !== "development") {
     return null;
   }
+  // The operator of a development or self-hosted deployment: an admin member with every scope.
+  const subject = await memberId("local");
   return {
     kind: "user",
     userId: "local",
     accountId: env.BLUE_ACCOUNT_ID,
+    ocPrincipal: {
+      org: env.BLUE_ACCOUNT_ID,
+      subject,
+      kind: "member",
+      via: "api",
+      scopes: [...API_SCOPES],
+      audiences: ["org", `member:${subject}`],
+      admin: true,
+      credential: { id: "local", expiresAt: null },
+    },
   };
 }

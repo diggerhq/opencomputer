@@ -29,8 +29,6 @@ The objects and events are also published as JSON Schema: [`https://raw.githubus
   "lastText": "I'll start by running the test a few times",
   "context": { "usedTokens": 41250, "windowTokens": 200000 },
   "lastSeq": 1184,
-  "logEpoch": 1,
-  "epochStartSeq": 1,
   "createdAt": "2026-10-26T09:01:02.311Z",
   "lastActiveAt": "2026-10-26T09:14:51.007Z",
   "syncedAt": "2026-10-26T09:14:51.009Z",
@@ -58,8 +56,6 @@ The objects and events are also published as JSON Schema: [`https://raw.githubus
 | `lastText` | string or null | The first 200 characters of the last message the agent wrote, for lists |
 | `context` | object | `usedTokens` of `windowTokens` in the model's context window, as of the last model call's [`usage.recorded`](/api/reference/events#model) |
 | `lastSeq` | integer | The `seq` of the newest event. `0` for a session with no events yet. |
-| `logEpoch` | integer | The log's epoch, from `1`. It changes only when a computer is lost mid-turn and the server records the recovery. See [If a computer is lost](/api/model#if-a-computer-is-lost). |
-| `epochStartSeq` | integer | The first `seq` recorded in `logEpoch` |
 | `createdAt`, `lastActiveAt` | string | Creation, and the newest event |
 | `syncedAt` | string or null | `null` over the WebSocket, where the computer itself answers. Over HTTP, when the server last heard from the session on the computer. When the computer is not running and `syncedAt` is old, show the session as possibly stale. |
 | `urls` | object | `dashboard`: the session on the dashboard, or `null` over the WebSocket. A Slack session's thread is `origin.slack.url`. |
@@ -345,7 +341,7 @@ Who did something, in turns, asks and events.
 
 ## Capabilities
 
-A session's capabilities are not on the Session object. Read them with [`GET /sessions/{id}/capabilities`](/api/http/sessions#get-a-sessions-capabilities), which returns `{ "capabilities": … }`; they are also in the result of [`sessions.attach`](/api/websocket/methods#attach). [`GET /me`](/api/authentication#who-am-i) has what a new session would get.
+A session's capabilities are not on the Session object. Read them with [`GET /sessions/{id}/capabilities`](/api/http/sessions#get-a-sessions-capabilities), which returns `{ "capabilities": … }`. [`GET /me`](/api/authentication#who-am-i) has what a new session would get.
 
 ```json
 {

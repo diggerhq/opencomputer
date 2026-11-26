@@ -26,18 +26,26 @@
 //   whole conversation: the owner's own words under their Slack name and photo
 //   when the app has `chat:write.customize`, anyone else's quoted under their name. Nothing else here posts
 //   to it beyond what the session's own commands (a model switch) say.
+// - a Slack message is a `turns.send` with `slack` (work 118, section 40.11),
+//   and a Slack button an `asks.answer` with `slack`, both only from an actor
+//   `via: 'slack'`: the message goes through the runner's Slack handling
+//   (commands, reactions, files, names) and starts, steers or answers as a
+//   Slack message always has, in the turn the cloud named (`turnId`); the
+//   button acts on its prompt as a click always has (prompts.ts).
 
 import { log } from '../../log.js';
 import { mintId } from '../../session-ids.js';
-import type { ApiActor, ApiDelivery, ApiError, Person } from '../../protocol.js';
+import { NOT_ASKED, type ApiActor, type ApiError, type Person, type SlackFile } from '../../protocol.js';
+import type { Linked } from '../../links.js';
 import type { Actor } from '../../api/schema-objects.js';
 import type { SessionLog } from '../../api/session-log.js';
-import { dispatch, idempotent, type WriteHandlers } from '../../api/read-methods.js';
+import { dispatch, type WriteHandlers } from '../../api/read-methods.js';
 import { apiError, type CallOutcome, type SubscribeOptions, type Subscription, type Writer } from '../../api/writer.js';
 import type { EffortLevel, PermissionMode } from '../../protocol.js';
 import { switchEffort, switchModel, switchSpeed } from '../model-switch.js';
 import type { Session } from '../session.js';
 import type { AskAnswer } from './asks.js';
+import { mayAnswer, prompts } from '../prompts.js';
 import { type IfBusy, type SentFrom, Tap } from './tap.js';
 import type { ApiWrite } from './write-events.js';
 import { WRITES } from '../../api/schema-methods.js';
@@ -51,6 +59,17 @@ interface Waiting {
   actor: Actor;
 }
 
+/** `turns.send`'s `slack`: the Slack message the input is, as the Slack actor read it. `context`: the messages held for the thread since its last turn. */
+export interface SlackTurn {
+  userId: string;
+  ts: string;
+  files?: SlackFile[];
+  mentioned?: boolean;
+  mentionedInline?: boolean;
+  context?: Linked;
+  linked?: Linked[];
+}
+
 export interface SessionApiOptions {
   /** The session's owner: a Slack message from them is theirs on the API. */
   owner: Person;
@@ -58,6 +77,8 @@ export interface SessionApiOptions {
   suspend(): void;
   /** Runs API sends in order with the runner's Slack deliveries. */
   serial?<T>(job: () => Promise<T>): Promise<T>;
+  /** A Slack message (`turns.send` with `slack`): the runner's Slack handling, in order with its others. Absent: sent as any other message. */
+  slack?(text: string, m: SlackTurn, from: SentFrom): Promise<void>;
   now?: () => number;
   /** Each write call, once it returns (api.write telemetry: write-events.ts). Never awaited. */
   onWrite?(w: ApiWrite): void;
@@ -90,7 +111,7 @@ export class SessionApi implements Writer {
   readonly tap: Tap;
   readonly call: Writer['call'];
   private queue: Waiting[] = [];
-  /** Every turn this runner queued or started from the queue: a Delivery.api for one is not queued again. */
+  /** Every turn this runner queued or started from the queue. */
   private taken = new Set<string>();
   private forceTimer?: NodeJS.Timeout;
   private forcing?: string;
@@ -113,17 +134,17 @@ export class SessionApi implements Writer {
     session.hooks.api = this.tap;
     const call = dispatch(log, this.handlers());
     const onWrite = o.onWrite;
-    this.call = !onWrite
-      ? call
-      : async (method, params, ctx) => {
-          if (!WRITES.has(method as never)) return call(method, params, ctx);
-          const t0 = performance.now();
-          const out = await call(method, params, ctx);
-          try {
-            onWrite({ method, params, ctx, ms: performance.now() - t0, out });
-          } catch {} // telemetry never fails a call
-          return out;
-        };
+    this.call = async (method, params, ctx) => {
+      if (!WRITES.has(method as never)) return call(method, params, ctx);
+      const t0 = performance.now();
+      const out = await call(method, params, ctx);
+      try {
+        onWrite?.({ method, params, ctx, ms: performance.now() - t0, out });
+      } catch {} // telemetry never fails a call
+      // A suspend ends the runner once its call is over (its idempotency kept); the socket writes the reply before it closes.
+      if (method === 'sessions.suspend' && !out.error && log.fold.status === 'suspended') this.o.suspend();
+      return out;
+    };
   }
 
   /** A person set the title over the API (kept in the session's info, across restarts): the computer's naming (work 093) leaves it alone. */
@@ -174,6 +195,18 @@ export class SessionApi implements Writer {
   }
 
   /**
+   * The runner serves the session: a journal that left it `suspended` or `starting` (a resume, a send, a wake)
+   * says the agent is up (`runtime.connected`) and idle until a turn runs.
+   */
+  connected() {
+    const was = this.log.fold.status;
+    if (was !== 'suspended' && was !== 'starting') return;
+    const resumed = was === 'suspended' || this.log.fold.turns().some((t) => t.status !== 'queued');
+    this.log.append('runtime.connected', { warm: false, resumed, durationMs: null }, { actor: null });
+    this.tap.setStatus('idle');
+  }
+
+  /**
    * The runner attached: the turns the journal holds `queued` (a runner that
    * died left them, or the host's writer recorded them while none ran) wait
    * here in order, and the first starts when the session is idle.
@@ -198,18 +231,18 @@ export class SessionApi implements Writer {
 
   // ---------------------------------------------------------------- sending
 
-  /** A message into the session, as `turns.send` (and a Delivery.api) has it. */
-  async send(text: string, actor: Actor, ifBusy: IfBusy): Promise<CallOutcome> {
+  /** A message into the session, as `turns.send` has it; `turnId`: the turn it starts, when the caller named one (the cloud's inbox). */
+  async send(text: string, actor: Actor, ifBusy: IfBusy, turnId: string = mintId('tn')): Promise<CallOutcome> {
     await this.echo(text, actor);
-    if (!this.busy && !this.queue.length) return this.start({ turnId: mintId('tn'), text, actor }, { ifBusy });
+    if (!this.busy && !this.queue.length) return this.start({ turnId, text, actor }, { ifBusy });
     const cur = this.tap.cur;
-    if (ifBusy === 'interrupt') return this.interruptWith(text, actor);
+    if (ifBusy === 'interrupt') return this.interruptWith(text, actor, turnId);
     if (ifBusy === 'steer' && cur) {
-      await this.run(() => this.session.send(text, undefined, [], undefined, { actor, ifBusy }));
+      await this.run(() => this.session.send(text, undefined, [], undefined, { actor, ifBusy, turnId }));
       return this.sent(cur.id, 'steered');
     }
     if (this.queue.length >= QUEUE_MAX) return fail('queue_full', `at most ${QUEUE_MAX} turns may wait`, 409, { retryable: true, retryAfterMs: 5000 });
-    const w = { turnId: mintId('tn'), text, actor };
+    const w = { turnId, text, actor };
     this.log.append('message.received', { input: text, ifBusy, delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: w.turnId, actor });
     this.log.append('turn.queued', { position: this.queue.length + 1, trigger: 'message', subagentId: null }, { turnId: w.turnId, actor });
     this.queue.push(w);
@@ -217,22 +250,23 @@ export class SessionApi implements Writer {
     return this.sent(w.turnId, 'queued');
   }
 
-  /** A Delivery.api: one the host's writer recorded while no runner ran (`turnId`) starts in that turn, in order; another is a `turns.send`. */
-  async deliver(text: string, d: ApiDelivery): Promise<CallOutcome> {
-    const actor = actorOf(d.actor);
-    if (!d.turnId) {
-      const ctx = { actor: d.actor, member: d.member, idempotencyKey: d.idempotencyKey };
-      return idempotent(this.log, 'turns.send', { sessionId: this.sessionId, input: text, ifBusy: d.ifBusy }, ctx, () => this.send(text, actor, d.ifBusy));
-    }
-    const t = this.log.fold.turn(d.turnId);
-    if (!this.taken.has(d.turnId) && (!t || t.status === 'queued')) {
-      this.taken.add(d.turnId);
-      await this.echo(text, actor);
-      this.queue.push({ turnId: d.turnId, text, actor });
-    }
-    this.taken.add(d.turnId);
-    this.idle();
-    return this.sent(d.turnId, 'queued');
+  /** A Slack message: the runner's Slack handling takes it; the turn it started, if it started one (a command, a steer and an answer to a prompt start none). */
+  private async slackTurn(text: string, m: SlackTurn, actor: Actor, turnId: string): Promise<CallOutcome> {
+    const cur = this.tap.cur?.id;
+    await this.run(() => this.o.slack!(text, m, { actor, turnId }));
+    const t = this.log.fold.turn(turnId);
+    return { result: { turn: t ?? (cur && this.log.fold.turn(cur)) ?? null, delivery: t ? 'started' : cur ? 'steered' : 'none', duplicate: false, seq: this.log.lastSeq } };
+  }
+
+  /** A Slack button: it acts on its prompt as a click does, for the person who pressed it. */
+  private async button(askId: string, b: { userId: string; value: string }): Promise<CallOutcome> {
+    const p = prompts.get(askId);
+    const folded = this.log.fold.ask(askId);
+    if (!p) return folded ? fail('ask_closed', `the ask is ${folded.status}`, 409, { ask: folded }) : fail('ask_not_found', `no ask ${askId}`, 404);
+    const owner = this.o.owner.slackUserId;
+    if (!mayAnswer(p, !owner || b.userId === owner ? 'owner' : 'driver', b.userId)) return fail(NOT_ASKED, 'the prompt waits on someone else', 403);
+    await p.onAction(b.value, b.userId);
+    return { result: { ask: this.log.fold.ask(askId) ?? folded, seq: this.log.lastSeq } };
   }
 
   /** A message from outside Slack, into a Slack session's thread (never throws: `say` logs Slack's refusals). The owner's
@@ -263,8 +297,7 @@ export class SessionApi implements Writer {
    * harness stop and the send follow in the background, in order with the
    * API's other sends (Slack's `!!` path, as a person typing it).
    */
-  private interruptWith(text: string, actor: Actor): CallOutcome {
-    const turnId = mintId('tn');
+  private interruptWith(text: string, actor: Actor, turnId: string): CallOutcome {
     this.cancelQueued(actor);
     const cur = this.tap.cur;
     if (cur) this.cancelling(cur.id, 'interrupted', actor);
@@ -307,7 +340,10 @@ export class SessionApi implements Writer {
     const fold = this.log.fold;
     const s = this.session;
     return {
-      'turns.send': (p, ctx) => this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue'),
+      'turns.send': (p, ctx) =>
+        p.slack && this.o.slack && ctx.actor.via === 'slack'
+          ? this.slackTurn(p.input, p.slack as SlackTurn, actorOf(ctx.actor), p.turnId ?? mintId('tn'))
+          : this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue', p.turnId),
       'sessions.compact': (p, ctx) => this.send(`/compact${p.instructions ? ` ${p.instructions}` : ''}`, actorOf(ctx.actor), 'queue'),
       'sessions.interrupt': (p, ctx) => {
         const actor = actorOf(ctx.actor);
@@ -360,10 +396,10 @@ export class SessionApi implements Writer {
         this.tap.asks.closeAll();
         this.log.append('runtime.suspended', { reason: 'requested' }, { actor });
         this.tap.setStatus('suspended');
-        const out = this.sessionResult();
-        this.o.suspend();
-        return out;
+        return this.sessionResult(); // the runner ends after the reply (`call`)
       },
+      // The host started this runner for the call (NEEDS_AGENT): the session is not suspended, so it is returned unchanged.
+      'sessions.resume': () => this.sessionResult(),
       'subagents.stop': async (p, ctx) => {
         const a = this.tap.subagents.get(p.subagentId) ?? fold.subagent(p.subagentId);
         if (!a) return fail('subagent_not_found', `no subagent ${p.subagentId}`, 404);
@@ -374,7 +410,11 @@ export class SessionApi implements Writer {
         await this.stopSubagent(a.id, actorOf(ctx.actor));
         return { result: { subagent: fold.subagent(a.id) ?? a, seq: this.log.lastSeq } };
       },
-      'asks.answer': (p, ctx) => this.ask(p.askId, (asks) => asks.answer(p.askId, p.answer as AskAnswer, actorOf(ctx.actor))),
+      'asks.answer': (p, ctx) => {
+        if (p.slack && ctx.actor.via === 'slack') return this.button(p.askId, p.slack);
+        if (!p.answer) return fail('invalid_request', 'answer is required', 400, { field: 'answer' });
+        return this.ask(p.askId, (asks) => asks.answer(p.askId, p.answer as AskAnswer, actorOf(ctx.actor)));
+      },
       'asks.dismiss': (p, ctx) => this.ask(p.askId, (asks) => asks.dismiss(p.askId, p.message, actorOf(ctx.actor))),
     };
   }

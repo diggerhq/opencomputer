@@ -1,0 +1,83 @@
+---
+title: "Live"
+description: "`GET /live` is one WebSocket per client that pushes new events, deltas and feed rows; history and gaps are read over HTTP"
+---
+
+Live tells a client what changed, the moment it changes. It never holds history: a client reads over HTTP up to where Live left off ([Events](/api/events)), then applies what Live pushes. `opc` uses it for every command that watches a session (`opc wait`, `opc watch`, `opc -p`, the interactive screen).
+
+## Open
+
+`GET /live` on the API (`wss://app.opencomputer.dev/api/managed-agents/computer/live`), a WebSocket upgrade offering the subprotocol `oc.live.v1`. Without it, or without an upgrade: `426 upgrade_required`.
+
+| Credential | How |
+| --- | --- |
+| API key | A second subprotocol `oc.bearer.<key>`, the only place a browser can put one, or the `x-api-key` or `Authorization: Bearer` header |
+| Dashboard | Its session cookie, from an allowed `Origin` |
+
+The connection needs `sessions:read`. The server answers with `oc.live.v1` only, never the bearer subprotocol.
+
+Every frame is one JSON text message of at most 64 kB. The client's first frame is `hello`; the server answers `ready`:
+
+```json
+{"t":"hello","protocol":1}
+{"t":"ready","connectionId":"cn_...","protocol":1,"org":"org_...","subject":"usr_...","expiresAt":null,"limits":{"sessions":32,"frameBytes":64000}}
+```
+
+`expiresAt` is when the credential expires, when it does. Send `{"t":"auth","token":"..."}` with a fresh credential of the same person before then; a credential of anyone else closes the socket with `4003`. `{"t":"ping"}` is answered `{"t":"pong"}`.
+
+## Streams
+
+| Stream | Pushes |
+| --- | --- |
+| `events:<cs_...>` | A session's recorded events, as ranges |
+| `deltas:<cs_...>` | A session's deltas: text and tool output as they are written. Not stored, never replayed |
+| `feed` | The organization's directory rows of the kinds named in `kinds`. Without `work:read`, only `session` and `machine` rows |
+
+```json
+{"t":"sub","stream":"events:cs_0123456789abcdef","after":"<cursor>"}
+{"t":"subd","stream":"events:cs_0123456789abcdef","head":"<cursor>"}
+```
+
+`after` is a cursor from an [events page](/api/events#read-a-range) or an earlier range. `subd` carries the stream's `head`. `{"t":"unsub","stream":"..."}` stops a stream. A connection watches at most 32 sessions; past that, `error` with `too_many_subscriptions`. Watching a session never resumes it.
+
+## Following a session
+
+Hold one cursor per session and compare it for equality only; never read inside it.
+
+1. Read events over HTTP until `hasMore` is false, keeping the page's `cursor`.
+2. `sub` to `events:<id>` with that cursor as `after`, and to `deltas:<id>` if you show text as it is written.
+3. Apply each `events` frame whose `from` is your cursor, then hold its `to`. One whose `to` is your cursor is a repeat: ignore it.
+4. On anything else (a `subd` or `behind` whose `head` is not your cursor, or an `events` frame that does not start at it), read over HTTP from your cursor, then go on.
+
+```json
+{"t":"events","session":"cs_0123456789abcdef","from":"<cursor>","to":"<cursor>","events":[{"id":"ev_...","seq":413,"type":"turn.steered","...":"..."}]}
+{"t":"behind","stream":"events:cs_0123456789abcdef","head":"<cursor>"}
+```
+
+`behind` is sent when a range is too large for one frame: the events are read over HTTP.
+
+| Server frame | Means | Do |
+| --- | --- | --- |
+| `reset` (`stream`, `cursor`, `seq`) | The cursor's position no longer exists | Drop held events above `seq`, if given, and read on from `cursor`; with a null `cursor`, from the start |
+| `detached` (`stream`, `reason`) | The stream stopped: `forbidden` (no access now), `gone` or `unavailable` | Stop showing it, or `sub` again later for `unavailable` |
+| `error` (`code`, `message`) | `unknown_frame`, `unknown_stream`, `too_many_subscriptions`, or `unavailable` when a credential could not be checked | Fix the frame, or retry |
+
+### Deltas
+
+```json
+{"t":"delta","session":"cs_0123456789abcdef","type":"message.delta","turnId":"tn_...","data":{"blockId":"...","...":"..."},"offset":120}
+```
+
+`offset` is where `data`'s text starts in its block. When it is not the length you hold, send `{"t":"block","session":"cs_...","blockId":"..."}`: the answer is a delta with `whole: true` whose text replaces the block. Each block's completed event (`message.completed`, `reasoning.completed`, `tool.completed`) carries the whole text, so a client may ignore deltas. Delta types: [API schema](/reference/api-schema#deltas).
+
+## Close codes
+
+| Code | Cause |
+| --- | --- |
+| `4001` | The credential expired, was revoked or does not verify |
+| `4003` | An `auth` frame named someone else |
+| `4400` | A frame that is not JSON, larger than 64 kB, before `hello`, or a `hello` with another protocol |
+
+Reconnect with backoff, `hello`, and `sub` again with each session's cursor: nothing is lost, because Live holds nothing a client cannot read over HTTP.
+
+{/* Sources: services/managed-agents/src/http/api/live-upgrade.ts, route-table.ts (scope); services/managed-agents/src/actors/live/contract.ts (frames, limits, close codes) and durable-object.ts; cloudflare-workers/api-edge/src/computer_api.ts and index.ts (liveOffer, oc.bearer., cookie); opc/src/wire/live.rs (the client's cursor rules) */}

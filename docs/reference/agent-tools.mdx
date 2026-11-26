@@ -7,16 +7,17 @@ Under Claude Code these tools are one MCP server named `calvin`; approval prompt
 
 ## Availability
 
-| Tool | One-machine mode (`npm start`) | Self-hosted gateway and host | Hosted |
-| --- | --- | --- | --- |
-| `send_file` | yes | yes | yes |
-| `post_card` | yes | yes | yes |
-| `checkout_repo` | no | when the host has a workspace definition | yes |
-| `spawn_thread` | no | yes | yes |
-| `read_thread` | no | yes | yes |
-| `post_thread` | no | yes | yes |
-| `request_secret` | no | yes; fails unless the gateway has `SP_STORE_KEY` | yes |
-| `preview`, `unpreview` | no | offered, but the gateway refuses the call (see [preview](#preview)) | yes |
+| Tool | One-machine mode (`npm start`) | On a computer |
+| --- | --- | --- |
+| `send_file` | yes | yes |
+| `post_card` | yes | yes |
+| `checkout_repo` | no | when the computer has a workspace definition |
+| `start_thread` | no | yes |
+| `read_thread` | no | yes |
+| `post_thread` | no | yes; only a session started in Slack posts |
+| [Work tools](#work-tools) | no | yes; each is for a thread's session or for a track's own session |
+| `request_secret` | no | yes |
+| `preview`, `unpreview` | no | yes |
 
 "Per runner" counts reset when the session's runner restarts.
 
@@ -74,33 +75,34 @@ Adds workspace repositories to the session directory, each as a git worktree on 
 | `no repository <x> in this workspace; the list is in AGENTS.md` | Not in the definition |
 | `<x> is not published yet` | The repository is marked `unpublished` |
 
-## spawn_thread
+## start_thread
 
-Starts a session in a new Slack thread, with the same owner and permission mode. The gateway posts the task and a link to the brief as a top-level message in the parent's channel, or in the owner's direct messages when the parent is a code channel. See [Linked and spawned threads](/slack/linked-and-spawned-threads).
+Starts a new session that works in parallel, owned by this session's owner and with the same access. Returns the new session's id (`cs_…`), which `read_thread` reads. When this session has a Slack thread, the new session's message is posted at the top level of the parent's channel and the new session runs in that thread. See [Linked and spawned threads](/slack/linked-and-spawned-threads).
 
 | Parameter | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `task` | string, 3 to 150 characters, one line | yes | What the new thread should do. |
-| `brief` | string | yes | Path of a `.md` file inside the session directory, relative to it, with an optional `#anchor`. Must be on the fetched default branch of its repository. |
-| `model` | `smart`, `fast` or `default` | no | Model tier. Omitted: the parent's model. |
-
-Limit: 8 per runner.
-
-## read_thread
-
-Returns a Slack thread's first message, its latest replies (at most 40, 16,000 characters in all, 4,000 per message) and how many were left out, marked as data, not instructions. See [Linked and spawned threads](/slack/linked-and-spawned-threads).
-
-| Parameter | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `url` | string | `url`, or `channel` with `ts` | The thread's Slack link. |
-| `channel` | string | | Channel id (`C…` or `G…`). |
-| `ts` | string | | Timestamp of a message in the thread, for example `1700000000.000100`. |
+| `brief` | string | no | Path of a `.md` file inside the session directory, relative to it, with an optional `#anchor`. Must be on the fetched default branch of its repository. The new thread is told to read it first and report there. |
+| `track` | boolean | no | Start it in the track this session is in. Fails when the session is in no track. |
 
 | Rule | Value |
 | --- | --- |
-| Count | 40 per runner |
+| Count | 8 per runner |
+| Open threads | 10 started by one session and not done; more are refused |
+| Approval | Asked outside `bypassPermissions` mode |
+
+## read_thread
+
+Returns what was sent to another session and what its agent said over its last 20 turns, text only, at most 60,000 characters (earlier text is left out), marked as data, not instructions.
+
+| Parameter | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `thread` | string | yes | A session id (`cs_…`), as `start_thread` and `list_work` return, or the link of the Slack thread the session runs on. |
+
+| Rule | Value |
+| --- | --- |
 | Approval | Never asked |
-| Readable conversations | The bot is in it, and the session's owner and everyone who can read the session's own conversation can see it. Otherwise the tool returns the reason. |
+| Readable sessions | This session, sessions it started, and, in a track, the track's agent; a track's own session also reads the track's threads. Otherwise the tool returns the reason. |
 
 ## post_thread
 
@@ -108,15 +110,48 @@ Posts a reply inside another Slack thread, never at the channel's top level.
 
 | Parameter | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `url`, or `channel` with `ts` | as for `read_thread` | yes | The thread to post into. |
+| `thread` | string | yes | The thread's Slack link. |
 | `text` | string, 1 to 4,000 characters | yes | Slack mrkdwn. |
 
 | Rule | Value |
 | --- | --- |
-| Count | 20 per runner |
+| Caller | Only a session started in Slack |
+| Target | A Slack thread that runs a session `read_thread` could read |
 | Approval | Asked outside `bypassPermissions` mode (see [Permission modes](/slack/permission-modes)) |
 | Channel-wide mentions (`@channel`, `@here`, `@everyone`, user groups) | Become plain text |
-| Attribution | The gateway appends a `Posted for` line naming the session's owner and linking the session's thread |
+| Delivery | The target session gets the text as a message from its owner, after a line saying it was posted for them by the session in another thread |
+
+## Work tools
+
+Tools on the work a session belongs to: its thread, and the track the thread is in. Each is one call to the API, which decides whether it applies; a refusal comes back as the tool's failed result.
+
+For a thread's session:
+
+| Tool | Parameters | What it does |
+| --- | --- | --- |
+| `list_work` | none | The open tracks and threads this session can see, with ids, names and marks. |
+| `track_this` | `name` (optional, up to 200 characters) | Makes this thread a track, with this thread as its first thread. Refused when the thread is already in a track, or when a person undid an earlier `track_this` on it. |
+| `start_track` | `message` (up to 20,000 characters), `name` (optional) | From the start box only, in the session's first turn: starts a track whose first message is `message`. This thread is removed. |
+| `place_thread` | `thread` (optional, default this thread), `track` (optional, default this session's track) | Puts a thread in a track. Where the thread is not this session's to move, proposes the move to the person instead. |
+| `mark_ready` | `what` (one line, up to 500 characters), `result` (optional) | Says this thread has something for the person to look at. |
+| `need_you` | `what` (one line, up to 500 characters) | Says this thread cannot go on without the person. Clears when they answer. |
+| `propose_done` | `what` (one line, up to 500 characters), `target` (`thread` or `track`) | Proposes that the thread or its track is done. The person accepts or dismisses. |
+| `add_result` | `kind` (`pr`, `changes`, `preview`, `file`, `document`), `ref`, `title` | Records what the thread produced. The same kind and ref again updates the title. |
+| `review_summary` | `result` and the summary | Writes the summary a person reads first when reviewing a pull request the thread made. |
+| `tell_track` | `message` (up to 100,000 characters) | Sends a message to the agent of the track this thread is in. It is queued there as a turn. |
+
+For a track's own session:
+
+| Tool | Parameters | What it does |
+| --- | --- | --- |
+| `rename` | `name` (up to 200 characters), `target` (optional) | Names the track, or renames one of its threads. A name a person set stays. |
+| `tell_thread` | `thread`, `message` (up to 100,000 characters) | Sends a message to a thread of the track as a turn. A thread that is working is steered. |
+| `stop_thread` | `thread` | Stops what a thread of the track is doing. It keeps its work. |
+| `set_stand` | `stand` (up to 2,000 characters) | Says where the track stands, shown at the top of the track. |
+| `doc_read` | none | Reads the track's Doc and which lines a person wrote. |
+| `doc_edit` | `old`, `new` | Replaces `old`, which must occur once in the Doc as last read, with `new`. A change to a person's lines is proposed to them instead. |
+
+`thread` is a session id (`cs_…`) or its Slack link; `track` is a track id (`trk_…`). A work tool called from the other kind of session fails with a note saying whom it is for.
 
 ## request_secret
 
@@ -128,7 +163,7 @@ Posts a button; the person types the secret into a private Slack form. The agent
 | `reason` | string, 3 to 200 characters | yes | One line shown to the person. |
 | `file` | boolean | no | Store the secret as a file; `$NAME` holds its path. |
 
-Limit: 10 per runner. Fails when a secret of that name is already set, or when a self-hosted gateway has no `SP_STORE_KEY`.
+Limit: 10 per runner. Fails when a secret of that name is already set.
 
 ## preview
 
@@ -149,4 +184,4 @@ Takes down a preview URL.
 | --- | --- | --- | --- |
 | `name` | string | yes | The preview's name, the label at the start of its URL. |
 
-{/* Sources: computer/src/runner/tools.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/harness/claude/process.ts (mcpServers, allowedTools); computer/src/host/main.ts (checkout); computer/src/workspaces/index.ts (checkoutRepos); computer/src/gateway/hosts.ts (spawn, read, post, secret-request, preview refusal); computer/src/gateway/threads.ts; computer/src/links.ts; computer/src/gateway/routing.ts (spawn); computer/src/runner/checkout.ts; computer/src/runner/spawn.ts; computer/src/runner/threads.ts; computer/src/runner/preview.ts; computer/src/runner/session-secrets.ts; computer/src/runner/prompts.ts; computer/src/main.ts (no hooks in one-machine mode) */}
+{/* Sources: computer/src/runner/tools.ts; computer/src/runner/send-file.ts; computer/src/runner/post-card.ts; computer/src/runner/harness/claude/process.ts (mcpServers, allowedTools); computer/src/host/main.ts (checkout); computer/src/workspaces/index.ts (checkoutRepos); computer/src/links.ts; computer/src/runner/checkout.ts; computer/src/runner/spawn.ts (MAX_STARTS); computer/src/runner/threads.ts; computer/src/runner/work.ts; computer/src/runner/work-tools.ts; computer/src/runner/track-tools.ts; services/managed-agents/src/actors/org/sessions.ts (parent's owner and access, Slack.announce); services/managed-agents/src/actors/org/limits.ts (AGENT_THREADS_MAX); services/managed-agents/src/actors/org/who-may.ts (seesSession); services/managed-agents/src/actors/org/mutations/track.ts (track.create); services/managed-agents/src/http/api/agent-posts.ts; services/managed-agents/src/actors/slack/durable-object.ts (post, wakeThread); services/managed-agents/src/slack-api/threads.ts; computer/src/runner/preview.ts; computer/src/runner/session-secrets.ts; computer/src/runner/prompts.ts; computer/src/main.ts (no hooks in one-machine mode) */}

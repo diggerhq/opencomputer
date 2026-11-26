@@ -70,7 +70,7 @@ import { refusal, spareMay } from './spare-frames.js';
 import type { SandboxRecord } from './sandbox/records.js';
 import type { Bound, SandboxSpares } from './sandbox/spares.js';
 import { type SandboxStarts, WORKSPACE, imageTag } from './sandbox/start.js';
-import type { ColdStart, Forwarded } from './trace.js';
+import type { ColdStart } from './trace.js';
 
 export interface Runner {
   /** Its socket's name: an id (work 069), or its session key's for runners from before. */
@@ -91,8 +91,6 @@ export interface Runner {
   switching?: boolean;
   /** Set by a launch, taken by the delivery that caused it: the path is not `warm`. */
   cold?: ColdStart;
-  /** The last trace forwarded (also in `<key>.trace.json`), for `turn.abandoned`. */
-  forwarded?: Forwarded;
   calls: Map<string, (r: { ok: boolean; error?: string }) => void>;
   /** Work 103: the thread's record and run root, for a runner in a container. */
   sandbox?: Sandboxed;

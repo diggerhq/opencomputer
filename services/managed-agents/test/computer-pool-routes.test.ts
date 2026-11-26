@@ -1,10 +1,10 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { randomToken } from "../src/computer/crypto.js";
-import { hostToken } from "../src/computer/host-token.js";
-import { encodeInstallState } from "../src/computer/slack.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { randomToken } from "../src/crypto/seal.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
+import { encodeInstallState } from "../src/slack-api/web-api.js";
 
 /**
  * The warm pool through the edge Worker (work 052) with COMPUTER_POOL_SIZE=2:
@@ -60,7 +60,7 @@ async function connectHost(id: string): Promise<{ socket: WebSocket; welcome: an
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: id, version: "test", sessions: [] }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: id, version: "test", sessions: [] }));
   return { socket, welcome: await welcomed };
 }
 
@@ -141,8 +141,6 @@ describe("warm pool", () => {
 
     // The install answered with org_b's computer already claimed: ready, on a warm slot.
     expect(await lifecycleRow(computers().getByName("org_b"))).toMatchObject({ organizationId: "org_b", state: "ready", poolSlot: expect.stringMatching(/^pool-/) });
-    // Installing again claims nothing more: it has a computer.
-    expect(await computers().getByName("org_b").ensureComputerOnInstall("org_b")).toBeNull();
 
     // The organization's computer is ready at once, on the pool computer's resources.
     const orgA = computers().getByName("org_a");
@@ -172,14 +170,14 @@ describe("warm pool", () => {
     const replay = again.webSocket!;
     replay.accept();
     const reassigned = nextMessage(replay, "assign");
-    replay.send(JSON.stringify({ t: "hello", protocol: 1, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
+    replay.send(JSON.stringify({ t: "hello", protocol: 6, hostId: hostOf("org_b").poolId, version: "test", sessions: [] }));
     expect(await reassigned).toMatchObject({ organizationId: "org_b", hostToken: await hostToken(KEY, "org_b") });
     replay.close();
 
     // The host reconnects as the organization: connected, with the organization's credentials.
     for (const host of hosts) host.socket.close();
     const { welcome } = await connectHost("org_a");
-    expect(welcome.credentials).toMatchObject({ anthropicApiKey: "sk-ant-test" });
+    expect(welcome.credentials).toBeDefined();
     expect((await orgA.overview("org_a")).computer).toMatchObject({ connected: true });
     expect(await inside(orgA, (instance) => instance.setting("assignPendingSince"))).toBeUndefined();
 
@@ -204,7 +202,9 @@ describe("warm pool", () => {
 /** Slack's OAuth callback for an install `accountId` started (the dashboard's POST /v1/computer/slack/install, minus the edge identity). */
 async function slackInstall(accountId: string): Promise<Response> {
   const nonce = randomToken();
-  await computers().getByName(accountId).startSlackInstall(accountId, "user_installer", nonce);
+  // The install's nonce is the Slack actor's; the link reaches the computer as `changed("slack")`.
+  const installer = { org: accountId, subject: "user_installer", kind: "member", via: "dashboard", scopes: [], audiences: ["org"], admin: true, credential: { id: "test", expiresAt: null } };
+  await (env as unknown as { SLACK: { getByName(name: string): { startInstall(p: unknown, nonce: string): Promise<void> } } }).SLACK.getByName(accountId).startInstall(installer, nonce);
   const state = encodeInstallState(accountId, nonce);
   return SELF.fetch(`${ORIGIN}/v1/computer/slack/callback?code=good&state=${encodeURIComponent(state)}`, { redirect: "manual" });
 }

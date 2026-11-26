@@ -17,16 +17,16 @@ curl -s "$API/sessions/$id/turns" -H "x-api-key: $OPENCOMPUTER_API_KEY" \
 # no response? retry with the same $key
 ```
 
-Over the WebSocket, pass `idempotencyKey` in the params. An HTTP route and its WebSocket method are one operation and share keys, so a request sent over one can be retried over the other.
+Every session write is HTTP only: the WebSocket carries none.
 
 | Accepts a key | |
 | --- | --- |
 | `POST /sessions` | Creates one session. The response is `200` instead of `201` on a repeat, with the session and turn as they are now. |
-| `POST /sessions/{id}/turns`, `turns.send` | Sends one message. `duplicate: true` on a repeat. |
-| `POST /sessions/{id}/compact`, `sessions.compact` | Starts one compaction |
-| `POST /sessions/{id}/interrupt`, `sessions.interrupt` | Interrupts once. A retry does not interrupt a turn that started after the first. |
-| `POST /sessions/{id}/asks/{askId}/answer`, `asks.answer` | Answers once |
-| `POST /sessions/{id}/asks/{askId}/dismiss`, `asks.dismiss` | Dismisses once |
+| `POST /sessions/{id}/turns` | Sends one message. `duplicate: true` on a repeat. |
+| `POST /sessions/{id}/compact` | Starts one compaction |
+| `POST /sessions/{id}/interrupt` | Interrupts once. A retry does not interrupt a turn that started after the first. |
+| `POST /sessions/{id}/asks/{askId}/answer` | Answers once |
+| `POST /sessions/{id}/asks/{askId}/dismiss` | Dismisses once |
 | `PUT /sessions/{id}/workspace/archive` | Writes once |
 
 Other writes need no key. Updating settings, cancelling a queued turn, suspending and resuming give the same result when repeated.
@@ -34,7 +34,7 @@ Other writes need no key. Updating settings, cancelling a queued turn, suspendin
 ## Rules
 
 - **A key is 1 to 255 printable ASCII characters.** A UUID is a good key.
-- **Keys are per member and per operation.** The same key from two members, or for two operations, is two keys. A route and its WebSocket method, such as `POST /sessions/{id}/turns` and `turns.send`, are one operation.
+- **Keys are per member and per operation.** The same key from two members, or for two operations, is two keys.
 - **Keys are kept for 24 hours.** After that, a repeat is a new request.
 - **A key identifies the request, not just the call.** A repeat must have the same body: the same `input`, whitespace included, and the same `ifBusy`, where an omitted `ifBusy` equals `queue`. A different body with a used key gets `409 idempotency_conflict` and does nothing.
 - **A repeat gets the current state.** A repeated send returns the turn's status now, which may have moved on to `completed`.

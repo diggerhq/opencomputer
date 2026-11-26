@@ -8,11 +8,11 @@
 // OS disk's deleteOption is Detach; waking PUTs the VM again attaching the
 // kept OS disk (createOption Attach: no image, no osProfile, no customData).
 
-import { computerName, isPoolId, ownerTag, validResourcePrefix } from "../../computer/names.js";
-import { nvmeSize, validSize } from "../../computer/placement.js";
+import { computerName, isPoolId, ownerTag, validResourcePrefix } from "../../ids/computer-names.js";
+import { nvmeSize, validSize } from "../../actors/computer/machine/placement.js";
 import { API_VERSIONS, type AzureCredentials } from "./arm.js";
 
-export { computerName, validOrganizationId, validResourcePrefix } from "../../computer/names.js";
+export { computerName, validOrganizationId, validResourcePrefix } from "../../ids/computer-names.js";
 
 /** Azure placement and Calvin bootstrap settings: platform Worker vars and secrets. */
 export interface ComputerPlatformEnv {

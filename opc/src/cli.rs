@@ -412,9 +412,9 @@ pub struct LogArgs {
     /// Everything, as the session screen shows it with details open
     #[arg(long)]
     pub details: bool,
-    /// Only events after this seq
-    #[arg(long, value_name = "SEQ")]
-    pub after: Option<u64>,
+    /// Only events after this cursor (the `cursor` of an earlier --json read)
+    #[arg(long, value_name = "CURSOR")]
+    pub after: Option<String>,
     /// Only this turn
     #[arg(long, value_name = "TURN")]
     pub turn: Option<String>,
@@ -490,10 +490,10 @@ pub struct WatchArgs {
     pub ids: Vec<String>,
     #[command(flatten)]
     pub session: SessionOpt,
-    /// Print recorded events after this seq first, then live ones
-    #[arg(long, value_name = "SEQ", conflicts_with = "from_start")]
-    pub after: Option<u64>,
-    /// Print the whole history first (same as --after 0)
+    /// Print recorded events after this cursor first, then live ones
+    #[arg(long, value_name = "CURSOR", conflicts_with = "from_start")]
+    pub after: Option<String>,
+    /// Print the whole history first
     #[arg(long)]
     pub from_start: bool,
     /// Keep watching across turns until interrupted

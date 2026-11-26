@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PROJECT_DETAIL_TABS } from './Detail'
+import { PROJECT_DETAIL_TABS } from './detail-tabs'
 
 describe('managed project detail tabs', () => {
   it('routes managed connections and retains the GitHub compatibility alias', () => {

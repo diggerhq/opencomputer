@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { signWire } from '../signed-header.js';
-import { startRelay, urlAttaches, type Relay } from './relay.js';
-import { accessFor, connectClient, event, type FakeWriter, type Frame, fakeDial, fakeHost, sid, until } from './test-fakes.js';
+import { startRelay, type Relay } from './relay.js';
+import { accessFor, connectClient, fakeDial, fakeHost, sid, until } from './test-fakes.js';
 
 let cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -19,16 +19,6 @@ async function setup(o: { sessions?: string[]; key?: string | null; dial?: Param
   if (o.key !== null) await until(() => relay.hostLink.key !== null);
   else await until(() => relay.hostLink.connected);
   return { host, relay, writers, sessions, port: relay.port };
-}
-
-/** Ids and timings out, so a run's frames compare to the golden file. */
-function normalize(frames: Frame[]) {
-  return JSON.parse(
-    JSON.stringify(frames)
-      .replace(/"cs_[0-9a-z]{16}"/g, '"cs_S"')
-      .replace(/"wc_[0-9a-z]{12}"/g, '"wc_C"')
-      .replace(/"serverUs":\d+/g, '"serverUs":0'),
-  );
 }
 
 /** The HTTP status an upgrade gets (101 when it is upgraded). */
@@ -113,55 +103,37 @@ describe('the upgrade', () => {
 });
 
 describe('frames', () => {
-  it('sends ready first, then sessions.attached before the session events (golden)', async () => {
-    const onSubscribe = (w: FakeWriter) => {
-      for (const s of [1, 2, 3]) w.h.onEvent(event(w.sessionId, s));
-    };
-    const { port, sessions } = await setup({ dial: { lastSeq: 2, onSubscribe } });
-    const c = connectClient(port, { query: `attach=${sessions[0]}&after=1` });
-    await c.next((m) => m.params?.seq === 3, 5000).then((m) => c.frames.push(m));
-    expect(c.frames[0].method).toBe('ready');
-    await expect(JSON.stringify(normalize(c.frames), null, 2)).toMatchFileSnapshot('./relay.frames.golden.json');
+  it('sends ready first, and no longer knows sessions.attach', async () => {
+    const { port, sessions } = await setup();
+    const c = connectClient(port, { query: `attach=${sessions[0]}` });
+    await c.next((m) => m.method === 'ready');
+    expect((await c.call('sessions.attach', { sessionId: sessions[0] })).error.code).toBe(-32601);
+    expect(c.frames).toEqual([]);
     c.ws.close();
   });
 
-  it('answers URL attach errors as sessions.attached with error', async () => {
-    const [a, b] = [sid(), sid()];
-    const { port } = await setup({ sessions: [a, b] });
-    const c = connectClient(port, { query: `attach=nope&attach=${b}`, scope: { sessionIds: [a] } });
-    expect((await c.next((m) => m.params?.sessionId === 'nope')).params.error.code).toBe('invalid_request');
-    expect((await c.next((m) => m.params?.sessionId === b)).params.error.code).toBe('session_not_found');
-    c.ws.close();
-  });
-
-  it('refuses more than 20 attached sessions', async () => {
-    const sessions = Array.from({ length: 21 }, sid);
-    const { port } = await setup({ sessions });
-    const c = connectClient(port, { query: sessions.map((s) => `attach=${s}`).join('&') });
-    expect((await c.next((m) => m.params?.sessionId === sessions[20])).params.error.code).toBe('too_many_attached');
-    await until(() => c.frames.filter((m) => m.method === 'sessions.attached' && !m.params.error).length === 20);
-    c.ws.close();
-  });
-
-  it("puts a write's response before the events it caused", async () => {
-    const { port, sessions } = await setup({
-      dial: {
-        onCall: async (w, method) => {
-          if (method === 'turns.send') w.h.onEvent(event(w.sessionId, 1, 'turn.started'));
-          await new Promise((r) => setTimeout(r, 30));
-          return { result: { turnId: 'tn_000000000000' } };
-        },
-      },
-    });
+  it('forwards a read to the session writer, and asks where again once it moved', async () => {
+    const { port, host, sessions, writers } = await setup({ dial: { onCall: async () => ({ result: { session: { id: sessions[0] } } }) } });
     const c = connectClient(port);
     await c.next((m) => m.method === 'ready');
-    await c.call('sessions.attach', { sessionId: sessions[0] });
-    const seen: Frame[] = [];
-    c.ws.on('message', (d) => seen.push(JSON.parse(d.toString())));
-    const r = await c.call('turns.send', { sessionId: sessions[0], input: 'hi' });
-    expect(r.result.turnId).toBe('tn_000000000000');
-    await c.next((m) => m.method === 'event');
-    expect(seen.map((m) => m.method ?? 'response')).toEqual(['response', 'event']);
+    expect((await c.call('sessions.get', { sessionId: sessions[0] })).result.session.id).toBe(sessions[0]);
+    await c.call('sessions.get', { sessionId: sessions[0] });
+    expect(writers.writers).toHaveLength(1);
+    host.push({ t: 'moved', sessionId: sessions[0] });
+    await until(() => writers.writers[0].closed);
+    await c.call('sessions.get', { sessionId: sessions[0] });
+    expect(writers.writers).toHaveLength(2);
+    c.ws.close();
+  });
+
+  it('knows no session write: those go through the inbox over HTTP', async () => {
+    const { port, sessions, writers } = await setup();
+    const c = connectClient(port);
+    await c.next((m) => m.method === 'ready');
+    for (const method of ['turns.send', 'turns.cancel', 'asks.answer', 'asks.dismiss', 'sessions.interrupt', 'sessions.update', 'sessions.compact', 'sessions.suspend', 'sessions.resume', 'subagents.stop']) {
+      expect((await c.call(method, { sessionId: sessions[0] })).error.code).toBe(-32601);
+    }
+    expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
     c.ws.close();
   });
 });
@@ -185,32 +157,27 @@ describe('limits and access', () => {
     c.ws.close();
   });
 
-  it('checks scopes and read-only before any writer', async () => {
+  it('checks scopes and read-only before any writer or terminal', async () => {
     const { port, sessions, writers } = await setup();
-    const reader = connectClient(port, { scope: { scopes: ['sessions:read'] } });
-    const r = await reader.call('sessions.suspend', { sessionId: sessions[0] });
+    const blind = connectClient(port, { scope: { scopes: ['terminals'] } });
+    const r = await blind.call('sessions.get', { sessionId: sessions[0] });
     expect(JSON.stringify(r.error)).toContain('missing_scope');
     const ticket = connectClient(port, { scope: { sessionIds: [sessions[0]], readOnly: true } });
-    const ro = await ticket.call('sessions.suspend', { sessionId: sessions[0] });
+    const ro = await ticket.call('terminals.open', { sessionId: sessions[0] });
     expect(JSON.stringify(ro.error)).toContain('read_only');
     expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
-    reader.ws.close();
+    blind.ws.close();
     ticket.ws.close();
   });
 
-  it("lets only the session's owner rename or archive it; members of an org-wide session may still write turns", async () => {
+  it('renames and archives over HTTP only, where Org lets only the owner (owner first): not on the wire for anyone', async () => {
     const { port, sessions, writers } = await setup();
-    const member = connectClient(port, { member: 'usr_pat' });
-    const denied = await member.call('sessions.update', { sessionId: sessions[0], title: 'mine now' });
-    expect(JSON.stringify(denied.error)).toContain('owner_only');
+    for (const c of [connectClient(port, { member: 'usr_pat' }), connectClient(port)]) {
+      const denied = await c.call('sessions.update', { sessionId: sessions[0], title: 'renamed' });
+      expect(denied.error).toMatchObject({ code: -32601 });
+      c.ws.close();
+    }
     expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
-    await member.call('turns.send', { sessionId: sessions[0], input: 'hi' });
-    expect(writers.writers.flatMap((w) => w.calls).map((c) => c.method)).toEqual(['turns.send']);
-    const owner = connectClient(port);
-    await owner.call('sessions.update', { sessionId: sessions[0], title: 'renamed' });
-    expect(writers.writers.flatMap((w) => w.calls).map((c) => c.method)).toEqual(['turns.send', 'sessions.update']);
-    member.ws.close();
-    owner.ws.close();
   });
 
   it('closes with 4001 when the key is revoked, and when the credential expires', async () => {
@@ -223,58 +190,4 @@ describe('limits and access', () => {
     expect((await t.next((m) => m.method === 'ready')).params.expiresInMs).toBeLessThanOrEqual(300);
     expect((await t.closed).code).toBe(4001);
   });
-
-  it('detaches a session whose access is lost', async () => {
-    const { port, host, sessions } = await setup();
-    const c = connectClient(port, { query: `attach=${sessions[0]}` });
-    await c.next((m) => m.method === 'sessions.attached');
-    host.push({ t: 'access', access: accessFor(sessions[0], 'usr_someone', []) });
-    expect((await c.next((m) => m.method === 'session.detached')).params.reason).toBe('access_lost');
-    c.ws.close();
-  });
-
-  it('follows a moved writer and resumes after the last delivered seq', async () => {
-    const { port, host, sessions, writers } = await setup({ dial: { onSubscribe: (w) => w.subscribed?.after === 0 && w.h.onEvent(event(w.sessionId, 1)) } });
-    const c = connectClient(port, { query: `attach=${sessions[0]}&after=0` });
-    await c.next((m) => m.params?.seq === 1);
-    host.push({ t: 'moved', sessionId: sessions[0] });
-    await until(() => writers.writers.filter((w) => w.subscribed).length === 2);
-    expect(writers.writers[1].subscribed?.after).toBe(1);
-    writers.writers[1].h.onEvent(event(sessions[0], 1));
-    writers.writers[1].h.onEvent(event(sessions[0], 2));
-    await c.next((m) => m.params?.seq === 2);
-    expect(c.frames.filter((m) => m.method === 'event')).toEqual([]);
-    c.ws.close();
-  });
 });
-
-describe('an adoption under attached clients (review r2 P2-4, P2-7)', () => {
-  it('a writer at a new epoch detaches with epoch_changed and the new logEpoch/epochStartSeq, before any resubscribe, wherever the cursor is', async () => {
-    let epoch = 1;
-    const { port, host, sessions, writers } = await setup({ dial: { onSubscribe: (w) => w.subscribed?.after === 0 && w.h.onEvent(event(w.sessionId, 1)) } });
-    host.state.answer = (m) =>
-      m.t === 'where' ? { result: { socket: `/fake/${m.sessionId}.api.sock`, token: 'tok', writer: 'host', epoch, ...(epoch > 1 && { epochStartSeq: 4 }) } } : undefined;
-    const c = connectClient(port, { query: `attach=${sessions[0]}&after=0` });
-    await c.next((m) => m.params?.seq === 1);
-    // The outage: the runner's events went on locally (the client's cursor passes the DO's lastSeq), then the host adopts epoch 2.
-    for (const s of [2, 3, 4, 5, 6, 7, 8, 9]) writers.writers[0].h.onEvent(event(sessions[0], s));
-    await c.next((m) => m.params?.seq === 9);
-    epoch = 2;
-    host.push({ t: 'moved', sessionId: sessions[0] });
-    const d = await c.next((m) => m.method === 'session.detached');
-    expect(d.params).toEqual({ sessionId: sessions[0], reason: 'epoch_changed', logEpoch: 2, epochStartSeq: 4 });
-    expect(writers.writers.filter((w) => w.subscribed)).toHaveLength(1);
-    c.ws.close();
-  });
-});
-
-describe('urlAttaches', () => {
-  it('pairs after and tailTurns by position', () => {
-    const q = new URLSearchParams('attach=a&after=5&tailTurns=&attach=b&after=&tailTurns=3&deltas=1');
-    expect(urlAttaches(q)).toEqual([
-      { sessionId: 'a', after: 5, tailTurns: undefined, deltas: true, resume: false },
-      { sessionId: 'b', after: undefined, tailTurns: 3, deltas: true, resume: false },
-    ]);
-  });
-});
-

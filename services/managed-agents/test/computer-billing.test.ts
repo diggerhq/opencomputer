@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { admitDelivery, billingWarningMessage, forgetCreditsNotice, onProPlan, outOfCreditsNotice, refuseForCredits } from "../src/computer/admission.js";
-import { CHECKPOINT_MS, ComputerRuntimeBilling } from "../src/computer/billing.js";
-import { MANAGED_ANTHROPIC_BASE_URL, modelCredentials, requestManagedModelKey } from "../src/computer/model-key.js";
+import { admitDelivery, onProPlan } from "../src/actors/computer/admission.js";
+import { billingWarningMessage, outOfCreditsMessage } from "../src/actors/slack/billing-notices.js";
+import { CHECKPOINT_MS, ComputerRuntimeBilling } from "../src/actors/computer/machine/billing.js";
+import { MANAGED_ANTHROPIC_BASE_URL, modelCredentials, requestManagedModelKey } from "../src/actors/computer/held-for-org/model-access/model-key.js";
 import type { ManagedAgentBillingAdmission } from "../src/edge/billing-admission.js";
 import { hmacSha256Hex, postAgentRuntimeUsage } from "../src/edge/runtime-usage.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
@@ -264,43 +265,21 @@ describe("the computer's credit gate", () => {
     }
   });
 
-  it("tells a thread once, clears its status every time, and tells it again after an admitted message", async () => {
-    const sql = sqlStorage();
-    sql.exec("CREATE TABLE notices (thread_key TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (thread_key, kind));");
-    const calls: Array<[string, Record<string, unknown>]> = [];
-    const slack = async (method: string, body: Record<string, unknown>) => {
-      calls.push([method, body]);
-      return { ok: true };
-    };
-    const refuse = () => refuseForCredits({ sql, slack, channelId: "C1", threadTs: "100.1", origin: "https://app.example" });
-    expect(await refuse()).toBe(true);
-    expect(await refuse()).toBe(false);
-    expect(calls).toEqual([
-      [
-        "chat.postMessage",
+  it("words the paywall with a billing button and the link in the fallback text", () => {
+    expect(outOfCreditsMessage("https://app.example")).toEqual({
+      text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) at https://app.example/billing?plan=max to keep going, then mention me again.",
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) to keep going, then mention me again." } },
         {
-          channel: "C1",
-          thread_ts: "100.1",
-          text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) at https://app.example/billing?plan=max to keep going, then mention me again.",
-          blocks: [
-            { type: "section", text: { type: "mrkdwn", text: ":information_source: You've used your free credits, so I can't take this on. Upgrade to Pro ($200/mo) to keep going, then mention me again." } },
-            {
-              type: "actions",
-              elements: [{ type: "button", text: { type: "plain_text", text: "Upgrade to Pro ($200/mo)" }, url: "https://app.example/billing?plan=max", action_id: "billing_link" }],
-            },
-          ],
+          type: "actions",
+          elements: [{ type: "button", text: { type: "plain_text", text: "Upgrade to Pro ($200/mo)" }, url: "https://app.example/billing?plan=max", action_id: "billing_link" }],
         },
       ],
-      ["agents.sessions.setStatus", { channel_id: "C1", thread_ts: "100.1", status: "active" }],
-      ["agents.sessions.setStatus", { channel_id: "C1", thread_ts: "100.1", status: "active" }],
-    ]);
-    expect(outOfCreditsNotice("https://o")).toContain("https://o/billing?plan=max");
+    });
     expect(outOfCreditsNotice("https://o")).not.toMatch(/top up|add credits/i);
     expect(outOfCreditsNotice("https://o", true)).toBe(
       ":information_source: You've used this month's Pro credits, so I can't take this on until they renew. See your renewal date at https://o/billing.",
     );
-    forgetCreditsNotice(sql, "C1", "100.1");
-    expect(await refuse()).toBe(true);
   });
 
   it("names the work-minute limit that was hit", () => {
@@ -317,6 +296,9 @@ describe("the computer's credit gate", () => {
     expect(outOfCreditsNotice("https://o", false, "credits_exhausted")).toBe(outOfCreditsNotice("https://o"));
   });
 });
+
+/** The paywall's text alone. */
+const outOfCreditsNotice = (origin: string, onPro = false, haltReason: string | null = null) => outOfCreditsMessage(origin, onPro, haltReason).text;
 
 describe("the computer's model credentials", () => {
   it("prefers the organization's managed key, on OpenRouter's Anthropic API", () => {

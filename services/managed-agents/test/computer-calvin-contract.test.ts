@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { capabilities, PLAN_EXIT_MODES } from "../src/computer/capabilities.js";
-import { decodeCursor, encodeCursor } from "../src/computer/list-cursor.js";
+import { capabilities, PLAN_EXIT_MODES } from "../src/api-objects/capabilities.js";
+import { decodeCursor, encodeCursor } from "../src/api-objects/list-cursor.js";
 import fixture from "./fixtures/calvin/capabilities.v1.json" with { type: "json" };
 import * as calvin from "./fixtures/calvin/list-cursor.js";
 import type { CursorKind } from "./fixtures/calvin/list-cursor.js";

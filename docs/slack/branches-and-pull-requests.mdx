@@ -27,7 +27,7 @@ A session starts with the repositories already cloned on the computer. It checks
 
 | Field | Value |
 | --- | --- |
-| Author | The session's owner, by the name and email in the people list, even when another person in the thread asked for the change |
+| Author | The session's owner, by their git name and email, even when another person in the thread asked for the change |
 | Committer | `Computer <computer@users.noreply.opencomputer.dev>`, or `SP_COMMITTER_NAME` and `SP_COMMITTER_EMAIL` when set |
 
 Claude Code's own attribution lines are turned off for commits and pull requests.
@@ -68,4 +68,4 @@ To change this, edit the instructions.
 
 A message to the thread after its directory is deleted gets a new directory from the default branch. Pushed branches are still on GitHub.
 
-{/* Sources: computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/main.ts (sessionVars, committer); computer/src/runner/harness/claude/process.ts (attribution); computer/definitions/computer/AGENTS.md; computer/bin/gh; computer/bin/git-credential-slack-presence; computer/src/host/tokens.ts; computer/src/github/app.ts; computer/src/gateway/main.ts (mintToken, SP_PEOPLE, onPush); computer/src/runner/checkout.ts; computer/src/runner/commands.ts (!diff); computer/src/workspace.ts (gitDiff); computer/deploy/vm/provision.sh (credential helper configuration) */}
+{/* Sources: computer/src/workspaces/index.ts; computer/src/workspaces/idle.ts; computer/src/runner/main.ts (sessionVars, committer); computer/src/runner/harness/claude/process.ts (attribution); computer/definitions/computer/AGENTS.md; computer/bin/gh; computer/bin/git-credential-slack-presence; computer/src/host/tokens.ts; services/managed-agents/src/actors/computer/held-for-org/github.ts; computer/src/runner/checkout.ts; computer/src/runner/commands.ts (!diff); computer/src/workspace.ts (gitDiff); computer/deploy/vm/provision.sh (credential helper configuration) */}

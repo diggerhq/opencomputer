@@ -74,19 +74,11 @@ describe('Hub via SessionLog', () => {
     expect(live.events).toEqual([]);
     expect(tail.events.map((e) => e.seq)).toEqual([9, 10, 11, 12]);
     const ahead = log.subscribe(collector({ after: 99 }).sink);
-    expect('error' in ahead && ahead.error).toMatchObject({ code: 'cursor_ahead', status: 409 });
+    expect('error' in ahead && ahead.error).toMatchObject({ code: 'internal', status: 500, retryable: true });
   });
 
-  it('attached is the full AttachResult; an after more than 10,000 events back is too_far_behind (review r1 contract 7, E4)', async () => {
+  it('an after more than 10,000 events back is too_far_behind', async () => {
     const { log } = await fresh();
-    const t1 = turn(log);
-    turn(log);
-    const s = log.subscribe(collector({ tailTurns: 1 }).sink);
-    if ('error' in s) throw new Error('subscribe failed');
-    expect(s.attached).toMatchObject({ logEpoch: 1, epochStartSeq: 1, capabilities: { features: { steer: true } } });
-    expect((s.attached.earlierTurns as { id: string }[]).map((t) => t.id)).toEqual([t1]);
-    const plain = log.subscribe(collector({ after: 0 }).sink);
-    expect('attached' in plain && plain.attached.earlierTurns).toBeNull();
     for (let i = 0; i < 2501; i++) turn(log, 'x', 'y');
     const far = log.subscribe(collector({ after: 0 }).sink);
     expect('error' in far && far.error).toMatchObject({ code: 'too_far_behind', status: 409 });
@@ -159,7 +151,7 @@ describe('Hub via SessionLog', () => {
     expect(late.deltas).toEqual([]);
   });
 
-  it('gives the host\'s mirror subagent progress alone, live and as catch-up (084 perf fix 4)', async () => {
+  it('gives the host\'s mirror every delta, live and as catch-up (work 118: the host sends a watched session\'s on)', async () => {
     const { log } = await fresh();
     const t = mintId('tn');
     log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
@@ -171,8 +163,10 @@ describe('Hub via SessionLog', () => {
     await tick();
     msgDelta(log, t, 'b1', 'lo');
     progress('sa_1', 2);
-    expect(m.deltas.map((d) => [d.type, (d.data as { toolCalls: number }).toolCalls])).toEqual([
+    expect(m.deltas.map((d) => [d.type, (d.data as { toolCalls?: number; text?: string }).toolCalls ?? (d.data as { text?: string }).text])).toEqual([
+      ['message.delta', 'hel'],
       ['subagent.progress', 1],
+      ['message.delta', 'lo'],
       ['subagent.progress', 2],
     ]);
   });

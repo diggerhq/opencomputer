@@ -132,8 +132,8 @@ export function managedAgentsNav(options: {
           ? [
               { to: '/computer', label: 'Computer', icon: Computer, end: true },
               {
-                to: '/computer/sessions',
-                label: 'Sessions',
+                to: '/computer/work',
+                label: 'Work',
                 icon: MessagesSquare,
                 preview: true,
               },

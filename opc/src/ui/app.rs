@@ -28,7 +28,7 @@ use crate::api::types::{Event, Session};
 use crate::cmd::Ctx;
 use crate::error::{Error, Result};
 use crate::telemetry::{self, Control};
-use crate::wire::{Attach, Wire, WireEvent, WireHandle, WireOptions};
+use crate::wire::{self, Attach, From, Wire, WireEvent, WireHandle, WireOptions};
 
 /// Keys pressed this soon after an ask takes the keyboard are ignored.
 const ASK_GUARD_MS: i64 = 300;
@@ -134,6 +134,8 @@ struct App<'a> {
     m: Model,
     ed: Editor,
     wire: Option<WireHandle>,
+    /// Watches the session; opened with the wire.
+    live: Option<wire::Live>,
     futs: FuturesUnordered<Fut<'a>>,
     painter: Painter,
     ask: Option<AskUi>,
@@ -155,9 +157,10 @@ struct App<'a> {
     key_base: String,
     /// Messages waiting for the connection or the create: (out id, queue).
     unsent: Vec<(u64, bool)>,
-    log_epoch: Option<u64>,
+    /// The cursor after the last event received: opaque, kept with the
+    /// cache and sent back as it came.
+    cursor: Option<String>,
     cache_writes: bool,
-    pending_truncate: Option<u64>,
     batch: Vec<Event>,
     me: Option<String>,
     reattach: bool,
@@ -235,6 +238,7 @@ impl<'a> App<'a> {
             m,
             ed: Editor::new(crate::cache::history()),
             wire: None,
+            live: None,
             futs: FuturesUnordered::new(),
             painter: Painter::new(ctx.color),
             ask: None,
@@ -253,9 +257,11 @@ impl<'a> App<'a> {
             create,
             key_base: start.create.as_ref().map(|c| c.key.clone()).unwrap_or_else(crate::ids::idempotency_key),
             unsent: Vec::new(),
-            log_epoch: None,
+            cursor: match &start.attach.from {
+                From::Cursor(c, _) => Some(c.clone()),
+                _ => None,
+            },
             cache_writes: start.cache_writes,
-            pending_truncate: None,
             batch: Vec::new(),
             me: None,
             reattach: false,
@@ -358,7 +364,6 @@ impl<'a> App<'a> {
                 }
                 Step::Tick => {}
             }
-            self.flush_cache();
             if let Some(e) = self.exit.take() {
                 return Ok(e);
             }
@@ -368,17 +373,11 @@ impl<'a> App<'a> {
 
     // ---- the connection ---------------------------------------------------
 
-    /// Opens the connection, attached to the session unless it is still to
-    /// be created on the first send.
+    /// Opens the live socket, watching the session unless it is still to be
+    /// created on the first send, and the wire (connection state, telemetry),
+    /// both reporting on one stream.
     fn open_wire(&mut self, url: String, start: &Start) -> Result<UnboundedReceiver<WireEvent>> {
-        let opts = WireOptions {
-            url,
-            key: self.ctx.require_key()?.to_string(),
-            deltas: true,
-            resume: !start.read_only,
-            read_only: start.read_only,
-            give_up: None,
-        };
+        let opts = WireOptions { url, key: self.ctx.require_key()?.to_string(), give_up: None };
         let attaches = match &self.create {
             CreateState::Lazy(_) => vec![],
             _ => {
@@ -387,8 +386,9 @@ impl<'a> App<'a> {
                 vec![a]
             }
         };
-        let (wire, rx) = Wire::open(opts, attaches, Some(self.ctx.http.clone()));
-        self.wire = Some(wire);
+        let (out, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.live = Some(wire::Live::open(self.ctx.http.clone(), true, None, attaches, out.clone()));
+        self.wire = Some(Wire::open(opts, Some(self.ctx.http.clone()), out));
         Ok(rx)
     }
 
@@ -412,13 +412,13 @@ impl<'a> App<'a> {
                         self.timing.attached = Some(self.timing.launched.elapsed());
                         crate::timing::get().mark_ready();
                     }
-                    if let Some(from) = self.pending_truncate.take() {
-                        crate::cache::truncate_events(&id, info.log_epoch, from);
-                    }
-                    self.log_epoch = Some(info.log_epoch);
                     let first = !self.m.attached_once;
                     self.m.attached(&info, now);
                     if first {
+                        // Attaching to work on a suspended session wakes it.
+                        if info.session.status == "suspended" && !self.m.read_only {
+                            self.write("/resume", json!({}), None, None);
+                        }
                         if let Some(t) = info.earlier_turns.as_ref().filter(|_| self.show_earlier) {
                             self.m.earlier(t);
                         }
@@ -456,15 +456,27 @@ impl<'a> App<'a> {
                 }
                 self.m.delta(&d, now)
             }
-            WireEvent::EpochReset { session_id, epoch_start_seq } if session_id == id => {
+            WireEvent::Cursor { session_id, cursor, .. } if session_id == id => {
+                self.cursor = Some(cursor);
                 self.flush_cache();
-                self.m.epoch_reset(epoch_start_seq);
-                self.pending_truncate = Some(epoch_start_seq);
+            }
+            WireEvent::Reset { session_id, seq, cursor } if session_id == id => {
+                // Events above `seq` no longer exist: here, and in the cache.
+                self.batch.clear();
+                self.m.reset(seq);
+                if self.cache_writes {
+                    crate::cache::truncate_events(&id, seq, cursor.as_deref());
+                }
+                self.cursor = cursor;
             }
             WireEvent::Detached { session_id, reason } if session_id == id => {
                 self.m.error(&format!("the server stopped sending this session's events ({reason}); attaching again"));
-                if let Some(w) = &self.wire {
-                    w.attach(Attach { session_id: id, after: Some(self.m.last_seq), tail_turns: None, log_epoch: self.log_epoch });
+                if let Some(w) = &self.live {
+                    let from = match &self.cursor {
+                        Some(c) => From::Cursor(c.clone(), Some(self.m.last_seq)),
+                        None => From::Start,
+                    };
+                    w.attach(Attach { session_id: id, from });
                 }
             }
             WireEvent::Fatal(e) => return Err(e),
@@ -495,14 +507,15 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Writes the events received to the cache with the cursor after them
+    /// (called when that cursor arrives: it follows its events at once).
     fn flush_cache(&mut self) {
         if self.batch.is_empty() {
             return;
         }
+        let Some(cursor) = &self.cursor else { return };
         let batch = std::mem::take(&mut self.batch);
-        if let Some(epoch) = self.log_epoch.filter(|_| self.pending_truncate.is_none()) {
-            crate::cache::append_events(&self.m.session_id, epoch, &batch);
-        }
+        crate::cache::append_events(&self.m.session_id, &batch, cursor);
     }
 
     /// The full plan goes into the transcript once, when it is asked.
@@ -580,14 +593,11 @@ impl<'a> App<'a> {
 
     fn send_now(&mut self, out: u64, queue: bool) {
         let Some(o) = self.m.outgoing.iter().find(|o| o.id == out) else { return };
-        let Some(w) = self.wire.clone() else { return };
-        let params = json!({
-            "sessionId": self.m.session_id,
-            "input": o.text,
-            "ifBusy": if queue { "queue" } else { "steer" },
-            "idempotencyKey": self.idem(&format!("send:{out}")),
-        });
-        self.futs.push(Box::pin(async move { Bg::Sent { out, result: w.call("turns.send", params).await } }));
+        let body = json!({"input": o.text, "ifBusy": if queue { "queue" } else { "steer" }});
+        let key = self.idem(&format!("send:{out}"));
+        let path = crate::http::session_path(&self.m.session_id, "/turns");
+        let http = self.ctx.http.clone();
+        self.futs.push(Box::pin(async move { Bg::Sent { out, result: http.post(&path, &body, Some(&key)).await } }));
     }
 
     fn flush_unsent(&mut self) {
@@ -605,8 +615,8 @@ impl<'a> App<'a> {
     /// pushes, then the message. Retries while the network is down.
     fn start_create(&mut self, c: Create, out: Option<u64>, input: Option<String>) {
         self.create = CreateState::Creating(c.clone());
-        if let Some(w) = &self.wire {
-            w.attach(Attach { session_id: self.id(), after: Some(0), tail_turns: None, log_epoch: None });
+        if let Some(w) = &self.live {
+            w.attach(Attach { session_id: self.id(), from: From::Start });
         }
         let ctx = self.ctx;
         self.futs.push(Box::pin(async move {
@@ -621,7 +631,7 @@ impl<'a> App<'a> {
                     Ok(v) => break Ok(v),
                     Err(e) if e.retryable && attempt < 40 => {
                         attempt += 1;
-                        tokio::time::sleep(crate::wire::reconnect::backoff(attempt).max(Duration::from_millis(500))).await;
+                        tokio::time::sleep(crate::wire::redial::backoff(attempt).max(Duration::from_millis(500))).await;
                     }
                     Err(e) => break Err(e),
                 }
@@ -669,14 +679,14 @@ impl<'a> App<'a> {
                     // The key had already created another session: that one.
                     let old = std::mem::replace(&mut self.m.session_id, real.clone());
                     self.tel.set_session(&real);
-                    if let Some(w) = &self.wire {
+                    if let Some(w) = &self.live {
                         w.detach(&old);
-                        w.attach(Attach { session_id: real.clone(), after: Some(0), tail_turns: None, log_epoch: None });
+                        w.attach(Attach { session_id: real.clone(), from: From::Start });
                     }
                 } else if self.reattach
-                    && let Some(w) = &self.wire
+                    && let Some(w) = &self.live
                 {
-                    w.attach(Attach { session_id: self.id(), after: Some(0), tail_turns: None, log_epoch: None });
+                    w.attach(Attach { session_id: self.id(), from: From::Start });
                 }
                 crate::cache::set_last_session(&self.id());
                 for n in notes {
@@ -701,7 +711,6 @@ impl<'a> App<'a> {
         for p in self.m.take_pending() {
             self.ed.restore(&p.text);
         }
-        let Some(w) = self.wire.clone() else { return };
         if self.m.read_only {
             self.m.error("read-only: cannot interrupt from this terminal");
             return;
@@ -711,27 +720,32 @@ impl<'a> App<'a> {
             return;
         }
         self.m.interrupting(now);
-        let mut params = json!({"sessionId": self.m.session_id, "idempotencyKey": self.idem(&format!("interrupt:{now}"))});
+        let mut body = json!({});
         if self.m.queued.is_empty()
             && let Some(t) = self.m.active_turn_id()
         {
-            params["turnId"] = json!(t);
+            body["turnId"] = json!(t);
         }
+        let idem = self.idem(&format!("interrupt:{now}"));
+        let path = crate::http::session_path(&self.m.session_id, "/interrupt");
+        let http = self.ctx.http.clone();
         self.m.set_fact("interrupting…", now);
         let key = self.tel.control(Control::Interrupt, None, Instant::now());
         self.futs.push(Box::pin(async move {
-            match w.call("sessions.interrupt", params).await {
+            match http.post(&path, &body, Some(&idem)).await {
                 Ok(_) => Bg::Interrupted { key, fail: None },
                 Err(e) => Bg::Interrupted { key, fail: Some(format!("interrupt failed: {}", e.message)) },
             }
         }));
     }
 
-    fn call(&mut self, method: &'static str, mut params: Value, ok: Option<String>) {
-        let Some(w) = self.wire.clone() else { return };
-        params["sessionId"] = json!(self.m.session_id);
+    /// A session write: `POST /sessions/{id}<rest>` over HTTP, through the
+    /// session's inbox, as every write is; never the wire.
+    fn write(&mut self, rest: &str, body: Value, key: Option<String>, ok: Option<String>) {
+        let path = crate::http::session_path(&self.m.session_id, rest);
+        let http = self.ctx.http.clone();
         self.futs.push(Box::pin(async move {
-            match w.call(method, params).await {
+            match http.post(&path, &body, key.as_deref()).await {
                 Ok(_) => ok.map(Bg::Note).unwrap_or(Bg::Quiet),
                 Err(e) => Bg::Fail(e.message),
             }
@@ -1027,21 +1041,20 @@ impl<'a> App<'a> {
             }
             AskOut::Answer(body) => {
                 let always = if body.get("decision").and_then(Value::as_str) == Some("always") { a.ask.approval.as_ref().and_then(|x| x.always_allows.clone()) } else { None };
-                // The schema's `asks.answer` takes the answer whole, as `answer`.
-                let params = json!({"sessionId": self.m.session_id, "askId": ask_id, "answer": body});
+                let path = crate::http::session_path(&self.m.session_id, &format!("/asks/{}/answer", crate::net::encode(&ask_id)));
+                let http = self.ctx.http.clone();
                 self.answered.insert(ask_id.clone());
                 self.ask_focus = false;
-                let Some(w) = self.wire.clone() else { return };
                 let key = self.tel.control(Control::Answer, None, Instant::now());
-                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always, key, result: w.call("asks.answer", params).await } }));
+                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always, key, result: http.post(&path, &body, None).await } }));
             }
             AskOut::Dismiss => {
                 self.answered.insert(ask_id.clone());
                 self.ask_focus = false;
-                let params = json!({"sessionId": self.m.session_id, "askId": ask_id});
-                let Some(w) = self.wire.clone() else { return };
+                let path = crate::http::session_path(&self.m.session_id, &format!("/asks/{}/dismiss", crate::net::encode(&ask_id)));
+                let http = self.ctx.http.clone();
                 let key = self.tel.control(Control::Answer, None, Instant::now());
-                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always: None, key, result: w.call("asks.dismiss", params).await } }));
+                self.futs.push(Box::pin(async move { Bg::Answered { ask: ask_id, always: None, key, result: http.post(&path, &json!({}), None).await } }));
             }
             AskOut::Web => {
                 let url = self.ctx.url_for(None, &self.m.session_id);
@@ -1120,7 +1133,7 @@ impl<'a> App<'a> {
                     return;
                 }
                 let name = self.m.subs.iter().find(|s| s.sa.id == key).map(|s| s.sa.name.clone()).unwrap_or_default();
-                self.call("subagents.stop", json!({"subagentId": key}), Some(format!("stopping \"{name}\"")));
+                self.write(&format!("/subagents/{}/stop", crate::net::encode(&key)), json!({}), None, Some(format!("stopping \"{name}\"")));
             }
             _ => {}
         }
@@ -1172,7 +1185,14 @@ impl<'a> App<'a> {
         }
         let mut p = Map::new();
         p.insert(field.to_string(), value);
-        self.call("sessions.update", Value::Object(p), None);
+        let path = crate::http::session_path(&self.m.session_id, "");
+        let http = self.ctx.http.clone();
+        self.futs.push(Box::pin(async move {
+            match http.patch(&path, &Value::Object(p)).await {
+                Ok(_) => Bg::Quiet,
+                Err(e) => Bg::Fail(e.message),
+            }
+        }));
     }
 
     fn setting_values(&self, kind: ListKind) -> Vec<(String, String)> {
@@ -1279,13 +1299,14 @@ impl<'a> App<'a> {
                     self.m.error("read-only: cannot compact from this terminal");
                     return;
                 }
-                let mut p = json!({"idempotencyKey": self.idem(&format!("compact:{now}"))});
+                let mut p = json!({});
                 if let Some(i) = instr {
                     p["instructions"] = json!(i);
                 }
                 let when = if self.m.turn_running() { "compacting after the running turn" } else { "compacting" };
                 self.m.note(when);
-                self.call("sessions.compact", p, None);
+                let key = self.idem(&format!("compact:{now}"));
+                self.write("/compact", p, Some(key), None);
             }
             Cmd::Allowed => self.m.note("/allowed is not available yet: the API has no route for a session's allowed rules"),
             Cmd::Diff { stat } => {
@@ -1342,16 +1363,17 @@ impl<'a> App<'a> {
                     self.m.error("read-only: cannot suspend from this terminal");
                     return;
                 }
-                self.call("sessions.suspend", json!({"idempotencyKey": self.idem(&format!("suspend:{now}"))}), Some("suspended".into()));
+                let key = self.idem(&format!("suspend:{now}"));
+                self.write("/suspend", json!({}), Some(key), Some("suspended".into()));
             }
             Cmd::Archive => {
                 if self.m.read_only {
                     self.m.error("read-only: cannot archive from this terminal");
                     return;
                 }
-                let Some(w) = self.wire.clone() else { return };
-                let p = json!({"sessionId": id, "archived": true});
-                self.futs.push(Box::pin(async move { Bg::Archived(w.call("sessions.update", p).await) }));
+                let path = crate::http::session_path(&id, "");
+                let http = self.ctx.http.clone();
+                self.futs.push(Box::pin(async move { Bg::Archived(http.patch(&path, &json!({"archived": true})).await) }));
             }
             Cmd::Web => {
                 let url = self.ctx.url_for(None, &id);
@@ -1551,6 +1573,9 @@ impl<'a> App<'a> {
         self.tel.leave();
         if let Some(w) = &self.wire {
             w.close();
+        }
+        if let Some(l) = &self.live {
+            l.close();
         }
     }
 }

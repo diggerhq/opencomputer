@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Telemetry credentials for computers' hosts (work 054,
-// "Host credentials"; src/computer/telemetry/credential.ts).
+// "Host credentials"; src/telemetry/credential.ts).
 //
 //   npm run telemetry-credential -- keygen
 //       A new key pair: TELEMETRY_SIGNING_KEY (the edge Worker's secret) and
@@ -11,7 +11,7 @@
 //
 // Prints secrets to stdout; pipe them where they go, never into a file in Git.
 import { parseArgs } from "node:util";
-import { generateTelemetryKeys, issueTelemetryCredential } from "../src/computer/telemetry/credential.ts";
+import { generateTelemetryKeys, issueTelemetryCredential } from "../src/telemetry/credential.ts";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,

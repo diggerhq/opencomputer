@@ -12,7 +12,9 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@opencomputer/sdk/computer": ["../sdks/typescript/src/computer/index.ts"],
+      "zod": ["./node_modules/zod"]
     },
     "strict": true,
     "noUnusedLocals": true,
@@ -20,5 +22,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src", "scripts"]
 }

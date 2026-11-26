@@ -16,7 +16,7 @@ function feed() {
     Schema.decodeUnknownSync(EVENT_DATA[type] as unknown as Schema.Codec<unknown, unknown>)(data);
     const e: JournalEvent = { id: mintId('ev'), seq: ++seq, createdAt: new Date(1_700_000_000_000 + seq * 1000).toISOString(), sessionId: sid, turnId, type, actor: ann, data };
     fold.apply(e);
-    fold.setLog({ lastSeq: seq, logEpoch: 1, epochStartSeq: 1 });
+    fold.setLog({ lastSeq: seq });
     return e;
   };
   return { fold, add };
@@ -144,6 +144,7 @@ describe('Fold', () => {
     const { fold, add } = feed();
     const events: JournalEvent[] = [];
     const t1 = mintId('tn');
+    const m1 = mintId('tn');
     const sa = mintId('sa');
     const sub = {
       id: sa, sessionId: sid, turnId: t1, callId: 'c9', name: 'n', agentType: 'Explore', background: true, status: 'running', activity: null,
@@ -154,6 +155,7 @@ describe('Fold', () => {
       add('session.updated', { changes: { 'metadata.k': { from: null, to: 'v' } } }),
       add('message.received', { input: 'go', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, t1),
       add('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, t1),
+      add('message.received', { input: 'use pnpm', ifBusy: 'steer', delivery: 'steered', interruptedTurnIds: [], declinedAskIds: [], messageId: m1 }, t1),
       add('tool.started', { subagentId: null, toolName: 'Bash', callId: 'c1', parentCallId: null, title: 'ls', input: {}, inputTruncated: false }, t1),
       add('subagent.started', { subagent: sub }, t1),
       add('ask.opened', { ask: ask(mintId('ak'), t1) as never }, t1),
@@ -166,9 +168,11 @@ describe('Fold', () => {
       add('turn.completed', { text: 'done', durationMs: 1, silent: false }, t1),
     ];
     for (const e of rest) restored.apply(e);
-    restored.setLog({ lastSeq: events.length + rest.length, logEpoch: 1, epochStartSeq: 1 });
-    const view = (f: Fold) => ({ s: { ...f.session(), lastActiveAt: null }, t: f.turns(), a: f.asks(), sa: f.subagents(), c: f.openCalls(t1), q: f.seqOf(sa) });
+    restored.setLog({ lastSeq: events.length + rest.length });
+    const view = (f: Fold) => ({ s: { ...f.session(), lastActiveAt: null }, t: f.turns(), a: f.asks(), sa: f.subagents(), c: f.openCalls(t1), q: f.seqOf(sa), m: f.steered(m1) });
     expect(view(restored)).toEqual(view(fold));
+    expect(view(restored).m).toBe(t1);
+    expect(fold.steered(t1)).toBeUndefined();
     expect(view(fold).s).toMatchObject({ title: 'hello', metadata: { k: 'v' }, context: { usedTokens: 10 }, lastText: 'done' });
     expect(Fold.restore(fold.seed, { ...fold.snapshot(), v: 0 })).toBeUndefined();
     expect(Fold.restore(fold.seed, null)).toBeUndefined();

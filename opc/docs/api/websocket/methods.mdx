@@ -3,117 +3,21 @@ title: "Methods"
 description: "Every WebSocket method, its parameters, its result and its notifications."
 ---
 
-A method is named `<plural resource>.<verb>`, and maps to the HTTP route of the same resource and verb. Its params are that route's path parameters, query and body, flattened into one object, and its result is the route's response. The one exception is `asks.answer`, whose body stays nested as `answer`: `{ sessionId, askId, answer: { decision: "allow" }, idempotencyKey? }`. Every session method takes `sessionId`. The exceptions are `sessions.attach` and `sessions.detach`, which only the WebSocket has, and the terminal methods.
+A method is named `<plural resource>.<verb>`, and maps to the HTTP route of the same resource and verb. Its params are that route's path parameters, query and body, flattened into one object, and its result is the route's response. Every session method takes `sessionId`, except the terminal methods after `terminals.open`.
 
-`turns.send` is the create verb for turns. It is named `send` because a message may join a running turn rather than create one.
+The WebSocket carries no session write. Sending a turn, answering or dismissing an ask, interrupting, cancelling a turn, stopping a subagent, compacting, suspending, resuming and changing a session's settings are HTTP only, because every write goes through the session's inbox, which checks who may write to it. `opc` sends them over HTTP too.
 
 | Method | HTTP equivalent |
 | --- | --- |
-| [`sessions.attach`](#attach) | none: live events |
-| [`sessions.detach`](#detach) | none |
 | `sessions.get` | [`GET /sessions/{id}`](/api/http/sessions#get-a-session) |
-| `sessions.update` | [`PATCH /sessions/{id}`](/api/http/sessions#update-a-session) |
-| [`sessions.interrupt`](#interrupt), `sessions.compact`, `sessions.suspend`, `sessions.resume` | [Control](/api/http/control) |
-| [`turns.send`](#send) | [`POST /sessions/{id}/turns`](/api/http/turns#send-a-message) |
 | `turns.get` | [`GET /sessions/{id}/turns/{turnId}`](/api/http/turns#get-a-turn), with `turnId` |
-| `turns.cancel` | [`POST /sessions/{id}/turns/{turnId}/cancel`](/api/http/turns#cancel-a-queued-turn), with `turnId` |
 | `asks.list`, `asks.get` | [`GET /sessions/{id}/asks`](/api/http/asks#list-asks) and [`GET /sessions/{id}/asks/{askId}`](/api/http/asks#get-an-ask), with `askId` |
-| `asks.answer`, `asks.dismiss` | [Asks](/api/http/asks), with `askId`. `asks.answer` takes the answer as `answer`. |
 | `subagents.list`, `subagents.get` | [`GET /sessions/{id}/subagents`](/api/http/subagents#list-subagents) and [`GET /sessions/{id}/subagents/{subagentId}`](/api/http/subagents#get-a-subagent), with `subagentId` |
-| `subagents.stop` | [Stop a subagent](/api/http/subagents#stop-a-subagent), with `subagentId` |
-| `events.list` | [`GET /sessions/{id}/events`](/api/http/events) |
+| `events.list` | [`GET /sessions/{id}/events`](/api/http/events), except that `after` here is a `seq` and the result has no `cursor` |
 | [`terminals.open`, `terminals.resize`, `terminals.eof`, `terminals.close`](/api/websocket/terminals) | none |
 | `ping` | none |
 
-Everything not in this table is HTTP only, such as creating and listing sessions, files and tickets. With the methods above, a browser holding only a ticket can read everything it was shown.
-
-The result of every write carries `seq`, the `seq` of the last event the write caused. To read it back over HTTP, pass it as `minSeq`. See [Consistency](/api/model#consistency).
-
-## Attach
-
-Starts sending a session's events to this connection. A session can also be attached in the [connection URL](/api/websocket/connect#attach-in-the-upgrade), which saves the round trip.
-
-```json
-{ "jsonrpc": "2.0", "id": 1, "method": "sessions.attach", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "after": 1180, "deltas": true } }
-```
-
-| Param | Meaning |
-| --- | --- |
-| `sessionId` | |
-| `after` | Optional. Also send recorded events with a `seq` greater than this, before live ones. Omit to get only what happens from now. |
-| `tailTurns` | Optional, without `after`, 1 to 50. Also send the full recorded events of the last `tailTurns` turns, before live ones, and summarize the turns before them in `earlierTurns`. |
-| `deltas` | Optional, default `false`. Also send [deltas](/api/reference/events#text): text as it is written, and tool output as it is produced. |
-| `resume` | Optional, default `false`. `true` resumes the session if it is suspended, in the same request. |
-| `readOnly` | Optional, default `false`. `true` refuses every write to this session on this connection with `403 forbidden` and `reason: "read_only"`. `opc a --read-only` uses it. |
-
-The result is the session, current as of the moment you attached:
-
-```json
-{
-  "jsonrpc": "2.0", "id": 1,
-  "result": {
-    "session": { "id": "cs_7f3a9k2m4q8r1t6v", "lastSeq": 1184, "logEpoch": 1, "epochStartSeq": 1, "…": "…" },
-    "logEpoch": 1,
-    "epochStartSeq": 1,
-    "capabilities": { "…": "…" },
-    "earlierTurns": null,
-    "timing": { "serverUs": 840 }
-  }
-}
-```
-
-| Field | Meaning |
-| --- | --- |
-| `session` | The [Session](/api/reference/objects#session) |
-| `logEpoch`, `epochStartSeq` | The session's, repeated for the [epoch check](/api/model#if-a-computer-is-lost) |
-| `capabilities` | The session's [Capabilities](/api/reference/objects#capabilities) |
-| `earlierTurns` | With `tailTurns`: the [Turns](/api/reference/objects#turn) before the last `tailTurns`, newest first, at most 50. Else `null`. |
-| `timing.serverUs` | Time the server spent on the attach, in microseconds |
-
-Then the session's events follow, in `seq` order, with no gap and no repeat:
-
-1. With `after`: every recorded event from `after + 1` to the session's `lastSeq`. With `tailTurns`: every recorded event of the last `tailTurns` turns.
-2. With `deltas`: for each block being written right now, one delta holding its text so far; for each tool call still running, one delta holding its last 4 KiB of output
-3. Live events, as they happen
-
-Recorded events arrive as `event` notifications, deltas as `delta` notifications. So a client that sets `after` to its last applied `seq` misses nothing, and one that starts from the `session` in the result and omits `after` misses nothing either. A long session paints at once with `tailTurns`, whatever its length.
-
-Attaching to a suspended session does not resume it unless you pass `resume`: watching costs nothing. Only `opc`'s interactive screen resumes a session when it attaches. `opc watch`, `opc wait` and `opc log` never do.
-
-Attaching again to a session already attached replaces the earlier attachment's options.
-
-| Error `data.code` | When |
-| --- | --- |
-| `session_not_found` | It does not exist, or you cannot see it |
-| `cursor_ahead` | `after` is greater than the session's `lastSeq`. `data.session` is the session now. |
-| `too_far_behind` | `after` is more than 10,000 events back. Read them over [HTTP](/api/http/events) first. |
-| `too_many_attached` | This connection already has 20 sessions attached |
-
-## Detach
-
-Stops sending a session's events. `{ "sessionId" }`. The result is `{}`. Events already sent may still arrive after it.
-
-## Ack
-
-`sessions.ack` is a notification you send, with no `id` and no response:
-
-```json
-{ "jsonrpc": "2.0", "method": "sessions.ack", "params": { "sessionId": "cs_7f3a9k2m4q8r1t6v", "seq": 1250 } }
-```
-
-`seq` is the last event you applied. Send it every 64 events or every 250 ms, whichever comes first, while events arrive. When a connection acks, the server measures how far behind it is from what it sent and what you acked, which is exact. Without acks it estimates from its socket buffer. Acks are optional. See [Flow control](/api/websocket/flow-control).
-
-## Send
-
-`{ sessionId, input, ifBusy?, idempotencyKey? }`. The result is what [`POST /turns`](/api/http/turns#send-a-message) returns, `{ turn, delivery, duplicate, seq }`, with `timing: { serverUs }` added.
-
-`idempotencyKey` does what the `Idempotency-Key` header does over HTTP. Send one with every message: after a reconnect you cannot know whether a request sent just before the drop arrived, and resending with the same key is safe. A method and its HTTP route share keys. See [Idempotency](/api/reference/idempotency).
-
-`ifBusy` defaults to `queue`, as over HTTP.
-
-## Interrupt
-
-`{ sessionId, turnId?, idempotencyKey? }`. With `turnId`, it interrupts only if that turn is still running or queued; otherwise it succeeds and changes nothing. So a client interrupts the turn it saw, never one that started since. The result is what [`POST /interrupt`](/api/http/control#interrupt) returns.
+Everything not in this table is HTTP only, such as every session write, creating and listing sessions, files and tickets. The WebSocket carries no session events: watch sessions on [Live](https://docs.opencomputer.dev/api/live).
 
 ## Telemetry
 
@@ -124,22 +28,7 @@ Stops sending a session's events. `{ "sessionId" }`. The result is `{}`. Events 
 | Method | Params | Sent |
 | --- | --- | --- |
 | `ready` | `connectionId`, `server`, `protocol`, `limits`, `expiresAt`, `expiresInMs` | Once, first. See [Connecting](/api/websocket/connect#open). |
-| `sessions.attached` | `sessionId`, `error`, and the fields of the attach result | For each session attached in the [connection URL](/api/websocket/connect#attach-in-the-upgrade), right after `ready` |
-| `event` | A recorded [event](/api/reference/events) | For each event of each attached session |
-| `delta` | A [delta](/api/reference/events#shape) | For each delta of each session attached with `deltas` |
-| `session.detached` | `sessionId`, `reason` | When the server stops sending a session's events. See below. |
 | `terminal.exited` | `terminalId`, `exitCode`, `signal` | When a [terminal](/api/websocket/terminals#terminalexited) ends |
-
-A delta for a `blockId` or `callId` whose completed event you already applied is stale. Ignore it.
-
-`session.detached` has one of these `reason`s. The connection stays open, and other sessions are not affected.
-
-| `reason` | Means | Do |
-| --- | --- | --- |
-| `access_lost` | You can no longer see the session, such as after your key lost a scope | Stop showing it |
-| `too_far_behind` | You fell more than 8 MiB or 10,000 events behind on this session | Attach again with `after` set to your last applied `seq`. See [Flow control](/api/websocket/flow-control). |
-| `epoch_changed` | The session's `logEpoch` changed: its computer was lost mid-turn | Discard what you applied at or after the new `epochStartSeq` and attach again with `after` set to `epochStartSeq - 1`. See [If a computer is lost](/api/model#if-a-computer-is-lost). |
-| `unavailable` | The session cannot be reached for now, such as while your computer restarts | Attach again with `after` set to your last applied `seq`, with backoff |
 
 ## Errors
 

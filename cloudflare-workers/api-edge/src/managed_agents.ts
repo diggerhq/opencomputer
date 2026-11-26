@@ -2,6 +2,8 @@ import { getAutumnCustomer } from "./autumn_webhook";
 import { FREE_CREDITS_PAYWALL } from "./billing_onramp";
 import { computerFamily } from "./computer";
 import { computerApiFamily } from "./computer_api";
+import { signJWT } from "./jwt";
+import type { Principal } from "./principal";
 import type { RouteFamily } from "./route_family";
 
 export interface ManagedAgentsEnv {
@@ -53,6 +55,8 @@ export interface ManagedAgentsCaller {
   /** The key creator's (or the dashboard member's) name and email, when the auth read loaded them. */
   userName?: string | null;
   userEmail?: string | null;
+  /** Who is asking (tracks and threads spec 34.3), as the `oc_principal` claim. */
+  ocPrincipal?: Principal;
 }
 
 const DEFAULT_MANAGED_AGENTS_API_URL = "https://managedagents.opencomputer.dev";
@@ -107,22 +111,11 @@ function byokPlanRequired(): Response {
   );
 }
 
-function b64url(value: ArrayBuffer | Uint8Array): string {
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-  let encoded = "";
-  for (const byte of bytes) encoded += String.fromCharCode(byte);
-  return btoa(encoded)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
 export async function mintManagedAgentsAssertion(
   secret: string,
   caller: ManagedAgentsCaller,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
   const payload: Record<string, unknown> = {
     iss: "opencomputer-edge",
     aud: "managedagents",
@@ -147,23 +140,8 @@ export async function mintManagedAgentsAssertion(
   // A key's creator, or a dashboard session's member (work tracking 3.10).
   if (caller.userName) payload.user_name = caller.userName;
   if (caller.userEmail) payload.user_email = caller.userEmail;
-  const encoder = new TextEncoder();
-  const signingInput =
-    `${b64url(encoder.encode(JSON.stringify(header)))}.` +
-    b64url(encoder.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(signingInput),
-  );
-  return `${signingInput}.${b64url(signature)}`;
+  if (caller.ocPrincipal) payload.oc_principal = caller.ocPrincipal;
+  return signJWT(secret, payload);
 }
 
 function copyRequestHeaders(request: Request): Headers {

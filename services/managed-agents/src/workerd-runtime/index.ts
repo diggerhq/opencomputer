@@ -73,7 +73,7 @@ import {
 } from "./mcp.js";
 import type { SkillToolDefinition } from "../runtime/skill-tool-core.js";
 import { type Latency, latencyTelemetry, requestRegion } from "../edge/latency.js";
-import type { Dimensions } from "../computer/telemetry/envelope.js";
+import type { Dimensions } from "../telemetry/envelope.js";
 
 let openCodeWorkerdModule:
   | Promise<typeof import("@opencode-ai/sdk/workerd")>

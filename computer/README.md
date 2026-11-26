@@ -63,8 +63,10 @@ Computer 👀 …  ✓ Edit src/auth/refresh.ts · ✓ Bash(npm test)
   Slack message or thread and the session gets its content as context, if
   the bot, the poster, the session's owner and everyone reading this thread
   can all see it; otherwise a note says why not ([details](#linked-threads)).
-- **Parallel threads.** A `spawn_thread` tool lets a session start another
-  thread for the same person, working from a brief.
+- **Parallel threads and tracks.** A `start_thread` tool lets a session start
+  another thread for the same person, optionally from a brief; work tools
+  (`track_this`, `start_track`, `tell_track`, …) group threads into tracks
+  ([details](#start_thread)).
 - **Secrets without pasting them in chat.** `!secret NAME` (or the agent's
   `request_secret` tool) opens a private Slack form; the value becomes `$NAME`
   in the session's commands, for this session, all of a person's sessions, or
@@ -102,7 +104,7 @@ Slack ──HTTPS──▶ gateway ◀──WebSocket (dialed out)── host ag
 
 | Piece | Job | Code |
 |---|---|---|
-| **Gateway** | Slack's HTTP endpoint, event de-dup, allowlist, session table, `/setup`, GitHub webhooks and token minting. It holds no per-session runtime state, so it can restart at any time. | `src/gateway/`, `src/setup/`, `src/github/` |
+| **Gateway** | Slack's HTTP endpoint, event de-dup, who may drive, session table, secrets, GitHub webhooks and token minting. It holds no per-session runtime state, so it can restart at any time. | the backend's Durable Objects (`services/managed-agents/src/actors/slack/`, `services/managed-agents/src/actors/computer/`) |
 | **Host agent** | Dials out to the gateway (no inbound ports), forks workspaces, starts one runner per active thread outside its own process tree, rediscovers them after a restart, stops idle ones, serves GitHub tokens to git. | `src/host/`, `src/workspaces/` |
 | **Runner** | One agent session per process. It renders to Slack directly, so streaming does not go through the gateway. | `src/runner/` |
 
@@ -137,7 +139,7 @@ it happens and can steer at any moment.
 | Esc + type | `!! <text>` interrupts within about 1 s and starts a new turn with your text |
 | status line | a footer on each turn: `opus-5-5 · default · 34s · ctx 21.3k · $0.12` |
 | shift-tab modes | `!mode default\|accept\|plan\|auto\|bypass` |
-| (no terminal equivalent) | `spawn_thread` starts another thread for the same person ([details](#spawn_thread)) |
+| (no terminal equivalent) | `start_thread` starts another thread for the same person ([details](#start_thread)) |
 | (no terminal equivalent) | a Slack permalink in your message brings the linked thread along ([details](#linked-threads)) |
 | (no terminal equivalent) | `read_thread` and `post_thread` read or answer another thread on request ([details](#linked-threads)) |
 
@@ -163,15 +165,27 @@ running agent (`stopTask`); **Result** opens its final answer in a modal. The
 panel is a plain message rather than part of the stream, so background agents
 keep updating after the turn ends.
 
-### `spawn_thread`
+### `start_thread`
 
-Starts another thread for the same person: a short top-level message
-(`↳ task · Brief: <doc> · from this thread`) and a session on it with the
-parent's mode and model (or the tier the tool's optional `model` argument
-picks: `smart`, `fast`, `default`; the message then reads `↳ +smart task`),
-which reads the brief first. It asks for approval
-unless the session is in bypass mode, and the brief must already be on its
-repository's default branch. Split deployment only.
+Starts another session for the same person, with the parent's owner and
+access, through the backend's `POST /sessions` (`src/runner/spawn.ts`). Its
+arguments: `task` (one line, 3 to 150 characters), an optional `brief` (a `.md`
+file in the workspace that must already be on its repository's default
+branch; the new session reads it first and reports there), and `track: true`
+to start it in this session's track. When the parent has a Slack thread, the
+task is posted at the top level of the parent's channel and the new session
+runs on that message. It asks for approval unless the session is in bypass
+mode; 8 per runner, and the backend refuses more than 10 open threads started
+by one session. Split deployment only.
+
+The work tools (`src/runner/work-tools.ts`) act on the thread and its track:
+`list_work`, `track_this` (make this thread a track), `start_track` (from the
+start box, in the first turn), `place_thread`, `mark_ready`, `need_you`,
+`propose_done`, `add_result`, `review_summary` and `tell_track` (a message to
+the track's agent). A track's own session gets `src/runner/track-tools.ts`:
+`rename`, `tell_thread` (a message to one of its threads, which steers it
+when it is working), `stop_thread`, `set_stand`, `doc_read` and `doc_edit`.
+Each is one call to the backend, which decides whether it applies.
 
 ### Linked threads
 
@@ -196,14 +210,15 @@ gets a one-line reason that names no private channel or person. Up to 3
 links per message; a spawned thread's first message is not expanded. Design:
 work 049.
 
-Two tools reach threads without a link in the message (split deployment only):
-`read_thread` reads one by link, or by channel id and ts, under the same
-checks with the session's owner as the one asking; it never prompts.
-`post_thread` posts a reply into one for the owner: in the thread, never at
-the top level, with `<!channel>`-style mentions neutralized and
-`_Posted for @owner from this thread._` appended. It asks for approval unless
-the session is in bypass mode, and stops after 20 posts per runner. In
-production, the backend answers both and allows public channels only.
+Two tools reach other sessions without a link in the message (split
+deployment only), both answered by the backend. `read_thread` takes a session
+id or a Slack thread link and returns that session's last 20 turns (60,000
+characters at most) as data; it reads this session, the ones it started and
+its track's, and never prompts. `post_thread` posts a reply into a Slack
+thread whose session it could read: in the thread, never at the top level,
+with `<!channel>`-style mentions neutralized; the target session is told it
+was posted for its owner from another thread. Only a session started in Slack
+posts, and it asks for approval unless the session is in bypass mode.
 
 ### Secrets
 
@@ -226,11 +241,10 @@ The narrowest scope wins on a name clash. `!secret` lists names (never values),
 session's thread, `!secret`, `!var` and the secret form are for people who can
 drive it (see below).
 
-**Where values live.** The gateway is the copy of record: AES-256-GCM, with
-each row's scope, owner and name as associated data, so a row copied elsewhere
-does not decrypt. In production that is the backend's per-organization
-`ComputerDurableObject` (`src/computer/secrets-store.ts`); the Node gateway uses its SQLite (`user_secrets`, key from
-`SP_STORE_KEY`, admins are `"admin": true` in `SP_PEOPLE`). A session's set
+**Where values live.** The backend's per-organization
+`ComputerDurableObject` is the copy of record
+(`services/managed-agents/src/actors/computer/held-for-org/secrets/secrets-store.ts`):
+AES-256-GCM. A session's set
 rides on every delivery and is pushed whenever it changes.
 
 **On the host** the runner writes them to a per-session directory under
@@ -275,7 +289,8 @@ reaction on its first message.
   the owner once, in the thread, with `Allow` and `Not now`; `Allow` lets them
   drive and runs the message that asked. They can still `!stop`, `!help` and
   `!status`.
-- **Anyone not in `SP_PEOPLE`** is ignored, as before.
+- **Anyone who is not a full member of the Slack workspace** is not
+  delivered; mentioning the bot gets a reply only they see.
 
 The first reply's `Access` button opens the settings; `!access` does the same
 in text and is never delivered:
@@ -288,10 +303,11 @@ in text and is never delivered:
 | `!access add @a` / `!access remove @a` | edit the list (not on an open session) |
 | `!access default open` / `!access default owner` | what new sessions start with (admins) |
 
-The owner and admins (`"admin": true` in `SP_PEOPLE`) change it; only people
-in `SP_PEOPLE` can be named. A thread started with `spawn_thread` copies its
-parent's setting. Stored in the gateway's SQLite (`sessions.drivers`,
-`session_context`, `access_requests`, `settings`). Design: work 112.
+The owner and admins change it; `!access default` is for organization
+admins. A thread started with `start_thread` gets its parent's owner and
+access. The organization's `OrgDurableObject` keeps who drives each session
+and the default; the Slack Durable Object keeps held context and access
+requests (`services/managed-agents/src/actors/slack/`). Design: work 112.
 
 ### Commands and code channels
 
@@ -410,9 +426,6 @@ cd modelproxy && go build -o /tmp/mp/oc-modelproxy . && /tmp/mp/oc-modelproxy -i
 # the host: SP_MODEL_PROXY=/tmp/mp/control.sock SP_MODEL_SOCKET=/tmp/mp/api.sock
 ```
 
-The Node gateway in `src/gateway/` is the self-hosted alternative and what the
-laptop and the e2e checks use; the `Dockerfile` packages it as a container.
-
 
 ### Workspaces
 
@@ -528,14 +541,12 @@ environment, which any session can change.
 | `SP_VERSION` | `dev` | the release's commit, in `ready.server.version` (the unit reads it from `.sp-version.env`) |
 | `SP_REGION` | unset (`null`) | `ready.server.region` |
 
-Gateway variables, the model credentials among them, are documented at the top of `src/gateway/main.ts`.
-
 ## Development
 
 `npm run check` is the gate: typecheck (`tsc`), lint (`biome lint`), unit tests
 (`vitest run`, the `*.test.ts` files next to the code) and a file-size ratchet
 (`scripts/max-lines.mjs`) and an import-boundary check (`scripts/boundaries.mjs`:
-`gateway/`, `host/` and `runner/` share code only through top-level `src/`).
+`host/`, `runner/` and `wire/` share code only through top-level `src/`).
 CI runs it on every pull request, and `main` deploys only after it passes. `npm run format` applies the formatter.
 
 The integration checks below spawn real processes and are run by hand. None
@@ -544,22 +555,16 @@ of them need a real Slack workspace.
 | Command | What it checks |
 |---|---|
 | `npx tsx src/dev/fake-run.ts "<prompt>" ["<steer sent 8s later>"]` | A real agent session against a fake Slack client. Prints every Slack API call with a timestamp and approves prompts automatically. The fast loop for event mapping, batching and steering. |
-| `npx tsx src/dev/e2e-check.ts [--keep]` | The whole split deployment on one machine, with fake Slack and GitHub APIs served by the check itself: `/setup`, mention → fork → runner → turn, thread replies, mid-turn messages, a permission button, host and gateway restarts under a live runner, GitHub tokens through the credential helper and `gh` shim, a push webhook. Prints the latency rows it can measure. Scratch space is `/tmp/spe2e`. |
-| `npx tsx src/dev/host-check.ts [--claude]` | The host agent against an in-process fake gateway, with oc-modelproxy built from `modelproxy/` (needs Go and openssl; Linux) and run with `-identity=single`: spawn, forwarding, token relay, restart with rediscovery, idle exit. `--claude` makes the first turn real, on `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` as the gateway routes them. With a fake telemetry collector (work 054): host events per trace, the `new`/`warm`/`resume` path, spooling through a collector outage and a host restart, gap-free batch numbers, and `turn.abandoned` for a runner killed mid-turn (its request held by a profile whose upstream never answers), before and after a host restart. |
 | `sudo -u sp-host env SP_RUNNER_USER=agent SP_IMAGE=… SP_IMAGE_ABI=… node --import tsx src/dev/sandbox-check.ts` (on a computer, from its release directory, with no host agent running) | The host with `SP_LAUNCH=podman` against an in-process fake gateway and a fake Slack (work 103): a session's runner is a container in a unit of the runners' slice, its record is written, its cwd is `/workspace`, its report names the host's path, its token socket is linked into its run directory, it exits when idle leaving its container, and the next message resumes the same container with its home intact. With a definition of two public repositories: helper containers clone them, a thread has its workspace, its worktree and its own registry mounted, a sibling thread and another person's thread see none of it, `git worktree prune` in one leaves the other, the mount helper refuses what is not the person's, a session of the API has its journal directory, `checkout` adds a repository, and housekeeping removes a stopped thread's ignored `node_modules`. Step 9: two threads, each with a server on the same port and the check's own on the host's; the real `preview` tool, called by a scripted stand-in for the model inside the container (`src/dev/fake-model.mjs`, no credential), reaches the gateway as a virtual port, and the proxy answers from inside the right container and never from the host's port; the probe; a terminal and `/files` over the wire socket (`src/dev/wire-client.ts`), running and stopped, each inside its own thread only (`src/dev/sandbox-check-reach.ts`). Both together: an upload to a running thread is in its workspace directory on the host and reads back while it is stopped, one to a stopped thread (a helper container) is in `/workspace` once it runs again; a terminal commits in the worktree; links to a sibling thread's workspace and to another person's lead nowhere, running or stopped; and a session of the API has `terminal.opened`, `terminal.closed` and `files.pushed` in its journal, written by its runner. With `SP_RUN` / `SP_DATA` it runs on roots of its own, laid out as `deploy/vm/provision.sh` lays out the computer's. With `--spares` it runs step 10 instead (`src/dev/sandbox-check-spares.ts`), on four hosts it starts one after the other: what an unclaimed spare container holds (its mounts, environment, `boot.env`, token socket: nothing of anyone) and costs (its unit's cgroup), a new thread's claim of one (the record under the spare's id, the mounts and worktrees made in the running container, the timings of each part), the pool's size and refill, a delivery beside a refill, new threads back to back, a claim that fails (the spares are paused) answered by a cold start under the same id, the spares of a killed host removed by the next one, which runs another `SP_VERSION` and image name, a spare that outlives the idle time, a spare told to go when its host stops, and the image lock when its file is there; it prints the first reply of new threads with a spare and without, with a repository and with none (`SP_CHECK_N` threads each, 6 unless set). Model access is the release's oc-modelproxy (`modelproxy/oc-modelproxy`), run by the check with a profile whose upstream is `src/dev/fake-model.mjs`. Needs podman, openssl and the network (github.com), so it does not run in CI. |
 | `npx tsx src/dev/workspaces-check.ts [--real]` | Clones, forks, housekeeping and git auth against local bare repositories. |
-| `npx tsx src/dev/gateway-check.ts`, `setup-check.ts` | Gateway routing and `/setup`. |
 | `npx tsx src/dev/links-check.ts` | Linked threads against a fake workspace: public, private, DM, guest and Slack Connect cases, other workspaces, caps, and injected instructions in linked text. |
-| `npx tsx src/dev/secrets-check.ts` | Secrets: the encrypted vault and its scopes, the env file as bash sources it (changes, removal, files, quoting), redaction of streamed and posted text, `!secret` → button → modal → stored and pushed to a fake host, `request_secret`, `!var` variables, and a real runner process with fake Slack. |
+| `npx tsx src/dev/secrets-check.ts` | Secrets on the machine: the env file as bash sources it (changes, removal, files, quoting), redaction of streamed and posted text, and a real runner process given secrets and variables over its socket. |
 | `npx tsx src/dev/silent-check.ts` | Silent turns from scripted model streams: a `<no-reply/>` reply posts nothing and is never shown. |
 | `npx tsx src/dev/model-check.ts` | `!model` and `+smart`/`+fast` against the real Agent SDK with a local stand-in for the Anthropic API (no credentials): switching while idle, mid-turn, an unknown id (clear error, nothing changes) and across a runner restart, asserting the model each API request actually used. |
 | `npx tsx src/dev/names-check.ts` | What the model reads about who is speaking and where, against the real Agent SDK with a stand-in Anthropic API (no credentials): the sender's and mentioned people's Slack names, the channel name, one lookup per person and per session, and ids standing in (within ~0.8 s) when Slack fails or hangs. |
 | `npx tsx src/dev/telemetry-check.ts` | Runner telemetry (work 054) against the real Agent SDK with a stand-in Anthropic API (no credentials): the event sequence and turn row of a turn that thinks, runs a tool and answers, then a warm turn; thinking counted as model time, not overhead. |
 | `npx tsx src/dev/addressing-check.ts` | A real agent in a multi-person thread: answers messages for it, stays silent on others. |
 | `npx tsx src/dev/tunnel-check.ts` | Starts the tunnel and Bolt's receiver, then sends a signed `url_verification` through it. |
-
-The e2e check reaches the fakes through the dev-only `SP_SLACK_API_URL` and
-`SP_GITHUB_API_URL`.
 
 ## Project layout
 
@@ -569,16 +574,11 @@ src/
   ipc.ts            newline-delimited JSON over unix sockets (host ⇄ runner, helpers → host)
   tiers.ts          +smart / +fast model tiers (parsed by the gateway, applied by the runner)
   secret-names.ts   which names a secret may have (gateway and runner)
-  variables.ts      `!var` syntax and how values are shown (gateway; ported to the backend)
   slack-text.ts     Slack message markup → plain text for the model
   links.ts          Slack permalinks in a message → linked thread content, if everyone may see it
   access.ts         session roles: who may do what, `!access` syntax, the strings (access-views.ts: Block Kit)
   build.ts          which commit is running (shown in footers and !status)
   log.ts, env.ts    logging; .env load and write-back
-  gateway/          Slack endpoint, routing, SQLite tables, host WebSockets;
-                    vault.ts and secrets-ui.ts: secrets storage, !secret and the modal;
-                    variables-ui.ts: !var; threads.ts: read_thread and post_thread;
-                    access-store.ts, access-flow.ts, access-ui.ts: who can drive a session
   host/             host agent: forks, runner lifecycle, token relay;
                     previews.ts: preview URLs (cloudflared, preview-proxy.ts, preview-probe.ts,
                     preview-dial.ts and sandbox/preview-ports.ts for sessions in containers)
@@ -592,15 +592,14 @@ src/
     format.ts         terminal-style tool titles and output tails
     agents.ts         the subagents panel
     attachments.ts    Slack uploads → model input
-    spawn.ts          the spawn_thread tool
+    spawn.ts          the start_thread tool
     threads.ts        the read_thread and post_thread tools
+    work.ts, work-tools.ts, track-tools.ts  the work tools (threads, tracks) and a track's own tools
     preview.ts        the preview and unpreview tools: public URLs for a session's servers
     preview-socket.ts the socket that lets the host's preview proxy into a container's previewed ports
     send-file.ts      the send_file tool: workspace files → the thread
     post-card.ts      the post_card tool: json-render specs → Block Kit cards
     session-secrets.ts  a session's secrets: env file, redaction, the request_secret tool
-  setup/            /setup: Slack app, secrets, host tokens
-  github/           GitHub App manifest and token minting
   workspaces/       definitions, clones, worktree forks, housekeeping
   main.ts           the one-machine bot (Bolt, HTTP + OAuth install)
   provision.ts      config-token rotation, app manifest create/update, ngrok
@@ -610,5 +609,5 @@ scripts/            `npm run check` helpers: file-size ratchet, import boundarie
 bin/                git credential helper and gh shim for hosts; ws-*.sh, the git sequences of src/workspaces
 definitions/        workspace definitions (computer.json + its root AGENTS.md)
 hooks/knowledge/    git hooks the host installs in the knowledge repository's clone
-deploy/             gateway image entrypoint, VM provisioning, runbook
+deploy/             session image, VM provisioning, runbook
 ```

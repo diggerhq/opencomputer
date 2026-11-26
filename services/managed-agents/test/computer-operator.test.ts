@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
 
 /**
  * Work 092, step 4: an operator reads an organization's computer and wakes
@@ -67,7 +67,15 @@ describe("operator computer routes", () => {
         trialEndsAt: new Date(trialEndsAt * 1000).toISOString(),
         haltedAt: null,
         failure: null,
+        dead: [],
       });
+
+      // Spec 18.6: Org's dead list is read here.
+      const orgs = (env as unknown as { ORGS: DurableObjectNamespace }).ORGS;
+      await runInDurableObject(orgs.getByName(ORG), ((instance: { sql: { exec(q: string): unknown } }) =>
+        instance.sql.exec("INSERT INTO _dead (grp, call, body, tries, last_error, at) VALUES ('summary:cs_1', 'SessionLog.accept', NULL, 1444, 'never', 1)")) as never,
+      );
+      expect((await operator("status")).body.dead).toEqual([{ group: "summary:cs_1", call: "SessionLog.accept", tries: 1444, lastError: "never", at: 1 }]);
 
       // Work 111: a failed computer says why, with the error as the cloud gave it.
       await inside((_instance, state) =>

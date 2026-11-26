@@ -8,7 +8,7 @@ use super::model::{Model, RIGHT};
 use super::{TLine, now_ms};
 use crate::cmd::Ctx;
 use crate::error::{Error, Result, exit};
-use crate::wire::{Attach, WireEvent};
+use crate::wire::{Attach, From, WireEvent};
 
 /// How long a settled session may stay quiet, with catch-up events still
 /// missing, before we take it as caught up.
@@ -57,8 +57,12 @@ pub fn settle(m: &Model, attached: bool, quiet_ms: i64) -> Settle {
 
 /// Follows a session and prints it; returns the exit code.
 pub async fn follow(ctx: &Ctx, session_id: &str, tail_turns: Option<u32>) -> Result<i32> {
-    let attach = Attach { session_id: session_id.to_string(), after: None, tail_turns, log_epoch: None };
-    let (wire, mut rx) = ctx.open_wire(vec![attach], false).await?;
+    let from = match tail_turns {
+        Some(n) if n > 0 => From::Tail(n),
+        _ => From::Now,
+    };
+    let attach = Attach { session_id: session_id.to_string(), from };
+    let (live, mut rx) = ctx.open_live(vec![attach], false);
     let mut m = Model::new(session_id, true);
     let mut attached = false;
     let mut last_event = now_ms();
@@ -83,7 +87,7 @@ pub async fn follow(ctx: &Ctx, session_id: &str, tail_turns: Option<u32>) -> Res
                         m.event(&e, now);
                         last_event = now;
                     }
-                    WireEvent::EpochReset { epoch_start_seq, .. } => m.epoch_reset(epoch_start_seq),
+                    WireEvent::Reset { seq, .. } => m.reset(seq),
                     WireEvent::Detached { reason, .. } => break Err(Error::new("detached", format!("the server stopped sending this session: {reason}"))),
                     WireEvent::Fatal(e) => break Err(e),
                     _ => {}
@@ -106,7 +110,7 @@ pub async fn follow(ctx: &Ctx, session_id: &str, tail_turns: Option<u32>) -> Res
         }
     };
     flush(&mut m);
-    wire.close();
+    live.close();
     code
 }
 

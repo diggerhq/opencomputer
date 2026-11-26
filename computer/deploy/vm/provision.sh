@@ -883,7 +883,7 @@ if [[ -f $HOST_ENV ]]; then
   chmod 0600 "$HOST_ENV"; chown root:root "$HOST_ENV"
   log "starting slack-presence-host"
   systemctl enable slack-presence-host.service
-  # Restart picks up the new release; runners are unaffected (see KillMode).
+  # Restart picks up the new release; the new host stops the previous release's runners itself (src/host/release.ts).
   legacy_drain_restart || systemctl restart slack-presence-host.service # ONE-TIME systemd->podman migration (work 103): delete in step 11
   # The relay follows the release too (its clients reconnect after 1012); a no-op unless the host is sp-host.
   systemctl enable -q slack-presence-wire.service

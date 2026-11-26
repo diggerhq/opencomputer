@@ -1,8 +1,9 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { HOST_DIAL_MS } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 
 /**
  * The computer follows its usage plan's size (work 052, 2026-10-13):
@@ -84,7 +85,7 @@ async function connectHost(org: string, sessions: Array<{ key: string; status: s
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
-  socket.send(JSON.stringify({ t: "hello", protocol: 1, hostId: org, version: "test", sessions }));
+  socket.send(JSON.stringify({ t: "hello", protocol: 6, hostId: org, version: "test", sessions }));
   await welcomed;
   return socket;
 }
@@ -99,6 +100,41 @@ async function readySmall(org: string): Promise<Stub> {
   return stub;
 }
 
+describe("a start is bounded by the host's dial", () => {
+  it("rebuilds the VM of a ready machine whose host never dialed, once, then reports the waiting entries", async () => {
+    const stub = await readySmall("org_never_dialed");
+    const late = () => inside(stub, (instance) => instance.put("hostAwaitedAt", String(Date.now() - HOST_DIAL_MS - 1)));
+    await inside(stub, (instance) => {
+      instance.api.owe("cs_00000000000000000000000001", { at: Date.now() + 3_600_000 });
+      instance.failedWakes = 0;
+      instance.api.wakeFailed = async () => void (instance.failedWakes += 1);
+    });
+    // Within the bound nothing happens, however often the alarm runs.
+    await runAlarms(stub, 2);
+    expect((await row(stub))?.state).toBe("ready");
+    // Past it: the VM goes and comes back, for the session that waits.
+    await late();
+    await runAlarms(stub);
+    expect((await row(stub))?.state).toBe("parking");
+    await settle(stub, "ready");
+    expect(await inside(stub, (instance) => [instance.lifecycle.row().wakes, instance.failedWakes])).toEqual([1, 0]);
+    // No dial again: the entries are reported and the machine stays parked until a drain wakes it.
+    await runAlarms(stub);
+    await late();
+    await runAlarms(stub);
+    await settle(stub, "parked");
+    expect(await inside(stub, (instance) => instance.failedWakes)).toBe(1);
+    // A host that dials ends the wait.
+    expect(await stub.ensureComputer("org_never_dialed")).toEqual({ status: 202 });
+    await settle(stub, "ready");
+    const socket = await connectHost("org_never_dialed");
+    await late();
+    await runAlarms(stub, 2);
+    expect((await row(stub))?.state).toBe("ready");
+    socket.close();
+  });
+});
+
 describe("computer size follows the usage plan", () => {
   it("creates a max organization's computer on the big size, and Pro's on the default", async () => {
     const max = computers().getByName("org_size_new_max");
@@ -111,7 +147,7 @@ describe("computer size follows the usage plan", () => {
     expect((await row(pro))?.size).toBe(SMALL);
   });
 
-  it("grows a computer whose organization moved to max once it is connected and idle, queueing messages meanwhile", async () => {
+  it("grows a computer whose organization moved to max once it is connected and idle", async () => {
     const ORG = "org_size_up";
     const stub = await readySmall(ORG);
     const socket = await connectHost(ORG);
@@ -133,25 +169,7 @@ describe("computer size follows the usage plan", () => {
     expect(await row(stub)).toMatchObject({ state: "resizing", size: BIG });
     expect((await stub.overview(ORG)).computer).toMatchObject({ state: "ready", vcpus: 8, memoryGiB: 32 });
 
-    // A message meanwhile: queued, and the thread told once.
-    await stub.linkSlack(ORG, { teamId: "T0SIZE", teamName: "Size", botUserId: "UBOT", botToken: "xoxb-size" });
-    const job = { eventId: "EvS1", teamId: "T0SIZE", channelId: "CSIZE", threadTs: "1.1", messageTs: "1.2", userId: "U1", text: "<@UBOT> again", mentioned: true, receivedAt: Date.now() };
-    for (const [eventId, ts] of [["EvS1", "1.2"], ["EvS2", "1.3"]] as const) {
-      await stub.acceptSlackEvent(ORG, { ...job, eventId, messageTs: ts });
-      await inside(stub, (_instance, state) => state.storage.sql.exec("UPDATE alarms SET at = 0 WHERE purpose = 'slack'"));
-      await runDurableObjectAlarm(stub);
-    }
-    // Told once (the notices table is what makes it once; the fake Slack's
-    // call log is shared with the other test file, so it is not read here).
-    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT thread_key AS t, kind FROM notices")])).toEqual([
-      { t: "CSIZE:1.1", kind: "resizing" },
-    ]);
-    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec("SELECT COUNT(*) AS n FROM dispatches WHERE state = 'pending'")][0])).toEqual({ n: 2 });
-
-    // The resize ends: the queued messages go to the host.
-    const delivered = nextMessage(socket, "deliver");
     await settle(stub, "ready");
-    expect((await delivered).msg).toMatchObject({ ts: "1.2" });
     expect((await row(stub))?.size).toBe(BIG);
     socket.close();
   });
@@ -241,5 +259,53 @@ describe("computer size follows the usage plan", () => {
     await settle(stub, "parked");
     await stub.ensureComputer(ORG);
     expect((await row(stub))?.size).toBe(SMALL);
+  });
+});
+
+describe("leftovers from an older deploy do not hold the computer busy", () => {
+  const leftoverDispatch = (stub: Stub) =>
+    inside(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        "INSERT INTO dispatches (id, runner_key, payload, state, created_at, updated_at) VALUES ('d_left', 'T0L:CL:1.1', '{}', 'pending', 0, 0)",
+      ),
+    );
+
+  it("parks an idle free computer with a leftover pending dispatch row", async () => {
+    const ORG = "org_left_dispatch_park";
+    const stub = await readySmall(ORG);
+    const socket = await connectHost(ORG);
+    await leftoverDispatch(stub);
+    await billing(stub, "base", false);
+    await inside(stub, async (instance) => {
+      instance.put("lastActivityAt", "0");
+      await instance.idleCheck();
+    });
+    expect((await row(stub))?.state).toBe("parking");
+    socket.close();
+  });
+
+  it("grows a max computer with a leftover pending dispatch row", async () => {
+    const ORG = "org_left_dispatch_size";
+    const stub = await readySmall(ORG);
+    const socket = await connectHost(ORG);
+    await leftoverDispatch(stub);
+    await billing(stub, "max");
+    await runAlarms(stub);
+    expect(await row(stub)).toMatchObject({ state: "resizing", size: BIG });
+    socket.close();
+  });
+
+  it("clears a subagents count on hello for a session the host no longer reports", async () => {
+    const ORG = "org_left_subagents";
+    const stub = await readySmall(ORG);
+    await inside(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, subagents, created_at, updated_at) VALUES ('T0SUB:CSUB:1.1', 'T0SUB', 'CSUB', '1.1', 'U1', 't', 'idle', 2, 0, 0)",
+      ),
+    );
+    const socket = await connectHost(ORG);
+    expect(await inside(stub, (instance) => instance.workload())).toEqual({ busySessions: 0 });
+    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec<{ subagents: number }>("SELECT subagents FROM sessions")][0]?.subagents)).toBe(0);
+    socket.close();
   });
 });

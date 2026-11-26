@@ -14,7 +14,7 @@
 
 import type { IncomingHttpHeaders } from 'node:http';
 import { CLOCK_SKEW_MS, WIRE_HEADERS, WIRE_SIGNATURE_TTL_MS, type WireClaims, type WireScope, verifyWire } from '../signed-header.js';
-import type { Method } from '../api/schema.js';
+import { isMethod, type Method, WRITES } from '../api/schema.js';
 import type { SessionAccess } from '../protocol.js';
 
 /** Whether the request carries an X-Wire-Auth of the Worker's shape (`<13-digit exp>.<43 base64url>`) with exp in the window; no key needed. */
@@ -36,6 +36,14 @@ export function authenticate(key: string | null, headers: IncomingHttpHeaders, n
   return { claims };
 }
 
+/**
+ * Whether the wire answers `method`. A session write (a turn, an answer, a
+ * stop, a change of settings) goes through the session's inbox over HTTP
+ * (spec 19.1), never the wire: of the writes, only `terminals.open` is the
+ * wire's own.
+ */
+export const onWire = (method: string): method is Method => isMethod(method) && (method === 'terminals.open' || !WRITES.has(method));
+
 /** The API scope a method needs (authentication.mdx "Scopes"); undefined: none. */
 export function scopeFor(method: Method | 'files.get' | 'files.put'): string | undefined {
   switch (method) {
@@ -46,16 +54,6 @@ export function scopeFor(method: Method | 'files.get' | 'files.put'): string | u
     case 'terminals.eof':
     case 'terminals.close':
       return 'terminals';
-    case 'asks.answer':
-    case 'asks.dismiss':
-      return 'asks:answer';
-    case 'sessions.update':
-    case 'sessions.interrupt':
-    case 'sessions.compact':
-    case 'sessions.suspend':
-    case 'sessions.resume':
-    case 'turns.send':
-    case 'turns.cancel':
     case 'files.put':
       return 'sessions:write';
     default:

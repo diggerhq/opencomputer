@@ -103,7 +103,14 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // The surface reads the SDK's client from source (spec 25).
+      '@opencomputer/sdk/computer': fileURLToPath(
+        new URL('../sdks/typescript/src/computer/index.ts', import.meta.url),
+      ),
     },
+    // The SDK's source imports zod (its review schema); take this app's copy, so a build
+    // needs only web/'s packages installed.
+    dedupe: ['zod'],
   },
   server: {
     port: 3000,

@@ -105,9 +105,10 @@ async function addKey(createdBy: string | null, orgID = ORG, expiresAt: number |
   const n = ++keySeq;
   const plain = `osb_perm_test_${n}_${Math.random().toString(36).slice(2)}`;
   const id = `key-${n}`;
+  // The computer's keys are minted for one session (keyPrincipal refuses one without).
   db.prepare(
-    `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, orgID, createdBy, await hashAPIKey(plain), plain.slice(0, 8), `key ${n}`, "sandbox:*", n, expiresAt);
+    `INSERT INTO api_keys (id, org_id, created_by, key_hash, key_prefix, name, scopes, created_at, expires_at, session_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, orgID, createdBy, await hashAPIKey(plain), plain.slice(0, 8), `key ${n}`, "sandbox:*", n, expiresAt, createdBy === "computer" ? "cs_0000000000000001" : null);
   return { id, plain };
 }
 

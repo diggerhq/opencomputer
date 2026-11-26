@@ -67,7 +67,7 @@ cargo build --release --locked
 | API requests | Sent under `<API URL>/api/managed-agents/computer` |
 | Login requests | Sent to `<API URL>/auth/cli/...` |
 
-`opc` uses HTTP for single reads and writes, and the WebSocket to follow a session live (the interactive screen, `attach`, `watch`, `wait`) and for `shell`.
+`opc` uses HTTP for every write and for reads, and [Live](/api/live) to follow a session (the interactive screen, `attach`, `watch`, `wait`, `-p`). Only `shell` and the interactive screen open the WebSocket to the computer.
 
 ## Commands
 

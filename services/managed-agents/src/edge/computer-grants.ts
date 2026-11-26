@@ -9,7 +9,7 @@
 import type { ComputerServiceAttachment, Connection } from "../protocol.js";
 import type { RequestIdentity } from "./auth.js";
 import type { AccountDurableObject } from "./account-do.js";
-import type { ComputerDurableObject } from "../computer/durable-object.js";
+import type { ComputerDurableObject } from "../actors/computer/durable-object.js";
 
 /** Whom a computer key acts for: its live session and that session's owner, as the gateway has them. */
 export interface ComputerGrantAudience {

@@ -1,6 +1,6 @@
 ---
 title: "Events"
-description: "A session's events are numbered by `seq` from 1 with no gaps; read them over HTTP or follow them live over WebSocket"
+description: "A session's events are numbered by `seq` from 1 with no gaps; read them over HTTP or follow them on Live"
 ---
 
 ```json
@@ -11,82 +11,28 @@ description: "A session's events are numbered by `seq` from 1 with no gaps; read
 
 ## Read a range
 
-`events.list` (`GET /sessions/{id}/events`) returns events in `seq` order. To follow a session over HTTP, loop on it with `after` and `waitMs`.
+`events.list` (`GET /sessions/{id}/events`) returns events in `seq` order. To follow a session over HTTP, read it every few seconds from the last cursor; to see events the moment they are recorded, use [Live](/api/live).
 
 ```
-GET /sessions/cs_0123456789abcdef/events?after=400&limit=100&types=turn.*,ask.opened
+GET /sessions/cs_0123456789abcdef/events?after=<cursor>&limit=100&types=turn.*,ask.opened
 ```
 
 | Param | Meaning |
 | --- | --- |
-| `after` | Return events with `seq` greater than this. Default 0, the start of the journal |
+| `after` | The `cursor` of the previous page: return the events after it. Omit to start at the beginning of the journal. A cursor is opaque: store it and send it back, never build one |
 | `limit` | 1 to 500 events. Default 100 |
 | `tailTurns` | Start at the last 1 to 50 turns instead; `earlierTurns` in the result holds the turns before them. Cannot be combined with `after` |
 | `turnId` | Only events of this turn |
 | `types` | A comma-separated list of types. A trailing `*` matches a prefix |
-| `waitMs` | When there is nothing after `after`, wait up to this long (at most 60,000) for an event |
 
-The result is `events`, `earlierTurns`, `lastSeq` (the journal's last `seq`) and `hasMore`.
-
-| `hasMore` | Next `after` |
-| --- | --- |
-| true | The `seq` of the last event returned |
-| false | `lastSeq`. With a filter, the page may be shorter than the range it covered |
-
-| Error | Cause |
-| --- | --- |
-| `409 cursor_ahead` | `after` is beyond the journal's last `seq`: the journal's epoch changed. See [Session journal](/api/overview#session-journal) |
-
-## Follow live
-
-[Attach](/api/sessions#attach) over WebSocket. Each event arrives as an `event` notification whose `params` is the event:
-
-```json
-{"jsonrpc":"2.0","method":"event","params":{"id":"ev_...","seq":413,"type":"turn.steered","...":"..."}}
-```
-
-Order on one connection:
-
-- Events of a session arrive in `seq` order, each once.
-- The response to `sessions.attach` arrives before any replayed event.
-- The response to a write arrives before any event of that session the write caused.
-
-When the whole connection closes, reconnect and attach with `after` set to the last `seq` processed. A runner starting or stopping does not interrupt the subscription.
+The result is `events`, `cursor` (after the last event returned, or the one sent when there is none), `lastSeq` (the journal's last `seq`), `hasMore`, and `earlierTurns` with `tailTurns`. Send `cursor` as the next `after`, whether or not `hasMore` is true. With a filter, the page may be shorter than the range it covered.
 
 | Error | Cause | What to do |
 | --- | --- | --- |
-| `too_far_behind` | Attach with `after` more than 10,000 events behind | Read the gap with `events.list` first, or attach with `tailTurns` |
+| `409 reset` | `after` is not a cursor of this session's events (a bare `seq` included), or its position no longer exists: past the journal's end, or the journal was rebuilt | The error carries `cursor` and may carry `seq`. Drop held events above `seq` and read on from `cursor`; with `cursor: null`, start again without `after` |
 
-### Acknowledge
+## Follow live
 
-Send `sessions.ack` notifications as events are processed:
+Subscribe to `events:<id>` on [Live](/api/live) with the last cursor. Live pushes each new range of events; a client reads over HTTP whenever a pushed range does not start at its cursor. Deltas (`deltas:<id>`) carry text and tool output as they are written: no `seq`, not stored, not replayed, and each block is followed by an event with the whole text (`message.completed`, `reasoning.completed`, `tool.completed`). Types: [API schema](/reference/api-schema#deltas).
 
-```json
-{"jsonrpc":"2.0","method":"sessions.ack","params":{"sessionId":"cs_0123456789abcdef","seq":413}}
-```
-
-The backlog of a session is its events not yet sent or, once the client has sent an ack, not yet acknowledged. When it passes 10,000 events or 8 MiB, the server detaches that session with `too_far_behind`.
-
-### Deltas
-
-An attach with `deltas: true` also receives `delta` notifications. Types: [API schema](/reference/api-schema#deltas).
-
-| Property | Detail |
-| --- | --- |
-| Content | Message and reasoning text as it is written, a tool call being prepared and its output, compaction, subagent progress |
-| Storage | No `seq`, not stored, not replayed |
-| Completeness | Each block of deltas is followed by an event with the whole text (`message.completed`, `reasoning.completed`, `tool.completed`). A client may ignore deltas |
-| Backlog | Sent only to a subscription that has been sent every event. Deltas of one block that wait are merged |
-
-### Detached
-
-When the server ends a subscription it sends `session.detached` with a `reason`:
-
-| `reason` | Cause | What to do |
-| --- | --- | --- |
-| `too_far_behind` | The backlog passed its limit | Attach again with `after` set to the last `seq` processed |
-| `access_lost` | The member no longer has access to the session | Nothing |
-| `epoch_changed` | The journal was rebuilt. The notification carries the new `logEpoch` and `epochStartSeq` | Discard events from `epochStartSeq` on and attach with `after` set to `epochStartSeq - 1` |
-| `unavailable` | The session's writer could not be reached | Attach again later |
-
-{/* Sources: computer/schema/computer-api.v1.json (Event, Delta, events.list, notifications); computer/src/api/read-methods.ts (eventsList, typeFilter); computer/src/api/hub.ts (backlog, too_far_behind, cursor_ahead, deltas to caught-up subscribers); computer/src/wire/attachment.ts (order, rewire, detach reasons); computer/src/wire/connection.ts (sessions.ack); computer/src/wire/limits.ts; computer/src/api/schema-events.ts (DELTA_DATA); computer/src/api/schema-objects.ts (Actor) */}
+{/* Sources: computer/schema/computer-api.v1.json (Event, Delta); services/managed-agents/src/http/api/session-routes.ts (events.list, reset on an unreadable cursor); services/managed-agents/src/actors/session-log/durable-object.ts (events, afterCursor); services/managed-agents/src/http/api/reply.ts (reset); services/managed-agents/src/actors/live/contract.ts; computer/src/api/schema-events.ts (DELTA_DATA); computer/src/api/schema-objects.ts (Actor) */}

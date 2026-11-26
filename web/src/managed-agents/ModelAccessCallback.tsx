@@ -14,31 +14,32 @@ import {
   MODEL_ACCESS_RETURN_TO_KEY,
 } from './byok-config'
 
-type CallbackState = 'completing' | 'failed'
+// Why the callback cannot even start, read straight from the URL.
+function callbackProblem(params: URLSearchParams): string | null {
+  const providerError = params.get('error')
+  if (providerError) return `OpenAI authorization failed: ${providerError}`
+  const state = params.get('state')
+  if (!params.get('code') || !state || !state.split('.', 1)[0])
+    return 'The OAuth callback was incomplete. Return to the project and try again.'
+  return null
+}
 
 export default function ModelAccessCallback() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const started = useRef(false)
-  const [status, setStatus] = useState<CallbackState>('completing')
-  const [message, setMessage] = useState('Completing Codex authorization…')
+  const problem = callbackProblem(searchParams)
+  const [failure, setFailure] = useState<string | null>(null)
+  const error = problem ?? failure
+  const status = error === null ? 'completing' : 'failed'
+  const message = error ?? 'Completing Codex authorization…'
 
   useEffect(() => {
-    if (started.current) return
+    if (started.current || callbackProblem(searchParams)) return
     started.current = true
-    const providerError = searchParams.get('error')
-    const code = searchParams.get('code')
-    const state = searchParams.get('state')
-    const connectionId = state?.split('.', 1)[0]
-    if (providerError || !code || !state || !connectionId) {
-      setStatus('failed')
-      setMessage(
-        providerError
-          ? `OpenAI authorization failed: ${providerError}`
-          : 'The OAuth callback was incomplete. Return to the project and try again.',
-      )
-      return
-    }
+    const code = searchParams.get('code')!
+    const state = searchParams.get('state')!
+    const connectionId = state.split('.', 1)[0]
 
     void completeManagedModelAccess(connectionId, code, state)
       .then(async () => {
@@ -68,8 +69,7 @@ export default function ModelAccessCallback() {
         void navigate(returnTo, { replace: true })
       })
       .catch((error: unknown) => {
-        setStatus('failed')
-        setMessage(
+        setFailure(
           error instanceof Error
             ? error.message
             : 'The Codex account could not be connected.',

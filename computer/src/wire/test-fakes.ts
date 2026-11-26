@@ -1,6 +1,6 @@
 // Test-only fakes for the relay's tests (relay.test.ts, files.test.ts,
-// relay.bench.test.ts): a host wire socket, an in-process writer (DialWriter),
-// a writer API socket for the real dialWriter, and a signed WebSocket client.
+// relay-telemetry.test.ts): a host wire socket, an in-process writer
+// (DialWriter) and a signed WebSocket client.
 // Never imported by the relay itself.
 //
 // Invariants: every fake answers in the documented frame shapes
@@ -12,12 +12,12 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
-import type { HostToWire, JournalDelta, JournalEvent, SessionAccess, WireToHost } from '../protocol.js';
+import type { HostToWire, SessionAccess, WireToHost } from '../protocol.js';
 import type { CallOutcome } from '../api/writer.js';
 import { mintId } from '../session-ids.js';
 import { signWire, type WireScope } from '../signed-header.js';
 import { ndjson, writeLine } from './ndjson.js';
-import type { DialWriter, SubscribeFrame, WriterHandlers, WriterLink } from './writer-client.js';
+import type { DialWriter, WriterHandlers, WriterLink } from './writer-client.js';
 
 export const KEY = 'test-wire-key-0123456789abcdef';
 
@@ -46,7 +46,6 @@ export async function fakeHost(o: { key?: string | null; access?: SessionAccess[
         if (!access.has(m.sessionId)) return void writeLine(peer, { t: 'result', id: m.id, error: { code: 'session_not_found', message: 'no', status: 404 } });
         return void writeLine(peer, { t: 'result', id: m.id, result: { socket: `/fake/${m.sessionId}.api.sock`, token: 'tok', writer: 'host', epoch: 1 } });
       }
-      if (m.t === 'resume') return void writeLine(peer, { t: 'result', id: m.id, result: { status: 'starting' } });
       writeLine(peer, { t: 'result', id: m.id, error: { code: 'internal', message: 'fake host: unhandled', status: 500 } });
     });
   });
@@ -69,44 +68,26 @@ export async function fakeHost(o: { key?: string | null; access?: SessionAccess[
 
 export const accessFor = (sessionId: string, owner = 'usr_owner', members: string[] | null = null): SessionAccess => ({ sessionId, owner, members });
 
-export function event(sessionId: string, seq: number, type = 'turn.started', data: unknown = {}): JournalEvent {
-  return { id: `ev_${String(seq).padStart(16, '0')}`, seq, createdAt: '2026-10-26T00:00:00.000Z', sessionId, turnId: null, type, actor: null, data };
-}
-
-/** One in-process writer per dial: the test drives events, deltas and call answers. */
+/** One in-process writer per dial: the test answers its calls. */
 export interface FakeWriter {
   sessionId: string;
   h: WriterHandlers;
-  subscribed: SubscribeFrame | undefined;
   calls: { method: string; params: unknown }[];
-  acks: number[];
-  paused: boolean;
   closed: boolean;
 }
 
-/** A DialWriter whose writers subscribe with `attached(sessionId)` and answer calls with `onCall`. */
-export function fakeDial(o: { lastSeq?: number; epoch?: number; onCall?: (w: FakeWriter, method: string, params: unknown) => CallOutcome | Promise<CallOutcome>; onSubscribe?: (w: FakeWriter) => void } = {}) {
+/** A DialWriter whose writers answer calls with `onCall`. */
+export function fakeDial(o: { onCall?: (w: FakeWriter, method: string, params: unknown) => CallOutcome | Promise<CallOutcome> } = {}) {
   const writers: FakeWriter[] = [];
   const dial: DialWriter = async (where, h) => {
     const sessionId = path.basename(where.socket).replace('.api.sock', '');
-    const w: FakeWriter = { sessionId, h, subscribed: undefined, calls: [], acks: [], paused: false, closed: false };
+    const w: FakeWriter = { sessionId, h, calls: [], closed: false };
     writers.push(w);
     const link: WriterLink = {
       async call(method, params) {
         w.calls.push({ method, params });
         return o.onCall ? o.onCall(w, method, params) : { result: { ok: true } };
       },
-      async subscribe(f) {
-        w.subscribed = f;
-        const lastSeq = o.lastSeq ?? 0;
-        const after = f.after ?? lastSeq;
-        // Like the writer's hub, events follow the result on a later tick.
-        if (o.onSubscribe) setImmediate(() => o.onSubscribe?.(w));
-        return { result: { session: { id: sessionId, lastSeq }, after, lastSeq, epoch: o.epoch ?? 1 } };
-      },
-      ack: (seq) => void w.acks.push(seq),
-      pause: () => void (w.paused = true),
-      resume: () => void (w.paused = false),
       close: () => void (w.closed = true),
       get closed() {
         return w.closed;
@@ -114,38 +95,7 @@ export function fakeDial(o: { lastSeq?: number; epoch?: number; onCall?: (w: Fak
     };
     return link;
   };
-  return { dial, writers, last: (sid: string) => [...writers].reverse().find((w) => w.sessionId === sid && w.subscribed) };
-}
-
-/** A writer's API socket (ApiWriterFrame), for the real dialWriter: subscribe answers, then `emit` writes events. */
-export async function fakeWriterSocket() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'wire-writer-'));
-  const socket = path.join(dir, 'cs.api.sock');
-  let sub: net.Socket | undefined;
-  const server = net.createServer((s) => {
-    s.setNoDelay?.(true);
-    s.on('error', () => {});
-    ndjson(s, 1 << 22, (raw) => {
-      const m = raw as { t: string; id?: string; after?: number };
-      if (m.t === 'subscribe') {
-        sub = s;
-        writeLine(s, { t: 'result', id: m.id, result: { session: { lastSeq: 0 }, after: m.after ?? 0, lastSeq: 0, epoch: 1 } });
-      } else if (m.t === 'call') writeLine(s, { t: 'result', id: m.id, result: {} });
-    });
-  });
-  await new Promise<void>((r) => server.listen(socket, () => r()));
-  return {
-    socket,
-    emit: (e: JournalEvent | { delta: JournalDelta }) => (sub ? writeLine(sub, 'delta' in e ? { t: 'delta', delta: e.delta } : { t: 'event', event: e }) : false),
-    get subscribed() {
-      return sub !== undefined;
-    },
-    async close() {
-      sub?.destroy();
-      await new Promise<void>((r) => server.close(() => r()));
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
+  return { dial, writers };
 }
 
 /** A frame as the client parsed it: JSON from the wire, read loosely by tests (the edge). */

@@ -15,8 +15,8 @@
 //      OC_STACK_AUTUMN_WEBHOOK_SECRET (optional, Autumn sandbox), OC_STACK_HOME (default ~/.oc-stacks).
 //
 // Reads/writes $OC_STACK_HOME/<name>/stack.json and secrets.json shared with
-// the blue script (OC_MANAGED_AGENTS_SECRET, OC_MANAGED_CRED_HMAC_SECRET and
-// BLUE_USAGE_HMAC_SECRET must match on both sides). `seed-key` writes the
+// the blue script (OC_MANAGED_AGENTS_SECRET, OC_MANAGED_CRED_HMAC_SECRET
+// and BLUE_USAGE_HMAC_SECRET must match on both sides). `seed-key` writes the
 // CLI API key to $OC_STACK_HOME/<name>/api-key (mode 0600) — never to stdout.
 // `up` registers <apiEdgeUrl>/auth/callback as a redirect URI on the staging
 // WorkOS app (Management API) and `destroy` removes it. `add-member` pre-creates

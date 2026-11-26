@@ -185,7 +185,7 @@ With a session, blocks until it has nothing left to do: no turn running or queue
 
 With several ids, `--all` returns when every one is done and `--any` when the first is. `--json` prints the [Result](/api/reference/objects#result) of the last turn, and with several ids one Result per line, as each is done. Without `--json`, the last turn's final message, and with several ids each one under a `── <session id>` line.
 
-With several ids, a session that is lost, because attaching to it was refused or the server stopped sending it, is reported on its own and the others go on: with `--json`, as a Result line with `subtype` `error` and its `sessionId`; without, as `opc: <id>: <message>` on standard error. With one id, a lost session fails the command, with an [error object](/reference/exit-codes#error-objects). Exit codes:
+With several ids, a session that is lost, because the server refused it or stopped sending it, is reported on its own and the others go on: with `--json`, as a Result line with `subtype` `error` and its `sessionId`; without, as `opc: <id>: <message>` on standard error. With one id, a lost session fails the command, with an [error object](/reference/exit-codes#error-objects). Exit codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -196,7 +196,7 @@ With several ids, a session that is lost, because attaching to it was refused or
 
 With `--all`, `0` when every one completed, else `5` when any is waiting, else `1`, which includes a lost session. With `--any`, the code of the one that returned; a lost session does not count as returning. A session that is already idle returns at once with the status of its last turn.
 
-`opc wait` follows the session over your computer's connection, so it returns the moment the turn ends. A program without `opc` waits the same way with one long-poll: [get the turn](/api/http/turns#get-a-turn) with `waitMs`, and repeat while it has not ended.
+`opc wait` follows the session on [Live](https://docs.opencomputer.dev/api/live) and reads its events over HTTP, so it returns the moment the turn ends. A program without `opc` does the same, or [gets the turn](/api/http/turns#get-a-turn) every few seconds until it has ended.
 
 ### Background subagents
 
@@ -212,19 +212,19 @@ opc wait tn_4m8q2x7c1v9b --wait-subagents --json | jq -r '.subagents[].id' |
 ```bash
 opc watch cs_7f3a9k2m4q8r1t6v
 opc watch cs_7f3a9k2m4q8r1t6v --output-format stream-json | jq -c 'select(.type == "tool.started")'
-opc watch cs_7f3a9k2m4q8r1t6v --after 1184 --follow --output-format stream-json
+opc watch cs_7f3a9k2m4q8r1t6v --after "$cursor" --follow --output-format stream-json
 ```
 
-Prints a session's events as they happen, read-only, and exits as `opc wait` does. `--after <seq>` prints the recorded events after that `seq` first, then live ones, with no gap and no repeat; `--from-start` is `--after 0`. `--follow` keeps watching across turns until interrupted. `--output-format json` prints the Result of the last turn it saw end. Several ids are followed over one connection; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
+Prints a session's events as they happen, read-only, and exits as `opc wait` does. `--after <cursor>` prints the recorded events after that cursor first, then live ones, with no gap and no repeat; `--from-start` prints the whole history first. A cursor is an opaque string: `opc watch --output-format stream-json` prints `{"type": "cursor", "sessionId", "cursor"}` lines and `opc log --json` returns `cursor`; pass one back unchanged. `--follow` keeps watching across turns until interrupted. `--output-format json` prints the Result of the last turn it saw end. Several ids are followed over one connection; a lost one is reported on its own, in JSON as `{"type": "error", "sessionId": …, "error": {…}}`, and the others go on.
 
 ## Read the history: `opc log`
 
 ```bash
 opc log cs_7f3a9k2m4q8r1t6v
-opc log cs_7f3a9k2m4q8r1t6v --after 1184 --types 'tool.*' --output-format stream-json
+opc log cs_7f3a9k2m4q8r1t6v --after "$cursor" --types 'tool.*' --output-format stream-json
 ```
 
-Prints what happened and exits. The default is one line per message, tool call and answer; `--details` prints everything. `--after <seq>`, `--turn <tn_…>` and `--types <glob>` narrow it. `--output-format stream-json` prints the recorded [events](/api/reference/events), one per line, and `json` prints `{ events, lastSeq, hasMore }`.
+Prints what happened and exits. The default is one line per message, tool call and answer; `--details` prints everything. `--after <cursor>`, `--turn <tn_…>` and `--types <glob>` narrow it. `--output-format stream-json` prints the recorded [events](/api/reference/events), one per line, and `json` prints `{ events, lastSeq, hasMore, cursor }`.
 
 `opc log`, `opc watch` and `opc wait` never resume a suspended session: they read the log as it is.
 
@@ -258,7 +258,7 @@ opc ls --metadata job=nightly --metadata run=1842 --json
 
 ## Running many
 
-Each `opc` process uses one HTTP/2 connection to OpenComputer's API. `opc -p`, `opc wait`, `opc watch` and `opc a` also open one WebSocket connection to your computer; the other commands do not. `opc wait --any`, `opc wait --all` and `opc watch` with several ids follow up to 20 sessions over one connection. Your computer accepts up to 50 connections per member, so to follow more sessions than that, wait for them in groups.
+Each `opc` process uses one HTTP/2 connection to OpenComputer's API. `opc -p`, `opc wait`, `opc watch` and `opc a` also open one [Live](https://docs.opencomputer.dev/api/live) socket to watch sessions, which follows up to 32 sessions; to follow more than that, wait for them in groups. Only `opc shell` and the interactive screen open a WebSocket to your computer, which accepts up to 50 connections per member.
 
 Any number of `opc` processes can run at once on one machine. They share `opc`'s cache files safely, with file locks.
 
