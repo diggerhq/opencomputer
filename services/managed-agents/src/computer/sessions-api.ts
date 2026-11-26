@@ -881,7 +881,7 @@ export class ComputerSessionsApi {
       const row = this.visible(caller, request.value.sessionIds![0]!);
       if (!row) return notFound();
       if (!mayOpenTerminal(row, caller)) {
-        return { status: 403, error: { code: "forbidden", message: "Only the session's owner and the people it is shared with by name can open a terminal.", reason: "terminal_owner_only" } };
+        return { status: 403, error: { code: "forbidden", message: "Only the session's owner or someone it is shared with by name can open a terminal.", reason: "terminal_owner_only" } };
       }
     }
     const now = this.now();

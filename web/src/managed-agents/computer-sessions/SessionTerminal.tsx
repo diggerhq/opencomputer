@@ -29,7 +29,7 @@ const WAKE_RETRY_MS = 3_000
 function ticketError(e: unknown): Error {
   if (e instanceof ApiError && e.status === 403)
     return new Error(
-      "Only the session's owner and the people it is shared with by name can open a terminal.",
+      "Only the session's owner or someone it is shared with by name can open a terminal.",
     )
   if (e instanceof ApiError && e.status === 404)
     return new Error('This session does not exist or is not shared with you.')

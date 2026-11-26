@@ -131,7 +131,7 @@ it('explains an idle, lost or refused terminal and reconnects', async () => {
   for (const message of [
     'Closed after 15 minutes without activity.',
     'Closed: you may no longer open a terminal in this session.',
-    "Only the session's owner and the people it is shared with by name can open a terminal.",
+    "Only the session's owner or someone it is shared with by name can open a terminal.",
   ]) {
     state({ kind: message.startsWith('Only') ? 'error' : 'ended', message })
     expect(container.textContent).toContain(message)
