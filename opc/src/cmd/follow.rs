@@ -12,6 +12,7 @@ use crate::api::result;
 use crate::api::types::{Delta, Event, Subagent, is_ended_status};
 use crate::cli::OnAsk;
 use crate::error::{Error, Result};
+use crate::http::{Http, session_path};
 use crate::wire::{AttachInfo, WireEvent, WireHandle};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -218,6 +219,8 @@ impl SessionState {
 }
 
 pub struct Follower {
+    /// Session writes: over HTTP, through the session's inbox, never the wire.
+    pub http: Http,
     pub wire: WireHandle,
     rx: UnboundedReceiver<WireEvent>,
     pub states: HashMap<String, SessionState>,
@@ -226,9 +229,9 @@ pub struct Follower {
 
 impl Follower {
     /// `from_start`: the sessions are read from the start of their logs.
-    pub fn new(wire: WireHandle, rx: UnboundedReceiver<WireEvent>, sessions: &[(String, bool)]) -> Follower {
+    pub fn new(http: Http, wire: WireHandle, rx: UnboundedReceiver<WireEvent>, sessions: &[(String, bool)]) -> Follower {
         let states = sessions.iter().map(|(id, from_start)| (id.clone(), SessionState::new(id, *from_start))).collect();
-        Follower { wire, rx, states, connected_once: false }
+        Follower { http, wire, rx, states, connected_once: false }
     }
 
     pub fn state(&self, id: &str) -> Option<&SessionState> {
@@ -568,10 +571,8 @@ impl Tracker {
             OnAsk::Wait => {}
             OnAsk::Dismiss => {
                 if self.dismissed.insert(ask_id.clone()) {
-                    let r = f
-                        .wire
-                        .call("asks.dismiss", json!({"sessionId": self.session_id, "askId": ask_id, "message": UNATTENDED}))
-                        .await;
+                    let path = session_path(&self.session_id, &format!("/asks/{}/dismiss", crate::net::encode(&ask_id)));
+                    let r = f.http.post(&path, &json!({"message": UNATTENDED}), None).await;
                     match r {
                         Ok(_) => {}
                         // Someone else closed it first: carry on.
