@@ -28,9 +28,10 @@
 #     oc-modelproxy (socket-activated), the metadata block, cgroup limits
 #   - for the gateway's compose stack (selfhost/compose.yaml, not started here):
 #     podman-compose in /opt/podman-compose (Ubuntu's 1.0.6 ignores compose
-#     profiles) and user oc-gateway (rootless Podman, lingering,
-#     podman-restart.service), so the stack runs apart from the sessions and
-#     comes back after a reboot
+#     profiles) and user oc-gateway (home /var/lib/oc-gateway, rootless Podman,
+#     lingering, podman-restart.service), so the stack runs apart from the
+#     sessions and comes back after a reboot; its copy of the repository goes
+#     in /var/lib/oc-gateway/opencomputer (empty here)
 #
 # Inputs (environment):
 #   SP_IMAGE        a session image to run instead of the one this checkout names,
@@ -106,6 +107,7 @@ GO_SERIES="${GO_SERIES:-1.27}"
 NODE_MAJOR="${NODE_MAJOR:-24}"
 GATEWAY_USER="${GATEWAY_USER:-oc-gateway}"
 GATEWAY_HOME_DEFAULT=/var/lib/oc-gateway
+GATEWAY_DIR_NAME=opencomputer   # the stack's copy: $GATEWAY_HOME/opencomputer/{selfhost,computer}
 PODMAN_COMPOSE_VERSION="${PODMAN_COMPOSE_VERSION:-1.6.0}"
 PODMAN_COMPOSE_MIN=1.1.0
 COMPOSE_VENV=/opt/podman-compose
@@ -265,7 +267,7 @@ Plan (nothing below has run):
   2. Node.js $NODE_MAJOR (nodejs.org, checksum-verified) -> /usr/local; Go $GO_SERIES (go.dev) -> /usr/local/go;
      podman-compose $PODMAN_COMPOSE_VERSION (PyPI) -> $COMPOSE_VENV, /usr/local/bin/podman-compose
   3. $DATA directory; user $AGENT_USER (uid $AGENT_UID, home $AGENT_HOME, no sudo);
-     user $GATEWAY_USER for the compose stack (home $GATEWAY_HOME, subuid/subgid, no sudo)
+     user $GATEWAY_USER for the compose stack (home $GATEWAY_HOME, stack dir $GATEWAY_HOME/$GATEWAY_DIR_NAME, subuid/subgid, no sudo)
   4. release $RELEASE from $REPO_ROOT (git archive HEAD:computer, npm ci, runner bundle, oc-modelproxy build)
   5. rootless Podman for $AGENT_USER (computer/deploy/vm/sandbox.sh install): podman crun passt uidmap slirp4netns,
      /etc/subuid and /etc/subgid, lingering, storage $DATA/containers/storage
@@ -275,7 +277,7 @@ Plan (nothing below has run):
   8. systemd: run dirs, /tmp ageing, user@$AGENT_UID drop-in, cgroup limits (limits.sh), oc-modelproxy (modelproxy.sh),
      slack-presence-imds-block.service, $UNIT (EnvironmentFile=$SELFHOST_ENV)
   9. user $HOST_USER, sudoers, SP_LAUNCH=podman (computer/deploy/vm/sp-host.sh new + apply)
-     $GATEWAY_USER: lingering, podman-restart.service (restart policies always and unless-stopped) enabled
+     $GATEWAY_USER: lingering, podman-restart.service enabled (starts restart: always containers at boot)
  10. $( [[ -n "$(env_value SP_HOST_TOKEN)" ]] && echo "start $UNIT ($SELFHOST_ENV has a token)" || echo "$UNIT installed, NOT started: $SELFHOST_ENV has no SP_HOST_TOKEN yet" )
 Not installed: Docker, cloudflared, Claude Code CLI, gh, codex, playwright, a self-update timer.
 Not started: the compose stack (selfhost/compose.yaml, as $GATEWAY_USER).
@@ -366,6 +368,8 @@ gateway_user() {
   fi
   GATEWAY_HOME="$(getent passwd "$GATEWAY_USER" | cut -d: -f6)"
   chmod 0750 "$GATEWAY_HOME"
+  # Where the operator copies selfhost/ and computer/ for compose (docs/self-hosting/single-vm.mdx).
+  install -d -m 0750 -o "$GATEWAY_USER" -g "$(id -gn "$GATEWAY_USER")" "$GATEWAY_HOME/$GATEWAY_DIR_NAME"
   local g f
   for g in sudo admin adm lxd docker "$AGENT_USER" "$HOST_USER"; do gpasswd -d "$GATEWAY_USER" "$g" >/dev/null 2>&1 || true; done
   # A range of its own, above every other: sandbox.sh refuses an agent range that overlaps another user's.
@@ -381,27 +385,12 @@ gateway_user() {
 
 gateway_units() {
   log "lingering and podman-restart for $GATEWAY_USER"
-  local uid podman dir
+  local uid
   uid="$(id -u "$GATEWAY_USER")"
-  podman="$(command -v podman)"
   loginctl enable-linger "$GATEWAY_USER"
   systemctl start "user@$uid.service"
-  # Ubuntu 24.04's podman-restart (Podman 4.9) starts only restart-policy=always;
-  # compose's `unless-stopped` needs the second filter (same-key filters are ORed).
-  dir="$GATEWAY_HOME/.config/systemd/user/podman-restart.service.d"
-  install -d -m 0755 -o "$GATEWAY_USER" -g "$(id -gn "$GATEWAY_USER")" \
-    "$GATEWAY_HOME/.config" "$GATEWAY_HOME/.config/systemd" "$GATEWAY_HOME/.config/systemd/user" "$dir"
-  cat > "$dir/10-unless-stopped.conf" <<EOF
-# Written by selfhost/host-install.sh: start containers with restart policy
-# unless-stopped at boot too, not only always.
-[Service]
-ExecStart=
-ExecStart=$podman \$LOGGING start --all --filter restart-policy=always --filter restart-policy=unless-stopped
-ExecStop=
-ExecStop=/bin/sh -c '$podman \$LOGGING stop \$($podman container ls --filter restart-policy=always --filter restart-policy=unless-stopped -q)'
-EOF
-  chown "$GATEWAY_USER:$(id -gn "$GATEWAY_USER")" "$dir/10-unless-stopped.conf"
-  as_gateway systemctl --user daemon-reload
+  # Ubuntu 24.04's podman-restart (Podman 4.9) starts only restart-policy=always
+  # containers at boot, which is what compose.yaml uses.
   as_gateway systemctl --user enable -q podman-restart.service
   as_gateway systemctl --user is-enabled -q podman-restart.service || die "podman-restart.service is not enabled for $GATEWAY_USER"
 }
@@ -611,7 +600,7 @@ install_all() {
   gateway_units
   start_host
   log "done: release $SHA, image $IMAGE, $(node --version), podman $(podman --version | awk '{print $3}'), podman-compose $PODMAN_COMPOSE_VERSION"
-  echo "The compose stack is $GATEWAY_USER's: copy selfhost/ where $GATEWAY_USER can read it, then as $GATEWAY_USER: podman compose up -d (selfhost/CONTRACT.md)"
+  echo "The compose stack is $GATEWAY_USER's: copy selfhost/ and computer/ to $GATEWAY_HOME/$GATEWAY_DIR_NAME, then as $GATEWAY_USER, from $GATEWAY_HOME/$GATEWAY_DIR_NAME/selfhost: podman compose up -d (selfhost/CONTRACT.md)"
 }
 
 # ------------------------------------------------------------------ uninstall
@@ -680,11 +669,9 @@ uninstall() {
 
 # --purge: the compose stack's user, with the stack's containers and volumes
 # (the gateway's database), only if this script made the user; an operator's
-# own account keeps everything but the podman-restart drop-in.
+# own account keeps everything.
 purge_gateway() {
   id "$GATEWAY_USER" >/dev/null 2>&1 || return 0
-  GATEWAY_HOME="$(getent passwd "$GATEWAY_USER" | cut -d: -f6)"
-  run rm -rf "$GATEWAY_HOME/.config/systemd/user/podman-restart.service.d/10-unless-stopped.conf"
   if [[ "$(cat "$SELFHOST_ETC/gateway-user-created" 2>/dev/null)" != "$GATEWAY_USER" ]]; then
     echo "kept: user $GATEWAY_USER (not made by this script) and its containers"
     return 0

@@ -7,7 +7,7 @@ One VM runs two things:
 - **The host agent and its sessions**: systemd services and rootless Podman, set up by
   `selfhost/host-install.sh` (stream A, this directory).
 
-This file is everything one side assumes about the other. Unmarked facts come from the code, with the file named. Anything marked **PROPOSED** is a choice made here that the code does not fix yet; stream B should match it or change it here. The names below were checked against stream B's `selfhost/compose.yaml` and `selfhost/.env.example` (PR #1203).
+This file is everything one side assumes about the other. Unmarked facts come from the code, with the file named. Anything marked **PROPOSED** is a choice made here that the code does not fix yet; stream B should match it or change it here. The names below were checked against stream B's `selfhost/compose.yaml`, `selfhost/.env.example` and `docs/self-hosting/single-vm.mdx` (PR #1203 at 9d75f9c9).
 
 ## 1. The connection
 
@@ -39,7 +39,7 @@ The gateway's `/setup` "Host" step prints `SP_GATEWAY_URL=<SP_ORIGIN>`, which is
 **PROPOSED flow (one token, generated once on the VM):**
 
 1. stream B's setup step (or the operator) runs `openssl rand -hex 32` once;
-2. it writes the value into compose's `selfhost/.env` as `SP_HOST_TOKENS=<value>`;
+2. it writes the value into `/var/lib/oc-gateway/opencomputer/selfhost/.env` as `SP_HOST_TOKENS=<value>`;
 3. it writes the same value into `/etc/opencomputer/selfhost.env` as `SP_HOST_TOKEN=<value>`;
 4. it runs `sudo selfhost/host-install.sh` (or `systemctl restart slack-presence-host`).
 
@@ -120,7 +120,8 @@ The VM's firewall needs no inbound port besides SSH.
 | `/data/state`, `/data/journals` | sp-host | host identity, gateway definition, sandbox records; session journals |
 | `/run/slack-presence` | sp-host:agent | runner sockets (tmpfiles) |
 | `/run/oc-modelproxy/{api,control}.sock` | modelproxy | sessions' model socket (group agent); host's control socket (group sp-host) |
-| gateway volume, mounted at `/data` in the container | node (entrypoint chowns) | `gateway.db`. Named volume `gateway-data` **PROPOSED**. It is not the host's `/data`; never bind the host's `/data` into the gateway |
+| gateway volume, mounted at `/data` in the container | node (entrypoint chowns) | `gateway.db`. Named volume `gateway-data`, in `oc-gateway`'s Podman storage. It is not the host's `/data`; never bind the host's `/data` into the gateway |
+| `/var/lib/oc-gateway/opencomputer/{selfhost,computer}` | oc-gateway | the compose stack's copy of the repository; `selfhost/.env` holds the gateway's secrets (0600) |
 
 ## 6. Users
 
@@ -129,7 +130,7 @@ The VM's firewall needs no inbound port besides SSH.
 | `agent` | 1500 (fixed: the image and `podman-args.ts` use 1500) | session containers, rootless Podman. Has subuid/subgid, lingering, no sudo, never in group docker |
 | `sp-host` | system | the host agent. May run commands as `agent` (sudoers); cannot read `selfhost.env` (systemd passes it in) |
 | `modelproxy` | system | oc-modelproxy |
-| `oc-gateway` (`GATEWAY_USER`) | system, made by `host-install.sh` | the compose stack: rootless Podman of its own, subuid/subgid above every other range, lingering, `podman-restart.service` enabled. No sudo, not in groups `agent` or `sp-host`. An existing login user may be named instead; never `agent`, `sp-host` or root **PROPOSED** |
+| `oc-gateway` (`GATEWAY_USER`) | system, made by `host-install.sh`, home `/var/lib/oc-gateway` (0750) | the compose stack: rootless Podman of its own, subuid/subgid above every other range, lingering, `podman-restart.service` enabled. No sudo, not in groups `agent` or `sp-host`. An existing login user may be named instead; never `agent`, `sp-host` or root |
 | `node` | in the container | the gateway |
 
 The stack must not run as `agent`. Sessions run tools as `agent` with no permission prompts, and as `agent`, `podman inspect` would show the gateway's environment: every secret it holds.
@@ -139,12 +140,12 @@ The stack must not run as `agent`. Sessions run tools as `agent` with no permiss
 | | |
 |---|---|
 | Compose | `podman-compose` 1.6.0 (`PODMAN_COMPOSE_VERSION`, refused below 1.1.0) in a venv at `/opt/podman-compose`, linked at `/usr/local/bin/podman-compose`, ahead of Ubuntu's 1.0.6 on PATH (1.0.6 ignores `profiles:`, so the tunnel services would not start). `podman compose` runs it. Docker Compose v2 reads the same file, but this script installs no Docker. |
-| Reboot | `podman-restart.service` (user unit of `oc-gateway`, lingering) starts the stack's containers at boot. Ubuntu 24.04's (Podman 4.9.3) starts only `restart-policy=always`; `host-install.sh` adds a drop-in so that `unless-stopped`, which #1203's `compose.yaml` uses, comes back too. |
-| Where compose runs | as `oc-gateway`, from a copy of `selfhost/` it can read (a checkout under another user's 0750 home is not readable), with `.env` owned by it, mode 0600 **PROPOSED** |
+| Reboot | `podman-restart.service` (user unit of `oc-gateway`, lingering) starts the stack's containers at boot. Ubuntu 24.04's (Podman 4.9.3) starts only `restart-policy=always`, so every service in `compose.yaml` uses `restart: always`; `unless-stopped` would not come back. Lingering also gives Podman the user session it needs for healthchecks. |
+| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost`: the operator copies the checkout's `selfhost/` and `computer/` (compose builds `../computer`) into `/var/lib/oc-gateway/opencomputer`, owned by `oc-gateway`. `host-install.sh` creates that directory empty (0750). `.env` there is `oc-gateway`'s, mode 0600. |
 
 ## 8. Order of start
 
 1. `host-install.sh` installs everything. Without a token the host is installed but stopped.
-2. The gateway container starts: `podman compose up -d` as `oc-gateway` (stream B).
+2. The gateway container starts: `podman compose up -d` as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost` (stream B).
 3. The token goes into both places (§2), then the host starts or restarts. Until the gateway answers, the host retries on its own (`Restart=always`, and the link reconnects). Either side can start first.
 4. Check: `curl -s 127.0.0.1:8080/healthz` shows `"hosts":1`.
