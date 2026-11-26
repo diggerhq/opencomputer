@@ -2753,6 +2753,7 @@ export function isGrantRoute(method: string, suffix: string): boolean {
   }
   return (
     /^\/projects\/[^/]+\/service-connections$/.test(suffix) ||
+    suffix === "/computer/service-connections" ||
     /^\/(?:projects\/[^/]+\/)?model-access(?:\/|$)/.test(suffix) ||
     isLinearRouteSuffix(suffix) ||
     /^\/channels(?:\/|$)/.test(suffix) ||

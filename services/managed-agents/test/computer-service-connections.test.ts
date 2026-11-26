@@ -125,11 +125,40 @@ describe("computer service attachments", () => {
     const listed = (await (await call(person("carol"), "GET")).json()) as { attachments: Array<{ connectionId: string }> };
     expect(listed.attachments.map((g) => g.connectionId).sort()).toEqual(["route-alice", "route-bob"]);
 
-    expect((await call(person("carol"), "DELETE", { connectionId: "route-bob" })).status).toBe(404);
+    expect((await call(person("carol"), "DELETE", { connectionId: "route-bob", scope: "user", subject: "U_BOB" })).status).toBe(404);
     expect((await call(person("carol"), "DELETE", { connectionId: "route-alice", scope: "nobody" })).status).toBe(400);
     expect((await call(person("bob"), "DELETE", { connectionId: "route-bob", scope: "user", subject: "U_BOB" })).status).toBe(204);
-    expect((await call(person("carol", "admin"), "DELETE", { connectionId: "route-alice" })).status).toBe(204);
-    expect((await call(person("carol", "admin"), "DELETE", { connectionId: "route-alice" })).status).toBe(404);
+    expect((await call(person("carol", "admin"), "DELETE", { connectionId: "route-alice", scope: "everyone" })).status).toBe(204);
+    expect((await call(person("carol", "admin"), "DELETE", { connectionId: "route-alice", scope: "everyone" })).status).toBe(404);
+  });
+
+  it("revokes only the grant it names, never all of a connection's grants", async () => {
+    await linear("revoke-one", "dana");
+    const a = account();
+    await a.grantComputerServiceConnection({ connectionId: "revoke-one", scope: "everyone", subject: "", grantedBy: "dana" });
+    await a.grantComputerServiceConnection({ connectionId: "revoke-one", scope: "user", subject: "U_DANA", grantedBy: "U_DANA" });
+    await a.grantComputerServiceConnection({ connectionId: "revoke-one", scope: "session", subject: "T1:C5:5.1", grantedBy: "U_DANA" });
+    await a.grantComputerServiceConnection({ connectionId: "revoke-one", scope: "session", subject: "T1:C5:5.2", grantedBy: "U_DANA" });
+    const left = async () =>
+      (await a.listComputerServiceAttachments("linear"))
+        .filter((g: ComputerServiceAttachment) => g.connectionId === "revoke-one")
+        .map((g: ComputerServiceAttachment) => `${g.scope}:${g.subject}`);
+
+    // No scope, or a scope without its subject, names no grant: nothing is revoked.
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one" })).status).toBe(400);
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "session" })).status).toBe(400);
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "user", subject: "" })).status).toBe(400);
+    expect(await left()).toEqual(["everyone:", "session:T1:C5:5.1", "session:T1:C5:5.2", "user:U_DANA"]);
+
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "session", subject: "T1:C5:5.1" })).status).toBe(204);
+    expect(await left()).toEqual(["everyone:", "session:T1:C5:5.2", "user:U_DANA"]);
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "user", subject: "U_DANA" })).status).toBe(204);
+    expect(await left()).toEqual(["everyone:", "session:T1:C5:5.2"]);
+    // `everyone` has no subject; one sent is ignored, so it cannot widen the match.
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "everyone", subject: "T1:C5:5.2" })).status).toBe(204);
+    expect(await left()).toEqual(["session:T1:C5:5.2"]);
+    expect((await call(person("dana"), "DELETE", { connectionId: "revoke-one", scope: "session", subject: "T1:C5:5.1" })).status).toBe(404);
+    await a.revokeComputerServiceConnection({ connectionId: "revoke-one" });
   });
 
   it("refuses the computer, project keys and other routes", async () => {

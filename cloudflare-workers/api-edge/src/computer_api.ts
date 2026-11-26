@@ -77,6 +77,12 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["PUT", "DELETE"]),
     pattern: route(`/(?:sessions/${SEG}|me|organization)/secrets/${SEG}`),
   },
+  // Connections granted to the computer (serverless-agents-ws work 080):
+  // people list, grant and revoke; computer keys only list (isGrantRoute).
+  {
+    methods: new Set(["GET", "POST", "DELETE"]),
+    pattern: route("/service-connections"),
+  },
   // The Work API (work tracking tech design 3.10).
   { methods: new Set(["GET", "PUT"]), pattern: route("/work/repository") },
   { methods: new Set(["GET"]), pattern: route("/work/repositories") },

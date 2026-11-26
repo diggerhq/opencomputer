@@ -251,6 +251,9 @@ describe("computer API allowlist", () => {
     ["DELETE", "/computer/sessions/cs_01h/secrets/API_KEY"],
     ["DELETE", "/computer/me/secrets/API_KEY"],
     ["PUT", "/computer/organization/secrets/API_KEY"],
+    ["GET", "/computer/service-connections"],
+    ["POST", "/computer/service-connections"],
+    ["DELETE", "/computer/service-connections"],
     ["GET", "/computer/work/repository"],
     ["PUT", "/computer/work/repository"],
     ["GET", "/computer/work/repositories"],
@@ -279,6 +282,7 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/a%2Fb"],
     ["GET", "/computer/sessions/cs_01h/unknown"],
     ["POST", "/computer/slack/install"],
+    ["PUT", "/computer/service-connections"],
     ["PUT", "/computer/settings"],
     ["GET", "/computer/settings/apiAccessDefault"],
     // Close and Reopen come with build step 5.

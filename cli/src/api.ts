@@ -133,6 +133,21 @@ export interface ProjectServiceAttachment {
   updatedAt: string;
 }
 
+/** A connection granted to the organization's computer (work 080). */
+export interface ComputerServiceAttachment {
+  service: string;
+  provider: string;
+  label: string;
+  connectionId: string;
+  connection: ServiceConnection;
+  /** `session` (one Slack thread), `user` (one Slack user's threads) or `everyone`. */
+  scope: "session" | "user" | "everyone";
+  subject: string;
+  grantedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ModelAccessConnection {
   id: string;
   organizationId: string;
@@ -965,6 +980,66 @@ export class OpenComputerClient {
               },
             }
           : {}),
+      },
+    );
+  }
+
+  async computerServiceConnections(): Promise<ComputerServiceAttachment[]> {
+    const result = await this.request<{
+      attachments: ComputerServiceAttachment[];
+    }>("/api/managed-agents/computer/service-connections");
+    return result.attachments ?? [];
+  }
+
+  /** Grants one of your connections to everyone on the computer (admins only). */
+  grantComputerServiceConnection(connectionId: string) {
+    return this.request<ComputerServiceAttachment>(
+      "/api/managed-agents/computer/service-connections",
+      { method: "POST", body: JSON.stringify({ connectionId }) },
+    );
+  }
+
+  /**
+   * Calls a service through a connection, as the connections route proxies
+   * it: the answer is the provider's response as JSON. On the computer, only
+   * granted connections answer.
+   */
+  connectionFetch(input: {
+    service: string;
+    path: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    label?: string;
+  }) {
+    const provider =
+      input.service === "linear" || input.service === "github"
+        ? input.service
+        : "google";
+    return this.request<unknown>(
+      `/api/managed-agents/connections/${provider}/fetch`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  /**
+   * Revokes one grant of a connection to the computer, named by its scope
+   * and subject (the session key or Slack user ID; none for `everyone`).
+   * The connection's other grants stay.
+   */
+  revokeComputerServiceConnection(
+    connectionId: string,
+    grant: { scope: ComputerServiceAttachment["scope"]; subject?: string },
+  ) {
+    return this.request<void>(
+      "/api/managed-agents/computer/service-connections",
+      {
+        method: "DELETE",
+        body: JSON.stringify({
+          connectionId,
+          scope: grant.scope,
+          ...(grant.scope === "everyone" ? {} : { subject: grant.subject }),
+        }),
       },
     );
   }

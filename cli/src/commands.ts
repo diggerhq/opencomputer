@@ -4,6 +4,7 @@ import {
   type ManagedAgentEvent,
   type ManagedAgentLog,
   type ManagedGitHubInstallation,
+  type ComputerServiceAttachment,
   type ManagedGitHubStatus,
   type ManagedSessionSnapshot,
   type ManagedSessionSummary,
@@ -209,6 +210,11 @@ function flag(args: string[], name: string): boolean {
   if (index < 0) return false;
   args.splice(index, 1);
   return true;
+}
+
+/** The `connection revoke` flag that names one grant to the computer. */
+function grantFlag(scope: ComputerServiceAttachment["scope"], subject: string): string {
+  return scope === "everyone" ? "--everyone" : `--${scope} ${subject}`;
 }
 
 function option(args: string[], name: string): string | undefined {
@@ -2194,6 +2200,137 @@ export async function runCommand(
       return;
     }
 
+    // The organization's computer (work 080): Slack threads use only the
+    // connections people grant it. From here, an admin grants their own
+    // connection to everyone; thread and personal grants are made in Slack.
+    if (action === "grants") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const attachments = await client.computerServiceConnections();
+      if (globals.json) {
+        printJSON(attachments);
+        return;
+      }
+      if (!attachments.length) {
+        process.stdout.write("No connections are granted to the computer.\n");
+        return;
+      }
+      for (const attachment of attachments) {
+        const audience =
+          attachment.scope === "everyone"
+            ? "everyone"
+            : `${attachment.scope} ${attachment.subject}`;
+        process.stdout.write(
+          `${attachment.label.padEnd(18)} ${attachment.service.padEnd(8)} ` +
+            `${audience.padEnd(26)} ${attachment.connectionId}\n`,
+        );
+      }
+      return;
+    }
+
+    if (action === "grant" || action === "revoke") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error(
+          action === "grant"
+            ? "Use `opencomputer connection grant <alias|connection-id>`"
+            : "Use `opencomputer connection revoke <alias|connection-id> [--everyone | --session <key> | --user <slack-user-id>]`",
+        );
+      }
+      const service = option(args, "--service");
+      // Revoke names one grant; the connection's other grants stay.
+      const everyone = action === "revoke" && flag(args, "--everyone");
+      const session = action === "revoke" ? option(args, "--session") : undefined;
+      const user = action === "revoke" ? option(args, "--user") : undefined;
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if ([everyone, session, user].filter(Boolean).length > 1) {
+        throw new Error("Choose one grant to revoke: --everyone, --session <key> or --user <slack-user-id>");
+      }
+      const connection = await findConnection(target, service);
+      const resolved = service ?? serviceOfConnection(connection);
+      if (action === "grant") {
+        // The computer reaches GitHub through its own app, never a person's.
+        if (resolved === "github") {
+          throw new Error("GitHub connections cannot be granted to the computer");
+        }
+        const attachment = await client.grantComputerServiceConnection(
+          connection.id,
+        );
+        if (globals.json) printJSON(attachment);
+        else
+          process.stdout.write(
+            `Granted ${connection.label} (${resolved}) to everyone on the computer.\n`,
+          );
+        return;
+      }
+      let grant: { scope: ComputerServiceAttachment["scope"]; subject: string };
+      if (everyone) grant = { scope: "everyone", subject: "" };
+      else if (session) grant = { scope: "session", subject: session };
+      else if (user) grant = { scope: "user", subject: user };
+      else {
+        // No grant named: the connection's only grant, or the choices.
+        const grants = (await client.computerServiceConnections()).filter(
+          (attachment) => attachment.connectionId === connection.id,
+        );
+        if (!grants.length) {
+          throw new Error(`${connection.label} (${resolved}) is not granted to the computer.`);
+        }
+        if (grants.length > 1) {
+          throw new Error(
+            `${connection.label} (${resolved}) has ${grants.length} grants; choose the one to revoke:\n` +
+              grants
+                .map((g) => `  opencomputer connection revoke ${connection.id} ${grantFlag(g.scope, g.subject)}`)
+                .join("\n"),
+          );
+        }
+        grant = { scope: grants[0]!.scope, subject: grants[0]!.subject };
+      }
+      await client.revokeComputerServiceConnection(connection.id, grant);
+      const audience =
+        grant.scope === "everyone" ? "everyone" : `${grant.scope} ${grant.subject}`;
+      if (globals.json) printJSON({ revoked: connection.id, scope: grant.scope, subject: grant.subject });
+      else
+        process.stdout.write(
+          `Revoked ${connection.label} (${resolved}) from ${audience} on the computer.\n`,
+        );
+      return;
+    }
+
+    // A call through a connection, for agents on the computer and scripts:
+    // `connection fetch linear /graphql --data '{"query":"{ viewer { id } }"}'`.
+    if (action === "fetch") {
+      const service = args.shift();
+      const path = args.shift();
+      if (!service || !path) {
+        throw new Error(
+          "Use `opencomputer connection fetch <service> <path> [--method <m>] [--data <body>] [--header 'Name: value'] [--alias <name>]`",
+        );
+      }
+      const data = option(args, "--data");
+      const headers: Record<string, string> = {};
+      for (const header of options(args, "--header")) {
+        const colon = header.indexOf(":");
+        if (colon < 1) throw new Error(`Invalid header ${JSON.stringify(header)}: use 'Name: value'`);
+        headers[header.slice(0, colon).trim()] = header.slice(colon + 1).trim();
+      }
+      const method = option(args, "--method") ?? (data === undefined ? "GET" : "POST");
+      const label = option(args, "--alias");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      if (data !== undefined && !Object.keys(headers).some((h) => h.toLowerCase() === "content-type")) {
+        headers["Content-Type"] = "application/json";
+      }
+      printJSON(
+        await client.connectionFetch({
+          service,
+          path,
+          method: method.toUpperCase(),
+          ...(Object.keys(headers).length ? { headers } : {}),
+          ...(data === undefined ? {} : { body: data }),
+          ...(label ? { label } : {}),
+        }),
+      );
+      return;
+    }
+
     if (action === "remove" || action === "disconnect") {
       const target = args.shift();
       if (!target) {
@@ -2216,7 +2353,7 @@ export async function runCommand(
     }
 
     throw new Error(
-      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|remove`.",
+      "Use `opencomputer connection connect|reconnect|list|status|attach|detach|grant|revoke|grants|fetch|remove`.",
     );
   }
 
