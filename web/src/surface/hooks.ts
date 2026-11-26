@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo } from 'react'
 import { useStore } from 'zustand'
-import type { State, Surface } from './store'
+import type { State } from './store/surface-state'
+import type { Surface } from './store/surface-store'
 import { buildTranscript, opLines, unsent, type Item, type OpenBlock } from './store/transcript'
 import { findTrack, listView, threadView, type ListView, type ThreadView, type TrackView } from './store/views'
 

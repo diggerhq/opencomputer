@@ -10,26 +10,15 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
 import { askLine, type ThreadView, type TrackView } from '../store/views'
-import {
-  Composer,
-  MenuButton,
-  Mk,
-  ResultIcon,
-  Rich,
-  type MenuItem,
-} from './bits'
-import {
-  ACTS,
-  BLOCK,
-  COMPOSER,
-  HD,
-  I,
-  IN,
-  LEFT,
-  resultDetail,
-  resultTitle,
-  useConfirm,
-} from './kit'
+import { I } from './icons'
+import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT } from './pane-classes'
+import { resultDetail, resultTitle } from './result-text'
+import { useConfirm } from './use-confirm'
+import { Mk } from './Mark'
+import { ResultIcon } from './ResultIcon'
+import { Rich } from './Rich'
+import { Composer } from './Composer'
+import { MenuButton, type MenuItem } from './MenuButton'
 import { AgentMarkdown } from '@/managed-agents/AgentMarkdown'
 import { Conversation } from './Conversation'
 import { SettingsPickers } from './SettingsPickers'

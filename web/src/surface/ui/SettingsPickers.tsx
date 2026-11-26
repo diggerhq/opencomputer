@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { SettingsPatch } from '@opencomputer/sdk/computer'
 import { Select } from '@/components/form'
 import { useSurface } from '../hooks'
-import { oneLayer } from './kit'
+import { oneLayer } from './one-layer'
 
 // The model, effort and mode a session is started with or changed to, from
 // the computer's capabilities. `onChange` gets the one field changed.

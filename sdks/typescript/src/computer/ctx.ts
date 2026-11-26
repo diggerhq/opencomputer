@@ -2,7 +2,8 @@
 // make a request and one way to wait before trying again.
 
 import { cryptoRandom } from "./ids.js";
-import { Refused, type ClientFrame, type ClientOptions } from "./types.js";
+import { Refused, type ClientOptions } from "./client-interface.js";
+import type { ClientFrame } from "./socket-frames.js";
 
 export type Op = { put: string; value: unknown } | { delete: string };
 

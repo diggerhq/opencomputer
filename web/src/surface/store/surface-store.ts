@@ -1,172 +1,39 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
-  createClient,
   makeId,
   Refused,
   type Answer,
-  type ApiEvent,
-  type Capabilities,
-  type Client,
-  type Delta,
-  type EventsUpdate,
   type Failure,
   type FeedFrame,
   type MutationArgs,
   type MutationName,
   type Pending,
   type ResultRow,
-  type Review,
   type Row,
-  type SearchReply,
   type SettingsPatch,
-  type Storage,
-  type ThreadsPage,
 } from '@opencomputer/sdk/computer'
-import type { Host, Location } from '../host'
+import type { Location } from '../host'
 import { NOWHERE } from '../host'
-import { docSpans, mergeDoc } from './doc'
+import { blockedIn } from './blocked'
+import { watchConversations } from './conversations'
+import { saveMerged } from './doc-save'
+import { OUT_OF_CREDITS, sayFailure, whatFailed } from './failure-text'
+import { hurriedClient } from './hurried-client'
 import { overlay } from './overlay'
+import { pageWake } from './page-wake'
+import { serverReads } from './server-reads'
 import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
-import type { OpenBlock } from './transcript'
-import { askLine, listView, threadView, type Counts, type ListView } from './views'
+import { KEPT, NO_COUNTS, type Kept, type Layout, type State, type SurfaceOptions, type Theme, type Toast, type TrackTab } from './surface-state'
+import { listView, threadView, type Counts, type ListView } from './views'
 
 // The surface's one store (spec 26.2): what the server last said, the
 // person's unconfirmed writes replayed on top, and what is open on screen.
 // Components read it through selectors and never await.
 
-export type Layout = 'L1' | 'L2' | 'L3'
-export type TrackTab = 'activity' | 'doc' | 'results'
-export type Theme = 'system' | 'light' | 'dark'
-
-export interface Toast {
-  id: string
-  text: string
-  tone?: 'error'
-  undo?: () => void
-  // A way on from an error: "Add credits" on an out-of-credits refusal.
-  action?: { label: string; run: () => void }
-}
-
-export interface Convo {
-  events: ApiEvent[]
-  // The first page has arrived (from storage or the server).
-  loaded: boolean
-  // Text still streaming; never stored (spec 26.4).
-  open: OpenBlock | null
-}
-
-// What is kept across reloads, beside the rows.
-interface Kept {
-  loc: Location
-  layout: Record<string, Layout>
-  trackTab: Record<string, TrackTab>
-  listHidden: boolean
-  openTracks: Record<string, boolean>
-  earlierOpen: boolean
-  trackEarlierOpen: Record<string, boolean>
-  drafts: Record<string, string>
-  theme: Theme
-  reviewMode: 'summary' | 'full'
-}
-
-export interface State extends Kept {
-  me: string
-  // Storage has been read: what was seen before is on screen (R43).
-  ready: boolean
-  // The server has answered since this page opened.
-  synced: boolean
-  status: 'connecting' | 'online' | 'offline'
-  // The feed's rows, then those with Earlier's pages beneath and pending writes on top.
-  base: Rows
-  rows: Rows
-  pending: Pending[]
-  counts: Counts
-  convos: Record<string, Convo>
-  toasts: Toast[]
-  palette: boolean
-  keysSheet: boolean
-  earlierNext: Record<string, string | null | undefined>
-  // Threads a link named that the server does not have (spec 26.2): shown as not found.
-  missing: Record<string, true>
-  // Threads a link named whose read failed otherwise (forbidden, server error):
-  // shown as not opened, with Try again.
-  unopened: Record<string, true>
-}
-
-const KEPT: (keyof Kept)[] = [
-  'loc',
-  'layout',
-  'trackTab',
-  'listHidden',
-  'openTracks',
-  'earlierOpen',
-  'trackEarlierOpen',
-  'drafts',
-  'theme',
-  'reviewMode',
-]
-
-const NO_COUNTS: Counts = { earlier: 0, trackEarlier: {} }
-const EMPTY_CONVO: Convo = { events: [], loaded: false, open: null }
-
-export interface SurfaceOptions {
-  host: Host
-  storage: Storage
-  // Where UI state is kept; localStorage in a browser.
-  kept?: { get(): string | null; set(v: string): void }
-  visible?: () => boolean
-  // Calls back when the network may be back: the browser is online again, or
-  // the tab is shown. Default: those two events of the page.
-  wake?: (cb: () => void) => () => void
-}
-
-const pageWake = (cb: () => void) => {
-  if (typeof window === 'undefined') return () => {}
-  const shown = () => {
-    if (document.visibilityState === 'visible') cb()
-  }
-  window.addEventListener('online', cb)
-  document.addEventListener('visibilitychange', shown)
-  return () => {
-    window.removeEventListener('online', cb)
-    document.removeEventListener('visibilitychange', shown)
-  }
-}
-
-// What a refusal's code means to the person, when the server gave no reason.
-const CODES: Record<string, string> = {
-  insufficient_credits: 'you are out of credits',
-  http_402: 'you are out of credits',
-  session_not_found: 'this thread no longer exists',
-  computer_unavailable: 'your computer is not reachable right now',
-  unavailable: 'the service is not reachable right now',
-  workspace_unavailable: 'your computer is not reachable right now',
-  forbidden: 'you do not have access to this',
-  http_403: 'you do not have access to this',
-  unauthenticated: 'you are signed out',
-  http_401: 'you are signed out',
-  turn_in_progress: 'the agent is still working',
-  inbox_full: 'too many messages are waiting; try again when the agent catches up',
-  too_large: 'it is too long',
-  http_413: 'it is too long',
-  rate_limited: 'too many requests; try again in a moment',
-  model_unavailable: 'that model is not available',
-  unsupported_model: 'that model is not available',
-  unsupported_effort: 'that effort is not available for this model',
-  unsupported_mode: 'that mode is not available',
-  conflict: 'it changed meanwhile',
-  not_found: 'it no longer exists',
-  internal: 'something went wrong on our side',
-}
 function without<T>(r: Record<string, T>, key: string): Record<string, T> {
   const next = { ...r }
   delete next[key]
   return next
-}
-
-const OUT_OF_CREDITS = new Set(['insufficient_credits', 'http_402'])
-export function sayFailure(f: Pick<Failure, 'code' | 'reason'>): string {
-  return f.reason || CODES[f.code] || f.code
 }
 
 export type Surface = ReturnType<typeof createSurface>
@@ -174,40 +41,7 @@ export type Surface = ReturnType<typeof createSurface>
 export function createSurface(o: SurfaceOptions) {
   const { host } = o
   const me = host.principal.subject
-  // The client's waits (reconnect, retry), held so they can be cut short when
-  // the network comes back (`hurry`).
-  const waits = new Map<number, { fn: () => void; h: ReturnType<typeof setTimeout> }>()
-  let waitIds = 0
-  const client: Client = createClient({
-    principal: host.principal,
-    fetch: (path, init) => host.api.fetch(path, init),
-    connect: () => host.connect(),
-    storage: o.storage,
-    lock:
-      typeof navigator !== 'undefined' && navigator.locks
-        ? (name, fn) => navigator.locks.request(name, fn)
-        : undefined,
-    setTimeout: (fn, ms) => {
-      const id = ++waitIds
-      waits.set(id, { fn, h: setTimeout(() => (waits.delete(id), fn()), ms) })
-      return id
-    },
-    clearTimeout: (id) => {
-      const w = waits.get(id as number)
-      if (w) clearTimeout(w.h)
-      waits.delete(id as number)
-    },
-  })
-  // The network may be back: an offline client reconnects (and retries) now,
-  // not at the end of its backoff.
-  const hurry = () => {
-    if (client.status.get() === 'online') return
-    for (const [id, w] of [...waits]) {
-      clearTimeout(w.h)
-      waits.delete(id)
-      w.fn()
-    }
-  }
+  const { client, hurry } = hurriedClient(host, o.storage)
 
   let kept: Partial<Kept> = {}
   try {
@@ -354,20 +188,7 @@ export function createSurface(o: SurfaceOptions) {
     }
     // Only a new block is announced outside the app (R27).
     const l = list()
-    const now = new Map<string, { title: string; body: string; askId?: string; approval: boolean }>()
-    for (const t of [...l.threads, ...l.tracks.flatMap((k) => k.threads)])
-      if (t.mark === 'blocked')
-        now.set(t.id, {
-          title: t.title,
-          body: t.ask ? askLine(t.ask) : (t.line ?? 'Needs you'),
-          askId: t.ask?.id,
-          approval: t.ask?.kind === 'approval',
-        })
-    for (const k of l.tracks)
-      if (k.agent?.blocked) {
-        const ask = k.agent.asks.find((a) => a.status === 'open')
-        now.set(k.agentSession, { title: k.name, body: ask ? askLine(ask) : 'Needs you', askId: ask?.id, approval: ask?.kind === 'approval' })
-      }
+    const now = blockedIn(l)
     if (blockedBefore && s.synced)
       for (const [id, b] of now)
         if (!blockedBefore.has(id))
@@ -461,14 +282,6 @@ export function createSurface(o: SurfaceOptions) {
     sync()
   }
 
-  const SAID: Partial<Record<string, string>> = {
-    'thread.done': 'Could not mark it done',
-    'thread.place': 'Could not move it',
-    'thread.rename': 'Could not rename it',
-    'track.create': 'Could not make the track',
-    'doc.save': 'Could not save the Doc',
-    undo: 'Could not undo that',
-  }
   const onFailure = (f: Failure) => {
     answered.delete(f.entry.key)
     sync()
@@ -476,14 +289,7 @@ export function createSurface(o: SurfaceOptions) {
     if (e.kind === 'mutation' && e.name === 'read.set') return
     // saveDoc merges and saves again.
     if (e.kind === 'mutation' && e.name === 'doc.save' && f.code === 'conflict') return
-    const what =
-      e.kind === 'mutation'
-        ? (SAID[e.name] ?? 'That did not go through')
-        : e.kind === 'turn' || e.kind === 'session'
-          ? 'Your message was not sent'
-          : e.kind === 'settings'
-            ? 'Could not change the settings'
-            : 'That did not go through'
+    const what = whatFailed(e)
     // What the person typed is not lost: it goes back in its box, unless
     // something new was typed there meanwhile.
     if (e.kind === 'turn' || e.kind === 'session') {
@@ -506,89 +312,7 @@ export function createSurface(o: SurfaceOptions) {
 
   // ---- conversations ----
 
-  const watching = new Map<string, { n: number; started: boolean; stop: () => void }>()
-  const patchConvo = (sid: string, fn: (c: Convo) => Convo) => {
-    const convos = get().convos
-    const next = fn(convos[sid] ?? EMPTY_CONVO)
-    if (next !== convos[sid]) set({ convos: { ...convos, [sid]: next } })
-  }
-  const onEvents = (sid: string, u: EventsUpdate) =>
-    patchConvo(sid, (c) => {
-      let events = c.events
-      if (u.reset) events = u.reset.seq === null ? [] : events.filter((e) => e.seq <= u.reset!.seq!)
-      if (u.events.length) {
-        const last = events.length ? events[events.length - 1].seq : -1
-        if (u.events[0].seq > last) events = [...events, ...u.events]
-        else {
-          const bySeq = new Map(events.map((e) => [e.seq, e]))
-          for (const e of u.events) bySeq.set(e.seq, e)
-          events = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
-        }
-      }
-      // The block that was streaming has arrived whole, or its turn is over.
-      const closes = u.events.some((e) => e.type === 'message.completed' || e.type.startsWith('turn.'))
-      return { events, loaded: true, open: closes || u.reset ? null : c.open }
-    })
-
-  // Deltas are applied at most every 50 ms (spec 26.4).
-  const buffered = new Map<string, OpenBlock | null>()
-  let flush: ReturnType<typeof setTimeout> | null = null
-  const onDelta = (sid: string, d: Delta) => {
-    if (d.type !== 'message.delta' || typeof d.data.text !== 'string') return
-    const blockId = d.data.blockId ?? d.turnId
-    const held = buffered.has(sid) ? buffered.get(sid)! : (get().convos[sid]?.open ?? null)
-    let text: string
-    if (d.whole || !held || held.blockId !== blockId) text = d.offset === 0 || d.whole ? d.data.text : ''
-    else if (d.offset === held.text.length) text = held.text + d.data.text
-    else if (d.offset < held.text.length) text = held.text.slice(0, d.offset) + d.data.text
-    else return
-    buffered.set(sid, { blockId, type: d.type, turnId: d.turnId, text })
-    flush ??= setTimeout(() => {
-      flush = null
-      for (const [id, open] of buffered) {
-        // A delta that trails its completed message is dropped.
-        const done = get().convos[id]?.events.some(
-          (e) => e.type === 'message.completed' && (e.data as { blockId?: string } | null)?.blockId === open?.blockId,
-        )
-        patchConvo(id, (c) => ({ ...c, open: done ? null : open }))
-      }
-      buffered.clear()
-    }, 50)
-  }
-
-  // Ref-counted: a pane watches the session it shows; the last to leave stops
-  // the streams, and what was read stays in memory.
-  // A session still being created has no log to read yet: its streams start
-  // when its row arrives.
-  const begin = (sid: string) => {
-    const w = watching.get(sid)
-    if (!w || w.started || !onServer(sid)) return
-    const a = client.events(sid, { tailTurns: 30 }).subscribe((u) => onEvents(sid, u))
-    const b = client.deltas(sid).subscribe((d) => onDelta(sid, d))
-    w.started = true
-    w.stop = () => (a(), b())
-  }
-  function watch(sid: string): () => void {
-    let w = watching.get(sid)
-    if (!w) {
-      w = { n: 0, started: false, stop: () => {} }
-      watching.set(sid, w)
-      begin(sid)
-    }
-    w.n++
-    let left = false
-    return () => {
-      if (left) return
-      left = true
-      // Let a pane that remounts at once keep its streams.
-      setTimeout(() => {
-        if (--w.n === 0) {
-          w.stop()
-          watching.delete(sid)
-        }
-      }, 1000)
-    }
-  }
+  const { watching, begin, watch } = watchConversations({ client, store, onServer })
 
   // ---- start ----
 
@@ -806,47 +530,9 @@ export function createSurface(o: SurfaceOptions) {
       if (open === tid) go({ ...NOWHERE, start: true })
       mutate('track.delete', { tid })
     },
-    // `base` is the Doc the person started editing from. When the Doc moved
-    // meanwhile, the save is merged three ways and sent again (spec 22.3);
-    // overlapping lines keep the person's, and the track's agent is told.
+    // Merged three ways when the Doc moved meanwhile (spec 22.3).
     async saveDoc(tid: string, text: string, base: { rev: number; text: string }): Promise<{ conflicts: number }> {
-      let from = base
-      let ours = text
-      let conflicts = 0
-      const onto = (theirs: { rev: number; text: string }) => {
-        if (theirs.rev === from.rev) return
-        const m = mergeDoc(from.text, ours, theirs.text)
-        ours = m.text
-        conflicts += m.conflicts
-        from = { rev: theirs.rev, text: theirs.text }
-      }
-      const now = get().rows.doc.get(tid)
-      if (now) onto(now)
-      for (let tries = 0; ; tries++) {
-        const row = get().rows.doc.get(tid)
-        const spans = docSpans(row, from.text, ours, `user:${me}`)
-        try {
-          await mutate('doc.save', { tid, baseRev: from.rev, text: ours, spans }).settled
-          break
-        } catch (e) {
-          const d = e instanceof Refused && e.code === 'conflict' ? (e.detail as { rev?: number; text?: string } | undefined) : undefined
-          if (tries >= 3 || typeof d?.rev !== 'number' || typeof d.text !== 'string') {
-            if (e instanceof Refused && e.code === 'conflict') toast({ text: 'The Doc kept changing while saving; your edit is still open', tone: 'error' })
-            throw e
-          }
-          onto({ rev: d.rev, text: d.text })
-        }
-      }
-      if (conflicts) {
-        const agent = get().rows.track.get(tid)?.agentSession
-        if (agent)
-          actions.send(
-              agent,
-              `I edited the Doc while you were changing it. Where we both changed the same lines (${conflicts === 1 ? 'one place' : `${conflicts} places`}), I kept mine.`,
-          )
-        toast({ text: 'Saved. Where you and the agent changed the same lines, yours were kept' })
-      }
-      return { conflicts }
+      return saveMerged({ get, me, mutate, toast, send: (sid, input) => actions.send(sid, input) }, tid, text, base)
     },
 
     // -- suggestions and undo --
@@ -873,36 +559,7 @@ export function createSurface(o: SurfaceOptions) {
     },
 
     // -- reads that are not streams --
-    async loadEarlier(tid?: string) {
-      const key = tid ?? ''
-      const before = get().earlierNext[key]
-      if (before === null) return
-      const q = new URLSearchParams({ earlier: '1', limit: '50' })
-      if (tid) q.set('track', tid)
-      if (before) q.set('before', before)
-      try {
-        const page = await client.read<ThreadsPage>(`/work/threads?${q}`)
-        set({ earlierNext: { ...get().earlierNext, [key]: page.next } })
-        addUnder(page.rows)
-      } catch {
-        // Offline: Earlier shows what is held.
-      }
-    },
-    async search(q: string) {
-      const reply = await client.read<SearchReply>(`/work/search?q=${encodeURIComponent(q)}&limit=20`)
-      addUnder(reply.rows)
-      return reply.rows
-    },
-    async review(resultId: string) {
-      return (await client.read<{ review: Review }>(`/work/results/${resultId}/review`)).review
-    },
-    // What a session may be started with or changed to (the model, effort and mode pickers).
-    async capabilities() {
-      return (await client.read<{ capabilities: Capabilities }>('/capabilities')).capabilities
-    },
-    async diff(resultId: string) {
-      return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff
-    },
+    ...serverReads({ client, store, addUnder }),
     openExternal(url: string) {
       host.openExternal(url)
     },

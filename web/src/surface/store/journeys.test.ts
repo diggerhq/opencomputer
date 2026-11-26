@@ -21,7 +21,7 @@ import {
 } from '../../../../services/managed-agents/test/fixtures/stack'
 import type { Host, Location } from '../host'
 import { NOWHERE } from '../host'
-import { createSurface } from './index'
+import { createSurface } from './surface-store'
 import { buildTranscript } from './transcript'
 import type { Mark, ThreadView, TrackView } from './views'
 
