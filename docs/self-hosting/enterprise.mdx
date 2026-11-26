@@ -8,7 +8,7 @@ The Community Edition (CE) is the deployment described in [Start here](/self-hos
 | | Community Edition | Enterprise Edition |
 | --- | --- | --- |
 | Computer VMs | One VM per organization, sized by you | A pool of VMs per organization that grows and shrinks with the number of sessions |
-| Where sessions run | VMs in Azure, AWS or Google Cloud | Those clouds, plus machines in your own data center |
+| Sandboxes for heavy builds | OpenComputer's hosted sandboxes | Sandboxes in your own Azure, AWS or Google Cloud account |
 | Sign-in | WorkOS | WorkOS, or your identity provider directly: Okta, Microsoft Entra ID, or any SAML 2.0 or OIDC provider |
 | Images | Built from this repository | Prebuilt images that need a license key |
 | Support | GitHub issues | A named contact and an agreed response time |
@@ -17,9 +17,9 @@ The Community Edition (CE) is the deployment described in [Start here](/self-hos
 
 In CE every session of an organization runs on its one VM, so the size of that VM caps how many sessions run at once. In EE an organization has a pool of VMs: a new session is placed on a VM with room for it, the pool adds VMs when they are full and removes idle ones, and you set the smallest and largest number of VMs and their size.
 
-## Sandboxes on your own machines
+## Sandboxes in your cloud account
 
-Heavy builds, large monorepos and work that must not leave your network can run on machines you own. An on-premises machine runs the same Computer release as a cloud VM and, like it, connects out to the gateway: it needs outbound HTTPS and no inbound access. You choose per organization which sessions go to the cloud pool and which to your machines.
+Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on OpenComputer's hosted sandboxes. You choose the worker instance types and how far the fleet scales.
 
 ## Sign-in with your identity provider
 
