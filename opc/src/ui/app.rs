@@ -28,7 +28,7 @@ use crate::api::types::{Event, Session};
 use crate::cmd::Ctx;
 use crate::error::{Error, Result};
 use crate::telemetry::{self, Control};
-use crate::wire::{Attach, From, Wire, WireEvent, WireHandle, WireOptions};
+use crate::wire::{self, Attach, From, Wire, WireEvent, WireHandle, WireOptions};
 
 /// Keys pressed this soon after an ask takes the keyboard are ignored.
 const ASK_GUARD_MS: i64 = 300;
@@ -134,6 +134,8 @@ struct App<'a> {
     m: Model,
     ed: Editor,
     wire: Option<WireHandle>,
+    /// Watches the session; opened with the wire.
+    live: Option<wire::Live>,
     futs: FuturesUnordered<Fut<'a>>,
     painter: Painter,
     ask: Option<AskUi>,
@@ -236,6 +238,7 @@ impl<'a> App<'a> {
             m,
             ed: Editor::new(crate::cache::history()),
             wire: None,
+            live: None,
             futs: FuturesUnordered::new(),
             painter: Painter::new(ctx.color),
             ask: None,
@@ -370,15 +373,11 @@ impl<'a> App<'a> {
 
     // ---- the connection ---------------------------------------------------
 
-    /// Opens the connection, attached to the session unless it is still to
-    /// be created on the first send.
+    /// Opens the live socket, watching the session unless it is still to be
+    /// created on the first send, and the wire (connection state, telemetry),
+    /// both reporting on one stream.
     fn open_wire(&mut self, url: String, start: &Start) -> Result<UnboundedReceiver<WireEvent>> {
-        let opts = WireOptions {
-            url,
-            key: self.ctx.require_key()?.to_string(),
-            deltas: true,
-            give_up: None,
-        };
+        let opts = WireOptions { url, key: self.ctx.require_key()?.to_string(), give_up: None };
         let attaches = match &self.create {
             CreateState::Lazy(_) => vec![],
             _ => {
@@ -387,8 +386,9 @@ impl<'a> App<'a> {
                 vec![a]
             }
         };
-        let (wire, rx) = Wire::open(opts, attaches, Some(self.ctx.http.clone()));
-        self.wire = Some(wire);
+        let (out, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.live = Some(wire::Live::open(self.ctx.http.clone(), true, None, attaches, out.clone()));
+        self.wire = Some(Wire::open(opts, Some(self.ctx.http.clone()), out));
         Ok(rx)
     }
 
@@ -471,7 +471,7 @@ impl<'a> App<'a> {
             }
             WireEvent::Detached { session_id, reason } if session_id == id => {
                 self.m.error(&format!("the server stopped sending this session's events ({reason}); attaching again"));
-                if let Some(w) = &self.wire {
+                if let Some(w) = &self.live {
                     let from = match &self.cursor {
                         Some(c) => From::Cursor(c.clone(), Some(self.m.last_seq)),
                         None => From::Start,
@@ -615,7 +615,7 @@ impl<'a> App<'a> {
     /// pushes, then the message. Retries while the network is down.
     fn start_create(&mut self, c: Create, out: Option<u64>, input: Option<String>) {
         self.create = CreateState::Creating(c.clone());
-        if let Some(w) = &self.wire {
+        if let Some(w) = &self.live {
             w.attach(Attach { session_id: self.id(), from: From::Start });
         }
         let ctx = self.ctx;
@@ -679,12 +679,12 @@ impl<'a> App<'a> {
                     // The key had already created another session: that one.
                     let old = std::mem::replace(&mut self.m.session_id, real.clone());
                     self.tel.set_session(&real);
-                    if let Some(w) = &self.wire {
+                    if let Some(w) = &self.live {
                         w.detach(&old);
                         w.attach(Attach { session_id: real.clone(), from: From::Start });
                     }
                 } else if self.reattach
-                    && let Some(w) = &self.wire
+                    && let Some(w) = &self.live
                 {
                     w.attach(Attach { session_id: self.id(), from: From::Start });
                 }
@@ -1573,6 +1573,9 @@ impl<'a> App<'a> {
         self.tel.leave();
         if let Some(w) = &self.wire {
             w.close();
+        }
+        if let Some(l) = &self.live {
+            l.close();
         }
     }
 }

@@ -11,9 +11,12 @@ $ opc doctor
 ✓ credential    ada-mbp · Ada Lovelace · acme                  84 ms
 ✓ api           https://app.opencomputer.dev                   (same request)
 ✓ computer      ready                                          (same request)
-✓ connection    wss://wire.opencomputer.dev · LHR → IAD        168 ms
-✓ round trip    80 ms median, 94 ms p90 (20 pings)            1.6 s
+✓ live          wss://app.opencomputer.dev:443/live            168 ms
+✓ round trip    80 ms median, 94 ms p90 (20 pings)            (same request)
+✓ wire          wss://wire.opencomputer.dev/v1 · LHR → IAD · 81 ms ping   190 ms
 ```
+
+`live` is the socket every command that waits or watches uses. `wire` is the connection to your computer that `opc shell` uses; it is checked only when the API names one.
 
 ## Common problems
 

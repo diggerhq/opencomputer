@@ -61,8 +61,8 @@ pub async fn interrupt(ctx: &Ctx, a: InterruptArgs) -> Result<i32> {
 /// cannot be followed, or the minute passes, the turn reads as it stands
 /// (still stopping).
 async fn stopped(ctx: &Ctx, sid: &str, turn: &str) {
-    let Ok((wire, rx)) = ctx.open_wire(vec![Attach { session_id: sid.to_string(), ..Default::default() }], false).await else { return };
-    let mut f = Follower::new(ctx.http.clone(), wire, rx, &[(sid.to_string(), false)]);
+    let (live, rx) = ctx.open_live(vec![Attach { session_id: sid.to_string(), ..Default::default() }], false);
+    let mut f = Follower::new(ctx.http.clone(), live, rx, &[(sid.to_string(), false)]);
     let mut trackers = [Tracker::new(sid, Goal::Turn(turn.to_string()), OnAsk::Wait, false)];
     let mut sink = |_: &Follower, _: &Step| {};
     let _ = race(Some(Duration::from_secs(60)), run_until_next(&mut f, &mut trackers, &mut sink)).await;

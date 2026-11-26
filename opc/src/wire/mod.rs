@@ -1,13 +1,15 @@
-//! The two sockets of a command: the WebSocket to the computer
-//! (`wss://wire.opencomputer.dev/v1`, protocol `opc.v1`, JSON-RPC 2.0) for
-//! requests, terminals and telemetry (`reconnect.rs`), and the live socket
-//! (`GET /live`, protocol `oc.live.v1`) that watches sessions (`live.rs`).
+//! The two sockets: the live socket (`GET /live` on the API, protocol
+//! `oc.live.v1`) that watches sessions ([`Live`], `live.rs`), and the
+//! WebSocket to the computer (`wss://wire.opencomputer.dev/v1`, protocol
+//! `opc.v1`, JSON-RPC 2.0) for terminals and telemetry ([`Wire`],
+//! `reconnect.rs`). Watching never needs the wire: a command dials it only
+//! for what only the computer can do.
 //!
-//! [`Wire::open`] returns at once with a handle and a stream of
-//! [`WireEvent`]s; the dials run in the background. The stream carries every
-//! recorded event once and in `seq` order per session, across reconnects:
-//! `live.rs` holds each session's opaque cursor, reads over HTTP whenever a
-//! pushed range does not start at it, and applies `reset`.
+//! Both open at once and report on a stream of [`WireEvent`]s; the dials run
+//! in the background. The stream carries every recorded event once and in
+//! `seq` order per session, across reconnects: `live.rs` holds each
+//! session's opaque cursor, reads over HTTP whenever a pushed range does not
+//! start at it, and applies `reset`.
 
 pub mod client;
 pub mod live;
@@ -20,6 +22,7 @@ use bytes::Bytes;
 use serde_json::Value;
 use std::time::Duration;
 
+pub use live::Live;
 pub use reconnect::{Wire, WireHandle};
 
 /// WebSocket subprotocol.
@@ -30,8 +33,6 @@ pub struct WireOptions {
     /// `wss://wire.opencomputer.dev/v1`
     pub url: String,
     pub key: String,
-    /// Ask for deltas on every watched session.
-    pub deltas: bool,
     /// Give up with `unreachable` after this long continuously disconnected
     /// (non-interactive commands); `None` keeps trying (the screen).
     pub give_up: Option<Duration>,

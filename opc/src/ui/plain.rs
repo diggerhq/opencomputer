@@ -62,7 +62,7 @@ pub async fn follow(ctx: &Ctx, session_id: &str, tail_turns: Option<u32>) -> Res
         _ => From::Now,
     };
     let attach = Attach { session_id: session_id.to_string(), from };
-    let (wire, mut rx) = ctx.open_wire(vec![attach], false).await?;
+    let (live, mut rx) = ctx.open_live(vec![attach], false);
     let mut m = Model::new(session_id, true);
     let mut attached = false;
     let mut last_event = now_ms();
@@ -110,7 +110,7 @@ pub async fn follow(ctx: &Ctx, session_id: &str, tail_turns: Option<u32>) -> Res
         }
     };
     flush(&mut m);
-    wire.close();
+    live.close();
     code
 }
 

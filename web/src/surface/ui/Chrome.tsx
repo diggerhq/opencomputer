@@ -12,7 +12,7 @@ import { useS, useSurface } from '../hooks'
 import { oneLayer } from './kit'
 
 // What the surface says, through sonner: the store decides when a toast comes
-// and goes; what can be undone carries Undo (Z).
+// and goes; what can be undone carries Undo (Z), an error may carry a way on.
 export function Toasts() {
   const surface = useSurface()
   const toasts = useS((s) => s.toasts)
@@ -23,6 +23,7 @@ export function Toasts() {
     for (const t of toasts) {
       if (shown.current.has(t.id)) continue
       const undo = t.undo
+      const act = t.action
       ;(t.tone === 'error' ? toast.error : undo ? toast.success : toast)(
         t.text,
         {
@@ -44,7 +45,15 @@ export function Toasts() {
                   surface.dismissToast(t.id)
                 },
               }
-            : undefined,
+            : act
+              ? {
+                  label: act.label,
+                  onClick: () => {
+                    act.run()
+                    surface.dismissToast(t.id)
+                  },
+                }
+              : undefined,
         },
       )
     }
