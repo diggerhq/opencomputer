@@ -159,7 +159,8 @@ pub fn session_access(mut e: Error) -> Error {
 pub fn access_change(mut e: Error) -> Error {
     match (e.code.as_str(), e.extra.get("reason").and_then(Value::as_str)) {
         ("forbidden", Some("not_member")) => {
-            e.message = "you can't change who may use this session: only its owner, the people it is shared with and organization admins can".into();
+            e.message = "you can't change who may use this session: only its owner can".into();
+            e.hint.get_or_insert_with(|| "ask its owner to run opc access".into());
         }
         ("forbidden", Some("access_in_slack")) => {
             e.message = "this session belongs to a Slack thread: change who drives it there".into();
@@ -267,7 +268,9 @@ mod tests {
         let e = session_access(Error::from_api(404, &json!({"error": {"code": "session_not_found", "message": "m"}})));
         assert!(e.hint.as_deref().unwrap().contains("isn't shared with you"), "{e:?}");
         let e = access_change(Error::from_api(403, &json!({"error": {"code": "forbidden", "message": "m", "reason": "not_member"}})));
-        assert!(e.message.contains("only its owner"));
+        // Owner first: neither the people it is shared with nor admins change access.
+        assert_eq!(e.message, "you can't change who may use this session: only its owner can");
+        assert!(e.hint.as_deref().unwrap().contains("ask its owner"), "{e:?}");
         assert_eq!(e.exit_code(), exit::AUTH);
         let e = access_change(Error::from_api(400, &json!({"error": {"code": "invalid_request", "message": "m", "field": "access.people", "reason": "unknown_member"}})));
         assert_eq!((e.message.as_str(), e.exit_code()), ("m", 2));

@@ -31,13 +31,14 @@ You can share with people by user id or email. They must be members of your orga
 | Who | Can |
 | --- | --- |
 | Anyone with access | See it, attach, send messages, answer asks, change settings, read its history |
-| The owner and the people it is shared with | Also change who has access |
-| An organization admin | See and change who has access, with `opc access <id>`. Not see or drive a session they do not have access to: they add themselves first, with `opc access <id> --add <themselves>`. |
+| The people it is shared with by name (`people`) | Also open a [shell](/cli/shell) |
+| The owner | Everything: also open a shell, change who has access, rename and archive it |
+| An organization admin | Nothing more in a session than any other member. An admin can't see, drive or open a shell in a session that isn't shared with them, and can't add themselves: they ask its owner to share it. Admins manage the organization: its default access, secrets, invites, roles and API keys. |
 | An API key | What the member who created it can do |
 
 Everything anyone does is attributed. Messages, answers and setting changes carry the person's name and where they came from, in every client and in the [event log](/api/reference/events).
 
-The agent runs as the session's owner: it uses the owner's GitHub identity for commits and pull requests, and the owner's secrets and subscription. Sharing does not remove them, so `opc` warns whenever you share a session:
+The agent runs as the session's owner: it uses the owner's GitHub identity for commits and pull requests, and the owner's secrets and subscription. Sharing does not remove them, so `opc` warns once you have shared a session:
 
 ```
 opc: shared: others who can drive this session use your secrets and subscription

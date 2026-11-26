@@ -87,10 +87,11 @@ pub async fn run(ctx: &mut Ctx, a: AccessArgs) -> Result<i32> {
         "people" => json!({"access": {"mode": "people", "people": people}}),
         m => json!({"access": {"mode": m}}),
     };
+    let got = ctx.http.patch(&session_path(&sid, ""), &body).await.map_err(crate::error::access_change)?;
+    // Only the owner changes access, so the secrets are theirs; said once the change is made.
     if mode != "owner" {
         ctx.note(SHARED_WARNING);
     }
-    let got = ctx.http.patch(&session_path(&sid, ""), &body).await.map_err(crate::error::access_change)?;
     let (session, usable) = read_session(&sid, &got)?;
     if usable {
         crate::cache::upsert_session(ctx.http.api_url(), &session);
@@ -103,9 +104,9 @@ async fn get(ctx: &Ctx, sid: &str) -> Result<Session> {
     Ok(read_session(sid, &ctx.http.get(&session_path(sid, ""), &[]).await?)?.0)
 }
 
-/// The session from a `GET` or `PATCH`, and whether you may use it. An admin
-/// who may change the access but not use the session gets no session back
-/// (`session: null`), only its access.
+/// The session from a `GET` or `PATCH`, and whether you may use it. A server
+/// from before owner-first access answered an admin outside the session with
+/// no session (`session: null`), only its access.
 fn read_session(sid: &str, got: &Value) -> Result<(Session, bool)> {
     if got.get("session").is_some_and(Value::is_null) {
         let mut session = Session { id: sid.to_string(), ..Default::default() };

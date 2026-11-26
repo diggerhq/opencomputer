@@ -252,7 +252,7 @@ pub enum Command {
     Secrets(SecretsCommand),
     /// Set a session's title
     Rename(RenameArgs),
-    /// Show or change who may use a session
+    /// Show who may use a session; its owner changes it
     #[command(override_usage = "opc access <ID> [owner | org | people <USER>...] [--add <USER>] [--remove <USER>]")]
     Access(AccessArgs),
     /// Archive a session
@@ -267,7 +267,7 @@ pub enum Command {
     Push(PushArgs),
     /// Copy a directory or file from a session's workspace
     Pull(PullArgs),
-    /// Open a shell in a session's workspace
+    /// Open a shell in a session's workspace (its owner and the people it is shared with by name)
     Shell(ShellArgs),
     /// Log in
     Login(LoginArgs),

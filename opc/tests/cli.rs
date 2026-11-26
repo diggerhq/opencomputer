@@ -552,7 +552,10 @@ fn access_refused_says_who_may_change_it() {
     assert_eq!(o.code, 3, "{}", o.stderr);
     let e = o.err_json();
     assert_eq!((e["error"]["code"].as_str(), e["error"]["reason"].as_str()), (Some("forbidden"), Some("not_member")));
-    assert!(e["error"]["message"].as_str().unwrap().contains("only its owner"), "{e}");
+    assert!(e["error"]["message"].as_str().unwrap().contains("only its owner can"), "{e}");
+    assert!(!e["error"]["message"].as_str().unwrap().contains("admin"), "{e}");
+    // Refused, so nothing was shared: no warning about the owner's secrets.
+    assert!(!o.stderr.contains("secrets and subscription"), "{}", o.stderr);
     assert_eq!(fake.session(&sid)["access"]["mode"], "org");
 }
 
