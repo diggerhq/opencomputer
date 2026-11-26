@@ -3,6 +3,7 @@
 
 import type { Actor, Answer, ApiEvent, Ask, EventPage, IfBusy, InboxEntry, PlaceRow, SessionRow, TurnSummary } from "../types.js";
 import { clone, isPerson, Refusal, type Ctx } from "./ctx.js";
+import type { FakeAsk } from "./api.js";
 
 export interface Entry {
   id: string;
@@ -138,7 +139,7 @@ export class Log {
   }
 
   /** `Org.createSession` (section 40.1): idempotent on `id`. */
-  create(body: { id?: string; input?: string; turnId?: string; trackId?: string | null; role?: string }, by: string, actor: Actor, parent: string | null = null): { status: number; body: unknown } {
+  create(body: { id?: string; input?: string; turnId?: string; trackId?: string | null; role?: string; model?: string; effort?: string; mode?: string }, by: string, actor: Actor, parent: string | null = null): { status: number; body: unknown } {
     const { org, ctx } = { org: this.ctx.org, ctx: this.ctx };
     const sid = body.id ?? ctx.id("cs");
     const turnId = body.turnId ?? ctx.id("tn", 12);
@@ -151,7 +152,9 @@ export class Log {
     if (typeof body.input !== "string" || !body.input) throw new Refusal("invalid_request", "input is required");
     if (body.trackId) org.need("track", body.trackId);
     org.tx(() => {
-      this.insert(sid, { role: body.role === "start" ? "start" : null, createdBy: by, trackId: body.trackId ?? null, parent });
+      const row = this.insert(sid, { role: body.role === "start" ? "start" : null, createdBy: by, trackId: body.trackId ?? null, parent });
+      if (body.model || body.effort || body.mode)
+        row.settings = { ...row.settings, model: body.model ?? null, effort: body.effort ?? null, ...(body.mode ? { mode: body.mode } : {}) };
       this.accept(sid, { id: turnId, kind: "turn", input: body.input! }, by, actor);
     });
     return reply(false);
@@ -388,7 +391,7 @@ export class Log {
     });
   }
 
-  ask(sid: string, a: { kind: "approval"; title: string; command?: string } | { kind: "question"; question: string; options: string[] }, at?: number): string {
+  ask(sid: string, a: FakeAsk, at?: number): string {
     const { org } = this.ctx;
     const s = this.sess(sid);
     const turn = s.turn;
@@ -404,12 +407,21 @@ export class Log {
       closedAt: null,
       closedBy: null,
       answer: null,
-      approval: a.kind === "approval" ? { toolName: "Bash", title: a.title, command: a.command ?? null, input: a.command ? { command: a.command } : {} } : null,
+      approval:
+        a.kind === "approval"
+          ? {
+              toolName: a.toolName ?? "Bash",
+              title: a.title,
+              command: a.command ?? null,
+              input: a.input ?? (a.command ? { command: a.command } : {}),
+              ...(a.alwaysAllows ? { alwaysAllows: a.alwaysAllows } : {}),
+            }
+          : null,
       question:
         a.kind === "question"
           ? { questions: [{ id: "q1", header: "Question", text: a.question, multiSelect: false, options: a.options.map((label) => ({ label, description: "" })) }] }
           : null,
-      secret: null,
+      secret: a.kind === "secret" ? { name: a.name, purpose: a.purpose ?? null, file: a.file ?? false } : null,
     };
     org.tx(() => {
       row.asks = [...row.asks, ask];

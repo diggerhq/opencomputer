@@ -41,6 +41,17 @@ const MUTATIONS: [method: string, path: RegExp, name: MutationName, arg: string 
   ["POST", /^\/work\/ops\/([^/]+)\/undo$/, "undo", "opId"],
 ];
 
+// A few of the server's models (managed-agents computer/capabilities.ts), for the pickers.
+const CAPABILITIES = {
+  models: [
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"], contextWindow: 1_000_000, default: true },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh", "max"], contextWindow: 1_000_000, default: false },
+    { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", efforts: ["low", "medium", "high"], contextWindow: 200_000, default: false },
+  ],
+  modes: ["default", "acceptEdits", "plan", "bypassPermissions"],
+  features: { steer: true },
+};
+
 const num = (v: string | null, d: number, max: number): number => {
   const n = v == null ? NaN : Number(v);
   return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : d;
@@ -66,6 +77,7 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
 
   // ---------- the feed and the occurrences
 
+  if (method === "GET" && path === "/capabilities") return { status: 200, body: { capabilities: CAPABILITIES } };
   if (method === "GET" && path === "/feed") {
     const kinds = q.get("kinds");
     return { status: 200, body: await org.feed({ after: q.get("after"), kinds: kinds ? kinds.split(",").filter(Boolean) : null, sum: q.get("sum") === "1" }) };
@@ -92,6 +104,12 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
         if (typeof body.title === "string") mutations.run(me, "thread.rename", { sid, title: body.title });
         if (body.archived === true) mutations.run(me, "thread.done", { sid });
         if (body.archived === false) mutations.run(me, "thread.reopen", { sid });
+        // The model, effort or mode (spec 19.1); the fake takes any.
+        const settings = Object.fromEntries((["model", "effort", "mode"] as const).filter((k) => typeof body[k] === "string").map((k) => [k, body[k] as string]));
+        if (Object.keys(settings).length) {
+          row.settings = { ...row.settings, ...settings };
+          org.touch(row);
+        }
         if (body.metadata && typeof body.metadata === "object") {
           row.metadata = { ...row.metadata, ...(body.metadata as Record<string, string>) };
           org.touch(row);
@@ -99,6 +117,12 @@ async function handle(ctx: Ctx, method: string, url: URL, headers: Headers, body
       });
       return { status: 200, body: { session: clone(row) } };
     }
+  }
+  // A secret is taken and dropped: the fake keeps no value.
+  if (method === "PUT" && (m = /^\/sessions\/([^/]+)\/secrets\/([^/]+)$/.exec(path))) {
+    org.need("session", decodeURIComponent(m[1]));
+    if (typeof body.value !== "string" || !body.value) throw new Refusal("invalid_request", "value is required");
+    return { status: 204 };
   }
   if (method === "GET" && (m = /^\/sessions\/([^/]+)\/events$/.exec(path))) {
     const tail = q.get("tailTurns");

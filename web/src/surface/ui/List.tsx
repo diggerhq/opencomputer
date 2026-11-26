@@ -5,6 +5,7 @@ import {
 } from '@tanstack/react-virtual'
 import { useCallback, useRef, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useList, useS, useSurface } from '../hooks'
 import type { ListView, ThreadView, TrackView } from '../store/views'
@@ -179,6 +180,7 @@ export function List() {
         ? `track:${s.loc.track}`
         : null,
   )
+  const synced = useS((s) => s.synced)
   const ref = useRef<HTMLDivElement>(null)
   const rows = rowsOf(list, openTracks, trackEarlierOpen, earlierOpen, more)
 
@@ -286,6 +288,22 @@ export function List() {
         )
     }
   }
+
+  if (!rows.length)
+    return (
+      <div className="flex-1 px-4 pt-3" data-slot="surface-list">
+        {synced ? (
+          <p className="text-muted-foreground text-[13px]">Nothing here yet.</p>
+        ) : (
+          // Held rows are drawn at once; this is only a first visit.
+          <div className="space-y-2 pt-1" aria-label="Loading">
+            {[70, 55, 62].map((w) => (
+              <Skeleton key={w} className="h-4" style={{ width: `${w}%` }} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
 
   return (
     <>

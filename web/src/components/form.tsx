@@ -19,6 +19,7 @@ export function Select({
   placeholder,
   disabled,
   className,
+  onEscapeKeyDown,
 }: {
   value: string
   onValueChange: (value: string) => void
@@ -30,6 +31,8 @@ export function Select({
   placeholder?: string
   disabled?: boolean
   className?: string
+  // For a screen with its own Escape handling, to close only the menu.
+  onEscapeKeyDown?: (e: KeyboardEvent) => void
 }) {
   return (
     <SelectPrimitive.Root
@@ -56,6 +59,7 @@ export function Select({
           sideOffset={4}
           // Don't let closing this menu dismiss a parent Dialog (floating-layer.ts).
           onPointerDownOutside={markFloatingLayerPointerDismiss}
+          onEscapeKeyDown={onEscapeKeyDown}
           className="bg-popover text-popover-foreground ring-foreground/10 shadow-overlay data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 z-50 max-h-(--radix-select-content-available-height) min-w-(--radix-select-trigger-width) origin-(--radix-select-content-transform-origin) overflow-hidden rounded-lg p-1 ring-1 duration-100"
         >
           <SelectPrimitive.Viewport>

@@ -32,6 +32,7 @@ import {
 } from './kit'
 import { AgentMarkdown } from '@/managed-agents/AgentMarkdown'
 import { Conversation } from './Conversation'
+import { SettingsPickers } from './SettingsPickers'
 
 const DocEditor = lazy(() =>
   import('./DocEditor').then((m) => ({ default: m.DocEditor })),
@@ -273,6 +274,19 @@ function Activity({ track }: { track: TrackView }) {
         placeholder="Message this track…"
         onSend={(text) => surface.send(track.agentSession, text)}
         className={COMPOSER}
+        tools={
+          track.agent &&
+          !track.agent.origin.slack && (
+            <SettingsPickers
+              value={{
+                model: track.agent.settings.model ?? undefined,
+                effort: track.agent.settings.effort ?? undefined,
+                mode: track.agent.settings.mode,
+              }}
+              onChange={(p) => surface.setSettings(track.agentSession, p)}
+            />
+          )
+        }
       />
     </>
   )

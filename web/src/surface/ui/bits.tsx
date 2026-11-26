@@ -120,6 +120,7 @@ export function Composer({
   autoFocus,
   rows = 1,
   className,
+  tools,
 }: {
   draftKey: string
   placeholder: string
@@ -127,6 +128,8 @@ export function Composer({
   autoFocus?: boolean
   rows?: number
   className?: string
+  // Beside the send button, under the text: the settings pickers.
+  tools?: ReactNode
 }) {
   const surface = useSurface()
   const text = useS((s) => s.drafts[draftKey] ?? '')
@@ -142,11 +145,23 @@ export function Composer({
     onSend(t, { meta: meta.current })
     meta.current = false
   }
+  const button = (
+    <Button
+      size="icon-sm"
+      aria-label="Send"
+      title="Send (Enter)"
+      disabled={!text.trim()}
+      onClick={send}
+    >
+      {I.up}
+    </Button>
+  )
   return (
     <div
       ref={ref}
       className={cn(
-        'bg-card focus-within:border-ring/60 flex flex-none items-end gap-1 rounded-xl border p-1 pl-1 shadow-sm transition-colors',
+        'bg-card focus-within:border-ring/60 flex flex-none gap-1 rounded-xl border p-1 pl-1 shadow-sm transition-colors',
+        tools ? 'flex-col' : 'items-end',
         className,
       )}
     >
@@ -163,15 +178,14 @@ export function Composer({
         }}
         className="min-h-8 flex-1 border-0 bg-transparent px-2.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
-      <Button
-        size="icon-sm"
-        aria-label="Send"
-        title="Send (Enter)"
-        disabled={!text.trim()}
-        onClick={send}
-      >
-        {I.up}
-      </Button>
+      {tools ? (
+        <div className="flex items-center gap-1">
+          <div className="min-w-0 flex-1">{tools}</div>
+          {button}
+        </div>
+      ) : (
+        button
+      )}
     </div>
   )
 }

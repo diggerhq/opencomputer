@@ -5,7 +5,7 @@
 //
 // Sending. One sender (under `lock('oc-queue')`) drains the list in lanes: the mutations in order,
 // each after the previous is answered; each session's writes (create, turns, answers, dismiss,
-// interrupt) in order the same way; the lanes in parallel. An entry that names a row an earlier
+// interrupt, settings) in order the same way; the lanes in parallel. An entry that names a row an earlier
 // entry would create (a session by `createSession`; a track and its agent's session by
 // `track.create`; a result; a proposal) waits until that entry is answered 2xx.
 //
@@ -30,7 +30,7 @@
 //   changed since the request was sent and its `inbox` does not hold the turn. (An accepted turn
 //   always changes the session's row, so none of this can strand it.) An `inbox` entry with an
 //   `error` fails it.
-// - `answer`, `dismiss`, `interrupt`: on the 2xx reply.
+// - `answer`, `dismiss`, `interrupt`, `settings`: on the 2xx reply.
 // `settled` of a session write resolves on its 2xx reply: from there the server holds it.
 //
 // `mutate` and the session writes throw before `ready`: the list is read from storage first.
@@ -131,7 +131,8 @@ function names(p: Pending): string[] {
 function request(e: Stored): [path: string, init: RequestInit] {
   const p = e.p;
   const headers: Record<string, string> = { "content-type": "application/json", "x-oc-trace": e.trace, "Idempotency-Key": e.idem };
-  const post = (path: string, body: unknown): [string, RequestInit] => [path, { method: "POST", headers, body: JSON.stringify(body) }];
+  const write = (method: string, path: string, body: unknown): [string, RequestInit] => [path, { method, headers, body: JSON.stringify(body) }];
+  const post = (path: string, body: unknown) => write("POST", path, body);
   switch (p.kind) {
     case "mutation": {
       const [method, template] = ROUTES[p.name];
@@ -153,6 +154,8 @@ function request(e: Stored): [path: string, init: RequestInit] {
       return post(`/sessions/${p.sessionId}/asks/${p.askId}/dismiss`, {});
     case "interrupt":
       return post(`/sessions/${p.sessionId}/interrupt`, {});
+    case "settings":
+      return write("PATCH", `/sessions/${p.sessionId}`, p.settings);
   }
 }
 

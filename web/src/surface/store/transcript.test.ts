@@ -41,3 +41,18 @@ describe('steps', () => {
     expect(groups.map((g) => g.settled)).toEqual([true, false])
   })
 })
+
+describe('notes', () => {
+  it('thinking is its own item, a subagent’s is not shown', () => {
+    const items = buildTranscript([
+      ev('reasoning.completed', 't1', { blockId: 'b1', text: 'Look at the logs first.', durationMs: 4200, redacted: false }),
+      ev('reasoning.completed', 't1', { blockId: 'b2', text: 'inner', parentCallId: 'c1', durationMs: 10, redacted: false }),
+    ])
+    expect(items).toMatchObject([{ kind: 'thinking', text: 'Look at the logs first.', ms: 4200 }])
+  })
+
+  it('a compaction is a muted line', () => {
+    const items = buildTranscript([ev('session.compacted', 't1', { beforeTokens: 1000, afterTokens: null, auto: true })])
+    expect(items).toMatchObject([{ kind: 'line', text: 'Context compacted', tone: 'muted' }])
+  })
+})

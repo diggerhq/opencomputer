@@ -1,12 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
+import { Loader2 } from 'lucide-react'
 import { OrgSwitcher } from '@/components/app-shell'
+import { BillingWarningBanner, HaltModal } from '@/components/billing-surfaces'
+import { Button } from '@/components/ui/button'
 import { useAuth } from '@/hooks/useAuth'
+import { AccountMenu } from './AccountMenu'
 import type { Host } from './host'
 import { Surface } from './Surface'
 
 // The web tab (spec 25): a lazy route of the dashboard, inside its auth gate,
-// that owns the whole page. With `?fake` it runs against the fake server
-// instead of the API.
+// that owns the whole page. In development and previews, `?fake` runs it
+// against the fake server instead of the API; a production build has no fake.
 
 const BASE = '/computer/work'
 // The Computer API takes the dashboard's cookie (spec 37); Live is `${API}/live`.
@@ -18,8 +22,10 @@ function login(): Promise<never> {
   return new Promise(() => {})
 }
 
+const FAKE_ALLOWED = import.meta.env.DEV || import.meta.env.VITE_PREVIEW === '1'
+
 async function makeHost(fake: string | null, email?: string): Promise<Host> {
-  if (fake !== null || import.meta.env.VITE_PREVIEW === '1') {
+  if (FAKE_ALLOWED && (fake !== null || import.meta.env.VITE_PREVIEW === '1')) {
     const { fakeHost } = await import('./host-fake')
     return fakeHost({ base: BASE, seed: fake === 'empty' ? 'empty' : 'demo' })
   }
@@ -60,7 +66,12 @@ export default function WebSurface() {
   // One host per org: switching org clears the query cache (useAuth), so the
   // surface is made again for the new principal. Never refetched otherwise —
   // a second fake server would leave `window.__fake` pointing at one nothing uses.
-  const { data: host } = useQuery({
+  const {
+    data: host,
+    isError,
+    refetch,
+    isFetching,
+  } = useQuery({
     queryKey: ['surface-host', user?.orgId, fake],
     queryFn: () => makeHost(fake, user?.email),
     enabled: !!user,
@@ -70,5 +81,37 @@ export default function WebSurface() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
-  return host ? <Surface host={host} account={<Org />} /> : null
+  if (host)
+    return (
+      <Surface
+        host={host}
+        account={<Org />}
+        me={<AccountMenu />}
+        banner={
+          <>
+            <BillingWarningBanner />
+            <HaltModal />
+          </>
+        }
+      />
+    )
+  return (
+    <div className="bg-background text-muted-foreground fixed inset-0 flex flex-col items-center justify-center gap-3 text-sm">
+      {isError ? (
+        <>
+          <p>Could not reach your computer.</p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isFetching}
+            onClick={() => void refetch()}
+          >
+            Try again
+          </Button>
+        </>
+      ) : (
+        <Loader2 className="size-5 animate-spin" aria-label="Loading" />
+      )}
+    </div>
+  )
 }
