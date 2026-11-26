@@ -93,6 +93,15 @@ export const owed = {
     const row = sql.exec<{ body: string | null }>("SELECT body FROM _owed WHERE key = ?", key)[0];
     return row?.body ? JSON.parse(row.body) : undefined;
   },
+  /** Whether a group has a call owed. */
+  pending(sql: Sql, group: string): boolean {
+    return sql.exec("SELECT 1 FROM _owed WHERE grp = ? LIMIT 1", group).length > 0;
+  },
+  /** The body of a group's latest call to go to the dead list, if one has. */
+  lastDead(sql: Sql, group: string): unknown {
+    const row = sql.exec<{ body: string | null }>("SELECT body FROM _dead WHERE grp = ? ORDER BY n DESC LIMIT 1", group)[0];
+    return row?.body ? JSON.parse(row.body) : undefined;
+  },
   /** The groups with a call owed. */
   groups(sql: Sql): string[] {
     return sql.exec<{ grp: string }>("SELECT DISTINCT grp FROM _owed ORDER BY grp").map((row) => row.grp);

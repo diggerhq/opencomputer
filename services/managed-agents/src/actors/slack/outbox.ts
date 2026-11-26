@@ -8,8 +8,11 @@ const PROCESS_SCHEDULE = [2_000, 4_000, 8_000, 16_000];
 
 /** An item from Slack owed a `process` call, in its thread's order (40.11 step 2), in the caller's transaction. */
 export function oweProcess(tx: Sql, threadKey: string, job: unknown): void {
-  owed.add(tx, { group: `thread:${threadKey}`, call: "process", body: job, schedule: PROCESS_SCHEDULE });
+  owed.add(tx, { group: processGroup(threadKey), call: "process", body: job, schedule: PROCESS_SCHEDULE });
 }
+
+/** The owed group of a thread's items (`<channel>:<thread ts>`). */
+export const processGroup = (threadKey: string): string => `thread:${threadKey}`;
 
 /** A post's waits between tries (a rate limit's Retry-After when longer), about nine minutes in all, then the dead list. */
 export const POST_SCHEDULE = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];

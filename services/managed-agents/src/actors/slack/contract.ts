@@ -32,8 +32,11 @@ export type BillingNotice =
 export type BillingNoticeResult = "shown" | "known" | "missed";
 
 export interface SlackRpc {
-  /** Deduplicated, queued; the edge acknowledges Slack after it. */
-  accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void>;
+  /**
+   * Deduplicated, queued; the edge acknowledges Slack after it. `unlinked`: an event for a workspace
+   * this organization is not linked to (any more), nothing kept; the edge's remembered link was stale.
+   */
+  accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<{ unlinked?: true }>;
   /** An interaction, answered while Slack waits: a modal's or its button's goes to Computer; any other is `accept`ed. */
   interact(id: string, interaction: unknown): Promise<SlackModalReply>;
   install(p: Principal, grant: SlackGrant): Promise<void>;

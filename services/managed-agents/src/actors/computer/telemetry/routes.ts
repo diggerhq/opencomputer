@@ -20,7 +20,7 @@ export interface ReceivedMessage {
   t: GatewayTelemetry;
   /**
    * The organization the workspace is linked to is known: emit `message.received`
-   * (and `message.ignored` when none), with which cache answered (team-cache.ts).
+   * (and `message.ignored` when none), with which cache answered (http/slack/team-orgs.ts).
    */
   resolved(accountId: string | null, cached?: "memory" | "colo" | null): void;
 }

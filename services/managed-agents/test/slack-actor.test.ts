@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SlackDurableObject } from "../src/actors/slack/durable-object.js";
 import { seal } from "../src/crypto/seal.js";
-import { routeSlackPublic, type SlackRouteEnv } from "../src/http/slack/webhooks.js";
+import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../src/http/slack/webhooks.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../src/ids/slack-ids.js";
 import type { Call, FakeComputer, FakeOrg, FakeSessionLog } from "./fixtures/slack-test-worker.js";
 
@@ -26,12 +26,12 @@ type Exec = (query: string, ...params: unknown[]) => Record<string, unknown>[];
 const inSlack = <T>(org: string, fn: (exec: Exec) => T | Promise<T>): Promise<T> =>
   runInDurableObject(slackOf(org), (_instance, state) => fn((q, ...p) => state.storage.sql.exec(q, ...(p as never[])).toArray() as Record<string, unknown>[]));
 
-/** A workspace linked as `install` leaves it: team T1, the bot UBOT, the token sealed for the organization. */
-async function linked(org: string): Promise<void> {
-  const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T1`);
+/** A workspace linked as `install` leaves it: team T1 (or `team`), the bot UBOT, the token sealed for the organization. */
+async function linked(org: string, team = "T1"): Promise<void> {
+  const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0${team}`);
   await slackOf(org).forHost(); // migrations
   await inSlack(org, (exec) => {
-    for (const [key, value] of [["slackTeamId", "T1"], ["slackTeamName", "Acme"], ["slackBotUserId", "UBOT"], ["slackBotToken", token]]) {
+    for (const [key, value] of [["slackTeamId", team], ["slackTeamName", "Acme"], ["slackBotUserId", "UBOT"], ["slackBotToken", token]]) {
       exec("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
     }
     exec("INSERT OR REPLACE INTO meta (k, imported) VALUES (1, 1)");
@@ -50,7 +50,7 @@ async function settled(org: string, tries = 200): Promise<void> {
 
 let n = 0;
 /** A Slack event envelope of a message. */
-function message(o: { text: string; ts: string; thread?: string; user?: string; channel?: string; mention?: boolean; id?: string }) {
+function message(o: { text: string; ts: string; thread?: string; user?: string; channel?: string; mention?: boolean; id?: string; team?: string }) {
   n += 1;
   return {
     kind: "event" as const,
@@ -58,7 +58,7 @@ function message(o: { text: string; ts: string; thread?: string; user?: string; 
     body: {
       type: "event_callback",
       event_id: o.id ?? `Ev${n}`,
-      team_id: "T1",
+      team_id: o.team ?? "T1",
       event: {
         type: o.mention === false ? "message" : "app_mention",
         channel: o.channel ?? "C1",
@@ -191,6 +191,74 @@ describe("the Slack actor: accept, the queue, turns", () => {
     expect(await slackOf(org).userName("U2")).toBe("Person U2");
     // Not linked: no token, so Slack is not asked.
     expect(await slackOf("org_rpc_unlinked").api("auth.test", {})).toEqual({ ok: false, error: "not_linked" });
+  });
+});
+
+describe("the Slack actor: the working status", () => {
+  /** Slack as the fake answers it, recorded: U1 a full member, a `UGUEST` a guest. */
+  const people = (method: string, body: Record<string, unknown>) =>
+    method === "users.info" ? { ok: true, user: { id: body.user, team_id: "T1", real_name: "P", profile: { email: "p@x" }, is_restricted: String(body.user).startsWith("UGUEST") } } : undefined;
+  const statuses = (calls: Recorded) => calls.filter(([m]) => m === "agents.sessions.setStatus").map(([, b]) => b.status);
+  async function until(fn: () => Promise<boolean>, tries = 200): Promise<void> {
+    for (let i = 0; i < tries && !(await fn()); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  it("starts when the message is accepted, before SessionLog has taken the turn, and only once", async () => {
+    const org = "org_ack_early";
+    await linked(org);
+    const seen: Recorded = [];
+    const calls = await recordSlack(org, people);
+    const sid = await sessionIdFor("T1:C1:1100.1");
+    await logOf(sid).set({ delayMs: 600 });
+    await slackOf(org).accept(message({ text: "hi", ts: "1100.1" }));
+    await until(async () => (seen.push(...(await calls())), statuses(seen).includes("processing")));
+    expect(statuses(seen)).toEqual(["processing"]);
+    // SessionLog has not answered yet: the `process` call is still owed.
+    expect(await inSlack(org, (exec) => exec("SELECT COUNT(*) AS n FROM _owed WHERE call = 'process'"))).toEqual([{ n: 1 }]);
+    await settled(org);
+    seen.push(...(await calls()));
+    expect(statuses(seen)).toEqual(["processing"]);
+    expect(await inSlack(org, (exec) => exec("SELECT thread_key, ts FROM acks"))).toEqual([{ thread_key: "T1:C1:1100.1", ts: "1100.1" }]);
+  });
+
+  it("is not started again when the message's `process` is retried", async () => {
+    const org = "org_ack_retry";
+    await linked(org);
+    const calls = await recordSlack(org, people);
+    const sid = await sessionIdFor("T1:C1:1110.1");
+    await logOf(sid).set({ failures: 1 });
+    await slackOf(org).accept(message({ text: "hi", ts: "1110.1" }));
+    await settled(org, 400);
+    expect(await callsOf(logOf(sid))).toHaveLength(2);
+    expect(statuses(await calls())).toEqual(["processing"]);
+  });
+
+  it("comes off a turn that does not run: refused by SessionLog, or from someone who is not a member", async () => {
+    const org = "org_ack_refused";
+    await linked(org);
+    const calls = await recordSlack(org, people);
+    const seen: Recorded = [];
+    await logOf(await sessionIdFor("T1:C1:1120.1")).set({ answer: { ok: false, code: "inbox_full" } });
+    await slackOf(org).accept(message({ text: "hi", ts: "1120.1" }));
+    await slackOf(org).accept(message({ text: "hi", ts: "1130.1", user: "UGUEST9" }));
+    await settled(org);
+    await until(async () => (seen.push(...(await calls())), seen.filter(([m]) => m === "reactions.remove").length === 2));
+    for (const ts of ["1120.1", "1130.1"]) {
+      const status = seen.filter(([m, b]) => m === "agents.sessions.setStatus" && b.thread_ts === ts).map(([, b]) => b.status);
+      expect(status).toEqual(["processing", ""]);
+      expect(seen.filter(([m, b]) => m === "reactions.remove" && b.timestamp === ts).map(([, b]) => b.name)).toEqual(["eyes"]);
+    }
+    expect(await inSlack(org, (exec) => exec("SELECT * FROM acks"))).toEqual([]);
+  });
+
+  it("is not started for a command", async () => {
+    const org = "org_ack_command";
+    await linked(org);
+    const calls = await recordSlack(org, people);
+    await slackOf(org).accept(message({ text: "!stop", ts: "1140.1" }));
+    await settled(org);
+    expect(statuses(await calls())).toEqual([]);
+    expect(await inSlack(org, (exec) => exec("SELECT * FROM acks"))).toEqual([]);
   });
 });
 
@@ -393,13 +461,13 @@ describe("the Slack actor: install, unlink, import", () => {
 
 /** Slack's Web API replaced inside the object: each call recorded, answered by `answer` (default: ok, a DM channel D1). */
 type Recorded = [string, any][];
-async function recordSlack(org: string, answer?: (method: string) => Record<string, unknown> | undefined): Promise<() => Promise<Recorded>> {
+async function recordSlack(org: string, answer?: (method: string, body: Record<string, unknown>) => Record<string, unknown> | undefined): Promise<() => Promise<Recorded>> {
   const inside = <T>(fn: (instance: any) => T) => runInDurableObject(slackOf(org), fn as never) as Promise<T>;
   await inside((instance) => {
     instance.recorded = [];
-    instance.slack = async (method: string, body: unknown) => {
+    instance.slack = async (method: string, body: Record<string, unknown>) => {
       instance.recorded.push([method, body]);
-      return answer?.(method) ?? (method === "conversations.open" ? { ok: true, channel: { id: "D1" } } : { ok: true, ts: "9.9" });
+      return answer?.(method, body) ?? (method === "conversations.open" ? { ok: true, channel: { id: "D1" } } : { ok: true, ts: "9.9" });
     };
   });
   return () => inside((instance) => instance.recorded.splice(0) as Recorded);
@@ -497,7 +565,9 @@ describe("the edge's Slack routes", () => {
   it("handles an un-imported organization's first Slack event, not drops it", async () => {
     // The workspace is claimed only in Computer's old router; its Slack state is still Computer's.
     const org = "org_lazy";
-    await slackOf("slack-team:T1").releaseTeam("org_edge"); // the test above's link
+    // The test above's organization unlinks: the edge still remembers its link, which the actor answers `unlinked`.
+    await slackOf("slack-team:T1").releaseTeam("org_edge");
+    await inSlack("org_edge", (exec) => exec("DELETE FROM settings WHERE key IN ('slackTeamId', 'slackBotToken')"));
     const token = await seal("xoxb-test", bindings.BLUE_CHANNEL_ENCRYPTION_KEY, "slack-bot-token", `${org}\0T1`);
     await computerOf(org).set({ carry: { settings: { slackTeamId: "T1", slackBotUserId: "UBOT", slackBotToken: token }, people: [], links: [] } });
     await computerOf("computer-slack-team:T1").set({ teamAccount: org });
@@ -512,7 +582,68 @@ describe("the edge's Slack routes", () => {
     expect((await callsOf(logOf(await sessionIdFor(key)))).map((c) => (c.args[1] as { id: string }).id)).toEqual([await turnIdFor(key, "910.1")]);
     // Imported once, and the workspace now routes through the Slack actor's router.
     expect(await slackOf("slack-team:T1").teamOrg()).toBe(org);
-    await slackOf("slack-team:T1").releaseTeam(org);
+    expect(await unlinkFromDashboard(org)).toBe(204);
+    await computerOf("computer-slack-team:T1").set({ teamAccount: "" });
+  });
+
+  const configuredEnv = {
+    ...bindings,
+    SLACK_COMPUTER_SIGNING_SECRET: "shh",
+    SLACK_COMPUTER_CLIENT_ID: "id",
+    SLACK_COMPUTER_CLIENT_SECRET: "secret",
+    SLACK_COMPUTER_SCOPES: "chat:write",
+  } as unknown as SlackRouteEnv;
+
+  /** The dashboard's unlink, as a member of `org`: its status. */
+  async function unlinkFromDashboard(org: string): Promise<number | undefined> {
+    const member = { org, subject: "usr_admin", kind: "member" as const, via: "dashboard" as const, scopes: [], audiences: ["org"], admin: true, credential: { id: "k", expiresAt: null } };
+    return (await routeSlackDashboard(new Request("https://edge.test/v1/computer/slack", { method: "DELETE" }), configuredEnv, async () => member as never))?.status;
+  }
+
+  /** An event through the edge, for team TC; waits for what the edge does after answering Slack. */
+  async function deliver(ts: string): Promise<void> {
+    const e = message({ text: "cached", ts, team: "TC" });
+    const context = createExecutionContext();
+    expect((await routeSlackPublic(await signed(JSON.stringify(e.body), "shh"), configuredEnv, context))?.status).toBe(200);
+    await waitOnExecutionContext(context);
+  }
+  const received = (org: string) => inSlack(org, (exec) => exec("SELECT message_key FROM slack_messages ORDER BY message_key").map((r) => r.message_key));
+
+  it("remembers a workspace's organization (no router call for the next event) and recovers from a stale link at once", async () => {
+    const [a, b] = ["org_cache_a", "org_cache_b"];
+    await linked(a, "TC");
+    await linked(b, "TC");
+    await slackOf("slack-team:TC").claimTeam("TC", a);
+    await deliver("1200.1");
+    expect(await received(a)).toEqual(["C1:1200.1"]);
+
+    // The router moves behind the edge's back: the next event still goes where the edge remembered.
+    await slackOf("slack-team:TC").releaseTeam(a);
+    await slackOf("slack-team:TC").claimTeam("TC", b);
+    await deliver("1200.2");
+    expect(await received(a)).toEqual(["C1:1200.1", "C1:1200.2"]);
+    expect(await received(b)).toEqual([]);
+
+    // `a` is no longer linked to TC: it answers `unlinked`, and the edge asks the router again.
+    await inSlack(a, (exec) => exec("DELETE FROM settings WHERE key IN ('slackTeamId', 'slackBotToken')"));
+    await deliver("1200.3");
+    expect(await received(a)).toEqual(["C1:1200.1", "C1:1200.2"]);
+    expect(await received(b)).toEqual(["C1:1200.3"]);
+  });
+
+  it("forgets a workspace the dashboard unlinks, and never remembers an unlinked one", async () => {
+    const [b, c] = ["org_cache_b", "org_cache_c"];
+    expect(await unlinkFromDashboard(b)).toBe(204);
+    expect(await slackOf("slack-team:TC").teamOrg()).toBeNull();
+    await deliver("1210.1");
+    expect(await received(b)).toEqual(["C1:1200.3"]);
+
+    // Linked again elsewhere: the very next event goes there (no answer for TC was remembered).
+    await linked(c, "TC");
+    await slackOf("slack-team:TC").claimTeam("TC", c);
+    await deliver("1210.2");
+    expect(await received(c)).toEqual(["C1:1210.2"]);
+    await slackOf("slack-team:TC").releaseTeam(c);
   });
 });
 

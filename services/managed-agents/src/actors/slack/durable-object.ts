@@ -73,7 +73,7 @@ import {
 import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "../../slack-api/threads.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../../ids/slack-ids.js";
 import { links, settings, threads } from "./tables.js";
-import { owePost, oweProcess, postGroup } from "./outbox.js";
+import { owePost, oweProcess, postGroup, processGroup } from "./outbox.js";
 import { STEPS } from "./schema.js";
 import { tellBilling } from "./billing-notices.js";
 import { announce } from "./announcements.js";
@@ -97,7 +97,10 @@ const UNREACHABLE_TEXT = "The computer could not be reached, so this message did
 const REFUSED_TEXT = "This message did not run.";
 const FAILED_NOTICE = "Your computer could not start; messages wait until it does.";
 
-/** A message to process; `harness` from its `+claude` or `+codex` prefix. */
+/**
+ * A message to process; `harness` from its `+claude` or `+codex` prefix; `acked`: its working status
+ * was started when it was owed (`oweMessage`), so a turn that does not run takes it off (`withdraw`).
+ */
 type MessageJob = SlackMessageJob & { harness?: string };
 /** Any other item; tagged so a bare message (as Computer queued it) still reads. */
 type OtherJob = { item: "stop"; eventId: string; teamId: string; channelId: string; threadTs?: string; userId?: string } | { item: "interaction"; id: string; body: unknown };
@@ -122,6 +125,9 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   private readonly owedEmit: Emitter = (event, fields, level) => {
     this.emit(event, fields, level);
     if (event !== "owed.dead" || fields?.call !== "process") return;
+    // Given up: nothing will run, so a message's working status comes off.
+    const job = owed.lastDead(this.sql, String(fields.group ?? "")) as Job | undefined;
+    if (job && !isOther(job)) this.withdraw(job);
     const where = /^thread:([^:]+):(.*)$/.exec(String(fields.group ?? ""));
     const team = settings.get(this.sql, "slackTeamId");
     this.emit("queue.failed", {
@@ -132,6 +138,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     }, "error");
   };
   private access?: { teamId: string; threads: ThreadAccess };
+  /** Acknowledgements in flight, by `<channel>:<message ts>`: ordering only, so a withdrawal comes after its acknowledgement. */
+  private readonly acking = new Map<string, Promise<void>>();
   private token?: { sealed: string; plain: string };
   private importing: Promise<void> | undefined;
 
@@ -177,12 +185,14 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   // ------------------------------------------------------------------ accept (40.11 step 1)
 
-  async accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<void> {
+  async accept(e: { kind: "event" | "interaction"; id: string; body: unknown }): Promise<{ unlinked?: true }> {
     await this.ready();
     this.org();
     const now = Date.now();
+    const teamId = settings.get(this.sql, "slackTeamId");
+    if (e.kind === "event" && (!teamId || !settings.get(this.sql, "slackBotToken") || !isRecord(e.body) || e.body.team_id !== teamId)) return { unlinked: true };
     const seen = `slack:${e.kind}:${e.id}`;
-    if (idem.get(this.sql, seen, e.kind)) return;
+    if (idem.get(this.sql, seen, e.kind)) return {};
     let job: Job | null = null;
     let threadKey: string | null = null;
     let left: string | null = null;
@@ -192,40 +202,65 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     } else {
       const parsed = parseSlackEnvelope(e.body, now);
       if (parsed.kind === "message") {
-        const teamId = settings.get(this.sql, "slackTeamId");
-        if (parsed.job.teamId !== teamId || !settings.get(this.sql, "slackBotToken")) return;
+        if (parsed.job.teamId !== teamId) return { unlinked: true };
         const normalized = normalizeJob(parsed.job, settings.get(this.sql, "slackBotUserId") ?? "");
         if (normalized) {
           job = normalized;
           threadKey = `${normalized.channelId}:${normalized.threadTs}`;
         }
       } else if (parsed.kind === "member-left") {
-        if (parsed.teamId === settings.get(this.sql, "slackTeamId")) left = parsed.userId;
+        if (parsed.teamId === teamId) left = parsed.userId;
       } else if (parsed.kind === "stop") {
         job = { item: "stop", eventId: parsed.eventId, teamId: parsed.teamId, channelId: parsed.channelId, ...(parsed.threadTs ? { threadTs: parsed.threadTs } : {}), ...(parsed.userId ? { userId: parsed.userId } : {}) };
         threadKey = `${parsed.channelId}:${parsed.threadTs ?? ""}`;
       }
     }
-    this.sql.transaction(() => {
+    const acked = this.sql.transaction((): MessageJob | null => {
       idem.put(this.sql, seen, e.kind, null, DEDUP_TTL_MS);
       if (left) {
         // Work 077: whoever left is forgotten here, and their subscriptions go (Computer's).
         this.sql.exec("DELETE FROM people WHERE slack_user_id = ?", left);
         owed.add(this.sql, { group: `left:${left}`, key: `left:${left}`, call: "memberLeft", body: left });
       }
-      if (!job) return;
-      if (!isOther(job)) {
-        // Slack sends both `message` and `app_mention` for one mention, with different event ids: the first is the one.
-        this.sql.exec("DELETE FROM slack_messages WHERE received_at < ?", now - DEDUP_TTL_MS);
-        const fresh = this.sql.exec("INSERT OR IGNORE INTO slack_messages (message_key, received_at) VALUES (?, ?) RETURNING message_key", `${job.channelId}:${job.messageTs}`, now);
-        if (!fresh.length) return;
+      if (!job) return null;
+      if (isOther(job)) {
+        oweProcess(this.sql, threadKey!, job);
+        return null;
       }
-      oweProcess(this.sql, threadKey!, job);
+      // Slack sends both `message` and `app_mention` for one mention, with different event ids: the first is the one.
+      this.sql.exec("DELETE FROM slack_messages WHERE received_at < ?", now - DEDUP_TTL_MS);
+      const fresh = this.sql.exec("INSERT OR IGNORE INTO slack_messages (message_key, received_at) VALUES (?, ?) RETURNING message_key", `${job.channelId}:${job.messageTs}`, now);
+      return fresh.length ? this.oweMessage(job) : null;
     });
     if (left) this.access?.threads.forget(left);
+    // The working status before the queue gets to the message, beside it, never holding it up.
+    if (acked) this.startAcknowledgement(acked);
     this.ctx.waitUntil(this.sendOwedNow());
+    return {};
   }
 
+  /**
+   * A message owed a `process` call, in the caller's transaction. One that will run as a turn (not a
+   * `!` command; addressed to the app, or in a thread that has a session or is about to) is marked
+   * `acked` and recorded in `acks`; the caller starts its working status after the transaction
+   * (`startAcknowledgement`). The marked job when it is to be acknowledged, else null.
+   */
+  private oweMessage(job: MessageJob): MessageJob | null {
+    const { acked: _acked, ackIndicator: _indicator, ...plain } = job;
+    const threadKey = `${job.channelId}:${job.threadTs}`;
+    const key = sessionKey(job.teamId, job.channelId, job.threadTs);
+    const turn =
+      !slackCommand(commandWord(commandText(job.text))) &&
+      (job.mentioned || job.channelType === "im" || threads.sessionOf(this.sql, key) !== undefined || owed.pending(this.sql, processGroup(threadKey)));
+    if (!turn) {
+      oweProcess(this.sql, threadKey, plain);
+      return null;
+    }
+    const marked: MessageJob = { ...plain, acked: true };
+    this.sql.exec("INSERT INTO acks (thread_key, user_id, ts) VALUES (?, ?, ?) ON CONFLICT(thread_key) DO UPDATE SET user_id = excluded.user_id, ts = excluded.ts", key, job.userId, job.messageTs);
+    oweProcess(this.sql, threadKey, marked);
+    return marked;
+  }
 
 
   /**
@@ -272,23 +307,32 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
 
   protected async process(job: Job): Promise<void> {
     if (isOther(job)) return this.processOther(job);
+    // A message that did not become a turn (refused, not a member, ...): its working status comes off.
+    if (!(await this.message(job))) this.withdraw(job);
+  }
+
+  /** A message: a command, or a turn in its thread's session. Whether SessionLog took a turn. */
+  private async message(job: MessageJob): Promise<boolean> {
     const teamId = settings.get(this.sql, "slackTeamId");
-    if (!teamId || teamId !== job.teamId) return;
+    if (!teamId || teamId !== job.teamId) return false;
     const key = sessionKey(teamId, job.channelId, job.threadTs);
     const known = threads.sessionOf(this.sql, key);
-    if (!known && !job.mentioned && job.channelType !== "im") return;
+    if (!known && !job.mentioned && job.channelType !== "im") return false;
 
     const p = await this.principal(job.userId);
     if (!p) {
       if (job.mentioned || job.channelType === "im") await this.ephemeral(job, ONLY_MEMBERS_TEXT);
-      return;
+      return false;
     }
     this.ctx.waitUntil(this.registerPerson(job.userId).catch(() => {}));
 
     // A command is a call, not a turn (40.11 step 3).
     const text = commandText(job.text);
     const command = slackCommand(commandWord(text));
-    if (command) return this.command(command, text, job, key, known, p);
+    if (command) {
+      await this.command(command, text, job, key, known, p);
+      return false;
+    }
 
     // A message that starts a thread: the session (idempotent on its id, so a retry creates it again), then the thread recorded.
     let sid = known;
@@ -304,7 +348,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       });
       if (!created.ok) {
         console.warn(JSON.stringify({ level: "warn", event: "slack.session_refused", code: created.code }));
-        return;
+        return false;
       }
       threads.put(this.sql, key, sid);
     }
@@ -329,15 +373,12 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     };
     const result = await logOf(this.env, sid).accept(p, { id, kind: "turn", body });
     await this.afterTurn(job, key, result, upTo);
+    return result.ok;
   }
 
   /** What SessionLog answered a turn: delivered, held (`forbidden`), or the person told. */
   protected async afterTurn(job: MessageJob, key: string, result: AcceptResult, upTo: number): Promise<void> {
-    if (result.ok) {
-      this.sql.exec("DELETE FROM session_context WHERE key = ? AND seq <= ?", key, upTo);
-      this.ctx.waitUntil(this.acknowledge(job, key).catch(() => {}));
-      return;
-    }
+    if (result.ok) return void this.sql.exec("DELETE FROM session_context WHERE key = ? AND seq <= ?", key, upTo);
     if (result.code === "inbox_full") return void (await this.ephemeral(job, INBOX_FULL_TEXT));
     if (result.code === "forbidden") return this.forbidden(job, key);
     console.warn(JSON.stringify({ level: "warn", event: "slack.turn_refused", code: result.code }));
@@ -552,8 +593,9 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (!closed) return;
     if (verb === "allow") {
       // The held message runs, in its thread's order.
-      const held = JSON.parse(request.held) as MessageJob;
-      oweProcess(this.sql, `${held.channelId}:${held.threadTs}`, held);
+      // Its working status came off when it was held: it starts again.
+      const acked = this.sql.transaction(() => this.oweMessage(JSON.parse(request.held) as MessageJob));
+      if (acked) this.startAcknowledgement(acked);
       this.ctx.waitUntil(this.sendOwedNow());
     }
     if (request.messageTs) await this.slack("chat.update", { channel: where.channelId, ts: request.messageTs, ...answeredPost(verb === "allow" ? grantedText(userId, requester) : declinedText(requester)) });
@@ -726,9 +768,50 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     await this.slack("chat.postEphemeral", { channel: where.channelId, user: where.userId, text, ...inThread });
   }
 
-  /** The working status on the thread, or 👀 where that is unavailable; `notify` takes it off. */
+  /**
+   * A message's working status, started off the caller's path when it is owed (`oweMessage`), once:
+   * a retried `process` does not start it again. `withdraw` (the turn did not run) and `notify` (Org's
+   * echo of a refused one) take it off.
+   */
+  private startAcknowledgement(job: MessageJob): void {
+    const at = `${job.channelId}:${job.messageTs}`;
+    const ack = this.acknowledge(job, sessionKey(job.teamId, job.channelId, job.threadTs))
+      .catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.ack_failed", message: errorText(error) })))
+      .finally(() => {
+        if (this.acking.get(at) === ack) this.acking.delete(at);
+      });
+    this.acking.set(at, ack);
+    this.ctx.waitUntil(ack);
+  }
+
+  /**
+   * An acknowledged message that will not run as a turn: once its acknowledgement settled, the status
+   * and 👀 come off, owed in its thread's post order. Off the caller's path; never throws.
+   */
+  private withdraw(job: MessageJob): void {
+    if (!job.acked) return;
+    const key = sessionKey(job.teamId, job.channelId, job.threadTs);
+    const pending = this.acking.get(`${job.channelId}:${job.messageTs}`) ?? Promise.resolve();
+    this.ctx.waitUntil(
+      pending.then(async () => {
+        this.sql.transaction(() => this.oweAckOff(key, job.messageTs));
+        await owed.run(this.sql, (call, body) => this.sendOwed(call, body), Date.now(), this.owedEmit, postGroup(key));
+      }).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "slack.owed_failed", message: errorText(error) }))),
+    );
+  }
+
+  /** In the caller's transaction: the thread's status cleared and, with `ts`, 👀 off that message (its `acks` row gone), owed in the thread's post order. */
+  private oweAckOff(key: string, ts: string | undefined): void {
+    const where = parseSessionKey(key);
+    if (!where) return;
+    owePost(this.sql, key, "agents.sessions.setStatus", { channel_id: where.channelId, thread_ts: where.threadTs, status: "" });
+    if (!ts) return;
+    owePost(this.sql, key, "reactions.remove", { channel: where.channelId, timestamp: ts, name: "eyes" });
+    this.sql.exec("DELETE FROM acks WHERE thread_key = ? AND ts = ?", key, ts);
+  }
+
+  /** The working status on the thread, or 👀 where that is unavailable. */
   private async acknowledge(job: MessageJob, key: string): Promise<void> {
-    this.sql.exec("INSERT INTO acks (thread_key, user_id, ts) VALUES (?, ?, ?) ON CONFLICT(thread_key) DO UPDATE SET user_id = excluded.user_id, ts = excluded.ts", key, job.userId, job.messageTs);
     const started = Date.now();
     let indicator = "status";
     let result = await this.slack("agents.sessions.setStatus", { channel_id: job.channelId, thread_ts: job.threadTs, status: "processing", initiator_user_id: job.userId });
@@ -828,12 +911,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     } else if (e.code !== "insufficient_credits" && /^[UW][A-Z0-9]+$/.test(person)) {
       owePost(this.sql, e.threadKey, "chat.postEphemeral", { channel: where.channelId, user: person, thread_ts: where.threadTs, text: e.code === "model_refused" ? REFUSED_TEXT : `${REFUSED_TEXT} (${e.code})` });
     }
-    const ack = this.sql.exec<{ ts: string }>("SELECT ts FROM acks WHERE thread_key = ?", e.threadKey)[0];
-    owePost(this.sql, e.threadKey, "agents.sessions.setStatus", { channel_id: where.channelId, thread_ts: where.threadTs, status: "" });
-    if (ack) {
-      owePost(this.sql, e.threadKey, "reactions.remove", { channel: where.channelId, timestamp: ack.ts, name: "eyes" });
-      this.sql.exec("DELETE FROM acks WHERE thread_key = ?", e.threadKey);
-    }
+    this.oweAckOff(e.threadKey, this.sql.exec<{ ts: string }>("SELECT ts FROM acks WHERE thread_key = ?", e.threadKey)[0]?.ts);
   }
 
   async billing(n: BillingNotice): Promise<BillingNoticeResult> {
@@ -893,7 +971,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       channelType: "channel",
       receivedAt: Date.now(),
     };
-    oweProcess(this.sql, `${where.channelId}:${where.threadTs}`, job);
+    const acked = this.sql.transaction(() => this.oweMessage(job));
+    if (acked) this.startAcknowledgement(acked);
     this.ctx.waitUntil(this.sendOwedNow());
   }
 

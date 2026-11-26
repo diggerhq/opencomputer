@@ -98,7 +98,7 @@ export class FakeComputer extends Recorder {
 
   async set(next: { carry?: SlackCarry; teamAccount?: string }): Promise<void> {
     if (next.carry) this.carry = next.carry;
-    if (next.teamAccount) this.account = next.teamAccount;
+    if (next.teamAccount !== undefined) this.account = next.teamAccount || null;
   }
 
   async teamAccount(): Promise<string | null> {

@@ -1,6 +1,7 @@
 // The edge's Slack routes (tracks and threads, spec 40.11 step 1): Slack's events and
 // interactions, the install and the unlink, all calling the Slack actor. The workspace →
-// organization lookup is the team router, the Slack object named `slack-team:<teamId>`.
+// organization lookup is the team router, the Slack object named `slack-team:<teamId>`, with a
+// cache in front of it (team-orgs.ts).
 
 import { exchangeSlackOAuthCode } from "../../channels/slack-api.js";
 import { verifySlackSignature } from "../../channels/slack-events.js";
@@ -9,6 +10,7 @@ import { publicOrigin, slackRedirectUri } from "../../actors/computer/config.js"
 import { randomToken, sha256Hex } from "../../crypto/seal.js";
 import type { Principal } from "../../auth/principal.js";
 import { slackOf, type ActorEnv } from "../../actors/addresses.js";
+import { coloTeamOrgs, TEAM_ORG_TTL_MS, TeamOrgCache } from "./team-orgs.js";
 import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl, slackTeamLinkName } from "../../slack-api/web-api.js";
 
 export type SlackRouteEnv = ComputerEdgeEnv & ActorEnv;
@@ -19,15 +21,31 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 const teamRouter = (env: SlackRouteEnv, teamId: string) => slackOf(env, `slack-team:${teamId}`);
 
 /**
- * The organization a workspace is linked to. An organization the Slack actor has not
- * imported yet is claimed only in Computer's old router; its actor imports on first
- * touch and then claims the team in the Slack router.
+ * The organization a workspace is linked to, as the routers say. An organization the Slack actor
+ * has not imported yet is claimed only in Computer's old router; its actor imports on first touch
+ * and then claims the team in the Slack router.
  */
-async function teamOrg(env: SlackRouteEnv, teamId: string): Promise<string | null> {
+async function routerOrg(env: SlackRouteEnv, teamId: string): Promise<string | null> {
   const org = await teamRouter(env, teamId).teamOrg();
   if (org) return org;
   const old = env.COMPUTERS.getByName(slackTeamLinkName(teamId)) as unknown as { teamAccount(): Promise<string | null> };
   return old.teamAccount();
+}
+
+/** Workspace → organization: the isolate's memory, then the colo's cache, then the routers. */
+const teamOrgs = new TeamOrgCache(TEAM_ORG_TTL_MS, Date.now, () =>
+  typeof caches !== "undefined" && (caches as { default?: Cache }).default ? coloTeamOrgs((caches as unknown as { default: Cache }).default) : null,
+);
+
+/** The organization a workspace is linked to (null: none), through the cache. */
+async function teamOrg(env: SlackRouteEnv, teamId: string): Promise<string | null> {
+  return (await teamOrgs.get(teamId, () => routerOrg(env, teamId))).org;
+}
+
+/** Frees a workspace in the router, then forgets it in this isolate and colo. */
+async function releaseTeam(env: SlackRouteEnv, teamId: string, org: string): Promise<void> {
+  await teamRouter(env, teamId).releaseTeam(org);
+  await teamOrgs.forget(teamId);
 }
 
 function configured(env: SlackRouteEnv): boolean {
@@ -67,7 +85,7 @@ export async function routeSlackDashboard(request: Request, env: SlackRouteEnv, 
   const teamId = (await slack.forHost()).slack?.teamId;
   if (!teamId) return problem(404, "computer_slack_not_installed", "No Slack workspace is linked");
   await slack.unlink(principal);
-  await teamRouter(env, teamId).releaseTeam(principal.org);
+  await releaseTeam(env, teamId, principal.org);
   return new Response(null, { status: 204 });
 }
 
@@ -99,7 +117,12 @@ async function events(request: Request, env: SlackRouteEnv, context: ExecutionCo
       const org = await teamOrg(env, teamId);
       if (!org) return console.warn(JSON.stringify({ level: "warn", event: "slack.team_unlinked", teamId }));
       if (parsed.kind === "revoked") return void (await releaseRevoked(env, teamId, org));
-      await slackOf(env, org).accept({ kind: "event", id: eventId!, body: payload });
+      const e = { kind: "event" as const, id: eventId!, body: payload };
+      if (!(await slackOf(env, org).accept(e)).unlinked) return;
+      // A remembered link was stale (the workspace was released or relinked): forgotten, and the routers asked again.
+      await teamOrgs.forget(teamId);
+      const now = await teamOrg(env, teamId);
+      if (now && now !== org) await slackOf(env, now).accept(e);
     })().catch((error) => console.error(JSON.stringify({ level: "error", event: "slack.event_failed", message: errorText(error) }))),
   );
   return json({ ok: true });
@@ -186,7 +209,8 @@ async function callback(env: SlackRouteEnv, url: URL): Promise<Response> {
     botToken: grant.accessToken,
     installerUserId: grant.authedUserId ?? "",
   });
-  if (previousTeamId && previousTeamId !== grant.teamId) await teamRouter(env, previousTeamId).releaseTeam(org);
+  if (previousTeamId && previousTeamId !== grant.teamId) await releaseTeam(env, previousTeamId, org);
+  await teamOrgs.remember(grant.teamId, org);
   console.log(JSON.stringify({ level: "info", event: "slack.linked", org, teamId: grant.teamId, by: consumed.subject }));
   return redirect(env, { ok: true });
 }
@@ -195,7 +219,7 @@ async function callback(env: SlackRouteEnv, url: URL): Promise<Response> {
 async function releaseRevoked(env: SlackRouteEnv, teamId: string, holder: string): Promise<boolean> {
   try {
     const { unlinked } = await slackOf(env, holder).unlinkRevoked(teamId);
-    if (unlinked) await teamRouter(env, teamId).releaseTeam(holder);
+    if (unlinked) await releaseTeam(env, teamId, holder);
     return unlinked;
   } catch (error) {
     console.error(JSON.stringify({ level: "error", event: "slack.release_failed", holder, teamId, message: errorText(error) }));
