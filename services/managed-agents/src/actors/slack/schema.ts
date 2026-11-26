@@ -2,9 +2,8 @@
 // its settings, and the added `link`, `thread` and `meta`. Slack's event ids go to the shared
 // module's `idem`, so `slack_events` is not here.
 
-import { owed } from "../../durable/outbox.js";
 import { type Sql } from "../../durable/sql.js";
-import { CROCKFORD } from "../../ids/session-ids.js";
+import { oweProcess } from "./outbox.js";
 
 export const STEPS: ((sql: Sql) => void)[] = [
   (sql) => {
@@ -62,60 +61,3 @@ export const STEPS: ((sql: Sql) => void)[] = [
     sql.exec("DROP TABLE slack_queue");
   },
 ];
-
-/** A Slack item's waits between tries (five in all), then the dead list. */
-const PROCESS_SCHEDULE = [2_000, 4_000, 8_000, 16_000];
-
-/** An item from Slack owed a `process` call, in its thread's order (40.11 step 2), in the caller's transaction. */
-export function oweProcess(tx: Sql, threadKey: string, job: unknown): void {
-  owed.add(tx, { group: `thread:${threadKey}`, call: "process", body: job, schedule: PROCESS_SCHEDULE });
-}
-
-export const settings = {
-  get(sql: Sql, key: string): string | undefined {
-    return sql.exec<{ value: string }>("SELECT value FROM settings WHERE key = ?", key)[0]?.value;
-  },
-  put(sql: Sql, key: string, value: string): void {
-    sql.exec("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value);
-  },
-  drop(sql: Sql, key: string): void {
-    sql.exec("DELETE FROM settings WHERE key = ?", key);
-  },
-};
-
-export const threads = {
-  sessionOf(sql: Sql, key: string): string | undefined {
-    return sql.exec<{ session_id: string }>("SELECT session_id FROM thread WHERE key = ?", key)[0]?.session_id;
-  },
-  keyOf(sql: Sql, sessionId: string): string | undefined {
-    return sql.exec<{ key: string }>("SELECT key FROM thread WHERE session_id = ?", sessionId)[0]?.key;
-  },
-  put(sql: Sql, key: string, sessionId: string): void {
-    sql.exec("INSERT INTO thread (key, session_id) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", key, sessionId);
-  },
-};
-
-export const links = {
-  memberOf(sql: Sql, slackUser: string): string | undefined {
-    return sql.exec<{ member: string }>("SELECT member FROM link WHERE slack_user = ?", slackUser)[0]?.member;
-  },
-  put(sql: Sql, slackUser: string, member: string): void {
-    sql.exec("INSERT INTO link (slack_user, member) VALUES (?, ?) ON CONFLICT(slack_user) DO UPDATE SET member = excluded.member", slackUser, member);
-  },
-};
-
-async function crockford(text: string, n: number): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
-  let out = "";
-  for (let i = 0; i < n; i++) out += CROCKFORD[digest[i]! & 31];
-  return out;
-}
-
-/** A Slack thread's session id, made from its key so a retry makes the same one: `cs_` + 16. */
-export const sessionIdFor = async (key: string): Promise<string> => `cs_${await crockford(`slack-thread\0${key}`, 16)}`;
-
-/** A Slack message's turn id: `tn_` + 12 of the hash of its thread key and ts. */
-export const turnIdFor = async (key: string, ts: string): Promise<string> => `tn_${await crockford(`${key}\0${ts}`, 12)}`;
-
-/** An interaction's entry id (an answer or a dismiss), from Slack's own id for it. */
-export const entryIdFor = async (prefix: string, id: string): Promise<string> => `${prefix}_${await crockford(id, 12)}`;

@@ -63,7 +63,10 @@ import {
   WAKING_NOTICE,
 } from "../../slack-api/web-api.js";
 import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "../../slack-api/threads.js";
-import { entryIdFor, links, oweProcess, sessionIdFor, settings, STEPS, threads, turnIdFor } from "./schema.js";
+import { entryIdFor, sessionIdFor, turnIdFor } from "../../ids/slack-ids.js";
+import { links, settings, threads } from "./tables.js";
+import { oweProcess } from "./outbox.js";
+import { STEPS } from "./schema.js";
 
 export interface SlackEnv extends ActorEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
