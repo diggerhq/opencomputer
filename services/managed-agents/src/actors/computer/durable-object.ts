@@ -62,7 +62,7 @@
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
 import { isSessionId } from "../../ids/session-ids.js";
-import type { AccessCarry, ComputerRpcAdded, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
+import type { AccessCarry, ComputerRpc, SlackCarry, SlackModalReply, StartSpec } from "./contract.js";
 import type { BillingNotice, SlackRpc } from "../slack/contract.js";
 import { type Access, type Principal, byOf } from "../../auth/principal.js";
 import { type Dead, OWED_PURPOSE, owed } from "../../durable/outbox.js";
@@ -338,7 +338,7 @@ export const ASSIGN_ACK_MS = 3 * 60_000;
 /** How often an organization's object reminds the pool to look at itself. */
 const POOL_KICK_INTERVAL_MS = 5 * 60_000;
 
-export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implements ComputerRpcAdded {
+export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implements ComputerRpc {
   /** The other actors of tracks and threads (actors/addresses.ts); fields, so a test puts its own. */
   actors = {
     log: (sessionId: string) => logOf(this.env, sessionId),
@@ -520,7 +520,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         const teamName = this.setting("slackTeamName");
         return { installed, ...(teamName ? { teamName } : {}) };
       },
-      poolProbe: (token, user) => (this.env.COMPUTERS && this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
+      poolProbe: (token, user) => (this.poolTarget() > 0 ? (this.poolObject().poolProbe(token, user) as Promise<PoolProbeResult>) : null),
       transaction: (fn) => this.ctx.storage.transactionSync(fn),
       waitUntil: (task) => ctx.waitUntil(task),
       slackUserName: (userId) => this.actors.slack().userName(userId),
@@ -933,7 +933,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * The Slack actor's commands that are this Computer's: `!secret`, `!var`, `!claude`, `!codex` and a
    * connection grant. The existing handlers answer in Slack themselves (ephemerals, modals): `reply` is empty.
    */
-  async command(p: Principal, c: Parameters<ComputerRpcAdded["command"]>[1]): Promise<{ reply: string; member?: string }> {
+  async command(p: Principal, c: Parameters<ComputerRpc["command"]>[1]): Promise<{ reply: string; member?: string }> {
     this.bind(p.org);
     // A linked person's subject is their member id: the Slack user is the one linked to it.
     const userId = p.subject.startsWith("slack:") ? p.subject.slice(p.subject.lastIndexOf(":") + 1) : this.access.agents.view(p.subject).linkedSlackUser?.id;
@@ -1552,7 +1552,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
 
   /** Reminds the pool to look at itself, at most every few minutes, off the request's path. */
   private kickPool(): void {
-    if (!this.env.COMPUTERS || this.poolTarget() === 0) return;
+    if (this.poolTarget() === 0) return;
     const last = Number(this.setting("poolKickedAt") ?? 0);
     if (Date.now() - last < POOL_KICK_INTERVAL_MS) return;
     this.put("poolKickedAt", String(Date.now()));
@@ -1571,7 +1571,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * usual way. The steps are in this file's header.
    */
   private async claimFromPool(accountId: string): Promise<LifecycleReply | null> {
-    if (!this.env.COMPUTERS || this.poolTarget() === 0) return null;
+    if (this.poolTarget() === 0) return null;
     if (this.lifecycle.row() || isPoolId(accountId)) return null;
     if (missingEdgeConfig(this.env).length) return null;
     const started = Date.now();
@@ -2083,7 +2083,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
    * The Slack actor's interactions that are this Computer's (the contract's list), as the presser. The
    * workspace is the one the Slack actor last reported; a `v:` button's session is named by its id.
    */
-  async interaction(p: Principal, c: Parameters<ComputerRpcAdded["interaction"]>[1]): Promise<SlackModalReply> {
+  async interaction(p: Principal, c: Parameters<ComputerRpc["interaction"]>[1]): Promise<SlackModalReply> {
     this.bind(p.org);
     if (typeof c.interaction !== "object" || c.interaction === null) return {};
     let interaction = c.interaction as SlackInteraction;

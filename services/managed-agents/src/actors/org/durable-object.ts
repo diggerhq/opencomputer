@@ -14,11 +14,11 @@ import { owed, type Dead } from "../../durable/outbox.js";
 import { platformPrincipal, type Access, type Principal } from "../../auth/principal.js";
 import { sqlOf, type Sql } from "../../durable/sql.js";
 import { unavailable } from "../../durable/unavailable.js";
-import { type ComputerRpcAdded, type StartSpec } from "../computer/contract.js";
+import { type ComputerRpc, type StartSpec } from "../computer/contract.js";
 import { type CreateSession, type DocRev, type FeedFrame, type ListQuery, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type ResultRow, type ReviewRow, type Row, type SessionPage, type SessionPatch, type SessionRow, type SlackAccessDefault, type SummaryPub } from "./contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type Reply } from "../../durable/rpc-reply.js";
-import { type SessionLogRpcAdded } from "../session-log/contract.js";
+import { type SessionLogRpc } from "../session-log/contract.js";
 import { type SlackRpc } from "../slack/contract.js";
 import { computerSessionId } from "../../host-protocol/protocol.js";
 import { memberId } from "../../ids/session-ids.js";
@@ -47,8 +47,8 @@ async function memberIds(access: unknown): Promise<CreateSession["access"]> {
 
 /** Every call Org makes out. A test replaces members of it. */
 export interface OrgOut {
-  computer(machine: string): Pick<ComputerRpcAdded, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
-  log(sessionId: string): Pick<SessionLogRpcAdded, "setAccess" | "accept" | "destroy">;
+  computer(machine: string): Pick<ComputerRpc, "start" | "stop" | "setAccess" | "changed" | "accessCarry">;
+  log(sessionId: string): Pick<SessionLogRpc, "setAccess" | "accept" | "destroy">;
   slack(): Pick<SlackRpc, "announce" | "notify">;
   live(): Pick<LiveRpc, "publish">;
   /** The usage row of a created session (D1 `session_creations`). */

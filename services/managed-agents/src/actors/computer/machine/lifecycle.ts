@@ -323,7 +323,7 @@ export class ComputerLifecycle {
   async missingConfig(): Promise<string[]> {
     const missing = this.deps.missingConfig();
     if (this.selfManaged()) return missing;
-    if (missing.includes("RUNTIMES") || missing.includes("COMPUTERS")) return missing;
+    if (missing.includes("RUNTIMES")) return missing;
     try {
       return [...missing, ...(await this.deps.cloud().missing())];
     } catch (error) {

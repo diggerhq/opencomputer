@@ -16,12 +16,13 @@
 //     title/mode/model stay the Slack path's, and only a v4 host sees any of it.
 
 import type { Access } from "../../auth/principal.js";
-import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind, SessionLogRpcAdded } from "../session-log/contract.js";
+import type { DeliveredOutcome, Inbox, InboxEntry, InboxKind } from "../session-log/contract.js";
 import type { DeltaPush, LiveRpc } from "../live/contract.js";
 import type { StartSpec } from "./contract.js";
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { RoutedApiSession } from "./held-for-org/model-access/api-session-route.js";
 import type { Principal } from "../../auth/principal.js";
+import { logOf } from "../addresses.js";
 import { emitter } from "../../telemetry/log-emitter.js";
 import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
@@ -206,8 +207,8 @@ export interface SessionsApiDeps {
   put: (key: string, value: string) => void;
   remove: (key: string) => void;
   now?: () => number;
-  /** A session's SessionLog (stubs.ts `logOf`). Absent: the `SESSION_LOG` binding. */
-  log?: (sessionId: string) => SessionLogRpc & SessionLogRpcAdded;
+  /** A session's SessionLog (addresses.ts `logOf`). Absent: the `SESSION_LOG` binding. */
+  log?: (sessionId: string) => SessionLogRpc;
   /** The organization's Live (stubs.ts `liveOf`). */
   live: () => LiveRpc;
   /** `start`: the session's harness, the spec's or its owner's (model access's `harnessFor`). */
@@ -272,11 +273,9 @@ export class ComputerSessionsApi {
     return this.deps.host() !== undefined;
   }
 
-  private log(sessionId: string): SessionLogRpc & SessionLogRpcAdded {
+  private log(sessionId: string): SessionLogRpc {
     if (this.deps.log) return this.deps.log(sessionId);
-    const ns = this.deps.env.SESSION_LOG;
-    if (!ns) throw new Error("SESSION_LOG is not bound");
-    return ns.getByName(sessionId) as unknown as SessionLogRpc & SessionLogRpcAdded;
+    return logOf(this.deps.env, sessionId);
   }
 
   /** The runner's spec for a session: an API one (`kind: "api"`) or a Slack thread. */
