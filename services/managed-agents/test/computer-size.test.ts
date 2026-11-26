@@ -261,3 +261,51 @@ describe("computer size follows the usage plan", () => {
     expect((await row(stub))?.size).toBe(SMALL);
   });
 });
+
+describe("leftovers from an older deploy do not hold the computer busy", () => {
+  const leftoverDispatch = (stub: Stub) =>
+    inside(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        "INSERT INTO dispatches (id, runner_key, payload, state, created_at, updated_at) VALUES ('d_left', 'T0L:CL:1.1', '{}', 'pending', 0, 0)",
+      ),
+    );
+
+  it("parks an idle free computer with a leftover pending dispatch row", async () => {
+    const ORG = "org_left_dispatch_park";
+    const stub = await readySmall(ORG);
+    const socket = await connectHost(ORG);
+    await leftoverDispatch(stub);
+    await billing(stub, "base", false);
+    await inside(stub, async (instance) => {
+      instance.put("lastActivityAt", "0");
+      await instance.idleCheck();
+    });
+    expect((await row(stub))?.state).toBe("parking");
+    socket.close();
+  });
+
+  it("grows a max computer with a leftover pending dispatch row", async () => {
+    const ORG = "org_left_dispatch_size";
+    const stub = await readySmall(ORG);
+    const socket = await connectHost(ORG);
+    await leftoverDispatch(stub);
+    await billing(stub, "max");
+    await runAlarms(stub);
+    expect(await row(stub)).toMatchObject({ state: "resizing", size: BIG });
+    socket.close();
+  });
+
+  it("clears a subagents count on hello for a session the host no longer reports", async () => {
+    const ORG = "org_left_subagents";
+    const stub = await readySmall(ORG);
+    await inside(stub, (_instance, state) =>
+      state.storage.sql.exec(
+        "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, subagents, created_at, updated_at) VALUES ('T0SUB:CSUB:1.1', 'T0SUB', 'CSUB', '1.1', 'U1', 't', 'idle', 2, 0, 0)",
+      ),
+    );
+    const socket = await connectHost(ORG);
+    expect(await inside(stub, (instance) => instance.workload())).toEqual({ busySessions: 0 });
+    expect(await inside(stub, (_instance, state) => [...state.storage.sql.exec<{ subagents: number }>("SELECT subagents FROM sessions")][0]?.subagents)).toBe(0);
+    socket.close();
+  });
+});
