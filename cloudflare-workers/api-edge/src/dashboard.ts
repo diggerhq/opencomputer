@@ -28,6 +28,7 @@ import { planSchedule, summarizeWorkMinutePlan, trialEndsAt } from "./billing_su
 import { emitBillingEvent, type BillingEventsEnv } from "./billing_events";
 import { KEY_SCOPES, createAPIKeyWithHash } from "./api_keys";
 import { createdKeyForSync, revokeComputerKey, syncComputerKey } from "./computer_keys";
+import { evictAuth } from "./auth_cache";
 import {
   proxyManagedAgents,
   proxyPublicTemplateInspection,
@@ -89,6 +90,25 @@ interface Caller {
   plan: string;
   claims: SessionClaims;
 }
+
+type OrgRole = "owner" | "admin" | "member";
+
+// A caller whose membership in the session's org was read on this request.
+interface MemberCaller extends Caller {
+  role: OrgRole;
+}
+
+const ROLE_RANK: Record<OrgRole, number> = { member: 0, admin: 1, owner: 2 };
+
+function isOrgRole(role: unknown): role is OrgRole {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+// Org admins (owners included) manage org-level things: every key, admin invites.
+function isOrgAdmin(caller: MemberCaller): boolean {
+  return caller.role === "owner" || caller.role === "admin";
+}
+
 
 // ── auth ─────────────────────────────────────────────────────────────────
 
@@ -361,11 +381,30 @@ async function handleListMembers(_req: Request, env: DashboardEnv, caller: Calle
   })));
 }
 
-async function handleRemoveMember(_req: Request, env: DashboardEnv, caller: Caller, memberUserID: string): Promise<Response> {
+async function handleRemoveMember(
+  _req: Request,
+  env: DashboardEnv,
+  ctx: ExecutionContext | undefined,
+  caller: Caller,
+  memberUserID: string,
+): Promise<Response> {
   if (memberUserID === caller.userID) return json({ error: "cannot remove self" }, 400);
   const org = await env.OPENCOMPUTER_DB.prepare(`SELECT owner_user_id FROM orgs WHERE id = ?1`).bind(caller.orgID).first<{ owner_user_id: string | null }>();
   if (!org || org.owner_user_id !== caller.userID) return json({ error: "only owner can remove members" }, 403);
-  await env.OPENCOMPUTER_DB.prepare(`DELETE FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`).bind(caller.orgID, memberUserID).run();
+  // Their keys in this org go with the membership (key auth also refuses a
+  // non-member's key, so a key that slips past this is still dead).
+  const { results: keys } = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT id, key_hash FROM api_keys WHERE org_id = ?1 AND created_by = ?2`,
+  ).bind(caller.orgID, memberUserID).all<{ id: string; key_hash: string }>();
+  await env.OPENCOMPUTER_DB.batch([
+    env.OPENCOMPUTER_DB.prepare(`DELETE FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`).bind(caller.orgID, memberUserID),
+    env.OPENCOMPUTER_DB.prepare(`DELETE FROM api_keys WHERE org_id = ?1 AND created_by = ?2`).bind(caller.orgID, memberUserID),
+  ]);
+  const revoked = keys ?? [];
+  if (revoked.length) {
+    await evictAuth(revoked.map((k) => k.key_hash));
+    for (const k of revoked) ctx?.waitUntil(revokeComputerKey(env, caller.orgID, caller.userID, k.id));
+  }
   return new Response(null, { status: 204 });
 }
 
@@ -387,12 +426,17 @@ async function handleListInvitations(_req: Request, env: DashboardEnv, caller: C
   })));
 }
 
-async function handleSendInvitation(req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+async function handleSendInvitation(req: Request, env: DashboardEnv, caller: MemberCaller): Promise<Response> {
   const body = await req.json<{ email?: string; role?: string }>().catch(() => ({} as { email?: string; role?: string }));
   const email = (body.email ?? "").trim().toLowerCase();
   const role = body.role || "member";
   if (!email) return json({ error: "email required" }, 400);
-  if (!["owner", "admin", "member"].includes(role)) return json({ error: "invalid role" }, 400);
+  if (!isOrgRole(role)) return json({ error: "invalid role" }, 400);
+  // No one grants more than they hold: members invite members, admins up to
+  // admin, and only an owner invites an owner.
+  if (role !== "member" && ROLE_RANK[role] > ROLE_RANK[caller.role]) {
+    return json({ error: `only an org ${role === "owner" ? "owner" : "admin or owner"} can invite as ${role}` }, 403);
+  }
 
   const now = Math.floor(Date.now() / 1000);
   // WorkOS invitation send. Returns the WorkOS invitation ID we mirror in D1.
@@ -461,14 +505,22 @@ async function handleRevokeInvitation(_req: Request, env: DashboardEnv, caller: 
 
 // ── API keys ─────────────────────────────────────────────────────────────
 
-async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: Caller): Promise<Response> {
+// Members see and manage only the keys they created; org admins manage every
+// key in the org, including the computer's and legacy keys with no creator.
+// Bound as ?3 in the key queries below: NULL for an admin matches every row.
+function keyHolderFilter(caller: MemberCaller): string | null {
+  return isOrgAdmin(caller) ? null : caller.userID;
+}
+
+async function handleListAPIKeys(_req: Request, env: DashboardEnv, caller: MemberCaller): Promise<Response> {
   // Expired one-hour computer keys (/internal/computer-keys) are noise: hidden.
   const { results } = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, name, key_prefix, scopes, last_used, expires_at, created_at, created_by
        FROM api_keys WHERE org_id = ?1
         AND NOT (created_by = 'computer' AND expires_at < ?2)
+        AND (?3 IS NULL OR created_by = ?3)
       ORDER BY created_at DESC`,
-  ).bind(caller.orgID, Math.floor(Date.now() / 1000)).all<{
+  ).bind(caller.orgID, Math.floor(Date.now() / 1000), keyHolderFilter(caller)).all<{
     id: string; name: string; key_prefix: string; scopes: string;
     last_used: number | null; expires_at: number | null; created_at: number; created_by: string | null;
   }>();
@@ -519,26 +571,31 @@ async function handleDeleteAPIKey(
   _req: Request,
   env: DashboardEnv,
   ctx: ExecutionContext | undefined,
-  caller: Caller,
+  caller: MemberCaller,
   keyID: string,
 ): Promise<Response> {
+  const row = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT key_hash FROM api_keys WHERE id = ?1 AND org_id = ?2 AND (?3 IS NULL OR created_by = ?3)`,
+  ).bind(keyID, caller.orgID, keyHolderFilter(caller)).first<{ key_hash: string }>();
+  if (!row) return json({ error: "api key not found" }, 404);
   const result = await env.OPENCOMPUTER_DB.prepare(`DELETE FROM api_keys WHERE id = ?1 AND org_id = ?2`).bind(keyID, caller.orgID).run();
   // Only a key this org held is reported revoked (D1 says how many rows went).
   if (result?.meta?.changes !== 0) {
+    await evictAuth([row.key_hash]);
     ctx?.waitUntil(revokeComputerKey(env, caller.orgID, caller.userID, keyID));
   }
   return new Response(null, { status: 204 });
 }
 
-async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: Caller, keyID: string): Promise<Response> {
+async function handleRenameAPIKey(req: Request, env: DashboardEnv, caller: MemberCaller, keyID: string): Promise<Response> {
   const body = await req.json<{ name?: unknown }>().catch(() => ({} as { name?: unknown }));
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return json({ error: "name is required" }, 400);
 
   const row = await env.OPENCOMPUTER_DB.prepare(
     `SELECT id, key_prefix, scopes, last_used, expires_at, created_at
-       FROM api_keys WHERE id = ?1 AND org_id = ?2`,
-  ).bind(keyID, caller.orgID).first<{
+       FROM api_keys WHERE id = ?1 AND org_id = ?2 AND (?3 IS NULL OR created_by = ?3)`,
+  ).bind(keyID, caller.orgID, keyHolderFilter(caller)).first<{
     id: string; key_prefix: string; scopes: string;
     last_used: number | null; expires_at: number | null; created_at: number;
   }>();
@@ -632,8 +689,8 @@ export async function handleDashboard(
   const sub = path.replace(/^\/api\/dashboard/, "");
   const method = req.method.toUpperCase();
 
-  const caller = await authDashboard(req, env);
-  if (!caller) {
+  const signedIn = await authDashboard(req, env);
+  if (!signedIn) {
     // Template preview is the one anonymous entry point: visitors can see
     // a template's deploy form before signing up.
     if (sub === "/managed-agents/template-inspections" && method === "POST") {
@@ -641,6 +698,20 @@ export async function handleDashboard(
     }
     return json({ error: "unauthenticated" }, 401);
   }
+
+  // These need no membership in the session's org, so someone removed from
+  // their active org can still see their own orgs and switch away.
+  if (sub === "/me" && method === "GET") return handleMe(req, env, signedIn);
+  if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, signedIn);
+  if (sub === "/me/preferences" && method === "PUT") return handleUpdateMePreferences(req, env, signedIn);
+  if (sub === "/org/switch" && method === "POST") return handleOrgSwitch(req, env, signedIn);
+  // Everything else is the org's: re-read the role, since the cookie outlives
+  // a removal or role change by up to SESSION_TTL_SEC.
+  const membership = await env.OPENCOMPUTER_DB.prepare(
+    `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
+  ).bind(signedIn.orgID, signedIn.userID).first<{ role: string }>();
+  if (!membership) return json({ error: "not a member of this org" }, 403);
+  const caller: MemberCaller = { ...signedIn, role: isOrgRole(membership.role) ? membership.role : "member" };
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
@@ -668,35 +739,25 @@ export async function handleDashboard(
         return json({ error: "managed model billing is unavailable" }, 503);
       }
     }
-    const membership = await env.OPENCOMPUTER_DB.prepare(
-      `SELECT role FROM org_memberships WHERE org_id = ?1 AND user_id = ?2`,
-    ).bind(caller.orgID, caller.userID).first<{ role: string }>();
     return proxyManagedAgents(
       req,
       env,
       {
         orgID: caller.orgID,
         userID: caller.userID,
-        role:
-          membership?.role === "owner" || membership?.role === "admin"
-            ? "admin"
-            : membership?.role,
+        role: isOrgAdmin(caller) ? "admin" : caller.role,
       },
       "/api/dashboard/managed-agents",
     );
   }
 
   // ── identity / org ─────────────────────────────────────────────────────
-  if (sub === "/me" && method === "GET") return handleMe(req, env, caller);
-  if (sub === "/orgs" && method === "GET") return handleListOrgs(req, env, caller);
-  if (sub === "/me/preferences" && method === "PUT") return handleUpdateMePreferences(req, env, caller);
   if (sub === "/org" && method === "GET") return handleGetOrg(req, env, caller);
   if (sub === "/org" && method === "PUT") return handleUpdateOrg(req, env, caller);
-  if (sub === "/org/switch" && method === "POST") return handleOrgSwitch(req, env, caller);
   if (sub === "/org/members" && method === "GET") return handleListMembers(req, env, caller);
   {
     const m = sub.match(/^\/org\/members\/([^/]+)$/);
-    if (m && method === "DELETE") return handleRemoveMember(req, env, caller, m[1]);
+    if (m && method === "DELETE") return handleRemoveMember(req, env, ctx, caller, m[1]);
   }
   if (sub === "/org/invitations" && method === "GET") return handleListInvitations(req, env, caller);
   if (sub === "/org/invitations" && method === "POST") return handleSendInvitation(req, env, caller);

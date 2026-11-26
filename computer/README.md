@@ -106,8 +106,11 @@ Slack ──HTTPS──▶ gateway ◀──WebSocket (dialed out)── host ag
 | **Host agent** | Dials out to the gateway (no inbound ports), forks workspaces, starts one runner per active thread outside its own process tree, rediscovers them after a restart, stops idle ones, serves GitHub tokens to git. | `src/host/`, `src/workspaces/` |
 | **Runner** | One agent session per process. It renders to Slack directly, so streaming does not go through the gateway. | `src/runner/` |
 
-On OpenComputer, the host agent's job goes away: each session runs in its own
-sandbox instead of as a process on a shared host VM.
+On a host VM with `SP_LAUNCH=podman` (work 103, the default for a new
+computer) each runner runs in its own rootless Podman container
+(`src/host/sandbox/`); with `systemd` or `detached`, runners are processes of
+one Unix user. On OpenComputer, the host agent's job goes away: each session
+runs in its own sandbox instead of on a shared host VM.
 
 ## How the terminal maps onto Slack
 
@@ -237,10 +240,11 @@ added mid-session is in the next command's environment. A file secret's
 variable holds the path of a file with the value. Everything the runner posts
 to Slack has known values replaced by `[secret:NAME]`, and `send_file` refuses
 files that contain one. That guards against accidents, not against a session
-set on leaking a value: until each person has their own Unix user (work 046),
-all sessions on a host run as one user and could read each other's
-environment. Names that would change how the session runs (`PATH`, `HOME`,
-`SP_*`, `CLAUDE*`, `ANTHROPIC_*`, `GIT_*`, `LD_*`, …) are refused. Split
+set on leaking a value. With `SP_LAUNCH=podman` (work 103) the directory is
+in the session's own run root, which only its container mounts, so other
+sessions cannot read it; with `systemd` or `detached`, all sessions on a host
+run as one user and could read each other's environment. Names that would
+change how the session runs (`PATH`, `HOME`, `SP_*`, `CLAUDE*`, `ANTHROPIC_*`, `GIT_*`, `LD_*`, …) are refused. Split
 deployment only. Design: work 046, decision 5.
 
 **Variables** are values that are not secret, such as an organization's name or a

@@ -102,7 +102,7 @@ fn notice(msg: &str) {
 fn open_error(e: Error) -> Error {
     let reason = e.extra.get("reason").and_then(Value::as_str).unwrap_or("");
     match (e.code.as_str(), reason) {
-        ("forbidden", "terminal_owner_only") => Error { message: "only the owner of this session can open a shell in it".into(), ..e },
+        ("forbidden", "terminal_owner_only") => Error { message: "only the session's owner, or someone it is shared with by name, can open a shell in it".into(), ..e },
         ("forbidden", "missing_scope") => Error { message: "this API key cannot open shells: it needs the terminals scope".into(), ..e },
         ("feature_unavailable", _) => Error { message: "shells are not available on this computer".into(), ..e },
         ("too_many_terminals", _) => Error { message: "8 shells are already open in this session: close one first".into(), ..e },
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn owner_only_is_exit_3_with_the_docs_message() {
         let e = open_error(Error::from_api(403, &json!({"code": "forbidden", "message": "m", "reason": "terminal_owner_only"})));
-        assert_eq!(e.message, "only the owner of this session can open a shell in it");
+        assert_eq!(e.message, "only the session's owner, or someone it is shared with by name, can open a shell in it");
         assert_eq!(e.exit_code(), 3);
     }
 

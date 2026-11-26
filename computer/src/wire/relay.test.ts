@@ -198,6 +198,21 @@ describe('limits and access', () => {
     ticket.ws.close();
   });
 
+  it("lets only the session's owner rename or archive it; members of an org-wide session may still write turns", async () => {
+    const { port, sessions, writers } = await setup();
+    const member = connectClient(port, { member: 'usr_pat' });
+    const denied = await member.call('sessions.update', { sessionId: sessions[0], title: 'mine now' });
+    expect(JSON.stringify(denied.error)).toContain('owner_only');
+    expect(writers.writers.flatMap((w) => w.calls)).toEqual([]);
+    await member.call('turns.send', { sessionId: sessions[0], input: 'hi' });
+    expect(writers.writers.flatMap((w) => w.calls).map((c) => c.method)).toEqual(['turns.send']);
+    const owner = connectClient(port);
+    await owner.call('sessions.update', { sessionId: sessions[0], title: 'renamed' });
+    expect(writers.writers.flatMap((w) => w.calls).map((c) => c.method)).toEqual(['turns.send', 'sessions.update']);
+    member.ws.close();
+    owner.ws.close();
+  });
+
   it('closes with 4001 when the key is revoked, and when the credential expires', async () => {
     const { port, host } = await setup();
     const c = connectClient(port, { keyId: 'ak_revoked00000' });

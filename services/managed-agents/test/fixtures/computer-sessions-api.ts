@@ -148,7 +148,7 @@ export function fixture(options: { protocol?: number | null; enabled?: boolean; 
   const keys = new ComputerKeys({ sql, kv: undefined, organizationId: () => ORG, tunnelId: () => "tun", revoked: () => {}, waitUntil: () => {} });
   /** The host answers each `api` frame with this (by method). */
   const answers = new Map<string, (frame: Extract<CalvinGatewayToHost, { t: "api" }>) => { result?: unknown; error?: unknown } | null>();
-  const api: ComputerSessionsApi = new ComputerSessionsApi({
+  const deps: SessionsApiDeps = {
     sql,
     env,
     organizationId: () => ORG,
@@ -186,7 +186,8 @@ export function fixture(options: { protocol?: number | null; enabled?: boolean; 
     remove: (key) => void settings.delete(key),
     now: () => clock,
     ...(options.telemetry ? { telemetry: options.telemetry } : {}),
-  });
+  };
+  const api: ComputerSessionsApi = new ComputerSessionsApi(deps);
   const slackRow = (key: string, owner = "U1") =>
     sql.exec(
       "INSERT INTO sessions (runner_key, team_id, channel_id, thread_ts, owner_id, title, status, created_at, updated_at) VALUES (?, 'T1', 'C1', '1.2', ?, 'Slack thread', 'idle', ?, ?)",
@@ -207,6 +208,8 @@ export function fixture(options: { protocol?: number | null; enabled?: boolean; 
     state,
     settings,
     slackRow,
+    /** A new API on the same storage, as after the object restarts. */
+    reopen: () => new ComputerSessionsApi(deps),
     advance: (ms: number) => (clock += ms),
     now: () => clock,
     pending: () => pendingWork.splice(0),
