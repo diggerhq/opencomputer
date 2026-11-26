@@ -160,6 +160,20 @@ describe("the principal in the assertion", () => {
       credential: { id, expiresAt: 1_900_000_000_000 },
     });
   });
+
+  it.each([
+    ["no session", null],
+    ["a Slack thread key", "T1:C1:1792176058.240229"],
+  ])("refuses a computer key with %s: it is never an organization-wide key", async (_, sessionKey) => {
+    const { db, env } = seeded();
+    const { key } = await addKey(db, { createdBy: "computer", sessionKey, expiresAt: 1_900_000_000 });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(api("/sessions", { headers: { authorization: `Bearer ${key}` } }), env, ctx());
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await new LiveCredentials(ctx(), env).principal(key)).toBeNull();
+  });
 });
 
 describe("the allowlist of tracks and threads", () => {

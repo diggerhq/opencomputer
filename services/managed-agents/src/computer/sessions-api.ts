@@ -288,7 +288,9 @@ export class ComputerSessionsApi {
   // ---------------------------------------------------------------- operations
 
   async handle(caller: ApiRequest, op: ApiOp): Promise<ApiReply> {
-    if (caller.apiKey) this.deps.keys.observe(caller.apiKey, caller.principal.subject);
+    // The wire authorizes by a key's record (scopes, member), not by SessionLog's `access`, so an
+    // agent's key, bound to its session (spec 34.3), gets no record: it cannot be used on the wire.
+    if (caller.apiKey && caller.principal.kind !== "agent") this.deps.keys.observe(caller.apiKey, caller.principal.subject);
     switch (op.op) {
       case "me":
         return this.me(caller);
@@ -339,6 +341,7 @@ export class ComputerSessionsApi {
     const key = caller.apiKey;
     if (!key) return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
     if (key.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
+    if (caller.principal.kind === "agent") return { status: 403, error: { code: "forbidden", message: "A session's key cannot mint tickets.", reason: "agent_key" } };
     if (!this.deps.env.WIRE_TICKET_KEY) return { status: 503, error: { code: "unavailable", message: "Tickets are not available yet.", retryAfterMs: 60_000 } };
     const request = validateTicketRequest(body, caller.userAgent);
     if (!request.ok) return invalid(request.errors[0]!.field, request.errors[0]!.message);

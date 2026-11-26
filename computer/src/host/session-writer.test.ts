@@ -62,6 +62,27 @@ describe('HostSessionWriter', () => {
     expect(types(events()).filter((t) => t === 'runtime.starting').length).toBe(1);
   });
 
+  it('an inbox entry redelivered after a crash lost its idempotency record (or onto a rebuilt disk) is the turn already there', async () => {
+    const t = tempSession();
+    cleanups.push(t.cleanup);
+    const open = () => HostSessionWriter.open({ sessionId: t.sessionId, journal: t.file, epoch: 1, lastSeq: 0, seed: { sessionId: t.sessionId, owner }, wake: () => {} });
+    const turnId = mintId('tn');
+    const send = (w: HostSessionWriter) => w.call('turns.send', { sessionId: t.sessionId, input: 'deploy it', turnId }, { ...ANN_CTX, idempotencyKey: turnId });
+    const w1 = await open();
+    expect((await send(w1)).result).toMatchObject({ duplicate: false });
+    await w1.handOff();
+    // The crash: the events reached the journal, the idempotency line did not.
+    const lines = fs.readFileSync(t.file, 'utf8').split('\n').filter(Boolean);
+    const kept = lines.filter((l) => !l.includes('"k":"idem"'));
+    expect(kept.length).toBe(lines.length - 1);
+    fs.writeFileSync(t.file, kept.join('\n') + '\n');
+    // The cloud never heard the reply: it sends the same entry again.
+    const w2 = await open();
+    cleanups.push(() => w2.handOff());
+    expect((await send(w2)).result).toMatchObject({ duplicate: true, delivery: 'queued', turn: { id: turnId, input: 'deploy it' } });
+    expect(w2.log.journal.read(0, 10_000).filter((e) => e.type === 'message.received' && e.turnId === turnId)).toHaveLength(1);
+  });
+
   it('failQueued fails the queued turns and leaves `starting` for `suspended`', async () => {
     const { w, sid, events } = await host({ prepare: (log) => log.append('session.status_changed', { from: null, to: 'suspended' }, { actor: null }) });
     await w.call('turns.send', { sessionId: sid, input: 'one' }, ANN_CTX);

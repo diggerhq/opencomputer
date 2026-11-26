@@ -161,6 +161,20 @@ describe('SessionApi', () => {
     expect((d.error as { code: string }).code).toBe('idempotency_conflict');
   });
 
+  it('an inbox entry the journal already holds (the host recorded it, its idempotency record is gone) is answered, not run twice', async () => {
+    const turnId = 'tn_0000000000r1';
+    const w = await world((log) => {
+      log.append('message.received', { input: 'deploy it', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
+      log.append('turn.queued', { position: 1 }, { turnId, actor: ANN });
+    });
+    await w.t.settle();
+    expect(w.sends()).toHaveLength(1); // resume started it
+    const r = result(await w.call('turns.send', { input: 'deploy it', turnId }, { ...ANN_CTX, idempotencyKey: turnId }));
+    expect(r).toMatchObject({ duplicate: true, delivery: 'started', turn: { id: turnId } });
+    expect(w.sends()).toHaveLength(1);
+    expect(w.of('message.received')).toHaveLength(1);
+  });
+
   it('turns.send starts the turn the caller names; a Slack message goes to the runner\'s Slack handling, a Slack button to its prompt', async () => {
     const w = await world();
     const turnId = 'tn_0000000000zz';

@@ -8,6 +8,7 @@ import {
   alarms,
   computerOf,
   deliveryOf,
+  emitter,
   hashOf,
   liveOf,
   logOf,
@@ -21,6 +22,7 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type CreateSession,
+  type Dead,
   type DeliveryKind,
   type DeliveryRpc,
   type DocRev,
@@ -87,6 +89,7 @@ const AGE_EVERY_MS = 60 * 60 * 1_000;
 
 export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDelivery {
   private store: Sql | null = null;
+  private readonly emit = emitter("org", () => ({ org: this.ctx.id.name }));
 
   /** The organization's id: the object's name, else what the first principal said. */
   get org(): string {
@@ -194,7 +197,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
 
   /** Send what is owed. Awaited by tests; a method leaves it to `waitUntil`. */
   drain(): Promise<void> {
-    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now());
+    return owed.run(this.sql, (call, body) => this.send(call, body), Date.now(), this.emit);
   }
 
   private flush(): void {
@@ -311,7 +314,8 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
   }
 
   async mismatch(p: Principal, body: { clientId: string; cursor: string; server: string; client: string }): Promise<void> {
-    console.warn(JSON.stringify({ event: "org.feed_mismatch", org: p.org, subject: p.subject, ...body }));
+    // Spec 27, 28: the rules missed something; counted and alerted on.
+    this.emit("org.feed_mismatch", { subject: p.subject, ...body }, "error");
   }
 
   // ------------------------------------------------------------------ the occurrence stream
@@ -355,6 +359,10 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgForDel
 
   async access(sessionId: string): Promise<Access | null> {
     return sessions.access(this.sql, sessionId);
+  }
+
+  async dead(): Promise<Dead[]> {
+    return owed.dead(this.sql);
   }
 
   async forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }> {
