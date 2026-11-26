@@ -7,7 +7,7 @@ import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http
 import { routeComputerDashboard } from "../src/computer/routes.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
-import { PRINCIPAL_HEADER, upgradePrincipal } from "../src/live/contract.js";
+import { PRINCIPAL_HEADER, upgradePrincipal } from "../src/actors/live/contract.js";
 
 const ORG = "org_1";
 const USER = "user_01JABCDEFGHJKMNPQRSTVWXYZ0";

@@ -23,7 +23,7 @@ import { hashOf } from "../encoding/canonical-json.js";
 import { liveOf, logOf, orgOf, slackOf } from "../actors/addresses.js";
 import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Refusal, SessionPatch, SessionRow } from "../actor/contracts.js";
 import type { Principal } from "../auth/principal.js";
-import { type LiveUpgrade, liveRequest } from "../live/contract.js";
+import { type LiveUpgrade, liveRequest } from "../actors/live/contract.js";
 import type { ApiScope, LogSummary } from "../api-objects/objects.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";

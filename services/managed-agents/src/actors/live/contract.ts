@@ -2,7 +2,7 @@
 // the edge and a client know of the fan-out actor. Nothing here imports `cloudflare:workers`, so
 // `managed-agents` can import it without pulling the class into its bundle.
 
-import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../actor/contracts.js";
+import type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal } from "../../actor/contracts.js";
 
 export type { DeltaPush, EventPush, FeedPush, LiveRpc, Principal };
 

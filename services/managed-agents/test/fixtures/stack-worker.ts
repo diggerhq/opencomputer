@@ -4,11 +4,11 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import type { LiveCredentials, Principal } from "../../src/live/contract.js";
+import type { LiveCredentials, Principal } from "../../src/actors/live/contract.js";
 
 export * from "../../src/edge/index.js";
 export { default } from "../../src/edge/index.js";
-export { LiveDurableObject } from "../../src/live/durable-object.js";
+export { LiveDurableObject } from "../../src/actors/live/durable-object.js";
 
 /** api-edge's `LiveCredentials`: no credential is revoked, and no `auth` token renews. */
 export class StackCredentials extends WorkerEntrypoint implements LiveCredentials {

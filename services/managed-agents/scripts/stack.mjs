@@ -508,7 +508,7 @@ function writeConfigs(stack, { bootstrap }) {
     $schema: schema,
     name: names.live,
     account_id: ACCOUNT_ID,
-    main: "src/live/index.ts",
+    main: "src/actors/live/worker.ts",
     compatibility_date: "2026-07-24",
     compatibility_flags: ["nodejs_compat"],
     workers_dev: false,

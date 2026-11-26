@@ -1,8 +1,8 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { LIVE_SUBPROTOCOL, PRINCIPAL_HEADER, type LiveAttachment, type Principal, type ServerFrame } from "../src/live/contract.js";
-import type { LiveDurableObject } from "../src/live/durable-object.js";
+import { LIVE_SUBPROTOCOL, PRINCIPAL_HEADER, type LiveAttachment, type Principal, type ServerFrame } from "../src/actors/live/contract.js";
+import type { LiveDurableObject } from "../src/actors/live/durable-object.js";
 import type { FakeComputer, FakeSessionLog } from "./fixtures/live-test-worker.js";
 
 const bindings = env as unknown as {

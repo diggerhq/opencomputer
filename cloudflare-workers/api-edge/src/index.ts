@@ -1812,7 +1812,7 @@ async function authLogout(req: Request, env: Env, ctx: ExecutionContext): Promis
 const LIVE_CHECK_MAX = 500;
 
 /**
- * Live's credential check (spec 18.7; services/managed-agents/src/live/contract.ts
+ * Live's credential check (spec 18.7; services/managed-agents/src/actors/live/contract.ts
  * LiveCredentials), an entrypoint Live reaches over its `EDGE` service binding.
  * `revoked` answers the ids that no longer verify; `principal` a token's
  * principal, null when it does not verify.
