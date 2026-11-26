@@ -19,6 +19,7 @@
 export { CreditAccount } from "../../shared/credit_account";
 export { PoolStock } from "./pool_stock";
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { decodeJwt } from "jose";
 import { coloDelete, coloGet, coloPut } from "./colo_cache";
 import { authDashboard, handleDashboard, type DashboardEnv } from "./dashboard";
 import { handleAgentFeedback, isAgentFeedbackPath, type AgentFeedbackEnv } from "./agent_feedback";
@@ -103,6 +104,7 @@ import {
 } from "./principal";
 import { appDeviceLive, appTokenPrincipal, handleAppAuth, verifyAppToken } from "./app_auth";
 import { createdKeyForSync, revokeComputerKey, revokeLiveCredential, syncComputerKey } from "./computer_keys";
+import { mintSessionJWT, SESSION_TTL_SEC, verifySessionJWT } from "./jwt";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
 
 export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
@@ -158,31 +160,6 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
-}
-
-const b64url = (buf: ArrayBuffer | Uint8Array): string => {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-
-// Cache the imported HMAC signing key used to sign session JWTs. Memoized per
-// secret (shared Promise so concurrent first-callers don't double-import), so
-// only sign() runs per mint. importKey is extractable:false, so the key never
-// leaves the isolate.
-let hmacSignKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
-function hmacSignKey(secret: string): Promise<CryptoKey> {
-  if (hmacSignKeyCache && hmacSignKeyCache.secret === secret) return hmacSignKeyCache.key;
-  const key = crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  hmacSignKeyCache = { secret, key };
-  return key;
 }
 
 interface Caller {
@@ -544,7 +521,6 @@ function constantTimeEqual(a: string, b: string): boolean {
 // valid).
 
 const SESSION_COOKIE = "oc_session";
-const SESSION_TTL_SEC = 60 * 60 * 8; // 8h
 
 interface WorkOSProfile {
   id: string;
@@ -1789,11 +1765,9 @@ async function authCLIRevoke(req: Request, env: Env, ctx?: ExecutionContext): Pr
 // URL, so an unverified parse is sufficient.
 function workosSessionIdFromAccessToken(accessToken?: string): string | undefined {
   if (!accessToken) return undefined;
-  const parts = accessToken.split(".");
-  if (parts.length !== 3) return undefined;
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as { sid?: string };
-    return payload.sid;
+    const sid = decodeJwt(accessToken).sid;
+    return typeof sid === "string" ? sid : undefined;
   } catch {
     return undefined;
   }
@@ -1914,63 +1888,6 @@ async function authRefresh(req: Request, env: Env): Promise<Response> {
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50);
-}
-
-interface SessionClaims {
-  org_id: string;
-  user_id: string;
-  plan: string;
-  iat: number;
-  exp: number;
-  // WorkOS session id (sid). Carried so /auth/logout can build the WorkOS
-  // hosted logout URL and tear down the SSO session, not just our cookie.
-  // Optional: sessions minted before this existed won't have it.
-  wsid?: string;
-}
-
-async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string, wsid?: string): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    iss: "opensandbox-session",
-    sub: userID,
-    iat: now,
-    exp: now + SESSION_TTL_SEC,
-    org_id: orgID,
-    user_id: userID,
-    plan,
-    ...(wsid ? { wsid } : {}),
-  };
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await hmacSignKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
-async function verifySessionJWT(secret: string, token: string): Promise<SessionClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [headerB64, payloadB64, sigB64] = parts;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
-  if (b64url(expected) !== sigB64) return null;
-  try {
-    const payload = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as SessionClaims & { iss?: string };
-    if (payload.iss !== "opensandbox-session") return null;
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
-  } catch {
-    return null;
-  }
 }
 
 // ── Stripe webhook ───────────────────────────────────────────────────────

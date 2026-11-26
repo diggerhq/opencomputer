@@ -43,13 +43,6 @@ export class Refusal extends Error {
 export const STATUS: Record<string, number> = { not_found: 404, principal_mismatch: 403, invalid_request: 400 };
 export const statusOf = (code: string): number => STATUS[code] ?? 409;
 
-const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-export function makeFakeId(rand: () => number, prefix: string, n = 16): string {
-  let s = "";
-  for (let i = 0; i < n; i++) s += ALPHABET[Math.floor(rand() * 32)];
-  return `${prefix}_${s}`;
-}
-
 export function mulberry(seed: number): () => number {
   let a = seed >>> 0;
   return () => {

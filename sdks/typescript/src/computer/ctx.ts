@@ -1,6 +1,7 @@
 // What the parts of the client share: the options, the clock, ordered writes to storage, one way to
 // make a request and one way to wait before trying again.
 
+import { cryptoRandom } from "./ids.js";
 import { Refused, type ClientFrame, type ClientOptions } from "./types.js";
 
 export type Op = { put: string; value: unknown } | { delete: string };
@@ -49,7 +50,7 @@ export function createCtx(o: ClientOptions): Ctx {
     clientId: "",
     closed: false,
     now: o.now ?? (() => Date.now()),
-    random: o.random ?? Math.random,
+    random: o.random ?? cryptoRandom,
     timer(fn, ms) {
       const h = set(fn, ms);
       return () => clear(h);

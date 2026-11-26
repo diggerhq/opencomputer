@@ -34,6 +34,7 @@ import {
 } from "./managed_agents";
 import { computerEnabledFor } from "./computer";
 import { cookieCredentialId, memberPrincipal } from "./principal";
+import { mintSessionJWT, SESSION_TTL_SEC, verifySessionJWT, type SessionClaims } from "./jwt";
 import { enableManagedBilling } from "./model_billing";
 import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
@@ -72,17 +73,6 @@ export interface DashboardEnv extends BillingEventsEnv {
 }
 
 const SESSION_COOKIE = "oc_session";
-const SESSION_TTL_SEC = 60 * 60 * 8;
-
-interface SessionClaims {
-  iss?: string;
-  sub: string;
-  iat: number;
-  exp: number;
-  org_id: string;
-  user_id: string;
-  plan: string;
-}
 
 interface Caller {
   orgID: string;
@@ -102,48 +92,8 @@ export async function authDashboard(req: Request, env: DashboardEnv): Promise<Ca
   return { orgID: claims.org_id, userID: claims.user_id, plan: claims.plan, claims };
 }
 
-async function verifySessionJWT(secret: string, token: string): Promise<SessionClaims | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [headerB64, payloadB64, sigB64] = parts;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = await crypto.subtle.sign("HMAC", key, enc.encode(`${headerB64}.${payloadB64}`));
-  if (b64url(expected) !== sigB64) return null;
-  try {
-    const payload = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"))) as SessionClaims;
-    if (payload.iss !== "opensandbox-session") return null;
-    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-async function mintSessionJWT(secret: string, orgID: string, userID: string, plan: string): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    iss: "opensandbox-session", sub: userID, iat: now, exp: now + SESSION_TTL_SEC,
-    org_id: orgID, user_id: userID, plan,
-  };
-  const enc = new TextEncoder();
-  const signingInput =
-    b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
-  return signingInput + "." + b64url(sig);
-}
-
 function setSessionCookie(jwt: string): string {
   return `${SESSION_COOKIE}=${jwt}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SEC}`;
-}
-
-function b64url(buf: ArrayBuffer | Uint8Array): string {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {

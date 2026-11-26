@@ -11,11 +11,11 @@
 // - `dissolve`: tracks the op made, which undo dissolves.
 
 import { byOf, type Principal } from "../../actor/principal.js";
+import { crockfordId } from "../../actor/helpers.js";
 import { owed } from "../../actor/store.js";
 import type { Origin } from "../../computer/api-types.js";
 import {
   emptySummary,
-  mint,
   parse,
   readPlace,
   readSession,
@@ -209,7 +209,7 @@ export class Changes {
     const tx = this.tx;
     const t = snap.track;
     if (readTrack(tx.sql, t.id)) return false;
-    const agentId = mint("cs");
+    const agentId = crockfordId("cs");
     tx.sql.exec(
       `INSERT INTO track (id, owner, name, name_by, former_names, stand, stand_at, agent_session, position, keep, done_at, outcome, created_by, version, audience)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

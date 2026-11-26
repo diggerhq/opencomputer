@@ -16,13 +16,13 @@
 
 import type { RequestIdentity } from "../edge/auth.js";
 import { readBoundedText } from "../edge/http.js";
-import { base64url, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
+import { base64url, crockfordId, cursor, hashOf, liveOf, logOf, orgOf, slackOf } from "../actor/index.js";
 import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Principal, Refusal, SessionPatch, SessionRow } from "../actor/index.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
 import type { ApiScope, LogSummary } from "./api-types.js";
 import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
-import { CROCKFORD, isId, isSessionId } from "./session-ids.js";
+import { isId, isSessionId } from "./session-ids.js";
 import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "./sessions-api.js";
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
@@ -239,12 +239,6 @@ class Reply {
   }
 }
 
-function newRequestId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
-  return `req_${[...bytes].map((b) => alphabet[b & 31]).join("")}`;
-}
-
 async function bodyOf(request: Request): Promise<{ value: unknown } | { error: [number, string, string, Record<string, unknown>] }> {
   const text = await readBoundedText(request, BODY_MAX_BYTES);
   if (text === null) return { error: [413, "payload_too_large", "The body is too large.", {}] };
@@ -271,7 +265,7 @@ function intParam(query: URLSearchParams, name: string, min: number, max: number
 /** An API error for a refusal made before routing (routes.ts): the same shape, request id and header as the rest. */
 export function apiRefusal(request: Request, status: number, code: string, message: string, extra: Record<string, unknown> = {}): Response {
   const incoming = request.headers.get("x-request-id");
-  return new Reply(incoming && REQUEST_ID.test(incoming) ? incoming : newRequestId()).error(status, code, message, extra);
+  return new Reply(incoming && REQUEST_ID.test(incoming) ? incoming : crockfordId("req", 12)).error(status, code, message, extra);
 }
 
 /**
@@ -288,7 +282,7 @@ export async function routeComputerApi(
   waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<Response> {
   const incoming = request.headers.get("x-request-id");
-  const out = new Reply(incoming && REQUEST_ID.test(incoming) ? incoming : newRequestId());
+  const out = new Reply(incoming && REQUEST_ID.test(incoming) ? incoming : crockfordId("req", 12));
   let response: Response | undefined;
   try {
     response = await routeApi(request, env, identity, accountId, computer, suffix, out);
@@ -635,10 +629,7 @@ const strip = <T extends { ok: true }>(r: T): Omit<T, "ok"> => {
 
 /** `<prefix>_` and `length` Crockford characters: of the hash of `seed` when given (a retry lands on the same id), else random. */
 async function entryId(prefix: string, length: number, seed?: unknown): Promise<string> {
-  const bytes = seed === undefined ? crypto.getRandomValues(new Uint8Array(length)) : base64url.decode(await hashOf(seed))!;
-  let id = `${prefix}_`;
-  for (let i = 0; i < length; i++) id += CROCKFORD[bytes[i]! & 31];
-  return id;
+  return crockfordId(prefix, length, seed === undefined ? undefined : base64url.decode(await hashOf(seed))!);
 }
 
 /** Time awaiting an actor other than the SessionLog, into the request's facts. */

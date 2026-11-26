@@ -17,9 +17,9 @@
 
 import type { Ask, LogSummary, Origin, Person, SessionAccess, SessionSettings, SessionStatus } from "../computer/api-types.js";
 import { DEFAULT_MODE, MODELS } from "../computer/capabilities.js";
-import { CROCKFORD } from "../computer/session-ids.js";
 import type { Access, PlaceRow, Row, SessionRow, Summary } from "../actor/contracts.js";
 import { byOf, type Principal } from "../actor/principal.js";
+import { crockfordId } from "../actor/helpers.js";
 import type { Sql } from "../actor/sql.js";
 import { owed, type Owed } from "../actor/store.js";
 import { FEED_TABLES, type FeedTable } from "./schema.js";
@@ -124,14 +124,6 @@ export const parse = <T>(text: string | null | undefined, fallback: T): T => {
     return fallback;
   }
 };
-
-/** A fresh id: `<prefix>_` + 16 Crockford characters (spec 34.1: `op_`, `res_`, `prp_`). */
-export function mint(prefix: string): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let out = `${prefix}_`;
-  for (const byte of bytes) out += CROCKFORD[byte & 31];
-  return out;
-}
 
 /** `by` is a person's: `user:<usr_…>` or `user:slack:<team>:<user>` (spec 34.1). */
 export const isPerson = (by: string | null | undefined): boolean => typeof by === "string" && by.startsWith("user:");
@@ -536,7 +528,7 @@ export class Tx {
 
   /** The operation's row (spec 19.3): in the feed, with the session's `lastSeq` when it was applied. Its id. */
   op(o: OpInput): string {
-    const id = mint("op");
+    const id = crockfordId("op");
     const session = o.sessionId ? readSession(this.sql, o.sessionId) : null;
     this.sql.exec(
       "INSERT INTO op (id, at, by, name, args, inverse, fields, session_id, track_id, at_seq, version, audience) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -682,7 +674,7 @@ export class Tx {
       for (const target of wakeTargets(this.sql, n)) {
         owed.debounce(
           this.sql,
-          { group: `wake:${target}`, call: "SessionLog.wake", body: { sessionId: target, id: mint("tn").slice(0, 15), fromN: n, toN: n }, at: this.now + WAKE_DEBOUNCE_MS, schedule: NOTICE_RETRY_MS },
+          { group: `wake:${target}`, call: "SessionLog.wake", body: { sessionId: target, id: crockfordId("tn", 12), fromN: n, toN: n }, at: this.now + WAKE_DEBOUNCE_MS, schedule: NOTICE_RETRY_MS },
           (pending) => ({ ...(pending as object), toN: n }),
         );
       }

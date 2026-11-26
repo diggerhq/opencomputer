@@ -7,7 +7,7 @@
 // own, so the button carries no authority and forwarding it gives nothing.
 // Grants for everyone are an admin's, from the dashboard or the CLI.
 
-import { base64UrlToBytes, bytesToBase64Url } from "./crypto.js";
+import { base64url } from "../actor/helpers.js";
 import type { SlackResult } from "../slack/slack-api.js";
 
 export const CONNECTION_VIEW = "computer_connection";
@@ -62,15 +62,12 @@ interface ModalData extends ButtonData {
   rq?: string;
 }
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-export const connectionButtonId = (d: ButtonData) => `${PREFIX}${bytesToBase64Url(encoder.encode(JSON.stringify(d)))}`;
+export const connectionButtonId = (d: ButtonData) => `${PREFIX}${base64url.encode(JSON.stringify(d))}`;
 
 export function decodeConnectionButtonId(actionId: string): ButtonData | null {
   if (!actionId.startsWith(PREFIX)) return null;
   try {
-    const d = JSON.parse(decoder.decode(base64UrlToBytes(actionId.slice(PREFIX.length)))) as ButtonData;
+    const d = JSON.parse(base64url.text(actionId.slice(PREFIX.length)) ?? "null") as ButtonData | null;
     return typeof d?.k === "string" && isService(d.s) ? { k: d.k, s: d.s } : null;
   } catch {
     return null;

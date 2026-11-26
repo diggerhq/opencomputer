@@ -31,6 +31,7 @@ import {
   slackThreadUrl,
 } from "../src/slack/slack-api.js";
 import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/computer/team-cache.js";
+import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/slack/access.js";
 import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack/threads.js";
 
 describe("new-thread harness prefixes", () => {
@@ -45,6 +46,16 @@ describe("new-thread harness prefixes", () => {
     ["+claude-code go", { text: "+claude-code go" }],
     ["`+codex` go", { text: "`+codex` go" }],
   ])("%s", (input, expected) => expect(takeHarnessPrefix(input)).toEqual(expected));
+});
+
+describe("Slack access button ids", () => {
+  it("carry the session key base64url, UTF-8, as the runner's prompt ids do", () => {
+    const key = "T1:C2:1791495325.000001:é";
+    expect(encodeSlackAccessId(key, "allow", "U1")).toBe(`ac:${Buffer.from(key).toString("base64url")}:allow:U1`);
+    expect(decodeSlackAccessId(encodeSlackAccessId(key, "deny", "U1"))).toEqual({ sessionKey: key, verb: "deny", userId: "U1" });
+    expect(decodeSlackAccessId("ac:a:allow:U1")).toBeUndefined();
+    expect(decodeSlackAccessId(`ac:${Buffer.from([0xff]).toString("base64url")}:allow:U1`)).toBeUndefined();
+  });
 });
 
 describe("host tokens", () => {
@@ -376,6 +387,10 @@ describe("Slack", () => {
     const key = "T1:C1:1.1";
     const id = `p:${btoa(key).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}:prompt1:yes`;
     expect(decodeCalvinActionId(id)).toEqual({ sessionKey: key, promptId: "prompt1", value: "yes" });
+    // As the runner encodes it (computer/src/action-ids.ts): UTF-8, base64url.
+    const unicode = "T1:C1:1.1:é";
+    expect(decodeCalvinActionId(`p:${Buffer.from(unicode).toString("base64url")}:p2:no`)).toEqual({ sessionKey: unicode, promptId: "p2", value: "no" });
+    expect(decodeCalvinActionId("p:a:p2:no")).toBeNull();
     expect(parseSessionKey(key)).toEqual({ teamId: "T1", channelId: "C1", threadTs: "1.1" });
     expect(slackThreadUrl("T1", "C1", "1.1")).toBe("https://app.slack.com/client/T1/C1/thread/C1-1.1");
     expect(slackThreadUrl(null, "C1", "1.1")).toBeNull();

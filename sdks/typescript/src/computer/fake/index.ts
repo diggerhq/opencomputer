@@ -3,7 +3,8 @@
 import type { Principal, RowKind, RowOf } from "../types.js";
 import { Agents } from "./agent.js";
 import type { Chaos, CreateFakeServer, FakeOptions, FakeServer } from "./api.js";
-import { clone, makeFakeId, mulberry, type Ctx } from "./ctx.js";
+import { clone, mulberry, type Ctx } from "./ctx.js";
+import { crockfordId } from "../ids.js";
 import { route } from "./http.js";
 import { Live } from "./live.js";
 import { Log } from "./log.js";
@@ -50,7 +51,7 @@ export const createFakeServer: CreateFakeServer = (o: FakeOptions = {}): FakeSer
     now: () => clock() + offset,
     iso: (ms?: number) => new Date(ms ?? clock() + offset).toISOString(),
     rand,
-    id: (prefix: string, n?: number) => makeFakeId(rand, prefix, n),
+    id: (prefix: string, n = 16) => crockfordId(prefix, n, rand),
     later,
     sleep: (ms: number) => new Promise<void>((resolve) => later(resolve, ms)),
     job,
