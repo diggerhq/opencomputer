@@ -126,8 +126,7 @@ export type FeedPush = {
   gone: { kind: string; id: string; audience: string }[];
   mutations: { clientId: string; n: number; errors: { n: number; code: string; reason: string }[] }[];
 };
-/** `audience` only on the platform's read, between actors (Delivery's webhook channel). */
-export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string; audience?: string };
+export type Occurrence = { n: string; key: string; kind: string; sessionId: string | null; trackId: string | null; by: string | null; at: string };
 export type MutateRequest = {
   name: string;
   args: unknown;

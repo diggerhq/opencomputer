@@ -7,7 +7,7 @@ import type { Occurrence, Principal, SlackEcho } from "../../src/actor/contracts
 
 export { DeliveryDurableObject } from "../../src/delivery/durable-object.js";
 
-export type FakeOccurrence = Omit<Occurrence, "n" | "audience"> & { n: number; audience: string };
+export type FakeOccurrence = Omit<Occurrence, "n"> & { n: number };
 
 export class FakeOrg extends DurableObject {
   private entries: FakeOccurrence[] = [];
@@ -26,11 +26,8 @@ export class FakeOrg extends DurableObject {
     this.reads.push({ subject: p.subject, after: q.after });
     const after = q.after ? Number(q.after.slice(3)) : 0;
     const page = this.entries.filter((entry) => entry.n > after).slice(0, q.limit ?? 100);
-    // The cursor moves past what the reader may not see, as the real read's does.
     const to = page.at(-1)?.n ?? after;
-    const seen = page.filter((entry) => p.kind === "platform" || p.audiences.includes(entry.audience));
-    // The platform's read carries each occurrence's audience, as the real one does.
-    return { entries: seen.map(({ audience, n, ...entry }) => ({ ...entry, n: `o1.${n}`, ...(p.kind === "platform" ? { audience } : {}) })), to: `o1.${to}` };
+    return { entries: page.map(({ n, ...entry }) => ({ ...entry, n: `o1.${n}` })), to: `o1.${to}` };
   }
 
   async wakeTargets(n: number): Promise<string[]> {
