@@ -222,6 +222,8 @@ export type AcceptResult =
   | { ok: true; id: string; duplicate: boolean; machine: string; result?: unknown }
   | { ok: false; code: "not_found" | "forbidden" | "idempotency_conflict" | "inbox_full" | "agent_turns" };
 export type DeliveredOutcome = { ok: true; result?: unknown } | { ok: false; code: string; message: string };
+/** One inbox entry's outcome, whichever drain delivered it (spec 40.2 steps 4 to 6). */
+export type EntryOutcome = { state: "waiting" } | { state: "delivered"; result: unknown } | { state: "refused"; error: { code: string; message: string } };
 /** What SessionLog publishes to Live on `events:<cs_…>` (spec 40.4). */
 export type EventPush = { from: string; to: string; events: ApiEvent[] };
 /** The events read's answers (spec 37.1): a page with the cursor after its last event, or `reset`. */
@@ -235,6 +237,8 @@ export interface SessionLogRpcAdded {
   /** The entries that are `waiting`, in order. */
   inbox(): Promise<Inbox>;
   delivered(id: string, outcome: DeliveredOutcome): Promise<void>;
+  /** The outcome of the entry `accept` took under this id; null when the inbox holds none. For the caller that accepted it. */
+  entry(id: string): Promise<EntryOutcome | null>;
   /** The events cursor of the log's end; null when `p` may not read. */
   watch(p: Principal, until: number): Promise<{ head: string } | null>;
   destroy(): Promise<void>;

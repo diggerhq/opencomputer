@@ -70,6 +70,13 @@ describe("accept", () => {
     expect(await log.stub.accept(member(), { id: "tn_a", kind: "answer", body: { input: "hello" } })).toEqual({ ok: false, code: "idempotency_conflict" });
     await log.stub.delivered("tn_a", { ok: true, result: { turn: { id: "tn_a", status: "running" } } });
     expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: true, machine: MACHINE, result: { turn: { id: "tn_a", status: "running" } } });
+    // The entry's outcome, for the caller that accepted it, whichever drain delivered it.
+    expect(await log.stub.entry("tn_a")).toEqual({ state: "delivered", result: { turn: { id: "tn_a", status: "running" } } });
+    expect(await log.stub.entry("tn_none")).toBeNull();
+    await log.stub.accept(member(), turn("tn_b"));
+    expect(await log.stub.entry("tn_b")).toEqual({ state: "waiting" });
+    await log.stub.delivered("tn_b", { ok: false, code: "queue_full", message: "full" });
+    expect(await log.stub.entry("tn_b")).toEqual({ state: "refused", error: { code: "queue_full", message: "full" } });
     expect((await log.stub.inbox()).entries).toEqual([]);
   });
 

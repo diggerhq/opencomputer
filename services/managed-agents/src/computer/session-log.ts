@@ -44,6 +44,7 @@ import {
   type ActorEnv,
   type ComputerRpcAdded,
   type DeliveredOutcome,
+  type EntryOutcome,
   type EventPush,
   type EventsReset,
   type Inbox,
@@ -724,6 +725,15 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   async inbox(): Promise<Inbox> {
     const entries = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE state = 'waiting' ORDER BY n").toArray().map(entryOfRow);
     return { entries, epoch: this.meta.logEpoch, lastSeq: this.meta.ack };
+  }
+
+  /** One entry's outcome, for the caller that accepted it: another drain than its own may have delivered it. */
+  async entry(id: string): Promise<EntryOutcome | null> {
+    const row = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ?", id).toArray()[0];
+    if (!row) return null;
+    if (row.state === "delivered") return { state: "delivered", result: row.result === null ? null : (JSON.parse(row.result) as unknown) };
+    if (row.state === "refused") return { state: "refused", error: JSON.parse(row.error ?? "{}") as { code: string; message: string } };
+    return { state: "waiting" };
   }
 
   async delivered(id: string, outcome: DeliveredOutcome): Promise<void> {
