@@ -40,18 +40,17 @@ import { liveOf } from "../../actors/addresses.js";
 import { apiRefusal, type ComputerApiStub, routeComputerApi } from "../api/dispatch.js";
 import { memberId } from "../../ids/session-ids.js";
 import { agentBody, CODEX_BODY_MAX_BYTES } from "../agent-body.js";
-import { computerOf, computers, reservedName } from "../computer-objects.js";
+import { computerOf, reservedName } from "../computer-objects.js";
 
 /**
  * The organization's managed model key was bound or deleted (work 058): its
  * computer refreshes its stored copy and sends the host fresh credentials.
- * No computers configured, or none for the organization: nothing. Never throws.
+ * A reserved name has none: nothing. Never throws.
  */
 export async function computerModelKeyChanged(env: ComputerEdgeEnv, accountId: string): Promise<void> {
-  const namespace = computers(env);
-  if (!namespace || reservedName(accountId)) return;
+  if (reservedName(accountId)) return;
   try {
-    await namespace.getByName(accountId).modelKeyChanged();
+    await computerOf(env, accountId).modelKeyChanged();
   } catch (error) {
     console.warn(JSON.stringify({ level: "warn", event: "computer.model_key_push_failed", accountId, message: error instanceof Error ? error.message : "unknown" }));
   }
@@ -122,7 +121,6 @@ export async function routeComputerDashboard(
   if (request.headers.get("x-opencomputer-surface") === "api") {
     if (identity.kind !== "user") return apiRefusal(request, 403, "forbidden", "Not a person's credential.");
     if (identity.projectId) return apiRefusal(request, 403, "forbidden", "Project keys cannot use sessions.", { reason: "project_key" });
-    if (!computers(env)) return apiRefusal(request, 503, "unavailable", "Computers are not available yet.", { retryAfterMs: 60_000 });
     if (reservedName(identity.accountId) || isPoolId(identity.accountId)) return apiRefusal(request, 403, "forbidden", "Not an organization.");
     const stub = computerOf(env, identity.accountId) as unknown as ComputerApiStub;
     return routeComputerApi(request, env, identity, identity.accountId, stub, url.pathname.slice("/v1/computer".length), waitUntil);
@@ -131,7 +129,6 @@ export async function routeComputerDashboard(
   // organization; never from an API key or the session API's mount.
   if (route === "POST /v1/computer/keys/sync" || route === "POST /v1/computer/keys/revoke") {
     if (identity.kind !== "user" || identity.projectId || identity.apiKey) return problem(403, "forbidden", "Key events come from the edge");
-    if (!computers(env)) return problem(503, "computer_not_configured", "Computers are not available yet");
     if (reservedName(identity.accountId) || isPoolId(identity.accountId)) return problem(403, "forbidden", "Not an organization");
     const input = await agentBody(request);
     if (input instanceof Response) return input;
@@ -163,7 +160,6 @@ export async function routeComputerDashboard(
   if (identity.kind !== "user" || identity.projectId) {
     return problem(403, "forbidden", "The computer is managed from the dashboard");
   }
-  if (!computers(env)) return problem(503, "computer_not_configured", "Computers are not available yet");
   const accountId = identity.accountId;
   // Pool computers and internal objects share the namespace with organizations.
   if (reservedName(accountId) || isPoolId(accountId)) return problem(403, "forbidden", "Not an organization");
