@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, sizeFor } from "../src/computer/config.js";
-import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
+import { gatewayUrl, sizeFor } from "../src/actors/computer/config.js";
+import { FAILURE_CODES, failureMessage, failureNotice } from "../src/actors/computer/machine/failure.js";
 import { bytesToBase64Url, seal, unseal } from "../src/crypto/seal.js";
-import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
-import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
-import { takeHarnessPrefix } from "../src/computer/harnesses.js";
+import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/actors/computer/held-for-org/github.js";
+import { constantTimeEqual, hostAuthorized, hostToken } from "../src/actors/computer/host-link/host-token.js";
+import { takeHarnessPrefix } from "../src/actors/computer/held-for-org/model-access/harnesses.js";
 import {
   IDLE_PARK_MS,
   UNPAID_PARK_MS,
@@ -17,8 +17,8 @@ import {
   unpaidStage,
   unpaidWarning,
   unpaidWarningGiven,
-} from "../src/computer/parking.js";
-import { resolvePlan, sizeTier } from "../src/computer/plan.js";
+} from "../src/actors/computer/machine/parking.js";
+import { resolvePlan, sizeTier } from "../src/actors/computer/machine/plan.js";
 import { decodeCalvinActionId, parseSessionKey } from "../src/host-protocol/protocol.js";
 import {
   decodeInstallState,
@@ -30,7 +30,7 @@ import {
   parseSlackEnvelope,
   slackThreadUrl,
 } from "../src/slack-api/web-api.js";
-import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/computer/team-cache.js";
+import { TEAM_ACCOUNT_TTL_MS, TeamAccountCache } from "../src/actors/computer/team-cache.js";
 import { decodeAccessId as decodeSlackAccessId, encodeAccessId as encodeSlackAccessId } from "../src/actors/slack/access.js";
 import { ThreadAccess, findThreadLinks, forwardedLinked, neutralizeBroadcasts, stripAttribution, threadRefFor } from "../src/slack-api/threads.js";
 

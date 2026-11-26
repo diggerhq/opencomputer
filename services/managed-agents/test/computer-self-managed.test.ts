@@ -1,8 +1,8 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 
 /**
  * Self-managed VMs (work 105, COMPUTER_VMS=self-managed): the operator runs

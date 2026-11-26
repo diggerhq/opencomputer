@@ -9,7 +9,7 @@
 // kept OS disk (createOption Attach: no image, no osProfile, no customData).
 
 import { computerName, isPoolId, ownerTag, validResourcePrefix } from "../../ids/computer-names.js";
-import { nvmeSize, validSize } from "../../computer/placement.js";
+import { nvmeSize, validSize } from "../../actors/computer/machine/placement.js";
 import { API_VERSIONS, type AzureCredentials } from "./arm.js";
 
 export { computerName, validOrganizationId, validResourcePrefix } from "../../ids/computer-names.js";

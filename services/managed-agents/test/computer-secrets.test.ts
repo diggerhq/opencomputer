@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/computer/secrets.js";
-import { SecretsStore } from "../src/computer/secrets-store.js";
+import { SECRET_VIEW, buttonId, decodeButtonId, parseSecretCommand, type SubmittedView } from "../src/actors/computer/held-for-org/secrets/secrets.js";
+import { SecretsStore } from "../src/actors/computer/held-for-org/secrets/secrets-store.js";
 import type { Principal } from "../src/auth/principal.js";
-import type { ApiRequest } from "../src/computer/sessions-api.js";
-import { credentialHint, parseVariableCommand } from "../src/computer/variables.js";
-import { secretNameProblem } from "../src/computer/secrets.js";
+import type { ApiRequest } from "../src/actors/computer/session-drain.js";
+import { credentialHint, parseVariableCommand } from "../src/actors/computer/held-for-org/secrets/variables.js";
+import { secretNameProblem } from "../src/actors/computer/held-for-org/secrets/secrets.js";
 import type { SlackResult } from "../src/slack-api/web-api.js";
-import { driversCommandText } from "../src/computer/access.js";
+import { driversCommandText } from "../src/actors/computer/copied/access.js";
 import { LOOKUP_FAILED_TEXT, ThreadAccess } from "../src/slack-api/threads.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
@@ -253,7 +253,7 @@ describe("!secret parsing", () => {
   });
 
   it("seals values bound to their scope, owner and name", async () => {
-    const { sealSecret, openSecret } = await import("../src/computer/secrets.js");
+    const { sealSecret, openSecret } = await import("../src/actors/computer/held-for-org/secrets/secrets.js");
     const sealed = await sealSecret("v", KEY, "user", "U1", "A");
     expect(await openSecret(sealed, KEY, "user", "U1", "A")).toBe("v");
     await expect(openSecret(sealed, KEY, "user", "U2", "A")).rejects.toThrow();

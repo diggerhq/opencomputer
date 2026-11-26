@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { DeliveredOutcome, InboxEntry, InboxKind } from "../src/actor/contracts.js";
 import type { ApiEvent, LogSummary } from "../src/api-objects/objects.js";
-import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
-import { ComputerKeys } from "../src/computer/keys.js";
+import { matchApiRoute, writeParams } from "../src/http/api/dispatch.js";
+import { ComputerKeys } from "../src/actors/computer/held-for-org/keys/keys.js";
 import type { CalvinGatewayToHost, CalvinPerson } from "../src/host-protocol/protocol.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/actors/session-log/contract.js";
 import {
@@ -11,10 +11,10 @@ import {
   ComputerSessionsApi,
   GAP_CLOSE_INTERVAL_MS,
   RECOVER_AFTER_MS,
-} from "../src/computer/sessions-api.js";
-import { ApiTelemetry } from "../src/computer/telemetry/api.js";
+} from "../src/actors/computer/session-drain.js";
+import { ApiTelemetry } from "../src/actors/computer/telemetry/api.js";
 import { createTelemetry } from "../src/telemetry/emitter.js";
-import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
+import type { SessionsApiDeps } from "../src/actors/computer/session-drain.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import type { Sql } from "../src/durable/sql.js";
 import { migrate } from "../src/durable/migrations.js";

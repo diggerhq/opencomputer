@@ -1,8 +1,8 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import type { ApiRequest } from "../src/computer/sessions-api.js";
+import type { ApiRequest } from "../src/actors/computer/session-drain.js";
 import { describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
 
 type Stub = DurableObjectStub<ComputerDurableObject>;
 const computers = () => (env as unknown as { COMPUTERS: DurableObjectNamespace<ComputerDurableObject> }).COMPUTERS;

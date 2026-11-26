@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { CloudResource, CloudResourceKind, CloudTarget } from "../src/computer/cloud-contract.js";
-import { CloudError, type ComputerCloud } from "../src/computer/cloud.js";
-import { failureMessage } from "../src/computer/failure.js";
-import { ComputerLifecycle, type LifecycleDeps, POLL_MS, backoffMs, readAttempt } from "../src/computer/lifecycle.js";
+import type { CloudResource, CloudResourceKind, CloudTarget } from "../src/actors/computer/machine/cloud-contract.js";
+import { CloudError, type ComputerCloud } from "../src/actors/computer/machine/cloud.js";
+import { failureMessage } from "../src/actors/computer/machine/failure.js";
+import { ComputerLifecycle, type LifecycleDeps, POLL_MS, backoffMs, readAttempt } from "../src/actors/computer/machine/lifecycle.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 const ORG = "org_test";

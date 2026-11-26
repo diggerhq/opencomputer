@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { TicketTooLongError, mintTicket as mintForRoute, validateTicketRequest } from "../src/computer/tickets.js";
+import { TicketTooLongError, mintTicket as mintForRoute, validateTicketRequest } from "../src/actors/computer/held-for-org/keys/tickets.js";
 import { TICKET_MAX_LENGTH, TICKET_TTL_MS, mintTicket, verifyTicket } from "../src/wire/ticket.js";
 
 /** Work 084: ticket v1, minted for `POST /tickets` and verified by the wire Worker. */

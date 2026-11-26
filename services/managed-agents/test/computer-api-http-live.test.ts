@@ -3,8 +3,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
-import { routeComputerDashboard } from "../src/computer/routes.js";
+import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
+import { routeComputerDashboard } from "../src/http/dashboard/routes.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
 import { PRINCIPAL_HEADER, upgradePrincipal } from "../src/actors/live/contract.js";

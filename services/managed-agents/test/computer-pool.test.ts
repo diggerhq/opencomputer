@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { AdoptedComputer, LifecycleReply } from "../src/computer/lifecycle.js";
+import type { AdoptedComputer, LifecycleReply } from "../src/actors/computer/machine/lifecycle.js";
 import { isPoolId, newPoolId, ownerTag } from "../src/ids/computer-names.js";
 import {
   ComputerPool,
@@ -10,7 +10,7 @@ import {
   REFILL_INTERVAL_MS,
   poolSize,
   refillBackoffMs,
-} from "../src/computer/pool.js";
+} from "../src/actors/computer-pool/pool.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 
 /** A slot's ComputerDurableObject, in memory: started computers become ready when the test says so. */

@@ -1,9 +1,9 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { HOST_DIAL_MS } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { HOST_DIAL_MS } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 
 /**
  * The computer follows its usage plan's size (work 052, 2026-10-13):

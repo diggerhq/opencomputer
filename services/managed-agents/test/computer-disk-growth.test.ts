@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { diskDecision, SETTLE_MS } from "../src/computer/disk-growth.js";
+import { diskDecision, SETTLE_MS } from "../src/actors/computer/machine/disk-growth.js";
 
 /** The data disk grows on its own near capacity (work 071). */
 

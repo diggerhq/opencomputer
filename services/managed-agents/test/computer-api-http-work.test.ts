@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
+import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { agentIdentity, keyIdentity, memberIdentity } from "./fixtures/identity.js";
 

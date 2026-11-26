@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
 
 /**
  * Work 092, step 4: an operator reads an organization's computer and wakes

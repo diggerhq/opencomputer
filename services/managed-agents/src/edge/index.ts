@@ -309,7 +309,7 @@ import {
   routeGitDeployTaskRequest,
 } from "./git-deploy-service.js";
 import { projectRepositoryArchive } from "../templates/code-storage.js";
-import { ComputerDurableObject } from "../computer/durable-object.js";
+import { ComputerDurableObject } from "../actors/computer/durable-object.js";
 import {
   COMPUTER_GRANT_HINT,
   computerGrantedConnections,
@@ -320,14 +320,14 @@ import { SessionLogDurableObject } from "../actors/session-log/durable-object.js
 import { WorkIndexDurableObject } from "../actors/org/work-index.js";
 import { OrgDurableObject } from "../actors/org/durable-object.js";
 import { SlackDurableObject } from "../actors/slack/durable-object.js";
-import type { ComputerEdgeEnv } from "../computer/config.js";
+import type { ComputerEdgeEnv } from "../actors/computer/config.js";
 import {
   type Latency,
   latencyTelemetry,
   requestRegion,
   upstreamTiming,
 } from "./latency.js";
-import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../computer/routes.js";
+import { computerModelKeyChanged, routeComputerDashboard, routeComputerPublic } from "../http/dashboard/routes.js";
 import { routeComputerServiceConnections } from "./computer-service-connections.js";
 import { COMPUTER_PRINCIPAL, isComputerGrantRoute } from "./computer-principal.js";
 import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../http/slack/webhooks.js";

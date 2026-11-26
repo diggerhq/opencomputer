@@ -3,7 +3,7 @@
 // method not listed here. `p` is the caller's principal. Types only; nothing here runs.
 
 import type { ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSettings } from "../api-objects/objects.js";
-import type { PublicComputerState } from "../computer/config.js";
+import type { PublicComputerState } from "../actors/computer/config.js";
 import type { CalvinPerson } from "../host-protocol/protocol.js";
 import type { SlackResult } from "../slack-api/web-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../actors/org/repository.js";

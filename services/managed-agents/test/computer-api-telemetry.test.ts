@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
-import { ComputerKeys } from "../src/computer/keys.js";
+import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
+import { ComputerKeys } from "../src/actors/computer/held-for-org/keys/keys.js";
 import type { LogSummary } from "../src/api-objects/objects.js";
 import type { AppendResult } from "../src/actors/session-log/contract.js";
-import { ApiTelemetry, type EmitTelemetry, surfaceOfOrigin } from "../src/computer/telemetry/api.js";
-import { BATCH_MS, TelemetryBatch } from "../src/computer/telemetry/batch.js";
+import { ApiTelemetry, type EmitTelemetry, surfaceOfOrigin } from "../src/actors/computer/telemetry/api.js";
+import { BATCH_MS, TelemetryBatch } from "../src/telemetry/batch.js";
 import { gatewayTelemetry } from "../src/telemetry/gateway.js";
 import { createTelemetry } from "../src/telemetry/emitter.js";
 import { keyIdentity } from "./fixtures/identity.js";

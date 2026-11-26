@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Principal } from "../src/auth/principal.js";
-import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
+import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
 import type { RequestIdentity } from "../src/edge/auth.js";
 import { principalClaim } from "../src/edge/computer-principal.js";
 

@@ -2,8 +2,8 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { DeliveredOutcome, InboxEntry } from "../src/actor/contracts.js";
-import type { ComputerDurableObject } from "../src/computer/durable-object.js";
-import { hostToken } from "../src/computer/host-token.js";
+import type { ComputerDurableObject } from "../src/actors/computer/durable-object.js";
+import { hostToken } from "../src/actors/computer/host-link/host-token.js";
 import { linkSlack } from "./fixtures/computer-link.js";
 
 /**

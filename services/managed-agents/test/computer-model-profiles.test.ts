@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { harnessOnProfile, helloProfiles, profileHarnesses } from "../src/computer/harnesses.js";
-import { noModelAccess } from "../src/computer/model-access.js";
-import { NO_MODEL_CREDENTIAL, listsProfile, managedModelRoute, modelKey } from "../src/computer/model-key.js";
+import { harnessOnProfile, helloProfiles, profileHarnesses } from "../src/actors/computer/held-for-org/model-access/harnesses.js";
+import { noModelAccess } from "../src/actors/computer/held-for-org/model-access/model-access.js";
+import { NO_MODEL_CREDENTIAL, listsProfile, managedModelRoute, modelKey } from "../src/actors/computer/held-for-org/model-access/model-key.js";
 import type { ModelProfile } from "../src/host-protocol/protocol.js";
 
 /**

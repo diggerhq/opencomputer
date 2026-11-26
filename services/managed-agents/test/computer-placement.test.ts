@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { missingEdgeConfig, sizes, zones } from "../src/computer/config.js";
-import { candidates, isCapacity, isQuota, sameShape, sizeShape, standsIn } from "../src/computer/placement.js";
+import { missingEdgeConfig, sizes, zones } from "../src/actors/computer/config.js";
+import { candidates, isCapacity, isQuota, sameShape, sizeShape, standsIn } from "../src/actors/computer/machine/placement.js";
 
 // Work 106: where a computer may be built (placement.ts) and the settings that say so (config.ts).
 const env = (vars: Record<string, string>) => vars as never;

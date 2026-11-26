@@ -22,7 +22,7 @@
 // - Every read takes the reader's principal, and `minSeq` answers `unavailable` at once when `ack` has
 //   not reached it. Nothing waits: a client follows over Live (spec 37.1).
 
-import { TelemetryBatch } from "../../computer/telemetry/batch.js";
+import { TelemetryBatch } from "../../telemetry/batch.js";
 import { gatewayTelemetry, type TelemetryEnv } from "../../telemetry/gateway.js";
 import { DurableObject } from "cloudflare:workers";
 

@@ -3,7 +3,7 @@
 
 import type { Principal } from "../../src/auth/principal.js";
 import { API_SCOPES, type ApiScope } from "../../src/api-objects/objects.js";
-import { apiScopes } from "../../src/computer/keys.js";
+import { apiScopes } from "../../src/actors/computer/held-for-org/keys/keys.js";
 import type { RequestIdentity } from "../../src/edge/auth.js";
 
 /** A member by cookie: the web tab is not narrowed. */
