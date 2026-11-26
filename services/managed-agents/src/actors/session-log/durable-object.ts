@@ -480,7 +480,11 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   /** Null where no bucket is bound: event data stays inline. */
   blobs: Blobs | null = this.env.SESSION_LOG_BLOBS ? r2Blobs(this.env.SESSION_LOG_BLOBS) : null;
   private readonly db: Sql;
-  private readonly emit = emitter("sessionlog", () => ({ org: this.meta?.organizationId, session: this.meta?.sessionId }));
+  private readonly emit = emitter("sessionlog", () => ({ org: this.meta?.organizationId, session: this.meta?.sessionId }), {
+    env: () => this.env,
+    waitUntil: (promise) => this.ctx.waitUntil(promise),
+    fetch: () => this.telemetryFetch,
+  });
   /** The copy of Org's access row, or null while the log holds none. */
   private access: Access | null = null;
 
@@ -1324,7 +1328,8 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   async turn(turnId: string, query: TurnQuery, p: Principal): Promise<TurnResult> {
     const refused = await this.admit(query.minSeq, p);
     if (refused) return refused;
-    const turn = this.readTurn(turnId);
+    // A turn accepted (202) and not yet delivered is in the inbox only: it reads as queued until the host's journal has it.
+    const turn = this.readTurn(turnId) ?? this.waitingTurn(turnId);
     if (!turn) return { ok: false, error: "turn_not_found" };
     return { ok: true, turn, lastSeq: this.meta.ack };
   }
@@ -1416,6 +1421,35 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
   private readTurn(turnId: string): Turn | null {
     const row = this.sql.exec<TurnRow>("SELECT seq, data, usage FROM turns WHERE id = ?", turnId).toArray()[0];
     return row ? publicTurn(turnOfRow(row)) : null;
+  }
+
+  /** A turn entry still waiting in the inbox, as the queued turn the host will journal (the same id, input and author). */
+  private waitingTurn(turnId: string): Turn | null {
+    const row = this.sql.exec<InboxRow>("SELECT * FROM inbox WHERE id = ? AND kind = 'turn' AND state = 'waiting'", turnId).toArray()[0];
+    if (!row) return null;
+    const entry = entryOfRow(row);
+    const body = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
+    const ifBusy = body.ifBusy === "steer" || body.ifBusy === "interrupt" ? body.ifBusy : "queue";
+    return {
+      id: entry.id,
+      sessionId: this.sessionId()!,
+      status: "queued",
+      trigger: "message",
+      subagentId: null,
+      ifBusy,
+      input: typeof body.input === "string" ? body.input : null,
+      // The inbox keeps who, not their display name, which the host's message.received brings; the API's Actor needs a string.
+      author: { id: entry.actor.subject, name: entry.actor.subject, via: entry.actor.via, client: null },
+      steering: [],
+      createdAt: new Date(entry.at).toISOString(),
+      startedAt: null,
+      endedAt: null,
+      text: null,
+      error: null,
+      reason: null,
+      forced: null,
+      usage: null,
+    };
   }
 
   private queuedTurns(): Turn[] {

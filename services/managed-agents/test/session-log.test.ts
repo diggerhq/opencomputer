@@ -287,6 +287,15 @@ describe("SessionLog recover", () => {
 });
 
 describe("SessionLog reads", () => {
+  it("a turn still waiting for the host reads as queued, not as not found", async () => {
+    const log = await open();
+    expect(await log.stub.accept(member(), { id: T1, kind: "turn", body: { input: "first", ifBusy: "queue" } })).toMatchObject({ ok: true });
+    const read = await log.stub.turn(T1, {}, member());
+    expect(read).toMatchObject({ ok: true, turn: { id: T1, sessionId: log.sessionId, status: "queued", input: "first", ifBusy: "queue", startedAt: null } });
+    validTurn((read as { turn: unknown }).turn);
+    expect(await log.stub.turn(T2, {}, member())).toEqual({ ok: false, error: "turn_not_found" });
+  });
+
   it("minSeq not reached is unavailable, at once", async () => {
     const log = await open();
     await log.stub.append(log.identity, 1, busyLog(log).slice(0, 2));

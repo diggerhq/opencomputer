@@ -52,11 +52,16 @@ export const CATALOG = {
   'ack.done': gateway('indicator', 'call_ms'),
   'links.resolved': gateway('count', 'timed_out', 'forwarded'),
   'dispatch.created': gateway('attempt'),
-  // `wait_ms`: since the dispatch row was created (work 068).
-  'dispatch.sent': gateway('attempt', 'wait_ms'),
-  'dispatch.parked': gateway(),
+  // `wait_ms`: since the dispatch row was created (work 068); on the inbox path, since the entry was accepted.
+  // Inbox path (the Computer's drain): dispatch_id = the inbox entry's id, session_key = the runner's key.
+  'dispatch.sent': gateway('attempt', 'wait_ms', 'method'),
+  'dispatch.parked': gateway('method'),
   'dispatch.resent': gateway('attempt'),
-  'dispatch.replied': gateway(),
+  // Inbox path: the host's answer to a drained entry; duration_ms = frame sent → answer; outcome completed |
+  // failed (refused, `code`) | timed_out (no answer in HOST_CALL_HELD_TIMEOUT_MS: the held-writes alert).
+  'dispatch.replied': gateway('method', 'code'),
+  // A call of an actor's owed outbox (durable/outbox.ts) that ran out of tries and went to the dead list.
+  'owed.dead': gateway('actor', 'group', 'call', 'tries', 'error'),
   'host.connected': gateway('host_version'),
   'host.disconnected': gateway('host_version', 'close_code'),
   'interaction.received': gateway('kind'),

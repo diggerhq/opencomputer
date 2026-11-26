@@ -28,7 +28,7 @@ import { owed } from "../../durable/outbox.js";
 import type { AssertedApiKey } from "../../edge/auth.js";
 import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
-import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
+import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
 import {
   type CalvinApiError,
@@ -218,14 +218,19 @@ export interface SessionsApiDeps {
   transaction?: <T>(fn: () => T) => T;
   /** Work 084 instrumentation: rollups and rare events (telemetry/api.ts). Absent: nothing is measured. */
   telemetry?: ApiTelemetry;
+  /** Tests: the catalog events' Tinybird POST goes here instead of `fetch`. */
+  telemetryFetch?: typeof fetch;
 }
 
-type HostOutcome = { result?: unknown; error?: CalvinApiError };
+/** `timedOut`: no answer within the frame's timeout (not a host that closed). */
+type HostOutcome = { result?: unknown; error?: CalvinApiError; timedOut?: true };
 
 /** A session's owed drain; `start`: its runner's `start` frame is owed too, sent when no entry waits. */
 interface OwedDrain {
   sessionId: string;
   start?: true;
+  /** This drain, told from one owed after it while it ran (rows written before it have none). */
+  token?: string;
 }
 
 const drainKey = (sessionId: string) => `drain:${sessionId}`;
@@ -332,7 +337,7 @@ export class ComputerSessionsApi {
         credential: key
           ? { id: key.id, name: key.name, kind: "key", scopes: caller.principal.scopes, expiresAt: key.expiresAt, createdAt: key.createdAt }
           : { id: null, name: null, kind: "login", scopes: caller.principal.scopes, expiresAt: null, createdAt: null },
-        computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || DEFAULT_WIRE_URL },
+        computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || null },
         defaults: { model: MODELS[0]!.id, effort: null, mode: DEFAULT_MODE, speed: null },
         capabilities: capabilities(),
       },
@@ -459,17 +464,21 @@ export class ComputerSessionsApi {
     return owed.run(this.deps.store, this.sendOwed, Date.now(), this.emit, group);
   }
 
-  private readonly emit = emitter("computer", () => ({ org: this.deps.organizationId() }));
+  private readonly emit = emitter("computer", () => ({ org: this.deps.organizationId() }), {
+    env: () => this.deps.env,
+    waitUntil: (promise) => this.deps.waitUntil(promise),
+    fetch: () => this.deps.telemetryFetch,
+  });
 
   private readonly sendOwed = async (call: string, body: unknown): Promise<void> => {
     if (call !== "drain") return this.deps.sendOwed(call, body);
-    const { sessionId, start } = body as OwedDrain;
-    await this.drainNow(sessionId, start === true);
+    const { sessionId, start, token } = body as OwedDrain;
+    await this.drainNow(sessionId, start === true, token);
   };
 
   /** One owed drain per session (its group, its key): a later one replaces it, so it reads the inbox again. */
   private owe(sessionId: string, opts: { start?: boolean; at?: number } = {}): void {
-    const body: OwedDrain = { sessionId, ...(opts.start ? { start: true } : {}) };
+    const body: OwedDrain = { sessionId, ...(opts.start ? { start: true } : {}), token: crypto.randomUUID() };
     owed.add(this.deps.store, { group: sessionId, key: drainKey(sessionId), call: "drain", body, ...(opts.at ? { at: opts.at } : {}) });
   }
 
@@ -477,13 +486,13 @@ export class ComputerSessionsApi {
    * The session's waiting inbox entries, in order, each as one `api` frame (the first starts the runner),
    * each then reported to its SessionLog; with none, the `start` frame if one is owed.
    */
-  private async drainNow(sessionId: string, start: boolean): Promise<void> {
+  private async drainNow(sessionId: string, start: boolean, token?: string): Promise<void> {
     // No runner row, no drain.
     if (!this.row(sessionId)) return;
     const log = this.log(sessionId);
     let inbox = await this.admit(sessionId, await log.inbox());
-    if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries.length > 0);
-    if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox) : undefined;
+    if (!this.v4Host()) return this.awaitHost(sessionId, start, inbox.entries, token);
+    if (inbox.entries.length === 0) return start ? this.sendStart(sessionId, inbox, token) : undefined;
     const moving = this.epochSends.get(sessionId);
     if (moving) {
       // The host hears the new epoch first; the frames then carry the log as it is after.
@@ -518,7 +527,7 @@ export class ComputerSessionsApi {
   }
 
   /** The `start` frame: the runner up before its first entry. A refused route starts nothing: the first turn reports it. */
-  private async sendStart(sessionId: string, inbox: Inbox): Promise<void> {
+  private async sendStart(sessionId: string, inbox: Inbox, token?: string): Promise<void> {
     const row = this.row(sessionId)!;
     const routed = await this.deps.routeSession?.(this.spec(row), row.ownerUserId ?? undefined);
     if (routed?.error) return;
@@ -528,17 +537,23 @@ export class ComputerSessionsApi {
       t: "start", id, session: routed?.session ?? this.spec(row), epoch: inbox.epoch, lastSeq: inbox.lastSeq,
       ...(secrets ? { secrets } : {}), role: row.role ? (JSON.parse(row.role) as CalvinRoleSpec) : null,
     });
-    if (!sent) return this.awaitHost(sessionId, true, false);
+    if (!sent) return this.awaitHost(sessionId, true, [], token);
     this.pending.set(id, { resolve: () => undefined, timer: setTimeout(() => this.settle(id, {}), HOST_CALL_TIMEOUT_MS) });
   }
 
   /**
    * No host: the drain stays owed until `hello` makes it due (`helloOwed`), HOST_AWAITED_MS at the latest.
-   * Entries that wait wake the machine; a start alone does not.
+   * Entries that wait wake the machine, each reported `dispatch.parked` (the no-host alert); a start alone does not.
    */
-  private awaitHost(sessionId: string, start: boolean, entries: boolean): void {
+  private awaitHost(sessionId: string, start: boolean, entries: InboxEntry[], token?: string): void {
+    // A drain owed while this one ran replaces it and runs next, reading the inbox again: it waits and reports, not this one.
+    const current = owed.body(this.deps.store, drainKey(sessionId)) as OwedDrain | undefined;
+    if (current && current.token !== token) return;
     this.owe(sessionId, { start, at: Date.now() + HOST_AWAITED_MS });
-    if (entries) this.wakeHost();
+    if (entries.length === 0) return;
+    const key = this.row(sessionId)?.key;
+    for (const entry of entries) this.emit("dispatch.parked", { ...dispatchOf(entry), session_key: key, method: DRAIN_METHODS[entry.kind] });
+    this.wakeHost();
   }
 
   private wakeHost(): void {
@@ -564,6 +579,13 @@ export class ComputerSessionsApi {
     }
     const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
     const body = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
+    const method = DRAIN_METHODS[entry.kind];
+    const dims = { ...dispatchOf(entry), session_key: row.key, method };
+    let sentAt: number | undefined;
+    const sent = () => {
+      sentAt = Date.now();
+      this.emit("dispatch.sent", { ...dims, wait_ms: Math.max(0, sentAt - entry.at) });
+    };
     const outcome = await this.ask({
       t: "api",
       id: crypto.randomUUID(),
@@ -580,7 +602,13 @@ export class ComputerSessionsApi {
       lastSeq: inbox.lastSeq,
       ...(secrets ? { secrets } : {}),
       ...(model ? { model } : {}),
-    });
+    }, sent);
+    if (sentAt !== undefined) {
+      const duration_ms = Date.now() - sentAt;
+      if (outcome.timedOut) this.emit("dispatch.replied", { ...dims, duration_ms, outcome: "timed_out", error_type: "timeout" }, "warn");
+      else if (outcome.error) this.emit("dispatch.replied", { ...dims, duration_ms, outcome: "failed", code: outcome.error.code });
+      else this.emit("dispatch.replied", { ...dims, duration_ms, outcome: "completed" });
+    }
     if (!outcome.error) return { ok: true, result: outcome.result };
     if (outcome.error.code === "computer_unavailable") return "lost";
     // The host's error whole: its status (409 `turn_not_cancellable`, …) and fields are the response's.
@@ -589,10 +617,11 @@ export class ComputerSessionsApi {
   }
 
   /** A frame the host answers by `id`; `computer_unavailable` when it is gone or silent. */
-  private ask(frame: Extract<CalvinGatewayToHost, { t: "api" }>): Promise<HostOutcome> {
+  private ask(frame: Extract<CalvinGatewayToHost, { t: "api" }>, sent?: () => void): Promise<HostOutcome> {
     if (!this.deps.send(frame)) return Promise.resolve({ error: hostLost() });
+    sent?.();
     return new Promise<HostOutcome>((resolve) =>
-      this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost() }), HOST_CALL_HELD_TIMEOUT_MS) }),
+      this.pending.set(frame.id, { resolve, timer: setTimeout(() => this.settle(frame.id, { error: hostLost(), timedOut: true }), HOST_CALL_HELD_TIMEOUT_MS) }),
     );
   }
 
@@ -1068,6 +1097,11 @@ function parseMetadata(raw: string | null): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+/** An inbox entry as a dispatch's dimensions (the dispatch alerts): its id, and its trace when it has one. */
+function dispatchOf(entry: InboxEntry): { dispatch_id: string; trace_id?: string } {
+  return { dispatch_id: entry.id, ...(entry.trace ? { trace_id: entry.trace } : {}) };
 }
 
 /** No answer from the host in time: retryable. */
