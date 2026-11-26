@@ -282,6 +282,34 @@ describe("the Slack actor: commands, buttons, held messages", () => {
     expect(first.threadKey).toMatch(/^T1:C1:\d+\.\d+$/);
     expect(await slackOf(org).announce({ sessionId: "cs_child", parent: sid, brief: "a child" })).toEqual(first);
   });
+
+  it("announces a child once when a try dies between the post and the thread's record", async () => {
+    const org = "org_announce_retry";
+    await linked(org);
+    await slackOf(org).accept(message({ text: "parent", ts: "850.1", channel: "C9" }));
+    await settled(org);
+    const child = { sessionId: "cs_child_retry", parent: await sessionIdFor("T1:C9:850.1"), brief: "a child" };
+    type Seam = { slack(method: string, body: Record<string, unknown>): Promise<unknown>; briefs: unknown[] };
+    // The first try's brief reaches Slack, then the try dies before it records the thread; Org's outbox tries again.
+    await runInDurableObject(slackOf(org), async (instance) => {
+      const o = instance as unknown as Seam;
+      const slack = o.slack.bind(o);
+      o.briefs = [];
+      o.slack = async (method, body) => {
+        const r = await slack(method, body);
+        if (method !== "chat.postMessage" || body.thread_ts) return r;
+        o.briefs.push(body);
+        if (o.briefs.length === 1) throw new Error("the try died");
+        return r;
+      };
+      await expect(instance.announce(child)).rejects.toThrow("the try died");
+    });
+    const again = await slackOf(org).announce(child);
+    expect(again.threadKey).toMatch(/^T1:C9:\d+\.\d+$/);
+    expect(await slackOf(org).announce(child)).toEqual(again);
+    expect(await runInDurableObject(slackOf(org), (instance) => (instance as unknown as Seam).briefs.length)).toBe(1);
+    expect(await inSlack(org, (exec) => exec("SELECT key FROM thread WHERE session_id = ?", child.sessionId))).toEqual([{ key: again.threadKey }]);
+  });
 });
 
 describe("the Slack actor: post_thread", () => {

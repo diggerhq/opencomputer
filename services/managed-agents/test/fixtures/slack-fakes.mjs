@@ -1,6 +1,8 @@
 // Slack's Web API, faked for the Slack actor's tests: everyone is a full member of team T1 except
 // users whose id starts with `UGUEST`; every post succeeds with a fresh ts.
 let ts = 1000;
+/** Top-level posts by channel, oldest first: a channel's history (with metadata when asked for). */
+const history = new Map();
 export async function fakeSlackOutbound(request) {
   const url = new URL(request.url);
   if (url.hostname !== "slack.com") return new Response("not found", { status: 404 });
@@ -18,11 +20,20 @@ export async function fakeSlackOutbound(request) {
       return Response.json({ ok: true, messages: [] });
     case "conversations.info":
       return Response.json({ ok: true, channel: { id: body.channel, name: "general", is_channel: true, is_member: true } });
+    case "conversations.history": {
+      const all = withMetadata(history.get(body.channel) ?? [], body.include_all_metadata === "true");
+      return Response.json({ ok: true, messages: all.reverse() });
+    }
     case "chat.postMessage":
-    case "chat.postEphemeral":
+    case "chat.postEphemeral": {
       ts += 1;
-      return Response.json({ ok: true, ts: `${ts}.000100`, channel: body.channel });
+      const posted = { ts: `${ts}.000100`, text: body.text, ...(body.metadata ? { metadata: body.metadata } : {}) };
+      if (method === "chat.postMessage" && !body.thread_ts) history.set(body.channel, [...(history.get(body.channel) ?? []), posted]);
+      return Response.json({ ok: true, ts: posted.ts, channel: body.channel });
+    }
     default:
       return Response.json({ ok: true });
   }
 }
+
+const withMetadata = (messages, metadata) => messages.map(({ metadata: m, ...rest }) => (metadata && m ? { ...rest, metadata: m } : rest));
