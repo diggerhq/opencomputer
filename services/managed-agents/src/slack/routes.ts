@@ -9,7 +9,7 @@ import { publicOrigin, slackRedirectUri } from "../computer/config.js";
 import { randomToken, sha256Hex } from "../computer/crypto.js";
 import type { Principal } from "../actor/principal.js";
 import { slackOf, type ActorEnv } from "../actor/stubs.js";
-import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl } from "./slack-api.js";
+import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl, slackTeamLinkName } from "./slack-api.js";
 
 export type SlackRouteEnv = ComputerEdgeEnv & ActorEnv;
 
@@ -17,6 +17,18 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const problem = (status: number, code: string, message: string) => json({ error: { code, message } }, status);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const teamRouter = (env: SlackRouteEnv, teamId: string) => slackOf(env, `slack-team:${teamId}`);
+
+/**
+ * The organization a workspace is linked to. An organization the Slack actor has not
+ * imported yet is claimed only in Computer's old router; its actor imports on first
+ * touch and then claims the team in the Slack router.
+ */
+async function teamOrg(env: SlackRouteEnv, teamId: string): Promise<string | null> {
+  const org = await teamRouter(env, teamId).teamOrg();
+  if (org || !env.COMPUTERS) return org;
+  const old = env.COMPUTERS.getByName(slackTeamLinkName(teamId)) as unknown as { teamAccount(): Promise<string | null> };
+  return old.teamAccount();
+}
 
 function configured(env: SlackRouteEnv): boolean {
   return Boolean(env.SLACK && env.SLACK_COMPUTER_CLIENT_ID && env.SLACK_COMPUTER_CLIENT_SECRET && env.SLACK_COMPUTER_SIGNING_SECRET && env.SLACK_COMPUTER_SCOPES);
@@ -84,7 +96,7 @@ async function events(request: Request, env: SlackRouteEnv, context: ExecutionCo
   // Slack wants an answer within three seconds: the actor accepts after it.
   context.waitUntil(
     (async () => {
-      const org = await teamRouter(env, teamId).teamOrg();
+      const org = await teamOrg(env, teamId);
       if (!org) return console.warn(JSON.stringify({ level: "warn", event: "slack.team_unlinked", teamId }));
       if (parsed.kind === "revoked") return void (await releaseRevoked(env, teamId, org));
       await slackOf(env, org).accept({ kind: "event", id: eventId!, body: payload });
@@ -99,7 +111,7 @@ async function interactions(request: Request, env: SlackRouteEnv): Promise<Respo
   const interaction = parseInteraction(raw);
   if (!interaction) return problem(400, "invalid_payload", "Missing Slack interaction payload");
   const teamId = interaction.team?.id;
-  const org = teamId ? await teamRouter(env, teamId).teamOrg() : null;
+  const org = teamId ? await teamOrg(env, teamId) : null;
   if (!org) return new Response(null, { status: 200 });
   // Slack gives an interaction no id of its own: its trigger, else the hash of what was sent.
   const id = interaction.trigger_id ?? (await sha256Hex(raw));

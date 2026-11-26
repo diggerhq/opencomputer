@@ -1,8 +1,17 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { Ask } from '@opencomputer/sdk/computer'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
 import type { Item } from '../store/transcript'
-import { I, Mk, Rich } from './bits'
+import { ACTS, BLOCK, I, Mk, Rich } from './bits'
 
 // The conversation of a thread or of a track's agent: messages, steps as
 // single lines, structural lines with their Undo, and asks as blocks.
@@ -11,36 +20,73 @@ const PAGE = 200
 // Where the reader was in each conversation, for when they return (R44).
 const places = new Map<string, { top: number; end: boolean }>()
 
-const DIM: CSSProperties = { opacity: 0.6 }
-const INERT: CSSProperties = { opacity: 0.7 }
-const WARN: CSSProperties = { color: 'var(--amber-t)' }
-const ASIDE: CSSProperties = { color: 'var(--muted)', fontSize: 12.5 }
+const WARN = 'text-status-pending'
+const ASIDE = 'text-muted-foreground text-[12.5px]'
+// An ask still waiting on the person; one that is closed goes quiet.
+const askCls = (open: boolean) =>
+  cn(
+    BLOCK,
+    open ? 'bg-status-pending-bg border-status-pending/25' : 'opacity-70',
+  )
+const LINK =
+  'text-foreground hover:decoration-muted-foreground underline underline-offset-2'
 
 const dayOf = (iso: string) => new Date(iso).toDateString()
 
 function dayLabel(iso: string): string {
   const d = new Date(iso)
-  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 86400000)
+  const days = Math.round(
+    (new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) /
+      86400000,
+  )
   if (days <= 0) return 'Today'
   if (days === 1) return 'Yesterday'
-  return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })
+  return d.toLocaleDateString(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+  })
 }
 
 // ---- asks ----
 
-type Question = { id: string; text: string; options: { label: string; description?: string }[]; multiSelect?: boolean }
+type Question = {
+  id: string
+  text: string
+  options: { label: string; description?: string }[]
+  multiSelect?: boolean
+}
 
 const questionsOf = (ask: Ask): Question[] => {
   const qs = (ask.question?.questions ?? []) as Partial<Question>[]
-  return qs.map((q, i) => ({ id: q.id ?? String(i), text: q.text ?? '', options: q.options ?? [], multiSelect: q.multiSelect }))
+  return qs.map((q, i) => ({
+    id: q.id ?? String(i),
+    text: q.text ?? '',
+    options: q.options ?? [],
+    multiSelect: q.multiSelect,
+  }))
 }
 
 // What a closed ask shows in place of its buttons (R33).
 function answered(ask: Ask): string {
-  if (ask.status !== 'answered') return ask.status === 'interrupted' ? 'Stopped before it was answered' : 'Dismissed'
-  const a = (ask.answer ?? {}) as { decision?: string; answers?: { choices?: string[]; text?: string | null }[] }
-  if (a.decision) return a.decision === 'deny' ? 'Not allowed' : a.decision === 'always' ? 'Always allowed' : 'Allowed'
-  const said = (a.answers ?? []).flatMap((x) => [...(x.choices ?? []), ...(x.text ? [x.text] : [])])
+  if (ask.status !== 'answered')
+    return ask.status === 'interrupted'
+      ? 'Stopped before it was answered'
+      : 'Dismissed'
+  const a = (ask.answer ?? {}) as {
+    decision?: string
+    answers?: { choices?: string[]; text?: string | null }[]
+  }
+  if (a.decision)
+    return a.decision === 'deny'
+      ? 'Not allowed'
+      : a.decision === 'always'
+        ? 'Always allowed'
+        : 'Allowed'
+  const said = (a.answers ?? []).flatMap((x) => [
+    ...(x.choices ?? []),
+    ...(x.text ? [x.text] : []),
+  ])
   return said.length ? said.join(' · ') : 'Answered'
 }
 
@@ -48,24 +94,46 @@ function AskBlock({ ask }: { ask: Ask }) {
   const surface = useSurface()
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const open = ask.status === 'open'
-  const closed = open ? null : <div style={{ ...ASIDE, marginTop: 8 }}>{answered(ask)}</div>
+  const closed = open ? null : (
+    <div className={cn(ASIDE, 'mt-2')}>{answered(ask)}</div>
+  )
 
   if (ask.kind === 'approval') {
     const a = ask.approval ?? {}
-    const title = typeof a.title === 'string' ? a.title : typeof a.toolName === 'string' ? a.toolName : null
+    const title =
+      typeof a.title === 'string'
+        ? a.title
+        : typeof a.toolName === 'string'
+          ? a.toolName
+          : null
     const command = typeof a.command === 'string' ? a.command : null
     return (
-      <div className={open ? 'blk ask' : 'blk'} style={open ? undefined : INERT}>
+      <div className={askCls(open)}>
         <Rich text={command && title ? title : 'Needs your OK'} />
-        {(command ?? title) && <pre>{command ?? title}</pre>}
+        {(command ?? title) && (
+          <pre className="bg-card mt-2 overflow-auto rounded-md border px-3 py-2 font-mono text-xs">
+            {command ?? title}
+          </pre>
+        )}
         {open ? (
-          <div className="acts">
-            <button className="btn p" onClick={() => surface.answer(ask.sessionId, ask.id, { decision: 'allow' })}>
+          <div className={ACTS}>
+            <Button
+              size="sm"
+              onClick={() =>
+                surface.answer(ask.sessionId, ask.id, { decision: 'allow' })
+              }
+            >
               Allow
-            </button>
-            <button className="btn" onClick={() => surface.answer(ask.sessionId, ask.id, { decision: 'deny' })}>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                surface.answer(ask.sessionId, ask.id, { decision: 'deny' })
+              }
+            >
               Don't allow
-            </button>
+            </Button>
           </div>
         ) : (
           closed
@@ -80,41 +148,54 @@ function AskBlock({ ask }: { ask: Ask }) {
     const direct = qs.length === 1 && !qs[0].multiSelect
     const send = (choices: Record<string, string[]>) =>
       surface.answer(ask.sessionId, ask.id, {
-        answers: qs.map((q) => ({ questionId: q.id, choices: choices[q.id] ?? [], text: null })),
+        answers: qs.map((q) => ({
+          questionId: q.id,
+          choices: choices[q.id] ?? [],
+          text: null,
+        })),
       })
     const pick = (q: Question, label: string) => {
       if (direct) return send({ [q.id]: [label] })
       const have = picked[q.id] ?? []
-      const next = q.multiSelect ? (have.includes(label) ? have.filter((l) => l !== label) : [...have, label]) : [label]
+      const next = q.multiSelect
+        ? have.includes(label)
+          ? have.filter((l) => l !== label)
+          : [...have, label]
+        : [label]
       setPicked({ ...picked, [q.id]: next })
     }
     const ready = qs.every((q) => (picked[q.id] ?? []).length > 0)
     return (
-      <div className={open ? 'blk ask' : 'blk'} style={open ? undefined : INERT}>
+      <div className={askCls(open)}>
         {qs.map((q, i) => (
-          <div key={q.id} style={i ? { marginTop: 12 } : undefined}>
+          <div key={q.id} className={i ? 'mt-3' : undefined}>
             <Rich text={q.text} />
             {open && (
-              <div className="acts">
+              <div className={ACTS}>
                 {q.options.map((o) => (
-                  <button
+                  <Button
                     key={o.label}
-                    className={(picked[q.id] ?? []).includes(o.label) ? 'btn p' : 'btn'}
+                    size="sm"
+                    variant={
+                      (picked[q.id] ?? []).includes(o.label)
+                        ? 'default'
+                        : 'outline'
+                    }
                     title={o.description}
                     onClick={() => pick(q, o.label)}
                   >
                     {o.label}
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}
           </div>
         ))}
         {open && !direct && (
-          <div className="acts">
-            <button className="btn p" disabled={!ready} style={ready ? undefined : DIM} onClick={() => send(picked)}>
+          <div className={ACTS}>
+            <Button size="sm" disabled={!ready} onClick={() => send(picked)}>
               Send
-            </button>
+            </Button>
           </div>
         )}
         {closed}
@@ -124,19 +205,26 @@ function AskBlock({ ask }: { ask: Ask }) {
 
   const name = typeof ask.secret?.name === 'string' ? ask.secret.name : null
   return (
-    <div className={open ? 'blk ask' : 'blk'} style={open ? undefined : INERT}>
+    <div className={askCls(open)}>
       {name ? (
         <>
-          This needs a secret: <code>{name}</code>
+          This needs a secret:{' '}
+          <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
+            {name}
+          </code>
         </>
       ) : (
         'This needs a secret.'
       )}
       {open ? (
-        <div className="acts">
-          <button className="btn" onClick={() => surface.dismissAsk(ask.sessionId, ask.id)}>
+        <div className={ACTS}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => surface.dismissAsk(ask.sessionId, ask.id)}
+          >
             Dismiss
-          </button>
+          </Button>
         </div>
       ) : (
         closed
@@ -156,27 +244,40 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
     const op = s.rows.op.get(id)
     const others =
       op?.name === 'track.create' && op.trackId
-        ? [...s.rows.place.values()].filter((p) => p.trackId === op.trackId && p.id !== op.sessionId).map((p) => p.id)
+        ? [...s.rows.place.values()]
+            .filter((p) => p.trackId === op.trackId && p.id !== op.sessionId)
+            .map((p) => p.id)
         : []
     if (others.length) setStarted(others)
     else surface.undo(id)
   }
   return (
-    <div className="note" style={item.tone === 'error' ? WARN : undefined}>
-      <span>
+    <div
+      className={cn(
+        'text-muted-foreground flex max-w-180 items-center gap-2 text-[12.5px]',
+        item.tone === 'error' && WARN,
+      )}
+    >
+      <span className="min-w-0">
         <Rich text={item.text} />
         {item.undo && !started && (
           <>
             {' · '}
-            <button onClick={() => undo(item.undo!)}>Undo</button>
+            <button className={LINK} onClick={() => undo(item.undo!)}>
+              Undo
+            </button>
           </>
         )}
         {item.undo && started && (
           <>
             {` · It started ${started.length} more: `}
-            <button onClick={() => surface.undo(item.undo!)}>keep {started.length === 1 ? 'it on its own' : 'them on their own'}</button>
+            <button className={LINK} onClick={() => surface.undo(item.undo!)}>
+              keep{' '}
+              {started.length === 1 ? 'it on its own' : 'them on their own'}
+            </button>
             {' · '}
             <button
+              className={LINK}
               onClick={() => {
                 for (const sid of started) surface.deleteThread(sid)
                 surface.undo(item.undo!)
@@ -185,13 +286,15 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
               stop and remove {started.length === 1 ? 'it' : 'them'}
             </button>
             {' · '}
-            <button onClick={() => setStarted(null)}>cancel</button>
+            <button className={LINK} onClick={() => setStarted(null)}>
+              cancel
+            </button>
           </>
         )}
         {item.undone && (
           <>
             {' · '}
-            <s style={{ color: 'var(--faint)' }}>Undo</s>
+            <s className="text-muted-foreground/70">Undo</s>
           </>
         )}
       </span>
@@ -207,35 +310,54 @@ const sameItem = (a: { item: Item }, b: { item: Item }) => {
   const x = a.item as unknown as Record<string, unknown>
   const y = b.item as unknown as Record<string, unknown>
   const keys = Object.keys(x)
-  return keys.length === Object.keys(y).length && keys.every((k) => x[k] === y[k])
+  return (
+    keys.length === Object.keys(y).length && keys.every((k) => x[k] === y[k])
+  )
 }
 
 const ItemView = memo(function ItemView({ item }: { item: Item }) {
   switch (item.kind) {
     case 'user':
       return (
-        <div className="msg u" style={item.state === 'sending' || item.state === 'queued' ? DIM : undefined}>
-          {item.author && <div style={{ ...ASIDE, fontSize: 12 }}>{item.author}</div>}
-          <span className="tx">
-            <Rich text={item.text} />
-          </span>
+        <div
+          className={cn(
+            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-xl rounded-br-sm px-3 py-2',
+            (item.state === 'sending' || item.state === 'queued') &&
+              'opacity-60',
+          )}
+        >
+          {item.author && (
+            <div className="text-muted-foreground text-xs">{item.author}</div>
+          )}
+          <Rich text={item.text} />
           {item.state === 'failed' && (
-            <div style={{ ...WARN, fontSize: 12, marginTop: 4 }}>Not sent{item.reason ? ` · ${item.reason}` : ''}</div>
+            <div className={cn(WARN, 'mt-1 text-xs')}>
+              Not sent{item.reason ? ` · ${item.reason}` : ''}
+            </div>
           )}
         </div>
       )
     case 'agent':
       return (
-        <div className="msg a">
-          <span className="tx">
-            <Rich text={item.text} />
-          </span>
+        <div className="max-w-180">
+          <Rich text={item.text} />
         </div>
       )
     case 'step':
       return (
-        <div className="tool" style={item.status === 'failed' ? WARN : undefined}>
-          {item.status === 'running' ? <Mk mark="working" className="sm" /> : item.status === 'done' ? I.check : <span>×</span>}
+        <div
+          className={cn(
+            'text-muted-foreground -my-1.5 flex max-w-180 items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+            item.status === 'failed' && WARN,
+          )}
+        >
+          {item.status === 'running' ? (
+            <Mk mark="working" small />
+          ) : item.status === 'done' ? (
+            I.check
+          ) : (
+            <span>×</span>
+          )}
           <span>
             <Rich text={item.title} />
             {item.status === 'failed' ? ' · failed' : ''}
@@ -251,7 +373,12 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
 
 // ---- the scroll area ----
 
-export function Conversation(props: { sid: string; trackId?: string; children?: ReactNode; id?: string }) {
+export function Conversation(props: {
+  sid: string
+  trackId?: string
+  children?: ReactNode
+  id?: string
+}) {
   const { sid, trackId, children, id } = props
   const { items, open } = useConversation(sid, trackId)
   const ref = useRef<HTMLDivElement>(null)
@@ -290,7 +417,13 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
     if (!el) return
     const last = items[items.length - 1]
     // The person's own new message takes them to it.
-    if (last && last.key !== lastKey.current && last.kind === 'user' && last.state === 'sending') pinned.current = true
+    if (
+      last &&
+      last.key !== lastKey.current &&
+      last.kind === 'user' &&
+      last.state === 'sending'
+    )
+      pinned.current = true
     lastKey.current = last?.key
     if (hold.current !== null) {
       el.scrollTop = el.scrollHeight - hold.current
@@ -324,7 +457,10 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
     const d = dayOf(item.at)
     if (i > 0 && d !== day)
       out.push(
-        <div className="day" key={`day-${item.key}`}>
+        <div
+          className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-[11.5px] font-medium after:h-px after:flex-1 after:content-['']"
+          key={`day-${item.key}`}
+        >
           {dayLabel(item.at)}
         </div>,
       )
@@ -333,11 +469,17 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
   })
 
   return (
-    <div className="conv" id={id} ref={ref} onScroll={onScroll}>
+    <div
+      className="flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto px-4 pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']"
+      id={id}
+      ref={ref}
+      onScroll={onScroll}
+    >
       {items.length > n && (
-        <button
-          className="btn"
-          style={{ alignSelf: 'center', flex: 'none' }}
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-none self-center"
           onClick={() => {
             const el = ref.current
             if (el) hold.current = el.scrollHeight - el.scrollTop
@@ -345,15 +487,13 @@ export function Conversation(props: { sid: string; trackId?: string; children?: 
           }}
         >
           Show earlier
-        </button>
+        </Button>
       )}
       {out}
       {open?.text ? (
-        <div className="msg a">
-          <span className="tx">
-            <Rich text={open.text} />
-          </span>
-          <span className="caret" />
+        <div className="max-w-180">
+          <Rich text={open.text} />
+          <span className="bg-foreground/55 ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[1px] align-[-2px]" />
         </div>
       ) : null}
       {children}
