@@ -11,6 +11,8 @@ export type Item =
   // folded into one line once it has ended (the settled pattern).
   | { kind: 'steps'; key: string; steps: Step[]; settled: boolean; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
+  // The agent's thinking, folded like a finished turn's steps; `text` is empty when the model hid it.
+  | { kind: 'thinking'; key: string; text: string; ms: number | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
 
@@ -103,6 +105,14 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         }
         break
       }
+      case 'reasoning.completed': {
+        if (d.parentCallId) break
+        items.push({ kind: 'thinking', key: e.id, text: str(d.text) ?? '', ms: typeof d.durationMs === 'number' ? d.durationMs : null, at: e.createdAt })
+        break
+      }
+      case 'session.compacted':
+        items.push({ kind: 'line', key: e.id, text: 'Context compacted', tone: 'muted', at: e.createdAt })
+        break
       case 'track.note': {
         const text = str(d.text)
         if (text) items.push({ kind: 'line', key: e.id, text, tone: 'muted', at: e.createdAt })

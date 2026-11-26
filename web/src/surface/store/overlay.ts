@@ -181,7 +181,7 @@ const newSession = (p: Extract<Pending, { kind: 'session' }>, me: string): [Sess
       archived: false,
       owner: { id: me, name: '', email: null },
       origin: { type: 'dashboard', client: null, slack: null },
-      settings: { model: null, effort: null, mode: 'default', speed: null },
+      settings: { model: p.body.model ?? null, effort: p.body.effort ?? null, mode: p.body.mode ?? 'default', speed: null },
       metadata: {},
       activeTurnId: null,
       queued: [],
@@ -260,6 +260,9 @@ export function overlay(rows: Rows, pending: Pending[], me: string): Rows {
           status: p.kind === 'answer' ? 'running' : s.status,
         })
       }
+    } else if (p.kind === 'settings') {
+      const s = d.get('session', p.sessionId)
+      if (s) d.patch('session', s.id, { settings: { ...s.settings, ...p.settings } })
     } else if (p.kind === 'interrupt') {
       const s = d.get('session', p.sessionId)
       if (s && (s.status === 'running' || s.status === 'starting'))
