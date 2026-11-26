@@ -300,6 +300,23 @@ describe('apiHost', () => {
     await t.a.stop();
   });
 
+  it("after a restart, resumes a session it has only a journal of, and tells a terminal it is not running, not unknown", async () => {
+    const t = setup();
+    // Suspended before this host booted: its journal is on disk, its spec is not in memory.
+    mkdirSync(path.join(t.root, 'data', 'journals', S), { recursive: true });
+    writeFileSync(path.join(t.root, 'data', 'journals', S, `${S}.jsonl`), '');
+    t.a.onGateway(welcome(4));
+    await tick(5);
+    expect(await t.a.hooks.workspace(S)).toBeUndefined();
+    expect(await t.a.hooks.known(S)).toBe(true);
+    expect(await t.a.hooks.known('cs_00000000000000000000')).toBe(false);
+    // The gateway's `start` brings the spec and the secrets.
+    expect(await t.a.hooks.resume(S, actor)).toEqual({ status: 'starting' });
+    expect(t.sent.filter((m) => m.t === 'wake')).toEqual([{ t: 'wake', sessionId: S }]);
+    expect(await t.a.hooks.resume('cs_00000000000000000000', actor)).toMatchObject({ error: { code: 'session_not_found' } });
+    await t.a.stop();
+  });
+
   it('wakes a session the host has no spec of through the gateway, and fails its queued turns when no runner comes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

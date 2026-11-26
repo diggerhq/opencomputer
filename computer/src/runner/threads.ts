@@ -18,10 +18,7 @@ import type { PostThreadRequest, PostThreadResult, ReadThreadRequest } from '../
 
 export const READ_THREAD_TOOL = 'mcp__calvin__read_thread';
 export const POST_THREAD_TOOL = 'mcp__calvin__post_thread';
-/** Bounds per runner, which matter in bypass mode where nobody approves each call and reads never prompt. */
-export const MAX_POSTS = 20;
 export const MAX_POST_CHARS = 4_000;
-export const MAX_READS = 40;
 
 /** What the process hosting the session wires: the gateway answers both. */
 export interface ThreadHooks {
@@ -55,8 +52,6 @@ const text = (t: string, isError = false) => ({ content: [{ type: 'text' as cons
 const errorOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function threadTools(hooks: ThreadHooks) {
-  let posts = 0;
-  let reads = 0;
   const read = tool(
     'read_thread',
     'Read a Slack thread: its first message, the latest replies, how many were left out, and its latest small files, saved for you to open. Give its link, or a channel id and the ts ' +
@@ -66,8 +61,6 @@ export function threadTools(hooks: ThreadHooks) {
     async (input) => {
       const req = threadRequest(input);
       if (typeof req === 'string') return text(req, true);
-      if (reads >= MAX_READS) return text(`this session already read ${MAX_READS} threads; ask the person before reading more`, true);
-      reads++;
       try {
         const linked = await hooks.read(req);
         // A tool result is text: images are not inline as with a link, but at a path the model can open.
@@ -87,19 +80,16 @@ export function threadTools(hooks: ThreadHooks) {
       'replying in this thread: just answer. Returns the posted message\'s link.',
     { ...where, text: z.string().min(1).describe(`What to post, at most ${MAX_POST_CHARS} characters`) },
     async ({ text: body, ...input }) => {
-      if (posts >= MAX_POSTS) return text(`this session already posted ${MAX_POSTS} times to other threads; ask the person before posting more`, true);
       if (body.length > MAX_POST_CHARS) return text(`text is ${body.length} characters; at most ${MAX_POST_CHARS}`, true);
       const req = threadRequest(input);
       if (typeof req === 'string') return text(req, true);
       try {
         const r = await hooks.post({ ...req, text: body });
-        posts++;
         return text(`Posted: ${r.url}`);
       } catch (e) {
         const why = errorOf(e); // the gateway's own refusals start "not posted:"
         if (/^no answer from the gateway within/.test(why)) {
-          // The gateway may still post it: counts, and says not to try again blind.
-          posts++;
+          // The gateway may still post it: says not to try again blind.
           return text(`${why}; it may still have been posted, so read the thread before trying again`, true);
         }
         return text(why.startsWith('not posted') ? why : `not posted: ${why}`, true);

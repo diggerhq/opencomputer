@@ -25,7 +25,7 @@ describe('launchCommand', () => {
   /** The --setenv variables of a systemd launch. */
   const setenv = (env: NodeJS.ProcessEnv) => {
     const vars = new Map<string, string>();
-    for (const a of launchCommand(rs, 'systemd', { SP_SYSTEMD_RUN: 'systemd-run --user', ...env }, '/r').args) {
+    for (const a of launchCommand(rs, 'systemd', env, '/r', 'systemd-run --user').args) {
       const m = /^--setenv=([^=]+)=(.*)$/s.exec(a);
       if (m) vars.set(m[1], m[2]);
     }
@@ -48,7 +48,7 @@ describe('launchCommand', () => {
   });
 
   it('gives a detached runner the same variables', () => {
-    const c = launchCommand(rs, 'detached', { PATH: '/bin' }, '/r');
+    const c = launchCommand(rs, 'detached', { PATH: '/bin' }, '/r', 'systemd-run --user');
     expect(Object.keys(c.env)).toEqual(expect.arrayContaining([...RUNNER_ENV, 'RUNNER_SPEC']));
     expect(c.env.SP_CODEX_PEER_CHECK).toBe('on');
   });
@@ -56,11 +56,12 @@ describe('launchCommand', () => {
 
 describe('launchCommand, podman', () => {
   const rs = { id: 'ab12', socket: '/run/x/runners/ab12.sock', version: 'v' } as never;
-  const env = { SP_RUNNER_USER: 'root', SP_SYSTEMD_RUN: 'systemd-run --user --slice=s.slice' };
+  const env = { SP_RUNNER_USER: 'root' };
+  const prefix = 'systemd-run --user --slice=s.slice';
   const yes = () => true;
 
   it('starts the container attached, in a unit named by the runner, with no environment and no directory', () => {
-    const c = launchCommand(rs, 'podman', env, '/r', yes);
+    const c = launchCommand(rs, 'podman', env, '/r', prefix, yes);
     expect(c.detached).toBe(false);
     expect(c.cmd).toBe('/usr/bin/sudo');
     const at = c.args.indexOf('--');
@@ -75,11 +76,11 @@ describe('launchCommand, podman', () => {
   });
 
   it('throws without the bundle: a container has no tsx fallback', () => {
-    expect(() => launchCommand(rs, 'podman', env, '/r', () => false)).toThrow('/r/dist/runner-boot.mjs');
+    expect(() => launchCommand(rs, 'podman', env, '/r', prefix, () => false)).toThrow('/r/dist/runner-boot.mjs');
   });
 
   it('throws without a runner user, naming what sets one up', () => {
-    expect(() => launchCommand(rs, 'podman', { SP_SYSTEMD_RUN: 'systemd-run --user' }, '/r', yes)).toThrow('sp-host.sh');
+    expect(() => launchCommand(rs, 'podman', {}, '/r', prefix, yes)).toThrow('sp-host.sh');
   });
 });
 

@@ -3,7 +3,7 @@ import type { Linked } from '../links.js';
 import type { PostThreadRequest, ReadThreadRequest } from '../protocol.js';
 import { toolTitle } from './format.js';
 import { previewFor } from './prompts.js';
-import { MAX_POSTS, MAX_POST_CHARS, MAX_READS, POST_THREAD_TOOL, type ThreadHooks, threadRequest, threadTools } from './threads.js';
+import { MAX_POST_CHARS, POST_THREAD_TOOL, type ThreadHooks, threadRequest, threadTools } from './threads.js';
 
 const URL = 'https://acme.slack.com/archives/C0PUB/p1700000001000100';
 const READ: Linked = { url: URL, ok: true, where: '#general', messages: [{ name: 'ada', ts: '1700000001.000100', text: 'ship it?' }] };
@@ -68,12 +68,6 @@ describe('read_thread', () => {
     expect(await t.read({ url: URL })).toEqual({ text: 'could not read the thread: gateway not connected', error: true });
   });
 
-  it(`stops after ${MAX_READS} reads`, async () => {
-    const t = tools();
-    for (let i = 0; i < MAX_READS; i++) expect((await t.read({ url: URL })).error).toBe(false);
-    expect((await t.read({ url: URL })).text).toMatch(/already read 40 threads/);
-    expect(t.asked.read).toHaveLength(MAX_READS);
-  });
 });
 
 describe('post_thread', () => {
@@ -89,27 +83,16 @@ describe('post_thread', () => {
     expect(t.asked.post).toEqual([]);
   });
 
-  it(`stops after ${MAX_POSTS} posts; refused posts do not count`, async () => {
-    const t = tools();
-    const refused = tools({ post: async () => Promise.reject(new Error('not posted: it is not in a public channel')) });
-    expect(await refused.post({ url: URL, text: 'hi' })).toEqual({ text: 'not posted: it is not in a public channel', error: true });
-    for (let i = 0; i < MAX_POSTS; i++) expect((await t.post({ url: URL, text: `post ${i}` })).error).toBe(false);
-    expect((await t.post({ url: URL, text: 'one more' })).text).toMatch(/already posted 20 times/);
-    expect(t.asked.post).toHaveLength(MAX_POSTS);
-  });
-
   it('says "not posted" for errors that are not the gateway\'s own refusal', async () => {
     const t = tools({ post: async () => Promise.reject(new Error('host not connected')) });
     expect(await t.post({ url: URL, text: 'hi' })).toEqual({ text: 'not posted: host not connected', error: true });
   });
 
-  it('counts a post the gateway never answered, and says it may have landed', async () => {
+  it('says a post the gateway never answered may have landed', async () => {
     const t = tools({ post: async () => Promise.reject(new Error('no answer from the gateway within 30 s')) });
     const r = await t.post({ url: URL, text: 'hi' });
     expect(r.error).toBe(true);
     expect(r.text).toBe('no answer from the gateway within 30 s; it may still have been posted, so read the thread before trying again');
-    for (let i = 1; i < MAX_POSTS; i++) await t.post({ url: URL, text: 'hi' });
-    expect((await t.post({ url: URL, text: 'hi' })).text).toMatch(/already posted 20 times/);
   });
 
   it('shows where and what in its approval prompt and timeline', () => {

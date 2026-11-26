@@ -18,7 +18,8 @@
 #   /etc/systemd/system/slack-presence-host.service.d/10-limits.conf
 #       the host agent's own MemoryMax
 # Each runner's own MemoryHigh/MemoryMax is set by the host agent
-# (src/host/runner-limits.ts: 60%/75% of RAM, capped at 12G/16G).
+# (src/host/runner-limits.ts: 60%/75% of RAM, capped at 12G/16G; host.env's
+# SP_RUNNER_MEMORY_MAX moves the 16G cap, and the 12G one to 75% of it).
 #
 # Formulas (T = MemTotal in MiB, N = online CPUs; integer arithmetic):
 #   reserve      = max(1024, T/10)      OS, journald, guest agent, host agent

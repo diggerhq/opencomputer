@@ -218,7 +218,9 @@ export class HostSessionWriter implements Writer {
       },
       'sessions.resume': (_p, ctx) => {
         const seq0 = log.lastSeq;
-        if (fold.status === 'suspended') this.starting(ctx.actor);
+        // This writer serves only while no runner does: `idle` here is a runner that exited for idleness (host/main.ts)
+        // without recording it, so it is woken as a suspended one is.
+        if (fold.status === 'suspended' || fold.status === 'idle') this.starting(ctx.actor);
         return this.sessionResult(seq0);
       },
       'sessions.interrupt': (p, ctx) => {

@@ -912,3 +912,43 @@ fn help_says_how_to_turn_telemetry_off() {
     assert_eq!(o.code, 0);
     assert!(o.stdout.contains("never sends what you type"), "{}", o.stdout);
 }
+
+fn ws_calls(fake: &Fake, method: &str) -> usize {
+    fake.ws_frames().iter().filter(|f| f.dir == support::Dir::In && f.method().as_deref() == Some(method)).count()
+}
+
+#[test]
+fn shell_wakes_a_suspended_session_then_opens() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(o.stderr.contains("waking session…"), "{}", o.stderr);
+    assert_eq!(ws_calls(&fake, "sessions.resume"), 1);
+    fake.assert_no_panics();
+}
+
+#[test]
+fn shell_on_a_running_session_does_not_wake_it() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("awake"));
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(o.stdout.trim(), "hi");
+    assert!(!o.stderr.contains("waking"), "{}", o.stderr);
+    assert_eq!(ws_calls(&fake, "sessions.resume"), 0);
+}
+
+#[test]
+fn shell_says_why_a_session_cannot_wake() {
+    let fake = Fake::start();
+    let sid = fake.seed_session(Seed::new("asleep").suspended());
+    fake.fail_next("ws sessions.resume", 1, Failure::insufficient_credits());
+    let o = run(&fake, &["shell", &sid, "--no-tty", "-c", "echo hi"]);
+    assert_eq!(o.code, 6, "{}", o.stderr);
+    assert!(o.stderr.contains("not running, and could not be woken"), "{}", o.stderr);
+    assert!(o.stderr.contains("opc send"), "{}", o.stderr);
+    assert!(!o.stderr.contains("No such session"), "{}", o.stderr);
+    assert_eq!(o.stdout, "");
+}

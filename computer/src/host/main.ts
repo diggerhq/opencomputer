@@ -17,6 +17,8 @@
 //                              prefix for the transient unit (--unit, --collect, --setenv are added; a container's
 //                              unit gets no --setenv); the
 //                              default sizes MemoryHigh/MemoryMax from the machine (runner-limits.ts)
+//   [SP_RUNNER_MEMORY_MAX=16G] the default prefix's MemoryMax cap (MemoryHigh's is 75% of it); still at most 75% of RAM.
+//                              Bytes or K/M/G/T (powers of 1024), at least 1G; else 16G and a warning. Ignored with SP_SYSTEMD_RUN
 //   [SP_POOL_SIZE=2]           spare runners kept parked for new sessions (work 069, pool.ts); 0: off
 //   [SP_VERSION]               code version (the release's commit); else `git rev-parse`
 //   [SP_TELEMETRY_URL]         telemetry collector (work 054); unset: telemetry is validated and discarded
@@ -26,6 +28,7 @@
 //   [SP_MODEL_SOCKET=/run/oc-modelproxy/api.sock]  where runners reach the proxy's API (sent to them, C4); a container mounts it
 //   [SP_RUNNER_USER=agent]     run runners as this user, through sudo (work 077, runner-user.ts); the host then runs as another
 //   [SP_RUNNER_PATH=...]       the PATH runners and workspace commands get then (the host's own has no agent-owned directory)
+//   (host-config.ts reads and checks these once; a bad tunable is a warning and its default. Identity: identity.ts.)
 //   node --import tsx src/host/main.ts
 //
 // Code paths come only from import.meta.dirname, so a versioned release
@@ -84,6 +87,7 @@ import type { Dimensions } from '../telemetry/envelope.js';
 import { assignedIdentity, codeVersion, identityFile, loadIdentity, saveIdentity } from './identity.js';
 import { hostModelAccess } from './model-access.js';
 import { unitExists } from './launch.js';
+import { loadHostConfig } from './host-config.js';
 import { runnerUser } from './runner-user.js';
 import { gatewayLink } from './gateway-link.js';
 import { gatewayUpdates } from './gateway-updates.js';
@@ -94,23 +98,27 @@ import { sandboxHost, sandboxWorkspace } from './sandbox/host.js';
 import { legacyDrain } from './legacy-migration/drain.js'; // ONE-TIME systemd->podman migration (work 103): delete in step 11
 
 const env = process.env;
+// The host's settings, read and checked once (host-config.ts): a bad tunable is a warning and its default.
+const { config, warnings } = loadHostConfig(env, os.totalmem());
+for (const w of warnings) log.warn(w);
 const IDENTITY_FILE = identityFile(HOST_DATA);
 // The gateway URL, token and id; replaced when a pool host is assigned (052).
 let identity = loadIdentity(env, IDENTITY_FILE, os.hostname());
-const IDLE_MS = Number(env.SP_IDLE_MS ?? 2 * 3600_000);
-const POOL_SIZE = Number(env.SP_POOL_SIZE ?? 2);
-const LAUNCH = env.SP_LAUNCH ?? (process.platform === 'linux' ? 'systemd' : 'detached');
+const IDLE_MS = config.idleMs;
+const POOL_SIZE = config.poolSize;
+const LAUNCH = config.launch;
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
-const VERSION = codeVersion(env.SP_VERSION, ROOT);
+const VERSION = codeVersion(config.version, ROOT);
+const RUNNER_USER = { SP_RUNNER_USER: config.runnerUser, SP_RUNNER_PATH: config.runnerPath };
 
 // Workspace writes as the runners' user (077): `people` stays theirs on a computer whose host is sp-host.
-configureAsRunner(runnerUser(env), env);
+configureAsRunner(runnerUser(RUNNER_USER), env);
 
 // ---------------------------------------------------------------- telemetry (work 054)
 
-const telemetryBase: Dimensions = { host_id: identity.hostId, substrate: env.SP_SUBSTRATE || undefined };
-const telemetry = startHostTelemetry({ dataDir: HOST_DATA, url: env.SP_TELEMETRY_URL || undefined, credential: env.SP_TELEMETRY_CREDENTIAL,
-  version: VERSION, region: env.SP_REGION || 'unknown', base: telemetryBase });
+const telemetryBase: Dimensions = { host_id: identity.hostId, substrate: config.telemetry.substrate };
+const telemetry = startHostTelemetry({ dataDir: HOST_DATA, url: config.telemetry.url, credential: config.telemetry.credential,
+  version: VERSION, region: config.telemetry.region, base: telemetryBase });
 const tm = telemetry.t;
 /** The delivery a cold start is for, so workspace events join its trace. */
 type Fields = ReturnType<typeof traceFields>;
@@ -120,7 +128,7 @@ observeWorkspaces(workspaceTelemetry(tm, () => forkContext.getStore()));
 /** The organization's credentials and people, as the gateway last sent them. */
 const org = gatewayUpdates({ runners: () => runners.values(), spares: () => pool.spares, forRunner: (key, c) => subs.forRunner(key, c),
   fillPool: () => fillPool(), prepare: (p) => workspacesEnabled() && prepareInBackground(p) });
-const subs = hostModelAccess({ controlSocket: env.SP_MODEL_PROXY || undefined, modelSocket: env.SP_MODEL_SOCKET || undefined, single: LAUNCH !== 'systemd' && LAUNCH !== 'podman',
+const subs = hostModelAccess({ controlSocket: config.modelProxy, modelSocket: config.modelSocket, single: LAUNCH !== 'systemd' && LAUNCH !== 'podman',
   toGateway, tm, runner: (key) => runners.get(key), creds: () => org.creds, exit: switchRunner, unitExists: (id) => unitExists(id, LAUNCH, env),
   rehello: () => link.redial(), codexBin: codexBin(env) });
 
@@ -163,19 +171,20 @@ let stopping = false;
 
 /** Work 103: on a `podman` host every thread runs in its own container (sandbox/host.ts); `api` and `tokens` below are there by a start. */
 const sandbox = LAUNCH === 'podman'
-  ? sandboxHost({ env, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm, modelSocket: env.SP_MODEL_SOCKET || MODEL_SOCKET, models: subs,
+  ? sandboxHost({ env, image: config.image, abi: config.imageAbi, systemdRun: config.systemdRun, run: HOST_RUN, data: HOST_DATA, root: ROOT, version: VERSION, tm,
+      modelSocket: config.modelSocket ?? MODEL_SOCKET, models: subs,
       mint: (spec, id, run) => api.mint(spec, id, run), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
       serveHelper: (socket, allowed) => tokens.serveHelper(socket, allowed), running: (id) => allRunners().some((r) => r.id === id),
       adopt: (record, run, sock) => starts.adopt(record.id, sock, { verify: true, sandbox: { record, run } }),
-      unpreview: (name, from) => previews.forget(name, from), sweepAgeMs: env.SP_SWEEP_AGE_MS ? Number(env.SP_SWEEP_AGE_MS) : undefined })
+      unpreview: (name, from) => previews.forget(name, from), sweepAgeMs: config.sweepAgeMs })
   : undefined;
 
 /** Starting and adopting runners (start-runner.ts); what it asks for is looked up when used, so `api` and `tokens` below are there by then. */
 const starts = runnerStarts({
-  tm, launch: { tm, mode: LAUNCH, env, root: ROOT }, run: HOST_RUN, version: VERSION, pool,
+  tm, launch: { tm, mode: LAUNCH, env, root: ROOT, systemdRun: config.systemdRun }, run: HOST_RUN, version: VERSION, pool,
   creds: () => org.creds, models: subs,
   mint: (spec, id) => api.mint(spec, id), serveTokens: (run, id, session) => tokens.serveRunner(run, id, session),
-  sandbox: sandbox?.starts, spares: sandbox?.spares, image: env.SP_IMAGE, stopSandbox: (id) => sandbox!.stop(id, 0),
+  sandbox: sandbox?.starts, spares: sandbox?.spares, image: config.image, stopSandbox: (id) => sandbox!.stop(id, 0),
   fillPool: () => fillPool(), inFork: (f, fn) => forkContext.run(f, fn),
   register, closed: runnerClosed, message: onRunner, exit: exitRunner, toGateway,
 });
@@ -292,10 +301,10 @@ function toGateway(m: HostToGateway) {
 }
 const api = apiHost({ dataDir: HOST_DATA, stateDir: path.join(HOST_DATA, 'host-api'), runDir: path.join(HOST_RUN, 'host-api'),
   send: (m) => link.open && (link.send(m), true), buffered: () => link.buffered, start: startSession, retire: retireRunner,
-  dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(env)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
+  dial: LAUNCH === 'podman' ? checkedDial({ uid: runnerUser(RUNNER_USER)?.uid }) : undefined, // a container's sockets are its user's (checked-socket.ts)
   forkPath: (key) => runners.get(key)?.report?.forkPath,
   routed: async (id) => { const r = [...runners.values()].find((x) => x.id === id); if (r) await subs.called(r.key); }, // model-access.ts `called`
-  wire: wireFor({ launch: LAUNCH, user: runnerUser(env), systemdRun: env.SP_SYSTEMD_RUN || undefined, path: env.SP_RUNNER_PATH,
+  wire: wireFor({ launch: LAUNCH, user: runnerUser(RUNNER_USER), systemdRun: config.systemdRun, path: config.runnerPath,
     stateDir: path.join(HOST_DATA, 'state', 'uploads'), files: sandbox?.files, terminal: sandbox?.terminal }), sandbox: sandbox?.place, telemetry: tm });
 setInterval(() => {
   const disk = diskReport(HOST_DATA);
