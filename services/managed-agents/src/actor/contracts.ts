@@ -184,10 +184,6 @@ export interface OrgRpc {
 
   // the occurrence stream
   occurrences(p: Principal, q: { after?: string; limit?: number }): Promise<{ entries: Occurrence[]; to: string } | { reset: true; cursor: null }>;
-  /** Delivery(wake) only. */
-  digest(target: string, fromN: number, toN: number): Promise<string>;
-  /** Delivery(slack) only: what occurrence n means in Slack. */
-  echo(n: number): Promise<SlackEcho | null>;
 
   // arrows in
   acceptSummary(pub: SummaryPub): Promise<{ accepted: boolean; revision: number }>;
@@ -337,14 +333,6 @@ export interface LiveRpc {
   revoke(credentialId: string): Promise<void>;
 }
 
-// ------------------------------------------------------------------ Delivery (36.5), lane 2's
-
-export interface DeliveryRpc {
-  /** "The occurrence stream's head moved." */
-  poke(head: number): Promise<void>;
-  status(): Promise<{ cursor: number; behind: number; dead: number }>;
-}
-
 // ------------------------------------------------------------------ Slack (36.6)
 
 export interface SlackGrant {
@@ -376,7 +364,7 @@ export interface SlackRpc {
   }>;
   /** Org only. Idempotent on `sessionId`. */
   announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }>;
-  /** Delivery(slack) only. */
+  /** Org only, the echo of an occurrence (spec 40.6). */
   notify(e: SlackEcho): Promise<void>;
   /** post_thread. */
   post(p: Principal, threadKey: string, text: string): Promise<Reply<{ ts: string }>>;

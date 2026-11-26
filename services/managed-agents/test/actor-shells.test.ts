@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 /**
  * Tracks and threads, migration `v8`: Org and Slack exist as classes that answer 503, so the
- * migration deploys ahead of the change that fills them in. Delivery is filled in (test/delivery.test.ts).
+ * migration deploys ahead of the change that fills them in.
  */
 
 const namespaces = env as unknown as Record<"ORGS" | "SLACK", DurableObjectNamespace>;
