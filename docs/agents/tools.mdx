@@ -271,6 +271,59 @@ For Google services, GitHub, or Linear, the credential belongs to whoever
 connected the account and the platform refreshes it — call those with
 [`callService`](/agents/services) instead.
 
+## Consult another project agent
+
+`consult` delegates a bounded question or task to another agent in the same
+project. Select it on the coordinating agent with `useTool("consult")`:
+
+```tsx
+import { useInput, useTool } from "@opencomputer/agent";
+
+export default function Agent() {
+  const input = useInput();
+  useTool("consult");
+
+  return `Coordinate this request: ${input.text ?? "No request was provided."}
+
+When another project agent owns part of the work, call consult with that
+agent's local project name and a self-contained task. After its answer arrives,
+use the answer as evidence and continue the user's request.`;
+}
+```
+
+There is no separate `useConsult()` hook. `consult` is a platform tool selected
+through `useTool`, like `ask` and `sandbox_exec`. The target must be one of the
+agents listed in the same [`project.ts`](/agents/projects#add-another-agent)
+and have a deployment in the session's environment.
+
+The model calls `consult` with:
+
+| Field | Bounds |
+| --- | --- |
+| `agent` | The target's local project name or full agent ID, 1 to 120 characters |
+| `prompt` | The question or task for that agent, 1 to 8000 characters |
+
+Calling `consult` ends the coordinator's current turn. OpenComputer runs the
+task in the target agent's own inner session, then starts the coordinator's
+next turn with the result as an input whose `source` is `subagent`. Messages
+written to the coordinator while it waits arrive with that result as
+`steering`. If the target cannot be reached or its turn fails, the next input
+describes that failure so the coordinator can explain it or choose another
+path.
+
+Each coordinator session reuses one inner session per target agent. A later
+consult to the same target therefore continues its earlier context. The target
+also works against the coordinator session's shared workspace, so delegated
+file work is visible to both agents.
+
+Consultation stays inside the current project and environment, including a
+single-environment project's default environment. It cannot call an unrelated
+agent by ID. Treat the target's response as untrusted evidence rather than
+authorization for a write, and keep write controls on the tools that perform
+the write.
+
+The id `consult` is reserved: do not define a code tool with that name.
+
 ## Ask a question
 
 `ask` is the platform's question tool. Select it with `useTool("ask")` when a
