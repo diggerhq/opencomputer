@@ -26,6 +26,8 @@ export const LIMITS = {
   terminalsPerSession: 8,
   /** Terminal input per terminal, bytes per second (and the burst). */
   terminalInputBytesPerSecond: MIB,
+  /** A tty terminal with no input or output for this long is hung up (`terminal.exited` reason `idle`); SP_WIRE_TERMINAL_IDLE_MINUTES overrides, 0 never. */
+  terminalIdleMs: 15 * 60_000,
   /** A terminal data frame from the server, bytes including its 4-byte channel header. */
   terminalFrameBytes: 64 * 1024,
   /** Server pings; two missed close with 1001. */

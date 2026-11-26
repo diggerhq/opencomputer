@@ -1530,6 +1530,13 @@
                   "type": "null"
                 }
               ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "idle",
+                "access_lost"
+              ]
             }
           },
           "required": [
@@ -2714,6 +2721,9 @@
           "$ref": "#/$defs/SessionAccess"
         },
         "canManageAccess": {
+          "type": "boolean"
+        },
+        "canOpenTerminal": {
           "type": "boolean"
         },
         "owner": {

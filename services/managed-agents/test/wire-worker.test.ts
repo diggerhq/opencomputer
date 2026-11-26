@@ -140,6 +140,41 @@ describe("the wire Worker's upgrade", () => {
     response.webSocket!.accept();
   });
 
+  it("forwards a login ticket with no key read: sessions:read only, read-only, ten minutes, the member as its key id", async () => {
+    const { calls, handle } = harness();
+    // A member with no key in KV at all, asking for more than a login ticket gives.
+    const who = { org: "org_wire", member: "usr_dash", computer: "cmp_wire", tunnelId: TUNNEL, client: "dashboard/1.0.0" };
+    const token = await mintTicket(wireEnv.WIRE_TICKET_KEY, { ...who, login: true, scope: { sessionIds: [SESSION], readOnly: false } }, NOW);
+    const response = await handle(dial({ "sec-websocket-protocol": `opc.v1, opc.ticket.${token}` }));
+    expect(response.status).toBe(101);
+    const headers = calls[0]!.headers;
+    expect(calls[0]!.url).toContain(`https://${TUNNEL}.`);
+    expect(headers.get("x-wire-member")).toBe("usr_dash");
+    expect(headers.get("x-wire-key")).toBe("login:usr_dash");
+    expect(headers.get("x-wire-client")).toBe("dashboard/1.0.0");
+    expect(headers.get("x-wire-scope")).toBe(encodeWireScope({ scopes: ["sessions:read"], sessionIds: [SESSION], readOnly: true, until: NOW + 600_000 }));
+    expect(JSON.stringify([...headers])).not.toContain(token);
+    response.webSocket!.accept();
+    // With a key as well it is refused like any ticket; stale, it is nothing.
+    const both = dial({ authorization: `Bearer ${KEYS.full.key}`, "sec-websocket-protocol": `opc.v1, opc.ticket.${token}` });
+    expect(await closeOf(await handle(both))).toEqual({ code: 4003, reason: { code: "forbidden", reason: "ticket_and_key" } });
+    const stale = await mintTicket(wireEnv.WIRE_TICKET_KEY, { ...who, login: true, scope: {} }, NOW - 600_000);
+    expect(await closeOf(await handle(dial({ "sec-websocket-protocol": `opc.v1, opc.ticket.${stale}` })))).toEqual({ code: 4001, reason: { code: "unauthenticated" } });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("forwards a login's terminal ticket: its one session's terminals, writable, for an hour", async () => {
+    const { calls, handle } = harness();
+    const who = { org: "org_wire", member: "usr_dash", computer: "cmp_wire", tunnelId: TUNNEL, client: "dashboard/1.0.0" };
+    const token = await mintTicket(wireEnv.WIRE_TICKET_KEY, { ...who, login: true, scope: { sessionIds: [SESSION], terminal: true } }, NOW);
+    const response = await handle(dial({ "sec-websocket-protocol": `opc.v1, opc.ticket.${token}` }));
+    expect(response.status).toBe(101);
+    const headers = calls[0]!.headers;
+    expect(headers.get("x-wire-key")).toBe("login:usr_dash");
+    expect(headers.get("x-wire-scope")).toBe(encodeWireScope({ scopes: ["sessions:read", "terminals"], sessionIds: [SESSION], readOnly: false, until: NOW + 3_600_000 }));
+    response.webSocket!.accept();
+  });
+
   it("closes 4001 for no, an unknown or an expired key, a bad or stale ticket, or a ticket of a revoked key", async () => {
     const { calls, handle } = harness();
     const ticket = (keyId: string, at = NOW) =>

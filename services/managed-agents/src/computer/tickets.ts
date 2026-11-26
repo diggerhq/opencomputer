@@ -3,6 +3,11 @@
 // upgrade. The route (routes.ts) resolves the key, refuses project keys and
 // rate-limits; this module validates the body and mints. The wire Worker
 // alone verifies (src/wire/ticket.ts).
+//
+// A dashboard login gets one too (work 113): without `keyId`, always
+// read-only, and labelled `dashboard…` so the relay's actor says so. With
+// `terminal: true` and one session (web terminal MVP), a login's ticket opens
+// terminals in that session instead; the route checks the member may open one in it.
 
 import { WIRE_CLIENT } from "../wire/auth.js";
 import { SESSION_ID, TICKET_MAX_SESSIONS, TICKET_TTL_MS, TicketTooLongError, mintTicket as mintWireTicket } from "../wire/ticket.js";
@@ -17,6 +22,8 @@ export interface TicketRequest {
   client: string;
   sessionIds?: string[];
   readOnly?: boolean;
+  /** A dashboard login's terminal ticket, for the one session in `sessionIds`. */
+  terminal?: true;
 }
 
 export interface TicketFieldError {
@@ -32,8 +39,12 @@ export interface MintTicketInput extends TicketRequest {
   member: string;
   computer: string;
   tunnelId: string;
-  keyId: string;
+  /** The minting API key's id; absent for a dashboard login, whose ticket is read-only whatever `readOnly` says, unless `terminal`. */
+  keyId?: string;
 }
+
+/** A login ticket's client label: the caller's own when it already says `dashboard`, else plain `dashboard`. */
+export const dashboardClient = (client: string) => (client.startsWith("dashboard") ? client : "dashboard");
 
 export interface MintedTicket {
   token: string;
@@ -43,7 +54,7 @@ export interface MintedTicket {
   expiresInMs: number;
 }
 
-const FIELDS = new Set(["client", "sessionIds", "readOnly"]);
+const FIELDS = new Set(["client", "sessionIds", "readOnly", "terminal"]);
 
 /** The request's User-Agent as a ticket's default client: printable ASCII without `|`, cut to 64. */
 export function clientFromHeader(userAgent: string | null | undefined): string {
@@ -53,7 +64,8 @@ export function clientFromHeader(userAgent: string | null | undefined): string {
 /**
  * Validates a `POST /tickets` body (absent or `{}` is fine). Unknown fields,
  * a client that is not printable ASCII up to 64 characters, more than 20 or
- * malformed `sessionIds`, or a non-boolean `readOnly` are field errors, for
+ * malformed `sessionIds`, a non-boolean `readOnly`, or a `terminal` that is
+ * not `true` with exactly one session id and no `readOnly` are field errors, for
  * `400 invalid_request` with the first one's `field`.
  */
 export function validateTicketRequest(body: unknown, userAgent?: string | null): TicketRequestValidation {
@@ -88,8 +100,16 @@ export function validateTicketRequest(body: unknown, userAgent?: string | null):
     else readOnly = input.readOnly;
   }
 
+  let terminal: true | undefined;
+  if (input.terminal !== undefined) {
+    if (input.terminal !== true) errors.push({ field: "terminal", message: "terminal must be true." });
+    else if (sessionIds?.length !== 1) errors.push({ field: "sessionIds", message: "A terminal ticket names exactly one session." });
+    else if (input.readOnly !== undefined) errors.push({ field: "readOnly", message: "A terminal ticket is not read-only." });
+    else terminal = true;
+  }
+
   if (errors.length) return { ok: false, errors };
-  return { ok: true, value: { client, ...(sessionIds ? { sessionIds } : {}), ...(readOnly ? { readOnly } : {}) } };
+  return { ok: true, value: { client, ...(sessionIds ? { sessionIds } : {}), ...(readOnly ? { readOnly } : {}), ...(terminal ? { terminal } : {}) } };
 }
 
 /**
@@ -99,10 +119,13 @@ export function validateTicketRequest(body: unknown, userAgent?: string | null):
  */
 export async function mintTicket(env: TicketEnv, input: MintTicketInput, now = Date.now()): Promise<MintedTicket> {
   if (!env.WIRE_TICKET_KEY) throw new Error("WIRE_TICKET_KEY is not set");
-  const { org, member, computer, tunnelId, keyId, client, sessionIds, readOnly } = input;
+  const { org, member, computer, tunnelId, keyId, client, sessionIds, readOnly, terminal } = input;
+  const sessions = sessionIds ? { sessionIds } : {};
   const token = await mintWireTicket(
     env.WIRE_TICKET_KEY,
-    { org, member, computer, tunnelId, keyId, client, scope: { ...(sessionIds ? { sessionIds } : {}), ...(readOnly ? { readOnly } : {}) } },
+    keyId !== undefined
+      ? { org, member, computer, tunnelId, keyId, client, scope: { ...sessions, ...(readOnly ? { readOnly } : {}) } }
+      : { org, member, computer, tunnelId, login: true, client: dashboardClient(client), scope: terminal ? { ...sessions, terminal } : { ...sessions, readOnly: true } },
     now,
   );
   return {

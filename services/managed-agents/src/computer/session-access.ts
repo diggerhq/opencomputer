@@ -5,8 +5,8 @@
 //   org     every member of the organization (a row from before this, `access_mode` NULL, is org)
 //   people  the owner and the listed members (`usr_…`)
 //
-// Using a session is everything that reads or drives it: get, list, history, writes, attach, terminals,
-// workspace files. Managing it is changing the mode or the list: the owner, a listed person, or an org
+// Using a session is everything that reads or drives it: get, list, history, writes, attach, workspace
+// files. A terminal is narrower (`mayOpenTerminal`): the owner and the people listed by name only. Managing it is changing the mode or the list: the owner, a listed person, or an org
 // admin. An admin manages any session but uses only those its access lets them into (Q4): to get into an
 // owner-only session they add themselves. The owner's secrets and subscription stay with the session
 // whoever drives it (Q6).
@@ -77,6 +77,18 @@ export function mayUse(row: AccessRow, who: AccessCaller): boolean {
   const a = accessOf(row);
   if (row.originType === "slack") return false;
   return a.mode === "org" || (a.mode === "people" && a.people.includes(who.member));
+}
+
+/**
+ * Whether the caller may open a terminal (the dashboard's terminal ticket): computer's `mayOpenTerminal` on the
+ * same list. The owner, or a person a `people` session lists; never every member of an `org` session, and never an
+ * admin by role (owner first). A Slack session's only terminal is its owner's.
+ */
+export function mayOpenTerminal(row: AccessRow, who: AccessCaller): boolean {
+  if (row.ownerUserId !== null && row.ownerUserId === who.member) return true;
+  if (row.originType === "slack") return false;
+  const a = accessOf(row);
+  return a.mode === "people" && a.people.includes(who.member);
 }
 
 /** Whether the caller may change the session's access: its owner, a listed person (Q7), or an org admin (Q4). */

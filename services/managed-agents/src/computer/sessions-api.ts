@@ -47,6 +47,7 @@ import {
   type AccessRow,
   accessOf,
   mayManage,
+  mayOpenTerminal,
   mayUse,
   membersOf,
   parseAccessInput,
@@ -90,7 +91,7 @@ export interface ApiCaller {
   member: string;
   /** The dashboard (WorkOS) user id. */
   userId: string;
-  /** The caller's organization role is owner or admin: they may open terminals in any session they can see. */
+  /** The caller's organization role is owner or admin. Grants nothing inside a session (owner first): no terminal, no use. */
   admin?: boolean;
   name: string | null;
   email: string | null;
@@ -335,7 +336,7 @@ export class ComputerSessionsApi {
 
   /**
    * The Session object: the row and the summary; `fresh` (a writer's result) wins for what the log owns.
-   * `caller` decides `canManageAccess` (false without one).
+   * `caller` decides `canManageAccess` and `canOpenTerminal` (false without one).
    */
   compose(row: ApiRow, fresh?: Partial<Session>, caller?: ApiCaller): Session {
     const summary = row.summary ? (JSON.parse(row.summary) as LogSummary) : null;
@@ -383,6 +384,7 @@ export class ComputerSessionsApi {
       urls: { dashboard: null },
       access: accessOf(row),
       canManageAccess: caller ? mayManage(row, caller) : false,
+      canOpenTerminal: caller ? mayOpenTerminal(row, caller) : false,
     };
     if (!fresh) return base;
     // The writer's own view is newer than the row; the row owns who, where, archive, aside and labels.
@@ -390,7 +392,7 @@ export class ComputerSessionsApi {
     const aside = row.asideRef !== null && row.asideRef === attentionRef(asks);
     return {
       ...base, ...fresh, id: base.id, owner, origin, archived: base.archived, aside, metadata: base.metadata, urls: base.urls,
-      access: base.access, canManageAccess: base.canManageAccess,
+      access: base.access, canManageAccess: base.canManageAccess, canOpenTerminal: base.canOpenTerminal,
     };
   }
 
@@ -735,7 +737,7 @@ export class ComputerSessionsApi {
     const row = this.row(sessionId)!;
     if (reply) {
       const out = reply.body as { session: Session; seq: number };
-      return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller) } } };
+      return { status: 200, body: { ...out, session: { ...out.session, access: accessOf(row), canManageAccess: mayManage(row, caller), canOpenTerminal: mayOpenTerminal(row, caller) } } };
     }
     if (mayUse(row, caller)) return { status: 200, body: { session: this.compose(row, undefined, caller), seq: row.lastSeq } };
     return { status: 200, body: { session: null, access: accessOf(row), canManageAccess: mayManage(row, caller), seq: row.lastSeq } };
@@ -867,25 +869,36 @@ export class ComputerSessionsApi {
 
   private async mint(caller: ApiCaller, body: unknown, facts: { sessions?: number; keyWritten?: boolean }): Promise<ApiReply> {
     const key = caller.apiKey;
-    if (!key) return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
-    if (key.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
+    // A dashboard login has no key; its ticket is read-only (work 113), or a terminal ticket for one session it may open a terminal in.
+    if (!key && caller.via !== "dashboard") return { status: 403, error: { code: "forbidden", message: "Tickets are minted for API keys.", reason: "api_key_required" } };
+    if (key?.kind === "project") return { status: 403, error: { code: "forbidden", message: "Project keys cannot mint tickets.", reason: "project_key" } };
     if (!this.deps.env.WIRE_TICKET_KEY) return { status: 503, error: { code: "unavailable", message: "Tickets are not available yet.", retryAfterMs: 60_000 } };
     const request = validateTicketRequest(body, caller.userAgent);
     if (!request.ok) return invalid(request.errors[0]!.field, request.errors[0]!.message);
+    if (request.value.terminal) {
+      // A key's ticket opens terminals by the key's scopes; this one is the dashboard's, for a session the member may open one in (session-access.ts).
+      if (key) return invalid("terminal", "terminal is for dashboard logins; a key's ticket opens terminals by its scopes.");
+      const row = this.visible(caller, request.value.sessionIds![0]!);
+      if (!row) return notFound();
+      if (!mayOpenTerminal(row, caller)) {
+        return { status: 403, error: { code: "forbidden", message: "Only the session's owner or someone it is shared with by name can open a terminal.", reason: "terminal_owner_only" } };
+      }
+    }
     const now = this.now();
-    const recent = (this.tickets.get(key.id) ?? []).filter((at) => now - at < 60_000);
+    const limited = key ? key.id : `login:${caller.member}`;
+    const recent = (this.tickets.get(limited) ?? []).filter((at) => now - at < 60_000);
     if (recent.length >= TICKETS_PER_MINUTE) {
-      return { status: 429, error: { code: "rate_limited", message: "At most 60 tickets a minute per key.", retryAfterMs: 60_000 - (now - recent[0]!) } };
+      return { status: 429, error: { code: "rate_limited", message: `At most 60 tickets a minute per ${key ? "key" : "member"}.`, retryAfterMs: 60_000 - (now - recent[0]!) } };
     }
     recent.push(now);
-    this.tickets.set(key.id, recent);
+    this.tickets.set(limited, recent);
     const tunnelId = this.deps.tunnelId();
     if (!tunnelId) return this.unavailable();
-    facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
+    if (key) facts.keyWritten = await this.deps.keys.ensure(key, caller.member);
     facts.sessions = request.value.sessionIds?.length ?? 0;
     try {
       const org = this.deps.organizationId();
-      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.member, computer: org, tunnelId, keyId: key.id }, now);
+      const ticket = await mintTicket(this.deps.env, { ...request.value, org, member: caller.member, computer: org, tunnelId, ...(key ? { keyId: key.id } : {}) }, now);
       return { status: 200, body: { ticket } };
     } catch (error) {
       if (error instanceof TicketTooLongError) return invalid("sessionIds", "Too many sessionIds for one ticket.");
@@ -1334,21 +1347,18 @@ export class ComputerSessionsApi {
     return this.admins().includes(member);
   }
 
-  /** Records whether `member` is an admin; on a change, every access list goes to the host again. */
+  /** Records whether `member` is an admin (access settings, access-flow.ts). Access lists do not carry admins. */
   private noteAdmin(member: string, admin: boolean): void {
     const admins = this.admins();
     if (admins.includes(member) === admin) return;
     this.adminsCache = admin ? [...admins, member].sort() : admins.filter((m) => m !== member);
     this.deps.put("apiAdmins", JSON.stringify(this.adminsCache));
-    if (this.v4Host()) this.sendAllAccess();
   }
 
-  /** API sessions: every member attaches. Slack sessions: only their linked owner. Admins may open terminals in both. */
+  /** API sessions: by their access mode. Slack sessions: only their linked owner. Admins are never sent: being one opens no terminal. */
   private sendAccess(row: { sessionId: string } & AccessRow): void {
-    const admins = this.admins();
-    const extra = admins.length ? { admins } : {};
     if (row.originType === "slack" && !row.ownerUserId) return;
-    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row), ...extra } });
+    this.deps.send({ t: "access", access: { sessionId: row.sessionId, owner: row.ownerUserId ?? "", members: membersOf(row) } });
   }
 
   /**

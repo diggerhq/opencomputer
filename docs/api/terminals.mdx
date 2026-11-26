@@ -9,7 +9,7 @@ description: "A terminal is a shell or command the host starts with podman exec 
 
 | Item | Rule |
 | --- | --- |
-| Caller | Someone who may use the session ([Access](/api/sessions#access)) and is its owner, a member listed in its `people`, or an admin in an `org` session, with the `terminals` scope. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"`. Losing access closes the terminal |
+| Caller | The session's owner or a member listed in its `people` ([Access](/api/sessions#access)), with the `terminals` scope. Members of an `org` session drive it but get no terminal, and being an admin opens none. Anyone else: `403 forbidden` with `reason: "terminal_owner_only"`. Losing access closes the terminal (`terminal.exited` with `reason: "access_lost"`) |
 | Process | `podman exec` into the session's own container (`sp-runner-<id>`), in `/workspace`. It sees this session's workspace and the repositories it uses, not other sessions' |
 | Process user | `agent` (uid 1500), the same user as the session's agent |
 | Environment | The container's own, plus `TERM`. No session secrets |
@@ -66,9 +66,13 @@ A terminal belongs to the connection that opened it.
 | Its id used on another connection | `404 terminal_not_found` |
 | The connection closes | Every terminal it opened closes |
 | The process exits | The server sends `terminal.exited` |
+| No input or output for 15 minutes (interactive terminals only) | The server hangs it up and sends `terminal.exited` with `reason: "idle"`. Self-hosted relays set this with `SP_WIRE_TERMINAL_IDLE_MINUTES`; `0` turns it off |
+| The caller loses access to the session | The server hangs it up and sends `terminal.exited` with `reason: "access_lost"` |
 
 ```json
 {"jsonrpc":"2.0","method":"terminal.exited","params":{"terminalId":"tm_...","exitCode":0,"signal":null}}
 ```
 
-{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts; computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (podman exec, agent user, environment, 8 per session, SIGHUP/SIGKILL, session_not_running); computer/src/host/sandbox/podman-args.ts (terminalArgs, SESSION_USER); computer/src/host/wire-link.ts (cwd, repeated check, known vs unknown session, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}
+`reason` is present only when the server ended the terminal: `idle` or `access_lost`.
+
+{/* Sources: computer/schema/computer-api.v1.json (terminals.*, terminal.exited, terminal events); computer/src/wire/terminal.ts (channels, frames, owner check, closeAll, input bucket); computer/src/wire/limits.ts (terminalIdleMs); computer/src/api/session-access.ts (mayOpenTerminal); computer/src/wire/rpc.ts; computer/src/wire/edge-auth.ts; computer/src/host/terminal.ts (podman exec, agent user, environment, 8 per session, SIGHUP/SIGKILL, session_not_running); computer/src/host/sandbox/podman-args.ts (terminalArgs, SESSION_USER); computer/src/host/wire-link.ts (cwd, repeated check, known vs unknown session, journal records, idle-suspend exemption); opc/src/cli.rs (shell) */}

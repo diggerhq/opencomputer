@@ -12,7 +12,7 @@ A terminal is a shell in the session's own container, in its workspace, run as u
 
 ## Who can open one
 
-Only the session's owner, or an admin of your organization, can open a terminal in a session. Anyone else gets `403 forbidden` with `reason: "terminal_owner_only"`. An API key needs the `terminals` [scope](/api/authentication#scopes).
+Only the session's owner and the people it is shared with by name can open a terminal in it. Members of a session shared with the whole organization can drive it but not open a terminal, and being an organization admin opens none. Anyone else gets `403 forbidden` with `reason: "terminal_owner_only"`. An API key needs the `terminals` [scope](/api/authentication#scopes).
 
 A terminal runs inside the session's container, as the session's agent user. It sees this session's workspace and the repositories the session uses, not other sessions' workspaces. Treat opening a terminal like logging in to the session's container.
 
@@ -96,7 +96,7 @@ All output is sent before `terminal.exited`. `exitCode` is `null` when a signal 
 
 | Error `data.code` | When |
 | --- | --- |
-| `forbidden` | You are not the session's owner or an admin (`reason: "terminal_owner_only"`), or your key lacks the `terminals` scope (`reason: "missing_scope"`) |
+| `forbidden` | You are not the session's owner or someone it is shared with by name (`reason: "terminal_owner_only"`), or your key lacks the `terminals` scope (`reason: "missing_scope"`) |
 | `too_many_terminals` | 8 are already open in this session |
 | `conflict` | The session is not running (`reason: "session_not_running"`). Resume it, then open the terminal again. |
 | `terminal_not_found` | The `terminalId` is not open on this connection |

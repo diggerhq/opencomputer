@@ -8,6 +8,7 @@
 //   [SP_WIRE_SOCKET=<SP_RUN>/wire/wire.sock]   the host's wire socket
 //   [SP_VERSION]                      the release's commit, in `ready.server.version`
 //   [SP_REGION]                       `ready.server.region`
+//   [SP_WIRE_TERMINAL_IDLE_MINUTES=15]   hang up a tty terminal after this many minutes with no input or output; 0 never
 //   node dist/wire.js   (bundled by scripts/bundle-runner.mjs; or node --import tsx src/wire/main.ts)
 //
 // Invariants: env is read here only; SIGTERM closes every connection with 1012
@@ -26,12 +27,17 @@ const port = Number(at >= 0 ? listen.slice(at + 1) : listen);
 if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`SP_WIRE_LISTEN: bad port in ${listen}`);
 if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') log.warn(`wire: listening on ${host}, not loopback`);
 
+const idle = process.env.SP_WIRE_TERMINAL_IDLE_MINUTES;
+const idleMinutes = idle === undefined || idle === '' ? undefined : Number(idle);
+if (idleMinutes !== undefined && !(Number.isFinite(idleMinutes) && idleMinutes >= 0)) throw new Error(`SP_WIRE_TERMINAL_IDLE_MINUTES: not a number of minutes: ${idle}`);
+
 const relay = await startRelay({
   host,
   port,
   socket: process.env.SP_WIRE_SOCKET ?? path.join(HOST_RUN, 'wire', 'wire.sock'),
   version: process.env.SP_VERSION ?? 'dev',
   region: process.env.SP_REGION ?? null,
+  terminalIdleMs: idleMinutes === undefined ? undefined : idleMinutes * 60_000,
 });
 
 let stopping = false;

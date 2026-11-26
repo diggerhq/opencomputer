@@ -4,6 +4,7 @@ import type { Ask } from "../src/computer/api-types.js";
 import { type ComputerApiStub, matchApiRoute, routeComputerApi, writeParams } from "../src/computer/api-http.js";
 import { computerApiEnabled, GATED_PROTOCOL } from "../src/computer/api-gate.js";
 import {
+  type ApiCaller,
   EPOCH_TAIL_RETRY_MS,
   GAP_CLOSE_INTERVAL_MS,
   HOST_CALL_HELD_TIMEOUT_MS,
@@ -856,36 +857,46 @@ describe("hello and tickets", () => {
     expect(f.frames("access").map((a) => a.access.sessionId)).toEqual([SID]);
   });
 
-  it("admins: a caller's admin role reaches every access list, and a demotion takes it back", async () => {
+  it("admins: a caller's admin role is remembered but never reaches an access list (owner first)", async () => {
     const f = fixture();
     await created(f);
+    f.sent.length = 0;
+    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
+    expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
+    // Being an admin opens no terminal: nothing to resend.
+    expect(f.frames("access")).toHaveLength(0);
+    await created(f, "cs_2222222222222222");
+    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [] });
+    f.sent.length = 0;
+    f.api.onHello();
+    expect(f.frames("access").every((a) => a.access.admins === undefined)).toBe(true);
+  });
+
+  it("tickets: a dashboard terminal ticket for one session: its owner or a listed person, never an admin or org-wide member", async () => {
+    const f = fixture({ ticketKey: true });
+    await created(f, SID, OWNER, { mode: "org" });
     f.slackRow("T1:C1:1.2");
     f.state.links.set("U1", "user_01JABCDEFGHJKMNPQRSTVWXYZ0");
     const slackId = (await f.api.slackDelivery("T1:C1:1.2", "U1"))!.sessionId;
-    f.sent.length = 0;
-    // A member's call says nothing new: no frames.
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // An admin's first call: every session's access list again, with admins.
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access").map((a) => a.access).sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual(
-      [
-        { sessionId: SID, owner: OWNER, members: [], admins: [MO] },
-        { sessionId: slackId, owner: OWNER, members: [OWNER], admins: [MO] },
-      ].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
-    );
-    f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: true }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(0);
-    // New sessions and the next hello carry them too, from storage.
-    await created(f, "cs_2222222222222222");
-    expect(f.frames("access").at(-1)!.access).toEqual({ sessionId: "cs_2222222222222222", owner: OWNER, members: [], admins: [MO] });
-    expect(f.settings.get("apiAdmins")).toBe(JSON.stringify([MO]));
-    // Demoted: the lists go out without them.
-    f.sent.length = 0;
-    await f.api.handle(caller(MO, { admin: false }), { op: "me" });
-    expect(f.frames("access")).toHaveLength(3);
-    expect(f.frames("access").every((a) => a.access.admins === undefined)).toBe(true);
+    const mint = (member: string, sessionIds: string[], extra: Partial<ApiCaller> = {}) =>
+      f.api.handle(caller(member, { via: "dashboard", client: "dashboard/1.0", ...extra }), { op: "ticket", body: { terminal: true, sessionIds } });
+    // The owner of an "only me" (Slack) session.
+    const own = await mint(OWNER, [slackId]);
+    expect(own).toMatchObject({ status: 200 });
+    const token = (own.body as { ticket: { token: string } }).ticket.token;
+    expect(JSON.parse(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/")))).toMatchObject({ login: true, scope: { sessionIds: [slackId], terminal: true } });
+    // An org session: neither a member it does not name nor an admin.
+    expect(await mint(MO, [SID])).toMatchObject({ status: 403, error: { reason: "terminal_owner_only" } });
+    expect(await mint(MO, [SID], { admin: true })).toMatchObject({ status: 403, error: { reason: "terminal_owner_only" } });
+    // A people session that names them.
+    await created(f, "cs_3333333333333333", OWNER, { mode: "people", people: [MO] });
+    expect(await mint(MO, ["cs_3333333333333333"])).toMatchObject({ status: 200 });
+    // An admin is not named in the "only me" session: it does not exist for them.
+    expect(await mint(MO, [slackId], { admin: true })).toMatchObject({ status: 404, error: { code: "session_not_found" } });
+    expect(await mint(OWNER, ["cs_9999999999999999"])).toMatchObject({ status: 404 });
+    expect(await mint(OWNER, [SID, slackId])).toMatchObject({ status: 400, error: { field: "sessionIds" } });
+    const key = { id: "key_1", hash: "a".repeat(64), name: "laptop", kind: "user" as const, scopes: ["sessions:read"], expiresAt: null, createdAt: null };
+    expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { terminal: true, sessionIds: [SID] } })).toMatchObject({ status: 400, error: { field: "terminal" } });
   });
 
   it("tickets: API keys only, project keys refused, 60 a minute", async () => {
@@ -897,6 +908,20 @@ describe("hello and tickets", () => {
     expect(ok).toMatchObject({ status: 200, body: { ticket: { url: "wss://wire.opencomputer.dev/v1", expiresInMs: 600_000 } } });
     for (let i = 0; i < 59; i++) await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } });
     expect(await f.api.handle(caller(OWNER, { apiKey: key }), { op: "ticket", body: { client: "browser" } })).toMatchObject({ status: 429, error: { code: "rate_limited" } });
+  });
+
+  it("tickets: a dashboard login gets a read-only login ticket, 60 a minute per member, and writes no key", async () => {
+    const f = fixture({ ticketKey: true });
+    const login = (member = OWNER) => f.api.handle(caller(member, { via: "dashboard", client: "Mozilla/5.0" }), { op: "ticket", body: { readOnly: false } });
+    const ok = await login();
+    expect(ok).toMatchObject({ status: 200, body: { ticket: { url: "wss://wire.opencomputer.dev/v1", expiresInMs: 600_000 } } });
+    const token = (ok.body as { ticket: { token: string } }).ticket.token;
+    const claims = JSON.parse(atob(token.slice(3, token.indexOf(".")).replace(/-/g, "+").replace(/_/g, "/")));
+    expect(claims).toMatchObject({ member: OWNER, login: true, client: "dashboard", scope: { readOnly: true } });
+    expect(claims.keyId).toBeUndefined();
+    for (let i = 0; i < 59; i++) await login();
+    expect(await login()).toMatchObject({ status: 429, error: { code: "rate_limited" } });
+    expect(await login(MO)).toMatchObject({ status: 200 });
   });
 
   it("/me names the wire and the credential", async () => {

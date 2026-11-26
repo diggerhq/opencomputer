@@ -1,11 +1,26 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, ArchiveRestore, ArrowUp, Loader2, Square } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowUp,
+  Loader2,
+  PanelRight,
+  Square,
+} from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { ChatTextarea } from '@/components/chat-textarea'
 import { SlackMark } from '@/components/slack-mark'
 import { Button } from '@/components/ui/button'
+import { AuthContext } from '@/hooks/useAuth'
 import { notifyError } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -31,6 +46,8 @@ import {
   useCapabilities,
 } from './state'
 import { buildTranscript, mergeEvents } from './transcript'
+import { SessionSidebar } from './SessionSidebar'
+import { useSidebarPrefs } from './sidebar-prefs'
 
 // Events that change what the session row says (status, asks, title).
 const SESSION_EVENTS = /^(session\.|turn\.|ask\.|runtime\.)/
@@ -110,7 +127,11 @@ function SessionPage({ id }: { id: string }) {
     void qc.invalidateQueries({ queryKey: sessionKeys.all })
   })
   const items = useMemo(() => buildTranscript(events), [events])
+  const userId = useContext(AuthContext)?.user?.id ?? 'anonymous'
+  const [sidebar, setSidebar] = useSidebarPrefs(userId)
   const s = session.data
+  // Only the owner and the people it lists by name get a terminal (owner first).
+  const terminal = s?.canOpenTerminal === true
   const emails = useMemberEmails()
 
   // Reading the session marks it read up to what was shown.
@@ -142,52 +163,81 @@ function SessionPage({ id }: { id: string }) {
   const openAsks = s?.asks.filter((a) => a.status === 'open') ?? []
   return (
     <div className="flex h-full flex-col">
-      <Header id={id} />
-      <div
-        ref={scroller}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-        }}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
-          {!loaded ? (
-            <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" />
-          ) : items.length === 0 ? (
-            <p className="text-muted-foreground text-center text-sm">
-              Nothing here yet.
-            </p>
-          ) : (
-            items.map((item, i) => (
-              <Item
-                key={item.key}
-                item={item}
-                emails={emails}
-                // A reply opens with who is speaking: the first agent item after a person's message.
-                leads={i === 0 || items[i - 1].kind === 'user'}
-              />
-            ))
-          )}
-          {s && isBusy(s.status) && !openAsks.length ? (
-            <p className="text-muted-foreground flex items-center gap-2 text-sm">
-              <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              {s.status === 'starting' ? 'Starting the computer…' : 'Working…'}
-            </p>
-          ) : null}
-          {s
-            ? openAsks.map((ask) => (
-                <AskCard key={ask.id} ask={ask} session={s} />
-              ))
-            : null}
+      <Header
+        id={id}
+        sidebar={terminal && sidebar.open}
+        onSidebar={
+          terminal ? () => setSidebar({ open: !sidebar.open }) : undefined
+        }
+      />
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              pinned.current =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            }}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
+              {!loaded ? (
+                <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" />
+              ) : items.length === 0 ? (
+                <p className="text-muted-foreground text-center text-sm">
+                  Nothing here yet.
+                </p>
+              ) : (
+                items.map((item, i) => (
+                  <Item
+                    key={item.key}
+                    item={item}
+                    emails={emails}
+                    // A reply opens with who is speaking: the first agent item after a person's message.
+                    leads={i === 0 || items[i - 1].kind === 'user'}
+                  />
+                ))
+              )}
+              {s && isBusy(s.status) && !openAsks.length ? (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  {s.status === 'starting'
+                    ? 'Starting the computer…'
+                    : 'Working…'}
+                </p>
+              ) : null}
+              {s
+                ? openAsks.map((ask) => (
+                    <AskCard key={ask.id} ask={ask} session={s} />
+                  ))
+                : null}
+            </div>
+          </div>
+          <Composer id={id} />
         </div>
+        {terminal ? (
+          <SessionSidebar
+            sessionId={id}
+            prefs={sidebar}
+            onChange={setSidebar}
+          />
+        ) : null}
       </div>
-      <Composer id={id} />
     </div>
   )
 }
 
-function Header({ id }: { id: string }) {
+function Header({
+  id,
+  sidebar,
+  onSidebar,
+}: {
+  id: string
+  sidebar: boolean
+  /** Absent when you may not open a terminal here: no sidebar toggle. */
+  onSidebar?: () => void
+}) {
   const qc = useQueryClient()
   const { data: s } = useQuery({
     queryKey: sessionKeys.one(id),
@@ -224,6 +274,18 @@ function Header({ id }: { id: string }) {
             <SlackMark className="size-3.5" />
             Open in Slack
           </a>
+        </Button>
+      ) : null}
+      {onSidebar ? (
+        <Button
+          size="icon-sm"
+          variant={sidebar ? 'secondary' : 'ghost'}
+          aria-pressed={sidebar}
+          aria-label={sidebar ? 'Hide the sidebar' : 'Show the sidebar'}
+          title="The terminal of this session's computer"
+          onClick={onSidebar}
+        >
+          <PanelRight />
         </Button>
       ) : null}
       {s ? (

@@ -69,7 +69,7 @@ Server to client:
 | `event` | One [event](#events) |
 | `delta` | One [delta](#deltas) |
 | `session.detached` | `sessionId`, `reason` (`too_far_behind`, `access_lost`, `epoch_changed`, `unavailable`), `logEpoch?`, `epochStartSeq?` |
-| `terminal.exited` | `terminalId`, `exitCode \| null`, `signal \| null` |
+| `terminal.exited` | `terminalId`, `exitCode \| null`, `signal \| null`, `reason?` (`idle`, `access_lost`) |
 
 Client to server:
 

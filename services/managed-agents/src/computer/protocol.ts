@@ -542,7 +542,7 @@ export interface CalvinSessionAccess {
   sessionId: string;
   owner: string;
   members: string[] | null;
-  /** The organization's admins (`usr_…`), who may also open terminals in the session; attaching follows `members`. */
+  /** No longer sent (web terminal MVP): being an admin opens no terminal; hosts before it read it. */
   admins?: string[];
 }
 

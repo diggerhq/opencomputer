@@ -200,7 +200,13 @@ export const NOTIFICATIONS = {
     logEpoch: Schema.optional(Schema.Number),
     epochStartSeq: Schema.optional(Schema.Number),
   }),
-  'terminal.exited': Schema.Struct({ terminalId: TerminalId, exitCode: Schema.NullOr(Schema.Int), signal: Schema.NullOr(Schema.String) }),
+  'terminal.exited': Schema.Struct({
+    terminalId: TerminalId,
+    exitCode: Schema.NullOr(Schema.Int),
+    signal: Schema.NullOr(Schema.String),
+    // Why the relay hung it up, when it did (wire/terminal.ts): idle past the timeout, or the member may no longer drive the session.
+    reason: Schema.optionalKey(Schema.Literals(['idle', 'access_lost'])),
+  }),
 } as const;
 
 /** Client → server notifications. */
