@@ -1,7 +1,7 @@
-// Org's adoption, arrows in from the machine and GitHub, the work reads, the digest, the Slack echo
-// and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9, 43.1). Pure functions over `Sql`.
+// Org's arrows in from the machine and GitHub, the work reads, the digest, the Slack echo
+// and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9). Pure functions over `Sql`.
 
-import type { DocRev, ExportedSession, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho, Summary } from "../actor/contracts.js";
+import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "../actor/contracts.js";
 import { cursor } from "../actor/cursor.js";
 import { platformPrincipal, type Principal } from "../actor/principal.js";
 import type { Sql } from "../actor/sql.js";
@@ -11,7 +11,6 @@ import {
   DAY_MS,
   RETAIN_MS,
   audiencesOf,
-  emptySummary,
   feedRow,
   forClient,
   iso,
@@ -32,75 +31,12 @@ import {
   type TrackRec,
 } from "./tx.js";
 
-export const ADOPT_PAGE = 200;
 export const EARLIER_AFTER_MS = 7 * DAY_MS;
 export const TRACK_QUIET_MS = 21 * DAY_MS;
 
 type Raw = Record<string, unknown> & { version: number; audience: string };
 const orgOf = (sql: Sql): string => sql.exec<{ org: string | null }>("SELECT org FROM meta WHERE k = 1")[0]!.org ?? "";
 const marks = (values: unknown[]): string => values.map(() => "?").join(",");
-
-// ------------------------------------------------------------------ adoption (spec 43.1)
-
-type AdoptMeta = { adopted: number; adopt_after: string | null; adopted_at: number | null };
-const adoptMeta = (sql: Sql): AdoptMeta => sql.exec<AdoptMeta>("SELECT adopted, adopt_after, adopted_at FROM meta WHERE k = 1")[0]!;
-export const adopted = (sql: Sql): boolean => adoptMeta(sql).adopted === 1;
-export const adoptAfter = (sql: Sql): string | null => adoptMeta(sql).adopt_after;
-/** Whether Computer holds sessions made after the adoption: `acceptMachine`'s `newestCreatedAt` is past `adopted_at`. */
-export const adoptedBefore = (sql: Sql, newestCreatedAt: number): boolean => {
-  const meta = adoptMeta(sql);
-  return meta.adopted === 1 && newestCreatedAt > (meta.adopted_at ?? 0);
-};
-
-/**
- * One page of Computer's export, in one transaction: a `session` and a `place` for each row Org
- * does not hold, and where the adoption is. `late`: a pass for rows made after the adoption, which
- * moves only `adopted_at`.
- */
-export function adoptPage(
-  sql: Sql,
-  now: number,
-  org: string,
-  page: { rows: ExportedSession[]; next: string | null; newestCreatedAt: number },
-  /** The knowledge repository setting the Work index held (`StoredRepository` as JSON), taken with the last page. */
-  knowledge: string | null,
-  late = false,
-): void {
-  transact(sql, now, (tx) => {
-    sql.exec("UPDATE meta SET org = COALESCE(org, ?) WHERE k = 1", org);
-    for (const row of page.rows) {
-      if (readSession(sql, row.id)) continue;
-      const base = emptySummary({}, null);
-      const summary: Summary = { ...base, ...(row.summary ?? { status: "idle" as const }), revision: 0, lastAgentSeq: 0, agentTitle: null, inbox: [] };
-      if (summary.lastActiveAt === null && row.lastActiveAt !== null) summary.lastActiveAt = iso(row.lastActiveAt);
-      const s = tx.addSession({
-        id: row.id,
-        owner: row.owner,
-        origin: row.origin,
-        slackThreadKey: row.slackThreadKey,
-        machine: org,
-        createdBy: row.owner.startsWith("cs_") ? `agent:${row.owner}` : `user:${row.owner}`,
-        title: row.title || null,
-        writers: row.writers,
-        metadata: row.metadata,
-        summary,
-        createHash: row.createHash,
-        createdAt: row.createdAt,
-        aside: row.asideRef,
-      });
-      tx.addPlace({ sessionId: row.id, placedBy: "rule:adopt", position: row.createdAt, doneAt: row.archived ? row.updatedAt : null, audience: s.audience });
-      const idle = (row.lastActiveAt ?? row.updatedAt) < now - EARLIER_AFTER_MS;
-      if (row.archived || idle) sql.exec("UPDATE place SET earlier_at = ? WHERE session_id = ?", now, row.id);
-      tx.reblock(row.id);
-    }
-    if (late) {
-      if (page.next === null) sql.exec("UPDATE meta SET adopted_at = MAX(COALESCE(adopted_at, 0), ?) WHERE k = 1", page.newestCreatedAt);
-      return;
-    }
-    if (page.next !== null) sql.exec("UPDATE meta SET adopt_after = ? WHERE k = 1", page.next);
-    else sql.exec("UPDATE meta SET adopted = 1, adopt_after = NULL, adopted_at = ?, knowledge = COALESCE(?, knowledge) WHERE k = 1", page.newestCreatedAt, knowledge);
-  });
-}
 
 // ------------------------------------------------------------------ the machine (spec 36.1, rule:preview)
 

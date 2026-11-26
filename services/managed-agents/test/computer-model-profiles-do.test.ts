@@ -65,8 +65,12 @@ async function connect(org: string, hello: Record<string, unknown>): Promise<{ s
   const socket = upgraded.webSocket!;
   socket.accept();
   const welcomed = nextMessage(socket, "welcome");
+  // The hello's read of the Slack actor pushes the credentials again; a later push is a change's.
+  const slackRead = nextMessage(socket, "credentials");
   socket.send(JSON.stringify({ t: "hello", hostId: org, version: "test", sessions: [], journals: [], ...hello }));
-  return { socket, welcome: await welcomed };
+  const welcome = await welcomed;
+  await slackRead;
+  return { socket, welcome };
 }
 
 const route = async (name: string, token: string) => ({ mode: "profile", profile: name, vars: { token }, key: await modelKey(name, { token }) });
