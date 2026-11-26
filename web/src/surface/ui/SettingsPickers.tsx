@@ -25,13 +25,13 @@ export function SettingsPickers({
   onChange: (patch: SettingsPatch) => void
 }) {
   const surface = useSurface()
-  const { data: caps } = useQuery({
+  const { data: caps, isError } = useQuery({
     queryKey: ['surface', surface.me, 'capabilities'],
     queryFn: () => surface.capabilities(),
     staleTime: 5 * 60_000,
   })
   // The row keeps its height while the capabilities load, so the composer does not jump.
-  if (!caps) return <div className="h-7" aria-hidden />
+  if (!caps) return isError ? null : <div className="h-7" aria-hidden />
   const model =
     caps.models.find((m) => m.id === value.model) ??
     caps.models.find((m) => m.default) ??

@@ -60,7 +60,7 @@ function headline(ask: Ask): string {
   const tool = toolOf(ask)
   switch (tool) {
     case 'Bash': {
-      const desc = str(input.description)
+      const desc = str(input.description) ?? own
       if (desc) return desc
       const prog = program(str(input.command) ?? str(a.command) ?? '')
       return prog ? `Run ${prog}` : 'Run a command'
