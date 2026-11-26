@@ -388,12 +388,16 @@ const KNOWLEDGE_TIMEOUT_MS = 2_000;
 /** How often a delivery may re-read the organization's repositories (work 052). */
 const DEFINITION_RECHECK_MS = 60_000;
 
-type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "migrate";
+type AlarmPurpose = "lifecycle" | "slack" | "idle" | "pool" | "assign" | "billing" | "size" | "model" | "agent" | "recover" | "machine" | "migrate" | "dial";
 
 /** How soon a refused `Org.acceptMachine` is tried again. */
 const MACHINE_RETRY_MS = 30_000;
 /** How soon a failed `Org.adopt` or `Slack.import` is tried again. */
 const MIGRATE_RETRY_MS = 5 * 60_000;
+/** A ready machine whose host has not dialed within this is a failed start: its VM is rebuilt. */
+export const HOST_DIAL_MS = 15 * 60_000;
+/** Rebuilds in a row before the waiting entries are reported `computer_unavailable`. */
+const HOST_DIAL_REBUILDS = 1;
 /** The settings the Slack actor imports (spec 43.1); the bot token is exported sealed. */
 const SLACK_SETTINGS = ["slackTeamId", "slackTeamName", "slackBotUserId", "slackBotToken", "slackInstallerUserId"];
 /** The tables the Slack actor imports whole. */
@@ -1252,6 +1256,7 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
         else if (purpose === "agent") await this.access.agents.expire();
         else if (purpose === "recover") await this.api.recoverTick();
         else if (purpose === "migrate") await this.migrate();
+        else if (purpose === "dial") await this.dialCheck();
       } catch (error) {
         failed(purpose)(error);
       }
@@ -1267,8 +1272,48 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     if (row?.state === "ready" && !isPoolId(row.organizationId) && !selfManagedVms(this.env) && ![...this.ctx.storage.sql.exec("SELECT 1 FROM alarms WHERE purpose = 'idle'")].length) {
       this.ctx.storage.sql.exec("INSERT INTO alarms (purpose, at) VALUES ('idle', ?)", Date.now() + 15 * 60_000);
     }
+    // A ready machine with no host is waited for, for a bound (`dialCheck`).
+    if (row?.state === "ready" && !isPoolId(row.organizationId) && !selfManagedVms(this.env) && this.socket() === undefined) {
+      if (!this.setting("hostAwaitedAt")) this.put("hostAwaitedAt", String(Date.now()));
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO alarms (purpose, at) VALUES ('dial', ?)", Number(this.setting("hostAwaitedAt")) + HOST_DIAL_MS);
+    } else if (this.setting("hostAwaitedAt")) {
+      this.hostDialed();
+    }
     const next = [...this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM alarms")][0]?.at;
     if (next !== null && next !== undefined) await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1));
+  }
+
+  /**
+   * The bound on a start: a machine `ready` for HOST_DIAL_MS with no host connected (its bootstrap
+   * failed, or its host died) is a failed start. Its VM goes and, while a session waits for it, is
+   * built again from its disks; after HOST_DIAL_REBUILDS rebuilds in a row with no dial the waiting
+   * entries are reported `computer_unavailable` and the machine stays parked until the next drain wakes it.
+   */
+  private async dialCheck(): Promise<void> {
+    const row = this.lifecycle.row();
+    if (row?.state !== "ready" || isPoolId(row.organizationId) || selfManagedVms(this.env)) return;
+    if (this.socket() !== undefined) return this.hostDialed(true);
+    // Since when it is waited for, stored: an alarm run early changes nothing.
+    const since = Number(this.setting("hostAwaitedAt") ?? Date.now());
+    if (Date.now() < since + HOST_DIAL_MS) return;
+    const misses = Number(this.setting("dialMisses") ?? 0) + 1;
+    const rebuild = misses <= HOST_DIAL_REBUILDS && this.api.owes();
+    console.error(JSON.stringify({ level: "error", event: "computer.host_never_dialed", accountId: row.organizationId, misses, rebuild }));
+    if (!(await this.lifecycle.park())) return;
+    this.hostDialed();
+    if (rebuild) {
+      this.put("dialMisses", String(misses));
+      await this.wakeComputer();
+      return;
+    }
+    this.ctx.storage.sql.exec("DELETE FROM settings WHERE key = 'dialMisses'");
+    if (this.api.owes()) await this.api.wakeFailed();
+  }
+
+  /** The wait for the host is over: it dialed (`met`: the rebuilds in a row start again), or the machine is not ready any more. */
+  private hostDialed(met = false): void {
+    this.ctx.storage.sql.exec("DELETE FROM alarms WHERE purpose = 'dial'");
+    this.ctx.storage.sql.exec(met ? "DELETE FROM settings WHERE key IN ('hostAwaitedAt', 'dialMisses')" : "DELETE FROM settings WHERE key = 'hostAwaitedAt'");
   }
 
   // ------------------------------------------------------------------ plan and parking
@@ -3611,6 +3656,8 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
       ws.close(UPGRADE_REQUIRED, "upgrade required");
       return;
     }
+    // The host dialed: the start's bound is met.
+    this.hostDialed(true);
     // A reconnect replaces the host's old socket, which may be half-open.
     const previous = this.telemetry.previousConnection(ws, this.ctx.getWebSockets());
     for (const socket of this.ctx.getWebSockets()) if (socket !== ws) socket.close(4001, "replaced");
