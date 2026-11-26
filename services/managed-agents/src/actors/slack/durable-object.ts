@@ -76,6 +76,7 @@ import { links, settings, threads } from "./tables.js";
 import { owePost, oweProcess, postGroup } from "./outbox.js";
 import { STEPS } from "./schema.js";
 import { tellBilling } from "./billing-notices.js";
+import { announce } from "./announcements.js";
 
 export interface SlackEnv extends ActorEnv, TelemetryEnv {
   BLUE_CHANNEL_ENCRYPTION_KEY?: string;
@@ -777,20 +778,11 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   // ------------------------------------------------------------------ the rest of SlackRpc (slices 2 and 3)
 
 
-  /** A child of a Slack thread's session: its brief posted at the top level of the parent's channel, and that thread recorded as the child's. */
+  /** A child of a Slack thread's session: its brief posted at the top level of the parent's channel, once, and that thread recorded as the child's. */
   async announce(child: { sessionId: string; parent: string; brief: string }): Promise<{ threadKey: string }> {
     await this.ready();
     this.org();
-    const known = threads.keyOf(this.sql, child.sessionId);
-    if (known) return { threadKey: known };
-    const parentKey = threads.keyOf(this.sql, child.parent);
-    const parent = parentKey ? parseSessionKey(parentKey) : null;
-    if (!parent) throw new Error("the parent session has no Slack thread");
-    const posted = await this.slack("chat.postMessage", { channel: parent.channelId, text: neutralizeBroadcasts(child.brief).slice(0, MAX_POST_CHARS) });
-    if (!posted.ok || !posted.ts) throw new Error(`the brief was not posted: ${posted.error ?? "no ts"}`);
-    const threadKey = sessionKey(parent.teamId, parent.channelId, posted.ts);
-    threads.put(this.sql, threadKey, child.sessionId);
-    return { threadKey };
+    return announce(this.sql, (method, body) => this.slack(method, body), child);
   }
 
   /**

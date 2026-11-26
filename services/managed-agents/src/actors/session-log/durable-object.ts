@@ -35,8 +35,8 @@ import { hashOf } from "../../encoding/canonical-json.js";
 import { migrate } from "../../durable/migrations.js";
 import { owed, OWED_PURPOSE } from "../../durable/outbox.js";
 import { sqlOf, type Sql } from "../../durable/sql.js";
-import { type AcceptResult, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type SessionLogRpcAdded, type Summary } from "./contract.js";
-import { type ComputerRpcAdded } from "../computer/contract.js";
+import { type AcceptResult, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type Summary } from "./contract.js";
+import { type ComputerRpc } from "../computer/contract.js";
 import { type LiveRpc } from "../live/contract.js";
 import { type OrgRpc, type SummaryPub } from "../org/contract.js";
 import type { FoldSummary } from "./summary.js";
@@ -80,7 +80,7 @@ export interface SessionLogEnv extends TelemetryEnv, ActorEnv {
 /** The actors a log calls (spec 36.2). A seam: tests put fakes here. */
 export interface SessionLogPeers {
   org(org: string): Pick<OrgRpc, "access" | "acceptSummary">;
-  computer(machine: string): Pick<ComputerRpcAdded, "drain">;
+  computer(machine: string): Pick<ComputerRpc, "drain">;
   live(org: string): Pick<LiveRpc, "publish">;
 }
 
@@ -461,7 +461,7 @@ interface PreparedRow {
   spill: string | null;
 }
 
-export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implements SessionLogRpc, SessionLogRpcAdded {
+export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implements SessionLogRpc {
   /** The actors this log calls; tests replace it. */
   peers: SessionLogPeers = {
     org: (org) => orgOf(this.env, org),

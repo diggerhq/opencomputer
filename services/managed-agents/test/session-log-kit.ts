@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 
 import type { Access, Principal } from "../src/auth/principal.js";
-import type { EventPush, SessionLogRpcAdded } from "../src/actors/session-log/contract.js";
+import type { EventPush } from "../src/actors/session-log/contract.js";
 import type { SummaryPub } from "../src/actors/org/contract.js";
 import type { Actor, ApiEvent } from "../src/api-objects/objects.js";
 import type { SessionLogDurableObject } from "../src/actors/session-log/durable-object.js";
@@ -65,7 +65,7 @@ let sessions = 0;
 export async function openLog(over: Partial<Fakes> = {}) {
   const sessionId = `cs_tt${String(++sessions).padStart(14, "0")}`;
   const object = testEnv.SESSION_LOG.getByName(sessionId);
-  const stub = object as unknown as SessionLogRpc & SessionLogRpcAdded;
+  const stub = object as unknown as SessionLogRpc;
   const identity = { sessionId, organizationId: ORG };
   const fakes: Fakes = {
     access: accessOf(),

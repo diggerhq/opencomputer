@@ -24,7 +24,6 @@ export async function connectWithCode(request: Request, env: ComputerEdgeEnv): P
   if (typeof input.code !== "string" || !isHarness(provider)) {
     return problem(400, "invalid_request", "code and provider (claude or codex) are required");
   }
-  if (!computers(env)) return problem(503, "computer_not_configured", "Computers are not available yet");
   const invalid = () => problem(CONNECT_CODE_INVALID.status, CONNECT_CODE_INVALID.code, CONNECT_CODE_INVALID.message);
   const code = normalizeConnectCode(input.code);
   if (!code) {
@@ -32,7 +31,7 @@ export async function connectWithCode(request: Request, env: ComputerEdgeEnv): P
     return invalid();
   }
   const hash = await connectCodeHash(code);
-  const accountId = await computers(env)!.getByName(connectCodeIndexName(hash)).connectCodeAccount(hash);
+  const accountId = await computers(env).getByName(connectCodeIndexName(hash)).connectCodeAccount(hash);
   if (!accountId || reservedName(accountId) || isPoolId(accountId)) {
     logConnectCode({ action: "refused", reason: "unknown", provider });
     return invalid();

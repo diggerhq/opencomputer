@@ -291,6 +291,7 @@ const FORM_METHODS = new Set([
   "chat.getPermalink",
   "conversations.info",
   "conversations.replies",
+  "conversations.history",
   "conversations.members",
   "auth.test",
   "auth.revoke",

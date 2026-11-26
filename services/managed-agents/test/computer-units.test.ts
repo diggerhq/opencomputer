@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { verifySlackSignature } from "../src/channels/slack-events.js";
-import { gatewayUrl, sizeFor } from "../src/actors/computer/config.js";
+import { type ComputerEdgeEnv, gatewayUrl, sizeFor } from "../src/actors/computer/config.js";
 import { FAILURE_CODES, failureMessage, failureNotice } from "../src/actors/computer/machine/failure.js";
 import { bytesToBase64Url, seal, unseal } from "../src/crypto/seal.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/actors/computer/held-for-org/github.js";
@@ -80,7 +80,7 @@ describe("host tokens", () => {
 
 describe("computer config and vocabulary", () => {
   it("sizes by plan", () => {
-    const env = { ACCOUNTS: {} as DurableObjectNamespace };
+    const env = { ACCOUNTS: {} as DurableObjectNamespace } as ComputerEdgeEnv;
     expect(sizeFor(env, "default")).toBe("Standard_D2as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "max")).toBe("Standard_D8as_v7");
     expect(sizeFor({ ...env, COMPUTER_MAX_SIZE: "Standard_D8as_v7" }, "default")).toBe("Standard_D2as_v7");
