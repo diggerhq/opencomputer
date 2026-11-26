@@ -271,7 +271,6 @@ function Activity({ track }: { track: TrackView }) {
               value={{
                 model: track.agent.settings.model ?? undefined,
                 effort: track.agent.settings.effort ?? undefined,
-                mode: track.agent.settings.mode,
               }}
               onChange={(p) => surface.setSettings(track.agentSession, p)}
             />
