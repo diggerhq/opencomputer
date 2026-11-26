@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { verifySlackSignature } from "../src/channels/slack-events.js";
 import { gatewayUrl, sizeFor } from "../src/computer/config.js";
 import { FAILURE_CODES, failureMessage, failureNotice } from "../src/computer/failure.js";
-import { bytesToBase64Url, seal, unseal } from "../src/computer/crypto.js";
+import { bytesToBase64Url, seal, unseal } from "../src/crypto/seal.js";
 import { DEFINITION_REPO_LIMIT, EAGER_REPO_COUNT, selectTokenTarget, workspaceDefinition } from "../src/computer/github.js";
 import { constantTimeEqual, hostAuthorized, hostToken } from "../src/computer/host-token.js";
 import { takeHarnessPrefix } from "../src/computer/harnesses.js";
@@ -19,7 +19,7 @@ import {
   unpaidWarningGiven,
 } from "../src/computer/parking.js";
 import { resolvePlan, sizeTier } from "../src/computer/plan.js";
-import { decodeCalvinActionId, parseSessionKey } from "../src/computer/protocol.js";
+import { decodeCalvinActionId, parseSessionKey } from "../src/host-protocol/protocol.js";
 import {
   decodeInstallState,
   decodeSlack,

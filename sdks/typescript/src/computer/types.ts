@@ -5,7 +5,7 @@
 
 import type { MutationArgs, MutationName } from "./mutation-table.js";
 
-// ---------- the session API's objects (services/managed-agents/src/computer/api-types.ts) ----------
+// ---------- the session API's objects (services/managed-agents/src/api-objects/objects.ts) ----------
 
 export type SessionStatus = "starting" | "running" | "waiting" | "idle" | "suspended";
 export type IfBusy = "queue" | "steer" | "interrupt";

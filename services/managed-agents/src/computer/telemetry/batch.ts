@@ -12,8 +12,8 @@
 //   closed early (the next event opens another), so one window never nears the emitter's buffer cap.
 // - Telemetry off: each event is validated and discarded at once; no timer is armed.
 
-import type { Telemetry } from "./emitter.js";
-import type { GatewayTelemetry } from "./gateway.js";
+import type { Telemetry } from "../../telemetry/emitter.js";
+import type { GatewayTelemetry } from "../../telemetry/gateway.js";
 
 export const BATCH_MS = 1_000;
 export const BATCH_MAX = 200;

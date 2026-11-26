@@ -4,7 +4,7 @@
 // Every documented field is always present, `null` rather than absent. Tests validate bodies
 // against the vendored schema (test/fixtures/calvin/computer-api.v1.json).
 
-import type { CalvinApiActor, CalvinJournalEvent } from "./protocol.js";
+import type { CalvinApiActor, CalvinJournalEvent } from "../host-protocol/protocol.js";
 
 export type Actor = CalvinApiActor;
 export type ApiEvent = CalvinJournalEvent;

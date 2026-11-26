@@ -1,7 +1,7 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
 import { describe, expect, it } from "vitest";
 
-import type { Actor, ApiEvent } from "../src/computer/api-types.js";
+import type { Actor, ApiEvent } from "../src/api-objects/objects.js";
 import { addDecimal, foldEvents, publicTurn } from "../src/computer/session-fold.js";
 import schema from "./fixtures/calvin/computer-api.v1.json" with { type: "json" };
 

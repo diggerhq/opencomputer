@@ -4,7 +4,7 @@
 
 import { owed } from "../durable/outbox.js";
 import { type Sql } from "../durable/sql.js";
-import { CROCKFORD } from "../computer/session-ids.js";
+import { CROCKFORD } from "../ids/session-ids.js";
 
 export const STEPS: ((sql: Sql) => void)[] = [
   (sql) => {

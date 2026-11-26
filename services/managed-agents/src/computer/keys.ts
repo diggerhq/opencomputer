@@ -13,7 +13,7 @@
 
 import type { ApiTelemetry } from "./telemetry/api.js";
 import type { AssertedApiKey } from "../edge/auth.js";
-import { API_SCOPES, type ApiScope } from "./api-types.js";
+import { API_SCOPES, type ApiScope } from "../api-objects/objects.js";
 import { keyHashKey, keyIdKey, type WireKeyRecord } from "../wire/keys.js";
 
 /** What keys.ts needs of the KV binding. */

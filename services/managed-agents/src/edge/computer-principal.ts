@@ -12,7 +12,7 @@
  */
 
 import type { Principal } from "../auth/principal.js";
-import { API_SCOPES } from "../computer/api-types.js";
+import { API_SCOPES } from "../api-objects/objects.js";
 
 export const COMPUTER_PRINCIPAL = "computer";
 

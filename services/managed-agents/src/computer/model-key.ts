@@ -31,8 +31,8 @@
 // sees it. `modelCredentials` is protocol 4's and goes with it.
 
 import { hmacSha256Hex } from "../edge/runtime-usage.js";
-import { sha256Hex } from "./crypto.js";
-import type { CalvinHostCredentials, ModelProfile, ModelRoute } from "./protocol.js";
+import { sha256Hex } from "../crypto/seal.js";
+import type { CalvinHostCredentials, ModelProfile, ModelRoute } from "../host-protocol/protocol.js";
 
 export const MANAGED_MODEL_PROVIDER = "openrouter";
 /**

@@ -3,7 +3,7 @@
 // through a `computer-connect-codes:<x>` object; routes.ts looks the hash up,
 // the organization's object (connect-codes.ts, behind ModelAccess) decides.
 
-import { sha256Hex } from "./crypto.js";
+import { sha256Hex } from "../crypto/seal.js";
 import type { AgentError } from "./model-access.js";
 
 export const CONNECT_CODE_PREFIX = "oc_";

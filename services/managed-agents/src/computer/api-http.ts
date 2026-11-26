@@ -24,17 +24,17 @@ import { liveOf, logOf, orgOf, slackOf } from "../actors/addresses.js";
 import type { CreateSession, EntryError, InboxKind, ListQuery, MutateReply, OrgRpc, OrgSettings, Refusal, SessionPatch, SessionRow } from "../actor/contracts.js";
 import type { Principal } from "../auth/principal.js";
 import { type LiveUpgrade, liveRequest } from "../live/contract.js";
-import type { ApiScope, LogSummary } from "./api-types.js";
-import { capabilities, checkSettings, PLAN_EXIT_MODES } from "./capabilities.js";
+import type { ApiScope, LogSummary } from "../api-objects/objects.js";
+import { capabilities, checkSettings, PLAN_EXIT_MODES } from "../api-objects/capabilities.js";
 import type { ComputerEdgeEnv } from "./config.js";
-import { isId, isSessionId } from "./session-ids.js";
+import { isId, isSessionId } from "../ids/session-ids.js";
 import { type ApiOp, type ApiRequest, type ApiReply, validatePatch } from "./sessions-api.js";
 import { type ComputerInstallation, selectTokenTarget } from "./github.js";
 import type { GitHubTokenMint } from "../protocol.js";
 import type { SecretsApiOp } from "./secrets-store.js";
 import { repositoriesQuery, repositoryChoice } from "../org/repository.js";
 import { matchMutation } from "../org/mutations/table.js";
-import { gatewayTelemetry } from "./telemetry/gateway.js";
+import { gatewayTelemetry } from "../telemetry/gateway.js";
 
 /** What api-http needs of the Computer DO stub. */
 export interface ComputerApiStub {

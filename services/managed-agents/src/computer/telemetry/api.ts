@@ -20,8 +20,8 @@
 // - The only state: when the current outage's first 503 went (a timestamp, not a counter).
 
 import type { AppendResult } from "../session-log-contract.js";
-import type { EventName } from "./catalog.js";
-import type { EventFields, Telemetry } from "./emitter.js";
+import type { EventName } from "../../telemetry/catalog.js";
+import type { EventFields, Telemetry } from "../../telemetry/emitter.js";
 
 /** Hands `write` an emitter whose batch is sent later (the DO's open batch, through `waitUntil`). */
 export type EmitTelemetry = (write: (t: Telemetry) => void) => void;

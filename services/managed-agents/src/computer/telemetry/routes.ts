@@ -4,10 +4,10 @@
 // the rest (telemetry/computer.ts).
 
 import type { ComputerEdgeEnv } from "../config.js";
-import type { CalvinTraceContext } from "../protocol.js";
+import type { CalvinTraceContext } from "../../host-protocol/protocol.js";
 import type { SlackMessageJob } from "../../slack/slack-api.js";
-import { uuidv7 } from "./envelope.js";
-import { type GatewayTelemetry, SURFACE, gatewayTelemetry, mintTrace, traceFields } from "./gateway.js";
+import { uuidv7 } from "../../telemetry/envelope.js";
+import { type GatewayTelemetry, SURFACE, gatewayTelemetry, mintTrace, traceFields } from "../../telemetry/gateway.js";
 
 /** The Cloudflare colo that took the request (the gateway's `region`), when the runtime says. */
 export function requestColo(request: Request): string | undefined {

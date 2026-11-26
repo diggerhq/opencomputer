@@ -33,7 +33,7 @@ import {
   agentRuntimeUsageRetryAt,
   postAgentRuntimeUsage,
 } from "../edge/runtime-usage.js";
-import type { CalvinSessionStatus } from "./protocol.js";
+import type { CalvinSessionStatus } from "../host-protocol/protocol.js";
 
 /** How long a working piece runs before it is closed and billed, and the next one opened. */
 export const CHECKPOINT_MS = 5 * 60_000;

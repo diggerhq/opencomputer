@@ -2,9 +2,9 @@
 // class's RPC methods and the values they pass. No actor reads another's storage, and none calls a
 // method not listed here. `p` is the caller's principal. Types only; nothing here runs.
 
-import type { ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSettings } from "../computer/api-types.js";
+import type { ApiEvent, LogSummary, Origin, Session, SessionAccess, SessionSettings } from "../api-objects/objects.js";
 import type { PublicComputerState } from "../computer/config.js";
-import type { CalvinPerson } from "../computer/protocol.js";
+import type { CalvinPerson } from "../host-protocol/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
 import type { GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice } from "../org/repository.js";
 import type { Access, Principal } from "../auth/principal.js";

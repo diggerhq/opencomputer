@@ -23,8 +23,8 @@ import { emitter } from "../telemetry/log-emitter.js";
 import type { Sql } from "../durable/sql.js";
 import { owed } from "../durable/outbox.js";
 import type { AssertedApiKey } from "../edge/auth.js";
-import type { Ask, LogSummary } from "./api-types.js";
-import { DEFAULT_MODE, MODELS, capabilities } from "./capabilities.js";
+import type { Ask, LogSummary } from "../api-objects/objects.js";
+import { DEFAULT_MODE, MODELS, capabilities } from "../api-objects/capabilities.js";
 import { type ComputerEdgeEnv, DEFAULT_WIRE_URL } from "./config.js";
 import type { ComputerKeys } from "./keys.js";
 import {
@@ -41,9 +41,9 @@ import {
   type SessionSecret,
   personForMember,
   sessionKey,
-} from "./protocol.js";
+} from "../host-protocol/protocol.js";
 import type { AppendResult, EpochTail, SessionLogRpc } from "./session-log-contract.js";
-import { isId, isMemberId } from "./session-ids.js";
+import { isId, isMemberId } from "../ids/session-ids.js";
 import { TicketTooLongError, mintTicket, validateTicketRequest } from "./tickets.js";
 
 /** A `start` frame's answer from the host: 15 s, then it is let go. */

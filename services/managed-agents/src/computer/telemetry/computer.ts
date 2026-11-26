@@ -17,13 +17,13 @@
 // runs and validates, and nothing is sent.
 
 import type { ComputerEdgeEnv } from "../config.js";
-import { isPoolId } from "../names.js";
-import { type CalvinTraceContext, sessionKey } from "../protocol.js";
+import { isPoolId } from "../../ids/computer-names.js";
+import { type CalvinTraceContext, sessionKey } from "../../host-protocol/protocol.js";
 import type { SlackMessageJob } from "../../slack/slack-api.js";
-import type { SubscriptionEventName } from "./catalog.js";
-import { credentialId, issueTelemetryCredential } from "./credential.js";
-import type { EventFields } from "./emitter.js";
-import type { Dimensions } from "./envelope.js";
+import type { SubscriptionEventName } from "../../telemetry/catalog.js";
+import { credentialId, issueTelemetryCredential } from "../../telemetry/credential.js";
+import type { EventFields } from "../../telemetry/emitter.js";
+import type { Dimensions } from "../../telemetry/envelope.js";
 import {
   type GatewayTelemetry,
   type TraceSource,
@@ -31,7 +31,7 @@ import {
   mintTrace,
   traceFields,
   traceTelemetry,
-} from "./gateway.js";
+} from "../../telemetry/gateway.js";
 
 /** What a host socket carries across hibernation (durable-object.ts `hello` writes it). */
 export interface HostAttachment {

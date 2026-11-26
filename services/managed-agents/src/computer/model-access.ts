@@ -17,14 +17,14 @@
 // Every data type the object or routes.ts needs is defined here, once; the
 // six modules import them from here and re-export them from their old paths.
 
-import { sha256Hex } from "./crypto.js";
+import { sha256Hex } from "../crypto/seal.js";
 import { DEFAULT_HARNESS } from "./harnesses.js";
 import { MANAGED_MODEL_NAME } from "./model-key.js";
 import type { PoolProbeResult } from "./pool.js";
-import type { CalvinGatewayToHost, CalvinHarness, ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "./protocol.js";
+import type { CalvinGatewayToHost, CalvinHarness, ModelObserved, ModelProfile, ModelProvider, ModelResponse, ModelRoute, ModelUsage } from "../host-protocol/protocol.js";
 import type { SlackResult } from "../slack/slack-api.js";
-import type { SubscriptionEventName } from "./telemetry/catalog.js";
-import type { EventFields } from "./telemetry/emitter.js";
+import type { SubscriptionEventName } from "../telemetry/catalog.js";
+import type { EventFields } from "../telemetry/emitter.js";
 
 // ------------------------------------------------------------------ subscriptions (model-subscriptions.ts)
 

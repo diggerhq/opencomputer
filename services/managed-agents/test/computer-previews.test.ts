@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { CalvinGatewayToHost } from "../src/computer/protocol.js";
+import type { CalvinGatewayToHost } from "../src/host-protocol/protocol.js";
 import {
   CloudflareTunnels,
   ComputerPreviews,

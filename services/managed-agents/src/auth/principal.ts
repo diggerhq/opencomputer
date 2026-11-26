@@ -1,7 +1,7 @@
 // Who is asking (spec 34.3), and who may reach a session (spec 36.2). The edge verifies the
 // credential and resolves it to a Principal; state and link actors never see a credential.
 
-import type { ApiScope } from "../computer/api-types.js";
+import type { ApiScope } from "../api-objects/objects.js";
 
 export interface Principal {
   org: string;

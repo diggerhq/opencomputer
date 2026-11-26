@@ -3,8 +3,8 @@
 // assertions added for bluecode's noUncheckedIndexedAccess).
 
 import { describe, expect, it } from 'vitest';
-import { type Batch, createTelemetry, type TelemetryOptions } from '../src/computer/telemetry/emitter.js';
-import { uuidv7 } from '../src/computer/telemetry/envelope.js';
+import { type Batch, createTelemetry, type TelemetryOptions } from '../src/telemetry/emitter.js';
+import { uuidv7 } from '../src/telemetry/envelope.js';
 
 function setup(over: Partial<TelemetryOptions> = {}) {
   const sent: Batch[] = [];

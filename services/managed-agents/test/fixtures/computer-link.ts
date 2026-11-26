@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { seal } from "../../src/computer/crypto.js";
+import { seal } from "../../src/crypto/seal.js";
 
 interface Link {
   teamId: string;

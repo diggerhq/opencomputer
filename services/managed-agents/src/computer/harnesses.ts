@@ -13,7 +13,7 @@
 // before #272 reads rows by owner alone, so a rollback must find none for a
 // harness it does not know.
 
-import type { CalvinHarness, ModelProfile, ModelProvider } from "./protocol.js";
+import type { CalvinHarness, ModelProfile, ModelProvider } from "../host-protocol/protocol.js";
 
 /** The feature a host's hello lists when ChatGPT routes may go to it (with protocol 3). */
 export const MODEL_PROXY_CHATGPT_FEATURE = "model-proxy/chatgpt";

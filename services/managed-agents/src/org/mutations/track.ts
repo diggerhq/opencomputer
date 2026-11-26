@@ -2,7 +2,7 @@
 // delete. Authorization is 19.2's table; a track the caller may not see or change is `not_found`.
 
 import type { Principal } from "../../auth/principal.js";
-import type { Origin } from "../../computer/api-types.js";
+import type { Origin } from "../../api-objects/objects.js";
 import { isPerson, ownsSession, ownsTrack, holdsTrack, isOwnSession, parse, readSession, readTrack, seesTrack, summaryOf, type TrackRec, type Tx } from "../tx.js";
 import { acceptOpenProposals, addTrackAgent, byFor, Changes, firstMachine, isSid, isStr, isTid, markDone, optStr, placesOf, removeSession } from "./common.js";
 import { applied, refuse, type MutationFn, type MutationRefusal } from "./outcome.js";

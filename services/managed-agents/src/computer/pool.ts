@@ -41,7 +41,7 @@
 
 import type { AdoptedComputer, LifecycleReply } from "./lifecycle.js";
 import { type ProbeOutcome, tokenFingerprint } from "./model-access.js";
-import { computerName, newPoolId } from "./names.js";
+import { computerName, newPoolId } from "../ids/computer-names.js";
 import { ProbeLimits } from "./pool-probe-limits.js";
 
 export type PoolSlotState = "provisioning" | "warm" | "claiming" | "claimed" | "retiring";

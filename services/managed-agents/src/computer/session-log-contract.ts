@@ -4,7 +4,7 @@
 
 import type { EventsReset, Summary } from "../actor/contracts.js";
 import type { Principal } from "../auth/principal.js";
-import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "./api-types.js";
+import type { ApiEvent, Ask, LogSummary, Subagent, SubagentProgress, Turn, TurnStatus } from "../api-objects/objects.js";
 
 export interface SessionLogIdentity {
   sessionId: string;

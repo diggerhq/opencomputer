@@ -17,9 +17,9 @@ import { type Sql, sqlOf } from "../durable/sql.js";
 import { unavailable } from "../http/unavailable.js";
 import { isRecord } from "../encoding/canonical-json.js";
 import type { SlackModalReply } from "../actor/contracts.js";
-import type { Origin } from "../computer/api-types.js";
-import { seal, sha256Hex, unseal } from "../computer/crypto.js";
-import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../computer/protocol.js";
+import type { Origin } from "../api-objects/objects.js";
+import { seal, sha256Hex, unseal } from "../crypto/seal.js";
+import { type CalvinPerson, COMPUTER_GIT_NAME, decodeCalvinActionId, noReplyGitEmail, parseSessionKey, personFor, sessionKey } from "../host-protocol/protocol.js";
 import {
   ACCESS_USAGE,
   answeredPost,

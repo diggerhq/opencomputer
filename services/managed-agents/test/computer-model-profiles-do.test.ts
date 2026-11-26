@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
 import { modelKey } from "../src/computer/model-key.js";
-import { CALVIN_PROTOCOL_VERSION } from "../src/computer/protocol.js";
+import { CALVIN_PROTOCOL_VERSION } from "../src/host-protocol/protocol.js";
 import { linkSlack } from "./fixtures/computer-link.js";
 
 /**

@@ -9,7 +9,7 @@
 // the edge cannot address anything outside the computers' resource group.
 
 import type { CloudOperation, CloudReply, CloudResource, CloudResourceKind } from "../../computer/cloud-contract.js";
-import { POOL_TAG, isPoolId } from "../../computer/names.js";
+import { POOL_TAG, isPoolId } from "../../ids/computer-names.js";
 import { ArmError, type ArmResource, AzureClient, type Fetch } from "./arm.js";
 import {
   type ComputerPlatformEnv,

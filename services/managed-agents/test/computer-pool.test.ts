@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { AdoptedComputer, LifecycleReply } from "../src/computer/lifecycle.js";
-import { isPoolId, newPoolId, ownerTag } from "../src/computer/names.js";
+import { isPoolId, newPoolId, ownerTag } from "../src/ids/computer-names.js";
 import {
   ComputerPool,
   MAX_PROVISIONING,

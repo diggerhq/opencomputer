@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { DeliveredOutcome, InboxEntry, InboxKind } from "../src/actor/contracts.js";
-import type { ApiEvent, LogSummary } from "../src/computer/api-types.js";
+import type { ApiEvent, LogSummary } from "../src/api-objects/objects.js";
 import { matchApiRoute, writeParams } from "../src/computer/api-http.js";
 import { ComputerKeys } from "../src/computer/keys.js";
-import type { CalvinGatewayToHost, CalvinPerson } from "../src/computer/protocol.js";
+import type { CalvinGatewayToHost, CalvinPerson } from "../src/host-protocol/protocol.js";
 import type { AppendResult, EpochTail, RecoverInput, RecoverResult } from "../src/computer/session-log-contract.js";
 import {
   type ApiRequest,
@@ -13,7 +13,7 @@ import {
   RECOVER_AFTER_MS,
 } from "../src/computer/sessions-api.js";
 import { ApiTelemetry } from "../src/computer/telemetry/api.js";
-import { createTelemetry } from "../src/computer/telemetry/emitter.js";
+import { createTelemetry } from "../src/telemetry/emitter.js";
 import type { SessionsApiDeps } from "../src/computer/sessions-api.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";
 import type { Sql } from "../src/durable/sql.js";

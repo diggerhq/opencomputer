@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Actor } from "../src/computer/api-types.js";
+import type { Actor } from "../src/api-objects/objects.js";
 import { SLOT_REFRESH_MS } from "../src/computer/session-log.js";
 import { member, openLog, OWNER_ID } from "./session-log-kit.js";
 

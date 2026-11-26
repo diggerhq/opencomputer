@@ -60,7 +60,7 @@
 // For the Slack queue it is the fallback: an accept drains the queue inline
 // (work 068 §3), and the alarm runs it first, before any other purpose.
 
-import { isSessionId } from "./session-ids.js";
+import { isSessionId } from "../ids/session-ids.js";
 import type { ComputerRpcAdded, SlackCarry, SlackModalReply, SlackRpc, StartSpec } from "../actor/contracts.js";
 import { type Access, type Principal, byOf } from "../auth/principal.js";
 import { type Dead, OWED_PURPOSE } from "../durable/outbox.js";
@@ -99,7 +99,7 @@ import {
 } from "./config.js";
 import { sizeShape } from "./placement.js";
 import { DEFAULT_HARNESS, computerHarnesses, helloProfiles, profileHarnesses } from "./harnesses.js";
-import { type SealPurpose, seal, unseal } from "./crypto.js";
+import { type SealPurpose, seal, unseal } from "../crypto/seal.js";
 import { type DiskReport, diskDecision } from "./disk-growth.js";
 import { LOOKUP_FAILED_TEXT } from "../slack/threads.js";
 import { type ComputerInstallation, type ComputerRepository, selectTokenTarget, workspaceDefinition } from "./github.js";
@@ -111,7 +111,7 @@ import { mintOpenComputerKey } from "./opencomputer-key.js";
 import { type AutomationRepositoryEnv, automationRepositoryCredential } from "../edge/automation-repository.js";
 import { daysUnpaid, idleParkMs, parkingDecision, unpaidStage, unpaidWarning, unpaidWarningGiven } from "./parking.js";
 import { type ComputerPlan, type ResolvedPlan, type UsagePlan, resolvePlan, sizeTier } from "./plan.js";
-import { POOL_OBJECT, isPoolId } from "./names.js";
+import { POOL_OBJECT, isPoolId } from "../ids/computer-names.js";
 import { ComputerPool, type PoolClaim, type PoolProbeResult, type PoolSlot, type PoolSlotStatus, SLOT_PROBE_TIMEOUT_MS, poolSize } from "./pool.js";
 import { ComputerPreviews } from "./previews.js";
 import { ComputerKeys, type SyncedKey } from "./keys.js";
@@ -135,7 +135,7 @@ import {
   type WorkspaceDefinition,
   parseSessionKey,
   personFor,
-} from "./protocol.js";
+} from "../host-protocol/protocol.js";
 import { type SubmittedView, parseSecretCommand } from "./secrets.js";
 import { parseVariableCommand } from "./variables.js";
 import { type SecretsApiOp, SecretsStore } from "./secrets-store.js";
@@ -171,7 +171,7 @@ import { ConnectCodeIndex, connectCodeIndexName } from "./connect-code-index.js"
 import { ApiTelemetry, surfaceOfOrigin } from "./telemetry/api.js";
 import { TelemetryBatch } from "./telemetry/batch.js";
 import { ComputerTelemetry, type HostAttachment } from "./telemetry/computer.js";
-import type { GatewayTelemetry } from "./telemetry/gateway.js";
+import type { GatewayTelemetry } from "../telemetry/gateway.js";
 import { type SlackInteraction, type SlackMessageJob, type SlackResult, slackThreadUrl } from "../slack/slack-api.js";
 
 /** What the edge's AccountDurableObject offers the computer. */

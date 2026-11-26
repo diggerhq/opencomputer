@@ -4,7 +4,7 @@
 //
 // The type is a copy of services/managed-agents/src/actor/principal.ts (the
 // packages share no code); the member id mapping a copy of `memberId` in
-// services/managed-agents/src/computer/session-ids.ts, and the scope reading
+// services/managed-agents/src/ids/session-ids.ts, and the scope reading
 // a copy of `apiScopes` in services/managed-agents/src/computer/keys.ts.
 
 export const API_SCOPES = [

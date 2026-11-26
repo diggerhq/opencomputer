@@ -7,7 +7,7 @@
  */
 import { hmacSha256Hex } from "../edge/runtime-usage.js";
 import type { ProvisionEnv } from "./model-key.js";
-import { isSessionId } from "./session-ids.js";
+import { isSessionId } from "../ids/session-ids.js";
 
 export const COMPUTER_KEYS_PATH = "/internal/computer-keys";
 const MINT_TIMEOUT_MS = 10_000;

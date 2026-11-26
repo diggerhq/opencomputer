@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import type { ComputerDurableObject } from "../src/computer/durable-object.js";
 import { hostToken } from "../src/computer/host-token.js";
-import { generateTelemetryKeys, verifyTelemetryCredential } from "../src/computer/telemetry/credential.js";
-import { checkEvent } from "../src/computer/telemetry/validate.js";
+import { generateTelemetryKeys, verifyTelemetryCredential } from "../src/telemetry/credential.js";
+import { checkEvent } from "../src/telemetry/validate.js";
 import { SLACK_BOT_TOKEN } from "./fixtures/computer-fakes.mjs";
 import { linkSlack } from "./fixtures/computer-link.js";
 

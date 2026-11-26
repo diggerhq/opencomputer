@@ -6,7 +6,7 @@ import { exchangeSlackOAuthCode } from "../channels/slack-api.js";
 import { verifySlackSignature } from "../channels/slack-events.js";
 import type { ComputerEdgeEnv } from "../computer/config.js";
 import { publicOrigin, slackRedirectUri } from "../computer/config.js";
-import { randomToken, sha256Hex } from "../computer/crypto.js";
+import { randomToken, sha256Hex } from "../crypto/seal.js";
 import type { Principal } from "../auth/principal.js";
 import { slackOf, type ActorEnv } from "../actors/addresses.js";
 import { decodeInstallState, encodeInstallState, parseInteraction, parseSlackEnvelope, slackAuthorizeUrl, slackTeamLinkName } from "./slack-api.js";

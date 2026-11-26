@@ -38,10 +38,10 @@ import { type ComputerEdgeEnv } from "./config.js";
 import type { ComputerDurableObject, ComputerOverview } from "./durable-object.js";
 import { isHarness } from "./harnesses.js";
 import { bearerToken, hostAuthorized } from "./host-token.js";
-import { POOL_OBJECT, isPoolId } from "./names.js";
+import { POOL_OBJECT, isPoolId } from "../ids/computer-names.js";
 import { liveOf } from "../actors/addresses.js";
 import { apiRefusal, type ComputerApiStub, routeComputerApi } from "./api-http.js";
-import { memberId } from "./session-ids.js";
+import { memberId } from "../ids/session-ids.js";
 
 type ComputerStub = DurableObjectStub<ComputerDurableObject>;
 

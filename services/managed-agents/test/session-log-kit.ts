@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 
 import type { Access, Principal } from "../src/auth/principal.js";
 import type { EventPush, SessionLogRpcAdded, SummaryPub } from "../src/actor/contracts.js";
-import type { Actor, ApiEvent } from "../src/computer/api-types.js";
+import type { Actor, ApiEvent } from "../src/api-objects/objects.js";
 import type { SessionLogDurableObject } from "../src/computer/session-log.js";
 import type { SessionLogRpc } from "../src/computer/session-log-contract.js";
 

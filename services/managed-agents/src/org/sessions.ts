@@ -1,8 +1,8 @@
 // Org's directory (spec 36.1, 37.2, 40.1): the only creator of a session, and the session API's
 // get, patch and list over Org's rows. Pure functions over `Sql`; a refusal is a value.
 
-import type { Origin, SessionAccess } from "../computer/api-types.js";
-import { isSessionId, mintId } from "../computer/session-ids.js";
+import type { Origin, SessionAccess } from "../api-objects/objects.js";
+import { isSessionId, mintId } from "../ids/session-ids.js";
 import type { Access, CreateSession, ListQuery, OrgSettings, OutsideAccess, PlaceRow, Reply, Refusal, SessionPage, SessionPatch, SessionRow } from "../actor/contracts.js";
 import { cursor } from "../durable/cursor.js";
 import { byOf, type Principal } from "../auth/principal.js";

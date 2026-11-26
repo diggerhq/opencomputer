@@ -14,8 +14,8 @@ import { platformPrincipal, type Access, type Principal } from "../auth/principa
 import { sqlOf, type Sql } from "../durable/sql.js";
 import { unavailable } from "../http/unavailable.js";
 import { type ComputerRpcAdded, type CreateSession, type DocRev, type FeedFrame, type ListQuery, type LiveRpc, type MachinePub, type MutateReply, type MutateRequest, type Occurrence, type OrgRpc, type OrgSettings, type OutsideAccess, type Overview, type PlaceRow, type PullPub, type Reply, type ResultRow, type ReviewRow, type Row, type SessionLogRpcAdded, type SessionPage, type SessionPatch, type SessionRow, type SlackRpc, type StartSpec, type SummaryPub } from "../actor/contracts.js";
-import { computerSessionId } from "../computer/protocol.js";
-import { memberId } from "../computer/session-ids.js";
+import { computerSessionId } from "../host-protocol/protocol.js";
+import { memberId } from "../ids/session-ids.js";
 import * as feeds from "./feed.js";
 import * as repositories from "./repository.js";
 import type { Fetch, GrantingInstallation, RepositoriesQuery, Repository, RepositoryChoice, StoredRepository, TokenMinter } from "./repository.js";

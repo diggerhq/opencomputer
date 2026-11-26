@@ -20,8 +20,8 @@
 // secret, flagged so the runner never redacts them. In one scope a name is
 // either a secret or a variable.
 
-import { base64UrlToBytes, bytesToBase64Url, seal, unseal } from "./crypto.js";
-import type { SecretRequest, SecretScope, SessionSecret } from "./protocol.js";
+import { base64UrlToBytes, bytesToBase64Url, seal, unseal } from "../crypto/seal.js";
+import type { SecretRequest, SecretScope, SessionSecret } from "../host-protocol/protocol.js";
 
 export type { SecretRequest, SecretScope, SessionSecret };
 

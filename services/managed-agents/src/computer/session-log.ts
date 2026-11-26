@@ -23,7 +23,7 @@
 //   not reached it. Nothing waits: a client follows over Live (spec 37.1).
 
 import { TelemetryBatch } from "./telemetry/batch.js";
-import { gatewayTelemetry, type TelemetryEnv } from "./telemetry/gateway.js";
+import { gatewayTelemetry, type TelemetryEnv } from "../telemetry/gateway.js";
 import { DurableObject } from "cloudflare:workers";
 
 import { alarms } from "../durable/alarms.js";
@@ -37,9 +37,9 @@ import { owed, OWED_PURPOSE } from "../durable/outbox.js";
 import { sqlOf, type Sql } from "../durable/sql.js";
 import { type AcceptResult, type ComputerRpcAdded, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type LiveRpc, type OrgRpc, type SessionLogRpcAdded, type Summary, type SummaryPub } from "../actor/contracts.js";
 import type { FoldSummary } from "./session-fold.js";
-import { decodeCursor, encodeCursor } from "./list-cursor.js";
+import { decodeCursor, encodeCursor } from "../api-objects/list-cursor.js";
 import { crockfordId } from "../ids/crockford.js";
-import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "./api-types.js";
+import type { ApiEvent, Ask, Subagent, SubagentProgress, Turn } from "../api-objects/objects.js";
 import {
   applyEvent,
   foldEvents,

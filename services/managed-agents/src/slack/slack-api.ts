@@ -4,7 +4,7 @@
 // URL and its state, and Web API calls with the linked workspace's bot token.
 // Ported from dash-cal src/slack.ts and src/workspace-do.ts.
 
-import type { CalvinSlackFile, CalvinTraceContext } from "../computer/protocol.js";
+import type { CalvinSlackFile, CalvinTraceContext } from "../host-protocol/protocol.js";
 import { type ForwardedMessage, MAX_LINKS } from "./threads.js";
 
 /** A submitted modal, as Slack posts it. */
