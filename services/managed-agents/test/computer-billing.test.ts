@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { admitDelivery, billingWarningMessage, forgetCreditsNotice, onProPlan, outOfCreditsNotice, refuseForCredits } from "../src/computer/admission.js";
-import { CHECKPOINT_MS, ComputerRuntimeBilling } from "../src/computer/billing.js";
-import { MANAGED_ANTHROPIC_BASE_URL, modelCredentials, requestManagedModelKey } from "../src/computer/model-key.js";
+import { admitDelivery, billingWarningMessage, forgetCreditsNotice, onProPlan, outOfCreditsNotice, refuseForCredits } from "../src/actors/computer/admission.js";
+import { CHECKPOINT_MS, ComputerRuntimeBilling } from "../src/actors/computer/machine/billing.js";
+import { MANAGED_ANTHROPIC_BASE_URL, modelCredentials, requestManagedModelKey } from "../src/actors/computer/held-for-org/model-access/model-key.js";
 import type { ManagedAgentBillingAdmission } from "../src/edge/billing-admission.js";
 import { hmacSha256Hex, postAgentRuntimeUsage } from "../src/edge/runtime-usage.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";

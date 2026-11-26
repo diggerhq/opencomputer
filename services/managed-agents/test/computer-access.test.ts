@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { type Access, type Actor, can, commandAction, decodeDrivers, role, stateText } from "../src/computer/access.js";
-import { accessView, decodeAccessId, encodeAccessId, requestPost } from "../src/computer/access-views.js";
+import { type Access, type Actor, can, commandAction, decodeDrivers, role, stateText } from "../src/actors/computer/copied/access.js";
+import { accessView, decodeAccessId, encodeAccessId, requestPost } from "../src/actors/computer/copied/access-views.js";
 
 /**
  * Work 112: session roles. access.ts and access-views.ts are byte-identical copies of calvin's
@@ -17,7 +17,7 @@ describe("session access, shared with calvin", () => {
   for (const name of ["access.ts", "access-views.ts"]) {
     const theirs = join(here, "../../../computer/src", name);
     it.skipIf(!existsSync(theirs))(`${name} is calvin's, byte for byte`, () => {
-      expect(readFileSync(join(here, "../src/computer", name), "utf8")).toBe(readFileSync(theirs, "utf8"));
+      expect(readFileSync(join(here, "../src/actors/computer/copied", name), "utf8")).toBe(readFileSync(theirs, "utf8"));
     });
   }
 

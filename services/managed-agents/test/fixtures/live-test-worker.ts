@@ -3,9 +3,9 @@
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
-import type { LiveCredentials, Principal } from "../../src/live/contract.js";
+import type { LiveCredentials, Principal } from "../../src/actors/live/contract.js";
 
-export { LiveDurableObject } from "../../src/live/durable-object.js";
+export { LiveDurableObject } from "../../src/actors/live/durable-object.js";
 
 export class FakeSessionLog extends DurableObject {
   private head = "e1.1.0";

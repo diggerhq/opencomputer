@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { CalvinGatewayToHost, CalvinTraceContext } from "../src/computer/protocol.js";
+import type { CalvinGatewayToHost, CalvinTraceContext } from "../src/host-protocol/protocol.js";
 import {
   CREDENTIAL_TTL_S,
   generateTelemetryKeys,
   issueTelemetryCredential,
   verifyTelemetryCredential,
-} from "../src/computer/telemetry/credential.js";
-import { gatewayTelemetry, mintTrace, slackTsMs, telemetryEnabled, traceFields } from "../src/computer/telemetry/gateway.js";
+} from "../src/telemetry/credential.js";
+import { gatewayTelemetry, mintTrace, slackTsMs, telemetryEnabled, traceFields } from "../src/telemetry/gateway.js";
 import fixture from "./fixtures/calvin-deliver-trace.json" with { type: "json" };
 
 /**

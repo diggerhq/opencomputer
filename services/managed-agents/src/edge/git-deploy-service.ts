@@ -16,8 +16,8 @@ import type {
   ProjectResourceManifest,
   RegisterDeploymentInput,
 } from "../protocol.js";
-import { type ActorEnv, orgOf } from "../actor/index.js";
-import type { PullPub } from "../actor/contracts.js";
+import { type ActorEnv, orgOf } from "../actors/addresses.js";
+import type { PullPub } from "../actors/org/contract.js";
 import type { RequestIdentity } from "./auth.js";
 import {
   createGitHubCheckRun,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { CalvinGatewayToHost } from "../src/computer/protocol.js";
+import type { CalvinGatewayToHost } from "../src/host-protocol/protocol.js";
 import {
   CloudflareTunnels,
   ComputerPreviews,
@@ -13,7 +13,7 @@ import {
   WIRE_INGRESS_PATH,
   tunnelName,
   wireKeyFor,
-} from "../src/computer/previews.js";
+} from "../src/actors/computer/previews.js";
 import { previewKey } from "../src/previews/auth.js";
 import { type PreviewClaim, type PreviewRecord, claimOutcome } from "../src/previews/registry.js";
 import { sqlStorage } from "./fixtures/computer-sql.js";

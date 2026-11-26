@@ -1,9 +1,9 @@
 // Assertions as the edge mints them: every caller of the Computer API carries the one principal
 // (`oc_principal`, spec 34.3).
 
-import type { Principal } from "../../src/actor/principal.js";
-import { API_SCOPES, type ApiScope } from "../../src/computer/api-types.js";
-import { apiScopes } from "../../src/computer/keys.js";
+import type { Principal } from "../../src/auth/principal.js";
+import { API_SCOPES, type ApiScope } from "../../src/api-objects/objects.js";
+import { apiScopes } from "../../src/actors/computer/held-for-org/keys/keys.js";
 import type { RequestIdentity } from "../../src/edge/auth.js";
 
 /** A member by cookie: the web tab is not narrowed. */

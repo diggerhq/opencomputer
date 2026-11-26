@@ -4,9 +4,9 @@ import {
 } from "jose";
 
 import type { ManagedAgentIdentity } from "../protocol.js";
-import type { Principal } from "../actor/principal.js";
-import { API_SCOPES } from "../computer/api-types.js";
-import { memberId } from "../computer/session-ids.js";
+import type { Principal } from "../auth/principal.js";
+import { API_SCOPES } from "../api-objects/objects.js";
+import { memberId } from "../ids/session-ids.js";
 import { COMPUTER_PRINCIPAL, principalClaim } from "./computer-principal.js";
 
 export interface ManagedAgentAuthEnv {

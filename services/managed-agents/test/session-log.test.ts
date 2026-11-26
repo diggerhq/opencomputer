@@ -2,9 +2,9 @@ import { Validator, type Schema } from "@cfworker/json-schema";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { cursor } from "../src/actor/index.js";
-import type { Actor } from "../src/computer/api-types.js";
-import type { SessionLogDurableObject } from "../src/computer/session-log.js";
+import { cursor } from "../src/durable/cursor.js";
+import type { Actor } from "../src/api-objects/objects.js";
+import type { SessionLogDurableObject } from "../src/actors/session-log/durable-object.js";
 import schema from "./fixtures/calvin/computer-api.v1.json" with { type: "json" };
 import { member, openLog } from "./session-log-kit.js";
 

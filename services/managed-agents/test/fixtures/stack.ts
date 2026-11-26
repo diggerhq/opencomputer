@@ -21,7 +21,7 @@ import { fakeComputerOutbound, fakeComputerPlatform } from "./computer-fakes.mjs
 
 // This file imports nothing of src/: the SDK, web and desktop typecheck it with their own settings.
 
-/** The principal the edge asserts (src/actor/principal.ts), as this fixture makes them. */
+/** The principal the edge asserts (src/auth/principal.ts), as this fixture makes them. */
 export interface Principal {
   org: string;
   subject: string;
@@ -34,7 +34,7 @@ export interface Principal {
   credential: { id: string; expiresAt: number | null };
 }
 
-/** Every scope (src/computer/api-types.ts `API_SCOPES`). */
+/** Every scope (src/api-objects/objects.ts `API_SCOPES`). */
 const SCOPES = ["sessions:read", "sessions:write", "asks:answer", "secrets:write", "terminals", "work:read", "work:write"];
 
 /** The organization's host token (src/computer/host-token.ts): `sph_` + base64url(HMAC-SHA256(key, "calvin-host:" + org)). */

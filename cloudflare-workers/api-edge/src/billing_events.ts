@@ -1,6 +1,6 @@
 // Billing funnel events (serverless-agents-ws 086, "Funnel events"): the same
 // event, by name, to Tinybird (`calvin_events`, the envelope edge.request uses;
-// catalogued as `edge` entries in blue's src/computer/telemetry/catalog.ts) and
+// catalogued as `edge` entries in blue's src/telemetry/catalog.ts) and
 // to PostHog, keyed by org id plus the user id where there is one.
 //
 // Each sink is off unless configured: TINYBIRD_API_URL + TINYBIRD_APPEND_TOKEN,

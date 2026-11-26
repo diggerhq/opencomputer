@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { routeComputerApi, type ComputerApiStub } from "../src/computer/api-http.js";
+import { routeComputerApi, type ComputerApiStub } from "../src/http/api/dispatch.js";
 import { memberIdentity } from "./fixtures/identity.js";
 import { receiveGitHubWebhook } from "../src/edge/git-deploy-service.js";
 

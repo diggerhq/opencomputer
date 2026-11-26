@@ -5,7 +5,7 @@ import { matchMutation, mutationRequest } from "./mutation-table.js";
 
 describe("the mutation table", () => {
   it("is the server's, copied (npm run mutations)", () => {
-    const server = path.resolve(import.meta.dirname, "../../../../services/managed-agents/src/org/mutations/table.ts");
+    const server = path.resolve(import.meta.dirname, "../../../../services/managed-agents/src/actors/org/mutations/table.ts");
     expect(readFileSync(path.resolve(import.meta.dirname, "mutation-table.ts"), "utf8")).toBe(readFileSync(server, "utf8"));
   });
 

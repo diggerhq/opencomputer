@@ -2,9 +2,9 @@
 // the same boundary tests run on the gateway's copy of the core.
 
 import { describe, expect, it } from 'vitest';
-import { CATALOG } from '../src/computer/telemetry/catalog.js';
-import { eventLine, SCHEMA_VERSION, tbTime, uuidv7 } from '../src/computer/telemetry/envelope.js';
-import { checkEvent, checkTurn } from '../src/computer/telemetry/validate.js';
+import { CATALOG } from '../src/telemetry/catalog.js';
+import { eventLine, SCHEMA_VERSION, tbTime, uuidv7 } from '../src/telemetry/envelope.js';
+import { checkEvent, checkTurn } from '../src/telemetry/validate.js';
 
 const at = tbTime(Date.UTC(2026, 9, 12, 10, 0, 0, 123));
 const event = (over: Record<string, unknown> = {}) => ({

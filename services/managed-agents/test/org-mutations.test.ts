@@ -1,13 +1,15 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { migrate, sqlOf, type Principal, type Sql } from "../src/actor/index.js";
-import type { Summary } from "../src/actor/contracts.js";
-import { runMutation, type MutationOutcome } from "../src/org/mutations/index.js";
-import { STEPS } from "../src/org/schema.js";
-import { emptySummary, transact } from "../src/org/tx.js";
-import { mutate } from "../src/org/feed.js";
-import { doc as docRow } from "../src/org/work.js";
-import orgReviewSchema from "../src/org/review.v1.json" with { type: "json" };
+import { migrate } from "../src/durable/migrations.js";
+import { sqlOf, type Sql } from "../src/durable/sql.js";
+import { type Principal } from "../src/auth/principal.js";
+import type { Summary } from "../src/actors/session-log/contract.js";
+import { runMutation, type MutationOutcome } from "../src/actors/org/mutations/run.js";
+import { STEPS } from "../src/actors/org/schema.js";
+import { emptySummary, transact } from "../src/actors/org/tx.js";
+import { mutate } from "../src/actors/org/feed.js";
+import { doc as docRow } from "../src/actors/org/work.js";
+import orgReviewSchema from "../src/actors/org/review.v1.json" with { type: "json" };
 import sdkReviewSchema from "../../../sdks/typescript/schema/review.v1.json" with { type: "json" };
 
 /** Org's mutations (spec 19.2, 39), on a real Durable Object's storage. */

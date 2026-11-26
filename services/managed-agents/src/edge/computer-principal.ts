@@ -11,8 +11,8 @@
  * in the assertion as `oc_principal`, checked here; the one principal every route reads.
  */
 
-import type { Principal } from "../actor/principal.js";
-import { API_SCOPES } from "../computer/api-types.js";
+import type { Principal } from "../auth/principal.js";
+import { API_SCOPES } from "../api-objects/objects.js";
 
 export const COMPUTER_PRINCIPAL = "computer";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { branchName, checkChoice, listGranted, repositoriesQuery, repositoryChoice, type TokenMinter } from "../src/org/repository.js";
+import { branchName, checkChoice, listGranted, repositoriesQuery, repositoryChoice, type TokenMinter } from "../src/actors/org/repository.js";
 
 /** The knowledge repository setting and the picker (spec 37, 43), against a fake GitHub. */
 

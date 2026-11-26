@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hmacSha256Hex } from "../src/edge/runtime-usage.js";
-import { COMPUTER_KEYS_PATH, mintOpenComputerKey } from "../src/computer/opencomputer-key.js";
+import { COMPUTER_KEYS_PATH, mintOpenComputerKey } from "../src/actors/computer/held-for-org/keys/opencomputer-key.js";
 
 const SESSION = "cs_0123456789abcdef";
 const env = { OPENCOMPUTER_APP_URL: "https://app.example.dev/", OC_MANAGED_CRED_HMAC_SECRET: "secret" };

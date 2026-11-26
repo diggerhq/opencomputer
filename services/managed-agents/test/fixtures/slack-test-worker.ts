@@ -3,9 +3,12 @@
 
 import { DurableObject } from "cloudflare:workers";
 
-import type { AcceptResult, MutateReply, Principal, SlackCarry } from "../../src/actor/contracts.js";
+import type { AcceptResult } from "../../src/actors/session-log/contract.js";
+import type { MutateReply } from "../../src/actors/org/contract.js";
+import type { Principal } from "../../src/auth/principal.js";
+import type { SlackCarry } from "../../src/actors/computer/contract.js";
 
-export { SlackDurableObject } from "../../src/slack/durable-object.js";
+export { SlackDurableObject } from "../../src/actors/slack/durable-object.js";
 
 export type Call = { method: string; args: unknown[] };
 
