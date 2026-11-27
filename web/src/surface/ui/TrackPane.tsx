@@ -266,7 +266,9 @@ function Activity({ track }: { track: TrackView }) {
       <Composer
         draftKey={`k:${tid}`}
         placeholder="Message this track…"
-        onSend={(text) => surface.send(track.agentSession, text)}
+        onSend={(text, e) =>
+          surface.send(track.agentSession, text, { now: e.meta })
+        }
         onAttach={(text, files) => surface.sendWithFiles(track.agentSession, text, files)}
         className={COMPOSER}
         tools={
