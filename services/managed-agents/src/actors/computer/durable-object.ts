@@ -983,6 +983,10 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     return { settings, people, links };
   }
 
+  async slackThreadRan(key: string): Promise<boolean> {
+    return this.api.rowByKey(key)?.originType === "slack";
+  }
+
   async accessCarry(): Promise<AccessCarry> {
     const accessDefault = this.setting(ACCESS_DEFAULT_SETTING);
     const apiAccessDefault = this.setting("apiAccessDefault");

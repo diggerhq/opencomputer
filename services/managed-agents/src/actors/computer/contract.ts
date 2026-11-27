@@ -58,6 +58,8 @@ export interface ComputerRpc {
   ): Promise<{ reply: string; member?: string }>;
   /** Once: spec 43.1. */
   slackCarry(): Promise<SlackCarry>;
+  /** Whether this Computer ran the Slack thread `key` (`team:channel:ts`) before the Slack actor knew it: a thread from before tracks and threads. */
+  slackThreadRan(key: string): Promise<boolean>;
   /**
    * An interaction whose state is Computer's (secret, variable, connection and
    * subscription modals and their buttons: a `view_submission`, `s:`, `cn:`, `v:`, `mc:connect`,
