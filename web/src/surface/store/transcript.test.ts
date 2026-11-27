@@ -29,12 +29,40 @@ describe('work', () => {
     expect(items[2]).toMatchObject({ text: 'Found it.' })
   })
 
-  it('a running turn folds a passing message into its work once the agent works on', () => {
+  it('a running turn keeps its latest message in view while the agent works on', () => {
     const items = buildTranscript(running())
-    expect(items.map((i) => i.kind)).toEqual(['user', 'work'])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(items[2]).toMatchObject({ text: 'Found it.' })
     const [w] = works(items)
     expect(w.settled).toBe(false)
-    expect(w.entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'text', 'step'])
+    expect(w.entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'step'])
+  })
+
+  it('a new message takes its predecessor’s place, which folds into the work', () => {
+    const items = buildTranscript([...running(), ev('message.completed', 't1', { text: 'Editing now.' })])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(items[2]).toMatchObject({ text: 'Editing now.' })
+    expect(works(items)[0].entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'text', 'step'])
+  })
+
+  it('the reply being written is the answer from its first token, and keeps its key when complete', () => {
+    const base = running().slice(0, 5)
+    const open = { turnId: 't1', blockId: 'b9', type: 'text', text: 'The cause' }
+    const streaming = buildTranscript(base, undefined, open)
+    expect(streaming.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(streaming[2]).toMatchObject({ key: 'b9', text: 'The cause', streaming: true })
+    const done = buildTranscript([...base, ev('message.completed', 't1', { blockId: 'b9', text: 'The cause is X.' })], undefined, null)
+    expect(done[2]).toMatchObject({ key: 'b9', text: 'The cause is X.' })
+    expect(done[2]).not.toHaveProperty('streaming', true)
+    // The work line keeps its key too.
+    expect(done[1].key).toBe(streaming[1].key)
+  })
+
+  it('a running turn reserves its work line from the start; an ended turn without work drops it', () => {
+    const started = [ev('message.received', 't8', { input: 'Hi' }), ev('turn.started', 't8')]
+    expect(buildTranscript(started).map((i) => i.kind)).toEqual(['user', 'work'])
+    const ended = buildTranscript([...started, ev('message.completed', 't8', { text: 'Hello.' }), ev('turn.completed', 't8')])
+    expect(ended.map((i) => i.kind)).toEqual(['user', 'agent'])
   })
 
   it('an ended turn folds thinking, steps and passing messages into one line before its answer', () => {
