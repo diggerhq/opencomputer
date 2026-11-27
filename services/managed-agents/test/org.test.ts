@@ -243,6 +243,25 @@ describe("Org: session access (spec 36.2)", () => {
     );
   });
 
+  it("moves a person's Slack sessions, their writers and tracks to the member they are linked to", async () => {
+    await withActor("link-person", async (org, _f, sql) => {
+      const name = "link-person";
+      const raw = "user_01KAW3QZ8N9Y5C7D2E4F6G8H0J";
+      const slack = slackMember(raw, name);
+      await org.createSession(slack, { id: "cs_0000000000000045", origin: slackOrigin, writers: [`user:${raw}`, "user:usr_b"] });
+      await org.mutate(slack, { name: "track.create", args: { tid: "trk_0045", agentSessionId: "cs_0000000000000046", name: "Linked", sid: "cs_0000000000000045" } });
+      const me = member("usr_01kaw3qz8n9y5c7d2e4f6g8h0j", name);
+      expect((await org.threads(me, {})).rows.filter((r) => r.kind === "session")).toEqual([]);
+
+      await org.linkPerson(raw, me.subject);
+      expect(sql.exec("SELECT owner, writers, audience FROM session WHERE id = 'cs_0000000000000045'")).toEqual([
+        { owner: me.subject, writers: JSON.stringify([`user:${me.subject}`, "user:usr_b"]), audience: `member:${me.subject}` },
+      ]);
+      expect(sql.exec("SELECT owner, audience FROM track WHERE id = 'trk_0045'")).toEqual([{ owner: me.subject, audience: `member:${me.subject}` }]);
+      expect((await org.threads(me, { trackId: "trk_0045" })).rows.filter((r) => r.kind === "session").map((r) => r.id)).toEqual(["cs_0000000000000045"]);
+    });
+  });
+
   it("lets only an admin change the Slack default, a Slack principal named by Org's admins too", async () => {
     await withActor("access-slack-default", async (org, _f, sql) => {
       const name = "access-slack-default";
