@@ -229,6 +229,7 @@ export function ThreadPane({ sid }: { sid: string }) {
   const [confirm, dialog] = useConfirm()
   const missing = useS((s) => s.missing[sid] === true)
   const unopened = useS((s) => s.unopened[sid] === true)
+  const me = useS((s) => s.me)
 
   if (!thread && missing)
     return (
@@ -258,6 +259,8 @@ export function ThreadPane({ sid }: { sid: string }) {
   if (!thread) return <div className={IN} data-pane="thread" />
 
   const status = thread.session.status
+  // A thread opened by link may be someone else's: say whose.
+  const owner = thread.session.owner.id === me ? null : thread.session.owner.name
   const slack = thread.session.origin.slack
   const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
@@ -358,6 +361,7 @@ export function ThreadPane({ sid }: { sid: string }) {
           ) : (
             ''
           )}
+          {owner && (thread.done || thread.waiting || (track && layout === 'L3') ? ` · ${owner}` : owner)}
         </span>
         <span className="flex-1" />
         {slack?.url && (
