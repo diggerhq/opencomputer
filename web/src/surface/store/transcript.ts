@@ -9,17 +9,19 @@ const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
 
 export type Item =
   | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
-  | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
-  // A turn's steps, where its first step was: listed while the turn runs,
-  // folded into one line once it has ended (the settled pattern).
-  | { kind: 'steps'; key: string; steps: Step[]; settled: boolean; at: string }
+  | { kind: 'agent'; key: string; text: string; at: string }
+  // A turn's work: its steps, thinking and passing messages, in order. Listed
+  // while the turn runs; once it has ended, everything before its last
+  // message folds into this one line (the settled pattern).
+  | { kind: 'work'; key: string; entries: Entry[]; settled: boolean; ms: number | null; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
-  // The agent's thinking, folded like a finished turn's steps; `text` is empty when the model hid it.
-  | { kind: 'thinking'; key: string; text: string; ms: number | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
 
-export type Step = { key: string; title: string; status: 'running' | 'done' | 'failed' }
+export type Step = { kind: 'step'; key: string; title: string; status: 'running' | 'done' | 'failed' }
+
+// `text` of thinking is empty when the model hid it.
+export type Entry = Step | { kind: 'thinking'; key: string; text: string; ms: number | null } | { kind: 'text'; key: string; text: string }
 
 export type OpenBlock = { blockId: string; type: string; turnId: string; text: string }
 
@@ -30,24 +32,63 @@ const withoutSlackHeader = (text: string | null): string | null =>
 
 // `me`: the person looking; their own messages carry no name.
 export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[] {
-  const items: Item[] = []
+  let items: Item[] = []
   const steps = new Map<string, Step>()
-  type Group = Extract<Item, { kind: 'steps' }>
-  // Each turn's runs of steps, in order.
-  const turns = new Map<string, Group[]>()
+  type Work = Extract<Item, { kind: 'work' }>
+  type Agent = Extract<Item, { kind: 'agent' }>
+  // Each turn's work and messages, which fold when it ends, and when it began.
+  const turns = new Map<string, { items: (Work | Agent)[]; began: string; settled: boolean }>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
-  // A turn that has ended: its steps fold, and one still running is not.
-  const settle = (turnId: string | null | undefined) => {
-    const runs = turns.get(turnId ?? '')
-    if (!runs?.length || runs[0].settled) return
-    const [first, ...rest] = runs
-    first.settled = true
-    for (const r of rest) {
-      first.steps.push(...r.steps)
-      items.splice(items.indexOf(r), 1)
+  const turnOf = (e: ApiEvent) => {
+    const id = e.turnId ?? ''
+    let t = turns.get(id)
+    if (!t) turns.set(id, (t = { items: [], began: e.createdAt, settled: false }))
+    return t
+  }
+  // The turn's open work item: the last item, if it is this turn's; else a new one.
+  const work = (e: ApiEvent, key: string): Work => {
+    const t = turnOf(e)
+    const last = items[items.length - 1]
+    if (last?.kind === 'work' && t.items.includes(last)) return last
+    const w: Work = { kind: 'work', key, entries: [], settled: t.settled, ms: null, at: e.createdAt }
+    t.items.push(w)
+    items.push(w)
+    return w
+  }
+  // A turn that has ended. Each unbroken run of its work and messages folds into
+  // one work item, except the run's last message, which stays: the answer, or
+  // what the agent said before it asked.
+  const settle = (turnId: string | null | undefined, at: string) => {
+    const t = turns.get(turnId ?? '')
+    if (!t || t.settled) return
+    t.settled = true
+    const mine = new Set<Item>(t.items)
+    const out: Item[] = []
+    let first = true
+    for (let i = 0; i < items.length; ) {
+      if (!mine.has(items[i])) {
+        out.push(items[i++])
+        continue
+      }
+      let j = i
+      while (j < items.length && mine.has(items[j])) j++
+      const run = items.slice(i, j) as (Work | Agent)[]
+      const kept = run[run.length - 1].kind === 'agent' ? (run.pop() as Agent) : null
+      const head = run.find((r): r is Work => r.kind === 'work')
+      if (head) {
+        head.entries = run.flatMap((r) => (r.kind === 'work' ? r.entries : [{ kind: 'text' as const, key: r.key, text: r.text }]))
+        head.settled = true
+        for (const en of head.entries) if (en.kind === 'step' && en.status === 'running') en.status = 'done'
+        const end = kept?.at ?? items[j]?.at ?? at
+        head.ms = Date.parse(end) - Date.parse(first ? t.began : run[0].at)
+        head.at = run[0].at
+        out.push(head)
+      } else out.push(...run)
+      if (kept) out.push(kept)
+      first = false
+      i = j
     }
-    turns.set(turnId ?? '', [first])
-    for (const st of first.steps) if (st.status === 'running') st.status = 'done'
+    items = out
   }
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>
@@ -75,7 +116,10 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       case 'message.completed': {
         if (d.parentCallId) break
         const text = str(d.text)
-        if (text) items.push({ kind: 'agent', key: e.id, text, at: e.createdAt })
+        if (!text) break
+        const item: Agent = { kind: 'agent', key: e.id, text, at: e.createdAt }
+        items.push(item)
+        if (e.turnId) turnOf(e).items.push(item)
         break
       }
       case 'tool.started':
@@ -89,18 +133,9 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
           have.status = status
           break
         }
-        const step: Step = { key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
+        const step: Step = { kind: 'step', key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
         steps.set(callId, step)
-        const turn = e.turnId ?? ''
-        const runs = turns.get(turn) ?? []
-        const last = runs[runs.length - 1]
-        if (last && runs[0].settled) runs[0].steps.push(step)
-        else if (last && items[items.length - 1] === last) last.steps.push(step)
-        else {
-          const g: Group = { kind: 'steps', key: `steps-${callId}`, steps: [step], settled: false, at: e.createdAt }
-          turns.set(turn, [...runs, g])
-          items.push(g)
-        }
+        work(e, `work-${callId}`).entries.push(step)
         break
       }
       case 'ask.opened':
@@ -118,7 +153,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       }
       case 'reasoning.completed': {
         if (d.parentCallId) break
-        items.push({ kind: 'thinking', key: e.id, text: str(d.text) ?? '', ms: typeof d.durationMs === 'number' ? d.durationMs : null, at: e.createdAt })
+        work(e, `work-${e.id}`).entries.push({ kind: 'thinking', key: e.id, text: str(d.text) ?? '', ms: typeof d.durationMs === 'number' ? d.durationMs : null })
         break
       }
       case 'session.compacted':
@@ -130,19 +165,20 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         break
       }
       case 'turn.failed': {
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         const err = d.error as { message?: unknown } | undefined
         items.push({ kind: 'line', key: e.id, text: str(err?.message) ?? 'The turn failed.', tone: 'error', at: e.createdAt })
         break
       }
       case 'turn.cancelled':
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
         break
       case 'turn.completed':
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         break
       case 'turn.started':
+        turnOf(e).began = e.createdAt
         break
     }
   }

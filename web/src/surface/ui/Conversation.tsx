@@ -16,7 +16,12 @@ import {
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { useConversation, useSurface } from '../hooks'
-import type { Item, Step } from '../store/transcript'
+import {
+  formatDuration,
+  type Entry,
+  type Item,
+  type Step,
+} from '../store/transcript'
 import { AskBlock } from './AskBlock'
 import { I } from './icons'
 import { Mk } from './Mark'
@@ -123,13 +128,16 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
   )
 }
 
-// ---- steps: listed while the turn runs, one line once it has ended ----
+// ---- a turn's work: one line, open to see its steps, thinking and messages ----
+
+const FOLD =
+  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[12.5px] outline-none'
 
 function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground flex max-w-180 items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground flex items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
         step.status === 'failed' && WARN,
       )}
     >
@@ -140,7 +148,7 @@ function StepLine({ step }: { step: Step }) {
       ) : (
         <span>×</span>
       )}
-      <span>
+      <span className="min-w-0">
         <Rich text={step.title} />
         {step.status === 'failed' ? ' · failed' : ''}
       </span>
@@ -148,48 +156,80 @@ function StepLine({ step }: { step: Step }) {
   )
 }
 
-function Steps({ item }: { item: Extract<Item, { kind: 'steps' }> }) {
-  const lines = (
-    <div className="flex flex-col gap-1.5">
-      {item.steps.map((st) => (
-        <StepLine key={st.key} step={st} />
-      ))}
-    </div>
-  )
-  if (!item.settled) return lines
-  const n = item.steps.length
-  const failed = item.steps.filter((st) => st.status === 'failed').length
+const seconds = (ms: number) => `${Math.max(1, Math.round(ms / 1000))}s`
+
+function EntryView({ entry }: { entry: Entry }) {
+  if (entry.kind === 'step') return <StepLine step={entry} />
+  if (entry.kind === 'text')
+    return (
+      <div className="text-foreground/85 text-[13px]">
+        <Rich text={entry.text} />
+      </div>
+    )
+  // Thinking the model hid has nothing to show but its length.
   return (
-    <Collapsible className="-my-1 max-w-180">
-      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex items-center gap-1 rounded-sm text-[12.5px] outline-none">
-        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-        Ran {n} {n === 1 ? 'step' : 'steps'}
-        {failed > 0 && <span className={WARN}>· {failed} failed</span>}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-1.5 ml-1.5 border-l pl-3">
-        {lines}
-      </CollapsibleContent>
-    </Collapsible>
+    <div className="text-muted-foreground text-[12.5px] italic">
+      {entry.text ? (
+        <Rich text={entry.text} />
+      ) : (
+        `Thought${entry.ms === null ? '' : ` for ${seconds(entry.ms)}`}`
+      )}
+    </div>
   )
 }
 
-// The agent's thinking: one folded line, like a finished turn's steps.
-function Thinking({ item }: { item: Extract<Item, { kind: 'thinking' }> }) {
-  const label =
-    item.ms === null
-      ? 'Thought'
-      : `Thought for ${Math.max(1, Math.round(item.ms / 1000))}s`
-  // Thinking the model hid has nothing to unfold.
-  if (!item.text)
-    return <div className="text-muted-foreground text-[12.5px]">{label}</div>
+// What the line says: once settled, how long the turn worked; while running,
+// what it is doing now.
+function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
+  const n = item.entries.filter((en) => en.kind === 'step').length
+  const counted = n > 1 ? ` · ${n} steps` : ''
+  if (item.settled) {
+    if (item.ms !== null && item.ms >= 1000)
+      return `Worked for ${formatDuration(item.ms)}`
+    return n ? `Ran ${n} ${n === 1 ? 'step' : 'steps'}` : 'Thought'
+  }
+  const now = item.entries[item.entries.length - 1]
+  return (
+    <>
+      <span className="truncate">
+        {now?.kind === 'step' ? (
+          <Rich text={now.title} />
+        ) : now?.kind === 'thinking' && now.ms !== null ? (
+          `Thought for ${seconds(now.ms)}`
+        ) : (
+          'Thought'
+        )}
+      </span>
+      <span className="flex-none">{counted}</span>
+    </>
+  )
+}
+
+function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
+  const failed = item.entries.filter(
+    (en) => en.kind === 'step' && en.status === 'failed',
+  ).length
+  // The spinner is for a step running now, not for a turn that is waiting.
+  const last = item.entries[item.entries.length - 1]
+  const running =
+    !item.settled && last?.kind === 'step' && last.status === 'running'
   return (
     <Collapsible className="-my-1 max-w-180">
-      <CollapsibleTrigger className="group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex items-center gap-1 rounded-sm text-[12.5px] outline-none">
-        <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-        {label}
+      <CollapsibleTrigger className={FOLD}>
+        {running ? (
+          <Mk mark="working" small />
+        ) : (
+          <ChevronRight className="size-3.5 flex-none transition-transform group-data-[state=open]:rotate-90" />
+        )}
+        {workLabel(item)}
+        {failed > 0 && (
+          <span className={cn(WARN, 'flex-none')}>· {failed} failed</span>
+        )}
       </CollapsibleTrigger>
-      <CollapsibleContent className="text-muted-foreground mt-1.5 ml-1.5 border-l pl-3">
-        <Rich text={item.text} />
+      <CollapsibleContent className="mt-1.5 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+        {item.entries.map((en) => (
+          <EntryView key={en.key} entry={en} />
+        ))}
       </CollapsibleContent>
     </Collapsible>
   )
@@ -238,10 +278,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
           <Rich text={item.text} />
         </div>
       )
-    case 'steps':
-      return <Steps item={item} />
-    case 'thinking':
-      return <Thinking item={item} />
+    case 'work':
+      return <Work item={item} />
     case 'ask':
       return <AskBlock ask={item.ask} />
     case 'line':
