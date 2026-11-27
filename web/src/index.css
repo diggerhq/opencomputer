@@ -48,11 +48,14 @@
   --font-heading: var(--font-sans);
 
   /* Type sizes beyond Tailwind's scale. reading: agent replies and the
-     person's messages in a thread, read for long stretches. mono: code at
-     that size, a step under it. (Register new names in lib/utils.ts too.) */
+     person's messages in a thread, read for long stretches. meta: secondary
+     lines, folds and small controls, between xs and sm. mono: code at the
+     reading size, a step under it. (Register new names in lib/utils.ts.) */
   --text-reading: 15px;
   --text-reading--line-height: 24px;
   --text-reading--letter-spacing: -0.005em;
+  --text-meta: 13px;
+  --text-meta--line-height: 20px;
   --text-mono: 13px;
   --text-mono--line-height: 21px;
 

@@ -21,8 +21,8 @@ const ROW =
   'group/row relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors hover:bg-row-hover focus-visible:bg-row-hover data-sel:bg-row-selected'
 const SEC = 'text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium'
 const FOLD =
-  'text-muted-foreground/80 hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-[12.5px] outline-none focus-visible:bg-row-hover'
-const WH = 'text-muted-foreground/70 flex-none text-xs tabular-nums'
+  'text-faint hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-meta outline-none focus-visible:bg-row-hover'
+const WH = 'text-faint flex-none text-xs tabular-nums'
 
 function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
   const surface = useSurface()
@@ -159,7 +159,7 @@ function TrackRow({ k }: { k: TrackView }) {
         variant="ghost"
         size="icon-xs"
         className={cn(
-          'text-muted-foreground/80 transition-[opacity,transform]',
+          'text-faint transition-[opacity,transform]',
           open
             ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100'
             : '-rotate-90',
@@ -305,7 +305,7 @@ export function List() {
     return (
       <div className="flex-1 px-4 pt-3" data-slot="surface-list">
         {synced ? (
-          <p className="text-muted-foreground text-[13px]">Nothing here yet.</p>
+          <p className="text-muted-foreground text-meta">Nothing here yet.</p>
         ) : (
           // Held rows are drawn at once; this is only a first visit.
           <div className="space-y-2 pt-1" aria-label="Loading">

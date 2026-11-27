@@ -253,20 +253,10 @@ function Pm({
 }) {
   return (
     <>
-      <span
-        className={cn(
-          add ? 'text-status-running' : 'text-muted-foreground/70',
-          a,
-        )}
-      >
+      <span className={cn(add ? 'text-status-running' : 'text-faint', a)}>
         +{nf(add)}
       </span>
-      <span
-        className={cn(
-          del ? 'text-status-error' : 'text-muted-foreground/70',
-          d,
-        )}
-      >
+      <span className={cn(del ? 'text-status-error' : 'text-faint', d)}>
         −{nf(del)}
       </span>
     </>
@@ -274,8 +264,7 @@ function Pm({
 }
 
 // A part's number.
-const ON_N =
-  'text-muted-foreground/70 w-4 flex-none pt-0.5 font-mono text-[11px] font-semibold'
+const ON_N = 'text-faint w-4 flex-none pt-0.5 font-mono text-xs font-semibold'
 
 // Text that keeps the end of a path when it is cut.
 const PATH =
@@ -369,9 +358,7 @@ function FileSnip({
           {'‎'}
           {file.path}
         </span>
-        {file.tag && (
-          <span className="text-muted-foreground/70 flex-none">{file.tag}</span>
-        )}
+        {file.tag && <span className="text-faint flex-none">{file.tag}</span>}
         <Pm add={file.add} del={file.del} a="ml-auto" />
       </button>
       {file.meta.hunks.length > 0 ? (
@@ -386,7 +373,7 @@ function FileSnip({
           variant="ghost"
           size="sm"
           className={cn(
-            'text-muted-foreground w-full justify-start gap-2 rounded-none border-t px-3 text-[12.5px] font-normal [&_svg]:transition-transform',
+            'text-muted-foreground text-meta w-full justify-start gap-2 rounded-none border-t px-3 font-normal [&_svg]:transition-transform',
             !all && '[&_svg]:-rotate-90',
           )}
           onClick={() => setAll(!all)}
@@ -421,7 +408,7 @@ function PartFiles({
         <Button
           variant="ghost"
           size="sm"
-          className="text-muted-foreground gap-2 px-2 text-[12.5px] font-normal [&_svg]:-rotate-90"
+          className="text-muted-foreground text-meta gap-2 px-2 font-normal [&_svg]:-rotate-90"
           onClick={() => setAll(true)}
         >
           {I.chev}
@@ -476,12 +463,12 @@ function ExcerptCard({
       >
         <span className="flex w-full gap-2.5 font-mono tabular-nums">
           <PathText path={x.path} />
-          <span className="text-muted-foreground/70 ml-auto flex-none">
+          <span className="text-faint ml-auto flex-none">
             {x.side === 'old' ? `${where} before` : where}
           </span>
         </span>
         {x.why && (
-          <span className="text-foreground text-[12.5px]">
+          <span className="text-foreground text-meta">
             <Rich text={x.why} />
           </span>
         )}
@@ -524,15 +511,11 @@ function FileList({
           >
             <span className="text-muted-foreground flex w-full gap-2.5 font-mono text-xs tabular-nums">
               <PathText path={f.path} />
-              {f.tag && (
-                <span className="text-muted-foreground/70 flex-none">
-                  {f.tag}
-                </span>
-              )}
+              {f.tag && <span className="text-faint flex-none">{f.tag}</span>}
               <Pm add={f.add} del={f.del} a="ml-auto" />
             </span>
             {note && (
-              <span className="text-[12.5px] leading-[1.5]">
+              <span className="text-meta leading-normal">
                 <Rich text={note} />
               </span>
             )}
@@ -543,7 +526,7 @@ function FileList({
         <Button
           variant="ghost"
           size="sm"
-          className="text-muted-foreground w-full justify-start gap-2 rounded-none px-3 text-[12.5px] font-normal [&_svg]:-rotate-90"
+          className="text-muted-foreground text-meta w-full justify-start gap-2 rounded-none px-3 font-normal [&_svg]:-rotate-90"
           onClick={() => setAll(true)}
         >
           {I.chev}
@@ -621,7 +604,7 @@ function Summary({
           {parts.map((p, i) => (
             <button
               className={cn(
-                'focus-visible:bg-accent active:bg-row-selected flex w-full gap-2 rounded-md p-2 text-left leading-[1.35] transition-colors outline-none',
+                'focus-visible:bg-accent active:bg-row-selected flex w-full gap-2 rounded-md p-2 text-left leading-snug transition-colors outline-none',
                 i === cur
                   ? 'bg-row-selected text-foreground'
                   : 'text-muted-foreground hover:bg-accent',
@@ -660,7 +643,7 @@ function Summary({
       <Pane scrollerRef={scroller} onScroll={act}>
         <article className="mx-auto max-w-[860px] px-8 pt-10 pb-[40vh] max-[700px]:px-4 max-[700px]:pt-6">
           {review ? (
-            <h2 className="mb-3 text-[22px] leading-[1.35] font-[650] tracking-[-0.015em] text-balance">
+            <h2 className="mb-3 text-2xl leading-snug font-semibold tracking-tight text-balance">
               <Rich text={heading} />
             </h2>
           ) : (
@@ -672,7 +655,7 @@ function Summary({
           )}
           {eyes.length > 0 && (
             <div className="bg-status-pending-bg ring-status-pending/25 mb-2 rounded-[10px] px-4 py-3 ring-1 ring-inset">
-              <b className="font-[650]">
+              <b className="font-semibold">
                 {eyes.length === 1 ? 'One thing' : `${eyes.length} things`}{' '}
                 worth your eye
               </b>
@@ -687,14 +670,14 @@ function Summary({
                   <span className="min-w-0 flex-1">
                     <Rich text={e.text} />
                     {e.path && (
-                      <span className="text-muted-foreground ml-2 font-mono text-[11.5px] whitespace-nowrap">
+                      <span className="text-muted-foreground ml-2 font-mono text-xs whitespace-nowrap">
                         {e.path}
                         {e.line ? `:${e.line}` : ''}
                       </span>
                     )}
                   </span>
                   {named && (
-                    <span className="text-muted-foreground/70 flex-none font-mono text-[11px]">
+                    <span className="text-faint flex-none font-mono text-xs">
                       {i + 1}
                     </span>
                   )}
@@ -715,16 +698,14 @@ function Summary({
                 <>
                   <div className="flex items-baseline gap-2">
                     <span className={cn(ON_N, 'text-xs')}>{i + 1}</span>
-                    <h3 className="text-[17px] font-[650] tracking-[-0.01em]">
-                      {p.title}
-                    </h3>
+                    <h3 className="text-lg font-semibold">{p.title}</h3>
                     {p.eye.length > 0 && (
-                      <span className="text-status-pending flex-none text-[11.5px] whitespace-nowrap">
+                      <span className="text-status-pending flex-none text-xs whitespace-nowrap">
                         worth your eye
                       </span>
                     )}
                   </div>
-                  <div className="text-muted-foreground mt-1 mb-3 ml-6 text-[12.5px] tabular-nums">
+                  <div className="text-muted-foreground text-meta mt-1 mb-3 ml-6 tabular-nums">
                     {filesWord(p.files.length || p.listed)}
                     {p.files.length > 0 && (
                       <>
@@ -737,12 +718,12 @@ function Summary({
                     )}
                   </div>
                   {p.claim && (
-                    <div className="mb-3 ml-6 max-w-[620px] leading-[1.6] text-pretty">
+                    <div className="mb-3 ml-6 max-w-[620px] leading-relaxed text-pretty">
                       <Rich text={p.claim} />
                     </div>
                   )}
                   {p.points.length > 0 && (
-                    <ul className="mb-4 ml-6 max-w-[620px] list-disc space-y-1 pl-5 leading-[1.55] text-pretty">
+                    <ul className="mb-4 ml-6 max-w-[620px] list-disc space-y-1 pl-5 leading-relaxed text-pretty">
                       {p.points.map((t, k) => (
                         <li key={k}>
                           <Rich text={t} />
@@ -866,7 +847,7 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
         {parts.map((p, i) => (
           <div key={i}>
             {p.title && (
-              <div className="bg-sidebar sticky top-0 z-1 flex gap-2 pt-4 pb-1.5 text-[12.5px] leading-[1.35] font-[650]">
+              <div className="bg-sidebar text-meta sticky top-0 z-1 flex gap-2 pt-4 pb-1.5 leading-snug font-semibold">
                 <span className={ON_N}>{i + 1}</span>
                 {p.title}
               </div>
@@ -883,7 +864,7 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
                 key={f.path}
                 onClick={() => go(f.path)}
               >
-                <span className="text-muted-foreground flex gap-2 font-mono text-[11.5px] tabular-nums">
+                <span className="text-muted-foreground flex gap-2 font-mono text-xs tabular-nums">
                   <span className={cn(PATH, 'flex-1')}>
                     {'‎'}
                     {f.path}
@@ -905,7 +886,7 @@ function Full({ parts, resultId }: { parts: Part[]; resultId: string }) {
           {parts.map((p, i) => [
             p.title && (
               <div
-                className="mt-6 mb-1 text-[15px] font-[650] first:mt-0"
+                className="text-reading mt-6 mb-1 font-semibold first:mt-0"
                 data-part={i}
                 key={`h${i}`}
               >
@@ -963,7 +944,7 @@ function Head({
       <Button
         variant="ghost"
         size="sm"
-        className="text-muted-foreground -ml-2 min-w-0 gap-1.5 text-[12.5px] font-normal"
+        className="text-muted-foreground text-meta -ml-2 min-w-0 gap-1.5 font-normal"
         onClick={() => surface.closeResult()}
       >
         {I.back}
@@ -979,11 +960,11 @@ const isHttp = (ref: string) => /^https?:\/\//.test(ref)
 
 // The header's pieces.
 const SUB =
-  'text-muted-foreground min-w-0 overflow-hidden text-[12.5px] text-ellipsis select-text max-[700px]:hidden'
+  'text-muted-foreground min-w-0 overflow-hidden text-meta text-ellipsis select-text max-[700px]:hidden'
 const SEG =
-  'text-muted-foreground h-6 gap-1.5 rounded-sm px-2.5 text-[12.5px] font-normal hover:bg-transparent hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm'
+  'text-muted-foreground h-6 gap-1.5 rounded-sm px-2.5 text-meta font-normal hover:bg-transparent hover:text-foreground data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-sm'
 // The last button keeps 8px from the edge, but not on a phone.
-const BTN = 'text-[12.5px] last:mr-2 max-[700px]:last:mr-0'
+const BTN = 'text-meta last:mr-2 max-[700px]:last:mr-0'
 
 function Changes({ result }: { result: ResultRow }) {
   const surface = useSurface()
@@ -1094,10 +1075,10 @@ function Site({ result }: { result: ResultRow }) {
     <>
       <Head back={thread?.title}>
         <span className="flex-1" />
-        <div className="bg-accent text-muted-foreground [&_svg]:text-muted-foreground/70 flex h-7 min-w-[180px] flex-[0_1_340px] items-center gap-2 rounded-md px-3 text-[12.5px] [&_svg]:flex-none">
+        <div className="bg-accent text-muted-foreground [&_svg]:text-faint text-meta flex h-7 min-w-[180px] flex-[0_1_340px] items-center gap-2 rounded-md px-3 [&_svg]:flex-none">
           {I.globe}
           <span className="text-foreground truncate select-text">
-            <i className="text-muted-foreground/70 not-italic">{scheme}</i>
+            <i className="text-faint not-italic">{scheme}</i>
             {rest}
           </span>
         </div>

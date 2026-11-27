@@ -80,7 +80,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground flex max-w-180 items-center gap-2 text-[12.5px]',
+        'text-muted-foreground text-meta flex max-w-180 items-center gap-2',
         item.tone === 'error' && WARN,
       )}
     >
@@ -120,7 +120,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
         {item.undone && (
           <>
             {' · '}
-            <s className="text-muted-foreground/70">Undo</s>
+            <s className="text-faint">Undo</s>
           </>
         )}
       </span>
@@ -131,13 +131,13 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 // ---- a turn's work: one line, open to see its steps, thinking and messages ----
 
 const FOLD =
-  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[12.5px] outline-none'
+  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
 function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground flex items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground text-meta flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
         step.status === 'failed' && WARN,
       )}
     >
@@ -162,13 +162,13 @@ function EntryView({ entry }: { entry: Entry }) {
   if (entry.kind === 'step') return <StepLine step={entry} />
   if (entry.kind === 'text')
     return (
-      <div className="text-foreground/85 text-[13px]">
+      <div className="text-foreground/85 text-meta">
         <Rich text={entry.text} />
       </div>
     )
   // Thinking the model hid has nothing to show but its length.
   return (
-    <div className="text-muted-foreground text-[12.5px] italic">
+    <div className="text-muted-foreground text-meta italic">
       {entry.text ? (
         <Rich text={entry.text} />
       ) : (
@@ -281,7 +281,7 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       {progress.length > 0 && (
         <div
           className={cn(
-            'text-muted-foreground mt-0.5 truncate pl-5 text-[12px] tabular-nums',
+            'text-muted-foreground mt-0.5 truncate pl-5 text-xs tabular-nums',
             sub.status === 'failed' && WARN,
           )}
         >
@@ -293,14 +293,12 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
           <StepLine key={st.key} step={st} />
         ))}
         {!steps.length && !answer && (
-          <div className="text-muted-foreground text-[12.5px]">
-            No steps yet
-          </div>
+          <div className="text-muted-foreground text-meta">No steps yet</div>
         )}
         {answer && (
           <div
             className={cn(
-              'text-foreground/85 max-h-60 overflow-y-auto text-[13px]',
+              'text-foreground/85 text-meta max-h-60 overflow-y-auto',
               sub.error && WARN,
             )}
           >
@@ -376,7 +374,7 @@ type Row = { key: string; day?: string; item?: Item }
 
 function DayLine({ at }: { at: string }) {
   return (
-    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
+    <div className="text-faint after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
       {dayLabel(at)}
     </div>
   )

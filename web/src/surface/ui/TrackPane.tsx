@@ -131,7 +131,7 @@ export function TrackPane({ tid }: { tid: string }) {
           </h1>
         )}
         {track.done && (
-          <span className="text-muted-foreground inline-flex items-center gap-1 text-[13px]">
+          <span className="text-muted-foreground text-meta inline-flex items-center gap-1">
             {I.check}done
           </span>
         )}
@@ -194,7 +194,7 @@ function Activity({ track }: { track: TrackView }) {
           ))}
           {track.earlier > 0 && (
             <button
-              className="text-muted-foreground/80 hover:text-muted-foreground self-start pt-1 pb-2 text-left text-[12.5px] outline-none focus-visible:underline"
+              className="text-faint hover:text-muted-foreground text-meta self-start pt-1 pb-2 text-left outline-none focus-visible:underline"
               aria-expanded={earlierOpen}
               onClick={() => surface.toggleEarlier(tid)}
             >
@@ -208,7 +208,7 @@ function Activity({ track }: { track: TrackView }) {
                   key={t.id}
                   className={cn(
                     ROW,
-                    'text-muted-foreground hover:text-foreground -mx-2 flex h-6.5 items-baseline gap-2 px-2 text-left text-[12.5px]',
+                    'text-muted-foreground hover:text-foreground text-meta -mx-2 flex h-6.5 items-baseline gap-2 px-2 text-left',
                   )}
                   onClick={() => surface.openThread(t.id)}
                 >
@@ -216,7 +216,7 @@ function Activity({ track }: { track: TrackView }) {
                     {t.title}
                   </span>
                   {t.outcome && (
-                    <small className="text-muted-foreground/70 min-w-0 truncate text-[11.5px]">
+                    <small className="text-faint min-w-0 truncate text-xs">
                       {t.outcome}
                     </small>
                   )}
@@ -349,11 +349,11 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
           {t.word}
         </span>
       </div>
-      <div className="text-muted-foreground mt-1 line-clamp-2 text-[12.5px]">
+      <div className="text-muted-foreground text-meta mt-1 line-clamp-2">
         {t.line ?? 'Just started'}
       </div>
       {ask && (question !== t.line || opts.length > 0) && (
-        <div className="mt-2 text-[12.5px]">
+        <div className="text-meta mt-2">
           {question !== t.line && <div>{question}</div>}
           {opts.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -467,7 +467,7 @@ function Doc({ track }: { track: TrackView }) {
   if (!doc)
     return (
       <div className={NOTES}>
-        <p className="text-muted-foreground/80 pt-4">
+        <p className="text-faint pt-4">
           The Doc appears here once the agent has written the goal.
         </p>
         {proposals}
@@ -544,7 +544,7 @@ function Doc({ track }: { track: TrackView }) {
       {editing ? (
         <>
           {moved && (
-            <p className="text-muted-foreground mb-2 max-w-180 text-[12.5px]">
+            <p className="text-muted-foreground text-meta mb-2 max-w-180">
               The agent changed the Doc while you were editing. Saving keeps
               both; where you both changed the same lines, yours are kept.
             </p>
@@ -571,7 +571,7 @@ function Doc({ track }: { track: TrackView }) {
 
 // ---- Results (R18) ----
 
-const RG = 'text-muted-foreground/80 mt-3 mb-1 text-[11.5px] font-medium'
+const RG = 'text-faint mt-3 mb-1 text-xs font-medium'
 
 function Results({ track }: { track: TrackView }) {
   const surface = useSurface()
@@ -595,7 +595,7 @@ function Results({ track }: { track: TrackView }) {
     >
       <ResultIcon result={r} ring={t?.readyResult === r.id} />
       {resultTitle(r)}
-      <small className="text-muted-foreground/80 ml-auto min-w-0 truncate text-[11.5px] tabular-nums">
+      <small className="text-faint ml-auto min-w-0 truncate text-xs tabular-nums">
         {resultDetail(r)}
       </small>
     </div>
@@ -615,7 +615,7 @@ function Results({ track }: { track: TrackView }) {
         </div>
       )}
       {!withRes.length && !past.length && (
-        <p className="text-muted-foreground/80 pt-2">
+        <p className="text-faint pt-2">
           Nothing yet. Pull requests, previews and files show up here as the
           threads produce them.
         </p>
