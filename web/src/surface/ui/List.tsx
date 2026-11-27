@@ -3,7 +3,7 @@ import {
   useVirtualizer,
   type Range,
 } from '@tanstack/react-virtual'
-import { useCallback, useRef, type ReactNode } from 'react'
+import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
@@ -25,6 +25,18 @@ const FOLD =
   'text-faint hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-meta outline-none focus-visible:bg-row-hover'
 const WH = 'text-faint flex-none text-xs tabular-nums'
 
+// A click on a row puts the cursor in the opened pane's composer, so typing
+// goes there and not to the letter keys. J and K click rows from code
+// (`detail` 0) and keep focus where it is, so they go on moving.
+const toComposer = (e: MouseEvent, key: string) => {
+  if (!e.detail) return
+  requestAnimationFrame(() =>
+    document
+      .querySelector<HTMLTextAreaElement>(`textarea[data-draft="${key}"]`)
+      ?.focus(),
+  )
+}
+
 function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
   const surface = useSurface()
   const sel = useS((s) => s.loc.thread === t.id)
@@ -34,7 +46,10 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
       data-nav={`thread:${t.id}`}
       data-sel={sel || undefined}
       data-mark={t.mark ?? ''}
-      onClick={() => surface.openThread(t.id)}
+      onClick={(e) => {
+        surface.openThread(t.id)
+        toComposer(e, `t:${t.id}`)
+      }}
     >
       <Mk mark={t.mark} />
       <span
@@ -65,7 +80,10 @@ function OldRow({ t }: { t: ThreadView }) {
       className={cn(ROW, 'text-muted-foreground pl-[25px]')}
       data-nav={`thread:${t.id}`}
       data-sel={sel || undefined}
-      onClick={() => surface.openThread(t.id)}
+      onClick={(e) => {
+        surface.openThread(t.id)
+        toComposer(e, `t:${t.id}`)
+      }}
     >
       <span className="min-w-0 flex-1 truncate">{t.title}</span>
       <span className={WH}>
@@ -141,7 +159,10 @@ function TrackRow({ k }: { k: TrackView }) {
       data-nav={`track:${k.id}`}
       data-sel={sel || undefined}
       data-mark={open ? '' : (k.mark ?? '')}
-      onClick={() => surface.openTrack(k.id)}
+      onClick={(e) => {
+        surface.openTrack(k.id)
+        toComposer(e, `k:${k.id}`)
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget)
           surface.openTrack(k.id)
@@ -281,7 +302,10 @@ export function List() {
             className={cn(ROW, 'text-muted-foreground pl-[25px]')}
             data-nav={`track:${r.k.id}`}
             data-sel={selTrack === r.k.id || undefined}
-            onClick={() => surface.openTrack(r.k.id)}
+            onClick={(e) => {
+              surface.openTrack(r.k.id)
+              toComposer(e, `k:${r.k.id}`)
+            }}
           >
             <span className="min-w-0 flex-1 truncate">{r.k.name}</span>
             <span className={WH}>
