@@ -110,7 +110,7 @@ The page has these sections:
 2. **Host** (required). It shows **connected** once step 4 is done. Select **I'll connect the host later** to finish without it.
 3. **People.** Nothing to set up yet. See [Limits](#limits).
 4. **Slack app** (optional). See [Slack](#slack).
-5. **SSO** (optional). OIDC and WorkOS settings are stored only. SAML isn't available.
+5. **SSO** (optional). OIDC and WorkOS settings are stored only.
 6. **GitHub App** (optional). Stored only.
 
 Setup is complete once the Claude credential is set and the host is connected or acknowledged. After that, every `/setup` URL returns 404. To change something later, set `SP_SETUP_OPEN=1` in `.env` and restart the gateway. When you're done, clear it and restart again.
