@@ -458,6 +458,7 @@ export default defineConfig({
           include: [
             "test/auth.test.ts",
             "test/boundaries.test.ts",
+            "test/selfhost-setup.test.ts",
             "test/computer-grants.test.ts",
             "test/computer-model-access.test.ts",
             "test/computer-model-profiles.test.ts",

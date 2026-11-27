@@ -7,7 +7,9 @@
 // Env: SETUP_TOKEN (required; the operator's bearer on /v1/computer/*), GATEWAY_DATA (/data),
 // PORT (8080), HOST (0.0.0.0), GATEWAY_ORG (org_selfhost), GATEWAY_BUNDLE (a prebuilt
 // entry.js; unset: built now with wrangler from MANAGED_AGENTS_DIR), COMPUTER_ANTHROPIC_API_KEY
-// (optional, the sessions' shared model key).
+// (optional, the sessions' shared model key), PUBLIC_URL (or SP_ORIGIN; the public https origin),
+// SP_SETUP_OPEN (1: /setup stays open once complete), GATEWAY_PORT (the host-side port the host
+// agent dials, for /setup's install command; default PORT).
 //
 // Keys the gateway needs and nobody types (the host token key, the store key) are generated on
 // first start into GATEWAY_DATA/keys.json (0600). The organization's host token is written to
@@ -28,6 +30,8 @@ const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "0.0.0.0";
 const org = process.env.GATEWAY_ORG ?? "org_selfhost";
 const setupToken = process.env.SETUP_TOKEN;
+const publicUrl = (process.env.PUBLIC_URL || process.env.SP_ORIGIN || "").replace(/\/+$/, "");
+const hostUrl = `ws://127.0.0.1:${process.env.GATEWAY_PORT || port}/v1/computer/host?organizationId=${org}`;
 if (!setupToken) {
   console.error("SETUP_TOKEN is required (openssl rand -hex 32)");
   process.exit(1);
@@ -88,12 +92,16 @@ const mf = new Miniflare({
       BLUE_ENVIRONMENT: "selfhost",
       BLUE_ACCOUNT_ID: org,
       BLUE_API_KEY: setupToken,
+      SELFHOST_SETUP_TOKEN: setupToken,
+      SELFHOST_HOST_URL: hostUrl,
+      SELFHOST_HOST_TOKEN: hostToken,
+      ...(process.env.SP_SETUP_OPEN === "1" ? { SP_SETUP_OPEN: "1" } : {}),
       COMPUTER_VMS: "self-managed",
       COMPUTER_HOST_TOKEN_KEY: hostTokenKey,
       BLUE_CHANNEL_ENCRYPTION_KEY: channelKey,
       BLUE_USAGE_HMAC_SECRET: usageSecret,
       WIRE_TICKET_KEY: wireTicketKey,
-      ...(process.env.SP_ORIGIN ? { COMPUTER_PUBLIC_ORIGIN: process.env.SP_ORIGIN } : {}),
+      ...(publicUrl ? { COMPUTER_PUBLIC_ORIGIN: publicUrl } : {}),
       ...(process.env.COMPUTER_ANTHROPIC_API_KEY ? { COMPUTER_ANTHROPIC_API_KEY: process.env.COMPUTER_ANTHROPIC_API_KEY } : {}),
     },
     durableObjects: {
@@ -127,7 +135,8 @@ for (const file of readdirSync(migrations).filter((f) => f.endsWith(".sql")).sor
 }
 
 console.log(`gateway listening on ${url.href} (org ${org}; data ${data})`);
-console.log(`host agent: SP_GATEWAY_URL=ws://127.0.0.1:${port}/v1/computer/host?organizationId=${org}, SP_HOST_TOKEN from ${join(data, "host-token")}`);
+console.log(`host agent: SP_GATEWAY_URL=${hostUrl}, SP_HOST_TOKEN from ${join(data, "host-token")}`);
+console.log(`setup: ${publicUrl || url.origin}/setup (sign in with SETUP_TOKEN)`);
 
 const stop = async () => { await mf.dispose(); process.exit(0); };
 process.on("SIGTERM", stop);

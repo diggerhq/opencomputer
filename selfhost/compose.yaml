@@ -7,10 +7,10 @@
 #   podman compose --profile cloudflared up -d   # or with a Cloudflare tunnel
 #   podman compose --profile ngrok up -d         # or with ngrok
 #
-# `docker compose` reads the same file. Guide: docs/self-hosting/single-vm.mdx.
+# `docker compose` reads the same file. Guide: docs/self-hosting/community-edition.mdx.
 #
 # Who connects to whom: Slack calls the gateway over HTTPS through the tunnel
-# (SP_ORIGIN). The host agent on the VM dials the gateway's WebSocket at
+# (PUBLIC_URL). The host agent on the VM dials the gateway's WebSocket at
 # ws://127.0.0.1:${GATEWAY_PORT}/v1/computer/host?organizationId=${GATEWAY_ORG}
 # (its SP_GATEWAY_URL), with SP_HOST_ID=${GATEWAY_ORG} and SP_HOST_TOKEN the
 # contents of /data/host-token in the gateway's volume. The gateway itself
@@ -34,9 +34,15 @@ services:
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     environment:
-      # The operator's bearer for /v1/computer (the hosted BLUE_API_KEY path).
+      # The operator's credential: /setup's sign-in and the bearer for /v1/computer (the hosted BLUE_API_KEY path).
       SETUP_TOKEN: ${SETUP_TOKEN:?set SETUP_TOKEN in .env (openssl rand -hex 32)}
+      # The public https origin (PUBLIC_URL; SP_ORIGIN is its older name).
+      PUBLIC_URL: ${PUBLIC_URL:-}
       SP_ORIGIN: ${SP_ORIGIN:-}
+      # 1: /setup stays open after the required steps are done.
+      SP_SETUP_OPEN: ${SP_SETUP_OPEN:-}
+      # The host-side port, for the host install command /setup shows.
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
       GATEWAY_ORG: ${GATEWAY_ORG:-org_selfhost}
       # The sessions' Anthropic key (the hosted shared-key fallback); optional.
       COMPUTER_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

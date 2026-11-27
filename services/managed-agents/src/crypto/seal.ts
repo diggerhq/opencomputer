@@ -20,7 +20,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-export type SealPurpose = "slack-bot-token" | "session-secret" | "managed-model-key" | "tunnel-token" | "model-subscription";
+export type SealPurpose = "slack-bot-token" | "session-secret" | "managed-model-key" | "tunnel-token" | "model-subscription" | "selfhost-setup";
 
 /**
  * Derived keys, memoized per (master key, purpose) for the isolate's life
