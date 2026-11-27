@@ -421,6 +421,11 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
               className={cn(CHIP, 'text-faint flex-none')}
               role="button"
               tabIndex={-1}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.stopPropagation()
+                surface.setTrackTab(t.trackId!, 'results')
+              }}
               onClick={(e) => {
                 e.stopPropagation()
                 surface.setTrackTab(t.trackId!, 'results')
