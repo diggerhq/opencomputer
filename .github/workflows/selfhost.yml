@@ -1,0 +1,40 @@
+name: Selfhost
+
+# The self-host installer's shell: bash -n and shellcheck on selfhost/, and the
+# plain-bash tests in selfhost/test/ (fakes only: no iptables, no network, no
+# cloud). Nothing here deploys, and no job has a secret.
+
+on:
+  pull_request:
+    paths:
+      - selfhost/**
+      - .github/workflows/selfhost.yml
+  push:
+    branches: [main]
+    paths:
+      - selfhost/**
+      - .github/workflows/selfhost.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: bash -n
+        run: for f in $(git ls-files 'selfhost/*.sh' 'selfhost/**/*.sh'); do bash -n "$f"; done
+      - name: shellcheck
+        # host-install.sh has warnings older than this job; errors fail everywhere.
+        run: shellcheck -x -S error $(git ls-files 'selfhost/*.sh' 'selfhost/**/*.sh') selfhost/test/bin/iptables
+      - name: tests
+        run: for t in selfhost/test/*.test.sh; do bash "$t" || exit 1; done

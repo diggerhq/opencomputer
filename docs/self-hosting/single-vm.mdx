@@ -37,6 +37,7 @@ The installer sets up the following:
 - the `slack-presence-host` service and the model proxy
 - the `oc-gateway` user (home `/var/lib/oc-gateway`, lingering enabled), which runs the gateway
 - the gateway's files in `/var/lib/oc-gateway/selfhost`, copied from your checkout and owned by `oc-gateway`
+- `opencomputer-imds-deny`, which denies the cloud instance metadata service (169.254.169.254, and `fd00:ec2::254` and `fd20:ce::254` over IPv6) to every user but root, on any cloud. DNS (port 53) and NTP (UDP 123) to that address stay open, because Google Cloud serves both there. A non-root program of your own that reads the metadata service stops working; run it as root. `sudo selfhost/check-imds.sh` checks the rule.
 
 The host agent doesn't start yet, because `/etc/opencomputer/selfhost.env` has no token. Step 4 adds it.
 
