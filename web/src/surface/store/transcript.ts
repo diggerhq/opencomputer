@@ -1,7 +1,8 @@
-import type { ApiEvent, Ask, InboxEntry, OpRow, Pending } from '@opencomputer/sdk/computer'
+import type { ApiEvent, Ask, InboxEntry, OpRow, Pending, Subagent } from '@opencomputer/sdk/computer'
 
 // Folds a session's events into what a conversation shows: people's messages,
-// the agent's replies, its steps as single lines, and its asks. Types it does
+// the agent's replies, its steps as single lines, its asks, and the subagents
+// it launched with their own steps. Types it does
 // not know are skipped, as the API asks of every client.
 
 // Where a message was written, when it was not here.
@@ -9,17 +10,22 @@ const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
 
 export type Item =
   | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
+  // `streaming`: still being written; its key is the one it keeps once whole.
   | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
-  // A turn's steps, where its first step was: listed while the turn runs,
-  // folded into one line once it has ended (the settled pattern).
-  | { kind: 'steps'; key: string; steps: Step[]; settled: boolean; at: string }
+  // A turn's work: its steps, thinking and earlier messages, in order, drawn
+  // as one line before its latest message (see buildTranscript).
+  | { kind: 'work'; key: string; entries: Entry[]; settled: boolean; ms: number | null; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
-  // The agent's thinking, folded like a finished turn's steps; `text` is empty when the model hid it.
-  | { kind: 'thinking'; key: string; text: string; ms: number | null; at: string }
+  // A subagent, where it was launched: its latest state, and its steps so far.
+  // `activity`: what it is doing now, while it runs.
+  | { kind: 'subagent'; key: string; sub: Subagent; steps: Step[]; activity: string | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
 
-export type Step = { key: string; title: string; status: 'running' | 'done' | 'failed' }
+export type Step = { kind: 'step'; key: string; title: string; status: 'running' | 'done' | 'failed' }
+
+// `text` of thinking is empty when the model hid it.
+export type Entry = Step | { kind: 'thinking'; key: string; text: string; ms: number | null } | { kind: 'text'; key: string; text: string }
 
 export type OpenBlock = { blockId: string; type: string; turnId: string; text: string }
 
@@ -28,26 +34,86 @@ const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const withoutSlackHeader = (text: string | null): string | null =>
   text && text.replace(/^\[Slack: from [^\n]*\]\n?/gm, '').trim()
 
-// `me`: the person looking; their own messages carry no name.
-export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[] {
+// One rule for what a turn shows (work 133): its latest message is the answer
+// and stays in view, in place, from its first streamed token; everything else
+// it does (steps, thinking, the messages before that one) is work, drawn as one
+// line before it. A turn is laid out this way from its start, so nothing it
+// does later moves what is drawn: a new message takes its predecessor's place,
+// which folds into the line, and the turn's end only settles the line.
+// Something else between (an ask, a subagent) closes the turn's segment, so
+// what the agent said before it stays beside it, and a new segment begins.
+//
+// `me`: the person looking. `open`: the text still streaming, drawn as the
+// message it will become, under the same key.
+export function buildTranscript(events: readonly ApiEvent[], me?: string, open?: OpenBlock | null): Item[] {
   const items: Item[] = []
   const steps = new Map<string, Step>()
-  type Group = Extract<Item, { kind: 'steps' }>
-  // Each turn's runs of steps, in order.
-  const turns = new Map<string, Group[]>()
+  type Work = Extract<Item, { kind: 'work' }>
+  type Agent = Extract<Item, { kind: 'agent' }>
+  // A run of a turn's own items: its work line and its latest message, with
+  // how much work came before that message, where it folds in.
+  type Segment = { work: Work | null; agent: Agent | null; said: number; began: string; end: string }
+  const turns = new Map<string, { segments: Segment[]; began: string; settled: boolean }>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
-  // A turn that has ended: its steps fold, and one still running is not.
-  const settle = (turnId: string | null | undefined) => {
-    const runs = turns.get(turnId ?? '')
-    if (!runs?.length || runs[0].settled) return
-    const [first, ...rest] = runs
-    first.settled = true
-    for (const r of rest) {
-      first.steps.push(...r.steps)
-      items.splice(items.indexOf(r), 1)
-    }
-    turns.set(turnId ?? '', [first])
-    for (const st of first.steps) if (st.status === 'running') st.status = 'done'
+  type Sub = Extract<Item, { kind: 'subagent' }>
+  const subs = new Map<string, Sub>()
+  const turnOf = (id: string, at: string) => {
+    let t = turns.get(id)
+    if (!t) turns.set(id, (t = { segments: [], began: at, settled: false }))
+    return t
+  }
+  // The turn's open segment: its last, while nothing else has been drawn after it.
+  const segment = (id: string, at: string): Segment => {
+    const t = turnOf(id, at)
+    const seg = t.segments[t.segments.length - 1]
+    const tail = items[items.length - 1]
+    if (seg && tail && (tail === seg.agent || tail === seg.work)) return seg
+    const next: Segment = { work: null, agent: null, said: 0, began: at, end: at }
+    t.segments.push(next)
+    return next
+  }
+  const newWork = (key: string, at: string): Work => ({ kind: 'work', key, entries: [], settled: false, ms: null, at })
+  // The segment's work line, made before its message if it has none.
+  const workOf = (seg: Segment, key: string, at: string): Work => {
+    if (seg.work) return seg.work
+    seg.work = newWork(key, at)
+    const i = seg.agent ? items.indexOf(seg.agent) : items.length
+    items.splice(i, 0, seg.work)
+    return seg.work
+  }
+  const addEntry = (e: ApiEvent, key: string, entry: Entry) => {
+    const seg = segment(e.turnId ?? '', e.createdAt)
+    workOf(seg, key, e.createdAt).entries.push(entry)
+    seg.end = e.createdAt
+  }
+  // A message: the segment's latest, in its predecessor's place, which folds into the work line.
+  const say = (turnId: string, msg: Agent) => {
+    const seg = segment(turnId, msg.at)
+    const was = seg.agent
+    if (was) {
+      workOf(seg, `work-${was.key}`, was.at).entries.splice(seg.said, 0, { kind: 'text', key: was.key, text: was.text })
+      items[items.indexOf(was)] = msg
+    } else items.push(msg)
+    seg.agent = msg
+    seg.said = seg.work?.entries.length ?? 0
+    seg.end = msg.at
+  }
+  const settle = (turnId: string | null | undefined, at: string) => {
+    const t = turns.get(turnId ?? '')
+    if (!t || t.settled) return
+    t.settled = true
+    t.segments.forEach((seg, i) => {
+      const w = seg.work
+      if (!w) return
+      // A line reserved at the turn's start that nothing came to.
+      if (!w.entries.length) {
+        items.splice(items.indexOf(w), 1)
+        return
+      }
+      w.settled = true
+      for (const en of w.entries) if (en.kind === 'step' && en.status === 'running') en.status = 'done'
+      w.ms = Date.parse(seg.end === seg.began ? at : seg.end) - Date.parse(i === 0 ? t.began : seg.began)
+    })
   }
   for (const e of events) {
     const d = (e.data ?? {}) as Record<string, unknown>
@@ -60,11 +126,11 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         const name = e.actor?.name?.replace(/ via Computer$/, '')
         if (!text) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
-        if (e.actor?.via === 'agent') items.push({ kind: 'line', key: e.turnId ?? e.id, text, tone: 'muted', at: e.createdAt })
+        if (e.actor?.via === 'agent') items.push({ kind: 'line', key: messageKey(e), text, tone: 'muted', at: e.createdAt })
         else
           items.push({
             kind: 'user',
-            key: e.turnId ?? e.id,
+            key: messageKey(e),
             text,
             author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
             via: e.actor?.via && VIA[e.actor.via],
@@ -75,31 +141,49 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       case 'message.completed': {
         if (d.parentCallId) break
         const text = str(d.text)
-        if (text) items.push({ kind: 'agent', key: e.id, text, at: e.createdAt })
+        if (!text) break
+        const item: Agent = { kind: 'agent', key: str(d.blockId) ?? e.id, text, at: e.createdAt }
+        if (e.turnId && !turns.get(e.turnId)?.settled) say(e.turnId, item)
+        else items.push(item)
         break
       }
       case 'tool.started':
       case 'tool.completed':
       case 'tool.failed': {
-        if (d.parentCallId) break
+        // A subagent's steps are its own; other nested calls are not shown.
+        const sub = subs.get(str(d.subagentId) ?? '')
+        if (!sub && d.parentCallId) break
         const callId = str(d.callId) ?? e.id
         const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
-        const have = steps.get(callId)
-        if (have) {
-          have.status = status
-          break
-        }
-        const step: Step = { key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
-        steps.set(callId, step)
-        const turn = e.turnId ?? ''
-        const runs = turns.get(turn) ?? []
-        const last = runs[runs.length - 1]
-        if (last && runs[0].settled) runs[0].steps.push(step)
-        else if (last && items[items.length - 1] === last) last.steps.push(step)
+        let step = steps.get(callId)
+        if (step) step.status = status
         else {
-          const g: Group = { kind: 'steps', key: `steps-${callId}`, steps: [step], settled: false, at: e.createdAt }
-          turns.set(turn, [...runs, g])
-          items.push(g)
+          step = { kind: 'step', key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
+          steps.set(callId, step)
+          if (sub) sub.steps.push(step)
+          else addEntry(e, `work-${callId}`, step)
+        }
+        if (sub) {
+          if (status === 'running') sub.activity = step.title
+          sub.sub = { ...sub.sub, toolCalls: Math.max(sub.sub.toolCalls, sub.steps.length) }
+        }
+        break
+      }
+      case 'subagent.started':
+      case 'subagent.ended': {
+        const a = d.subagent as Subagent | undefined
+        if (!a?.id) break
+        const seen = subs.get(a.id)
+        if (seen) {
+          seen.sub = { ...a, toolCalls: Math.max(a.toolCalls ?? 0, seen.steps.length) }
+          if (a.status !== 'running') {
+            seen.activity = null
+            for (const s of seen.steps) if (s.status === 'running') s.status = 'done'
+          }
+        } else {
+          const item: Sub = { kind: 'subagent', key: `sa-${a.id}`, sub: a, steps: [], activity: a.activity ?? null, at: e.createdAt }
+          subs.set(a.id, item)
+          items.push(item)
         }
         break
       }
@@ -118,7 +202,7 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       }
       case 'reasoning.completed': {
         if (d.parentCallId) break
-        items.push({ kind: 'thinking', key: e.id, text: str(d.text) ?? '', ms: typeof d.durationMs === 'number' ? d.durationMs : null, at: e.createdAt })
+        addEntry(e, `work-${e.id}`, { kind: 'thinking', key: e.id, text: str(d.text) ?? '', ms: typeof d.durationMs === 'number' ? d.durationMs : null })
         break
       }
       case 'session.compacted':
@@ -130,30 +214,49 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         break
       }
       case 'turn.failed': {
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         const err = d.error as { message?: unknown } | undefined
         items.push({ kind: 'line', key: e.id, text: str(err?.message) ?? 'The turn failed.', tone: 'error', at: e.createdAt })
         break
       }
       case 'turn.cancelled':
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
         break
       case 'turn.completed':
-        settle(e.turnId)
+        settle(e.turnId, e.createdAt)
         break
-      case 'turn.started':
+      case 'turn.started': {
+        const id = e.turnId ?? ''
+        const t = turnOf(id, e.createdAt)
+        t.began = e.createdAt
+        // The turn's work line is drawn from its start, so what comes later does not move it.
+        if (!t.settled) workOf(segment(id, e.createdAt), `work-${id}`, e.createdAt)
         break
+      }
     }
   }
+  // The text streaming: the message it will be, under the key it will have.
+  if (open?.text && !turns.get(open.turnId)?.settled && !items.some((i) => i.key === open.blockId)) {
+    const last = events[events.length - 1]
+    say(open.turnId, { kind: 'agent', key: open.blockId, text: open.text, at: last?.createdAt ?? new Date(0).toISOString(), streaming: true })
+  }
   return items
+}
+
+// The id the sender gave a message. A steer joins the running turn, so its
+// turnId is that turn's and its own id is messageId: two messages in one turn
+// must not share a key.
+const messageKey = (e: ApiEvent): string => {
+  const id = (e.data as { messageId?: unknown } | undefined)?.messageId
+  return typeof id === 'string' ? id : (e.turnId ?? e.id)
 }
 
 // The person's own messages that no event shows yet: queued here, waiting in
 // the session's inbox, or refused by the host (spec 40.2, steps 6 and 7).
 export function unsent(events: readonly ApiEvent[], pending: readonly Pending[], inbox: readonly InboxEntry[], sid: string): Item[] {
   const seen = new Set<string>()
-  for (const e of events) if (e.type === 'message.received' && e.turnId) seen.add(e.turnId)
+  for (const e of events) if (e.type === 'message.received') seen.add(messageKey(e))
   const out: Item[] = []
   const mine = new Set<string>()
   for (const p of pending) {

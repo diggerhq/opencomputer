@@ -38,7 +38,7 @@ import os from 'node:os';
 import { WebClient } from '@slack/web-api';
 import { Session, type SessionHooks } from './session.js';
 import { fetchAttachments, interruptDownloads } from './attachments.js';
-import { type Linked, linkedFiles, withLinked } from '../links.js';
+import { linkedFiles, slackLinked, withLinked } from '../links.js';
 import { commandAction, commandWord } from '../access.js';
 import type { SlackTurn } from './api/api.js';
 import type { SentFrom } from './api/tap.js';
@@ -427,7 +427,7 @@ async function handle(text: string, m: SlackTurn, from: SentFrom) {
   if (refused) return void (await s.say(refused), clearFeedback(m.ts));
   if (!s.isBusy) awaitingOutput.push(m.ts);
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
-  const linked = [...(m.context ? [m.context] : []), ...(m.linked ?? [])];
+  const linked = slackLinked(m);
   const files = [...(m.files ?? []), ...linkedFiles(linked)];
   const fetching = fetchAttachments(files, botToken, ss.key);
   const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;

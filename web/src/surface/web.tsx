@@ -57,7 +57,7 @@ function Org() {
   if (orgs.length > 1) return <OrgSwitcher />
   const active = orgs.find((o) => o.isActive) ?? orgs[0]
   return active ? (
-    <span className="text-muted-foreground truncate text-[13px]">
+    <span className="text-muted-foreground text-meta truncate">
       {active.name}
     </span>
   ) : null

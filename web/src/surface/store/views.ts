@@ -26,6 +26,8 @@ export interface ThreadView {
   line: string | null
   // What a thread that has not begun waits on (its machine starting), else null.
   waiting: string | null
+  // Its running subagents; background ones keep it working after its turn ends.
+  subagents: number
   trackId: string | null
   done: boolean
   outcome: string | null
@@ -156,7 +158,8 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
   if (hit && hit.key.every((k, i) => k === key[i])) return hit.view
 
   const readSeq = read?.readSeq ?? 0
-  const working = session.status === 'running' || session.status === 'starting'
+  const subagents = session.subagents?.length ?? 0
+  const working = session.status === 'running' || session.status === 'starting' || subagents > 0
   // Opening a thread clears the ring of a done proposal (R7); a suggestion's stays until answered (A5).
   const ready =
     (place.readySeq ?? -1) > readSeq || proposals.some((p) => p.type !== 'done' || (p.atSeq ?? -1) > readSeq)
@@ -175,8 +178,10 @@ export function threadView(rows: Rows, me: string, sid: string): ThreadView | un
       (session.lastTurn?.status === 'failed' ? (session.lastTurn.error?.message ?? 'The turn failed') : null) ??
       (ready ? place.readyWhat : null) ??
       waiting ??
+      (subagents && session.status !== 'running' ? `${subagents} ${subagents === 1 ? 'subagent' : 'subagents'} running` : null) ??
       firstLine(session.lastText),
     waiting,
+    subagents,
     trackId: place.trackId,
     done: place.doneAt !== null,
     outcome: place.outcome,

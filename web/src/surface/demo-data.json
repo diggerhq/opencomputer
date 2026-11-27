@@ -44,7 +44,7 @@
      "lastTurn": {
       "id": "tn_tpy239jy30dk",
       "status": "completed",
-      "endedAt": "2026-11-26T18:14:49.519Z",
+      "endedAt": "2026-11-26T18:15:51.901000Z",
       "text": null,
       "error": null,
       "reason": null,
@@ -55,18 +55,18 @@
       "usedTokens": null,
       "windowTokens": null
      },
-     "lastSeq": 6,
+     "lastSeq": 26,
      "logEpoch": 0,
      "epochStartSeq": 1,
      "createdAt": "2026-11-26T18:14:49.313Z",
-     "lastActiveAt": "2026-11-26T18:14:49.519Z",
+     "lastActiveAt": "2026-11-26T18:15:51.901000Z",
      "syncedAt": "2026-11-26T18:14:49.590Z",
      "urls": {
       "dashboard": null
      },
      "titleBy": null,
      "agentTitle": "Why is the build slow?",
-     "lastAgentSeq": 5,
+     "lastAgentSeq": 25,
      "blocked": false,
      "inbox": [],
      "machine": "org_demo",
@@ -474,9 +474,284 @@
      }
     },
     {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_1",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "reasoning.completed",
+     "actor": null,
+     "data": {
+      "text": "The person wants to know why the build is slow. Start with the CI workflow and the timing of each step.",
+      "durationMs": 1200
+     },
+     "createdAt": "2026-11-26T18:14:50.601000Z",
+     "seq": 4
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_2",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c1",
+      "toolName": "Bash",
+      "title": "Read `.github/workflows/ci.yml`"
+     },
+     "createdAt": "2026-11-26T18:14:50.801000Z",
+     "seq": 5
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_3",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c1",
+      "toolName": "Bash",
+      "title": "Read `.github/workflows/ci.yml`"
+     },
+     "createdAt": "2026-11-26T18:14:51.201000Z",
+     "seq": 6
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_4",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c2",
+      "toolName": "Bash",
+      "title": "Search for `actions/cache` in `.github/`"
+     },
+     "createdAt": "2026-11-26T18:14:51.401000Z",
+     "seq": 7
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_5",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c2",
+      "toolName": "Bash",
+      "title": "Search for `actions/cache` in `.github/`"
+     },
+     "createdAt": "2026-11-26T18:14:52.001000Z",
+     "seq": 8
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_6",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c3",
+      "toolName": "Bash",
+      "title": "Read `package.json`"
+     },
+     "createdAt": "2026-11-26T18:14:52.201000Z",
+     "seq": 9
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_7",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c3",
+      "toolName": "Bash",
+      "title": "Read `package.json`"
+     },
+     "createdAt": "2026-11-26T18:14:52.501000Z",
+     "seq": 10
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_8",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "reasoning.completed",
+     "actor": null,
+     "data": {
+      "text": "The cache key uses `hashFiles` on nothing; it is built from the lockfile mtime. Check the recent runs.",
+      "durationMs": 800
+     },
+     "createdAt": "2026-11-26T18:14:53.301000Z",
+     "seq": 11
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_9",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "message.completed",
+     "actor": null,
+     "data": {
+      "text": "The install step takes most of the time. Checking whether the dependency cache ever hits."
+     },
+     "createdAt": "2026-11-26T18:14:53.801000Z",
+     "seq": 12
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_10",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c4",
+      "toolName": "Bash",
+      "title": "Run `gh run list --limit 20 --json conclusion,createdAt`"
+     },
+     "createdAt": "2026-11-26T18:14:54.001000Z",
+     "seq": 13
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_11",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c4",
+      "toolName": "Bash",
+      "title": "Run `gh run list --limit 20 --json conclusion,createdAt`"
+     },
+     "createdAt": "2026-11-26T18:14:56.101000Z",
+     "seq": 14
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_12",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c5",
+      "toolName": "Bash",
+      "title": "Run `gh run view 1182 --log | grep -i cache`"
+     },
+     "createdAt": "2026-11-26T18:14:56.301000Z",
+     "seq": 15
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_13",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c5",
+      "toolName": "Bash",
+      "title": "Run `gh run view 1182 --log | grep -i cache`"
+     },
+     "createdAt": "2026-11-26T18:14:59.701000Z",
+     "seq": 16
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_14",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c6",
+      "toolName": "Bash",
+      "title": "Run `npm ci --timing`"
+     },
+     "createdAt": "2026-11-26T18:14:59.901000Z",
+     "seq": 17
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_15",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c6",
+      "toolName": "Bash",
+      "title": "Run `npm ci --timing`"
+     },
+     "createdAt": "2026-11-26T18:15:40.901000Z",
+     "seq": 18
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_16",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "reasoning.completed",
+     "actor": null,
+     "data": {
+      "text": "Every run reports a cache miss. The key changes on each checkout because mtime is not stable. Keying on the hash of the lockfile fixes it.",
+      "durationMs": 3100
+     },
+     "createdAt": "2026-11-26T18:15:44.001000Z",
+     "seq": 19
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_17",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c7",
+      "toolName": "Bash",
+      "title": "Edit `.github/workflows/ci.yml`"
+     },
+     "createdAt": "2026-11-26T18:15:44.201000Z",
+     "seq": 20
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_18",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c7",
+      "toolName": "Bash",
+      "title": "Edit `.github/workflows/ci.yml`"
+     },
+     "createdAt": "2026-11-26T18:15:44.501000Z",
+     "seq": 21
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_19",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "c8",
+      "toolName": "Bash",
+      "title": "Run `act -j build --dryrun`"
+     },
+     "createdAt": "2026-11-26T18:15:44.701000Z",
+     "seq": 22
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_busy_20",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_tpy239jy30dk",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "c8",
+      "toolName": "Bash",
+      "title": "Run `act -j build --dryrun`"
+     },
+     "createdAt": "2026-11-26T18:15:50.901000Z",
+     "seq": 23
+    },
+    {
      "id": "ev_cs_0pmnvt9w0pba00an_0_4",
-     "seq": 4,
-     "createdAt": "2026-11-26T18:14:49.519Z",
+     "seq": 24,
+     "createdAt": "2026-11-26T18:15:51.901000Z",
      "sessionId": "cs_0pmnvt9w0pba00an",
      "turnId": "tn_tpy239jy30dk",
      "type": "message.completed",
@@ -487,8 +762,8 @@
     },
     {
      "id": "ev_cs_0pmnvt9w0pba00an_0_5",
-     "seq": 5,
-     "createdAt": "2026-11-26T18:14:49.519Z",
+     "seq": 25,
+     "createdAt": "2026-11-26T18:15:51.901000Z",
      "sessionId": "cs_0pmnvt9w0pba00an",
      "turnId": "tn_tpy239jy30dk",
      "type": "turn.completed",
@@ -497,8 +772,231 @@
     },
     {
      "id": "ev_cs_0pmnvt9w0pba00an_0_6",
-     "seq": 6,
-     "createdAt": "2026-11-26T18:14:49.519Z",
+     "seq": 26,
+     "createdAt": "2026-11-26T18:15:51.901000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "running",
+      "to": "idle"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_1",
+     "seq": 27,
+     "createdAt": "2026-11-26T18:20:02.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "message.received",
+     "actor": {
+      "id": "usr_igor",
+      "name": null,
+      "via": "app",
+      "client": null
+     },
+     "data": {
+      "input": "Show me the fix, and what it saves",
+      "ifBusy": "queue",
+      "delivery": "queued",
+      "interruptedTurnIds": [],
+      "declinedAskIds": []
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_2",
+     "seq": 28,
+     "createdAt": "2026-11-26T18:20:02.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": null,
+     "type": "session.status_changed",
+     "actor": null,
+     "data": {
+      "from": "idle",
+      "to": "running"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_3",
+     "seq": 29,
+     "createdAt": "2026-11-26T18:20:02.100Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "turn.started",
+     "actor": null,
+     "data": {
+      "turn": {
+       "trigger": "message"
+      }
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_4",
+     "seq": 30,
+     "createdAt": "2026-11-26T18:20:03.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "r0",
+      "toolName": "Bash",
+      "title": "Read `.github/workflows/ci.yml`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_5",
+     "seq": 31,
+     "createdAt": "2026-11-26T18:20:07.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "r0",
+      "toolName": "Bash",
+      "title": "Read `.github/workflows/ci.yml`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_6",
+     "seq": 32,
+     "createdAt": "2026-11-26T18:20:10.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "r1",
+      "toolName": "Bash",
+      "title": "Run `gh run list --limit 20 --json durationMs`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_7",
+     "seq": 33,
+     "createdAt": "2026-11-26T18:20:14.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "r1",
+      "toolName": "Bash",
+      "title": "Run `gh run list --limit 20 --json durationMs`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_8",
+     "seq": 34,
+     "createdAt": "2026-11-26T18:20:17.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "r2",
+      "toolName": "Bash",
+      "title": "Read `vitest.config.ts`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_9",
+     "seq": 35,
+     "createdAt": "2026-11-26T18:20:21.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "r2",
+      "toolName": "Bash",
+      "title": "Read `vitest.config.ts`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_10",
+     "seq": 36,
+     "createdAt": "2026-11-26T18:20:24.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "r3",
+      "toolName": "Bash",
+      "title": "Edit `.github/workflows/ci.yml`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_11",
+     "seq": 37,
+     "createdAt": "2026-11-26T18:20:28.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "r3",
+      "toolName": "Bash",
+      "title": "Edit `.github/workflows/ci.yml`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_12",
+     "seq": 38,
+     "createdAt": "2026-11-26T18:20:31.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.started",
+     "actor": null,
+     "data": {
+      "callId": "r4",
+      "toolName": "Bash",
+      "title": "Run `gh pr create`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_13",
+     "seq": 39,
+     "createdAt": "2026-11-26T18:20:35.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "tool.completed",
+     "actor": null,
+     "data": {
+      "callId": "r4",
+      "toolName": "Bash",
+      "title": "Run `gh pr create`"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_14",
+     "seq": 40,
+     "createdAt": "2026-11-26T18:20:48.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "message.completed",
+     "actor": null,
+     "data": {
+      "text": "Keyed on the hash, the cache hits on every run where the lockfile hasn’t changed. On the last 20 runs that would have saved about **4 minutes a build**.\n\n## The change\n\nOne line in `.github/workflows/ci.yml`: the key moves from the file’s modification time to its content.\n\n```yaml\n- uses: actions/cache@v4\n  with:\n    path: ~/.npm\n    key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}\n    restore-keys: npm-${{ runner.os }}-\n```\n\n`restore-keys` lets a run whose lockfile did change start from the nearest older cache instead of from nothing.\n\n## What it saves\n\n| Step | Now | With the fix |\n|---|---|---|\n| Install | 4m 12s | 18s |\n| Build | 1m 40s | 1m 40s |\n| Test | 2m 05s | 2m 05s |\n| **Total** | **7m 57s** | **4m 03s** |\n\n## Still slow after this\n\n1. **Tests run serially.** Vitest is pinned to one thread in `vitest.config.ts`; four would take the step to about 40s.\n2. **The Docker layer cache is off.** Each run rebuilds the base image, which costs another minute on the deploy job.\n3. The `lint` job installs everything again instead of sharing the cache.\n\nI opened [#318](https://github.com/acme/app/pull/318) with the cache fix only. Want me to take the test threads next?"
+     }
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_15",
+     "seq": 41,
+     "createdAt": "2026-11-26T18:20:48.000Z",
+     "sessionId": "cs_0pmnvt9w0pba00an",
+     "turnId": "tn_rd7k2m9q4x1v",
+     "type": "turn.completed",
+     "actor": null,
+     "data": {}
+    },
+    {
+     "id": "ev_cs_0pmnvt9w0pba00an_read_16",
+     "seq": 42,
+     "createdAt": "2026-11-26T18:20:48.000Z",
      "sessionId": "cs_0pmnvt9w0pba00an",
      "turnId": null,
      "type": "session.status_changed",

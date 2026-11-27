@@ -17,8 +17,12 @@ export const LEFT = 'in-data-[list=hidden]:pl-12'
 
 // A pane's column, which keeps its width while the pane animates.
 export const IN = 'flex h-full min-w-[340px] flex-col'
+// The conversation's measure, 45rem (max-w-180), centered in the pane with at
+// least 1rem either side. As padding on a scroll area it holds the content;
+// as margin it places a composer under it.
+export const MEASURE = 'px-[max(1rem,calc(50%-22.5rem))]'
 // A pane's composer, on the conversation's measure.
-export const COMPOSER = 'mx-4 mt-2 mb-4 max-w-180'
+export const COMPOSER = 'mx-[max(1rem,calc(50%-22.5rem))] mt-2 mb-4'
 // A block in a conversation: a proposal or an ask, with its buttons.
 export const BLOCK = 'bg-card max-w-140 rounded-lg border px-4 py-3'
 export const ACTS = 'mt-3 flex flex-wrap items-center gap-2'

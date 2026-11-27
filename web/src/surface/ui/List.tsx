@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import { useList, useS, useSurface } from '../hooks'
 import type { ListView, ThreadView, TrackView } from '../store/views'
 import { I } from './icons'
-import { when } from './day-label'
+import { ago, when } from './day-label'
 import { Mk } from './Mark'
 
 // S1: the list. Tracks, then threads on their own, then Earlier, drawn as one
@@ -18,11 +18,12 @@ import { Mk } from './Mark'
 
 // A row; `data-sel` marks the open one, which J and K move from.
 const ROW =
-  'group/row relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors hover:bg-row-hover focus-visible:bg-row-hover data-sel:bg-row-selected'
-const SEC = 'text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium'
+  'group/row relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors hover:bg-row-hover focus-visible:bg-row-hover data-sel:bg-row-selected data-sel:text-strong'
+// A section's label: furniture, quieter than the rows it heads.
+const SEC = 'text-faint px-2 pt-5 pb-1 text-xs font-medium'
 const FOLD =
-  'text-muted-foreground/80 hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-[12.5px] outline-none focus-visible:bg-row-hover'
-const WH = 'text-muted-foreground/70 flex-none text-xs tabular-nums'
+  'text-faint hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-meta outline-none focus-visible:bg-row-hover'
+const WH = 'text-faint flex-none text-xs tabular-nums'
 
 function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
   const surface = useSurface()
@@ -40,6 +41,17 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
         className={cn('min-w-0 flex-1 truncate', t.unread && 'font-semibold')}
       >
         {t.title}
+      </span>
+      {t.subagents > 0 && (
+        <span
+          className={cn(WH, 'group-hover/row:hidden')}
+          title={`${t.subagents} ${t.subagents === 1 ? 'subagent' : 'subagents'} running`}
+        >
+          {t.subagents} {t.subagents === 1 ? 'agent' : 'agents'}
+        </span>
+      )}
+      <span className={cn(WH, 'hidden group-hover/row:inline')}>
+        {ago(t.session.lastActiveAt)}
       </span>
     </button>
   )
@@ -148,7 +160,7 @@ function TrackRow({ k }: { k: TrackView }) {
         variant="ghost"
         size="icon-xs"
         className={cn(
-          'text-muted-foreground/80 transition-[opacity,transform]',
+          'text-faint transition-[opacity,transform]',
           open
             ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100'
             : '-rotate-90',
@@ -209,7 +221,7 @@ export function List() {
     count: rows.length,
     getScrollElement: () => ref.current,
     estimateSize: (i) =>
-      ({ sec: 32, track: 44, earlier: 38, fold: 26, more: 26 })[
+      ({ sec: 40, track: 44, earlier: 38, fold: 26, more: 26 })[
         rows[i].kind as 'sec'
       ] ?? 28,
     getItemKey: (i) => rows[i].key,
@@ -294,7 +306,7 @@ export function List() {
     return (
       <div className="flex-1 px-4 pt-3" data-slot="surface-list">
         {synced ? (
-          <p className="text-muted-foreground text-[13px]">Nothing here yet.</p>
+          <p className="text-muted-foreground text-meta">Nothing here yet.</p>
         ) : (
           // Held rows are drawn at once; this is only a first visit.
           <div className="space-y-2 pt-1" aria-label="Loading">

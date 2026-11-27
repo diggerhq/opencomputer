@@ -41,6 +41,33 @@ export interface TurnSummary {
   forced: boolean | null;
 }
 
+/** A subagent the session's agent launched (Claude Code's Task tool, Codex's agents). Background ones outlive their turn. */
+export interface Subagent {
+  id: string;
+  sessionId: string;
+  /** The turn that launched it. */
+  turnId: string;
+  /** The tool call that launched it; null when the harness does not say. */
+  callId: string | null;
+  /** Its description. */
+  name: string;
+  agentType: string | null;
+  background: boolean;
+  status: "running" | "completed" | "failed" | "stopped" | (string & {});
+  /** What it is doing now; null once ended or before it reports. */
+  activity: string | null;
+  toolCalls: number;
+  tokens: number;
+  createdAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  /** Its final answer: null until it ends; inline up to 8 KiB (`resultTruncated`). */
+  result: string | null;
+  resultTruncated: boolean;
+  error: { code: string; message: string } | null;
+  stoppedBy: unknown;
+}
+
 export interface Ask {
   id: string;
   sessionId: string;
@@ -104,7 +131,8 @@ export interface Session {
   activeTurnId: string | null;
   queued: unknown[];
   asks: Ask[];
-  subagents: unknown[];
+  /** The running subagents, oldest first. */
+  subagents: Subagent[];
   lastTurn: TurnSummary | null;
   lastText: string | null;
   context: { usedTokens: number | null; windowTokens: number | null };

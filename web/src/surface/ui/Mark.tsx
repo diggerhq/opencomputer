@@ -1,12 +1,14 @@
+import { useLayoutEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import type { Mark } from '../store/views'
 
-// The mark of spec section 3: dot (blocked), ring (ready), spinner (working).
+// The mark of spec section 3: dot (blocked), ring (ready), breathing dot
+// (working). Working is quiet on purpose: a muted dot that fades slowly.
 const MARK: Record<string, string> = {
   blocked: 'bg-status-pending',
   ready: 'shadow-[inset_0_0_0_2px_var(--status-pending)]',
   working:
-    'border-[1.5px] border-muted-foreground border-t-transparent border-r-transparent animate-spin',
+    'bg-muted-foreground animate-breathe motion-reduce:animate-none motion-reduce:opacity-60',
 }
 export function Mk({
   mark,
@@ -17,8 +19,15 @@ export function Mk({
   small?: boolean
   className?: string
 }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  // Every working mark breathes in one phase, whenever it mounted: pin its
+  // animation to the start of the document timeline.
+  useLayoutEffect(() => {
+    for (const a of ref.current?.getAnimations?.() ?? []) a.startTime = 0
+  }, [mark])
   return (
     <span
+      ref={ref}
       data-mark-dot={mark ?? ''}
       className={cn(
         'relative inline-block flex-none rounded-full',

@@ -72,6 +72,7 @@ import {
 } from "../../slack-api/web-api.js";
 import { findThreadLinks, forwardedLinked, LINK_TIMEOUT_MS, type Linked, MAX_POST_CHARS, neutralizeBroadcasts, ThreadAccess } from "../../slack-api/threads.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../../ids/slack-ids.js";
+import { isMemberId, memberId } from "../../ids/session-ids.js";
 import { links, settings, threads } from "./tables.js";
 import { owePost, oweProcess, postGroup, processGroup } from "./outbox.js";
 import { STEPS } from "./schema.js";
@@ -107,6 +108,9 @@ type OtherJob = { item: "stop"; eventId: string; teamId: string; channelId: stri
 type Job = MessageJob | OtherJob;
 
 const isOther = (job: Job): job is OtherJob => "item" in job;
+
+/** A person as Org names them: a member id as is, a dashboard user id (`user_…`) as its member id. */
+const asMember = async (id: string): Promise<string> => (isMemberId(id) ? id : memberId(id));
 
 export class SlackDurableObject extends DurableObject<SlackEnv> implements SlackRpc {
   protected readonly sql: Sql;
@@ -181,6 +185,25 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
   private async ready(): Promise<void> {
     const meta = this.sql.exec<{ imported: number }>("SELECT imported FROM meta WHERE k = 1")[0];
     if (!meta?.imported) await this.import();
+    await this.repairLinks();
+  }
+
+  /**
+   * Links stored as Computer's dashboard user id (`user_…`) rather than the member id (`usr_…`):
+   * the import and `!link` once kept them as Computer gave them, so those people's Slack sessions
+   * were owned by an id no dashboard principal has. Each is rewritten, and Org moves the sessions.
+   */
+  private async repairLinks(): Promise<void> {
+    const raw = this.sql.exec<{ slack_user: string; member: string }>("SELECT slack_user, member FROM link WHERE member NOT LIKE 'usr\\_%' ESCAPE '\\'");
+    if (raw.length === 0) return;
+    const fixed = await Promise.all(raw.map(async (l) => ({ ...l, to: await memberId(l.member) })));
+    this.sql.transaction(() => {
+      for (const l of fixed) {
+        links.put(this.sql, l.slack_user, l.to);
+        owed.add(this.sql, { group: `link:${l.slack_user}`, key: `link:${l.slack_user}:${l.member}`, call: "linkPerson", body: { from: l.member, to: l.to } });
+      }
+    });
+    this.ctx.waitUntil(this.sendOwedNow());
   }
 
   // ------------------------------------------------------------------ accept (40.11 step 1)
@@ -405,9 +428,11 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
       const r = await computer.command(p, { name: "link", args });
       if (r.member) {
         const from = `slack:${job.teamId}:${job.userId}`;
+        // Computer names the person by their dashboard user id; Org and the dashboard by the member id.
+        const to = await asMember(r.member);
         this.sql.transaction(() => {
-          links.put(this.sql, job.userId, r.member!);
-          owed.add(this.sql, { group: `link:${job.userId}`, key: `link:${job.userId}`, call: "linkPerson", body: { from, to: r.member } });
+          links.put(this.sql, job.userId, to);
+          owed.add(this.sql, { group: `link:${job.userId}`, key: `link:${job.userId}`, call: "linkPerson", body: { from, to } });
         });
         this.ctx.waitUntil(this.sendOwedNow());
       }
@@ -1126,6 +1151,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
         const done = this.sql.exec<{ imported: number }>("SELECT imported FROM meta WHERE k = 1")[0];
         if (done?.imported) return;
         const carry = await computerOf(this.env, org).slackCarry();
+        const carried = await Promise.all(carry.links.map(async (l) => ({ slackUser: l.slackUser, member: await asMember(l.member) })));
         this.sql.transaction(() => {
           for (const [k, v] of Object.entries(carry.settings)) settings.put(this.sql, k, v);
           for (const p of carry.people) {
@@ -1138,7 +1164,7 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
               p.updated_at,
             );
           }
-          for (const l of carry.links) links.put(this.sql, l.slackUser, l.member);
+          for (const l of carried) links.put(this.sql, l.slackUser, l.member);
           this.sql.exec("INSERT INTO meta (k, imported) VALUES (1, 1) ON CONFLICT(k) DO UPDATE SET imported = 1");
         });
         this.token = undefined;
