@@ -1,7 +1,8 @@
-import type { ApiEvent, Ask, InboxEntry, OpRow, Pending } from '@opencomputer/sdk/computer'
+import type { ApiEvent, Ask, InboxEntry, OpRow, Pending, Subagent } from '@opencomputer/sdk/computer'
 
 // Folds a session's events into what a conversation shows: people's messages,
-// the agent's replies, its steps as single lines, and its asks. Types it does
+// the agent's replies, its steps as single lines, its asks, and the subagents
+// it launched with their own steps. Types it does
 // not know are skipped, as the API asks of every client.
 
 // Where a message was written, when it was not here.
@@ -15,6 +16,9 @@ export type Item =
   // message folds into this one line (the settled pattern).
   | { kind: 'work'; key: string; entries: Entry[]; settled: boolean; ms: number | null; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
+  // A subagent, where it was launched: its latest state, and its steps so far.
+  // `activity`: what it is doing now, while it runs.
+  | { kind: 'subagent'; key: string; sub: Subagent; steps: Step[]; activity: string | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
 
@@ -39,6 +43,8 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
   // Each turn's work and messages, which fold when it ends, and when it began.
   const turns = new Map<string, { items: (Work | Agent)[]; began: string; settled: boolean }>()
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
+  type Sub = Extract<Item, { kind: 'subagent' }>
+  const subs = new Map<string, Sub>()
   const turnOf = (e: ApiEvent) => {
     const id = e.turnId ?? ''
     let t = turns.get(id)
@@ -125,17 +131,41 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
       case 'tool.started':
       case 'tool.completed':
       case 'tool.failed': {
-        if (d.parentCallId) break
+        // A subagent's steps are its own; other nested calls are not shown.
+        const sub = subs.get(str(d.subagentId) ?? '')
+        if (!sub && d.parentCallId) break
         const callId = str(d.callId) ?? e.id
         const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
-        const have = steps.get(callId)
-        if (have) {
-          have.status = status
-          break
+        let step = steps.get(callId)
+        if (step) step.status = status
+        else {
+          step = { kind: 'step', key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
+          steps.set(callId, step)
+          if (sub) sub.steps.push(step)
+          else work(e, `work-${callId}`).entries.push(step)
         }
-        const step: Step = { kind: 'step', key: `step-${callId}`, title: str(d.title) ?? str(d.toolName) ?? 'Tool', status }
-        steps.set(callId, step)
-        work(e, `work-${callId}`).entries.push(step)
+        if (sub) {
+          if (status === 'running') sub.activity = step.title
+          sub.sub = { ...sub.sub, toolCalls: Math.max(sub.sub.toolCalls, sub.steps.length) }
+        }
+        break
+      }
+      case 'subagent.started':
+      case 'subagent.ended': {
+        const a = d.subagent as Subagent | undefined
+        if (!a?.id) break
+        const seen = subs.get(a.id)
+        if (seen) {
+          seen.sub = { ...a, toolCalls: Math.max(a.toolCalls ?? 0, seen.steps.length) }
+          if (a.status !== 'running') {
+            seen.activity = null
+            for (const s of seen.steps) if (s.status === 'running') s.status = 'done'
+          }
+        } else {
+          const item: Sub = { kind: 'subagent', key: `sa-${a.id}`, sub: a, steps: [], activity: a.activity ?? null, at: e.createdAt }
+          subs.set(a.id, item)
+          items.push(item)
+        }
         break
       }
       case 'ask.opened':

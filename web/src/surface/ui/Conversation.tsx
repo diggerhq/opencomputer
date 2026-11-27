@@ -235,6 +235,86 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
   )
 }
 
+// ---- a subagent: its name, how far it has got, open to see its steps and answer ----
+
+const SUB_END: Record<string, string> = { failed: 'failed', stopped: 'stopped' }
+
+const count = (n: number) =>
+  n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
+
+function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
+  const { sub, steps, activity } = item
+  const running = sub.status === 'running'
+  const progress = [
+    running ? activity : (SUB_END[sub.status] ?? null),
+    sub.toolCalls
+      ? `${sub.toolCalls} ${sub.toolCalls === 1 ? 'tool call' : 'tool calls'}`
+      : null,
+    sub.tokens ? `${count(sub.tokens)} tokens` : null,
+    sub.durationMs ? formatDuration(sub.durationMs) : null,
+  ].filter(Boolean)
+  const answer = sub.error?.message ?? sub.result
+  return (
+    <Collapsible
+      className="max-w-180 rounded-md border px-3 py-2"
+      data-subagent={sub.status}
+    >
+      <CollapsibleTrigger className={cn(FOLD, 'w-full')}>
+        {running ? (
+          <Mk mark="working" small />
+        ) : sub.status === 'completed' ? (
+          I.check
+        ) : (
+          <span className={cn(sub.status === 'failed' && WARN)}>×</span>
+        )}
+        <span className="text-foreground truncate font-medium">{sub.name}</span>
+        {(sub.agentType || sub.background) && (
+          <span className="flex-none">
+            {[sub.agentType, sub.background && 'background']
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+        )}
+        <span className="flex-1" />
+        <ChevronRight className="size-3.5 flex-none transition-transform group-data-[state=open]:rotate-90" />
+      </CollapsibleTrigger>
+      {progress.length > 0 && (
+        <div
+          className={cn(
+            'text-muted-foreground mt-0.5 truncate pl-5 text-[12px] tabular-nums',
+            sub.status === 'failed' && WARN,
+          )}
+        >
+          {progress.join(' · ')}
+        </div>
+      )}
+      <CollapsibleContent className="mt-2 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+        {steps.map((st) => (
+          <StepLine key={st.key} step={st} />
+        ))}
+        {!steps.length && !answer && (
+          <div className="text-muted-foreground text-[12.5px]">
+            No steps yet
+          </div>
+        )}
+        {answer && (
+          <div
+            className={cn(
+              'text-foreground/85 max-h-60 overflow-y-auto text-[13px]',
+              sub.error && WARN,
+            )}
+          >
+            <Rich text={answer} />
+            {sub.resultTruncated && (
+              <span className="text-muted-foreground"> …</span>
+            )}
+          </div>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 // ---- one item ----
 
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
@@ -282,6 +362,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return <Work item={item} />
     case 'ask':
       return <AskBlock ask={item.ask} />
+    case 'subagent':
+      return <SubagentView item={item} />
     case 'line':
       return <Line item={item} />
   }

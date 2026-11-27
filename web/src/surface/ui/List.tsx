@@ -41,6 +41,14 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
       >
         {t.title}
       </span>
+      {t.subagents > 0 && (
+        <span
+          className={cn(WH, 'group-hover/row:hidden')}
+          title={`${t.subagents} ${t.subagents === 1 ? 'subagent' : 'subagents'} running`}
+        >
+          {t.subagents} {t.subagents === 1 ? 'agent' : 'agents'}
+        </span>
+      )}
       <span className={cn(WH, 'hidden group-hover/row:inline')}>
         {ago(t.session.lastActiveAt)}
       </span>

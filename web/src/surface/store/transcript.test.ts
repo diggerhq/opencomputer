@@ -85,3 +85,47 @@ describe('notes', () => {
     expect(items).toMatchObject([{ kind: 'line', text: 'Context compacted', tone: 'muted' }])
   })
 })
+
+describe('subagents', () => {
+  const sa = (status: string, more: Record<string, unknown> = {}) => ({
+    id: 'sa_1', sessionId: 'cs_1', turnId: 't1', callId: 'c1', name: 'Find the callers', agentType: 'Explore', background: false,
+    status, activity: null, toolCalls: 0, tokens: 0, createdAt: '', endedAt: null, durationMs: null, result: null, resultTruncated: false, error: null, stoppedBy: null,
+    ...more,
+  })
+  const launched = () => [
+    ev('message.received', 't1', { input: 'Who calls it?' }),
+    ev('turn.started', 't1'),
+    ev('tool.started', 't1', { callId: 'c1', title: 'Task: Find the callers' }),
+    ev('subagent.started', 't1', { subagent: sa('running') }),
+    ev('tool.started', 't1', { callId: 'c2', parentCallId: 'c1', subagentId: 'sa_1', title: 'Grep handler' }),
+    ev('tool.completed', 't1', { callId: 'c2', parentCallId: 'c1', subagentId: 'sa_1' }),
+    ev('tool.started', 't1', { callId: 'c3', parentCallId: 'c1', subagentId: 'sa_1', title: 'Read a file' }),
+  ]
+  type Sub = Extract<Item, { kind: 'subagent' }>
+  const subOf = (items: Item[]) => items.find((i): i is Sub => i.kind === 'subagent')!
+
+  it('a running subagent is its own item, with its steps and what it is doing now', () => {
+    const items = buildTranscript(launched())
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'subagent'])
+    const s = subOf(items)
+    expect(s.steps.map((x) => [x.title, x.status])).toEqual([['Grep handler', 'done'], ['Read a file', 'running']])
+    expect(s.activity).toBe('Read a file')
+    expect(s.sub.toolCalls).toBe(2)
+    // Its steps are not the turn's.
+    expect(works(items)[0].entries).toHaveLength(1)
+  })
+
+  it('an ended subagent keeps its place, takes its final state and stops showing activity', () => {
+    const items = buildTranscript([
+      ...launched(),
+      ev('subagent.ended', 't1', { subagent: sa('completed', { toolCalls: 5, tokens: 1200, durationMs: 4000, result: 'Two callers.' }) }),
+      ev('tool.completed', 't1', { callId: 'c1' }),
+      ev('message.completed', 't1', { text: 'Two callers.' }),
+      ev('turn.completed', 't1'),
+    ])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'subagent', 'agent'])
+    const s = subOf(items)
+    expect([s.sub.status, s.sub.toolCalls, s.sub.result, s.activity]).toEqual(['completed', 5, 'Two callers.', null])
+    expect(s.steps.every((x) => x.status === 'done')).toBe(true)
+  })
+})
