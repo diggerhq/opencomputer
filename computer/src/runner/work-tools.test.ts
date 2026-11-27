@@ -89,6 +89,7 @@ describe('fileResult', () => {
     await fileResult(w, cwd, { path: path.join(tmp, 'shot.png'), filename: 'shot.png' });
     const ref = calls[0]!.o.body.ref as string;
     expect(ref).toMatch(/^\.sent\/[0-9a-f]{16}\/shot\.png$/);
+    expect(readFileSync(path.join(cwd, '.sent', '.gitignore'), 'utf8')).toBe('*\n');
     expect(readFileSync(path.join(cwd, ref), 'utf8')).toBe('png bytes');
     expect(calls[1]!.o.key).toBe(calls[0]!.o.key);
   });

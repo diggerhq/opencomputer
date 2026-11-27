@@ -180,6 +180,8 @@ async function keep(cwd: string, file: string, filename: string): Promise<string
   const data = await readFile(file);
   const ref = path.join('.sent', createHash('sha256').update(data).digest('hex').slice(0, 16), filename);
   await mkdir(path.dirname(path.join(cwd, ref)), { recursive: true });
+  // Kept for the dashboard, not the person's repository: git ignores the whole directory.
+  await writeFile(path.join(cwd, '.sent', '.gitignore'), '*\n');
   await writeFile(path.join(cwd, ref), data);
   return ref;
 }
