@@ -2126,6 +2126,8 @@ export default {
     const url = new URL(req.url);
     const path = url.pathname;
     if (isSelfhost(env)) {
+      // managed-agents reports runtime usage for billing; accepted and dropped, so it doesn't retry.
+      if (path === "/internal/agent-runtime-usage") return new Response(null, { status: 204 });
       if (selfhostBillingPath(path)) return json({ error: "not found" }, 404);
       if (path.startsWith("/auth/") || path.startsWith("/api/")) env = await withSelfhostSignIn(env);
     }

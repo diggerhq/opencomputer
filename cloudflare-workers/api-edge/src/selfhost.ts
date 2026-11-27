@@ -98,7 +98,6 @@ export function selfhostBillingPath(path: string): boolean {
     path === "/webhooks/autumn" ||
     path.startsWith("/internal/autumn-") ||
     path === "/internal/run-autumn-meter" ||
-    path === "/internal/agent-runtime-usage" ||
     under("/internal/model-billing")
   );
 }

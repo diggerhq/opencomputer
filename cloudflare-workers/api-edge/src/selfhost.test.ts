@@ -146,6 +146,12 @@ describe("self-hosted gateway", () => {
     ]);
   });
 
+  it("accepts and drops managed-agents' runtime usage, so it doesn't retry", async () => {
+    const { env } = makeEnv();
+    const resp = await worker.fetch(new Request(`${ORIGIN}/internal/agent-runtime-usage`, { method: "POST", body: "{}" }), env, ctx);
+    expect(resp.status).toBe(204);
+  });
+
   it("answers billing's routes with 404", async () => {
     const { env } = makeEnv();
     for (const path of ["/api/dashboard/billing", "/api/dashboard/billing/autumn", "/api/billing/credits", "/webhooks/stripe", "/webhooks/autumn"]) {
