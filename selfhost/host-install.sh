@@ -912,6 +912,7 @@ Plan (nothing below has run):
   3. units: ${OFFLOAD_UNITS[*]} (from selfhost/systemd)
   4. marker $OFFLOAD_MARKER
   5. start: opencomputer-offload-imds.service (oc-offload may reach the metadata service), opencomputer-offload.service, opencomputer-offload-reap.timer
+  6. restart $UNIT (if running), so sessions get offload through SP_OFFLOAD_CONTROL
 EOF
     exit 0
   fi
@@ -933,6 +934,8 @@ EOF
   printf 'enabled %s by host-install.sh: %s\n' "$(date -u +%FT%TZ)" "$OFFLOAD_LINE" >"$OFFLOAD_MARKER"
   chmod 0644 "$OFFLOAD_MARKER"
   offload_start
+  # The host relays builds to the service only while SP_OFFLOAD_CONTROL is in its environment.
+  systemctl try-restart "$UNIT" || warn "$UNIT did not restart; sessions get offload after: sudo systemctl restart $UNIT"
   sleep 3
   systemctl --no-pager --lines=10 status opencomputer-offload.service || true
   log "build offload enabled ($OFFLOAD_LINE)"
@@ -1005,6 +1008,8 @@ disable_offload() {
     else env_rewrite "$OFFLOAD_KEYS"; echo "removed the SP_OFFLOAD* lines from $SELFHOST_ENV"; fi
   fi
   run rm -f "$OFFLOAD_MARKER" "$OFFLOAD_DRAINING"
+  # The host drops its offload relay once SP_OFFLOAD_CONTROL is gone from its environment.
+  if [[ $MODE == disable-offload ]]; then run systemctl try-restart "$UNIT" || warn "$UNIT did not restart: sudo systemctl restart $UNIT"; fi
   if id "$OFFLOAD_USER" >/dev/null 2>&1; then run userdel "$OFFLOAD_USER" || warn "userdel $OFFLOAD_USER failed; remove it by hand"; fi
   if getent group "$OFFLOAD_USER" >/dev/null 2>&1; then run groupdel "$OFFLOAD_USER" || true; fi
 

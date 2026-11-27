@@ -13,6 +13,10 @@
 # ExecStartPre (+, as root) gives the runtime directory group sp-host and the
 # setgid bit, so the socket the daemon makes there is group sp-host, and
 # UMask=0007 makes it 0660. sp-host may enter the directory; nobody else may.
+# No SupplementaryGroups=sp-host: the service's chown of the directory and the
+# socket to sp-host's gid (control.ts) is a no-op chown it is allowed as their
+# owner, so the one process holding the role's credentials stays out of the
+# host's group.
 [Unit]
 Description=OpenComputer build offload (AWS Lambda MicroVMs)
 Wants=network-online.target

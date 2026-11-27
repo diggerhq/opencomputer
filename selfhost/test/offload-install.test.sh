@@ -114,6 +114,8 @@ check_has "enable: service condition on marker" "ConditionPathExists=$OC_ROOT/et
 check "enable: exception started before the service" "opencomputer-offload-imds.service opencomputer-offload-reap.timer opencomputer-offload.service" \
   "$(sed -n 's/^systemctl restart //p' "$T/calls" | tr '\n' ' ' | sed 's/ $//')"
 check_lacks "enable: no secret in output" "sph_x" "$OUT"
+check "enable: host restarted after the service" "opencomputer-offload.service slack-presence-host.service" \
+  "$(sed -n 's/^systemctl \(try-\)\{0,1\}restart //p' "$T/calls" | tail -2 | tr '\n' ' ' | sed 's/ $//')"
 
 # Enable again: idempotent (one user, no duplicate lines).
 hi --enable-offload --bucket oc-offload-b
@@ -155,6 +157,7 @@ check "disable: no offload files" "" "$(tree | tr ' ' '\n' | grep -E 'offload\.(
 check "disable: no SP_OFFLOAD lines" "" "$(ENV | grep SP_OFFLOAD)"
 check "disable: host lines kept" 1 "$(ENV | grep -c '^SP_HOST_TOKEN=sph_x$')"
 check "disable: user removed" "" "$(grep -x oc-offload "$T/users")"
+check "disable: host restarted" 1 "$(grep -c '^systemctl try-restart slack-presence-host.service$' "$T/calls")"
 check "disable: ledger kept" '{"jobs":[]}' "$(cat "$OC_ROOT"/var/lib/opencomputer/offload-ledger-*/ledger.json)"
 hi --disable-offload
 check "disable again: nothing to do" "0 build offload is not enabled here; nothing to do" "$RC $OUT"
