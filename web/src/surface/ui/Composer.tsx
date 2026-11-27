@@ -40,8 +40,10 @@ export function Composer({
     meta.current = false
   }
   const button = (
+    // Filled once there is something to send.
     <Button
       size="icon-sm"
+      variant={text.trim() ? 'default' : 'outline'}
       aria-label="Send"
       title="Send (Enter)"
       disabled={!text.trim()}
@@ -54,7 +56,7 @@ export function Composer({
     <div
       ref={ref}
       className={cn(
-        'bg-card focus-within:border-ring/60 flex flex-none gap-1 rounded-xl border p-1 pl-1 shadow-sm transition-colors',
+        'bg-card focus-within:border-ring focus-within:ring-ring/25 flex flex-none gap-1 rounded-xl border p-1.5 shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]',
         tools ? 'flex-col' : 'items-end',
         className,
       )}
@@ -70,7 +72,7 @@ export function Composer({
           meta.current = e.metaKey || e.ctrlKey
           if (e.key === 'Escape') e.currentTarget.blur()
         }}
-        className="text-reading md:text-reading min-h-8 flex-1 border-0 bg-transparent px-2.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+        className="text-reading md:text-reading placeholder:text-faint min-h-10 flex-1 border-0 bg-transparent px-2.5 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
       {tools ? (
         <div className="flex items-center gap-1">

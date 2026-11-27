@@ -26,6 +26,7 @@ import { AskBlock } from './AskBlock'
 import { I } from './icons'
 import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
+import { MEASURE } from './pane-classes'
 import { Rich } from './Rich'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
@@ -131,6 +132,10 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 
 // ---- a turn's work: one line, open to see its steps, thinking and messages ----
 
+// Inside a fold: a step's arguments read as plain mono, not as chips.
+const FOLD_BODY =
+  'flex flex-col gap-1.5 border-l pl-3.5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground'
+
 const FOLD =
   'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
@@ -138,7 +143,7 @@ function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground text-meta flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground text-meta [&>svg]:text-faint flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
         step.status === 'failed' && WARN,
       )}
     >
@@ -169,7 +174,7 @@ function EntryView({ entry }: { entry: Entry }) {
     )
   // Thinking the model hid has nothing to show but its length.
   return (
-    <div className="text-muted-foreground text-meta italic">
+    <div className="text-faint text-meta">
       {entry.text ? (
         <Rich text={entry.text} />
       ) : (
@@ -227,7 +232,7 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
           <span className={cn(WARN, 'flex-none')}>· {failed} failed</span>
         )}
       </CollapsibleTrigger>
-      <CollapsibleContent className="mt-1.5 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+      <CollapsibleContent className={cn(FOLD_BODY, 'mt-1.5 ml-1.5')}>
         {item.entries.map((en) => (
           <EntryView key={en.key} entry={en} />
         ))}
@@ -282,14 +287,14 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       {progress.length > 0 && (
         <div
           className={cn(
-            'text-muted-foreground mt-0.5 truncate pl-5 text-xs tabular-nums',
+            'text-muted-foreground text-meta mt-0.5 truncate pl-5 tabular-nums',
             sub.status === 'failed' && WARN,
           )}
         >
           {progress.join(' · ')}
         </div>
       )}
-      <CollapsibleContent className="mt-2 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+      <CollapsibleContent className={cn(FOLD_BODY, 'mt-2 ml-1.5')}>
         {steps.map((st) => (
           <StepLine key={st.key} step={st} />
         ))}
@@ -316,6 +321,36 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
 
 // ---- one item ----
 
+// A turn on its way, dimmed until it lands, with a word on why.
+const PENDING: Record<string, string> = {
+  sending: 'Sending…',
+  queued: 'Queued',
+}
+
+// On the measure like the agent's text, so the reading edge stays put; the
+// card and the stronger text say whose turn it is.
+function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
+  const pending = item.state && PENDING[item.state]
+  return (
+    <div className="bg-card text-strong max-w-180 rounded-lg border px-3.5 py-2.5">
+      {(item.author || item.via) && (
+        <div className="text-muted-foreground text-meta">
+          {[item.author, item.via].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div className={cn(pending && 'opacity-60')}>
+        <Rich text={item.text} size="reading" />
+      </div>
+      {pending && <div className="text-faint text-meta mt-1">{pending}</div>}
+      {item.state === 'failed' && (
+        <div className={cn(WARN, 'text-meta mt-1')}>
+          Not sent{item.reason ? ` · ${item.reason}` : ''}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
 // is a new object with the same fields: compare those.
 const sameItem = (a: { item: Item }, b: { item: Item }) => {
@@ -330,27 +365,7 @@ const sameItem = (a: { item: Item }, b: { item: Item }) => {
 const ItemView = memo(function ItemView({ item }: { item: Item }) {
   switch (item.kind) {
     case 'user':
-      return (
-        <div
-          className={cn(
-            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-2xl rounded-br-sm px-3.5 py-2',
-            (item.state === 'sending' || item.state === 'queued') &&
-              'opacity-60',
-          )}
-        >
-          {(item.author || item.via) && (
-            <div className="text-muted-foreground text-xs">
-              {[item.author, item.via].filter(Boolean).join(' · ')}
-            </div>
-          )}
-          <Rich text={item.text} size="reading" />
-          {item.state === 'failed' && (
-            <div className={cn(WARN, 'mt-1 text-xs')}>
-              Not sent{item.reason ? ` · ${item.reason}` : ''}
-            </div>
-          )}
-        </div>
-      )
+      return <UserTurn item={item} />
     case 'agent':
       return (
         <div className="max-w-180">
@@ -375,7 +390,7 @@ type Row = { key: string; day?: string; item?: Item }
 
 function DayLine({ at }: { at: string }) {
   return (
-    <div className="text-faint after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
+    <div className="text-faint after:bg-border text-meta flex max-w-180 items-center gap-3 font-medium after:h-px after:flex-1 after:content-['']">
       {dayLabel(at)}
     </div>
   )
@@ -503,7 +518,10 @@ function Transcript(props: {
 
   return (
     <div
-      className="flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto px-4 pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']"
+      className={cn(
+        "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
+        MEASURE,
+      )}
       id={id}
       ref={ref}
       onScroll={onScroll}
@@ -552,7 +570,7 @@ function Transcript(props: {
       )}
       {open?.text ? (
         <div className="max-w-180">
-          <Rich text={open.text} />
+          <Rich text={open.text} size="reading" />
           <span className="bg-foreground/55 ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[1px] align-[-2px]" />
         </div>
       ) : null}

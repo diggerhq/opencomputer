@@ -41,7 +41,7 @@ function Name({
   if (!editing)
     return (
       <h1
-        className="truncate text-sm font-semibold select-text"
+        className="text-reading truncate font-semibold select-text"
         onDoubleClick={() => setEditing(true)}
       >
         {thread.title}
@@ -52,7 +52,7 @@ function Name({
       ref={(el) => el?.focus()}
       aria-label="Name"
       // The name's own type, so editing it does not move anything.
-      className="min-w-20 flex-[0_1_320px] bg-transparent p-0 text-sm font-semibold outline-none"
+      className="text-reading min-w-20 flex-[0_1_320px] bg-transparent p-0 font-semibold outline-none"
       defaultValue={thread.title}
       onFocus={(e) => e.currentTarget.select()}
       onBlur={() => setEditing(false)}

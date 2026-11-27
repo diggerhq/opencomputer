@@ -188,7 +188,7 @@
   --muted-foreground: hsl(
     40 5% 38%
   ); /* secondary text — ~5.4:1 on paper (site's 53% fails AA) */
-  --faint: hsl(40 4% 44%); /* ~4.7:1 on paper */
+  --faint: hsl(40 4% 41%); /* ~5.1:1 on paper, 4.9:1 on the sidebar */
 
   /* Lines + focus */
   --border: hsl(40 14% 87%);
@@ -234,7 +234,7 @@
   --chart-5: hsl(40 10% 84%);
 
   /* Sidebar (warm, one step off the app bg) */
-  --sidebar: hsl(40 28% 96%);
+  --sidebar: hsl(40 28% 95%);
   --sidebar-foreground: hsl(45 8% 8%);
   --sidebar-border: hsl(40 14% 87%);
   --sidebar-accent: hsl(40 24% 92%);
@@ -316,7 +316,7 @@
   --chart-4: hsl(36 6% 36%);
   --chart-5: hsl(36 6% 26%);
 
-  --sidebar: hsl(40 4% 5.7%);
+  --sidebar: hsl(40 4% 4.5%);
   --sidebar-foreground: hsl(38 13% 84%);
   --sidebar-border: hsl(40 4% 13%);
   --sidebar-accent: hsl(40 5% 12.7%);
