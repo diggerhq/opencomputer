@@ -14,3 +14,16 @@ export const WAKE_DEBOUNCE_MS = 20_000;
  * one that keeps failing holds its group minutes, not hours.
  */
 export const NOTICE_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000];
+
+// Attachments (work 126, section 8): the limits Org owns. The bytes of one attachment are the API
+// handler's (http/api/attachment-routes.ts); the count per message the edge's and the SDK's.
+/** Bytes of one session's attachments, counted from the declared size at create so parallel uploads cannot overshoot. */
+export const ATTACHMENT_SESSION_BYTES_MAX = 1024 * 1024 * 1024;
+/** Bytes of one organization's attachments; past it `attachment_quota` names `organization`. */
+export const ATTACHMENT_ORG_BYTES_MAX = 20 * 1024 * 1024 * 1024;
+/** An `uploading` row this old is swept: the common interrupted upload is a laptop that resumes next morning. */
+export const ATTACHMENT_UPLOADING_TTL_MS = DAY_MS;
+/** A `ready` row this old whose session does not exist in Org is swept (a draft cleared without sending). */
+export const ATTACHMENT_ORPHAN_TTL_MS = DAY_MS;
+/** A `deleted` row is kept this long so a late reference answers `410`, not `404`. */
+export const ATTACHMENT_DELETED_KEEP_MS = RETAIN_MS;

@@ -17,7 +17,7 @@
 
 
 import type { Origin } from "../../api-objects/objects.js";
-import type { Row } from "./contract.js";
+import type { AttachmentMeta, Row } from "./contract.js";
 import type { Summary } from "../session-log/contract.js";
 import { byOf, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";
@@ -265,9 +265,10 @@ export class Tx {
    * `Computer.start` for a session, its spec built from the rows when sent. `firstInput`: a turn accepted
    * before it (spec 40.7 step 3), as `turnId` (else the session's first turn id) from `as` (else the platform).
    */
-  start(sessionId: string, extra: { harness?: string; trace?: string; firstInput?: string; turnId?: string; as?: Principal } = {}): void {
+  start(sessionId: string, extra: { harness?: string; trace?: string; firstInput?: string; turnId?: string; as?: Principal; attachments?: AttachmentMeta[] } = {}): void {
     if (extra.firstInput !== undefined) {
-      const turn = { input: extra.firstInput, ifBusy: "queue" };
+      // The same body the edge's own `accept` of this turn sends (http/api/session-routes.ts), so a duplicate's hash matches.
+      const turn = { input: extra.firstInput, ifBusy: "queue", ...(extra.attachments?.length ? { attachments: extra.attachments } : {}) };
       this.accept(sessionId, { id: extra.turnId ?? firstTurnId(sessionId), kind: "turn", body: turn, trace: extra.trace }, extra.as);
     }
     this.owe({ group: sessionId, key: `start:${sessionId}`, call: "Computer.start", body: { sessionId, harness: extra.harness, trace: extra.trace } });

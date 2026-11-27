@@ -14,6 +14,8 @@ export interface ComputerEdgeEnv extends PreviewsEnv, ActorEnv {
   /** The managed-agent session index (session_creations), read by oc-usage-chart. */
   SERVERLESS_AGENTS_DB?: D1Database;
   ACCOUNTS: DurableObjectNamespace;
+  /** The attachments' objects (work 126, http/api/attachment-routes.ts); absent on a stack without them. */
+  ATTACHMENTS?: R2Bucket;
   /** The platform Worker (service binding): owns the cloud credentials. */
   RUNTIMES?: Fetcher;
   OPENCOMPUTER_BILLING?: ManagedAgentBillingService;
