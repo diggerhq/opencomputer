@@ -119,6 +119,8 @@ AGENT_PATH="$SP_CURRENT/bin:/usr/local/go/bin:$AGENT_HOME/go/bin:/usr/local/sbin
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DEBIAN_FRONTEND=noninteractive
+# go build needs a module cache under HOME; run-command and some cloud-init shells give root none.
+export HOME="${HOME:-/root}"
 
 [[ $EUID -eq 0 || $DRY_RUN == 1 ]] || die "run as root (sudo $0 $*)"
 
@@ -492,7 +494,8 @@ release() {
 sandbox() {
   log "rootless Podman for $AGENT_USER"
   AGENT_USER="$AGENT_USER" AGENT_UID="$AGENT_UID" SP_DATA="$DATA" bash "$RELEASE/deploy/vm/sandbox.sh" install
-  local pv; pv="$(podman --version 2>/dev/null | awk '{print $NF}')"
+  # As agent: sandbox.sh's /etc/containers/storage.conf sets no runroot, so root's podman fails ("runroot must be set").
+  local pv; pv="$(as_agent podman --version 2>/dev/null | awk '{print $NF}')"
   podman_version_ok "$pv" || die "podman ${pv:-not found}: this needs Podman >= 4.7"
   if [[ $BUILD_IMAGE == 1 ]] && ! as_agent podman image exists "$IMAGE"; then
     log "building $IMAGE as $AGENT_USER (computer/deploy/image; 20 minutes or more)"
