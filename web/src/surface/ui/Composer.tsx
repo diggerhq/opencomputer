@@ -70,7 +70,7 @@ export function Composer({
           meta.current = e.metaKey || e.ctrlKey
           if (e.key === 'Escape') e.currentTarget.blur()
         }}
-        className="min-h-8 flex-1 border-0 bg-transparent px-2.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+        className="text-reading md:text-reading min-h-8 flex-1 border-0 bg-transparent px-2.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
       {tools ? (
         <div className="flex items-center gap-1">

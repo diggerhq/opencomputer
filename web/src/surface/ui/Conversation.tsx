@@ -131,7 +131,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 // ---- a turn's work: one line, open to see its steps, thinking and messages ----
 
 const FOLD =
-  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[13px] outline-none'
+  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[12.5px] outline-none'
 
 function StepLine({ step }: { step: Step }) {
   return (
@@ -334,7 +334,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return (
         <div
           className={cn(
-            'reading bubble bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-xl rounded-br-sm px-3 py-2',
+            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-2xl rounded-br-sm px-3.5 py-2',
             (item.state === 'sending' || item.state === 'queued') &&
               'opacity-60',
           )}
@@ -344,7 +344,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
               {[item.author, item.via].filter(Boolean).join(' · ')}
             </div>
           )}
-          <Rich text={item.text} />
+          <Rich text={item.text} size="reading" />
           {item.state === 'failed' && (
             <div className={cn(WARN, 'mt-1 text-xs')}>
               Not sent{item.reason ? ` · ${item.reason}` : ''}
@@ -354,8 +354,8 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       )
     case 'agent':
       return (
-        <div className="reading max-w-180">
-          <Rich text={item.text} />
+        <div className="max-w-180">
+          <Rich text={item.text} size="reading" />
         </div>
       )
     case 'work':
