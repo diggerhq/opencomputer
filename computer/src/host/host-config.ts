@@ -43,6 +43,8 @@ export interface HostConfig {
   /** SP_MODEL_PROXY: the proxy's control socket; SP_MODEL_SOCKET: where runners reach its API. */
   modelProxy?: string;
   modelSocket?: string;
+  /** SP_OFFLOAD_CONTROL: the build offload service's control socket (work 136, offload-relay.ts); unset: no offload. Podman hosts only. */
+  offloadSocket?: string;
   /** SP_TELEMETRY_URL, SP_TELEMETRY_CREDENTIAL, SP_REGION (`unknown`), SP_SUBSTRATE. */
   telemetry: { url?: string; credential?: string; region: string; substrate?: string };
 }
@@ -92,6 +94,7 @@ export function loadHostConfig(env: NodeJS.ProcessEnv, totalBytes: number, platf
     runnerPath: given(env.SP_RUNNER_PATH),
     modelProxy: given(env.SP_MODEL_PROXY),
     modelSocket: given(env.SP_MODEL_SOCKET),
+    offloadSocket: given(env.SP_OFFLOAD_CONTROL),
     telemetry: { url: given(env.SP_TELEMETRY_URL), credential: given(env.SP_TELEMETRY_CREDENTIAL), region: given(env.SP_REGION) ?? 'unknown', substrate: given(env.SP_SUBSTRATE) },
   };
 

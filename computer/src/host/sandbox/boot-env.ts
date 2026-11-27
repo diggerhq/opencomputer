@@ -6,7 +6,8 @@
 //
 // Invariants:
 // - One `NAME='value'` per line, in the order of BOOT_ENV after SP_ROOT and
-//   RUNNER_SPEC; a name whose value is empty is left out.
+//   RUNNER_SPEC; a name whose value is empty is left out. SP_OFFLOAD_SOCKET
+//   (work 136) comes last, and only when the host serves the runner one.
 // - No credential (the invariant of runner-env.ts stands), and no name in
 //   HOST_ONLY: those are host paths, loader settings, or owned by the image
 //   or by Create.
@@ -37,11 +38,14 @@ export interface BootVars {
   spec: RunnerSpec;
   /** `runnerVars(env)` (runner-env.ts). */
   vars: Record<string, string>;
+  /** The runner's offload socket when the host serves one this start (work 136): SP_OFFLOAD_SOCKET, last. */
+  offloadSocket?: string;
 }
 
 /** The file's text. */
 export function bootEnv(b: BootVars): string {
   const out: [string, string][] = [['SP_ROOT', b.root], ['RUNNER_SPEC', JSON.stringify(b.spec)]];
   for (const k of BOOT_ENV) if (b.vars[k]) out.push([k, b.vars[k]]);
+  if (b.offloadSocket) out.push(['SP_OFFLOAD_SOCKET', b.offloadSocket]);
   return out.map(([k, v]) => `${k}=${quote(v)}\n`).join('');
 }

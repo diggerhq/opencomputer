@@ -91,8 +91,8 @@ export interface ContainersDeps {
   vars(): Record<string, string>;
   /** The definition file in effect, if any (`definitionFile`). */
   definition(): string | undefined;
-  /** `tokens.serveRunner`. */
-  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void };
+  /** `tokens.serveRunner`, and the runner's offload socket when offload is served (`offload`: its path, for boot.env; work 136). */
+  serveTokens(run: RunRoot, id: string, session: () => string | undefined): { close(): void; offload?: string };
   /** A sandbox's container was removed: what else the host keeps by its id goes too (its preview ports, C9). Not called while Podman still has the container. */
   removed?(id: string): void;
   sleep?: (ms: number) => Promise<void>;
@@ -154,8 +154,8 @@ export function containers(d: ContainersDeps) {
     else rmSync(file, { force: true });
   }
 
-  /** The run directory as a start needs it: what the session wrote gone, the host's files current. */
-  async function prepareRun(id: string, spec: RunnerSpec) {
+  /** The run directory as a start needs it: what the session wrote gone, the host's files current (boot.env is `up`'s, after the sockets). */
+  async function prepareRun(id: string) {
     const run = d.runRoot(id);
     await as.podman(emptyRunArgs(run), { timeoutMs: TIMEOUTS.remove }).catch((e) => {
       const lines = String(e?.stderr ?? '').trim().split('\n').filter(Boolean);
@@ -166,7 +166,6 @@ export function containers(d: ContainersDeps) {
     dir(path.dirname(secretsFor(run, id)), 0o2770);
     dir(path.dirname(tokenSocketFor(run, id)), 0o2750);
     rewriteDefinition(id);
-    writeWhole(path.join(run, 'boot.env'), bootEnv({ root: d.root, spec, vars: d.vars() }), 0o640);
     return run;
   }
 
@@ -184,15 +183,16 @@ export function containers(d: ContainersDeps) {
   }
 
   /**
-   * Bring the created container up for `spec`: its run directory, its token socket, Start, then Pid.
+   * Bring the created container up for `spec`: its run directory, its token (and offload) socket, boot.env, Start, then Pid.
    * `record`: the thread it serves; none for a container that serves no thread yet.
    * `mount`: what gives the running container its mounts (mounts.ts), from its first process; part of the start.
    */
   async function up(id: string, spec: RunnerSpec, record?: SandboxRecord, mount?: (pid: number) => Promise<void>): Promise<Up> {
-    const run = await prepareRun(id, spec);
+    const run = await prepareRun(id);
     const tokens = d.serveTokens(run, id, () => record?.key);
     const t0 = Date.now();
     try {
+      writeWhole(path.join(run, 'boot.env'), bootEnv({ root: d.root, spec, vars: d.vars(), offloadSocket: tokens.offload }), 0o640);
       // The unit's `podman start` is not `as.podman`'s: behind the image lock it would run out of the unit's time, not wait.
       await as.settled();
       await d.start(id, TIMEOUTS.start);

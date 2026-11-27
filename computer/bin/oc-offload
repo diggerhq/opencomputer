@@ -1,0 +1,226 @@
+#!/usr/bin/env node
+// Run a build on a MicroVM instead of this computer (work 136).
+//
+//   oc-offload --size s|m [--timeout MIN] [--artifact PATH]... -- <cmd>
+//
+// The current directory (in a git repository: `git ls-files -co --exclude-standard`,
+// so ignored files stay home) goes up as a tarball, `<cmd>` runs there under
+// `sh -c` on a fresh MicroVM, its output streams here, and the --artifact paths
+// (relative to the current directory) come back and are unpacked over it. The
+// exit code is the build's.
+//
+// Socket protocol: $SP_OFFLOAD_SOCKET, the runner's own offload socket, which
+// the host serves only while offload is ready on this box (host/offload-relay.ts,
+// src/offload-protocol.ts): one JSON line {"op", ...} in, one JSON line out per
+// connection. The host attaches the session's fence; nothing here names one.
+//
+// Exit codes: the build's own; 3 offload is not available here (no socket, or
+// the service says so); 2 usage; 1 any other failure; 130 cancelled (Ctrl-C
+// cancels the remote job). Uploads and downloads go to presigned URLs; no
+// credential is held or printed here.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+
+const UNAVAILABLE = 'offload not available on this host';
+const USAGE = 'usage: oc-offload --size s|m [--timeout MIN] [--artifact PATH]... -- <cmd>';
+const POLL_MS = 2000;
+
+class Unavailable extends Error {}
+
+function parse(argv) {
+  const o = { artifacts: [] };
+  let i = 0;
+  for (; i < argv.length && argv[i] !== '--'; i++) {
+    const a = argv[i];
+    const val = () => {
+      const v = argv[++i];
+      if (v === undefined) throw new Error(`${a} needs a value`);
+      return v;
+    };
+    if (a === '--size') o.size = val();
+    else if (a === '--timeout') o.timeoutMin = Number(val());
+    else if (a === '--artifact') o.artifacts.push(val());
+    else if (a === '-h' || a === '--help') return { help: true };
+    else throw new Error(`unknown option ${a}`);
+  }
+  const cmd = argv.slice(i + 1);
+  if (!o.size || !['s', 'm'].includes(o.size)) throw new Error('--size s|m is required');
+  if (o.timeoutMin !== undefined && !(Number.isInteger(o.timeoutMin) && o.timeoutMin > 0)) throw new Error('--timeout is whole minutes');
+  if (!cmd.length) throw new Error('nothing to run after --');
+  for (const p of o.artifacts) if (!relativeInside(p)) throw new Error(`--artifact ${p}: a relative path inside the current directory`);
+  o.cmd = cmd.length === 1 ? cmd[0] : cmd.map(shq).join(' ');
+  return o;
+}
+
+const shq = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
+/** A relative path that stays inside the directory it is relative to. */
+function relativeInside(p) {
+  if (!p || p.includes('\0') || path.isAbsolute(p) || /^[A-Za-z]:/.test(p)) return false;
+  return !path.normalize(p).split(/[\\/]/).includes('..');
+}
+
+function ask(req, timeoutMs = 30_000) {
+  const socket = process.env.SP_OFFLOAD_SOCKET;
+  if (!socket) return Promise.reject(new Unavailable('SP_OFFLOAD_SOCKET is not set'));
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    const s = net.createConnection(socket, () => s.write(`${JSON.stringify(req)}\n`));
+    const timer = setTimeout(() => s.destroy(new Error('the offload socket did not answer')), timeoutMs);
+    s.setEncoding('utf8');
+    s.on('data', (d) => (buf += d));
+    s.on('error', (e) => (clearTimeout(timer), reject(req.op === 'health' ? new Unavailable(e.message) : e)));
+    s.on('end', () => {
+      clearTimeout(timer);
+      let r;
+      try {
+        r = JSON.parse(buf.split('\n')[0]);
+      } catch {
+        return reject(new Error('the offload socket answered garbage'));
+      }
+      if (!r.ok) return reject(r.code === 'unavailable' ? new Unavailable(r.error) : new Error(r.error ?? 'refused'));
+      resolve(r);
+    });
+  });
+}
+
+/** The current directory as a gzipped tarball in `file`. */
+function pack(file) {
+  const git = spawnSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { maxBuffer: 1 << 30 });
+  const args = ['-czf', file, '--no-recursion'];
+  const r =
+    git.status === 0
+      ? spawnSync('tar', [...args, '--null', '-T', '-'], { input: existing(git.stdout), stdio: ['pipe', 'ignore', 'pipe'] })
+      : spawnSync('tar', ['-czf', file, '--exclude', './.git', '.'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  if (r.status !== 0) throw new Error(`tar: ${String(r.stderr).trim()}`);
+  return statSync(file).size;
+}
+/** `git ls-files -c` also lists files deleted in the work tree; tar would fail on them. */
+const existing = (z) => Buffer.from(z.toString('utf8').split('\0').filter((f) => {
+  try {
+    return f && statSync(f, { throwIfNoEntry: false });
+  } catch {
+    return false;
+  }
+}).map((f) => `${f}\0`).join(''));
+
+/** Every entry of `tgz` stays under the directory it is unpacked into: no absolute path, no `..`, no link out. */
+export function checkEntries(listing) {
+  for (const line of listing.split('\n').filter(Boolean)) {
+    const type = line[0];
+    const m = line.match(/^\S+\s+\S+\s+\d+\s+\S+\s+\S+\s(.*)$/);
+    if (!m) throw new Error(`artifact: cannot read entry ${JSON.stringify(line)}`);
+    let name = m[1];
+    let target;
+    if (type === 'l' || type === 'h') {
+      const sep = type === 'l' ? ' -> ' : ' link to ';
+      const parts = name.split(sep);
+      if (parts.length !== 2) throw new Error(`artifact: ambiguous link entry ${JSON.stringify(name)}`);
+      [name, target] = parts;
+    } else if (!'-d'.includes(type)) throw new Error(`artifact: entry ${JSON.stringify(name)} is not a file, directory or link`);
+    if (!relativeInside(name)) throw new Error(`artifact: entry ${JSON.stringify(name)} leaves the directory`);
+    if (target !== undefined) {
+      const resolved = type === 'l' ? path.join(path.dirname(name), target) : target;
+      if (path.isAbsolute(target) || !relativeInside(resolved)) throw new Error(`artifact: link ${JSON.stringify(name)} points outside`);
+    }
+  }
+}
+
+function unpack(tgz) {
+  const list = spawnSync('tar', ['-tvzf', tgz, '--numeric-owner', '--quoting-style=literal'], { maxBuffer: 1 << 28 });
+  if (list.status !== 0) throw new Error(`tar: ${String(list.stderr).trim()}`);
+  checkEntries(String(list.stdout));
+  const x = spawnSync('tar', ['-xzf', tgz, '--no-same-owner', '--no-overwrite-dir'], { stdio: ['ignore', 'inherit', 'pipe'] });
+  if (x.status !== 0) throw new Error(`tar: ${String(x.stderr).trim()}`);
+}
+
+async function put(url, file, bytes) {
+  const r = await fetch(url, { method: 'PUT', body: createReadStream(file), duplex: 'half', headers: { 'content-length': String(bytes) } });
+  if (!r.ok) throw new Error(`upload failed: HTTP ${r.status}`);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  let o;
+  try {
+    o = parse(process.argv.slice(2));
+  } catch (e) {
+    console.error(`oc-offload: ${e.message}\n${USAGE}`);
+    return 2;
+  }
+  if (o.help) return console.log(USAGE), 0;
+  const health = await ask({ op: 'health' }, 5000);
+  if (!health.ready) throw new Unavailable(health.reason ?? 'not ready');
+  if (health.sizes && !health.sizes.includes(o.size)) throw new Error(`size ${o.size} is not offered on this host (${health.sizes.join(', ') || 'none'})`);
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'oc-offload-'));
+  let id;
+  let done = false;
+  process.on('SIGINT', () => {
+    if (!id || done) process.exit(130);
+    console.error('\noc-offload: cancelling');
+    ask({ op: 'cancel', id }, 10_000).catch(() => {}).finally(() => (rmSync(tmp, { recursive: true, force: true }), process.exit(130)));
+  });
+  try {
+    const src = path.join(tmp, 'src.tgz');
+    const bytes = pack(src);
+    const capMb = Number(health.sourceMaxMb) || 2048;
+    if (bytes > capMb * 1024 * 1024) throw new Error(`the source is ${(bytes / 1048576).toFixed(0)} MiB, over this host's ${capMb} MiB`);
+    const sub = await ask({ op: 'submit', size: o.size, cmd: o.cmd, artifacts: o.artifacts, timeoutMin: o.timeoutMin, sourceBytes: bytes });
+    id = sub.id;
+    console.error(`oc-offload: job ${id} (${o.size}, ${sub.minutes} min at most), ${(bytes / 1048576).toFixed(1)} MiB of source`);
+    await put(sub.srcPutUrl, src, bytes);
+    await ask({ op: 'start', id });
+    let offset = 0;
+    let job;
+    let said;
+    for (;;) {
+      const l = await ask({ op: 'logs', id, offset });
+      if (l.data) process.stdout.write(Buffer.from(l.data, 'base64'));
+      offset = l.next ?? offset;
+      job = (await ask({ op: 'status', id })).job;
+      if (job.state === 'queued' && job.queuePosition && said !== job.queuePosition) console.error(`oc-offload: queued (${(said = job.queuePosition)} ahead)`);
+      if (l.eof) break;
+      if (!l.data) await sleep(POLL_MS);
+    }
+    done = true;
+    if (job.state !== 'done') {
+      console.error(`oc-offload: job ${id} ${job.state}${job.error ? `: ${job.error}` : ''}`);
+      return job.exitCode ?? (job.state === 'cancelled' ? 130 : 1);
+    }
+    if (o.artifacts.length && job.artifactSha256) {
+      const f = await ask({ op: 'fetch', id });
+      const r = await fetch(f.url);
+      if (!r.ok) throw new Error(`artifact download failed: HTTP ${r.status}`);
+      const body = Buffer.from(await r.arrayBuffer());
+      const sum = createHash('sha256').update(body).digest('hex');
+      if (sum !== f.sha256) throw new Error(`artifact checksum mismatch (${sum} != ${f.sha256})`);
+      const out = path.join(tmp, 'out.tgz');
+      writeFileSync(out, body);
+      unpack(out);
+      console.error(`oc-offload: unpacked ${(body.length / 1048576).toFixed(1)} MiB of artifacts`);
+    }
+    return job.exitCode ?? 0;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+  main().then(
+    (code) => process.exit(code),
+    (e) => {
+      if (e instanceof Unavailable) {
+        console.error(`${UNAVAILABLE} (${e.message})`);
+        process.exit(3);
+      }
+      console.error(`oc-offload: ${e.message}`);
+      process.exit(1);
+    },
+  );
+}
+
