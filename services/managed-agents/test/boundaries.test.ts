@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 const SRC = path.join(__dirname, "..", "src");
 const LIBRARIES = ["durable", "encoding", "ids", "telemetry", "crypto", "api-objects", "host-protocol", "slack-api", "auth"];
 /** Worker entries: they export Durable Object classes, so they import `durable-object.ts`. */
-const ENTRIES = ["edge/index.ts", "actors/live/worker.ts", "previews/index.ts"];
+const ENTRIES = ["edge/index.ts", "actors/live/worker.ts", "previews/index.ts", "selfhost/entry.ts"];
 const EXISTING: string[] = [
   "edge/computer-grants.ts -> actors/computer/durable-object.ts (reaches into an actor past its contract)",
   "edge/index.ts -> actors/computer/config.ts (reaches into an actor past its contract)",

@@ -57,6 +57,7 @@
           "self-hosting/azure",
           "self-hosting/aws",
           "self-hosting/gcp",
+          "self-hosting/single-vm",
           "self-hosting/enterprise"
         ]
       },
@@ -177,6 +178,10 @@
     }
   },
   "redirects": [
+    {
+      "source": "/self-hosting/community-edition",
+      "destination": "/self-hosting/single-vm"
+    },
     {
       "source": "/agents/examples/exa-research-session",
       "destination": "/agents/examples/gtm-engineer"

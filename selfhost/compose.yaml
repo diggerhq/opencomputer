@@ -1,0 +1,76 @@
+# Single-VM self-host: the containers. The gateway is the hosted one
+# (services/managed-agents, Computer path; api-edge and the web dashboard in
+# front) under Miniflare: selfhost/gateway.
+# Spike: the host <-> gateway contract is the hosted one, not #1204's CONTRACT.md.
+#
+#   cp .env.example .env    # fill it in
+#   podman compose up -d                      # gateway only (bring your own tunnel)
+#   # kept up across kills and reboots: systemd/opencomputer-gateway.service (gateway/README.md)
+#   podman compose --profile cloudflared up -d   # or with a Cloudflare tunnel
+#
+# `docker compose` reads the same file. Guide: docs/self-hosting/single-vm.mdx.
+#
+# Who connects to whom: Slack calls the gateway over HTTPS through the tunnel
+# (PUBLIC_URL). The host agent on the VM dials the gateway's WebSocket at
+# ws://127.0.0.1:${GATEWAY_PORT}/v1/computer/host?organizationId=${GATEWAY_ORG}
+# (its SP_GATEWAY_URL), with SP_HOST_ID=${GATEWAY_ORG} and SP_HOST_TOKEN the
+# contents of /data/host-token in the gateway's volume. The gateway itself
+# makes no calls to the host agent or the model proxy; it sends hosts their
+# credentials over that WebSocket.
+
+name: opencomputer
+
+services:
+  gateway:
+    # selfhost/gateway/Dockerfile: the Worker bundles, the dashboard and Miniflare.
+    image: ${GATEWAY_IMAGE:-computer-gateway:local}
+    build:
+      context: ..
+      dockerfile: selfhost/gateway/Dockerfile
+    # `always`, not `unless-stopped`: Podman 4.9's podman-restart.service
+    # (Ubuntu 24.04) revives only `always` containers after a reboot.
+    restart: always
+    # Loopback only: the host agent dials here, the tunnel reaches the
+    # gateway over the compose network. Nothing else should.
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    environment:
+      # The operator's credential: /setup's sign-in and the bearer for /v1/computer (the hosted BLUE_API_KEY path).
+      SETUP_TOKEN: ${SETUP_TOKEN:?set SETUP_TOKEN in .env (openssl rand -hex 32)}
+      # The public https origin (PUBLIC_URL; SP_ORIGIN is its older name).
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      SP_ORIGIN: ${SP_ORIGIN:-}
+      # 1: /setup stays open after the required steps are done.
+      SP_SETUP_OPEN: ${SP_SETUP_OPEN:-}
+      # The host-side port, for the host install command /setup shows.
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      GATEWAY_ORG: ${GATEWAY_ORG:-org_selfhost}
+      # The sessions' Anthropic key (the hosted shared-key fallback); optional.
+      COMPUTER_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Durable Objects, D1, R2 and KV state, the generated keys and the host token.
+      - gateway-data:/data
+    healthcheck:
+      # A shell string, not exec form: podman-compose re-quotes exec form.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Cloudflare Tunnel (named tunnel, token from the Zero Trust dashboard).
+  # Its public hostname's service must be http://gateway:8080.
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
+    profiles: ["cloudflared"]
+    restart: always
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - gateway
+
+volumes:
+  # The whole instance: Miniflare's persisted state (do/, d1/, r2/, kv/),
+  # keys.json (generated once; back it up with the volume) and host-token.
+  gateway-data:

@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Self-host spike (selfhost/gateway): the Computer path of the edge, for one VM under Miniflare.
+  // Bundled with `wrangler deploy --dry-run --outdir`; selfhost/gateway/serve.mjs runs the bundle and
+  // supplies the secrets (BLUE_API_KEY, COMPUTER_HOST_TOKEN_KEY, BLUE_CHANNEL_ENCRYPTION_KEY, …).
+  // Never deployed to Cloudflare.
+  "name": "selfhost-gateway",
+  "main": "src/selfhost/entry.ts",
+  "compatibility_date": "2026-07-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "vars": {
+    "BLUE_ENVIRONMENT": "selfhost",
+    "BLUE_ACCOUNT_ID": "org_selfhost",
+    "COMPUTER_VMS": "self-managed"
+  },
+  "d1_databases": [
+    { "binding": "SERVERLESS_AGENTS_DB", "database_name": "selfhost", "database_id": "00000000-0000-0000-0000-000000000001", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "session-log" }],
+  "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "COMPUTERS", "class_name": "ComputerDurableObject" },
+      { "name": "SESSION_LOG", "class_name": "SessionLogDurableObject" },
+      { "name": "ORGS", "class_name": "OrgDurableObject" },
+      { "name": "SLACK", "class_name": "SlackDurableObject" },
+      { "name": "LIVE", "class_name": "LiveDurableObject" },
+      { "name": "ACCOUNTS", "class_name": "SelfhostAccountDurableObject" }
+    ]
+  },
+  "services": [{ "binding": "EDGE", "service": "selfhost-gateway", "entrypoint": "LiveCredentials" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ComputerDurableObject", "SessionLogDurableObject", "OrgDurableObject", "SlackDurableObject", "LiveDurableObject", "SelfhostAccountDurableObject"] }
+  ]
+}

@@ -66,6 +66,8 @@ export function modelCredentials(organizationKey: string | null, env: SharedMode
 /** The profile that spends the organization's key, and the one that spends the shared key (the proxy's default profiles). */
 export const MANAGED_MODEL_PROFILE = "openrouter";
 export const SHARED_KEY_PROFILE = "anthropic-key";
+/** The proxy's profile for a Claude subscription's OAuth token (computer/modelproxy/profiles/default.json). */
+export const CLAUDE_OAUTH_PROFILE = "claude-oauth";
 
 /** What a thread hears when its computer has no managed credential at all; the host says the same of a session with no route. */
 export const NO_MODEL_CREDENTIAL = "No model credential is configured for this computer.";
@@ -92,13 +94,20 @@ async function profileRoute(profiles: readonly ModelProfile[] | undefined, profi
   return { mode: "profile", profile, vars, key: await modelKey(profile, vars) };
 }
 
+/** The proxy profile that spends the organization's key: hosted keys are OpenRouter's; a self-hosted gateway's (selfhost/account.ts) is Anthropic's, an API key or a Claude subscription token. */
+export function organizationKeyProfile(key: string): string {
+  if (key.startsWith("sk-ant-oat")) return CLAUDE_OAUTH_PROFILE;
+  if (key.startsWith("sk-ant-")) return SHARED_KEY_PROFILE;
+  return MANAGED_MODEL_PROFILE;
+}
+
 /** Protocol 5's `modelCredentials`: the managed route of a host that lists `profiles`, and whether it is the shared key's. */
 export async function managedModelRoute(
   organizationKey: string | null,
   env: SharedModelEnv,
   profiles: readonly ModelProfile[] | undefined,
 ): Promise<{ route: ModelRoute; fallback: boolean }> {
-  if (organizationKey) return { route: await profileRoute(profiles, MANAGED_MODEL_PROFILE, { token: organizationKey }), fallback: false };
+  if (organizationKey) return { route: await profileRoute(profiles, organizationKeyProfile(organizationKey), { token: organizationKey }), fallback: false };
   if (env.COMPUTER_ANTHROPIC_API_KEY) return { route: await profileRoute(profiles, SHARED_KEY_PROFILE, { token: env.COMPUTER_ANTHROPIC_API_KEY }), fallback: true };
   return { route: { mode: "refuse", reason: NO_MODEL_CREDENTIAL }, fallback: true };
 }

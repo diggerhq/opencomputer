@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { useEffect, type ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { CircleAlert, Loader2 } from 'lucide-react'
@@ -32,7 +33,9 @@ import { cn } from '@/lib/utils'
 // the header pill, the warning banner and the halt modal. All read the shared
 // 'autumn-billing' poll; legacy orgs 404 there and see none of them.
 
-export function BillingPill({ className }: { className?: string }) {
+export const BillingPill = SELFHOST ? () => null : BillingPillImpl
+
+function BillingPillImpl({ className }: { className?: string }) {
   const { billing } = useCreditState()
   const text = billing ? billingPillText(billing) : null
   if (!billingOnrampV2Enabled || !text) return null
@@ -61,7 +64,9 @@ export function BillingPill({ className }: { className?: string }) {
   )
 }
 
-export function BillingWarningBanner() {
+export const BillingWarningBanner = SELFHOST ? () => null : BillingWarningBannerImpl
+
+function BillingWarningBannerImpl() {
   const location = useLocation()
   const { billing, warning } = useCreditState()
   const onBilling = location.pathname.startsWith('/billing')
@@ -100,7 +105,9 @@ export function BillingWarningBanner() {
 // Blocks every page while the org's halt stops work. The Billing page is the one
 // exception: it shows the same notice inline so plans, packs and the card
 // stay reachable there.
-export function HaltModal() {
+export const HaltModal = SELFHOST ? () => null : HaltModalImpl
+
+function HaltModalImpl() {
   const location = useLocation()
   const { billing, sessionsBlocked, haltReason, usagePlan } = useCreditState()
   const onBilling = location.pathname.startsWith('/billing')

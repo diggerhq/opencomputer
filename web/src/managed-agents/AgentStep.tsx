@@ -36,6 +36,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { AuthContext } from '@/hooks/useAuth'
 import { TRIAL_CREDITS_USD } from '@/lib/billing-onramp'
+import { SELFHOST } from '@/lib/selfhost'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import {
@@ -280,33 +281,35 @@ export function AgentSetup({
           onDone={onDone}
         />
       )}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3">
-        <div>
-          <p className="text-foreground font-semibold">
-            {agent.subscription
-              ? 'Switch to OpenComputer credits.'
-              : `No subscription? Your trial includes $${TRIAL_CREDITS_USD} of model credits.`}
-          </p>
-          <p>
-            {agent.subscription
-              ? `Disconnects ${PROVIDER_NAME[agent.subscription.provider]}; runs`
-              : 'Runs'}{' '}
-            {agent.managedModel} on our credits.
-          </p>
+      {!SELFHOST && (
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3">
+          <div>
+            <p className="text-foreground font-semibold">
+              {agent.subscription
+                ? 'Switch to OpenComputer credits.'
+                : `No subscription? Your trial includes $${TRIAL_CREDITS_USD} of model credits.`}
+            </p>
+            <p>
+              {agent.subscription
+                ? `Disconnects ${PROVIDER_NAME[agent.subscription.provider]}; runs`
+                : 'Runs'}{' '}
+              {agent.managedModel} on our credits.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => choose.mutate('credits')}
+            disabled={choose.isPending || onCredits}
+          >
+            {choose.isPending && choose.variables === 'credits' ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : null}
+            {onCredits
+              ? 'Using OpenComputer credits'
+              : 'Use OpenComputer credits'}
+          </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => choose.mutate('credits')}
-          disabled={choose.isPending || onCredits}
-        >
-          {choose.isPending && choose.variables === 'credits' ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-          ) : null}
-          {onCredits
-            ? 'Using OpenComputer credits'
-            : 'Use OpenComputer credits'}
-        </Button>
-      </div>
+      )}
     </>
   )
 }

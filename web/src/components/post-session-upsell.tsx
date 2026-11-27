@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
@@ -42,7 +43,9 @@ function rememberSession(sessionId: string): { index: number; show: boolean } {
 // Shown under a serverless-agent session once it has finished a turn, during
 // the trial. Sessions don't expose per-session cost, so the card speaks in
 // terms of the trial's work minutes instead.
-export function PostSessionUpsell({
+export const PostSessionUpsell = SELFHOST ? () => null : PostSessionUpsellImpl
+
+function PostSessionUpsellImpl({
   sessionId,
   completed,
   className,
