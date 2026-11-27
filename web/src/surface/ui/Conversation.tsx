@@ -396,7 +396,7 @@ function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   const pending =
     item.state && (item.state !== 'sending' || slow) && PENDING[item.state]
   return (
-    <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
+    <div className="bg-foreground/7 dark:bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
       {(item.author || item.via) && (
         <div className="text-muted-foreground text-meta">
           {[item.author, item.via].filter(Boolean).join(' · ')}
