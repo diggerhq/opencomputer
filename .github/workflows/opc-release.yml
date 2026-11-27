@@ -19,8 +19,8 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-16-64-20 }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { target: x86_64-apple-darwin, os: macos-14 }
-          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          - { target: aarch64-apple-darwin, os: macos-15 }
     runs-on: ${{ matrix.os }}
     env:
       HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERT_P12 != '' }}
