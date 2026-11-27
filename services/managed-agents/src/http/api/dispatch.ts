@@ -14,6 +14,7 @@ import type { RequestIdentity } from "../../edge/auth.js";
 import { crockfordId } from "../../ids/crockford.js";
 import { orgOf } from "../../actors/addresses.js";
 import { capabilities } from "../../api-objects/capabilities.js";
+import { attachmentsOf } from "../../attachments/store.js";
 import type { ComputerEdgeEnv } from "../../actors/computer/config.js";
 import { isSessionId } from "../../ids/session-ids.js";
 import { TICKET_MAX_SESSIONS } from "../../wire/ticket.js";
@@ -136,7 +137,7 @@ async function routeApi(
       : { op: "secrets.put", name, body: parsed.value });
   }
   if (route.op === "me") return call({ op: "me" });
-  if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities() });
+  if (route.op === "capabilities" && !route.sessionId) return out.send(200, { capabilities: capabilities(attachmentsOf(env) !== null) });
 
   const needsBody = request.method === "POST" || request.method === "PATCH" || request.method === "PUT";
   let body: unknown;
@@ -161,5 +162,5 @@ async function routeApi(
   // Per-session capabilities: the same for every session, once Org says the principal may see it.
   const sessionId = route.sessionId!;
   if (!isSessionId(sessionId) || !(await timedDo(out.facts, orgOf(env, p.org).getSession(p, sessionId))).ok) return out.error(404, "session_not_found", "No such session.");
-  return out.send(200, { capabilities: capabilities() });
+  return out.send(200, { capabilities: capabilities(attachmentsOf(env) !== null) });
 }

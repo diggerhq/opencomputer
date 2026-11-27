@@ -37,7 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { WebClient } from '@slack/web-api';
 import { Session, type SessionHooks } from './session.js';
-import { fetchAttachments, interruptDownloads } from './attachments.js';
+import { attachmentsDir, fetchAttachments, interruptDownloads, restoreAttachments } from './attachments.js';
 import { linkedFiles, slackLinked, withLinked } from '../links.js';
 import { commandAction, commandWord } from '../access.js';
 import type { SlackTurn } from './api/api.js';
@@ -337,6 +337,8 @@ let api: AttachedApi | undefined;
 async function link(b: Bound, a: RunnerApi | undefined = spec.api) {
   if (!a?.token || !s || api) return;
   api = await attachApi(a, s, { owner: b.owner, spec: b, redact: (t) => guard.redact(secrets.redact(t)), suspend: () => ((exiting = true), quit()), slack: slackMessage, attachments: apiAttachments, telemetry });
+  // A resume on a machine without them: the API attachments the conversation named come back at their paths, off the turn.
+  if (b.sessionId) void restoreAttachments(b.sessionId, { api: work.api }, attachmentsOf(b)).catch((e) => log.warn('attachments: not restored:', e?.message ?? e));
 }
 
 // A spare's Claude Code starts with what a session's would, reaching the session late-bound.
@@ -409,12 +411,17 @@ function clearFeedback(ts?: string) {
 const ordered = new Ordered(20_000, () => log.warn('a message is still being handled after 20 s; handling the next one'));
 const slackMessage = (text: string, m: SlackTurn, from: SentFrom) => ordered.run(() => handle(text, m, from));
 
-// An API message's attachments (work 126): fetched from the session's own attachment route with its key (`work.api`),
+// Where the session's attachments land (attachment-dir.ts): under the runner's home, the sandbox's one volume. A
+// download that outlasts its message's wait tells the model when it settles (late-notes.ts).
+const attachmentsOf = (b: Bound) => attachmentsDir(b.key, env.HOME || os.homedir());
+const lateNotes = { late: (note: string) => s?.notes.add(note) };
+
+// An API message's attachments (work 126): fetched through the session's own attachment route with its key (`work.api`),
 // into the same directory and under the same rules as a Slack message's files.
 function apiAttachments(atts: ApiAttachment[]) {
   if (!ss?.sessionId) return Promise.reject(new Error('this session has no id on the API yet'));
   const wanted = atts.map((a) => ({ ...a, source: 'api' as const, sessionId: ss!.sessionId! }));
-  return turns.timed('attachments', fetchAttachments(wanted, { api: work.api }, ss.key), { count: atts.length });
+  return turns.timed('attachments', fetchAttachments(wanted, { api: work.api }, attachmentsOf(ss), lateNotes), { count: atts.length });
 }
 
 async function handle(text: string, m: SlackTurn, from: SentFrom) {
@@ -437,7 +444,7 @@ async function handle(text: string, m: SlackTurn, from: SentFrom) {
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
   const linked = slackLinked(m);
   const files = [...(m.files ?? []), ...linkedFiles(linked)];
-  const fetching = fetchAttachments(files, { slack: botToken }, ss.key);
+  const fetching = fetchAttachments(files, { slack: botToken }, attachmentsOf(ss), lateNotes);
   const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;
   await s.send(withLinked(text, linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, from, owner ? 'owner' : 'driver');
   // The Slack actor set the status to `processing` on receipt. A reply that only

@@ -20,7 +20,7 @@ import { Session, prompts, type SessionInfo } from './runner/session.js';
 import { panels } from './runner/agents.js';
 import { ensureWorkdir } from './workspace.js';
 import { addressed, decodeSlack } from './slack-text.js';
-import { fetchAttachments, type SlackFile } from './runner/attachments.js';
+import { attachmentsDir, fetchAttachments, type SlackFile } from './runner/attachments.js';
 import { forwarded, linkedFiles, linkResolver, type SharedAttachment, withLinked } from './links.js';
 import { log } from './log.js';
 import { decodeActionId, type PermissionMode } from './protocol.js';
@@ -183,7 +183,7 @@ async function deliver(s: Session, m: Msg, text: string, mentioned = true, midTh
   const linked = [...forwarded(m.attachments), ...(await resolveLinks(s.client, req))];
   // Mentioned mid-thread: the replies above, so the new session sees what it was asked about.
   if (midThread) linked.unshift(await resolveLinks.thread(s.client, req, m.thread_ts!, m.ts));
-  const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], { slack: s.client.token ?? env.SLACK_BOT_TOKEN }, s.info.key);
+  const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], { slack: s.client.token ?? env.SLACK_BOT_TOKEN }, attachmentsDir(s.info.key), { late: (note) => s.notes.add(note) });
   await s.send(withLinked(text, linked), m.user!, atts, mentioned);
 }
 

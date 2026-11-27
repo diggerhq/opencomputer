@@ -1,10 +1,10 @@
 // Attachments (work 126): the rows of what people upload for a message, over Org's `attachment`
 // table. Pure functions over `Sql`; a refusal is a value. The bytes are the store's
-// (attachment-store.ts); Org owes `Attachments.delete` and `Attachments.removeAll` to it.
+// (attachments/store.ts); Org owes `Attachments.delete` and `Attachments.removeAll` to it.
 //
-// A row's life (section 3): `uploading` (the row made from the request's headers, before its body
-// is read) → `ready` (the object is stored, `etag` set) → `attached` (a turn reserved it) ; any of
-// the first two → `deleted` (kept ATTACHMENT_DELETED_KEEP_MS so a late reference answers 410).
+// A row's life (section 3): `uploading` (the row made, the uploader holds a signed URL) → `ready`
+// (the object is stored, `etag` set) → `attached` (a turn named it; more may) ; any of the first
+// two → `deleted` (kept ATTACHMENT_DELETED_KEEP_MS so a late reference answers 410).
 // The quota is taken at create, from the declared size, so parallel uploads cannot overshoot.
 //
 // `by` is the uploader's spec 34.1 string (`user:usr_…`), as `created_by` of a session is.
@@ -152,13 +152,13 @@ function oweDelete(sql: Sql, r: Pick<AttachmentRec, "id" | "session_id">): void 
   owed.add(sql, { group: `attachments:${r.session_id}`, key: `attachment:${r.id}`, call: "Attachments.delete", body: { sessionId: r.session_id, id: r.id } });
 }
 
-// ------------------------------------------------------------------ create, ready (PUT …/content)
+// ------------------------------------------------------------------ create, ready (PUT, POST …/complete)
 
 /**
- * The row of an upload, from the request's headers, before its body is read (section 4). A member
- * or a member's key, of a session Org does not hold yet or one they may write to. Idempotent by
- * id: the same uploader's same row answers `created: false` (a `ready` one tells the handler not to
- * read the body); another's, or other headers, is refused. The quota is taken now.
+ * The row of an upload, before any byte is sent (section 4). A member or a member's key, of a
+ * session Org does not hold yet or one they may write to. Idempotent by id: the same uploader's
+ * same row answers `created: false`; another's, or another name, type or size, is refused. The
+ * quota is taken now.
  */
 export function create(sql: Sql, now: number, p: Principal, sessionId: string, id: string, spec: AttachmentSpec): Reply<{ attachment: Attachment; created: boolean }> {
   if (!isMember(p)) return refusal("forbidden", 403, "Only a member uploads attachments.");
@@ -177,8 +177,7 @@ export function create(sql: Sql, now: number, p: Principal, sessionId: string, i
       if (existing.session_id !== sessionId || existing.name !== spec.name || existing.mimetype !== spec.mimetype || existing.bytes !== spec.bytes) {
         return refusal("content_mismatch", 400, "The attachment was created with another name, type, size or session.");
       }
-      if (existing.state === "attached") return inUse();
-      return { ok: true, attachment: apiAttachment(existing), created: existing.state === "uploading" };
+      return { ok: true, attachment: apiAttachment(existing), created: false };
     }
     const sessionBytes = sql.exec<{ b: number | null }>("SELECT SUM(bytes) AS b FROM attachment WHERE session_id = ? AND state != 'deleted'", sessionId)[0]?.b ?? 0;
     if (sessionBytes + spec.bytes > ATTACHMENT_SESSION_BYTES_MAX) return refusal("attachment_quota", 429, "The session's attachments are at their limit.", { limit: "session", max: ATTACHMENT_SESSION_BYTES_MAX });
@@ -200,12 +199,12 @@ export function create(sql: Sql, now: number, p: Principal, sessionId: string, i
   });
 }
 
-/** The object is stored: the row is `ready` with its etag. A `ready` row takes the new etag (a re-upload). */
+/** The object is stored: an `uploading` row is `ready` with its etag. One already `ready` or `attached` stays as it is (a retry). */
 export function ready(sql: Sql, now: number, id: string, etag: string): Reply<{ attachment: Attachment }> {
   const r = readAttachment(sql, id);
   if (!r) return notFound();
   if (r.state === "deleted") return deleted();
-  if (r.state === "attached") return inUse();
+  if (r.state !== "uploading") return { ok: true, attachment: apiAttachment(r) };
   sql.exec("UPDATE attachment SET state = 'ready', etag = ?, state_at = ? WHERE id = ?", etag, now, id);
   arm(sql);
   return { ok: true, attachment: apiAttachment(readAttachment(sql, id)!) };
@@ -245,13 +244,15 @@ export function remove(sql: Sql, now: number, p: Principal, sessionId: string, i
   });
 }
 
-// ------------------------------------------------------------------ reserve, release (a turn's attachments)
+// ------------------------------------------------------------------ reserve (a turn's attachments)
 
 /**
- * A turn names these attachments (section 6, D5): each must be `ready`, of this session, uploaded by
- * the caller or by a writer of the session; `p` must write to the session when Org holds it. All or
- * none are written `attached` to `turnId`. One already attached to the same turn is a retry. Answers
- * what the turn carries, in the order given.
+ * A turn names these attachments (section 6, D5): each must be stored, of this session, uploaded by
+ * the caller or by a writer of the session; `p` must write to the session when Org holds it. A
+ * `ready` one becomes `attached` to this turn; one already attached stays with its first turn, and
+ * this turn carries it as well. So a turn that is then not accepted leaves nothing to undo: its
+ * attachments can be sent again, and those of a session that never comes to be are swept.
+ * Answers what the turn carries, in the order given.
  */
 export function reserve(sql: Sql, now: number, p: Principal, sessionId: string, turnId: string, messageId: string | null, ids: string[]): Reply<{ attachments: AttachmentMeta[] }> {
   if (p.kind === "platform") return refusal("forbidden", 403);
@@ -273,23 +274,16 @@ export function reserve(sql: Sql, now: number, p: Principal, sessionId: string, 
     if (!r || r.session_id !== sessionId || !visibleTo(sql, p, r)) return notFound(id);
     if (r.state === "deleted") return deleted(id);
     if (r.state === "uploading") return refusal("attachment_not_ready", 409, "The attachment is still uploading.", { attachmentId: id });
-    if (r.state === "attached" && r.turn_id !== turnId) return inUse(id);
     if (r.by !== byOf(p) && !(s && access && uploaderWrites(s, access, r.by))) return notFound(id);
     rows.push(r);
   }
   return sql.transaction(() => {
-    for (const r of rows) sql.exec("UPDATE attachment SET state = 'attached', turn_id = ?, message_id = ?, state_at = ? WHERE id = ?", turnId, messageId, now, r.id);
+    for (const r of rows) {
+      if (r.state === "ready") sql.exec("UPDATE attachment SET state = 'attached', turn_id = ?, message_id = ?, state_at = ? WHERE id = ?", turnId, messageId, now, r.id);
+    }
     arm(sql);
     return { ok: true, attachments: rows.map(metaOf) };
   });
-}
-
-/** The turn was not accepted: what it reserved is `ready` again. Idempotent; only rows attached to this turn change. */
-export function release(sql: Sql, now: number, sessionId: string, turnId: string, ids: string[]): void {
-  for (const id of ids) {
-    sql.exec("UPDATE attachment SET state = 'ready', turn_id = NULL, message_id = NULL, state_at = ? WHERE id = ? AND session_id = ? AND state = 'attached' AND turn_id = ?", now, id, sessionId, turnId);
-  }
-  arm(sql);
 }
 
 // ------------------------------------------------------------------ the sweep, a session's removal

@@ -48,7 +48,7 @@ const OPS = new Set([
   "asks.list", "asks.get", "asks.answer", "asks.dismiss", "subagents.list", "subagents.get", "subagents.stop",
   "work.repository.get", "work.repository.put", "work.repositories",
   "feed", "occurrences", "mutate", "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search",
-  "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.content",
+  "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.complete", "attachments.url",
 ]);
 
 /** The request's one `httpapi.request`; never throws, never awaited. */

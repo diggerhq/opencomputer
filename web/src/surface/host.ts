@@ -19,9 +19,11 @@ export interface Host {
   name?: string
   api: {
     fetch(path: string, init?: RequestInit): Promise<Response>
-    // An attachment's PUT with progress (work 126, K3): XMLHttpRequest in a
-    // browser, where `fetch` reports none. Without it the client uses `fetch`.
-    upload?(path: string, req: UploadRequest): Promise<Response>
+    // An attachment's bytes to their signed URL, with progress (work 126, K3):
+    // XMLHttpRequest in a browser, where `fetch` reports none. `url` is
+    // absolute, on whatever host the server named, and is its own authority:
+    // no credential goes with it. Without this the client uses `fetch`.
+    uploadTo?(url: string, req: UploadRequest): Promise<Response>
   }
   connect(): Channel
   notify(n: {

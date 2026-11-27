@@ -6,10 +6,13 @@
 // big file finishes while a stalled one does not hold up the message; the byte
 // count holds the size cap whatever the source declared.
 //
-// A background download (the file arrives after the message went to the model)
-// is tracked here: a failure leaves the reason in `<file>.error`, and a runner
-// that exits interrupts every one (`interruptDownloads`), so the model never
-// waits on a file nothing is downloading.
+// Two requests for one file share one transfer (`transfer`, by path): the same
+// attachment named by two messages, or a message and the restore at resume.
+// A transfer that outlasts its message's wait goes on in the background
+// (`later`): when it settles the caller is told, a failure also leaves the
+// reason in `<file>.error`, and a success removes an `.error` an earlier try
+// left. A runner that exits interrupts every transfer (`interruptDownloads`),
+// so the model never waits on a file nothing is downloading.
 //
 // Credentials never enter this file: `Open` is the source's own fetch, with its
 // own headers and host rules (attachments.ts), and a Response is all it yields.
@@ -26,45 +29,83 @@ export interface Limits {
   maxBytes: number;
   /** A download that sends nothing for this long is dropped. */
   stallMs: number;
-  /** Files up to this size arrive before the message; larger ones download in the background. */
-  waitBytes: number;
+  /** How long a message waits for its files; a download still running then goes on in the background. */
+  waitMs: number;
+  /** The bound on a session's attachment directory (attachment-dir.ts). */
+  dirBytes: number;
 }
 
-export const LIMITS: Limits = { maxBytes: 1024 * 1024 * 1024, stallMs: 60_000, waitBytes: 5 * 1024 * 1024 };
+const GIB = 1024 * 1024 * 1024;
+export const LIMITS: Limits = { maxBytes: GIB, stallMs: 60_000, waitMs: 15_000, dirBytes: 5 * GIB };
 
 /** A source's fetch: resolves with a response whose body is the file (status checked), or throws the reason. */
 export type Open = (signal: AbortSignal) => Promise<Response>;
 
-/** Background downloads in flight, with the controller that interrupts each. */
-const inflight = new Map<Promise<void>, AbortController>();
-
-/** Resolves once no background download is in flight. */
-async function downloadsSettled() {
-  while (inflight.size) await Promise.all(inflight.keys());
+/** One file on its way to disk: `done` is its size once it is at its path. */
+export interface Transfer {
+  done: Promise<number>;
+  stop: AbortController;
+  /** Set once it went to the background: settles when the caller was told. */
+  late?: Promise<void>;
+  /** Settles when nothing of it is left to do. */
+  settled: Promise<void>;
 }
 
-/** Stops every background download; each leaves `<path>.error` saying so. Resolves once they have. */
-export function interruptDownloads() {
-  for (const c of inflight.values()) c.abort(new Error('interrupted: the session stopped before the download finished; ask for the file again'));
-  return downloadsSettled();
+/** Transfers in flight, by the path each lands at. */
+const inflight = new Map<string, Transfer>();
+
+/** Whether `file` is being downloaded now. */
+export const downloading = (file: string) => inflight.has(file);
+
+/** Stops every transfer; each one in the background leaves `<path>.error` saying so. Resolves once they have. */
+export async function interruptDownloads() {
+  for (const t of inflight.values()) t.stop.abort(new Error('interrupted: the session stopped before the download finished; ask for the file again'));
+  while (inflight.size) await Promise.all([...inflight.values()].map((t) => t.settled));
+}
+
+/** The transfer of `file`: the one in flight if there is one, else a new one from `open`. */
+export function transfer(open: Open, file: string, limits: Limits): Transfer {
+  const have = inflight.get(file);
+  if (have) return have;
+  const stop = new AbortController();
+  const done = download(open, file, limits, stop.signal).then(async (bytes) => {
+    await rm(`${file}.error`, { force: true }).catch(() => {}); // an earlier try's reason no longer holds
+    return bytes;
+  });
+  const t: Transfer = { done, stop, settled: Promise.resolve() };
+  t.settled = done
+    .then(
+      () => {},
+      () => {},
+    )
+    .then(() => t.late)
+    .finally(() => inflight.get(file) === t && inflight.delete(file));
+  inflight.set(file, t);
+  return t;
 }
 
 /**
- * Downloads `file` in the background: settles when it is at `file` or `<file>.error` says why not. `name` labels the log line.
+ * `t` goes on in the background, once however many ask: when it settles `told` hears (with the reason, if it failed),
+ * and a failure leaves the reason in `<file>.error` too. `name` labels the log line. Never rejects.
  */
-export function background(open: Open, file: string, name: string, limits: Limits): Promise<void> {
-  const stop = new AbortController();
-  const pending = download(open, file, limits, stop.signal)
-    .then(
-      () => {},
-      async (e) => {
-        log.warn(`attachment ${name} failed: ${e?.message ?? e}`);
-        await writeFile(`${file}.error`, `${e?.message ?? e}\n`).catch(() => {});
-      },
-    )
-    .finally(() => inflight.delete(pending));
-  inflight.set(pending, stop);
-  return pending;
+export function later(t: Transfer, file: string, name: string, told: (error?: string) => void = () => {}): Promise<void> {
+  const tell = (error?: string) => {
+    try {
+      told(error);
+    } catch (e) {
+      log.warn(`attachment ${name}: the note was not delivered:`, e);
+    }
+  };
+  t.late ??= t.done.then(
+    () => tell(),
+    async (e) => {
+      const error = String(e?.message ?? e);
+      log.warn(`attachment ${name} failed: ${error}`);
+      await writeFile(`${file}.error`, `${error}\n`).catch(() => {});
+      tell(error);
+    },
+  );
+  return t.late;
 }
 
 /** Streams one file to `<file>.part`, renames it to `file` and returns its size. */

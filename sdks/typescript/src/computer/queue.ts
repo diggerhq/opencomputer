@@ -10,6 +10,8 @@
 // `track.create`; a result; a proposal) waits until that entry is answered 2xx. A turn or a create
 // with `attachments` waits until every one is `ready` (attachments.ts; work 126, D2), and fails
 // without being sent when one of them failed or was removed; an entry without them never waits.
+// When the server refuses the entry for one of its files (it expired, it is not there), that file
+// is marked `failed` too.
 //
 // Replies. 2xx: answered. 429, 5xx and a network error: again after 1 s doubling to 60 s, or at
 // once when the socket comes online. Any other 4xx: the entry fails.
@@ -107,10 +109,10 @@ function names(p: Pending): string[] {
   return Object.values(p.args).filter((v): v is string => typeof v === "string" && !made.includes(v));
 }
 
-function request(e: Stored, attachments: Attachments): [path: string, init: RequestInit] {
+function request(e: Stored): [path: string, init: RequestInit] {
   const p = e.p;
   const ids = attachmentsOf(p);
-  const refs = ids.length ? attachments.remote(ids) : undefined;
+  const refs = ids.length ? ids : undefined;
   const headers: Record<string, string> = { "content-type": "application/json", "x-oc-trace": e.trace, "Idempotency-Key": e.idem };
   const write = (method: string, path: string, body: unknown): [string, RequestInit] => [path, { method, headers, body: JSON.stringify(body) }];
   const post = (path: string, body: unknown) => write("POST", path, body);
@@ -242,7 +244,7 @@ export function createQueue(ctx: Ctx, feed: FeedView, attachments: Attachments):
     const retry = ctx.backoff();
     for (let e = next(l); e && !ctx.closed; e = next(l)) {
       if (e.p.kind === "turn") e.sentVersion = feed.row("session", e.p.sessionId)?.version;
-      const reply = await ctx.request(...request(e, attachments)).catch(() => null);
+      const reply = await ctx.request(...request(e)).catch(() => null);
       if (ctx.closed) return;
       if (!held(e)) continue; // the feed confirmed or failed it meanwhile
       if (!reply || transient(reply.status)) await retry.wait();
@@ -256,10 +258,16 @@ export function createQueue(ctx: Ctx, feed: FeedView, attachments: Attachments):
 
   function answer(e: Entry, reply: Reply): void {
     const p = e.p;
-    if (reply.status >= 300) return fail(e, refusal(reply));
+    const ids = attachmentsOf(p);
+    if (reply.status >= 300) {
+      const why = refusal(reply);
+      fail(e, why);
+      // Refused for one of its files: that file is `failed`, so the person sees which to remove.
+      if (ids.length) attachments.refused(ids, why);
+      return;
+    }
     e.answered = true;
     // Its attachments are `attached` on the server now: the local files go.
-    const ids = attachmentsOf(p);
     if (ids.length) attachments.forget(ids);
     if (p.kind === "mutation") {
       e.version = Number(reply.body?.version ?? 0);

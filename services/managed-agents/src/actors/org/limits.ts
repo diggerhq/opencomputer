@@ -15,10 +15,11 @@ export const WAKE_DEBOUNCE_MS = 20_000;
  */
 export const NOTICE_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000, 60_000, 60_000];
 
-// Attachments (work 126, section 8): the limits Org owns. The bytes of one attachment are the API
-// handler's (http/api/attachment-routes.ts); the count per message the edge's and the SDK's.
+// Attachments (work 126, section 8): the limits Org owns. The count per message is the edge's and the SDK's.
+/** Bytes of one attachment: well under what a store takes in one PUT (5 GiB). */
+export const ATTACHMENT_BYTES_MAX = 1024 * 1024 * 1024;
 /** Bytes of one session's attachments, counted from the declared size at create so parallel uploads cannot overshoot. */
-export const ATTACHMENT_SESSION_BYTES_MAX = 1024 * 1024 * 1024;
+export const ATTACHMENT_SESSION_BYTES_MAX = 5 * 1024 * 1024 * 1024;
 /** Bytes of one organization's attachments; past it `attachment_quota` names `organization`. */
 export const ATTACHMENT_ORG_BYTES_MAX = 20 * 1024 * 1024 * 1024;
 /** An `uploading` row this old is swept: the common interrupted upload is a laptop that resumes next morning. */

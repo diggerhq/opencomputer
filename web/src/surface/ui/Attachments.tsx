@@ -8,34 +8,26 @@ import { formatBytes, isImage, SessionContext } from './attachment-rules'
 import { I } from './icons'
 
 // Files on messages (work 126): the chips under a composer while they upload,
-// and the chips on a sent message. An image is shown as a thumbnail, from the
-// local file while it is pending and from the server once sent; the bytes
-// are always fetched with the credential, never put in an `<img src>` (the
-// API's cookie is not sent for one from another origin).
+// and the chips on a sent message. An image is shown as a thumbnail: from the
+// file itself while this page still has it (it was attached here), and once
+// sent from a signed URL of the server, straight in an `<img src>`. The URL is
+// its own authority and short-lived; the client keeps it until it nears its end.
 
-// An object URL for `load`'s blob, revoked when it is no longer shown.
-function useObjectUrl(load: (() => Promise<Blob | undefined>) | null, key: string): string | null {
+// An object URL of a file this page holds, revoked when it is no longer shown.
+function useLocalUrl(blob: Blob | undefined): string | null {
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
-    if (!load) return
-    let made: string | null = null
-    let gone = false
-    load().then(
-      (blob) => {
-        if (gone || !blob) return
-        made = URL.createObjectURL(blob)
-        setUrl(made)
-      },
-      () => {},
-    )
+    if (!blob) return
+    // The URL is a resource made here and revoked in the cleanup; publishing
+    // it is the one render this effect causes.
+    const made = URL.createObjectURL(blob)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUrl(made)
     return () => {
-      gone = true
-      if (made) URL.revokeObjectURL(made)
+      URL.revokeObjectURL(made)
       setUrl(null)
     }
-    // `key` stands for `load`: a new file, a new reader.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [blob])
   return url
 }
 
@@ -47,7 +39,8 @@ export function DraftChip({ id, draftKey }: { id: string; draftKey: string }) {
   const surface = useSurface()
   const a = useS((s) => s.attachments.find((x) => x.id === id))
   const image = a && isImage(a)
-  const url = useObjectUrl(image ? () => surface.client.attachmentFile(id) : null, image ? id : '')
+  // After a reload the page has no bytes: a plain file chip.
+  const url = useLocalUrl(image ? surface.attachmentBlob(id) : undefined)
   if (!a) return null
   const failed = a.state === 'failed'
   const pct = Math.round(a.progress * 100)
@@ -108,27 +101,49 @@ export function DraftChips({ draftKey, ids }: { draftKey: string; ids: string[] 
 
 // ---- on a message ----
 
+// One box for the placeholder and the picture, so a row does not move when it loads.
+const IMAGE_BOX = 'relative block h-36 w-48 overflow-hidden rounded-lg border'
+
 function MessageImage({ a, sending }: { a: ItemAttachment; sending: boolean }) {
   const surface = useSurface()
   const sid = useContext(SessionContext)
   const [open, setOpen] = useState(false)
-  const url = useObjectUrl(sending ? () => surface.client.attachmentFile(a.id) : () => surface.client.readAttachment(sid, a.id), `${sending}:${sid}:${a.id}`)
+  // The file, when it was attached in this page: taken once and shown from
+  // then on, so the picture does not change when the message is accepted.
+  const [blob] = useState(() => surface.attachmentBlob(a.id))
+  const local = useLocalUrl(blob)
+  // Else the server's, once it has the message.
+  const [signed, setSigned] = useState<string | null>(null)
+  const ask = !blob && !sending
+  useEffect(() => {
+    if (!ask) return
+    let gone = false
+    surface.client.attachmentUrl(sid, a.id).then(
+      (url) => void (gone || setSigned(url)),
+      () => {},
+    )
+    return () => {
+      gone = true
+    }
+  }, [surface, ask, sid, a.id])
+  const url = local ?? signed
   if (!url)
     return (
-      <span className={cn(CHIP, 'bg-background/40 h-24 w-32 animate-pulse justify-center')} title={a.name}>
+      <span className={cn(CHIP, IMAGE_BOX, 'bg-background/40 justify-center', ask && 'animate-pulse')} title={a.name}>
         <span className="truncate">{a.name}</span>
+        {sending && a.upload !== 'ready' && <Progress a={a} />}
       </span>
     )
   return (
     <>
       <button
         type="button"
-        className="focus-visible:ring-ring/50 relative block overflow-hidden rounded-lg border outline-none focus-visible:ring-3"
+        className={cn(IMAGE_BOX, 'focus-visible:ring-ring/50 outline-none focus-visible:ring-3')}
         title={a.name}
         aria-label={`Open ${a.name}`}
         onClick={() => setOpen(true)}
       >
-        <img src={url} alt={a.name} className="max-h-48 max-w-64 object-cover" />
+        <img src={url} alt={a.name} loading="lazy" decoding="async" className="size-full object-cover" />
         {sending && a.upload !== 'ready' && <Progress a={a} />}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -160,18 +175,21 @@ function MessageFile({ a, sending }: { a: ItemAttachment; sending: boolean }) {
   const surface = useSurface()
   const sid = useContext(SessionContext)
   const [busy, setBusy] = useState(false)
-  // The bytes come with the credential; a link to `…/content` would not carry it.
+  // The browser fetches the file itself, from a signed URL that says
+  // "attachment": nothing of it is held in this page. The Mac app does not
+  // navigate away from itself, so there the URL goes to the browser.
   const download = async () => {
     setBusy(true)
     try {
-      const blob = sending ? await surface.client.attachmentFile(a.id) : await surface.client.readAttachment(sid, a.id)
-      if (!blob) return
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = a.name
-      link.click()
-      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      const url = await surface.client.attachmentUrl(sid, a.id, { download: true })
+      if (surface.host.platform === 'desktop') surface.openExternal(url)
+      else {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = a.name
+        link.rel = 'noopener'
+        link.click()
+      }
     } catch {
       surface.toast({ text: `Could not download ${a.name}`, tone: 'error' })
     } finally {
@@ -183,8 +201,8 @@ function MessageFile({ a, sending }: { a: ItemAttachment; sending: boolean }) {
     <button
       type="button"
       className={cn(CHIP, 'focus-visible:ring-ring/50 hover:bg-background relative overflow-hidden outline-none focus-visible:ring-3', failed && 'border-destructive/50 text-destructive')}
-      title={failed ? `${a.name}: ${a.error ?? 'the upload failed'}` : `Download ${a.name}`}
-      disabled={busy}
+      title={failed ? `${a.name}: ${a.error ?? 'the upload failed'}` : sending ? a.name : `Download ${a.name}`}
+      disabled={busy || sending}
       onClick={() => void download()}
     >
       <span className="text-muted-foreground flex-none">{I.file}</span>

@@ -127,7 +127,8 @@ export function browserParts(): Pick<Host, 'notify' | 'badge' | 'openExternal' |
 
 // A PUT whose progress is reported (work 126, K3): `fetch` cannot say how much
 // of a body has gone, XMLHttpRequest can. The reply is read back as a Response
-// so the client treats it as any other.
+// so the client treats it as any other. A signed URL is sent to with
+// `credentials: false`: no cookie, and no header but the ones it was signed with.
 export function xhrUpload(url: string, req: UploadRequest, o?: { credentials?: boolean; headers?: Record<string, string> }): Promise<Response> {
   return new Promise<Response>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -177,7 +178,7 @@ export function webHost(o: {
         }
         return reply
       },
-      upload: (path, req) => xhrUpload(`${o.api}${path}`, req),
+      uploadTo: (url, req) => xhrUpload(url, req, { credentials: false }),
     },
     connect: () => socketChannel(ws, ['oc.live.v1']),
     location: urlLocation(o.base),

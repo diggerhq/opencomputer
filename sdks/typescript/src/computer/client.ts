@@ -2,7 +2,7 @@
 //
 // Storage keys: `meta` (the client id), `queue/<ms>-<key>`, `att/<id>` (a pending attachment),
 // `feed/cursor`, `feed/row/<kind>/<id>`, and with `keepEvents` `ev/<session>/cursor` and
-// `ev/<session>/e/<seq>`. The bytes of a pending attachment are in `files`.
+// `ev/<session>/e/<seq>`. The bytes of a pending attachment are in memory only.
 //
 // Nothing starts before `ready`: a stream subscribed earlier starts then, and a write made earlier
 // throws (the queue comes from storage).
@@ -12,7 +12,6 @@ import { createCtx, refusal } from "./ctx.js";
 import { createEvents } from "./events.js";
 import { createFeed } from "./feed.js";
 import { makeId } from "./ids.js";
-import { memoryFiles } from "./memory-files.js";
 import { createQueue } from "./queue.js";
 import { emitter, signal, type Emitter } from "./signal.js";
 import { Refused, type Channel, type Client, type ClientOptions, type Stream } from "./client-interface.js";
@@ -33,7 +32,7 @@ export function createClient(o: ClientOptions): Client {
   const status = signal<"connecting" | "online" | "offline">("connecting");
   const feed = createFeed(ctx, (frame) => queue.onFeed(frame));
   const events = createEvents(ctx, (id, evs) => queue.onEvents(id, evs));
-  const attachments = createAttachments(ctx, o.files ?? memoryFiles());
+  const attachments = createAttachments(ctx);
   const queue = createQueue(ctx, feed, attachments);
   attachments.changed.add(() => queue.pump());
   const watches = new Map<string, Watch>();
@@ -211,9 +210,8 @@ export function createClient(o: ClientOptions): Client {
     },
     attach: (sessionId, file, opts) => attachments.attach(sessionId, file, opts?.name),
     attachments: () => attachments.list,
-    attachmentFile: (id) => attachments.file(id),
     removeAttachment: (id) => attachments.remove(id),
-    readAttachment: (sessionId, id) => attachments.read(sessionId, id),
+    attachmentUrl: (sessionId, id, opts) => attachments.url(sessionId, id, opts?.download === true),
     answer: (sessionId, askId, answer) => ({ settled: queue.add({ kind: "answer", sessionId, askId, answer }).settled }),
     dismiss: (sessionId, askId) => ({ settled: queue.add({ kind: "dismiss", sessionId, askId }).settled }),
     interrupt: (sessionId) => ({ settled: queue.add({ kind: "interrupt", sessionId }).settled }),

@@ -15,6 +15,10 @@ State persists under `/data`.
   The session API also needs `x-opencomputer-surface: api`.
 - Host agent: `SP_GATEWAY_URL=ws://127.0.0.1:8080/v1/computer/host?organizationId=$GATEWAY_ORG`,
   `SP_HOST_ID=$GATEWAY_ORG`, `SP_HOST_TOKEN=$(cat /data/host-token)`.
+- Attachments: the bytes are in the `ATTACHMENTS` bucket under `/data/r2`, uploaded to and read from the gateway's
+  own signed URLs (`/v1/computer/attachment-objects/…`, key `ATTACHMENTS_URL_KEY` in `keys.json`). With
+  `ATTACHMENTS_S3_ENDPOINT`, `ATTACHMENTS_S3_BUCKET`, `ATTACHMENTS_S3_ACCESS_KEY_ID` and
+  `ATTACHMENTS_S3_SECRET_ACCESS_KEY` set (optional `ATTACHMENTS_S3_REGION`), an S3-compatible store holds them instead.
 - `dev/stub-model.mjs`: an echo stand-in for the Anthropic Messages API, for tests without a model key.
   `slow:<seconds>` in a prompt delays its answer.
 

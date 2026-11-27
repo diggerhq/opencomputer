@@ -1,8 +1,8 @@
-import { createClient, type Client, type Files, type Storage } from '@opencomputer/sdk/computer'
+import { createClient, type Client, type Storage } from '@opencomputer/sdk/computer'
 import type { Host } from '../host'
 
 // The surface's client, whose waits can be cut short when the network is back.
-export function hurriedClient(host: Host, storage: Storage, files?: Files): { client: Client; hurry: () => void } {
+export function hurriedClient(host: Host, storage: Storage): { client: Client; hurry: () => void } {
   // The client's waits (reconnect, retry), held so they can be cut short when
   // the network comes back (`hurry`).
   const waits = new Map<number, { fn: () => void; h: ReturnType<typeof setTimeout> }>()
@@ -12,8 +12,7 @@ export function hurriedClient(host: Host, storage: Storage, files?: Files): { cl
     fetch: (path, init) => host.api.fetch(path, init),
     connect: () => host.connect(),
     storage,
-    files,
-    upload: host.api.upload ? (path, req) => host.api.upload!(path, req) : undefined,
+    uploadTo: host.api.uploadTo ? (url, req) => host.api.uploadTo!(url, req) : undefined,
     lock:
       typeof navigator !== 'undefined' && navigator.locks
         ? (name, fn) => navigator.locks.request(name, fn)

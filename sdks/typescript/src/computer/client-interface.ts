@@ -27,17 +27,6 @@ export interface Storage {
   batch?(ops: ({ put: string; value: unknown } | { delete: string })[]): Promise<void>;
 }
 
-/**
- * Where a pending attachment's bytes rest until its message is accepted (work 126): IndexedDB in a
- * browser, so they survive a reload with the draft. `Storage` is JSON-valued and cannot hold a Blob.
- * Named by principal by the caller, like `Storage`.
- */
-export interface Files {
-  get(id: string): Promise<Blob | undefined>;
-  put(id: string, blob: Blob): Promise<void>;
-  delete(id: string): Promise<void>;
-}
-
 /** An attachment of a message not yet sent, from `attach` until its message is accepted. */
 export interface PendingAttachment {
   /** `at_…`, made here. */
@@ -46,7 +35,10 @@ export interface PendingAttachment {
   name: string;
   mimetype: string;
   bytes: number;
-  /** `queued`: waiting for a slot or the network; `failed`: refused by the server, remove it to send. */
+  /**
+   * `queued`: waiting for a slot or the network; `failed`: refused by the server, or its upload was
+   * cut by a reload (`attachment_lost`): remove it to send.
+   */
   state: "queued" | "uploading" | "ready" | "failed";
   /** 0 to 1 while `uploading`; 1 once `ready`. */
   progress: number;
@@ -55,9 +47,10 @@ export interface PendingAttachment {
 }
 
 /**
- * An upload with progress (work 126, K3): `fetch` reports none, so a browser host does the `PUT`
- * with `XMLHttpRequest`. `path` and the credential are as for `fetch`. Rejects when the network does;
- * an HTTP error is a reply. `signal` aborts it.
+ * A file's bytes on their way to a signed URL (work 126, K3). `fetch` reports no progress, so a
+ * browser host does the `PUT` with `XMLHttpRequest`. Sent with exactly these headers and no
+ * credential: the URL is its own authority, on whatever host it names. Rejects when the network
+ * does; an HTTP error is a reply. `signal` aborts it.
  */
 export interface UploadRequest {
   method: "PUT";
@@ -118,10 +111,11 @@ export interface ClientOptions {
   fetch(path: string, init?: RequestInit): Promise<Response>;
   connect(): Channel;
   storage: Storage;
-  /** Pending attachments' bytes (work 126). Default: memory, which a reload loses. */
-  files?: Files;
-  /** An upload with progress; default: `fetch`, which reports none. */
-  upload?(path: string, req: UploadRequest): Promise<Response>;
+  /**
+   * Sends an attachment's bytes to `url`, an absolute signed URL, without credentials (work 126).
+   * Default: the global `fetch`, which reports no progress.
+   */
+  uploadTo?(url: string, req: UploadRequest): Promise<Response>;
   /** Keep a session's events in `storage` (section 26.3's "Remember this device"). Default: memory only. */
   keepEvents?: boolean;
   /** Runs `fn` as the one sender across tabs; a Web Lock in a browser. Default: runs it at once. */
@@ -155,20 +149,25 @@ export interface Client {
   /** `attachments`: ids from `attach`; the turn waits until every one is `ready` (work 126, D2). */
   send(sessionId: string, input: string, o?: { ifBusy?: IfBusy; attachments?: string[] }): { turnId: string; settled: Promise<void> };
   /**
-   * Keeps `file` and uploads it to the session at once, ahead of its message (work 126). The id can
-   * name the session before `createSession` has sent it (D8). Throws `Refused` (`attachment_too_large`,
-   * `attachment_budget`) when the file is over `ATTACHMENT_MAX_BYTES` or the pending files would pass
-   * `PENDING_ATTACHMENTS_MAX_BYTES`. `state` follows the upload; `attachments()` lists them all.
+   * Uploads `file` to the session at once, ahead of its message (work 126). The id can name the
+   * session before `createSession` has sent it (D8). The bytes are held in memory until the message
+   * is accepted; the limits are the server's, and a file it refuses is `failed` with its reason.
+   * `state` follows the upload; `attachments()` lists them all.
    */
   attach(sessionId: string, file: Blob, o?: { name?: string }): { id: string; state: Signal<PendingAttachment> };
-  /** Every pending attachment, from storage too: the ones a draft held before a reload. */
+  /**
+   * Every pending attachment, from storage too: after a reload a `ready` one is still `ready`, and
+   * one whose upload was not finished is `failed` (`attachment_lost`).
+   */
   attachments(): Signal<PendingAttachment[]>;
-  /** The bytes of a pending attachment, for a thumbnail. */
-  attachmentFile(id: string): Promise<Blob | undefined>;
-  /** Drops a pending attachment: the upload stops, the file goes, and the server's row is deleted (best effort). */
+  /** Drops a pending attachment: the upload stops, and the server's row is deleted (best effort). */
   removeAttachment(id: string): Promise<void>;
-  /** The bytes of an attachment of a message (`GET …/content`, with the host's credential). Throws `Refused`. */
-  readAttachment(sessionId: string, id: string): Promise<Blob>;
+  /**
+   * A signed URL of an attachment of a message (`GET …/url`), to show or, with `download`, to save.
+   * It is read without credentials and ends after a few minutes; the client keeps it until shortly
+   * before, so asking again is free. Throws `Refused`.
+   */
+  attachmentUrl(sessionId: string, id: string, o?: { download?: boolean }): Promise<string>;
   answer(sessionId: string, askId: string, answer: Answer): { settled: Promise<void> };
   dismiss(sessionId: string, askId: string): { settled: Promise<void> };
   interrupt(sessionId: string): { settled: Promise<void> };

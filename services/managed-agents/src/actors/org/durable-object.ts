@@ -29,19 +29,17 @@ import { completeFolded, STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf } from "./access.js";
 import * as attachments from "./attachments.js";
-import { attachmentKey, attachmentPrefix, r2Attachments, type Attachments } from "./attachment-store.js";
+import { attachmentKey, attachmentPrefix, attachmentsOf, type Attachments, type AttachmentsEnv } from "../../attachments/store.js";
 import { readSession, trackOfAgent } from "./records.js";
 import type { PublishOwed } from "./tx.js";
 import * as work from "./work.js";
 
-export type OrgEnv = ActorEnv & TelemetryEnv & {
+export type OrgEnv = ActorEnv & TelemetryEnv & AttachmentsEnv & {
   SERVERLESS_AGENTS_DB?: D1Database;
   /** The edge's AccountDurableObject, addressed by the organization's id: GitHub tokens. */
   ACCOUNTS?: DurableObjectNamespace;
   /** The retired Work board's object: the knowledge repository it held, read once (org/work-index.ts). */
   WORK_INDEX?: DurableObjectNamespace;
-  /** The attachments' objects (work 126), keyed `<org>/<session>/<id>`; absent on a stack without them. */
-  ATTACHMENTS?: R2Bucket;
 };
 
 /** `access.people` with WorkOS user ids (the dashboard's) as member ids; Org checks the rest. */
@@ -68,7 +66,7 @@ export interface OrgOut {
   boardRepository(): Promise<StoredRepository | null>;
   /** The organization's Account object, or null where it is not bound. */
   account(): TokenMinter | null;
-  /** The attachments' object store, or null where none is bound: a delete is then nothing to do. */
+  /** The attachments' object store, or null where none is configured: a delete is then nothing to do. */
   attachments(): Attachments | null;
   fetch: Fetch;
 }
@@ -110,7 +108,7 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     boardRepository: async () =>
       this.env.WORK_INDEX ? ((this.env.WORK_INDEX.getByName(this.org) as unknown as { repository(): Promise<StoredRepository | null> }).repository()) : null,
     account: () => (this.env.ACCOUNTS ? (this.env.ACCOUNTS.getByName(this.org) as unknown as TokenMinter) : null),
-    attachments: () => (this.env.ATTACHMENTS ? r2Attachments(this.env.ATTACHMENTS) : null),
+    attachments: () => attachmentsOf(this.env),
     fetch: (url, init) => fetch(url, init),
   };
 
@@ -465,9 +463,5 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
   async attachmentReserve(p: Principal, sessionId: string, turnId: string, messageId: string | null, ids: string[]): Promise<Reply<{ attachments: AttachmentMeta[] }>> {
     this.seen(p);
     return attachments.reserve(this.sql, Date.now(), p, sessionId, turnId, messageId, ids);
-  }
-
-  async attachmentRelease(sessionId: string, turnId: string, ids: string[]): Promise<void> {
-    attachments.release(this.sql, Date.now(), sessionId, turnId, ids);
   }
 }

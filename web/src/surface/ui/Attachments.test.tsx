@@ -27,6 +27,7 @@ const pending = (over: Partial<PendingAttachment>): PendingAttachment => ({
 })
 
 let root: Root
+let objectUrl: ReturnType<typeof vi.fn<(b: Blob) => string>>
 let el: HTMLDivElement
 let store: StoreApi<State>
 let surface: {
@@ -35,24 +36,32 @@ let surface: {
   attach: ReturnType<typeof vi.fn>
   removeAttachment: ReturnType<typeof vi.fn>
   toast: ReturnType<typeof vi.fn>
-  client: { attachmentFile: ReturnType<typeof vi.fn>; readAttachment: ReturnType<typeof vi.fn> }
+  openExternal: ReturnType<typeof vi.fn>
+  // The bytes of what was attached in this page, by id.
+  attachmentBlob: ReturnType<typeof vi.fn<(id: string) => Blob | undefined>>
+  host: { platform: 'web' | 'desktop' }
+  client: { attachmentUrl: ReturnType<typeof vi.fn<(sid: string, id: string, o?: { download?: boolean }) => Promise<string>>> }
 }
 
 beforeEach(() => {
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
-  store = createStore<State>(() => ({ drafts: {}, draftAttachments: {}, attachments: [] }) as unknown as State)
+  store = createStore<State>(() => ({ drafts: {}, draftAttachments: {}, attachments: [], canAttach: true }) as unknown as State)
   surface = {
     store,
     setDraft: vi.fn((key: string, text: string) => store.setState({ drafts: { ...store.getState().drafts, [key]: text } })),
     attach: vi.fn(),
     removeAttachment: vi.fn(),
     toast: vi.fn(),
-    client: { attachmentFile: vi.fn(() => Promise.resolve(undefined)), readAttachment: vi.fn(() => Promise.resolve(new Blob([new Uint8Array(3)]))) },
+    openExternal: vi.fn(),
+    attachmentBlob: vi.fn(() => undefined),
+    host: { platform: 'web' },
+    client: { attachmentUrl: vi.fn((sid, id, o) => Promise.resolve(`https://store.test/${sid}/${id}${o?.download ? '?download' : ''}`)) },
   }
   // happy-dom has no object URLs.
-  URL.createObjectURL = vi.fn(() => 'blob:fake')
+  objectUrl = vi.fn(() => 'blob:fake')
+  URL.createObjectURL = objectUrl
   URL.revokeObjectURL = vi.fn()
 })
 afterEach(() => {
@@ -156,13 +165,46 @@ describe('the composer', () => {
     expect(surface.attach).toHaveBeenCalledTimes(3)
   })
 
-  it('draws a thumbnail of a pending image from the local file', async () => {
-    surface.client.attachmentFile.mockResolvedValue(new Blob([new Uint8Array(3)], { type: 'image/png' }))
+  it('draws a thumbnail of a pending image from the file this page holds', () => {
+    surface.attachmentBlob.mockReturnValue(new Blob([new Uint8Array(3)], { type: 'image/png' }))
     draw(<Composer draftKey="t:cs_1" placeholder="Reply" onSend={() => {}} />)
     act(() => store.setState({ attachments: [pending({})], draftAttachments: { 't:cs_1': ['at_1'] } }))
-    await flush()
-    expect(surface.client.attachmentFile).toHaveBeenCalledWith('at_1')
+    expect(surface.attachmentBlob).toHaveBeenCalledWith('at_1')
     expect(el.querySelector('[data-slot=draft-attachments] img')?.getAttribute('src')).toBe('blob:fake')
+  })
+
+  it('shows a plain chip after a reload, and why an interrupted upload failed', () => {
+    draw(<Composer draftKey="t:cs_1" placeholder="Reply" onSend={() => {}} />)
+    const lost = pending({ id: 'at_2', name: 'cut.png', state: 'failed', progress: 0, error: { code: 'attachment_lost', reason: 'the upload was interrupted: attach the file again' } })
+    act(() => store.setState({ attachments: [pending({ state: 'ready', progress: 1 }), lost], draftAttachments: { 't:cs_1': ['at_1', 'at_2'] } }))
+    expect(el.querySelector('[data-slot=draft-attachments] img')).toBeNull()
+    expect(el.querySelector('[data-state=ready]')?.textContent).toContain('photo.png')
+    expect(el.querySelector('[data-state=failed]')?.getAttribute('title')).toBe('cut.png: the upload was interrupted: attach the file again')
+    expect(button('Send').hasAttribute('disabled')).toBe(true)
+  })
+
+  it('has no paperclip and ignores a dropped or pasted file where files cannot be attached', () => {
+    act(() => store.setState({ canAttach: false }))
+    draw(<Composer draftKey="t:cs_1" placeholder="Reply" onSend={() => {}} />)
+    expect([...el.querySelectorAll('button')].some((b) => b.getAttribute('aria-label') === 'Attach files')).toBe(false)
+    expect(el.querySelector('input[type=file]')).toBeNull()
+    const file = new File([new Uint8Array(3)], 'a.txt', { type: 'text/plain' })
+    const box = el.firstElementChild as HTMLElement
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    act(() => {
+      Object.defineProperty(drop, 'dataTransfer', { value: { types: ['Files'], files: [file], dropEffect: 'none' } })
+      box.dispatchEvent(drop)
+    })
+    // Still taken from the browser, which would open the file.
+    expect(drop.defaultPrevented).toBe(true)
+    expect(box.hasAttribute('data-dragging')).toBe(false)
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    act(() => {
+      Object.defineProperty(paste, 'clipboardData', { value: { files: [file] } })
+      el.querySelector('textarea')!.dispatchEvent(paste)
+    })
+    expect(paste.defaultPrevented).toBe(false)
+    expect(surface.attach).not.toHaveBeenCalled()
   })
 })
 
@@ -171,23 +213,31 @@ describe("a message's attachments", () => {
   const big: ItemAttachment = { id: 'at_big', name: 'huge.png', mimetype: 'image/png', bytes: 6 * 1024 * 1024 }
   const doc: ItemAttachment = { id: 'at_doc', name: 'notes.pdf', mimetype: 'application/pdf', bytes: 3 * 1024 * 1024 }
 
-  it('reads an image through the client, with the credential, and shows it; a big one and a file are chips', async () => {
+  it("shows a sent image straight from its signed URL, lazily, in a box of a fixed size; a big one and a file are chips", async () => {
     draw(
       <SessionScope sid="cs_7">
         <MessageAttachments attachments={[image, big, doc]} sending={false} />
       </SessionScope>,
     )
+    // Before the URL: a placeholder of the picture's size.
+    const box = el.querySelector('[title="shot.png"]')!
+    expect(box.className).toContain('h-36 w-48')
     await flush()
-    expect(surface.client.readAttachment).toHaveBeenCalledWith('cs_7', 'at_img')
-    expect(surface.client.readAttachment).toHaveBeenCalledTimes(1)
-    expect(el.querySelector('img')?.getAttribute('src')).toBe('blob:fake')
-    expect(el.querySelector('img')?.getAttribute('alt')).toBe('shot.png')
+    expect(surface.client.attachmentUrl).toHaveBeenCalledWith('cs_7', 'at_img')
+    expect(surface.client.attachmentUrl).toHaveBeenCalledTimes(1)
+    const img = el.querySelector('img')!
+    expect(img.getAttribute('src')).toBe('https://store.test/cs_7/at_img')
+    expect(img.getAttribute('loading')).toBe('lazy')
+    expect(img.getAttribute('alt')).toBe('shot.png')
+    expect(button('Open shot.png').className).toContain('h-36 w-48')
+    // Nothing was pulled into the page.
+    expect(objectUrl).not.toHaveBeenCalled()
     const chips = [...el.querySelectorAll('button')].map((b) => b.textContent)
     expect(chips.some((t) => t?.includes('huge.png') && t.includes('6 MB'))).toBe(true)
     expect(chips.some((t) => t?.includes('notes.pdf') && t.includes('3 MB'))).toBe(true)
   })
 
-  it('opens the image full size on click, and downloads a file on click', async () => {
+  it('opens the image full size on click, and downloads a file by its signed URL', async () => {
     draw(
       <SessionScope sid="cs_7">
         <MessageAttachments attachments={[image, doc]} sending={false} />
@@ -197,12 +247,28 @@ describe("a message's attachments", () => {
     click(button('Open shot.png'))
     expect(document.querySelector('[role=dialog] img')?.getAttribute('alt')).toBe('shot.png')
 
-    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const hrefs: string[] = []
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      hrefs.push(`${this.href} ${this.download}`)
+    })
     click(button('Download notes.pdf'))
     await flush()
-    expect(surface.client.readAttachment).toHaveBeenLastCalledWith('cs_7', 'at_doc')
-    expect(clicked).toHaveBeenCalledTimes(1)
+    expect(surface.client.attachmentUrl).toHaveBeenLastCalledWith('cs_7', 'at_doc', { download: true })
+    expect(hrefs).toEqual(['https://store.test/cs_7/at_doc?download notes.pdf'])
+    expect(objectUrl).not.toHaveBeenCalled()
     clicked.mockRestore()
+  })
+
+  it('hands a download to the browser in the Mac app, which does not navigate', async () => {
+    surface.host.platform = 'desktop'
+    draw(
+      <SessionScope sid="cs_7">
+        <MessageAttachments attachments={[doc]} sending={false} />
+      </SessionScope>,
+    )
+    click(button('Download notes.pdf'))
+    await flush()
+    expect(surface.openExternal).toHaveBeenCalledWith('https://store.test/cs_7/at_doc?download')
   })
 
   it('shows the upload of a message still being sent', () => {
@@ -213,6 +279,43 @@ describe("a message's attachments", () => {
     )
     expect(el.textContent).toContain('25%')
     expect(el.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')).toBe('25')
-    expect(surface.client.readAttachment).not.toHaveBeenCalled()
+    expect(surface.client.attachmentUrl).not.toHaveBeenCalled()
+  })
+
+  it('shows an image being sent from the file this page holds, and keeps it once sent, asking nothing', async () => {
+    surface.attachmentBlob.mockReturnValue(new Blob([new Uint8Array(3)], { type: 'image/png' }))
+    const view = (sending: boolean) => (
+      <SessionScope sid="cs_7">
+        <MessageAttachments attachments={[sending ? { ...image, progress: 0.5, upload: 'uploading' } : image]} sending={sending} />
+      </SessionScope>
+    )
+    draw(view(true))
+    expect(el.querySelector('img')?.getAttribute('src')).toBe('blob:fake')
+    expect(el.querySelector('[role=progressbar]')?.getAttribute('aria-valuenow')).toBe('50')
+    // Accepted: the page has let go of the file, the picture stays as it is.
+    surface.attachmentBlob.mockReturnValue(undefined)
+    draw(view(false))
+    await flush()
+    expect(el.querySelector('img')?.getAttribute('src')).toBe('blob:fake')
+    expect(el.querySelector('[role=progressbar]')).toBeNull()
+    expect(surface.client.attachmentUrl).not.toHaveBeenCalled()
+    expect(objectUrl).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a placeholder for an image being sent whose file this page no longer has, then the signed URL', async () => {
+    const view = (sending: boolean) => (
+      <SessionScope sid="cs_7">
+        <MessageAttachments attachments={[sending ? { ...image, progress: 1, upload: 'ready' } : image]} sending={sending} />
+      </SessionScope>
+    )
+    draw(view(true))
+    await flush()
+    expect(el.querySelector('img')).toBeNull()
+    expect(el.querySelector('[title="shot.png"]')?.className).toContain('h-36 w-48')
+    expect(surface.client.attachmentUrl).not.toHaveBeenCalled()
+    draw(view(false))
+    await flush()
+    expect(el.querySelector('img')?.getAttribute('src')).toBe('https://store.test/cs_7/at_img')
+    expect(surface.client.attachmentUrl).toHaveBeenCalledTimes(1)
   })
 })

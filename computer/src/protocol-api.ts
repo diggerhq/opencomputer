@@ -84,8 +84,8 @@ export interface SessionAccess {
 
 /**
  * A message's attachment as every client and the runner see it (work 126): metadata only, from Org's row at reserve,
- * never the bytes. The runner fetches the bytes from `GET /sessions/{sid}/attachments/{id}/content` with the
- * session's own credential (runner/attachments.ts).
+ * never the bytes. The runner asks `GET /sessions/{sid}/attachments/{id}/url` with the session's own credential
+ * and fetches the bytes from the signed URL it answers, with none (runner/attachments.ts).
  */
 export interface ApiAttachment {
   /** `at_…`, client-made. */

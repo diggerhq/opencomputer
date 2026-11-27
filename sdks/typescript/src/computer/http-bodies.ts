@@ -83,5 +83,6 @@ export type SettingsPatch = { model?: string; effort?: string; mode?: string };
 export interface Capabilities {
   models: { id: string; name: string; efforts: string[]; default: boolean }[];
   modes: string[];
-  features: { steer: boolean };
+  /** `attachments`: the deployment has a store for files (work 126). An older server does not say: read a missing value as true. */
+  features: { steer: boolean; attachments?: boolean };
 }

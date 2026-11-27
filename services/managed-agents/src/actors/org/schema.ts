@@ -87,7 +87,7 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "accessCarry", 0);
   },
   // Attachments (work 126, section 5): the rows of what people upload for a message. Not in the feed;
-  // the objects are in the `ATTACHMENTS` store, keyed `<org>/<session>/<id>` (org/attachments.ts).
+  // the objects are in the attachments' store (attachments/store.ts), keyed `<org>/<session>/<id>` (org/attachments.ts).
   attachmentTable,
 ];
 

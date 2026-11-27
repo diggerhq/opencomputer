@@ -58,12 +58,10 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
   const query = new URL(request.url).searchParams;
   const org = () => orgOf(env, p.org);
   /**
-   * A turn's attachments (work 126): reserved in Org before the accept (`attached`), released when the
-   * accept refuses. A failed release leaves them `attached` to a turn that never was: the sweep does
-   * not touch those while the session exists, so a client sees `attachment_in_use` until it re-uploads.
+   * A turn's attachments (work 126): named in Org before the accept (`attached`). A turn may name
+   * ones another already did, so an accept that refuses leaves nothing to undo: they are sent again.
    */
   const reserve = async (sessionId: string, turnId: string, messageId: string | null, ids: string[]) => timedDo(out.facts, org().attachmentReserve(p, sessionId, turnId, messageId, ids));
-  const release = (sessionId: string, turnId: string, ids: string[]) => timedDo(out.facts, org().attachmentRelease(sessionId, turnId, ids)).catch(() => undefined);
 
   if (route.op === "list") {
     const q = listQuery(query);
@@ -97,10 +95,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
       ...(attachments ? { attachments } : {}),
       ...(p.kind === "agent" && p.session ? { parent: p.session } : {}),
     }));
-    if (!made.ok) {
-      if (input.attachments) await release(id!, turnId, input.attachments);
-      return refusalOf(out, made);
-    }
+    if (!made.ok) return refusalOf(out, made);
     const session = made.session;
     out.facts.sessionId = session.id;
     if (made.duplicate) out.facts.replayed = true;
@@ -109,10 +104,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
     }
     // Org owed the first turn with the session; accepting it again (the same id and body, so a duplicate) waits for it.
     const sent = await sendEntry(env, p, session.id, { id: create.turnId ?? firstTurnId(session.id), kind: "turn", body: { input: create.input, ifBusy: "queue", ...(attachments ? { attachments } : {}) } }, trace, out);
-    if ("response" in sent) {
-      if (input.attachments) await release(session.id, turnId, input.attachments);
-      return sent.response;
-    }
+    if ("response" in sent) return sent.response;
     if ("waking" in sent) return out.send(202, { accepted: true, id: create.turnId ?? firstTurnId(session.id), session });
     const result = (asObject(sent.delivered) ?? {}) as { turn?: unknown; delivery?: unknown; seq?: number; duplicate?: boolean };
     const duplicate = made.duplicate && result.duplicate !== false;
@@ -191,7 +183,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
     const kind = ENTRY_KINDS[op];
     const [prefix, length] = kind === "turn" ? ["tn", 12] as const : ["ie", 16] as const;
     const id = typeof askedId === "string" ? askedId : await entryId(prefix, length, idem ? [kind, p.org, p.subject, sessionId, idem] : undefined);
-    // A turn's attachments: reserved (`attached` to this turn) before the accept; what it carries replaces the ids.
+    // A turn's attachments: named in Org before the accept; what it carries replaces the ids.
     // A steer's message is its own (doc 126: `attachedTo` names the turn and the message): the entry's id names it.
     const ids = kind === "turn" ? checkAttachments(askedAttachments) : undefined;
     if (ids && "ids" in ids) {
@@ -200,10 +192,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
       body.attachments = reserved.attachments;
     }
     const sent = await sendEntry(env, p, sessionId, { id, kind, body }, trace, out);
-    if ("response" in sent) {
-      if (ids && "ids" in ids) await release(sessionId, id, ids.ids);
-      return sent.response;
-    }
+    if ("response" in sent) return sent.response;
     if ("waking" in sent) return out.send(202, { accepted: true, id });
     return out.send(200, sent.delivered);
   }

@@ -64,7 +64,8 @@ export function desktopHost(oc: Bridge): Host {
         headers.set('x-oc-app', '1')
         return fetch(`/api${path}`, { ...init, headers })
       },
-      upload: (path, req) => xhrUpload(`/api${path}`, req, { credentials: false, headers: { 'x-oc-app': '1' } }),
+      // Straight to the signed URL: the shell's `/api` relays JSON only.
+      uploadTo: (url, req) => xhrUpload(url, req, { credentials: false }),
     },
     // One relay for the app: each "connection" is a view of it.
     connect(): Channel {

@@ -7,7 +7,7 @@ const TID = 'trk_0000000000000001';
 function rig(answers: (method: string, path: string, o: any) => unknown) {
   const calls: Array<{ method: string; path: string; o: any }> = [];
   const w: Work = {
-    api: { call: async (method, path, o) => (calls.push({ method, path, o }), answers(method, path, o)), stream: async () => Promise.reject(new Error('unused')) },
+    api: { call: async (method, path, o) => (calls.push({ method, path, o }), answers(method, path, o)) },
     session: () => ({ id: 'cs_0000000000000001', role: { name: 'track', trackId: TID } as never }),
   };
   const tools = Object.fromEntries(trackTools(w).map((t) => [t.name, t]));

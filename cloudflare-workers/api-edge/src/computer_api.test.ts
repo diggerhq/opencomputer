@@ -249,8 +249,9 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h/attachments"],
     ["GET", "/computer/sessions/cs_01h/attachments/at_01h"],
     ["DELETE", "/computer/sessions/cs_01h/attachments/at_01h"],
-    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/content"],
-    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["POST", "/computer/sessions/cs_01h/attachments/at_01h/complete"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/url"],
     ["GET", "/computer/sessions/cs_01h/subagents"],
     ["GET", "/computer/sessions/cs_01h/subagents/sa_01h"],
     ["POST", "/computer/sessions/cs_01h/subagents/sa_01h/stop"],
@@ -281,11 +282,12 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/sessions/cs_01h/aside"],
     ["PUT", "/computer/sessions/cs_01h/workspace/file"],
     ["POST", "/computer/sessions/cs_01h/turns/tn_1"],
-    // Attachments: the row is created by the PUT of its content, there is no POST; nothing else is writable.
+    // Attachments: the row is made by the PUT of its id, there is no POST; the bytes never come here.
     ["POST", "/computer/sessions/cs_01h/attachments"],
-    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h"],
-    ["POST", "/computer/sessions/cs_01h/attachments/at_01h/content"],
-    ["DELETE", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/complete"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/url"],
     ["GET", "/computer/sessions/../me"],
     ["GET", "/computer/sessions/.hidden"],
     ["GET", "/computer/sessions/a%2Fb"],
@@ -669,79 +671,44 @@ describe("computer API proxy to blue", () => {
   });
 });
 
-describe("attachments go to blue with their bytes", () => {
+describe("attachments go to blue without their bytes", () => {
   // Unlike workspace routes, attachments are a dashboard surface too: a cookie uploads what the composer picked.
-  it("streams a cookie's PUT of content up with its content headers, no JSON gate", async () => {
-    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      expect(init.body).toBeInstanceOf(ReadableStream);
-      return Response.json(
-        { id: "at_1", name: "a.png", mimetype: "image/png", bytes: 2, state: "ready" },
-        { status: 201, headers: { etag: '"e1"', "x-request-id": "req_a" } },
-      );
-    });
+  it("sends a cookie's PUT of the row up, with the origin the caller reached", async () => {
+    const upload = { url: `${ORIGIN}/v1/computer/attachment-objects/o/cs_1/at_1?sig=s`, method: "PUT", headers: { "content-type": "image/png" } };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ attachment: { id: "at_1", state: "uploading" }, upload }, { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
     const res = await worker.fetch(
-      api("/sessions/cs_1/attachments/at_1/content", {
+      api("/sessions/cs_1/attachments/at_1", {
         method: "PUT",
-        headers: {
-          cookie: await sessionCookie(),
-          origin: ORIGIN,
-          "content-type": "image/png",
-          "content-length": "2",
-          "content-disposition": 'attachment; filename="a.png"',
-        },
-        body: new ReadableStream({
-          start(c) {
-            c.enqueue(new Uint8Array([9, 9]));
-            c.close();
-          },
-        }),
-        duplex: "half",
-      } as RequestInit),
+        headers: { cookie: await sessionCookie(), origin: ORIGIN, "content-type": "application/json", "x-opencomputer-public-origin": "https://evil.test" },
+        body: JSON.stringify({ name: "a.png", mimetype: "image/png", bytes: 2 }),
+      }),
       testEnv(new FakeDB()),
       testCtx().ctx,
     );
     expect(res.status).toBe(201);
-    expect(res.headers.get("etag")).toBe('"e1"');
+    expect(await res.json()).toMatchObject({ upload });
     const { url, init, headers } = sent(fetchMock);
-    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/content`);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1`);
     expect(init.method).toBe("PUT");
-    expect(headers.get("content-type")).toBe("image/png");
-    expect(headers.get("content-disposition")).toBe('attachment; filename="a.png"');
+    // Ours, never the caller's own header.
+    expect(headers.get("x-opencomputer-public-origin")).toBe(ORIGIN);
     expect(headers.get("x-opencomputer-agent-token")).toEqual(expect.any(String));
   });
 
-  it("passes a key's ranged GET of content through, and the content headers back", async () => {
+  it("passes a key's complete and url calls through", async () => {
     const db = new FakeDB();
     const key = await addKey(db);
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(new Uint8Array([2, 3]), {
-        status: 206,
-        headers: {
-          "content-type": "image/png",
-          "content-disposition": 'inline; filename="a.png"',
-          "accept-ranges": "bytes",
-          "content-range": "bytes 1-2/3",
-          "x-content-type-options": "nosniff",
-          etag: '"e1"',
-        },
-      }),
-    );
+    const fetchMock = vi.fn(async () => Response.json({ url: "https://store.test/x?sig=s", expiresAt: "2030-01-01T00:00:00.000Z" }));
     vi.stubGlobal("fetch", fetchMock);
-    const res = await worker.fetch(
-      api("/sessions/cs_1/attachments/at_1/content", { headers: { authorization: `Bearer ${key}`, range: "bytes=1-2" } }),
-      testEnv(db),
-      testCtx().ctx,
-    );
-    expect(res.status).toBe(206);
-    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([2, 3]));
-    expect(res.headers.get("content-disposition")).toBe('inline; filename="a.png"');
-    expect(res.headers.get("accept-ranges")).toBe("bytes");
-    expect(res.headers.get("content-range")).toBe("bytes 1-2/3");
-    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    const { url, headers } = sent(fetchMock);
-    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/content`);
-    expect(headers.get("range")).toBe("bytes=1-2");
+    const done = await worker.fetch(api("/sessions/cs_1/attachments/at_1/complete", { method: "POST", headers: { authorization: `Bearer ${key}` } }), testEnv(db), testCtx().ctx);
+    expect(done.status).toBe(200);
+    expect(sent(fetchMock).url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/complete`);
+    const res = await worker.fetch(api("/sessions/cs_1/attachments/at_1/url?disposition=attachment", { headers: { authorization: `Bearer ${key}` } }), testEnv(db), testCtx().ctx);
+    expect(await res.json()).toMatchObject({ url: "https://store.test/x?sig=s" });
+    const { url, headers } = sent(fetchMock, 1);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/url?disposition=attachment`);
+    expect(headers.get("x-opencomputer-public-origin")).toBe(ORIGIN);
   });
 });
 

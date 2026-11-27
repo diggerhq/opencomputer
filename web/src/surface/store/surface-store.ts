@@ -9,6 +9,7 @@ import {
   type MutationArgs,
   type MutationName,
   type Pending,
+  type PendingAttachment,
   type ResultRow,
   type Row,
   type SettingsPatch,
@@ -42,7 +43,7 @@ export type Surface = ReturnType<typeof createSurface>
 export function createSurface(o: SurfaceOptions) {
   const { host } = o
   const me = host.principal.subject
-  const { client, hurry } = hurriedClient(host, o.storage, o.files)
+  const { client, hurry } = hurriedClient(host, o.storage)
 
   let kept: Partial<Kept> = {}
   try {
@@ -62,6 +63,7 @@ export function createSurface(o: SurfaceOptions) {
     rows: emptyRows(),
     pending: [],
     attachments: [],
+    canAttach: true,
     counts: NO_COUNTS,
     convos: {},
     toasts: [],
@@ -300,8 +302,8 @@ export function createSurface(o: SurfaceOptions) {
       const input = e.kind === 'turn' ? e.input : e.body.input
       const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
       if (input && !get().drafts[key]) actions.setDraft(key, input)
-      // Its files too (work 126): the client still holds them, and a failed
-      // one shows why, to be taken out.
+      // Its files too (work 126): the client still holds them, and one that
+      // failed (the server refused the message for it) shows why, to be taken out.
       const ids = e.kind === 'turn' ? e.attachments : e.body.attachments
       if (ids?.length && !get().draftAttachments[key]?.length) {
         setDraftAttachments(key, ids)
@@ -337,6 +339,24 @@ export function createSurface(o: SurfaceOptions) {
     if (key.startsWith('t:')) return key.slice(2)
     return get().rows.track.get(key.slice(2))?.agentSession ?? null
   }
+  // The bytes of the files attached in this page, for their thumbnails: in
+  // memory only, and dropped with the client's record.
+  const blobs = new Map<string, Blob>()
+  const onAttachments = (attachments: PendingAttachment[]) => {
+    for (const id of [...blobs.keys()]) if (!attachments.some((a) => a.id === id)) blobs.delete(id)
+    set({ attachments })
+  }
+  // What was kept names files by id: one the client does not hold (sent or
+  // removed in another tab, or dropped for its age) leaves no chip behind.
+  const dropUnknown = (attachments: PendingAttachment[]) => {
+    const held = new Set(attachments.map((a) => a.id))
+    const draftAttachments: Record<string, string[]> = {}
+    for (const [key, ids] of Object.entries(get().draftAttachments)) {
+      const known = ids.filter((id) => held.has(id))
+      if (known.length) draftAttachments[key] = known
+    }
+    set({ draftAttachments, ...(draftAttachments.new ? {} : { startSession: null }) })
+  }
   // The ids a composer sends: the ones the client still holds, in order.
   const attachmentsOf = (key: string): string[] | undefined => {
     const held = new Set(get().attachments.map((a) => a.id))
@@ -353,7 +373,7 @@ export function createSurface(o: SurfaceOptions) {
   void client.ready.then(() => {
     stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
     stops.push(client.pending().subscribe((pending) => recompose({ pending })))
-    stops.push(client.attachments().subscribe((attachments) => set({ attachments })))
+    stops.push(client.attachments().subscribe(onAttachments))
     stops.push(client.failures.subscribe(onFailure))
     stops.push((o.wake ?? pageWake)(hurry))
     stops.push(
@@ -362,6 +382,7 @@ export function createSurface(o: SurfaceOptions) {
         if (status === 'online') set({ synced: true })
       }),
     )
+    dropUnknown(client.attachments().get())
     set({ ready: true, status: client.status.get(), pending: client.pending().get(), attachments: client.attachments().get() })
     recompose()
   })
@@ -479,10 +500,11 @@ export function createSurface(o: SurfaceOptions) {
       if (opt?.draftKey) setDraftAttachments(opt.draftKey, [])
       settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined, attachments }))
     },
-    // Files for a composer's next message (work 126): kept and uploaded at
-    // once by the client, ahead of the message. A file the client refuses
-    // (too large, too many waiting) is said, and the others still go in.
+    // Files for a composer's next message (work 126): uploaded at once by the
+    // client, ahead of the message. The limits are the server's: a file it
+    // refuses shows as a failed chip with its reason.
     attach(draftKey: string, files: Iterable<Blob>) {
+      if (!get().canAttach) return
       const sid = sessionOf(draftKey)
       if (!sid) return
       const ids = [...(get().draftAttachments[draftKey] ?? [])]
@@ -492,7 +514,9 @@ export function createSurface(o: SurfaceOptions) {
           break
         }
         try {
-          ids.push(client.attach(sid, file).id)
+          const { id } = client.attach(sid, file)
+          blobs.set(id, file)
+          ids.push(id)
         } catch (e) {
           const name = (file as File).name || 'A file'
           toast({ text: `${name} was not attached: ${e instanceof Refused ? sayFailure(e) : 'something went wrong'}`, tone: 'error' })
@@ -504,6 +528,8 @@ export function createSurface(o: SurfaceOptions) {
       setDraftAttachments(draftKey, (get().draftAttachments[draftKey] ?? []).filter((x) => x !== id))
       void client.removeAttachment(id)
     },
+    // The bytes of a file attached in this page; none after a reload.
+    attachmentBlob: (id: string): Blob | undefined => blobs.get(id),
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))
     },

@@ -94,7 +94,7 @@ import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract
 import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
-import type { Attachments } from "../src/actors/org/attachment-store.js";
+import type { Attachments } from "../src/attachments/store.js";
 import type { AccessCarry } from "../src/actors/computer/contract.js";
 import { firstTurnId } from "../src/ids/session-ids.js";
 

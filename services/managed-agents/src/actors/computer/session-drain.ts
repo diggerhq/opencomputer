@@ -27,6 +27,7 @@ import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
 import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
+import { attachmentsOf } from "../../attachments/store.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
 import type { CalvinApiError, CalvinJournalReport } from "../../host-protocol/api-shapes.js";
@@ -296,7 +297,7 @@ export class ComputerSessionsApi {
           : { id: null, name: null, kind: "login", scopes: caller.principal.scopes, expiresAt: null, createdAt: null },
         computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || null },
         defaults: { model: MODELS[0]!.id, effort: null, mode: DEFAULT_MODE, speed: null },
-        capabilities: capabilities(),
+        capabilities: capabilities(attachmentsOf(this.deps.env) !== null),
       },
     };
   }

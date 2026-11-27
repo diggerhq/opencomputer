@@ -83,9 +83,12 @@ Reads no configuration from the environment and never talks to the gateway. Mode
 | `GATEWAY_PORT` | no | | the VM side of the loopback port, default 8080 (§1) |
 | `SP_SETUP_OPEN` | no | | `1`: `/setup` stays open after the Claude credential is set and the host connected |
 | `ANTHROPIC_API_KEY` | no | yes | the sessions' shared key; `/setup` can store one instead (encrypted in `/data`) |
+| `ATTACHMENTS_S3_ENDPOINT`, `ATTACHMENTS_S3_BUCKET`, `ATTACHMENTS_S3_ACCESS_KEY_ID`, `ATTACHMENTS_S3_SECRET_ACCESS_KEY` | no | the key pair | an S3-compatible store (R2, S3, MinIO) for attachments, used when all four are set; `ATTACHMENTS_S3_REGION` is optional (default `auto`). Unset: attachments are in the volume (`r2/`), see below |
 | `CLOUDFLARE_TUNNEL_TOKEN`, `NGROK_*` | for a tunnel profile | yes | |
 
 None of the gateway's variables are needed on the host, and none of the host's on the gateway. The host's three values come from the running container (§2).
+
+Attachments without `ATTACHMENTS_S3_*`: the gateway keeps the bytes in its `ATTACHMENTS` bucket (Miniflare's R2, in the volume) and serves them itself. The API hands a client a URL of the gateway's own, `<origin>/v1/computer/attachment-objects/<org>/<session>/<id>?…&sig=…`, signed with `ATTACHMENTS_URL_KEY` (generated into `/data/keys.json`); the router sends `/v1/*` to managed-agents, so the URL needs no sign-in, only its signature. `<origin>` is the one the caller reached the API at: api-edge passes it on (`x-opencomputer-public-origin`), a direct `/v1/computer` caller's request has it, and `PUBLIC_URL` is the fallback. Sessions fetch attachments at `PUBLIC_URL`, as they reach the rest of the API (`services/managed-agents/src/http/api/attachment-objects.ts`, `src/actors/org/attachment-store.ts`).
 
 ## 4. Ports
 

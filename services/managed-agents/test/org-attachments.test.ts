@@ -1,11 +1,11 @@
 // Org's attachment rows (work 126, sections 3, 5, 6, 8): the state machine of one row, who may,
-// the quotas, a turn's reserve and release, the sweep on the alarm, and a session's removal.
+// the quotas, the attachments a turn names, the sweep on the alarm, and a session's removal.
 
 import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/auth/principal.js";
-import type { Attachments } from "../src/actors/org/attachment-store.js";
+import type { Attachments } from "../src/attachments/store.js";
 import type { OrgDurableObject } from "../src/actors/org/durable-object.js";
-import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "../src/actors/org/limits.js";
+import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_ORG_BYTES_MAX, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "../src/actors/org/limits.js";
 import { bytesOf } from "../src/actors/org/attachments.js";
 import { member, seedThread, withActor, type Fakes } from "./org.test.js";
 
@@ -25,8 +25,9 @@ function store(): Attachments & { deleted: string[]; removed: string[] } {
   const s = {
     deleted: [] as string[],
     removed: [] as string[],
-    put: vi.fn(async () => ({ etag: '"e"' })),
-    get: vi.fn(async () => null),
+    uploadUrl: vi.fn(async () => ({ url: "https://store.test/put", headers: {} })),
+    downloadUrl: vi.fn(async () => "https://store.test/get"),
+    head: vi.fn(async () => null),
     delete: async (key: string) => void s.deleted.push(key),
     removeAll: async (prefix: string) => void s.removed.push(prefix),
   };
@@ -51,7 +52,7 @@ const owedCalls = (sql: { exec: <T>(q: string, ...a: unknown[]) => T[] }) => sql
 const alarmAt = (sql: { exec: <T>(q: string, ...a: unknown[]) => T[] }) => sql.exec<{ at: number }>("SELECT at FROM _alarm WHERE purpose = 'attachments'")[0]?.at ?? null;
 
 describe("Org's attachment rows: one upload's states (work 126, section 3)", () => {
-  it("creates the row uploading from the headers, marks it ready with the etag, and replays a same-headers retry", async () => {
+  it("creates the row uploading, marks it ready with the etag, and answers the same row to a retry", async () => {
     await withActor("at-states", async (org, _f, sql) => {
       const a = member("usr_a", "at-states");
       await org.feed(a, {}); // the actor migrates on its first use
@@ -60,10 +61,11 @@ describe("Org's attachment rows: one upload's states (work 126, section 3)", () 
       expect(made).toMatchObject({ ok: true, created: true, attachment: { id: AT1, sessionId: SID, by: "user:usr_a", name: "notes.txt", mimetype: "text/plain", bytes: 12, state: "uploading", etag: null, attachedTo: null } });
       // The sweep is armed for the uploading row's TTL.
       expect(alarmAt(sql)).toBeGreaterThan(Date.now() + ATTACHMENT_UPLOADING_TTL_MS - 60_000);
-      // Still uploading: the same headers are a retry that reads the body again.
-      expect(await org.attachmentCreate(a, SID, AT1, spec())).toMatchObject({ ok: true, created: true });
+      // Still uploading: the same row, for a new upload URL.
+      expect(await org.attachmentCreate(a, SID, AT1, spec())).toMatchObject({ ok: true, created: false, attachment: { state: "uploading" } });
       expect(await org.attachmentReady(AT1, '"abc"')).toMatchObject({ ok: true, attachment: { state: "ready", etag: '"abc"' } });
-      // Ready: the same headers replay without a body; other headers, another uploader or a bad id are refused.
+      // Ready: the same row again, and a second `ready` keeps the first etag; another size or session, another uploader or a bad id are refused.
+      expect(await org.attachmentReady(AT1, '"other"')).toMatchObject({ ok: true, attachment: { state: "ready", etag: '"abc"' } });
       expect(await org.attachmentCreate(a, SID, AT1, spec())).toMatchObject({ ok: true, created: false, attachment: { state: "ready" } });
       expect(await org.attachmentCreate(a, SID, AT1, spec({ bytes: 13 }))).toMatchObject({ ok: false, code: "content_mismatch", status: 400 });
       expect(await org.attachmentCreate(a, DRAFT, AT1, spec())).toMatchObject({ ok: false, code: "content_mismatch" });
@@ -183,8 +185,8 @@ describe("the quotas (section 8)", () => {
       expect(await org.attachmentCreate(a, SID, AT1, spec({ bytes: ATTACHMENT_SESSION_BYTES_MAX }))).toMatchObject({ ok: true });
       expect(await org.attachmentCreate(a, SID, AT2, spec({ bytes: 1 }))).toMatchObject({ ok: false, code: "attachment_quota", status: 429, limit: "session", max: ATTACHMENT_SESSION_BYTES_MAX });
       expect(bytesOf(sql, SID)).toBe(ATTACHMENT_SESSION_BYTES_MAX);
-      // Nineteen more full sessions reach the organization's limit; the twenty-first byte is refused.
-      for (let n = 1; n <= 19; n++) {
+      // Full sessions up to the organization's limit; the next byte is refused.
+      for (let n = 1; n < ATTACHMENT_ORG_BYTES_MAX / ATTACHMENT_SESSION_BYTES_MAX; n++) {
         expect(await org.attachmentCreate(a, `cs_1${String(n).padStart(15, "0")}`, `at_1${String(n).padStart(15, "0")}`, spec({ bytes: ATTACHMENT_SESSION_BYTES_MAX }))).toMatchObject({ ok: true });
       }
       expect(await org.attachmentCreate(a, DRAFT, AT3, spec({ bytes: 1 }))).toMatchObject({ ok: false, code: "attachment_quota", limit: "organization" });
@@ -195,8 +197,8 @@ describe("the quotas (section 8)", () => {
   });
 });
 
-describe("a turn's attachments: reserve and release (section 6, D5)", () => {
-  it("attaches ready rows to the turn, all or none, in the order given; releases them when the accept refuses", async () => {
+describe("a turn's attachments: reserve (section 6, D5)", () => {
+  it("attaches ready rows to the turn, all or none, in the order given; another turn may name them again", async () => {
     await withActor("at-reserve", async (org, _f, sql) => {
       const a = member("usr_a", "at-reserve");
       await org.feed(a, {}); // the actor migrates on its first use
@@ -216,18 +218,19 @@ describe("a turn's attachments: reserve and release (section 6, D5)", () => {
         ],
       });
       expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: true, attachment: { state: "attached", attachedTo: { turnId: TURN, messageId: "msg_1" } } });
-      // The same turn again is a retry; another turn is refused; ready again is not a replay.
+      // The same turn again is a retry. Another turn carries it as well (a send that was not accepted is sent
+      // again under a new id, a forwarded file): it stays with the first turn that named it.
       expect(await org.attachmentReserve(a, SID, TURN, "msg_1", [AT1])).toMatchObject({ ok: true });
-      expect(await org.attachmentReserve(a, SID, "tn_000000000002", null, [AT1])).toMatchObject({ ok: false, code: "attachment_in_use", status: 409, attachmentId: AT1 });
-      expect(await org.attachmentReady(AT1, '"3"')).toMatchObject({ ok: false, code: "attachment_in_use" });
-      expect(await org.attachmentCreate(a, SID, AT1, spec({ name: "one.png", mimetype: "image/png", bytes: 3 }))).toMatchObject({ ok: false, code: "attachment_in_use" });
-      // Released: only this turn's rows, back to ready.
-      await org.attachmentRelease(SID, "tn_000000000002", [AT1]);
-      expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: true, attachment: { state: "attached" } });
-      await org.attachmentRelease(SID, TURN, [AT1, AT2]);
-      expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: true, attachment: { state: "ready", attachedTo: null } });
-      expect(await org.attachmentReserve(a, SID, "tn_000000000002", null, [AT1, "at_0000000000000009"])).toMatchObject({ ok: false, code: "attachment_not_found", attachmentId: "at_0000000000000009" });
-      expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: true, attachment: { state: "ready" } });
+      expect(await org.attachmentReserve(a, SID, "tn_000000000002", null, [AT1])).toEqual({ ok: true, attachments: [{ id: AT1, name: "one.png", mimetype: "image/png", bytes: 3 }] });
+      expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: true, attachment: { state: "attached", attachedTo: { turnId: TURN, messageId: "msg_1" } } });
+      // Attached: `ready` and the same create answer the row as it is.
+      expect(await org.attachmentReady(AT1, '"3"')).toMatchObject({ ok: true, attachment: { state: "attached", etag: '"1"' } });
+      expect(await org.attachmentCreate(a, SID, AT1, spec({ name: "one.png", mimetype: "image/png", bytes: 3 }))).toMatchObject({ ok: true, created: false, attachment: { state: "attached" } });
+      // All or none: one unknown id, and the ready row named with it stays ready.
+      await org.attachmentCreate(a, SID, AT3, spec({ name: "three.txt" }));
+      await org.attachmentReady(AT3, '"3"');
+      expect(await org.attachmentReserve(a, SID, "tn_000000000002", null, [AT3, "at_0000000000000009"])).toMatchObject({ ok: false, code: "attachment_not_found", attachmentId: "at_0000000000000009" });
+      expect(await org.attachmentRead(a, SID, AT3)).toMatchObject({ ok: true, attachment: { state: "ready", attachedTo: null } });
       expect(sql.exec("SELECT purpose FROM _alarm WHERE purpose = 'attachments'")).toEqual([]);
     });
   });
