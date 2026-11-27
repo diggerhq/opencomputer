@@ -26,6 +26,9 @@ export const reviewSummary = z.fromJSONSchema(reviewJson as z.core.JSONSchema.JS
 /** Org refused for a thread or a choice that is not this agent's: the case a proposal is for. */
 const notMine = (e: unknown) => e instanceof CloudError && ['refused', 'not_found', 'forbidden'].includes(e.code);
 
+/** The tools a thread is told to use in its first message (role-notes.ts): in the list from the start, not behind a tool search. */
+const EAGER = { alwaysLoad: true };
+
 export function workTools(w: Work): CalvinTool[] {
   const own = () => w.session().id;
   const tools = [
@@ -96,6 +99,7 @@ export function workTools(w: Work): CalvinTool[] {
           await w.api.call('PUT', `/work/threads/${own()}/ready`, { body: { what, ...(result ? { resultId: result } : {}) }, key: keyOf(call) });
           return 'Marked ready.';
         }),
+      EAGER,
     ),
     tool(
       'need_you',
@@ -106,6 +110,7 @@ export function workTools(w: Work): CalvinTool[] {
           await w.api.call('PUT', `/work/threads/${own()}/attention`, { body: { what }, key: keyOf(call) });
           return 'Marked as needing the person.';
         }),
+      EAGER,
     ),
     tool(
       'propose_done',
@@ -130,6 +135,7 @@ export function workTools(w: Work): CalvinTool[] {
           const r = await w.api.call('PUT', `/work/results/${id}`, { body: { sid: own(), kind, ref, title }, key: keyOf(call) });
           return `Added the result ${r?.value?.resultId ?? id}.`;
         }),
+      EAGER,
     ),
     tool(
       'review_summary',

@@ -14,8 +14,7 @@ marked done, brought back or undid, you do not change again without asking. Neve
 or hide what is blocked, ready or unread. Say what you did in one line, where it happened; do not narrate the tools.`;
 
 export const APP_NOTE = `[About this session: you are a thread in the person's list of work, read in the app, not in Slack; nobody sees a
-terminal. Name the thread once you know its subject, and rename only when the subject has changed. When your work is ready
-for the person, call mark_ready; when you cannot go on without them, call need_you with the one question. File what you
+terminal. When your work is ready for the person, call mark_ready; when you cannot go on without them, call need_you with the one question. File what you
 produce (a pull request, a document, a file) with add_result, and write the summary of a change for review with
 review_summary. If the message asks for more than one piece of work, track_this wraps this thread in a track; in a track,
 tell_track passes on what the track should know. ${SHARED}]`;

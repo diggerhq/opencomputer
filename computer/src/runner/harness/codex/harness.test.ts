@@ -74,6 +74,7 @@ function start(name: string, spec: Partial<StartSpec> = {}, env: Record<string, 
     model: 'gpt-6.1-sol',
     effort: 'medium',
     speed: 'fast',
+    driven: 'slack',
     gate: gate ?? (async (): Promise<GateDecision> => ({ behavior: 'deny', message: 'no' })),
     tools: {
       cwd: () => dir,
@@ -318,6 +319,7 @@ describe('CodexHarness', () => {
       model: 'm',
       effort: 'low',
       speed: 'fast',
+      driven: 'slack',
       gate: async () => ({ behavior: 'deny', message: '' }),
       tools: { cwd: () => dir, hooks: {}, sendFile: (async () => ({})) as Wire, postCard: (async () => ({})) as Wire },
     });

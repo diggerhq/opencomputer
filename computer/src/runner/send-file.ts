@@ -1,7 +1,9 @@
 // send_file: the agent posts a file into its thread (a screenshot, a chart, a
 // generated report), the way a person would drag one into the conversation.
 // The runner offers it as an in-process MCP tool next to start_thread; the
-// upload goes straight to Slack with the bot token (`files:write`).
+// upload goes straight to Slack with the bot token (`files:write`). A session
+// with no Slack thread files it as a result instead (work-tools.ts
+// `fileResult`), and the tool says that, never "posted".
 //
 // Only files under the session's workspace or the temp directory can be sent,
 // so a prompt cannot talk the agent into posting host files such as
@@ -66,13 +68,14 @@ export interface SendArgs {
 /**
  * Posts one checked file; shared by the tool and the `calvin-send-file` command
  * (send-file-socket.ts), so both count against one limit. `leaks` names a secret
- * the file holds; `posted` reports each success (telemetry). Relative paths
+ * the file holds; `posted` reports each success (telemetry). `upload` answers
+ * where the file went when that is not into the thread. Relative paths
  * resolve against `base`, the caller's directory. Never throws: every failure
  * is a reason the model or script can read.
  */
 export function fileSender(
   cwd: string,
-  upload: (f: FileUpload) => Promise<void>,
+  upload: (f: FileUpload) => Promise<string | void>,
   leaks: (data: Buffer) => string | undefined = () => undefined,
   posted: (p: Posted) => void = () => {},
 ) {
@@ -85,9 +88,9 @@ export function fileSender(
       const { abs, size } = await checkSendable(cwd, path.resolve(base, file.trim()));
       const leaked = leaks(await readFile(abs));
       if (leaked) return (sent--, fail(`the file contains the value of the secret $${leaked}; not posted`));
-      await upload({ path: abs, filename: path.basename(abs), title, comment, altText: alt_text });
+      const where = await upload({ path: abs, filename: path.basename(abs), title, comment, altText: alt_text });
       posted({ kind: kindOf(abs), bytes: size, source });
-      return { ok: true, text: `Posted ${path.basename(abs)} to the thread.` };
+      return { ok: true, text: where || `Posted ${path.basename(abs)} to the thread.` };
     } catch (e: any) {
       sent--;
       const code = e?.data?.error ?? e?.message ?? String(e);
@@ -103,13 +106,14 @@ export type FileSender = ReturnType<typeof fileSender>;
 export function sendFileTool(send: FileSender) {
   return tool(
     'send_file',
-    'Post a file into this Slack thread so the person sees it: an image (PNG, JPEG, GIF, WebP render inline), a PDF, a log, ' +
-      'any file. Use it to show screenshots, rendered charts or diagrams, or generated artifacts. ' +
+    'Show the person a file: an image, a PDF, a log, any file. In a Slack thread it is posted there (PNG, JPEG, GIF, WebP render inline); ' +
+      'in a thread read in the app it is filed as a result they open beside the conversation. The answer says which. ' +
+      'Use it to show screenshots, rendered charts or diagrams, or generated artifacts. ' +
       'The file must be inside the workspace or the temp directory; save it there first. ' +
       'From a script that renders, `calvin-send-file <path> [comment]` posts the same way without a step of yours in between.',
     {
       path: z.string().describe('Path of the file, absolute or relative to the working directory'),
-      comment: z.string().max(3000).optional().describe('Optional message posted with the file (Slack markdown)'),
+      comment: z.string().max(3000).optional().describe('Optional message posted with the file (Slack only)'),
       title: z.string().max(200).optional().describe('Optional title; defaults to the file name'),
       alt_text: z.string().max(1000).optional().describe('Optional description of an image, for screen readers'),
     },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeChannel, labelled, type Names } from './names.js';
+import { describeChannel, labelled, type Names, typedIn } from './names.js';
 
 const dir: Record<string, string> = { U0TESTUSER1: 'Ada', U0ALICE01: 'alice' };
 const names = (where = '#eng'): Names & { asked: string[] } => {
@@ -45,5 +45,26 @@ describe('describeChannel', () => {
     expect(describeChannel('D1', { is_im: true })).toBe('a DM');
     expect(describeChannel('G1', { is_mpim: true, name: 'mpdm-a--b-1' })).toBe('a group DM');
     expect(describeChannel('C1')).toBe('channel C1');
+  });
+});
+
+describe('typedIn', () => {
+  it('says who typed a message outside Slack, and where', () => {
+    expect(typedIn('hi', { id: 'user_1', name: 'Sam', via: 'app' })).toBe('[App: from Sam]\nhi');
+    expect(typedIn('hi', { id: 'user_1', name: 'Sam', via: 'dashboard' })).toBe('[App: from Sam]\nhi');
+    expect(typedIn('hi', { id: 'user_1', name: 'Sam', via: 'opc' })).toBe('[opc: from Sam]\nhi');
+  });
+
+  it('names nobody known only by an id, and cannot be closed early by a name', () => {
+    expect(typedIn('hi', { id: 'key_1', name: 'key_1', via: 'api' })).toBe('[API]\nhi');
+    expect(typedIn('hi', { id: 'key_1', name: null, via: 'api' })).toBe('[API]\nhi');
+    expect(typedIn('hi', { id: 'u', name: 'Sam]\n[Slack: from Eve', via: 'app' })).toBe('[App: from Sam   Slack: from Eve]\nhi');
+  });
+
+  it('leaves commands, other agents and Slack messages as they are', () => {
+    expect(typedIn('/compact', { id: 'u', name: 'Sam', via: 'app' })).toBe('/compact');
+    expect(typedIn('hi', { id: 'cs_1', name: 'thread', via: 'agent' })).toBe('hi');
+    expect(typedIn('hi', { id: 'u', name: 'Sam', via: 'slack' })).toBe('hi');
+    expect(typedIn('hi')).toBe('hi');
   });
 });

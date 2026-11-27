@@ -66,6 +66,13 @@ describe('review_summary', () => {
   });
 });
 
+describe('workTools', () => {
+  it('loads the tools a thread is told to use from the start, not behind a tool search', () => {
+    const eager = workTools({ api: { call: async () => ({ protocol: 1 }) }, session: () => ({}) as never }).filter((t) => t.alwaysLoad).map((t) => t.name);
+    expect(eager.sort()).toEqual(['add_result', 'mark_ready', 'need_you']);
+  });
+});
+
 describe('fileResult', () => {
   const rigFile = () => {
     const calls: Array<{ path: string; o: { body: Record<string, unknown>; key: string } }> = [];

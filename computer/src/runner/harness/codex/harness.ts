@@ -21,7 +21,7 @@ import { performance } from 'node:perf_hooks';
 import { Effect, Stream } from 'effect';
 import { log } from '../../../log.js';
 import { userContent } from '../../attachments.js';
-import { SYSTEM_APPEND } from '../../system-prompt.js';
+import { systemAppend } from '../../system-prompt.js';
 import {
   type Admission,
   type Capabilities,
@@ -212,7 +212,7 @@ export class CodexHarness implements Harness {
       model: this.model,
       approvalPolicy: policyOf(this.mode),
       sandbox: 'danger-full-access',
-      developerInstructions: SYSTEM_APPEND,
+      developerInstructions: systemAppend(spec.driven),
       modelProvider: PROVIDER,
       dynamicTools: this.served.specs(),
     };

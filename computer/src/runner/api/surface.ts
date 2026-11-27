@@ -12,7 +12,8 @@
 // - NullSurface never throws on a render and never reaches Slack. Its Segment,
 //   History and AgentsPanel are real (the timeline keeps its card state in
 //   them) and write into a client that answers every call and goes nowhere;
-//   `upload` refuses, so send_file tells the model there is no thread.
+//   `upload` files the file as a result or refuses, and send_file tells the
+//   model which: it never says a file was posted where there is no thread.
 
 import type { KnownBlock } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
@@ -40,7 +41,8 @@ export interface Surface extends Names {
   post(text: string, blocks: KnownBlock[]): Promise<string>;
   update(ts: string, text: string, blocks: KnownBlock[], what?: string): Promise<void>;
   delete(ts: string, what?: string): Promise<void>;
-  upload(f: FileUpload, before?: Promise<unknown>): Promise<void>;
+  /** Answers where the file went when that is not into the thread (send-file.ts says it to the model). */
+  upload(f: FileUpload, before?: Promise<unknown>): Promise<string | void>;
   setStatus(status: SessionStatus): Promise<void>;
   rename(title: string): Promise<void>;
   showContext(s: { cwd: string; model?: string; mode: string; costUsd: number; ctxTokens: number }): Promise<void>;
@@ -106,8 +108,8 @@ export class NullSurface implements Surface {
   }
   async update() {}
   async delete() {}
-  async upload(f: FileUpload): Promise<void> {
-    if (this.result) return this.result(f);
+  async upload(f: FileUpload): Promise<string> {
+    if (this.result) return (await this.result(f), `Filed ${f.filename} as a result on the thread: the person opens it from there, it is not shown in the conversation.`);
     throw new Error('this session has no Slack thread to post files to; tell the person where the file is instead');
   }
   async setStatus() {}

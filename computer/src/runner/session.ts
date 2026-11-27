@@ -23,7 +23,7 @@ import { bashDetails, editStats, HIDDEN_TOOLS, fmtStatus, summarizeOutput, todoD
 import { gitDiff } from '../workspace.js';
 import { safeKey } from '../workspaces/index.js';
 import type { Attachment } from './attachments.js';
-import { labelled, type Mentioned } from './names.js';
+import { labelled, type Mentioned, typedIn } from './names.js';
 import { log } from '../log.js';
 import type { PromptGuard } from './prompt-guard.js';
 import type { CheckoutResult, EffortLevel, PermissionMode, SecretRequest, Speed } from '../protocol.js';
@@ -31,12 +31,12 @@ import type { Work } from './work.js';
 import { prefaced } from './role-notes.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
-import { cardSender } from './post-card.js';
+import { cardSender, NO_CARDS } from './post-card.js';
 import type { SessionSecrets } from './session-secrets.js';
 import { TIERS, takeTier } from '../tiers.js';
 import { FIRST_THINKING_CARD_MS, OPENING_THINKING_CARD_MS, THINKING_CARD_MS, ThinkingCards } from './thinking.js';
 import { ReminderFilter } from './stream.js';
-import { SILENT } from './system-prompt.js';
+import { drivenFrom, SILENT } from './system-prompt.js';
 import { close, type Compactor, type Gate, type Harness, type HarnessEvent, type HarnessKind, type Running, type StartSpec, type TaskRecord } from './harness/types.js';
 import { claude } from './harness/claude/harness.js';
 import type { SessionStatus, ThreadInfo } from './thread.js';
@@ -159,7 +159,7 @@ export class Session {
   /** Whether the current model message already arrived as deltas. */
   private streamedText = false;
   readonly sendFile: FileSender; // send_file and `calvin-send-file` (the runner serves it): one limit for both
-  readonly postCard = cardSender((text, blocks) => this.below(async (b) => void (await b, await this.thread.post(text, blocks))), (b) => this.hooks.secrets?.foundIn(b));
+  readonly postCard = cardSender(async (text, blocks) => (this.thread.slack ? this.below(async (b) => void (await b, await this.thread.post(text, blocks))) : NO_CARDS), (b) => this.hooks.secrets?.foundIn(b));
 
   constructor(
     public info: SessionInfo,
@@ -222,7 +222,8 @@ export class Session {
     if (stopping) await (this.hooks.turns?.interrupting('interrupted'), this.stopTurn());
     else if (this.busy) this.rotate();
     const h = this.ensureHarness();
-    const body = this.used ? text : prefaced(this.hooks.work, text);
+    const said = mentioned === undefined ? typedIn(text, from?.actor) : text; // who and where, for the model only (names.ts)
+    const body = this.used ? said : prefaced(this.hooks.work, said);
     this.used = true;
     if (this.busy) this.pending = true;
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
@@ -311,7 +312,7 @@ export class Session {
   /** What a harness for this session starts with, now. */
   spec(): StartSpec {
     const { cwd, sdkSessionId, mode } = this.info;
-    return { cwd, resume: sdkSessionId, mode, model: this.model, effort: effortOf(this.info), speed: speedOf(this.info), gate: this.gate, tools: { cwd: () => cwd, hooks: this.hooks, sendFile: this.sendFile, postCard: this.postCard } };
+    return { cwd, resume: sdkSessionId, mode, model: this.model, effort: effortOf(this.info), speed: speedOf(this.info), driven: drivenFrom(this.thread.slack), gate: this.gate, tools: { cwd: () => cwd, hooks: this.hooks, sendFile: this.sendFile, postCard: this.postCard } };
   }
 
   /** A claimed spare's harness (work 069, harness/claude/spare.ts): already up, as a prewarmed one is. */
@@ -558,10 +559,10 @@ export class Session {
   }
 
   /** send_file and post_card: `post` lands below the current message (after its last text, or a fresh session's intro) once `before` settles; output continues under it. */
-  private async below(post: (before?: Promise<unknown>) => Promise<void>) {
+  private async below<T>(post: (before?: Promise<unknown>) => Promise<T>): Promise<T> {
     const seg = this.seg;
     this.rotate();
-    await post((seg?.close() ?? this.introducing)?.catch(() => {}));
+    return post((seg?.close() ?? this.introducing)?.catch(() => {}));
   }
 
   /** Finalize the current message; the next output starts a new one below. */

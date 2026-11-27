@@ -3,7 +3,7 @@
 //
 // Two checks, both string work on the text already flowing to Slack, so no
 // model call and no added latency beyond holding back a few words:
-// - the canary (a marker in SYSTEM_APPEND) is withheld wherever it appears;
+// - the canary (a marker in every prompt of system-prompt.ts) is withheld wherever it appears;
 // - shingles: the protected text is cut into overlapping runs of SHINGLE
 //   words, compared case- and punctuation-insensitively, so markdown and
 //   quoting don't hide a copy. RUN consecutive matching shingles (SHINGLE +
@@ -22,7 +22,7 @@
 // with it, and Session filters streamed text through `stream()` ahead of the
 // secrets filter, since the client only sees streamed text a chunk at a time.
 
-import { CANARY, SYSTEM_APPEND } from './system-prompt.js';
+import { CANARY, PROMPTS } from './system-prompt.js';
 
 export const WITHHELD = '[withheld: internal instructions]';
 const SHINGLE = 8;
@@ -145,7 +145,7 @@ export class PromptGuard {
   ) {}
 
   private shingles() {
-    return (this.set ??= shingles([SYSTEM_APPEND]));
+    return (this.set ??= shingles([...PROMPTS]));
   }
 
   /** `s` with any copy of Calvin's instructions withheld (every Slack call's strings). */

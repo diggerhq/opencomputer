@@ -233,6 +233,8 @@ export class SessionApi implements Writer {
 
   /** A message into the session, as `turns.send` has it; `turnId`: the turn it starts, when the caller named one (the cloud's inbox). */
   async send(text: string, actor: Actor, ifBusy: IfBusy, turnId: string = mintId('tn')): Promise<CallOutcome> {
+    // The wire carries only the member id: the owner's own name is known here, and the model is told it (names.ts `typedIn`).
+    if (actor.name === actor.id && actor.id === this.o.owner.userId) actor = { ...actor, name: personName(this.o.owner) };
     await this.echo(text, actor);
     if (!this.busy && !this.queue.length) return this.start({ turnId, text, actor }, { ifBusy });
     const cur = this.tap.cur;

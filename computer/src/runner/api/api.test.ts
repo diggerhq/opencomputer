@@ -524,10 +524,10 @@ describe('SessionApi', () => {
       log.append('turn.failed', { error: { code: 'runtime_lost', message: 'the runner ended' } }, { turnId: run });
     });
     await w.t.settle();
-    expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['second']);
+    expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['[API: from Ann]\nsecond']); // the model is told who typed it, and where (names.ts)
     await w.t.feed(w.T.first(), ...w.T.text('0', 'two'), w.T.done());
     await w.t.feed(w.T.first(), ...w.T.text('1', 'three'), w.T.done());
-    expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['second', 'third']);
+    expect(w.sends().map((r) => (r as { v: { text: string } }).v.text)).toEqual(['[API: from Ann]\nsecond', '[API: from Bob]\nthird']);
     expect(w.of('turn.started').map((e) => e.turnId)).toEqual([run, b, c]);
     expect(w.of('message.received')).toHaveLength(3);
     expect(w.log.fold.turn(c)).toMatchObject({ status: 'completed', author: { id: 'usr_bob' } });
@@ -555,8 +555,8 @@ describe('SessionApi', () => {
     stopped();
     await w.t.settle();
     expect(w.sends().map((x) => (x as { v: unknown }).v)).toEqual([
-      { text: 'job', how: 'queue' },
-      { text: 'redo', how: 'queue' },
+      { text: '[API: from Ann]\njob', how: 'queue' },
+      { text: '[API: from Bob]\nredo', how: 'queue' },
     ]);
     expect(w.of('turn.cancelled').map((e) => [e.turnId, (e.data as { forced: boolean }).forced])).toEqual([[a.turn.id, false]]);
     expect(w.of('turn.started').at(-1)?.turnId).toBe(r.turn.id);
