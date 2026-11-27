@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiEvent } from '@opencomputer/sdk/computer'
-import { buildTranscript, type Item } from './transcript'
+import { buildTranscript, unsent, type Item } from './transcript'
 
 // The settled pattern: a running turn shows one work line and its latest
 // message; an ended turn folds everything before its last message into one line.
@@ -140,5 +140,38 @@ describe('subagents', () => {
     const s = subOf(items)
     expect([s.sub.status, s.sub.toolCalls, s.sub.result, s.activity]).toEqual(['completed', 5, 'Two callers.', null])
     expect(s.steps.every((x) => x.status === 'done')).toBe(true)
+  })
+})
+
+// Files on a person's message (work 126): what the event says, kept as is; a
+// message of files alone is still a message; one still being sent shows its uploads.
+describe('attachments', () => {
+  const files = [{ id: 'at_1', name: 'shot.png', mimetype: 'image/png', bytes: 10 }]
+
+  it('are on the user item, by the same array', () => {
+    const events = [ev('message.received', 't1', { input: 'look', attachments: files })]
+    const [item] = buildTranscript(events)
+    expect(item).toMatchObject({ kind: 'user', text: 'look' })
+    expect((item as Extract<Item, { kind: 'user' }>).attachments).toBe(files)
+  })
+
+  it('make a message without text', () => {
+    const items = buildTranscript([ev('message.received', 't1', { input: '', attachments: files })])
+    expect(items).toMatchObject([{ kind: 'user', text: '', attachments: files }])
+    expect(buildTranscript([ev('message.received', 't2', { input: '' })])).toEqual([])
+  })
+
+  it('show how far their uploads are while the message is pending', () => {
+    const pending = [{ key: 'k', kind: 'turn' as const, sessionId: 'cs_1', turnId: 'tn_9', input: 'x', attachments: ['at_1', 'at_lost'], at: 0 }]
+    const held = [{ id: 'at_1', sessionId: 'cs_1', name: 'shot.png', mimetype: 'image/png', bytes: 10, state: 'uploading' as const, progress: 0.5 }]
+    const [item] = unsent([], pending, [], 'cs_1', held)
+    expect(item).toMatchObject({
+      kind: 'user',
+      state: 'sending',
+      attachments: [
+        { id: 'at_1', name: 'shot.png', progress: 0.5, upload: 'uploading' },
+        { id: 'at_lost', name: 'file' },
+      ],
+    })
   })
 })

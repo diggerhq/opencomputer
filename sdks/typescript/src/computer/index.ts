@@ -12,4 +12,6 @@ export * from "./client-interface.js";
 export * from "./review.js";
 export { createClient } from "./client.js";
 export { memoryStorage } from "./memory-storage.js";
+export { memoryFiles } from "./memory-files.js";
+export { ATTACHMENTS_PER_MESSAGE, ATTACHMENT_MAX_BYTES, PENDING_ATTACHMENTS_MAX_BYTES, UPLOADS_AT_ONCE } from "./attachments.js";
 export { makeId } from "./ids.js";

@@ -23,6 +23,7 @@ import {
   type Step,
 } from '../store/transcript'
 import { AskBlock } from './AskBlock'
+import { MessageAttachments, SessionScope } from './Attachments'
 import { I } from './icons'
 import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
@@ -339,7 +340,14 @@ function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
         </div>
       )}
       <div className={cn(pending && 'opacity-60')}>
-        <Rich text={item.text} size="reading" />
+        {item.text && <Rich text={item.text} size="reading" />}
+        {item.attachments && (
+          <MessageAttachments
+            attachments={item.attachments}
+            sending={item.state === 'sending'}
+            className={cn(item.text && 'mt-2')}
+          />
+        )}
       </div>
       {pending && <div className="text-faint text-meta mt-1">{pending}</div>}
       {item.state === 'failed' && (
@@ -403,7 +411,11 @@ export function Conversation(props: {
   id?: string
 }) {
   // One list per conversation: its measured sizes are its own.
-  return <Transcript key={props.sid} {...props} />
+  return (
+    <SessionScope sid={props.sid}>
+      <Transcript key={props.sid} {...props} />
+    </SessionScope>
+  )
 }
 
 function Transcript(props: {

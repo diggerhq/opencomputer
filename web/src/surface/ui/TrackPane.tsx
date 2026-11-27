@@ -263,7 +263,7 @@ function Activity({ track }: { track: TrackView }) {
       <Composer
         draftKey={`k:${tid}`}
         placeholder="Message this track…"
-        onSend={(text) => surface.send(track.agentSession, text)}
+        onSend={(text) => surface.send(track.agentSession, text, `k:${tid}`)}
         className={COMPOSER}
         tools={
           track.agent &&

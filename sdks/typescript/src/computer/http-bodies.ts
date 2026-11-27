@@ -66,6 +66,8 @@ export interface CreateSessionBody {
   mode?: string;
   /** Absent: the organization's `apiAccessDefault`. */
   access?: AccessInput;
+  /** Ids of `ready` attachments (work 126), at most `ATTACHMENTS_PER_MESSAGE`. */
+  attachments?: string[];
 }
 
 /** A change of a session's model, effort or mode (`PATCH /sessions/{id}`, spec 19.1). */

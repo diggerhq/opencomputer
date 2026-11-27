@@ -1,5 +1,6 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
+  ATTACHMENTS_PER_MESSAGE,
   makeId,
   Refused,
   type Answer,
@@ -41,7 +42,7 @@ export type Surface = ReturnType<typeof createSurface>
 export function createSurface(o: SurfaceOptions) {
   const { host } = o
   const me = host.principal.subject
-  const { client, hurry } = hurriedClient(host, o.storage)
+  const { client, hurry } = hurriedClient(host, o.storage, o.files)
 
   let kept: Partial<Kept> = {}
   try {
@@ -60,6 +61,7 @@ export function createSurface(o: SurfaceOptions) {
     base: emptyRows(),
     rows: emptyRows(),
     pending: [],
+    attachments: [],
     counts: NO_COUNTS,
     convos: {},
     toasts: [],
@@ -75,6 +77,8 @@ export function createSurface(o: SurfaceOptions) {
     earlierOpen: false,
     trackEarlierOpen: {},
     drafts: {},
+    draftAttachments: {},
+    startSession: null,
     theme: 'system',
     reviewMode: 'summary',
     ...kept,
@@ -296,6 +300,13 @@ export function createSurface(o: SurfaceOptions) {
       const input = e.kind === 'turn' ? e.input : e.body.input
       const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
       if (!get().drafts[key]) actions.setDraft(key, input)
+      // Its files too (work 126): the client still holds them, and a failed
+      // one shows why, to be taken out.
+      const ids = e.kind === 'turn' ? e.attachments : e.body.attachments
+      if (ids?.length && !get().draftAttachments[key]?.length) {
+        setDraftAttachments(key, ids)
+        if (e.kind === 'session' && !get().startSession) set({ startSession: e.sessionId })
+      }
     }
     const billing = host.billing
     toast({
@@ -309,6 +320,29 @@ export function createSurface(o: SurfaceOptions) {
     for (const k of get().rows.track.values()) if (k.agentSession === sid) return `k:${k.id}`
     return `t:${sid}`
   }
+  const setDraftAttachments = (key: string, ids: string[]) => {
+    const draftAttachments = { ...get().draftAttachments }
+    if (ids.length) draftAttachments[key] = ids
+    else delete draftAttachments[key]
+    set({ draftAttachments })
+  }
+  // The session a composer's files are uploaded to (work 126, D8): the start
+  // box's is made at its first file, and is the one `start` then creates.
+  const sessionOf = (key: string): string | null => {
+    if (key === 'new') {
+      const id = get().startSession ?? makeId('cs')
+      if (id !== get().startSession) set({ startSession: id })
+      return id
+    }
+    if (key.startsWith('t:')) return key.slice(2)
+    return get().rows.track.get(key.slice(2))?.agentSession ?? null
+  }
+  // The ids a composer sends: the ones the client still holds, in order.
+  const attachmentsOf = (key: string): string[] | undefined => {
+    const held = new Set(get().attachments.map((a) => a.id))
+    const ids = (get().draftAttachments[key] ?? []).filter((id) => held.has(id))
+    return ids.length ? ids : undefined
+  }
 
   // ---- conversations ----
 
@@ -319,6 +353,7 @@ export function createSurface(o: SurfaceOptions) {
   void client.ready.then(() => {
     stops.push(client.feed(['session', 'place', 'track', 'result', 'proposal', 'doc', 'read', 'pref', 'machine', 'op']).subscribe(onFrame))
     stops.push(client.pending().subscribe((pending) => recompose({ pending })))
+    stops.push(client.attachments().subscribe((attachments) => set({ attachments })))
     stops.push(client.failures.subscribe(onFailure))
     stops.push((o.wake ?? pageWake)(hurry))
     stops.push(
@@ -327,7 +362,7 @@ export function createSurface(o: SurfaceOptions) {
         if (status === 'online') set({ synced: true })
       }),
     )
-    set({ ready: true, status: client.status.get(), pending: client.pending().get() })
+    set({ ready: true, status: client.status.get(), pending: client.pending().get(), attachments: client.attachments().get() })
     recompose()
   })
   stops.push(
@@ -414,17 +449,50 @@ export function createSurface(o: SurfaceOptions) {
     dismissToast,
 
     // -- talking --
-    // A1, A22: the agent decides what this becomes; `open` lands on it.
+    // A1, A22: the agent decides what this becomes; `open` lands on it. The
+    // start box's files were uploaded to `startSession` (D8): that is the id.
     start(input: string, opt: { open: boolean; settings?: SettingsPatch }) {
-      const r = client.createSession({ input, role: 'start', ...opt.settings })
+      const attachments = attachmentsOf('new')
+      const id = attachments ? (get().startSession ?? undefined) : undefined
+      const r = client.createSession({ id, input, role: 'start', ...opt.settings, attachments })
+      setDraftAttachments('new', [])
+      set({ startSession: null })
       settle(r)
       if (opt.open) go({ ...NOWHERE, thread: r.id })
       return r.id
     },
-    // A2, A3: a reply to a working agent steers it.
-    send(sid: string, input: string) {
+    // A2, A3: a reply to a working agent steers it. `draftKey`: the composer
+    // whose files go with it (work 126); the message waits for their uploads.
+    send(sid: string, input: string, draftKey?: string) {
       const st = get().rows.session.get(sid)?.status
-      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined }))
+      const attachments = draftKey ? attachmentsOf(draftKey) : undefined
+      if (draftKey) setDraftAttachments(draftKey, [])
+      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined, attachments }))
+    },
+    // Files for a composer's next message (work 126): kept and uploaded at
+    // once by the client, ahead of the message. A file the client refuses
+    // (too large, too many waiting) is said, and the others still go in.
+    attach(draftKey: string, files: Iterable<Blob>) {
+      const sid = sessionOf(draftKey)
+      if (!sid) return
+      const ids = [...(get().draftAttachments[draftKey] ?? [])]
+      for (const file of files) {
+        if (ids.length >= ATTACHMENTS_PER_MESSAGE) {
+          toast({ text: `A message can carry at most ${ATTACHMENTS_PER_MESSAGE} files`, tone: 'error' })
+          break
+        }
+        try {
+          ids.push(client.attach(sid, file).id)
+        } catch (e) {
+          const name = (file as File).name || 'A file'
+          toast({ text: `${name} was not attached: ${e instanceof Refused ? sayFailure(e) : 'something went wrong'}`, tone: 'error' })
+        }
+      }
+      setDraftAttachments(draftKey, ids)
+    },
+    removeAttachment(draftKey: string, id: string) {
+      setDraftAttachments(draftKey, (get().draftAttachments[draftKey] ?? []).filter((x) => x !== id))
+      void client.removeAttachment(id)
     },
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))

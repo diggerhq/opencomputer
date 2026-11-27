@@ -14,6 +14,6 @@ export function crockfordId(prefix: string, n: number, random: () => number = cr
   return `${prefix}_${s}`;
 }
 
-export function makeId(prefix: "cs" | "tn" | "trk" | "res" | "prp" | "op" | "cl" | "tr" | "ib", random?: () => number): string {
+export function makeId(prefix: "cs" | "tn" | "at" | "trk" | "res" | "prp" | "op" | "cl" | "tr" | "ib", random?: () => number): string {
   return crockfordId(prefix, prefix === "tn" ? 12 : 16, random);
 }

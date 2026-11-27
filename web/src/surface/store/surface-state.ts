@@ -1,4 +1,4 @@
-import type { ApiEvent, Pending, Storage } from '@opencomputer/sdk/computer'
+import type { ApiEvent, Files, Pending, PendingAttachment, Storage } from '@opencomputer/sdk/computer'
 import type { Host, Location } from '../host'
 import type { Rows } from './rows'
 import type { OpenBlock } from './transcript'
@@ -38,6 +38,12 @@ export interface Kept {
   earlierOpen: boolean
   trackEarlierOpen: Record<string, boolean>
   drafts: Record<string, string>
+  // The files attached in each composer, by draft key (work 126): ids of the
+  // client's pending attachments, which it keeps and uploads across reloads.
+  draftAttachments: Record<string, string[]>
+  // The session the start box's attachments were uploaded to (D8): made when
+  // its first file is attached, and the one `start` then creates.
+  startSession: string | null
   theme: Theme
   reviewMode: 'summary' | 'full'
 }
@@ -53,6 +59,8 @@ export interface State extends Kept {
   base: Rows
   rows: Rows
   pending: Pending[]
+  // Every file attached and not yet sent, with its upload's progress.
+  attachments: PendingAttachment[]
   counts: Counts
   convos: Record<string, Convo>
   toasts: Toast[]
@@ -75,6 +83,8 @@ export const KEPT: (keyof Kept)[] = [
   'earlierOpen',
   'trackEarlierOpen',
   'drafts',
+  'draftAttachments',
+  'startSession',
   'theme',
   'reviewMode',
 ]
@@ -85,6 +95,8 @@ export const EMPTY_CONVO: Convo = { events: [], loaded: false, open: null }
 export interface SurfaceOptions {
   host: Host
   storage: Storage
+  // Where pending attachments' bytes rest (work 126); memory when not given.
+  files?: Files
   // Where UI state is kept; localStorage in a browser.
   kept?: { get(): string | null; set(v: string): void }
   visible?: () => boolean
