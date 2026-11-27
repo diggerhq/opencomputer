@@ -323,26 +323,46 @@ function choices(ask: Ask): Choice[] {
   }))
 }
 
+// A result is settled once nothing more comes of it: a pull request merged or
+// closed, a preview stopped.
+const settled = (r: ThreadView['results'][number]) =>
+  r.state === 'merged' || r.state === 'closed' || r.state === 'stopped'
+
+// The one result a card shows: the one waiting on the user, else the newest
+// unsettled one. The rest are in the Results view, a click away.
+function cardResult(t: ThreadView) {
+  return (
+    t.results.find((r) => r.id === t.readyResult) ??
+    [...t.results].reverse().find((r) => !settled(r)) ??
+    null
+  )
+}
+
+const CHIP =
+  'hover:bg-accent hover:text-foreground -mx-1.5 -my-0.5 inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 whitespace-nowrap'
+
 function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
   const surface = useSurface()
   const ask = t.mark === 'blocked' ? t.ask : null
   const question = ask ? askLine(ask) : null
   const opts = ask ? choices(ask) : []
+  const shown = cardResult(t)
+  const more = t.results.length - (shown ? 1 : 0)
   const body: ReactNode = (
     <>
       <div className="flex items-baseline gap-2">
         <Mk mark={t.mark} />
         <span
           className={cn(
-            'min-w-0 truncate',
-            t.unread ? 'font-bold' : 'font-medium',
+            'text-reading min-w-0 truncate',
+            t.unread ? 'font-semibold' : 'font-medium',
           )}
         >
           {t.title}
         </span>
         <span
           className={cn(
-            'ml-auto flex-none text-xs whitespace-nowrap',
+            'text-meta ml-auto flex-none whitespace-nowrap',
             t.mark ? 'text-status-pending' : 'text-muted-foreground',
           )}
         >
@@ -376,33 +396,52 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
         </div>
       )}
       {t.results.length > 0 && (
-        <div className="text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-          {t.results.map((r) => (
+        <div className="text-muted-foreground text-meta mt-2 flex items-center gap-3">
+          {shown && (
             <span
-              key={r.id}
-              className="hover:bg-accent hover:text-foreground -mx-1.5 -my-0.5 inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 whitespace-nowrap"
+              className={cn(CHIP, 'min-w-0')}
               role="button"
               tabIndex={-1}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return
                 e.stopPropagation()
-                surface.openResult(r)
+                surface.openResult(shown)
               }}
               onClick={(e) => {
                 e.stopPropagation()
-                surface.openResult(r)
+                surface.openResult(shown)
               }}
             >
-              <ResultIcon result={r} ring={t.readyResult === r.id} />
-              {resultTitle(r)}
+              <ResultIcon result={shown} ring={t.readyResult === shown.id} />
+              <span className="truncate">{resultTitle(shown)}</span>
             </span>
-          ))}
+          )}
+          {more > 0 && (
+            <span
+              className={cn(CHIP, 'text-faint flex-none')}
+              role="button"
+              tabIndex={-1}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.stopPropagation()
+                surface.setTrackTab(t.trackId!, 'results')
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                surface.setTrackTab(t.trackId!, 'results')
+              }}
+            >
+              {shown
+                ? `+${more} more`
+                : `${more} ${more === 1 ? 'result' : 'results'}`}
+            </span>
+          )}
         </div>
       )}
     </>
   )
   const cls = cn(
-    'animate-in fade-in-0 block max-w-180 rounded-lg border p-3 text-left shadow-xs transition-colors outline-none focus-visible:border-ring',
+    'animate-in fade-in-0 block max-w-180 rounded-lg border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring',
     sel ? 'bg-row-selected' : 'bg-card hover:border-input',
   )
   // Buttons cannot sit inside a button, so a card that carries choices is a
