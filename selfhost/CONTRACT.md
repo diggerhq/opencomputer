@@ -2,50 +2,45 @@
 
 One VM runs two things:
 
-- **The gateway**: a container built from `computer/Dockerfile`, run by
-  `selfhost/compose.yaml` (stream B). It handles Slack, `/setup`, SQLite and the tunnel.
+- **The gateway**: the hosted gateway (`services/managed-agents`) under Miniflare, a container
+  built from `selfhost/gateway/Dockerfile` and run by `selfhost/compose.yaml` (PR #1253). It
+  handles the API, Slack, `/setup`, its state in the `/data` volume, and the tunnel.
 - **The host agent and its sessions**: systemd services and rootless Podman, set up by
   `selfhost/host-install.sh` (stream A, this directory).
 
-This file is everything one side assumes about the other. Unmarked facts come from the code, with the file named. Anything marked **PROPOSED** is a choice made here that the code does not fix yet; stream B should match it or change it here. The names below were checked against stream B's `selfhost/compose.yaml`, `selfhost/.env.example` and `docs/self-hosting/single-vm.mdx` (PR #1203 at 9d75f9c9).
+This file is everything one side assumes about the other. Unmarked facts come from the code, with the file named. Anything marked **PROPOSED** is a choice made here that the code does not fix yet; stream B should match it or change it here. The names below were checked against #1253's `selfhost/compose.yaml`, `selfhost/.env.example` and `selfhost/gateway/serve.mjs`, and the connection in §1, §2 and §8 was run on an Azure test VM (see §9).
 
 ## 1. The connection
 
 | | Value | Source |
 |---|---|---|
 | Direction | host → gateway, outbound only. The gateway never calls a service on the host (not the host agent, not oc-modelproxy); it sends hosts their credentials over the host's WebSocket. | `src/host/gateway-link.ts` |
-| Protocol | WebSocket on path **`/host`**. The gateway destroys an upgrade on any other path. | `src/gateway/hosts.ts:103-108` |
-| Auth | `Authorization: Bearer <SP_HOST_TOKEN>` on the upgrade. A bad token gets a 401. | `gateway-link.ts:46`, `hosts.ts` |
-| Host id | `hostId` field of the `hello` message (not a header). Defaults to the hostname. | `src/host/identity.ts:45` |
-| Gateway port in the container | **8080**. The image sets `PORT=8080`; the gateway listens on `0.0.0.0:$PORT`. Without the image's env the default is 3170. | `computer/Dockerfile`, `src/gateway/main.ts:57` |
-| Published port on the VM | **`127.0.0.1:${GATEWAY_PORT:-8080}:8080`**: loopback only. `GATEWAY_PORT` is in compose's `.env`. | `selfhost/compose.yaml` (#1203) |
-| Host's URL | **`SP_GATEWAY_URL=ws://127.0.0.1:8080/host`**: plain ws over loopback, never through the tunnel. If `GATEWAY_PORT` changes, change this port with it; nothing checks that the two match. | `selfhost/selfhost.env.example` |
-| Health check | `GET`/`HEAD /healthz` on the same port returns 200 with `{"ok":true,"mode":"setup"\|"slack","version":"…","hosts":<connected hosts>}`. `hosts` is how to check that the host connected. | `src/gateway/main.ts:199-200` |
+| Protocol | WebSocket on the Computer path, **`/v1/computer/host?organizationId=<GATEWAY_ORG>`**, as the hosted gateway. | `services/managed-agents/src/http/host/upgrade.ts` |
+| Auth | `Authorization: Bearer <SP_HOST_TOKEN>` on the upgrade, the organization's host token (§2). A bad token gets a 401. | `gateway-link.ts`, `actors/computer/host-link/host-token.ts` |
+| Host id | `SP_HOST_ID` = the organization, `GATEWAY_ORG` (default `org_selfhost`). | `selfhost/.env.example` (#1253) |
+| Gateway port in the container | **8080**. | `selfhost/compose.yaml` (#1253) |
+| Published port on the VM | **`127.0.0.1:${GATEWAY_PORT:-8080}:8080`**: loopback only. `GATEWAY_PORT` is in compose's `.env` and is passed into the container too, so the gateway knows it. | `selfhost/compose.yaml` (#1253) |
+| Host's URL | **`SP_GATEWAY_URL=ws://127.0.0.1:8080/v1/computer/host?organizationId=org_selfhost`**: plain ws over loopback, never through the tunnel. `host-install.sh --link-gateway` builds it from the container's `GATEWAY_PORT` and `GATEWAY_ORG`, so the two cannot drift; `host-install.sh` refuses any other shape. | `selfhost/host-install.sh` |
+| Health check | `GET /healthz` on the same port returns 200 with `{"ok":true,"mode":"miniflare"}`. It has no host count: the host's journal says `connected to ws://127.0.0.1:8080/v1/computer/host?organizationId=…`, and `/setup`'s Host step shows **connected**. | `selfhost/gateway/serve.mjs` |
 
-The gateway's `/setup` "Host" step prints `SP_GATEWAY_URL=<SP_ORIGIN>`, which is the bare public `https://…` origin, not a `ws(s)://…/host` URL (`src/setup/index.ts:388-398`). Two consequences on a self-hosted computer:
-
-- Do not paste that value as the host's URL. Use the loopback URL above.
-- The token that step prints is fine to use (see §2).
+`/setup`'s Host step shows the same URL, `SP_HOST_ID` and the token masked (`sph_••••`), as a one-line install command; "Reveal" shows it with the token. `--link-gateway` does the same without the browser and without the token passing through a terminal.
 
 ## 2. The host token
 
 | | |
 |---|---|
-| Host side | `SP_HOST_TOKEN`, in `/etc/opencomputer/selfhost.env` (root:root 0600, read by systemd only). |
-| Gateway side, either | `SP_HOST_TOKENS`, a comma-separated list in the gateway container's environment, compared as is (`src/gateway/main.ts:121`); |
-| or | a token issued by `POST /setup/host`: `sph_` + base64url(32 random bytes), shown once, only its sha256 kept in SQLite `host_tokens` (`src/setup/hosts.ts:19`). |
-| Format | Any non-empty string without commas or whitespace works for `SP_HOST_TOKENS`. |
+| Gateway side | `/data/host-token` in the gateway's volume, mode 0600, written by the gateway at every start: `sph_` + base64url(HMAC-SHA256(`COMPUTER_HOST_TOKEN_KEY`, `"calvin-host:" + GATEWAY_ORG`)). The key is generated once into `/data/keys.json`, so the token is stable as long as the volume is; nothing is set in the gateway's `.env`. |
+| Host side | `SP_HOST_TOKEN`, in `/etc/opencomputer/selfhost.env` (root:root 0600). systemd reads it (`EnvironmentFile=`) and passes it to the host; `sp-host` cannot read the file, and `agent` (the sessions) can read neither. |
+| Format | `sph_` followed by base64url characters. `--link-gateway` refuses anything else. |
 
-**PROPOSED flow (one token, generated once on the VM):**
+**How the token gets from the gateway to the host** (`sudo selfhost/host-install.sh --link-gateway`, as run on the VM):
 
-1. stream B's setup step (or the operator) runs `openssl rand -hex 32` once;
-2. it writes the value into `/var/lib/oc-gateway/opencomputer/selfhost/.env` as `SP_HOST_TOKENS=<value>`;
-3. it writes the same value into `/etc/opencomputer/selfhost.env` as `SP_HOST_TOKEN=<value>`;
-4. it runs `sudo selfhost/host-install.sh` (or `systemctl restart slack-presence-host`).
+1. as `oc-gateway`, find the compose stack's gateway container (label `com.docker.compose.service=gateway`; `GATEWAY_CONTAINER=` names one when there are several);
+2. `podman exec <container> printenv GATEWAY_ORG GATEWAY_PORT` and `podman exec <container> cat /data/host-token`, the token captured into a shell variable;
+3. write `SP_GATEWAY_URL`, `SP_HOST_ID` and `SP_HOST_TOKEN` into a 0600 temp file next to `selfhost.env` (its other lines kept; `printf`, a shell builtin, so the token is on no command line), then `mv` it over `selfhost.env` (root:root 0600);
+4. restart `slack-presence-host`.
 
-The value is never printed, never committed and never passed on a command line. Issuing it from `/setup` instead also works and needs no gateway env, but it adds a manual browser step before the host can connect.
-
-`host-install.sh` never writes `selfhost.env` and never generates the token. It starts the host only once `SP_HOST_TOKEN` there is non-empty.
+The token is never printed, logged, committed or passed as an argument. The log line names only where it came from. Rerun `--link-gateway` after the gateway's volume is recreated (a new key means a new token); a plain gateway restart keeps it.
 
 ## 3. Environment variables
 
@@ -53,9 +48,9 @@ The value is never printed, never committed and never passed on a command line. 
 
 | Var | Req | Default | Meaning |
 |---|---|---|---|
-| `SP_GATEWAY_URL` | yes | `ws://localhost:3171/host` (code) | `ws://127.0.0.1:8080/host` here **PROPOSED** |
-| `SP_HOST_TOKEN` | yes, **secret** | empty → 401 | §2 |
-| `SP_HOST_ID` | no | hostname | `selfhost` in the example. Keep it stable across reinstalls. |
+| `SP_GATEWAY_URL` | yes | `ws://localhost:3171/host` (code) | `ws://127.0.0.1:<GATEWAY_PORT>/v1/computer/host?organizationId=<GATEWAY_ORG>` (§1); written by `--link-gateway` |
+| `SP_HOST_TOKEN` | yes, **secret** | empty → 401 | `/data/host-token` (§2); written by `--link-gateway` |
+| `SP_HOST_ID` | yes | hostname | `GATEWAY_ORG` (`org_selfhost`); written by `--link-gateway` |
 | `SP_RUNNER_MEMORY_MAX`, `SP_IDLE_MS`, `SP_POOL_SIZE`, `SP_ARTIFACTS_IDLE_HOURS`, `SP_SWEEP_AGE_MS`, `SP_FETCH_INTERVAL`, `SP_FETCH_TIMEOUT`, `SP_FORK_FETCH_TIMEOUT`, `SP_FORK_FETCH_FRESH`, `SP_FORK_RETENTION_DAYS` | no | code defaults | tuning (`src/host/host-config.ts`, `src/workspaces/clones.ts`) |
 | `SP_TELEMETRY_URL`, `SP_TELEMETRY_CREDENTIAL`, `SP_REGION`, `SP_SUBSTRATE` | no | unset: nothing leaves | leave unset |
 
@@ -78,22 +73,19 @@ The value is never printed, never committed and never passed on a command line. 
 
 Reads no configuration from the environment and never talks to the gateway. Model credentials reach it from the gateway through the host, over `control.sock`. It does **not** get `selfhost.env`: that would hand it the host token for nothing.
 
-### Gateway container (stream B; listed so nothing is set on the wrong side)
+### Gateway container (#1253's `selfhost/.env.example`; listed so nothing is set on the wrong side)
 
 | Var | Req | Secret | Notes |
 |---|---|---|---|
-| `PORT` | no | | 8080 from the image; keep it |
-| `SP_DB` | no | | `/data/gateway.db` from the image |
-| `SP_ORIGIN` | **yes** | | public `https://` origin of the tunnel (OAuth redirects, `/setup` output) |
-| `SETUP_TOKEN` | **yes** | yes | `/setup` answers 503 without it |
-| `SP_STORE_KEY` | **yes** | yes | `openssl rand -hex 32`. Encrypts the setup store and session-secret vault; without it nothing can be saved |
-| `SP_HOST_TOKENS` | yes (PROPOSED flow) | yes | §2. Optional in compose (`/setup` can issue one instead) |
-| `GATEWAY_PORT` | no | | compose only: the VM side of the loopback port, default 8080 (§1) |
-| `GITHUB_ORG` | for `/setup`'s GitHub step | | |
-| `SP_PEOPLE`, `PERMISSION_MODE`, `SLACK_APP_NAME`, `MODEL`, `SP_GITHUB_API_URL`, `SP_VERSION` | no | | |
-| Slack, model and GitHub credentials (`SLACK_*`, `MODEL_PROFILE`/`MODEL_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_*`) | via env or `/setup` | yes | read env first, then the encrypted store (`src/gateway/main.ts:80`) |
+| `SETUP_TOKEN` | **yes** | yes | `/setup`'s sign-in and the operator's bearer on `/v1/computer/*` |
+| `PUBLIC_URL` | for Slack | | public `https://` origin of the tunnel (`SP_ORIGIN` is its older name) |
+| `GATEWAY_ORG` | no | | the one organization; default `org_selfhost`. The host's `SP_HOST_ID` and the URL's `organizationId` |
+| `GATEWAY_PORT` | no | | the VM side of the loopback port, default 8080 (§1) |
+| `SP_SETUP_OPEN` | no | | `1`: `/setup` stays open after the Claude credential is set and the host connected |
+| `ANTHROPIC_API_KEY` | no | yes | the sessions' shared key; `/setup` can store one instead (encrypted in `/data`) |
+| `CLOUDFLARE_TUNNEL_TOKEN`, `NGROK_*` | for a tunnel profile | yes | |
 
-None of the gateway's variables are needed on the host, and none of the host's on the gateway, except the shared token value.
+None of the gateway's variables are needed on the host, and none of the host's on the gateway. The host's three values come from the running container (§2).
 
 ## 4. Ports
 
@@ -120,8 +112,8 @@ The VM's firewall needs no inbound port besides SSH.
 | `/data/state`, `/data/journals` | sp-host | host identity, gateway definition, sandbox records; session journals |
 | `/run/slack-presence` | sp-host:agent | runner sockets (tmpfiles) |
 | `/run/oc-modelproxy/{api,control}.sock` | modelproxy | sessions' model socket (group agent); host's control socket (group sp-host) |
-| gateway volume, mounted at `/data` in the container | node (entrypoint chowns) | `gateway.db`. Named volume `gateway-data`, in `oc-gateway`'s Podman storage. It is not the host's `/data`; never bind the host's `/data` into the gateway |
-| `/var/lib/oc-gateway/opencomputer/{selfhost,computer}` | oc-gateway | the compose stack's copy of the repository; `selfhost/.env` holds the gateway's secrets (0600) |
+| gateway volume, mounted at `/data` in the container | the gateway | Miniflare's state (`do/`, `d1/`, `r2/`, `kv/`), `keys.json` and `host-token`. Named volume `gateway-data`, in `oc-gateway`'s Podman storage. It is not the host's `/data`; never bind the host's `/data` into the gateway. Back it up whole |
+| `/var/lib/oc-gateway/opencomputer` | oc-gateway | the compose stack's checkout of the repository (compose builds from its root); `selfhost/.env` holds the gateway's secrets (0600) |
 
 ## 6. Users
 
@@ -140,12 +132,21 @@ The compose stack runs as the dedicated `oc-gateway` user (or the one `GATEWAY_U
 | | |
 |---|---|
 | Compose | `podman-compose` 1.6.0 (`PODMAN_COMPOSE_VERSION`, refused below 1.1.0) in a venv at `/opt/podman-compose`, linked at `/usr/local/bin/podman-compose`, ahead of Ubuntu's 1.0.6 on PATH (1.0.6 ignores `profiles:`, so the tunnel services would not start). `podman compose` runs it. Docker Compose v2 reads the same file, but this script installs no Docker. |
-| Reboot | `podman-restart.service` (user unit of `oc-gateway`, lingering) starts the stack's containers at boot. Ubuntu 24.04's (Podman 4.9.3) starts only `restart-policy=always`, so every service in `compose.yaml` uses `restart: always`; `unless-stopped` would not come back. Lingering also gives Podman the user session it needs for healthchecks. |
-| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost`: the operator copies the checkout's `selfhost/` and `computer/` (compose builds `../computer`) into `/var/lib/oc-gateway/opencomputer`, owned by `oc-gateway`. `host-install.sh` creates that directory empty (0750). `.env` there is `oc-gateway`'s, mode 0600. |
+| Reboot and crashes | #1253's `selfhost/systemd/opencomputer-gateway.service`, a user unit of `oc-gateway` (lingering) that runs `podman-compose up --abort-on-container-exit` with `Restart=always`. `restart: always` alone is not enough: rootless Podman leaves a `podman kill`ed container `Exited (137)`. `podman-restart.service` stays enabled for the `restart: always` services. Lingering also gives Podman the user session it needs for healthchecks. |
+| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost`: a checkout of the repository at `/var/lib/oc-gateway/opencomputer`, owned by `oc-gateway` (compose builds `selfhost/gateway/Dockerfile` from the checkout's root). `host-install.sh` creates that directory empty (0750). `.env` there is `oc-gateway`'s, mode 0600. |
 
 ## 8. Order of start
 
 1. `host-install.sh` installs everything. Without a token the host is installed but stopped.
-2. The gateway container starts: `podman compose up -d` as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost` (stream B).
-3. The token goes into both places (§2), then the host starts or restarts. Until the gateway answers, the host retries on its own (`Restart=always`, and the link reconnects). Either side can start first.
-4. Check: `curl -s 127.0.0.1:8080/healthz` shows `"hosts":1`.
+2. The gateway starts as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost` (`podman compose up -d`, or the user unit). On first start it generates its keys and writes `/data/host-token`.
+3. `sudo selfhost/host-install.sh --link-gateway` writes the host's URL, id and token (§2) and starts the host. Until the gateway answers, the host retries on its own (`Restart=always`, and the link reconnects).
+4. Check: `journalctl -u slack-presence-host | grep 'connected to'`, or `/setup`'s Host step.
+
+## 9. Verified
+
+On an Azure test VM (Ubuntu 24.04, Podman 4.9.3, podman-compose 1.6.0), driven only through `az vm run-command`, with #1253's gateway (compose project under `oc-gateway`) and this script:
+
+- `host-install.sh` built the release, pulled the session image by digest and installed the host as `sp-host` with `SP_LAUNCH=podman` (after the two fixes in `6a8655f5`: `HOME` for `go build`, and Podman's version checked as `agent`).
+- The host connected to `ws://127.0.0.1:8080/v1/computer/host?organizationId=org_selfhost` as `org_selfhost` with the token from `/data/host-token`; sessions ran turns in rootless Podman containers (runners up in about 600 ms).
+- `--link-gateway` rewrote `selfhost.env` (root:root 0600, the three values identical to the ones tested by hand, the other 51 lines kept), restarted the host, which took back its live session container in 3 ms and reconnected. Run from the checkout under a directory `oc-gateway` cannot enter, it works too (it changes to `/` first).
+- The host reconnected on its own after a `podman kill` of the gateway (6.3 s), a gateway restart and a VM reboot (13 s after boot).

@@ -10,6 +10,8 @@
 #
 #   sudo selfhost/host-install.sh [--build-image]   install, or update to this checkout
 #   sudo selfhost/host-install.sh --dry-run         check this machine and print the plan; changes nothing
+#   sudo selfhost/host-install.sh --link-gateway    point the host at the running gateway container (its
+#                                                   URL, organization and /data/host-token) and (re)start it
 #   sudo selfhost/host-install.sh --uninstall [--purge]
 #                                                   stop and remove the services; --purge also
 #                                                   the users, their data under /data and the images
@@ -41,6 +43,8 @@
 #                   anyway. Anyone who can push a branch to the repository can
 #                   move a tag; the digest check is what rules that out.
 #   GO_SERIES       Go series for oc-modelproxy (default 1.27, as its go.mod)
+#   GATEWAY_CONTAINER  --link-gateway: the gateway container's name, when
+#                   $GATEWAY_USER runs more than one compose project
 #   GATEWAY_USER    the dedicated user that runs the compose stack (default
 #                   oc-gateway, made here); an existing login user works too.
 #                   Never agent (uid 1500: only the sessions' user, inside their
@@ -50,8 +54,9 @@
 #   NODE_MAJOR      Node.js major (default 24)
 #
 # /etc/opencomputer/selfhost.env (selfhost/selfhost.env.example) is the
-# operator's: this script never writes it. Without a token in it the host is
-# installed but not started.
+# operator's: an install never writes it, and --link-gateway rewrites only its
+# SP_GATEWAY_URL, SP_HOST_ID and SP_HOST_TOKEN lines. Without a token in it the
+# host is installed but not started.
 #
 # Invariants:
 # - Idempotent: a second run with the same checkout changes nothing and restarts
@@ -84,6 +89,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --build-image) BUILD_IMAGE=1 ;;
     --uninstall) MODE=uninstall ;;
+    --link-gateway) MODE=link ;;
     --purge) PURGE=1 ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $arg" >&2; usage 2 ;;
@@ -615,8 +621,8 @@ start_host() {
     log "SP_HOST_TOKEN is empty in $SELFHOST_ENV: host installed, not started"
     return
   fi
-  [[ "$(env_value SP_GATEWAY_URL)" == ws://* || "$(env_value SP_GATEWAY_URL)" == wss://* ]] \
-    || die "SP_GATEWAY_URL in $SELFHOST_ENV must be ws://.../host or wss://.../host"
+  [[ "$(env_value SP_GATEWAY_URL)" =~ ^wss?://[^/]+/v1/computer/host\?organizationId=[A-Za-z0-9_-]+$ ]] \
+    || die "SP_GATEWAY_URL in $SELFHOST_ENV must be ws://127.0.0.1:<GATEWAY_PORT>/v1/computer/host?organizationId=<GATEWAY_ORG> (sudo $0 --link-gateway writes it)"
   log "starting $UNIT"
   systemctl restart "$UNIT"
   sleep 3
@@ -645,7 +651,43 @@ install_all() {
   gateway_units
   start_host
   log "done: release $SHA, image $IMAGE, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
-  echo "The compose stack is $GATEWAY_USER's: copy selfhost/ and computer/ to $GATEWAY_HOME/$GATEWAY_DIR_NAME, then as $GATEWAY_USER, from $GATEWAY_HOME/$GATEWAY_DIR_NAME/selfhost: podman compose up -d (selfhost/CONTRACT.md)"
+  echo "The compose stack is $GATEWAY_USER's: a checkout of the repository at $GATEWAY_HOME/$GATEWAY_DIR_NAME, then as $GATEWAY_USER, from $GATEWAY_HOME/$GATEWAY_DIR_NAME/selfhost: podman compose up -d; then sudo $0 --link-gateway (selfhost/CONTRACT.md)"
+}
+
+# --link-gateway: points the host at the gateway container that $GATEWAY_USER runs. As
+# $GATEWAY_USER it reads the gateway's GATEWAY_ORG, GATEWAY_PORT and /data/host-token (the
+# gateway writes it at every start), then writes SP_GATEWAY_URL, SP_HOST_ID and SP_HOST_TOKEN
+# into selfhost.env (root 0600; its other lines are kept) and (re)starts the host. The token
+# goes from `podman exec` into a variable and from there into the file: never printed, never
+# on a command line. sp-host cannot read the file; systemd hands it the token (EnvironmentFile=).
+link_gateway() {
+  id "$GATEWAY_USER" >/dev/null 2>&1 || die "no user $GATEWAY_USER: run $0 first"
+  systemctl cat "$UNIT" >/dev/null 2>&1 || die "$UNIT is not installed: run $0 first"
+  GATEWAY_HOME="$(getent passwd "$GATEWAY_USER" | cut -d: -f6)"
+  cd /   # runuser fails in a directory $GATEWAY_USER cannot enter, such as a checkout under /root
+  local container="${GATEWAY_CONTAINER:-}" org port token tmp keep='^[[:space:]]*(SP_GATEWAY_URL|SP_HOST_ID|SP_HOST_TOKEN)='
+  if [[ -z $container ]]; then
+    container="$(as_gateway podman ps --filter label=com.docker.compose.service=gateway --format '{{.Names}}')" \
+      || die "podman ps as $GATEWAY_USER failed"
+    [[ -n $container ]] || die "$GATEWAY_USER runs no gateway container: start the compose stack first (podman compose up -d)"
+    [[ $container != *$'\n'* ]] || die "$GATEWAY_USER runs more than one gateway container ($(echo $container)): name one with GATEWAY_CONTAINER="
+  fi
+  as_gateway podman container exists "$container" || die "$GATEWAY_USER has no container $container"
+  org="$(as_gateway podman exec "$container" printenv GATEWAY_ORG)" || die "$container has no GATEWAY_ORG (a gateway older than selfhost/gateway?)"
+  port="$(as_gateway podman exec "$container" printenv GATEWAY_PORT)" || port=8080
+  [[ $org =~ ^[A-Za-z0-9_-]+$ ]] || die "$container's GATEWAY_ORG is not a plain id: $org"
+  [[ $port =~ ^[0-9]+$ ]] || die "$container's GATEWAY_PORT is not a port: $port"
+  token="$(as_gateway podman exec "$container" cat /data/host-token)" || die "cannot read /data/host-token in $container"
+  [[ $token =~ ^sph_[A-Za-z0-9_-]+$ ]] || die "/data/host-token in $container is not an sph_ token (not printed)"
+  install -d -m 0755 "$SELFHOST_ETC"
+  tmp="$(mktemp "$SELFHOST_ETC/.selfhost.env.XXXXXX")"   # 0600
+  grep -Ev "$keep" "$( [[ -f $SELFHOST_ENV ]] && echo "$SELFHOST_ENV" || echo "$HERE/selfhost.env.example" )" >"$tmp" || true
+  printf 'SP_GATEWAY_URL=ws://127.0.0.1:%s/v1/computer/host?organizationId=%s\nSP_HOST_ID=%s\nSP_HOST_TOKEN=%s\n' \
+    "$port" "$org" "$org" "$token" >>"$tmp"
+  unset token
+  chown root:root "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$SELFHOST_ENV"
+  log "$SELFHOST_ENV: SP_GATEWAY_URL=ws://127.0.0.1:$port/v1/computer/host?organizationId=$org, SP_HOST_ID=$org, SP_HOST_TOKEN from $container:/data/host-token (not printed)"
+  start_host
 }
 
 # ------------------------------------------------------------------ uninstall
@@ -735,4 +777,5 @@ purge_gateway() {
 case $MODE in
   install) install_all ;;
   uninstall) uninstall ;;
+  link) link_gateway ;;
 esac
