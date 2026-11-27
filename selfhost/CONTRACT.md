@@ -113,7 +113,7 @@ The VM's firewall needs no inbound port besides SSH.
 | `/run/slack-presence` | sp-host:agent | runner sockets (tmpfiles) |
 | `/run/oc-modelproxy/{api,control}.sock` | modelproxy | sessions' model socket (group agent); host's control socket (group sp-host) |
 | gateway volume, mounted at `/data` in the container | the gateway | Miniflare's state (`do/`, `d1/`, `r2/`, `kv/`), `keys.json` and `host-token`. Named volume `gateway-data`, in `oc-gateway`'s Podman storage. It is not the host's `/data`; never bind the host's `/data` into the gateway. Back it up whole |
-| `/var/lib/oc-gateway/opencomputer` | oc-gateway | the compose stack's checkout of the repository (compose builds from its root); `selfhost/.env` holds the gateway's secrets (0600) |
+| `/var/lib/oc-gateway/selfhost`, `/var/lib/oc-gateway/services/managed-agents` | oc-gateway | the compose stack, copied from the host's checkout by `host-install.sh` (compose builds from `/var/lib/oc-gateway`); `selfhost/.env` holds the gateway's secrets (0600) |
 
 ## 6. Users
 
@@ -133,12 +133,12 @@ The compose stack runs as the dedicated `oc-gateway` user (or the one `GATEWAY_U
 |---|---|
 | Compose | `podman-compose` 1.6.0 (`PODMAN_COMPOSE_VERSION`, refused below 1.1.0) in a venv at `/opt/podman-compose`, linked at `/usr/local/bin/podman-compose`, ahead of Ubuntu's 1.0.6 on PATH (1.0.6 ignores `profiles:`, so the tunnel services would not start). `podman compose` runs it. Docker Compose v2 reads the same file, but this script installs no Docker. |
 | Reboot and crashes | #1253's `selfhost/systemd/opencomputer-gateway.service`, a user unit of `oc-gateway` (lingering) that runs `podman-compose up --abort-on-container-exit` with `Restart=always`. `restart: always` alone is not enough: rootless Podman leaves a `podman kill`ed container `Exited (137)`. `podman-restart.service` stays enabled for the `restart: always` services. Lingering also gives Podman the user session it needs for healthchecks. |
-| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost`: a checkout of the repository at `/var/lib/oc-gateway/opencomputer`, owned by `oc-gateway` (compose builds `selfhost/gateway/Dockerfile` from the checkout's root). `host-install.sh` creates that directory empty (0750). `.env` there is `oc-gateway`'s, mode 0600. |
+| Where compose runs | as `oc-gateway`, from `/var/lib/oc-gateway/selfhost`. `host-install.sh` copies `selfhost/` and `services/managed-agents/` there from its checkout's HEAD, owned by `oc-gateway`, on every install (compose builds `selfhost/gateway/Dockerfile` from `/var/lib/oc-gateway`). `.env` there is `oc-gateway`'s, mode 0600, and an install keeps it. |
 
 ## 8. Order of start
 
 1. `host-install.sh` installs everything. Without a token the host is installed but stopped.
-2. The gateway starts as `oc-gateway`, from `/var/lib/oc-gateway/opencomputer/selfhost` (`podman compose up -d`, or the user unit). On first start it generates its keys and writes `/data/host-token`.
+2. The gateway starts as `oc-gateway`, from `/var/lib/oc-gateway/selfhost` (`podman compose up -d`, or the user unit). On first start it generates its keys and writes `/data/host-token`.
 3. `sudo selfhost/host-install.sh --link-gateway` writes the host's URL, id and token (§2) and starts the host. Until the gateway answers, the host retries on its own (`Restart=always`, and the link reconnects).
 4. Check: `journalctl -u slack-presence-host | grep 'connected to'`, or `/setup`'s Host step.
 

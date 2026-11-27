@@ -32,8 +32,9 @@
 #     podman-compose in /opt/podman-compose (Ubuntu's 1.0.6 ignores compose
 #     profiles) and user oc-gateway (home /var/lib/oc-gateway, rootless Podman,
 #     lingering, podman-restart.service), so the stack runs apart from the
-#     sessions and comes back after a reboot; its copy of the repository goes
-#     in /var/lib/oc-gateway/opencomputer (empty here)
+#     sessions and comes back after a reboot; this checkout's selfhost/ (and
+#     services/managed-agents, the gateway's build context) copied to
+#     /var/lib/oc-gateway/selfhost, refreshed on every install; .env is kept
 #
 # Inputs (environment):
 #   SP_IMAGE        a session image to run instead of the one this checkout names,
@@ -114,7 +115,8 @@ GO_SERIES="${GO_SERIES:-1.27}"
 NODE_MAJOR="${NODE_MAJOR:-24}"
 GATEWAY_USER="${GATEWAY_USER:-oc-gateway}"
 GATEWAY_HOME_DEFAULT=/var/lib/oc-gateway
-GATEWAY_DIR_NAME=opencomputer   # the stack's copy: $GATEWAY_HOME/opencomputer/{selfhost,computer}
+# The stack's copy, from this checkout into $GATEWAY_HOME: compose.yaml builds from its parent (context: ..).
+GATEWAY_STACK_PATHS=(selfhost/compose.yaml selfhost/.env.example selfhost/gateway selfhost/systemd services/managed-agents)
 GATEWAY_NETWORKS="/srv/$GATEWAY_USER/networks"   # its Podman networks: not under /var/lib (gateway_user)
 PODMAN_COMPOSE_VERSION="${PODMAN_COMPOSE_VERSION:-1.6.0}"
 PODMAN_COMPOSE_MIN=1.1.0
@@ -280,7 +282,7 @@ Plan (nothing below has run):
   2. Node.js $NODE_MAJOR (nodejs.org, checksum-verified) -> /usr/local; Go $GO_SERIES (go.dev) -> /usr/local/go;
      podman-compose $PODMAN_COMPOSE_VERSION (PyPI) -> $COMPOSE_VENV, /usr/local/bin/podman-compose
   3. $DATA directory; user $AGENT_USER (uid $AGENT_UID, home $AGENT_HOME, no sudo);
-     user $GATEWAY_USER for the compose stack (home $GATEWAY_HOME, stack dir $GATEWAY_HOME/$GATEWAY_DIR_NAME, subuid/subgid, no sudo)
+     user $GATEWAY_USER for the compose stack (home $GATEWAY_HOME, stack in $GATEWAY_HOME/selfhost, copied from this checkout, .env kept; subuid/subgid, no sudo)
   4. release $RELEASE from $REPO_ROOT (git archive HEAD:computer, npm ci, runner bundle, oc-modelproxy build)
   5. rootless Podman for $AGENT_USER (computer/deploy/vm/sandbox.sh install): podman crun passt uidmap slirp4netns,
      /etc/subuid and /etc/subgid, lingering, storage $DATA/containers/storage
@@ -298,6 +300,23 @@ EOF
 }
 
 # ------------------------------------------------------------------ install steps
+
+# The stack's files, from this checkout's HEAD (git archive: no node_modules or
+# local edits) into $GATEWAY_HOME, owned by $GATEWAY_USER. Each run replaces
+# them; selfhost/.env is not in the archive and stays.
+gateway_stack() {
+  log "compose stack -> $GATEWAY_HOME/selfhost"
+  local p paths=() group; group="$(id -gn "$GATEWAY_USER")"
+  for p in "${GATEWAY_STACK_PATHS[@]}"; do
+    if rgit cat-file -e "HEAD:$p" 2>/dev/null; then paths+=("$p"); else echo "warning: $p is not in this checkout; skipped"; fi
+  done
+  [[ ${#paths[@]} -gt 0 ]] || { echo "warning: no compose stack in this checkout"; return 0; }
+  for p in "${paths[@]}"; do [[ $p == */.env.example || $p == */compose.yaml ]] || rm -rf "${GATEWAY_HOME:?}/$p"; done
+  rgit archive --format=tar HEAD "${paths[@]}" | tar -x -C "$GATEWAY_HOME" --no-same-owner
+  for p in selfhost services; do [[ ! -d $GATEWAY_HOME/$p ]] || chown -R "$GATEWAY_USER:$group" "$GATEWAY_HOME/$p"; done
+  chmod 0750 "$GATEWAY_HOME/selfhost"
+  [[ ! -f $GATEWAY_HOME/selfhost/.env ]] || chmod 0600 "$GATEWAY_HOME/selfhost/.env"
+}
 packages() {
   log "apt packages"
   apt-get update -q
@@ -381,8 +400,6 @@ gateway_user() {
   fi
   GATEWAY_HOME="$(getent passwd "$GATEWAY_USER" | cut -d: -f6)"
   chmod 0750 "$GATEWAY_HOME"
-  # Where the operator copies selfhost/ and computer/ for compose (docs/self-hosting/single-vm.mdx).
-  install -d -m 0750 -o "$GATEWAY_USER" -g "$(id -gn "$GATEWAY_USER")" "$GATEWAY_HOME/$GATEWAY_DIR_NAME"
   local g f
   for g in sudo admin adm lxd docker "$AGENT_USER" "$HOST_USER"; do gpasswd -d "$GATEWAY_USER" "$g" >/dev/null 2>&1 || true; done
   # A range of its own, above every other: sandbox.sh refuses an agent range that overlaps another user's.
@@ -642,6 +659,7 @@ install_all() {
   compose_tool
   agent_user
   gateway_user
+  gateway_stack
   release
   sandbox
   switch_current
@@ -651,7 +669,7 @@ install_all() {
   gateway_units
   start_host
   log "done: release $SHA, image $IMAGE, $(node --version), podman $(dpkg-query -W -f='${Version}' podman), podman-compose $PODMAN_COMPOSE_VERSION"
-  echo "The compose stack is $GATEWAY_USER's: a checkout of the repository at $GATEWAY_HOME/$GATEWAY_DIR_NAME, then as $GATEWAY_USER, from $GATEWAY_HOME/$GATEWAY_DIR_NAME/selfhost: podman compose up -d; then sudo $0 --link-gateway (selfhost/CONTRACT.md)"
+  echo "The compose stack is $GATEWAY_USER's, in $GATEWAY_HOME/selfhost: as $GATEWAY_USER, cp .env.example .env, fill it in, start it (docs/self-hosting/single-vm.mdx); then sudo $0 --link-gateway"
 }
 
 # --link-gateway: points the host at the gateway container that $GATEWAY_USER runs. As
