@@ -24,6 +24,7 @@ import {
 } from '../store/transcript'
 import { AskBlock } from './AskBlock'
 import { I } from './icons'
+import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
 import { Rich } from './Rich'
 
@@ -403,9 +404,8 @@ function Transcript(props: {
   // Distance from the end to hold when earlier items are revealed above.
   const hold = useRef<number | null>(null)
   const lastKey = useRef<string | undefined>(undefined)
-  // Where this pane last put itself. Its scroll event arrives a frame later,
-  // when a pane that is changing width has grown again: it is not the reader's.
-  const own = useRef(-1)
+  // Where the pane was when last looked at, by the reader or by itself.
+  const seen = useRef<Seen>({ top: 0, bottom: 0, view: 0 })
 
   const [n, setN] = useState(PAGE)
   const shown = items.length > n ? items.slice(items.length - n) : items
@@ -433,8 +433,16 @@ function Transcript(props: {
     places.set(sid, { top: el.scrollTop, end, sizes: v.measurementsCache })
   const toEnd = (el: HTMLDivElement) => {
     el.scrollTop = el.scrollHeight
-    own.current = el.scrollTop
+    seen.current = at(el)
     remember(el, true)
+  }
+  // Whether the reader has left the end or come back to it since last seen.
+  // Every render looks first, since the virtualizer re-renders on a scroll
+  // before the pane's own scroll handler runs.
+  const look = (el: HTMLDivElement) => {
+    const now = at(el)
+    pinned.current = following(pinned.current, seen.current, now)
+    seen.current = now
   }
 
   // Opening a conversation: where the reader left it, else its end.
@@ -443,8 +451,10 @@ function Transcript(props: {
     if (!el) return
     const was = places.get(sid)
     pinned.current = was ? was.end : true
-    if (was && !was.end) el.scrollTop = was.top
-    else toEnd(el)
+    if (was && !was.end) {
+      el.scrollTop = was.top
+      seen.current = at(el)
+    } else toEnd(el)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -454,6 +464,7 @@ function Transcript(props: {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    look(el)
     const last = items[items.length - 1]
     // The person's own new message takes them to it.
     if (
@@ -466,6 +477,7 @@ function Transcript(props: {
     lastKey.current = last?.key
     if (hold.current !== null) {
       el.scrollTop = el.scrollHeight - hold.current
+      seen.current = at(el)
       hold.current = null
     } else if (pinned.current) toEnd(el)
   })
@@ -484,10 +496,9 @@ function Transcript(props: {
 
   const onScroll = () => {
     const el = ref.current
-    if (!el || el.scrollTop === own.current) return
-    const end = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-    pinned.current = end
-    remember(el, end)
+    if (!el) return
+    look(el)
+    remember(el, pinned.current)
   }
 
   return (
