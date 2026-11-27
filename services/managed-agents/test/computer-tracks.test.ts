@@ -206,6 +206,18 @@ describe("the Computer actor of tracks and threads", () => {
     expect(api[1]!.params).toEqual({ sessionId: SESSION(1) });
   });
 
+  it("sends the conversation the runner last reported, so a cold start resumes it", async () => {
+    const { stub, fakes } = await computer("tt-resume");
+    const { frames } = await host("tt-resume");
+    await stub.start(spec("tt-resume", SESSION(1)));
+    await until(() => frames, (all) => all.some((frame) => frame.t === "start"), "start frame");
+    await inside(stub, (_i, state) => state.storage.sql.exec("UPDATE sessions SET sdk_session_id = 'sdk-1', fork_path = '/workspace' WHERE session_id = ?", SESSION(1)));
+    fakes.entries = [entry("in_1")];
+    await stub.drain(SESSION(1));
+    const api = await until(() => frames.filter((frame) => frame.t === "api"), (all) => all.length === 1, "api frame");
+    expect(api[0].session).toMatchObject({ sessionId: SESSION(1), sdkSessionId: "sdk-1", forkPath: "/workspace" });
+  });
+
   it("takes the drain with no host, owes it, and drains at hello", async () => {
     const { stub, fakes } = await computer("tt-waking");
     fakes.entries = [entry("in_1")];

@@ -93,6 +93,9 @@ export interface ApiRow {
   model: string | null;
   effort: string | null;
   speed: string | null;
+  /** The conversation the runner last reported, which a cold start resumes. */
+  sdkSessionId: string | null;
+  forkPath: string | null;
   status: string | null;
   originType: string;
   originClient: string | null;
@@ -106,7 +109,8 @@ export interface ApiRow {
 
 const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
   thread_ts AS threadTs, owner_id AS ownerId, owner_user_id AS ownerUserId, owner_name AS ownerName,
-  owner_email AS ownerEmail, title, mode, model, effort, speed, status, origin_type AS originType,
+  owner_email AS ownerEmail, title, mode, model, effort, speed, sdk_session_id AS sdkSessionId,
+  fork_path AS forkPath, status, origin_type AS originType,
   origin_client AS originClient, metadata, created_at AS createdAt, updated_at AS updatedAt,
   active_turn_id AS activeTurnId, role FROM sessions`;
 
@@ -245,6 +249,8 @@ export class ComputerSessionsApi {
       ...(row.model ? { model: row.model } : {}),
       ...(row.effort ? { effort: row.effort } : {}),
       ...(isSpeed(row.speed) ? { speed: row.speed } : {}),
+      ...(row.sdkSessionId ? { sdkSessionId: row.sdkSessionId } : {}),
+      ...(row.forkPath ? { forkPath: row.forkPath } : {}),
       metadata: parseMetadata(row.metadata),
       ...(row.role ? { role: JSON.parse(row.role) as CalvinRoleSpec } : {}),
     };
