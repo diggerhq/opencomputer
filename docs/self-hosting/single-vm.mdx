@@ -96,7 +96,7 @@ The Host step of `/setup` shows an equivalent command, with the token masked unt
 
 ## 5. Set up in the browser
 
-Open `https://<PUBLIC_URL>/setup`. Before you have a public URL, use an SSH tunnel and open `http://localhost:8080/setup`:
+Open `<PUBLIC_URL>/setup`. Before you have a public URL, use an SSH tunnel and open `http://localhost:8080/setup`:
 
 ```sh
 ssh -L 8080:127.0.0.1:8080 you@your-vm
@@ -127,33 +127,23 @@ To start a session, mention the app in a channel or DM it.
 
 ## HTTPS
 
-The gateway listens only on `127.0.0.1`. Put one of the following in front of it, set `PUBLIC_URL` to its origin, and restart the gateway.
+The gateway listens only on `127.0.0.1`. To expose it, run a Cloudflare Tunnel on a custom domain, which needs no inbound ports:
 
-**Caddy**, on a VM with a public IP, a DNS name, and ports 80 and 443 open. Caddy gets the certificate itself:
-
-```sh
-sudo apt install -y caddy
-printf 'computer.example.com {\n  reverse_proxy 127.0.0.1:8080\n}\n' | sudo tee /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
-
-**Cloudflare Tunnel**, with no inbound ports:
-
-1. Create a named tunnel in Cloudflare Zero Trust.
-2. Add a public hostname to it, with the service `http://gateway:8080`.
-3. Put the tunnel's token in `.env` as `CLOUDFLARE_TUNNEL_TOKEN`.
-4. Enable the `cloudflared` profile. Run `systemctl --user edit opencomputer-gateway`, add the lines below, then restart the gateway.
+1. In Cloudflare Zero Trust, create a named tunnel.
+2. Add a public hostname on your domain, for example `computer.example.com`, with the service `http://gateway:8080`.
+3. In `.env`, set `CLOUDFLARE_TUNNEL_TOKEN` to the tunnel's token and `PUBLIC_URL=https://computer.example.com`.
+4. Enable the `cloudflared` profile. Run `systemctl --user edit opencomputer-gateway`, add the lines below, then run `systemctl --user restart opencomputer-gateway`.
 
 ```ini
 [Service]
 Environment=COMPOSE_PROFILES=cloudflared
 ```
 
-**ngrok** uses the `ngrok` profile the same way. Set `NGROK_AUTHTOKEN` and a reserved domain in `NGROK_URL`, and set `PUBLIC_URL=https://<NGROK_URL>`.
+Any other reverse proxy that terminates TLS in front of `127.0.0.1:8080` also works.
 
 ## On a laptop or workstation
 
-A Linux machine running Ubuntu 24.04 on x86-64 works with the same steps. Use `http://localhost:8080/setup`, and skip Slack unless you run a tunnel.
+A Linux machine running Ubuntu 24.04 on x86-64 works with the same steps. Use `http://localhost:8080/setup`, and skip Slack unless you set up the tunnel.
 
 On a Mac, the host can't run: the installer needs Ubuntu on x86-64. Run it in an Ubuntu VM on the Mac instead. On Apple Silicon, that VM runs x86-64 under emulation, which is much slower.
 
