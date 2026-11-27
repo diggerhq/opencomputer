@@ -131,7 +131,7 @@ describe('Hub via SessionLog', () => {
   it('merges deltas per block, gives a catch-up delta on reaching live, and drops them once completed', async () => {
     const { log } = await fresh();
     const t = mintId('tn');
-    log.append('message.received', { input: 'hi', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: t, actor: ANN });
+    log.append('message.received', { input: 'hi', ifBusy: 'queue', delivery: 'started', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId: t, actor: ANN });
     log.append('turn.started', { model: null, effort: null, mode: null, trigger: 'message', subagentId: null }, { turnId: t, actor: ANN });
     msgDelta(log, t, 'b1', 'hel');
     msgDelta(log, t, 'b1', 'lo');

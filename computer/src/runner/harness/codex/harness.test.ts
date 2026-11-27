@@ -77,7 +77,7 @@ function start(name: string, spec: Partial<StartSpec> = {}, env: Record<string, 
     gate: gate ?? (async (): Promise<GateDecision> => ({ behavior: 'deny', message: 'no' })),
     tools: {
       cwd: () => dir,
-      hooks: { work: { api: { call: async () => Promise.reject(new Error('offline')) }, session: () => ({ id: 'cs_0000000000000001' }) } },
+      hooks: { work: { api: { call: async () => Promise.reject(new Error('offline')), stream: async () => Promise.reject(new Error('unused')) }, session: () => ({ id: 'cs_0000000000000001' }) } },
       sendFile: (async () => ({ ok: true })) as Wire,
       postCard: (async () => ({ ok: true })) as Wire,
     },
