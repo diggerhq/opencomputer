@@ -362,10 +362,14 @@ export class SessionApi implements Writer {
     const fold = this.log.fold;
     const s = this.session;
     return {
-      'turns.send': (p, ctx) =>
-        p.slack && this.o.slack && ctx.actor.via === 'slack'
-          ? this.slackTurn(p.input, p.slack as SlackTurn, actorOf(ctx.actor), p.turnId ?? mintId('tn'))
-          : this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue', p.turnId, ctx.attachments ?? []),
+      'turns.send': (p, ctx) => {
+        const slack = p.slack && this.o.slack && ctx.actor.via === 'slack' ? (p.slack as SlackTurn) : undefined;
+        // A message is its text or its files (work 126); the schema allows empty text, so the files are checked here.
+        if (!p.input && !ctx.attachments?.length && !slack?.files?.length) return fail('invalid_request', 'a message needs text or an attachment', 400, { field: 'input' });
+        return slack
+          ? this.slackTurn(p.input, slack, actorOf(ctx.actor), p.turnId ?? mintId('tn'))
+          : this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue', p.turnId, ctx.attachments ?? []);
+      },
       'sessions.compact': (p, ctx) => this.send(`/compact${p.instructions ? ` ${p.instructions}` : ''}`, actorOf(ctx.actor), 'queue'),
       'sessions.interrupt': (p, ctx) => {
         const actor = actorOf(ctx.actor);

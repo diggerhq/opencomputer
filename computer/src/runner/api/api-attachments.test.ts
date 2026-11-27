@@ -88,6 +88,21 @@ describe('SessionApi with attachments', () => {
     for (const e of w.events()) assertEvent(e);
   });
 
+  it('a message may be its attachments alone; one with neither text nor attachments is refused', async () => {
+    const w = await world();
+    const atts = [{ id: 'at_7', name: 'spec.pdf', mimetype: 'application/pdf', bytes: 5 }];
+    const empty = await w.call('turns.send', { input: '' }, BOB);
+    expect(empty.error).toMatchObject({ code: 'invalid_request', field: 'input', status: 400 });
+    expect(w.of('message.received')).toHaveLength(0);
+    const none = await w.call('turns.send', { input: '' }, { ...BOB, attachments: [] });
+    expect(none.error).toMatchObject({ code: 'invalid_request', field: 'input' });
+    const a = result(await w.call('turns.send', { input: '' }, { ...BOB, attachments: atts }));
+    expect(a.delivery).toBe('started');
+    expect(w.fetched).toEqual([atts]);
+    expect(w.of('message.received').map((e) => e.data)).toMatchObject([{ input: '', attachments: atts }]);
+    for (const e of w.events()) assertEvent(e);
+  });
+
   it('a queued turn with attachments survives the runner that queued it: the resume fetches them again from the journal', async () => {
     const atts = [{ id: 'at_9', name: 'spec.pdf', mimetype: 'application/pdf', bytes: 5 }];
     const w = await world((log) => {
