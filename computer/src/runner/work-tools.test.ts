@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { invoke, jsonSchema } from './tool.js';
 import type { Work } from './work.js';
-import { workTools } from './work-tools.js';
+import { fileResult, workTools } from './work-tools.js';
 
 const RES = 'res_0000000000000001';
 const summary = {
@@ -62,5 +63,34 @@ describe('review_summary', () => {
     // The release holds computer/ only; in the repository the copy must match.
     if (!existsSync(sdk)) return;
     expect(readFileSync(path.resolve(import.meta.dirname, '../../schema/review.v1.json'), 'utf8')).toBe(readFileSync(sdk, 'utf8'));
+  });
+});
+
+describe('fileResult', () => {
+  const rigFile = () => {
+    const calls: Array<{ path: string; o: { body: Record<string, unknown>; key: string } }> = [];
+    const w: Work = { api: { call: async (_m, p, o) => (calls.push({ path: p, o: o as never }), { protocol: 1 }) }, session: () => ({ id: 'cs_0000000000000001' }) as never };
+    return { w, calls };
+  };
+
+  it('names a file in the workspace by its path there', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+    const { w, calls } = rigFile();
+    await fileResult(w, cwd, { path: path.join(cwd, 'repo', 'chart.png'), filename: 'chart.png' });
+    expect(calls[0]!.o.body).toMatchObject({ kind: 'file', ref: 'repo/chart.png', title: 'chart.png' });
+  });
+
+  it('copies a file from outside the workspace into .sent/, by its content: the same bytes are the same result', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'ws-'));
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'render-'));
+    writeFileSync(path.join(tmp, 'shot.png'), 'png bytes');
+    const { w, calls } = rigFile();
+    await fileResult(w, cwd, { path: path.join(tmp, 'shot.png'), filename: 'shot.png' });
+    await fileResult(w, cwd, { path: path.join(tmp, 'shot.png'), filename: 'shot.png' });
+    const ref = calls[0]!.o.body.ref as string;
+    expect(ref).toMatch(/^\.sent\/[0-9a-f]{16}\/shot\.png$/);
+    expect(readFileSync(path.join(cwd, '.sent', '.gitignore'), 'utf8')).toBe('*\n');
+    expect(readFileSync(path.join(cwd, ref), 'utf8')).toBe('png bytes');
+    expect(calls[1]!.o.key).toBe(calls[0]!.o.key);
   });
 });
