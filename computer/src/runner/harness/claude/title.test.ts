@@ -1,6 +1,15 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import { describe, expect, it } from 'vitest';
-import { transcript } from './title.js';
+import * as sdk from '@anthropic-ai/claude-agent-sdk';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { nameSession, transcript } from './title.js';
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  getSessionInfo: vi.fn(),
+  getSessionMessages: vi.fn(),
+  renameSession: vi.fn(),
+  tagSession: vi.fn(),
+  query: vi.fn(),
+}));
 
 const msg = (type: SessionMessage['type'], content: unknown, parent: string | null = null): SessionMessage =>
   ({ type, uuid: 'u', session_id: 's', message: { content }, parent_tool_use_id: parent, parent_agent_id: null }) as SessionMessage;
@@ -20,5 +29,40 @@ describe('transcript', () => {
 
   it('is cut to a few thousand characters', () => {
     expect(transcript([msg('user', 'x'.repeat(10_000))]).text.length).toBe(4000);
+  });
+});
+
+describe('nameSession', () => {
+  const asked = vi.mocked(sdk.query);
+  const said = (n: number) => Array.from({ length: n }, (_, i) => msg('user', `message ${i}`));
+  const session = (info: object, messages: SessionMessage[]) => {
+    vi.mocked(sdk.getSessionInfo).mockResolvedValue({ sessionId: 's', ...info } as never);
+    vi.mocked(sdk.getSessionMessages).mockResolvedValue(messages);
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asked.mockImplementation((async function* () {
+      yield { type: 'result', subtype: 'success', result: 'Fix login redirect loop' };
+    }) as never);
+  });
+
+  it('names a session from its first turn, without Claude Code writing a title of its own', async () => {
+    session({}, said(1));
+    expect(await nameSession('s', '/w')).toEqual({ title: 'Fix login redirect loop', done: false });
+    expect(sdk.renameSession).toHaveBeenCalledWith('s', 'Fix login redirect loop', { dir: '/w' });
+    expect(sdk.tagSession).not.toHaveBeenCalled();
+  });
+
+  it('reads the first title back until the conversation is long enough', async () => {
+    session({ customTitle: 'Fix login redirect loop' }, said(2));
+    expect(await nameSession('s', '/w')).toEqual({ title: 'Fix login redirect loop', done: false });
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it('names it once more, for good, after enough messages', async () => {
+    session({ customTitle: 'Login page' }, said(3));
+    expect(await nameSession('s', '/w')).toEqual({ title: 'Fix login redirect loop', done: true });
+    expect(sdk.tagSession).toHaveBeenCalledWith('s', 'calvin-titled', { dir: '/w' });
   });
 });

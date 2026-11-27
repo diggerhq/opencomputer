@@ -1,8 +1,11 @@
 // A session's display name, so the Slack sidebar shows what a thread is about
 // instead of its opening message (work 093). Two stages:
 //
-// 1. From the first turn: the title Claude Code writes itself from the first
-//    prompt (its `ai-title`, which the SDK reports as `customTitle`). Free.
+// 1. From the first turn: a title a model writes from the conversation so
+//    far, kept in the transcript as a custom title, so later turns read it back
+//    instead of asking again. Claude Code would write one itself (its
+//    `ai-title`), but not with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which
+//    keeps it on the model proxy's socket (model-env.ts, work 097).
 // 2. Once people have sent `TITLE_AFTER` messages: a title a model writes from
 //    the conversation so far, kept in the transcript as a custom title and
 //    marked with the `TITLED` tag, so a runner that restarts does not ask again.
@@ -56,10 +59,18 @@ async function ask(convo: string): Promise<string> {
   return reply;
 }
 
+/** Stage 1: a title from the conversation so far, kept as the custom title; undefined if unusable. */
+async function first(sdkSessionId: string, cwd: string, convo: string): Promise<string | undefined> {
+  const title = cleanTitle(await ask(convo));
+  if (title) await renameSession(sdkSessionId, title, { dir: cwd });
+  return title || undefined;
+}
+
 /**
- * The session's title after this turn: Claude Code's own until the
- * conversation is long enough, then the model's, written once; `done` once
- * that has happened, so the caller can stop asking. Undefined on any failure.
+ * The session's title after this turn: a first one from the opening turn,
+ * then, once the conversation is long enough, the final one, written once;
+ * `done` once that has happened, so the caller can stop asking. Undefined on
+ * any failure.
  */
 export async function nameSession(sdkSessionId: string, cwd: string): Promise<Naming | undefined> {
   try {
@@ -68,7 +79,7 @@ export async function nameSession(sdkSessionId: string, cwd: string): Promise<Na
     if (info.tag === TITLED) return { done: true };
     const own = info.customTitle?.trim() || undefined;
     const { said, text } = transcript(await getSessionMessages(sdkSessionId, { dir: cwd }));
-    if (said < TITLE_AFTER) return { title: own, done: false };
+    if (said < TITLE_AFTER) return { title: own ?? (await first(sdkSessionId, cwd, text)), done: false };
     const title = cleanTitle(await ask(text));
     if (!title) return { title: own, done: false };
     await renameSession(sdkSessionId, title, { dir: cwd });
