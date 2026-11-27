@@ -269,6 +269,7 @@ function Activity({ track }: { track: TrackView }) {
         onSend={(text, e) =>
           surface.send(track.agentSession, text, { now: e.meta })
         }
+        onAttach={(text, files) => surface.sendWithFiles(track.agentSession, text, files)}
         className={COMPOSER}
         tools={
           track.agent &&

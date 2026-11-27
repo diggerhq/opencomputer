@@ -176,7 +176,7 @@ const newSession = (p: Extract<Pending, { kind: 'session' }>, me: string): [Sess
       kind: 'session',
       id: p.sessionId,
       version: 0,
-      title: p.body.input.slice(0, 80),
+      title: (p.body.input ?? '').slice(0, 80),
       status: 'starting',
       archived: false,
       owner: { id: me, name: '', email: null },
