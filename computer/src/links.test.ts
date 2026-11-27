@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { forwarded, linkedBlock, linkedFiles, MAX_LINKED_FILES } from './links.js';
+import { forwarded, linkedBlock, linkedFiles, MAX_LINKED_FILES, slackLinked, withLinked } from './links.js';
 
 describe('linkedBlock', () => {
   it('frames held context with its own sentence, oldest first (work 112)', () => {
@@ -54,5 +54,19 @@ describe('files of linked messages', () => {
 
   it('marks every file as not attached when none came with the link', () => {
     expect(linkedBlock({ url: 'u', ok: true, where: '#a', messages: [{ name: 'a', ts: '1', text: '', files: ['old.png'] }] })).toContain('[files: old.png (not attached)]');
+  });
+});
+
+describe('slackLinked', () => {
+  // Work 129: the Slack actor sends `context` as a list, usually empty; read as one link, `[]` became
+  // "[Linked Slack message undefined is not shared with you: undefined.]" under every Slack message.
+  it('adds nothing for a Slack turn with no held context and no links', () => {
+    expect(withLinked('hi', slackLinked({ context: [], linked: [] }))).toBe('hi');
+  });
+
+  it('puts held context before the links', () => {
+    const held = { url: '', ok: true as const, where: '', context: true, messages: [{ name: 'Bob', ts: '1', text: 'fyi' }] };
+    const link = { url: 'u', ok: false as const, reason: 'r' };
+    expect(slackLinked({ context: [held], linked: [link] })).toEqual([held, link]);
   });
 });

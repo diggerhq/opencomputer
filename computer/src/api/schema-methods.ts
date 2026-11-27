@@ -42,7 +42,7 @@ const SlackTurn = Schema.Struct({
   files: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   mentioned: Schema.optionalKey(Schema.Boolean),
   mentionedInline: Schema.optionalKey(Schema.Boolean),
-  context: Schema.optionalKey(Schema.Unknown),
+  context: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   linked: Schema.optionalKey(Schema.Array(Schema.Unknown)),
 });
 const SlackButton = Schema.Struct({ userId: Schema.String, value: Schema.String });

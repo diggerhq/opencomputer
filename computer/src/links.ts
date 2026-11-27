@@ -415,6 +415,11 @@ export function linkedFiles(linked: Linked[] | undefined): LinkedFile[] {
   return (linked ?? []).flatMap((l) => (l.ok ? (l.attached ?? []).map((f) => ({ ...f, from: l.where ? `${f.from} in ${l.where}` : f.from })) : []));
 }
 
+/** A Slack turn's held context, then its links, in the order the model reads them. Both are lists, as the Slack actor sends them. */
+export function slackLinked(m: { context?: Linked[]; linked?: Linked[] }): Linked[] {
+  return [...(m.context ?? []), ...(m.linked ?? [])];
+}
+
 /** The message text with each linked thread (or the reason it isn't shared) after it, for the model. */
 export function withLinked(text: string, linked: Linked[] | undefined): string {
   const own = defang(text);
