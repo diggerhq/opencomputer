@@ -56,6 +56,8 @@ export interface State extends Kept {
   counts: Counts
   convos: Record<string, Convo>
   toasts: Toast[]
+  // Why a result's pull request was not merged, until it is tried again (work 118).
+  unmerged: Record<string, string>
   palette: boolean
   keysSheet: boolean
   earlierNext: Record<string, string | null | undefined>

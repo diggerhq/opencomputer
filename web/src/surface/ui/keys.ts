@@ -1,4 +1,5 @@
 import { tinykeys } from 'tinykeys'
+import { mergeable } from '../store/pulls'
 import type { Surface } from '../store/surface-store'
 
 // Spec section 12: one key per frequent action. Letters act only while the
@@ -99,6 +100,13 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
           void surface.undoLast()
         } else plain(() => void surface.undoLast())(e)
       },
+      // Merge, where the thread offers it: on its done suggestion (work 118).
+      m: plain(() => {
+        const t = openThread()
+        if (!t || t.done || !t.proposals.some((x) => x.type === 'done')) return
+        const pulls = t.results.filter(mergeable)
+        if (pulls.length === 1) surface.merge(pulls[0].id)
+      }),
       t: plain(() => {
         const t = openThread()
         if (t && !t.trackId && !t.done) surface.trackIt(t.id)

@@ -1,4 +1,5 @@
 import type { ResultRow } from '@opencomputer/sdk/computer'
+import { revertOf } from '../store/pulls'
 
 // A result's title and one-line detail, as the panes write them.
 
@@ -12,8 +13,12 @@ export function resultTitle(r: ResultRow): string {
 export function resultDetail(r: ResultRow): string {
   const m = r.meta ?? {}
   if (typeof m.detail === 'string') return m.detail
+  if (m.pending === 'merge') return 'merging…'
+  if (m.pending === 'revert') return 'reverting…'
   const parts: string[] = []
   if (r.state) parts.push(r.state)
+  const revert = revertOf(r)
+  if (revert) parts.push(revert.merged ? 'reverted' : `revert #${revert.number} open`)
   if (r.type === 'pr' && typeof m.checks === 'string')
     parts.push(`checks ${m.checks}`)
   if (typeof m.additions === 'number' && typeof m.deletions === 'number')

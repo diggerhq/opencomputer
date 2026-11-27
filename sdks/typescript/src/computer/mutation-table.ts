@@ -33,6 +33,10 @@ export interface MutationArgs {
   "result.add": { resultId: string; sid: string; kind: "pr" | "changes" | "preview" | "file" | "document"; ref: string; title: string; meta?: Record<string, unknown> };
   /** `parts` as review.v1.json has them. */
   "review.save": { resultId: string; head: string; parts: unknown[] };
+  /** Merge the result's pull request on GitHub. `head`: the commit the caller saw; another head is `refused` `changed`. */
+  "result.merge": { resultId: string; head?: string };
+  /** Undo a merge: open the pull request's revert on GitHub and merge it. */
+  "result.revert": { resultId: string };
   "proposal.create": { proposalId: string; kind: "done" | "wrap" | "move" | "edit"; target: string; what: string; args?: Record<string, unknown> };
   "proposal.accept": { proposalId: string };
   "proposal.dismiss": { proposalId: string };
@@ -65,6 +69,8 @@ export const MUTATION_ROUTES: Record<MutationName, readonly [method: string, pat
   "doc.save": ["PUT", "/work/tracks/{tid}/doc"],
   "result.add": ["PUT", "/work/results/{resultId}"],
   "review.save": ["PUT", "/work/results/{resultId}/review"],
+  "result.merge": ["POST", "/work/results/{resultId}/merge"],
+  "result.revert": ["POST", "/work/results/{resultId}/revert"],
   "proposal.create": ["POST", "/work/proposals"],
   "proposal.accept": ["POST", "/work/proposals/{proposalId}/accept"],
   "proposal.dismiss": ["POST", "/work/proposals/{proposalId}/dismiss"],

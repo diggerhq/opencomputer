@@ -348,12 +348,31 @@ export function formatDuration(ms: number): string {
 export function opLines(
   ops: Iterable<OpRow>,
   where: { sessionId: string } | { trackId: string },
-  names: { track(id: string): string; thread(id: string): string },
+  names: { track(id: string): string; thread(id: string): string; me?: string },
 ): Item[] {
   const out: Item[] = []
   const inThread = 'sessionId' in where
   for (const op of ops) {
     if (inThread ? op.sessionId !== where.sessionId : op.trackId !== where.trackId) continue
+    // A person's merge of a pull request, and its revert (work 118): GitHub's, so said whoever did it.
+    if ((op.name === 'result.merge' || op.name === 'result.revert') && inThread) {
+      const m = op.args as { number?: number; base?: string; method?: string | null; branchDeleted?: boolean }
+      const who = op.by === names.me ? 'You' : op.by.startsWith('agent:') ? 'The agent' : 'A teammate'
+      const how = m.method === 'squash' ? ' · squashed' : m.method === 'rebase' ? ' · rebased' : ''
+      const merged = op.name === 'result.merge'
+      out.push({
+        kind: 'line',
+        key: op.id,
+        text: merged
+          ? `${who} merged #${m.number} into **${m.base}**${how}${m.branchDeleted ? ' · branch deleted' : ''}`
+          : `${who} reverted it with #${m.number}`,
+        tone: 'muted',
+        at: new Date(op.at).toISOString(),
+        undo: merged && !op.undoneBy ? op.id : undefined,
+        undone: merged && !!op.undoneBy,
+      })
+      continue
+    }
     if (!op.by.startsWith('agent:') || op.name === 'undo') continue
     const a = op.args as Record<string, string | null | undefined>
     const before = (op.inverse as { args?: Record<string, string> } | null)?.args

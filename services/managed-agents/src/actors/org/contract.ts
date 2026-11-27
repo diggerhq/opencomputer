@@ -145,7 +145,13 @@ export type MutateRequest = {
   trace?: string;
   /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
   person?: { name: string | null; email: string | null };
+  /** What GitHub did, as the edge saw it, never a body's: `result.merge` and `result.revert` record it (http/api/result-merge.ts). */
+  github?: MergeFacts | RevertFacts;
 };
+/** A merge GitHub made. `method` null: the pull request was already merged, by someone else. */
+export type MergeFacts = { number: number; base: string; method: "squash" | "merge" | "rebase" | null; sha: string | null; branchDeleted: boolean };
+/** A merge's revert: its pull request, and whether GitHub merged it. */
+export type RevertFacts = { number: number; url: string; merged: boolean };
 export type MutateReply =
   /** `version`: the feed version that holds the effect; a client's feed that reached it shows it. */
   | { protocol: 1; version: number; value?: unknown }
@@ -166,7 +172,8 @@ export type MachinePub = {
   state: MachineState;
   previews: { sessionId: string; name: string; url: string }[];
 };
-export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number };
+/** `head` and `draft`: null when GitHub's object lacked them (they stay as they were). */
+export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number; head?: string | null; draft?: boolean | null };
 
 export interface OrgRpc {
   // the directory
@@ -189,6 +196,8 @@ export interface OrgRpc {
   thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
   result(p: Principal, id: string): Promise<ResultRow | null>;
+  /** Before the edge merges or reverts a result's pull request: whether `p` may, and the row. A merge is marked as begun, so `rule:pr-merged` leaves its thread alone. */
+  mergeStart(p: Principal, id: string, what: "merge" | "revert"): Promise<Reply<{ result: ResultRow }>>;
   overview(p: Principal): Promise<Overview>;
   /** tell_track: the agent session of the caller's track. */
   trackAgent(p: Principal): Promise<string | null>;

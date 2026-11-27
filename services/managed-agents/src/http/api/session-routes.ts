@@ -9,6 +9,7 @@ import type { Principal } from "../../auth/principal.js";
 import { cursor } from "../../durable/cursor.js";
 import { firstTurnId, isSessionId } from "../../ids/session-ids.js";
 import { slackPost, tellTrack } from "./agent-posts.js";
+import { resultMerge, resultRevert } from "./result-merge.js";
 import { liveUpgrade } from "./live-upgrade.js";
 import { logRefusalOf, refusalOf, strip, type LogRefused, type Reply } from "./reply.js";
 import { asObject, bodyOf, intParam } from "./request-body.js";
@@ -104,6 +105,10 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       return tellTrack(request, env, p, idem, trace, org, out);
     case "work.diff":
       return resultDiff(request, env, p, route.sub!, org, out);
+    case "work.merge":
+      return resultMerge({ request, env, p, person, resultId: route.sub!, idem, trace, org, out });
+    case "work.revert":
+      return resultRevert({ request, env, p, person, resultId: route.sub!, idem, trace, org, out });
     case "work.file":
       return resultFile(request, env, p, route.sub!, org, out);
     case "slack.post":

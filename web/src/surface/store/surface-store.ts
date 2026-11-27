@@ -17,7 +17,8 @@ import { NOWHERE } from '../host'
 import { blockedIn } from './blocked'
 import { watchConversations } from './conversations'
 import { saveMerged } from './doc-save'
-import { OUT_OF_CREDITS, sayFailure, whatFailed } from './failure-text'
+import { OUT_OF_CREDITS, sayFailure, sayMergeFailure, whatFailed } from './failure-text'
+import { mergeable, pullNumber, revertOf } from './pulls'
 import { hurriedClient } from './hurried-client'
 import { overlay } from './overlay'
 import { safeNames, tar, uploadName } from './upload'
@@ -64,6 +65,7 @@ export function createSurface(o: SurfaceOptions) {
     counts: NO_COUNTS,
     convos: {},
     toasts: [],
+    unmerged: {},
     palette: false,
     keysSheet: false,
     earlierNext: {},
@@ -305,6 +307,12 @@ export function createSurface(o: SurfaceOptions) {
     // saveDoc merges and saves again.
     if (e.kind === 'mutation' && e.name === 'doc.save' && f.code === 'conflict') return
     const what = whatFailed(e)
+    if (e.kind === 'mutation' && (e.name === 'result.merge' || e.name === 'result.revert')) {
+      const why = sayMergeFailure(f)
+      const id = (e.args as { resultId: string }).resultId
+      if (e.name === 'result.merge') set({ unmerged: { ...get().unmerged, [id]: why } })
+      return toast({ text: `${what}: ${why}`, tone: 'error' })
+    }
     // What the person typed is not lost: it goes back in its box, unless
     // something new was typed there meanwhile.
     if (e.kind === 'turn' || e.kind === 'session') {
@@ -588,8 +596,40 @@ export function createSurface(o: SurfaceOptions) {
     dismissProposal(proposalId: string) {
       mutate('proposal.dismiss', { proposalId })
     },
+    // A merge is undone on GitHub: its revert.
     undo(opId: string) {
+      const op = get().rows.op.get(opId)
+      if (op?.name === 'result.merge') return actions.revert((op.args as { resultId: string }).resultId)
       mutate('undo', { opId })
+    },
+    // Work 118: one click merges the pull request as the person saw it. Nothing is asked first; Undo reverts it.
+    merge(resultId: string) {
+      const r = get().rows.result.get(resultId)
+      if (!r || !mergeable(r)) return
+      const unmerged = { ...get().unmerged }
+      delete unmerged[resultId]
+      set({ unmerged })
+      const head = typeof r.meta?.head === 'string' ? r.meta.head : undefined
+      const sent = mutate('result.merge', { resultId, ...(head ? { head } : {}) })
+      const n = pullNumber(r)
+      sent.settled.then(
+        () => toast({ text: n ? `Merged #${n}` : 'Merged', undo: () => actions.revert(resultId) }),
+        () => {},
+      )
+    },
+    revert(resultId: string) {
+      const r = get().rows.result.get(resultId)
+      if (!r || r.state !== 'merged' || r.meta?.pending) return
+      mutate('result.revert', { resultId }).settled.then(
+        () => {
+          const now = get().rows.result.get(resultId)
+          const revert = now ? revertOf(now) : null
+          if (!revert) return
+          if (revert.merged) toast({ text: `Reverted with #${revert.number}` })
+          else toast({ text: `Could not revert it cleanly: #${revert.number} is open on GitHub`, tone: 'error' })
+        },
+        () => {},
+      )
     },
     // Z: the last thing that offered an Undo.
     undoLast() {

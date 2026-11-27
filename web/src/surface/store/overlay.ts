@@ -146,6 +146,15 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
     d.patch('doc', a.tid, { rev: a.baseRev + 1, text: a.text, spans: a.spans }),
   'result.add': () => {},
   'review.save': () => {},
+  // GitHub merges it; until the feed says so, the chip says it is on its way.
+  'result.merge': (d, a) => {
+    const r = d.get('result', a.resultId)
+    if (r) d.patch('result', a.resultId, { meta: { ...r.meta, pending: 'merge' } })
+  },
+  'result.revert': (d, a) => {
+    const r = d.get('result', a.resultId)
+    if (r) d.patch('result', a.resultId, { meta: { ...r.meta, pending: 'revert' } })
+  },
   'proposal.create': () => {},
   'proposal.accept': (d, a, c) => {
     const p = d.get('proposal', a.proposalId)

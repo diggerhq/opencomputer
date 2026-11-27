@@ -2,10 +2,12 @@
 // and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9). Pure functions over `Sql`.
 
 import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "./contract.js";
+import type { Reply } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
-import { platformPrincipal, type Principal } from "../../auth/principal.js";
+import { byOf, platformPrincipal, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";
 import type { Sql } from "../../durable/sql.js";
+import { pullFor } from "./mutations/result.js";
 import { runMutation } from "./mutations/run.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";
 import { feedRow, forClient, sessionRow } from "./feed-rows.js";
@@ -73,14 +75,18 @@ export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
     const sessions = new Set<string>();
     for (const r of results) {
       const meta = parse<Record<string, unknown>>(r.meta, {});
-      // `checks: null` (a pull_request event): the checks are as they were.
+      // `checks: null` (a pull_request event): the checks are as they were. So too `head` and `draft`.
       const checks = pub.checks ?? meta.checks ?? null;
-      if (r.state === pub.state && r.title === pub.title && (meta.checks ?? null) === checks) continue;
-      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ?, meta = ? WHERE id = ?", pub.state, pub.at, pub.title, JSON.stringify({ ...meta, checks }), r.id);
+      const head = pub.head ?? meta.head ?? null;
+      const draft = pub.draft ?? meta.draft ?? null;
+      // A person's merge from the surface (`result.merge`) is not the thread's end (work 118): `rule:pr-merged` leaves it alone.
+      const byPerson = meta.merge !== undefined || pub.at - ((meta.merging as { at?: number } | undefined)?.at ?? 0) < MERGING_MS;
+      if (r.state === pub.state && r.title === pub.title && (meta.checks ?? null) === checks && (meta.head ?? null) === head && (meta.draft ?? null) === draft) continue;
+      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ?, meta = ? WHERE id = ?", pub.state, pub.at, pub.title, JSON.stringify({ ...meta, checks, head, draft }), r.id);
       tx.stamp("result", r.id);
       const place = readPlace(sql, r.session_id);
       tx.occur({ key: `${r.id}:${pub.state}`, kind: "result.changed", sessionId: r.session_id, trackId: place?.track_id ?? null, by: "platform", audience: r.audience });
-      sessions.add(r.session_id);
+      if (!byPerson) sessions.add(r.session_id);
     }
     if (pub.state !== "merged") return;
     for (const sid of sessions) {
@@ -92,6 +98,22 @@ export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
       const unmerged = sql.exec<{ c: number }>("SELECT COUNT(*) AS c FROM result WHERE session_id = ? AND kind = 'pr' AND COALESCE(state, '') != 'merged'", sid)[0]!.c;
       if (unmerged === 0) runMutation(tx, platformPrincipal(orgOf(sql)), "thread.done", { sid, outcome: "done", by: "rule:pr-merged" });
     }
+  });
+}
+
+/** How long a begun merge (`mergeStart`) answers for the webhook of its merge. */
+const MERGING_MS = 10 * 60_000;
+
+/** Before the edge merges or reverts a result's pull request (http/api/result-merge.ts): whether `p` may, and the row. */
+export function mergeStart(sql: Sql, now: number, p: Principal, id: string, what: "merge" | "revert"): Reply<{ result: ResultRow }> {
+  return transact(sql, now, (tx) => {
+    const found = pullFor(sql, p, id);
+    if ("ok" in found) return found;
+    if (what === "merge" && found.r.state !== "merged") {
+      sql.exec("UPDATE result SET meta = ? WHERE id = ?", JSON.stringify({ ...parse<Record<string, unknown>>(found.r.meta, {}), merging: { by: byOf(p), at: now } }), id);
+      tx.stamp("result", id);
+    }
+    return { ok: true, result: result(sql, p, id)! };
   });
 }
 

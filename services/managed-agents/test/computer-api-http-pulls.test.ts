@@ -43,7 +43,7 @@ describe("pull request webhooks (spec 40.9)", () => {
     const env = { SERVERLESS_AGENTS_DB: db([{ account_id: ORG, installation_id: "i1" }, { account_id: "org_2", installation_id: "i2" }]), ORGS: { getByName: vi.fn(() => org) } };
     await deliver(env, "pull_request", { action: "closed", installation: { id: 42 }, repository, pull_request: pr });
     expect(org.acceptPull).toHaveBeenCalledTimes(2);
-    expect(org.acceptPull).toHaveBeenCalledWith({ url: pr.html_url, state: "merged", checks: null, title: "Fix", at: expect.any(Number) });
+    expect(org.acceptPull).toHaveBeenCalledWith({ url: pr.html_url, state: "merged", checks: null, title: "Fix", head: "a".repeat(40), draft: null, at: expect.any(Number) });
     expect(env.ORGS.getByName.mock.calls.map((c) => (c as unknown[])[0])).toEqual([ORG, "org_2"]);
     await deliver(env, "pull_request", { action: "labeled", installation: { id: 42 }, repository, pull_request: pr });
     await deliver(env, "pull_request", { action: "opened", installation: { id: 43 }, repository, pull_request: pr });

@@ -1340,9 +1340,9 @@ export async function receiveGitHubWebhook(
   return json({ handled: false });
 }
 
-const PULL_ACTIONS = new Set(["opened", "closed", "reopened", "synchronize"]);
+const PULL_ACTIONS = new Set(["opened", "closed", "reopened", "synchronize", "ready_for_review", "converted_to_draft"]);
 
-type PullFields = { html_url?: unknown; number?: unknown; state?: unknown; merged?: unknown; merged_at?: unknown; title?: unknown };
+type PullFields = { html_url?: unknown; number?: unknown; state?: unknown; merged?: unknown; merged_at?: unknown; title?: unknown; draft?: unknown; head?: unknown };
 
 /** A pull request as Org takes it; null when GitHub's object lacks a field. */
 function pullPub(fullName: string, pr: PullFields, checks: string | null): PullPub | null {
@@ -1351,7 +1351,8 @@ function pullPub(fullName: string, pr: PullFields, checks: string | null): PullP
   const state = merged ? "merged" : pr.state === "open" ? "open" : pr.state === "closed" ? "closed" : null;
   if (!state) return null;
   const url = typeof pr.html_url === "string" ? pr.html_url : `https://github.com/${fullName}/pull/${String(pr.number)}`;
-  return { url, state, checks, title: pr.title, at: Date.now() };
+  const head = isRecord(pr.head) && typeof pr.head.sha === "string" ? pr.head.sha : null;
+  return { url, state, checks, title: pr.title, at: Date.now(), head, draft: typeof pr.draft === "boolean" ? pr.draft : null };
 }
 
 /**

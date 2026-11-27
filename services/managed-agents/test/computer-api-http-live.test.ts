@@ -171,3 +171,123 @@ describe("result diffs (spec 37.1)", () => {
     expect((await setup({ ORGS: ns(org), ACCOUNTS: ns(accounts) })("GET", `/work/results/${RID}/diff`)).body.error.code).toBe("github_not_connected");
   });
 });
+
+describe("merging a result's pull request (work 118)", () => {
+  const HEAD = "a".repeat(40);
+  const row = (over: Record<string, unknown> = {}) => ({ id: RID, ref: "https://github.com/o/r/pull/7", state: "open", meta: null, ...over });
+  const accounts = () => ({
+    listGitHubInstallations: vi.fn(async () => [{ id: 5, accountLogin: "o", state: "active" }]),
+    mintGitHubInstallationToken: vi.fn(async () => ({ outcome: "minted", token: "t" })),
+  });
+  const orgOf = (result: unknown) => ({
+    mergeStart: vi.fn(async () => ({ ok: true, result })),
+    mutate: vi.fn(async () => ({ protocol: 1, ops: [], results: {} })),
+  });
+  const open = { node_id: "PR_1", state: "open", merged: false, draft: false, mergeable: true, head: { sha: HEAD, ref: "feat/x", repo: { full_name: "o/r" } }, base: { ref: "main", repo: { full_name: "o/r" } } };
+  /** GitHub by `METHOD path`; a call it has no answer for fails the test. */
+  const github = (answers: Record<string, (body: Record<string, unknown>) => Response>) => {
+    const mock = vi.fn(async (url: string, init: RequestInit) => {
+      const key = `${init.method ?? "GET"} ${url.replace("https://api.github.com", "").replace("/repos/o/r", "")}`;
+      const answer = answers[key];
+      if (!answer) throw new Error(`unexpected ${key}`);
+      return answer(init.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {});
+    });
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  };
+  const sent = (mock: ReturnType<typeof github>) => mock.mock.calls.map(([url, init]) => `${init.method ?? "GET"} ${url.replace("https://api.github.com", "").replace("/repos/o/r", "")}`);
+
+  it("merges at the head it was shown by the first method the repository allows, deletes the branch, and Org records it under the request's key", async () => {
+    const org = orgOf(row());
+    const acc = accounts();
+    const mock = github({
+      "GET /pulls/7": () => Response.json(open),
+      "PUT /pulls/7/merge": (body) => (body.merge_method === "squash" ? Response.json({ message: "Squash merges are not allowed on this repository." }, { status: 405 }) : Response.json({ sha: "b".repeat(40), merged: true })),
+      "DELETE /git/refs/heads/feat/x": () => new Response(null, { status: 204 }),
+    });
+    const r = await setup({ ORGS: ns(org), ACCOUNTS: ns(acc) })("POST", `/work/results/${RID}/merge`, { body: { head: HEAD }, headers: { "idempotency-key": "k1" } });
+    expect(r).toMatchObject({ status: 200, body: { protocol: 1 } });
+    expect(acc.mintGitHubInstallationToken).toHaveBeenCalledWith({ installationId: "5", repositories: ["r"], permissions: { contents: "write", pull_requests: "write" } });
+    expect(sent(mock)).toEqual(["GET /pulls/7", "PUT /pulls/7/merge", "PUT /pulls/7/merge", "DELETE /git/refs/heads/feat/x"]);
+    expect(JSON.parse(mock.mock.calls[2]![1].body as string)).toMatchObject({ merge_method: "merge", sha: HEAD, commit_message: expect.stringMatching(/^Merged .*via OpenComputer\./) });
+    expect(org.mergeStart).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), RID, "merge");
+    expect(org.mutate).toHaveBeenCalledWith(expect.objectContaining({ kind: "member" }), {
+      name: "result.merge",
+      args: { resultId: RID, head: HEAD },
+      github: { number: 7, base: "main", method: "merge", sha: "b".repeat(40), branchDeleted: true },
+      idem: "k1",
+    });
+  });
+
+  it("refuses with the reason and merges nothing: changed, draft, closed, conflicts, GitHub's own", async () => {
+    const refusal = async (pull: Record<string, unknown>, body: unknown = {}, merge?: () => Response) => {
+      const org = orgOf(row());
+      const mock = github({ "GET /pulls/7": () => Response.json({ ...open, ...pull }), ...(merge ? { "PUT /pulls/7/merge": merge } : {}) });
+      const r = await setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) })("POST", `/work/results/${RID}/merge`, { body });
+      expect(org.mutate).not.toHaveBeenCalled();
+      expect(r.status).toBe(409);
+      expect(r.body.error.code).toBe("refused");
+      return { ...r.body.error, calls: sent(mock) };
+    };
+    expect(await refusal({}, { head: "c".repeat(40) })).toMatchObject({ reason: "changed", head: HEAD, calls: ["GET /pulls/7"] });
+    expect(await refusal({ draft: true })).toMatchObject({ reason: "draft" });
+    expect(await refusal({ state: "closed" })).toMatchObject({ reason: "closed" });
+    expect(await refusal({ mergeable: false })).toMatchObject({ reason: "conflicts", message: "The pull request conflicts with main." });
+    expect(await refusal({}, {}, () => Response.json({ message: "Required status check \"ci\" is expected." }, { status: 405 }))).toMatchObject({ reason: "blocked", message: "Required status check \"ci\" is expected.", calls: ["GET /pulls/7", "PUT /pulls/7/merge"] });
+    expect(await refusal({}, {}, () => Response.json({ message: "Head branch was modified." }, { status: 409 }))).toMatchObject({ reason: "changed" });
+  });
+
+  it("a pull request merged before is recorded, not merged again; Org's refusal and a bad head stop before GitHub", async () => {
+    const org = orgOf(row());
+    const mock = github({ "GET /pulls/7": () => Response.json({ ...open, state: "closed", merged: true, merge_commit_sha: "d".repeat(40) }) });
+    const call = setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) });
+    expect((await call("POST", `/work/results/${RID}/merge`, { body: {} })).status).toBe(200);
+    expect(sent(mock)).toEqual(["GET /pulls/7"]);
+    expect(org.mutate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ github: { number: 7, base: "main", method: null, sha: "d".repeat(40), branchDeleted: false } }));
+
+    mock.mockClear();
+    expect((await call("POST", `/work/results/${RID}/merge`, { body: { head: "main" } })).status).toBe(400);
+    org.mergeStart.mockResolvedValue({ ok: false, status: 403, code: "forbidden", message: "Only the thread's writers merge.", reason: "writers_only" } as never);
+    expect(await call("POST", `/work/results/${RID}/merge`, { body: {} })).toMatchObject({ status: 403, body: { error: { code: "forbidden" } } });
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("revert opens the merged pull request's revert and merges it; one GitHub will not merge stays open and is not opened twice", async () => {
+    const org = orgOf(row({ state: "merged" }));
+    const revert = { ...open, head: { sha: HEAD, ref: "revert-7-feat/x", repo: { full_name: "o/r" } } };
+    const answers = {
+      "GET /pulls/7": () => Response.json({ ...open, state: "closed", merged: true }),
+      "POST /graphql": (body: Record<string, unknown>) => (expect(body.variables).toEqual({ id: "PR_1" }), Response.json({ data: { revertPullRequest: { revertPullRequest: { number: 8, url: "https://github.com/o/r/pull/8" } } } })),
+      "GET /pulls/8": () => Response.json(revert),
+      "PUT /pulls/8/merge": () => Response.json({ sha: "e".repeat(40) }),
+      "DELETE /git/refs/heads/revert-7-feat/x": () => new Response(null, { status: 204 }),
+    };
+    let mock = github(answers);
+    const call = setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) });
+    expect((await call("POST", `/work/results/${RID}/revert`, { headers: { "idempotency-key": "k2" } })).status).toBe(200);
+    expect(sent(mock)).toEqual(["GET /pulls/7", "POST /graphql", "GET /pulls/8", "PUT /pulls/8/merge", "DELETE /git/refs/heads/revert-7-feat/x"]);
+    expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), { name: "result.revert", args: { resultId: RID }, github: { number: 8, url: "https://github.com/o/r/pull/8", merged: true }, idem: "k2" });
+
+    // It conflicts: left open, and said so.
+    mock = github({ ...answers, "GET /pulls/8": () => Response.json({ ...revert, mergeable: false }) });
+    await call("POST", `/work/results/${RID}/revert`);
+    expect(sent(mock)).toEqual(["GET /pulls/7", "POST /graphql", "GET /pulls/8"]);
+    expect(org.mutate).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ github: { number: 8, url: "https://github.com/o/r/pull/8", merged: false } }));
+
+    // Asked again with that revert on the result: the same one is tried, no second opened.
+    org.mergeStart.mockResolvedValue({ ok: true, result: row({ state: "merged", meta: { revert: { number: 8, url: "https://github.com/o/r/pull/8", merged: false } } }) });
+    mock = github(answers);
+    await call("POST", `/work/results/${RID}/revert`);
+    expect(sent(mock)).toEqual(["GET /pulls/8", "PUT /pulls/8/merge", "DELETE /git/refs/heads/revert-7-feat/x"]);
+
+    org.mergeStart.mockResolvedValue({ ok: true, result: row() });
+    expect((await call("POST", `/work/results/${RID}/revert`)).body.error).toMatchObject({ code: "refused", reason: "not_merged" });
+  });
+
+  it("an agent does not merge", async () => {
+    const org = orgOf(row());
+    const r = await setup({ ORGS: ns(org), ACCOUNTS: ns(accounts()) })("POST", `/work/results/${RID}/merge`, { body: {}, identity: agent });
+    expect(r.status).toBe(403);
+    expect(org.mergeStart).not.toHaveBeenCalled();
+  });
+});

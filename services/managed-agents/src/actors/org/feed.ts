@@ -170,8 +170,8 @@ export function occurrences(sql: Sql, p: Principal, q: { after?: string; limit?:
 type MutateError = Extract<MutateReply, { error: unknown }>["error"];
 
 function apply(tx: Tx, p: Principal, m: MutateRequest): { protocol: 1; value?: unknown } | { error: MutateError } {
-  // `person` is the edge's, never the body's: a body's is replaced.
-  const args = typeof m.args === "object" && m.args !== null && !Array.isArray(m.args) ? { ...(m.args as Record<string, unknown>), person: m.person } : m.args;
+  // `person` and `github` are the edge's, never the body's: a body's is replaced.
+  const args = typeof m.args === "object" && m.args !== null && !Array.isArray(m.args) ? { ...(m.args as Record<string, unknown>), person: m.person, github: m.github } : m.args;
   const out = runMutation(tx, p, m.name, args);
   if (out.ok) return { protocol: 1, ...(out.value !== undefined ? { value: out.value } : {}) };
   const { ok: _ok, ...error } = out;

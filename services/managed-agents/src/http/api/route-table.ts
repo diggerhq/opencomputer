@@ -16,6 +16,8 @@ export interface Route {
 /** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
   const mutation = matchMutation(method, `/work/${s.join("/")}`);
+  // A merge and its revert are GitHub's first: the edge's, not Org's alone (result-merge.ts).
+  if (mutation?.name === "result.merge" || mutation?.name === "result.revert") return { op: mutation.name === "result.merge" ? "work.merge" : "work.revert", sub: mutation.args.resultId! };
   if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;
@@ -125,7 +127,7 @@ export function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
   if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
-  if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
+  if (op === "work.repository.put" || op === "mutate" || op === "work.tell" || op === "work.merge" || op === "work.revert") return "work:write";
   if (op === "live") return "sessions:read";
   if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
@@ -141,5 +143,5 @@ export const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "work.file", "slack.post", "settings.get", "settings.patch",
+  "live", "work.tell", "work.diff", "work.merge", "work.revert", "work.file", "slack.post", "settings.get", "settings.patch",
 ]);
