@@ -5,8 +5,9 @@ import { computerApiFamily } from "./computer_api";
 import { signJWT } from "./jwt";
 import type { Principal } from "./principal";
 import type { RouteFamily } from "./route_family";
+import { isSelfhost, type SelfhostEnv } from "./selfhost";
 
-export interface ManagedAgentsEnv {
+export interface ManagedAgentsEnv extends SelfhostEnv {
   /** Computer rollout (work 052): see computerEnabledFor. */
   COMPUTER_ENABLED_FOR_ALL?: string;
   COMPUTER_ENABLED_ORGS?: string;
@@ -67,6 +68,8 @@ export async function hasBYOKPlanAccess(
   env: ManagedAgentsEnv,
   orgID: string,
 ): Promise<boolean> {
+  // No plans on the self-hosted gateway (selfhost.ts): bringing your own model is always allowed.
+  if (isSelfhost(env)) return true;
   if (!env.OPENCOMPUTER_DB) return false;
   const org = await env.OPENCOMPUTER_DB.prepare(
     "SELECT plan, billing_provider FROM orgs WHERE id = ?1",

@@ -25,7 +25,7 @@ export interface SetupStatus {
   hostsAcknowledged: boolean;
   slack: { clientId: string; clientSecret: boolean; signingSecret: boolean } | null;
   oidc: { issuer: string; clientId: string; clientSecret: boolean } | null;
-  workos: { clientId: string; apiKey: boolean } | null;
+  workos: { clientId: string; apiKey: boolean; ownerEmail: string | null } | null;
   github: { appId: string; slug: string; privateKey: boolean; webhookSecret: boolean } | null;
 }
 
@@ -35,7 +35,7 @@ export type SetupWrite =
   | { step: "hosts-ack" }
   | { step: "slack"; clientId: string; clientSecret?: string; signingSecret?: string }
   | { step: "oidc"; issuer: string; clientId: string; clientSecret?: string }
-  | { step: "workos"; clientId: string; apiKey?: string }
+  | { step: "workos"; clientId: string; apiKey?: string; ownerEmail: string }
   | { step: "github"; appId: string; slug: string; privateKey?: string; webhookSecret?: string };
 
 export interface SetupStore {
@@ -275,9 +275,14 @@ ${form("/setup/claude", `<label>Credential<input type="password" name="token" au
 ${hosts}
 ${connected === true ? "" : status.hostsAcknowledged ? `<p>${badge(true, "acknowledged")} — connect it when ready.</p>` : form("/setup/hosts/ack", "", "I'll connect the host later")}
 
-<h2>3. People</h2>
-<p>Today the operator signs in with <code>SETUP_TOKEN</code>, and once Slack is connected, people in the linked workspace use the computer from Slack (each thread's access is the Slack actor's, <code>!access</code>).
-Inviting people by email and listing members need sign-in for people (SSO, below): <strong>coming soon</strong>. The hosted invites live in the hosted dashboard, which this gateway does not run.</p>
+<h2>3. Sign-in and people (optional)</h2>
+<p>People sign in to the dashboard at ${origin ? `<a href="${esc(origin)}/">${esc(origin)}/</a>` : "the gateway's address"} with a WorkOS app. The owner's email below becomes the organization's owner on first sign-in; the owner invites everyone else from Settings, and WorkOS emails the invitation. Anyone else is turned away.</p>
+${form(
+  "/setup/sso/workos",
+  field("client_id", "WorkOS client ID", status.workos?.clientId ?? "") + secret("api_key", "WorkOS API key", !!status.workos?.apiKey) + field("owner_email", "Owner's email", status.workos?.ownerEmail ?? "", "email") +
+    (origin ? `<p class="muted">Redirect URI to register in WorkOS: <code>${esc(origin)}/auth/callback</code></p>` : ""),
+  "Save",
+)}
 
 <h2>4. Slack app (optional)</h2>
 <p>Workspace: ${slack.installed ? badge(true, `connected${slack.teamName ? ` to ${esc(slack.teamName)}` : ""}`) : badge(false, "", "not connected")}</p>
@@ -295,19 +300,14 @@ ${status.slack?.clientSecret && status.slack.signingSecret ? form("/setup/slack/
     : `<p class="pending">Set <code>PUBLIC_URL</code> to the gateway's public https origin (a reverse proxy or tunnel) and restart it: Slack only calls https URLs.</p>`
 }
 
-<h2>5. SSO (optional, coming soon)</h2>
-<p class="pending">Stored only: sign-in for people is not wired yet. Saving these changes nothing about who can sign in today.</p>
-<h3>OIDC</h3>
+<h2>5. OIDC (optional, stored only)</h2>
+<p class="pending">Sign-in uses the WorkOS app above.</p>
 ${form(
   "/setup/sso/oidc",
   field("issuer", "Issuer URL", status.oidc?.issuer ?? "", "url") + field("client_id", "Client ID", status.oidc?.clientId ?? "") + secret("client_secret", "Client secret", !!status.oidc?.clientSecret) +
     (origin ? `<p class="muted">Redirect URI to register: <code>${esc(origin)}/setup/sso/oidc/callback</code></p>` : ""),
   "Save",
 )}
-<h3>WorkOS</h3>
-${form("/setup/sso/workos", field("client_id", "Client ID", status.workos?.clientId ?? "") + secret("api_key", "API key", !!status.workos?.apiKey), "Save")}
-<h3>SAML</h3>
-<p class="muted">Not available. Use your identity provider's OIDC app, or WorkOS, which brokers SAML.</p>
 
 <h2>6. GitHub App (optional, limited)</h2>
 <p class="pending">Stored only: this gateway's GitHub installations are not wired yet (the Account object is a stand-in), so sessions do not get GitHub tokens from it. Sessions can still use credentials you give them as secrets.</p>
@@ -374,13 +374,15 @@ async function step(path: string, form: URLSearchParams, deps: SetupDeps): Promi
       const clientSecret = text(form, "client_secret", SECRET_MAX) ?? "";
       if (!httpsUrl(issuer)) return { error: "The issuer must be an https URL." };
       if (!plainId(clientId)) return { error: "The client ID is required." };
-      return { write: { step: "oidc", issuer: issuer!, clientId: clientId!, ...(clientSecret ? { clientSecret } : {}) }, done: "OIDC settings saved (sign-in coming soon)." };
+      return { write: { step: "oidc", issuer: issuer!, clientId: clientId!, ...(clientSecret ? { clientSecret } : {}) }, done: "OIDC settings saved." };
     }
     case "/setup/sso/workos": {
       const clientId = text(form, "client_id", 200);
       const apiKey = text(form, "api_key", SECRET_MAX) ?? "";
+      const ownerEmail = text(form, "owner_email", 320)?.toLowerCase() ?? "";
       if (!plainId(clientId)) return { error: "The client ID is required." };
-      return { write: { step: "workos", clientId: clientId!, ...(apiKey ? { apiKey } : {}) }, done: "WorkOS settings saved (sign-in coming soon)." };
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail)) return { error: "The owner's email is required." };
+      return { write: { step: "workos", clientId: clientId!, ...(apiKey ? { apiKey } : {}), ownerEmail }, done: "Sign-in saved. The owner can sign in to the dashboard now." };
     }
     case "/setup/github": {
       const appId = text(form, "app_id", 50);
@@ -392,7 +394,7 @@ async function step(path: string, form: URLSearchParams, deps: SetupDeps): Promi
       if (privateKey && !/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(privateKey)) return { error: "The private key must be the PEM file's contents." };
       return {
         write: { step: "github", appId, slug, ...(privateKey ? { privateKey } : {}), ...(webhookSecret ? { webhookSecret } : {}) },
-        done: "GitHub App saved (not used yet).",
+        done: "GitHub App saved.",
       };
     }
   }

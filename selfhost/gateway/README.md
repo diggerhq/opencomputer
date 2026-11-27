@@ -1,10 +1,16 @@
 # Self-host gateway (spike)
 
 The hosted gateway, `services/managed-agents`, run on one VM under Miniflare: only the Computer path
-(`src/selfhost/entry.ts`, `wrangler.selfhost.jsonc`). State persists under `/data`.
+(`src/selfhost/entry.ts`, `wrangler.selfhost.jsonc`). In front of it, on the same port, `cloudflare-workers/api-edge`
+with `SELFHOST=1` (WorkOS sign-in, invitations, no billing) serves the dashboard, `web/` built with `VITE_SELFHOST=1`.
+A router Worker sends `/healthz`, `/setup*`, `/v1/*` and Slack's callback to managed-agents, the rest to api-edge.
+State persists under `/data`.
 
-- `serve.mjs` builds the bundle (unless `GATEWAY_BUNDLE` names one), generates the gateway's keys once
-  into `/data/keys.json`, applies D1 migrations and serves on `0.0.0.0:8080`.
+- `serve.mjs` builds the bundles (unless `GATEWAY_BUNDLE` / `EDGE_BUNDLE` name them), generates the keys once
+  into `/data/keys.json`, applies both D1 databases' migrations and serves on `0.0.0.0:8080`. It needs
+  `web/dist` (`cd web && VITE_SELFHOST=1 npm run build`, or `WEB_DIST`).
+- Dashboard sign-in: the WorkOS app and the owner's email from `/setup`; register `<PUBLIC_URL>/auth/callback`
+  as the app's redirect URI. Others sign in once the owner invites them.
 - Sign-in: `Authorization: Bearer $SETUP_TOKEN` on `/v1/computer/*` (the hosted operator path, `BLUE_API_KEY`).
   The session API also needs `x-opencomputer-surface: api`.
 - Host agent: `SP_GATEWAY_URL=ws://127.0.0.1:8080/v1/computer/host?organizationId=$GATEWAY_ORG`,

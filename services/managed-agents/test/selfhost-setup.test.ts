@@ -64,7 +64,7 @@ function fakeDeps(over: Partial<SetupDeps> = {}) {
             break;
           case "workos":
             if (w.apiKey) kept.workos = w.apiKey;
-            status.workos = { clientId: w.clientId, apiKey: !!kept.workos };
+            status.workos = { clientId: w.clientId, apiKey: !!kept.workos, ownerEmail: w.ownerEmail };
             break;
           case "github":
             if (w.privateKey) kept.ghKey = w.privateKey;
@@ -167,7 +167,7 @@ describe("selfhost /setup", () => {
       await handleSetup(post("/setup/claude", { token: API_KEY }), deps),
       await handleSetup(post("/setup/slack", { client_id: "123.456", client_secret: secrets.slack, signing_secret: secrets.signing }), deps),
       await handleSetup(post("/setup/sso/oidc", { issuer: "https://idp.example.test", client_id: "abc", client_secret: secrets.oidc }), deps),
-      await handleSetup(post("/setup/sso/workos", { client_id: "client_01", api_key: secrets.workos }), deps),
+      await handleSetup(post("/setup/sso/workos", { client_id: "client_01", api_key: secrets.workos, owner_email: "owner@example.com" }), deps),
       await handleSetup(post("/setup/github", { app_id: "42", slug: "my-app", private_key: pem, webhook_secret: secrets.hook }), deps),
       await handleSetup(get("/setup", bearer), deps),
     ];
@@ -182,6 +182,16 @@ describe("selfhost /setup", () => {
     expect(page).toContain("sph_••••");
     const reveal = await handleSetup(post("/setup/hosts/reveal", {}), deps);
     expect(await reveal.text()).toContain(HOST_TOKEN);
+  });
+
+  it("stores sign-in's WorkOS app with the owner's email and shows the redirect URI", async () => {
+    const { deps } = fakeDeps();
+    const missing = await (await handleSetup(post("/setup/sso/workos", { client_id: "client_01", api_key: "sk_x" }), deps)).text();
+    expect(missing).toContain("The owner&#39;s email is required.");
+    await handleSetup(post("/setup/sso/workos", { client_id: "client_01", api_key: "sk_x", owner_email: "Owner@Example.com" }), deps);
+    const page = await (await handleSetup(get("/setup", bearer), deps)).text();
+    expect(page).toContain('value="owner@example.com"');
+    if (deps.publicUrl) expect(page).toContain(`${deps.publicUrl}/auth/callback`);
   });
 
   it("shows the host token masked until an authenticated reveal", async () => {

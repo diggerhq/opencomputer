@@ -107,8 +107,18 @@ import { appDeviceLive, appTokenPrincipal, handleAppAuth, verifyAppToken } from 
 import { createdKeyForSync, revokeComputerKey, revokeLiveCredential, syncComputerKey } from "./computer_keys";
 import { mintSessionJWT, SESSION_TTL_SEC, verifySessionJWT } from "./jwt";
 import { FIRST_TOUCH_COOKIE, readCookie, recordSignupAttribution, withFirstTouchCookie } from "./signup_attribution";
+import {
+  ensureSelfhostOrg,
+  isSelfhost,
+  notInvitedPage,
+  SelfhostNotInvited,
+  selfhostBillingPath,
+  signInNotConfigured,
+  withSelfhostSignIn,
+  type SelfhostEnv,
+} from "./selfhost";
 
-export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv {
+export interface Env extends DashboardEnv, AgentFeedbackEnv, BillingEventsEnv, LoopsEnv, SelfhostEnv {
   CF_ADMIN_SECRET: string;
   STRIPE_WEBHOOK_SECRET: string;
   EVENT_SECRET: string;
@@ -586,6 +596,7 @@ export function safeReturnTo(raw: string | null | undefined): string | null {
 }
 
 async function authLogin(req: Request, env: Env): Promise<Response> {
+  if (isSelfhost(env) && !env.WORKOS_CLIENT_ID) return signInNotConfigured();
   const reqURL = new URL(req.url);
   const redirectURI = `${reqURL.origin}/auth/callback`;
   // WorkOS AuthKit hosted login URL. authorize_url uses provider=authkit
@@ -760,6 +771,19 @@ async function provisionWorkOSIdentity(
     return memberships[0] ?? null;
   };
 
+  if (isSelfhost(env)) {
+    // One organization and no personal workspaces: the owner's email or an invitation gets in.
+    await ensureSelfhostOrg(env, userID, profile.email, nowSec);
+    await acceptPendingInvitations(env, userID, profile.email, nowSec);
+    const member = await selectMembershipByOrg(env.SELFHOST_ORG_ID ?? "");
+    if (!member) throw new SelfhostNotInvited();
+    return {
+      user: { id: userID, email: userRow.email || profile.email, name: userRow.name || displayName },
+      org: { id: member.id, name: member.name, plan: member.plan },
+      created,
+    };
+  }
+
   let orgRow =
     selection === "browser"
       ? await selectBrowserMembership()
@@ -891,6 +915,7 @@ async function authCallback(req: Request, env: Env, ctx?: ExecutionContext): Pro
   try {
     return await completeAuthCallback(req, env, reqURL, tokenBody, ctx);
   } catch (err) {
+    if (err instanceof SelfhostNotInvited) return notInvitedPage();
     console.error("auth callback: post-exchange failure", err);
     const state = parseAuthState(reqURL.searchParams.get("state"));
     if (state.retried) {
@@ -2100,6 +2125,12 @@ export default {
     env = envWithD1Retry(env);
     const url = new URL(req.url);
     const path = url.pathname;
+    if (isSelfhost(env)) {
+      // managed-agents reports runtime usage for billing; accepted and dropped, so it doesn't retry.
+      if (path === "/internal/agent-runtime-usage") return new Response(null, { status: 204 });
+      if (selfhostBillingPath(path)) return json({ error: "not found" }, 404);
+      if (path.startsWith("/auth/") || path.startsWith("/api/")) env = await withSelfhostSignIn(env);
+    }
 
     if (path === "/health") {
       return json({ ok: true, env: env.WORKER_ENV });
@@ -2419,7 +2450,9 @@ export default {
       if (!caller) {
         return json({ error: "missing or invalid API key" }, 401);
       }
-      if (path === "/api/managed-agents/sessions" && req.method === "POST") {
+      if (isSelfhost(env)) {
+        // No billing on the self-hosted gateway.
+      } else if (path === "/api/managed-agents/sessions" && req.method === "POST") {
         try {
           const billing = await enableManagedBilling(env, caller.orgID, (id) =>
             selfHealHalt(env, id),
@@ -2509,6 +2542,8 @@ export default {
   // key's spend → debit Autumn `model_spend` → push the markup-correct cap + halt.
   // Dormant unless OPENROUTER_PROVISIONING_KEY is set + managed keys exist.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // The self-hosted gateway runs no crons (selfhost.ts); this guards a stray trigger.
+    if (isSelfhost(env)) return;
     env = envWithD1Retry(env);
     // Telemetry retention, regardless of billing config. D1 caps a database at
     // 10 GB with no way to raise it, and when events/usage_samples reach it

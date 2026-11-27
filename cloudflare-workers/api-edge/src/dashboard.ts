@@ -40,9 +40,10 @@ import { enableManagedBilling } from "./model_billing";
 import { paywallContext } from "./billing_onramp";
 import { insufficientManagedAgentCredits } from "./managed_agent_credit_gate";
 import { sendSlackAlert, teammateInvitedAlert } from "./slack_alerts";
+import { isSelfhost, type SelfhostEnv } from "./selfhost";
 import { handleGitHubStarClaim, handleGitHubStarStart, handleGitHubStarState } from "./github_star";
 
-export interface DashboardEnv extends BillingEventsEnv {
+export interface DashboardEnv extends BillingEventsEnv, SelfhostEnv {
   /** Computer rollout (work 052): see computerEnabledFor in computer.ts. */
   COMPUTER_ENABLED_FOR_ALL?: string;
   COMPUTER_ENABLED_ORGS?: string;
@@ -666,7 +667,8 @@ export async function handleDashboard(
 
   // ── Managed Agents experiment ───────────────────────────────────────────
   if (sub === "/managed-agents" || sub.startsWith("/managed-agents/")) {
-    if (sub === "/managed-agents/sessions" && method === "POST") {
+    // No billing on the self-hosted gateway (selfhost.ts).
+    if (sub === "/managed-agents/sessions" && method === "POST" && !isSelfhost(env)) {
       try {
         // Re-check Autumn and re-project D1 (the same projection projectOrg
         // writes; it no longer dispatches anywhere since 097 step 7.2).

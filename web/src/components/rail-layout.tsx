@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { Suspense, useState, type ReactNode } from 'react'
 import {
   Link,
@@ -184,10 +185,12 @@ function Rail() {
             <KeyRound className="size-4 opacity-60" aria-hidden />
             API keys
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void navigate('/billing')}>
-            <CreditCard className="size-4 opacity-60" aria-hidden />
-            Billing
-          </DropdownMenuItem>
+          {!SELFHOST && (
+            <DropdownMenuItem onClick={() => void navigate('/billing')}>
+              <CreditCard className="size-4 opacity-60" aria-hidden />
+              Billing
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onSelect={(e) => {
               e.preventDefault()
