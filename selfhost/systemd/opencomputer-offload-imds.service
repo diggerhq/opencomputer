@@ -1,0 +1,22 @@
+# Template: selfhost/host-install.sh --enable-offload writes it to
+# /etc/systemd/system/opencomputer-offload-imds.service. The only exception to
+# opencomputer-imds-deny.service: lets oc-offload (and nobody else non-root)
+# reach the instance metadata service, for the instance role's credentials.
+# A RETURN at the top of chain OC-IMDS, so it sits above the REJECT whatever
+# order the units start in; opencomputer-imds-deny.service re-runs this after
+# each refill. IPv4 only: the documented instance settings disable IMDS over
+# IPv6. ExecStop removes every copy. Plan: work/136 PR 5.
+[Unit]
+Description=Let oc-offload reach the instance metadata service (AWS role credentials)
+After=opencomputer-imds-deny.service
+Requires=opencomputer-imds-deny.service
+ConditionPathExists=@SELFHOST_ETC@/offload.enabled
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C OC-IMDS -m owner --uid-owner oc-offload -j RETURN 2>/dev/null || iptables -I OC-IMDS 1 -m owner --uid-owner oc-offload -j RETURN'
+ExecStop=-/bin/sh -c 'while iptables -D OC-IMDS -m owner --uid-owner oc-offload -j RETURN 2>/dev/null; do :; done'
+
+[Install]
+WantedBy=multi-user.target
