@@ -53,6 +53,10 @@ html.dark:has(.surface) {
 
   --primary: #ece9e4;
   --primary-foreground: #141312;
+
+  /* Asks and blocked states: a tint of the amber, not a slab of it. */
+  --status-pending: #e8a94a;
+  --status-pending-bg: #201b13;
 }
 
 /* ---- reading: agent messages and the person's bubble ---- */
