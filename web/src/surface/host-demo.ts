@@ -100,9 +100,8 @@ function write(path: string, init?: RequestInit): Promise<Response> {
     }
     const running = playing.get(turn[1])
     // The demo sends no session rows, so the store may think it idle: a reply
-    // to a running turn steers it.
-    // An interrupt stops it, and the next turn starts from every message
-    // waiting, this one last, as the runner's does.
+    // to a running turn steers it. An interrupt then stops it, and the next
+    // turn starts from every message waiting, this one last, as the runner's does.
     if (running) {
       running.steer(body.id, body.input)
       if (body.ifBusy === 'interrupt') running.stop()

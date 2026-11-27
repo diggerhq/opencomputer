@@ -337,11 +337,7 @@ const PENDING: Record<string, string> = {
 }
 
 // Rows' one-line heights by kind, as drawn (with the gap between rows).
-const ESTIMATE: Partial<Record<Item['kind'], number>> = {
-  user: 60,
-  agent: 40,
-  work: 28,
-}
+const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 60, agent: 40, work: 28 }
 
 // A reply, with a caret at the end of its last line while it streams: inside
 // the text, so the reply is as tall streaming as it is when complete.
@@ -349,11 +345,7 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (!streaming) return
-    const last = [
-      ...(ref.current?.querySelectorAll(
-        'p, li, h1, h2, h3, h4, h5, h6, pre, td',
-      ) ?? []),
-    ].pop()
+    const last = [...(ref.current?.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, td') ?? [])].pop()
     last?.classList.add('caret-end')
     return () => last?.classList.remove('caret-end')
   }, [text, streaming])
@@ -560,7 +552,9 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'user':
       return <UserTurn item={item} />
     case 'agent':
-      return <Reply text={item.text} streaming={!!item.streaming} />
+      return (
+        <Reply text={item.text} streaming={!!item.streaming} />
+      )
     case 'work':
       return <Work item={item} />
     case 'ask':
