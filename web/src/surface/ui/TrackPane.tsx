@@ -333,7 +333,7 @@ const settled = (r: ThreadView['results'][number]) =>
 function cardResult(t: ThreadView) {
   return (
     t.results.find((r) => r.id === t.readyResult) ??
-    t.results.findLast((r) => !settled(r)) ??
+    [...t.results].reverse().find((r) => !settled(r)) ??
     null
   )
 }
