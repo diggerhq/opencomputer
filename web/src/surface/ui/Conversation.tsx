@@ -16,6 +16,10 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import {
+  MarkdownLinkContext,
+  type MarkdownLink,
+} from '@/managed-agents/markdown-link'
 import { useConversation, useSurface } from '../hooks'
 import { ThreadGroup } from './ThreadRows'
 import {
@@ -30,6 +34,7 @@ import { I } from './icons'
 import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
 import { MEASURE } from './pane-classes'
+import { PullLink } from './PullLink'
 import { Rich } from './Rich'
 import { Tip } from './Tip'
 
@@ -606,6 +611,11 @@ function DayLine({ at }: { at: string }) {
   )
 }
 
+// A link to one of the reader's pull requests is drawn as that result (work 118).
+const pullLink: MarkdownLink = (href, plain) => (
+  <PullLink href={href} plain={plain} />
+)
+
 export function Conversation(props: {
   sid: string
   trackId?: string
@@ -615,7 +625,9 @@ export function Conversation(props: {
   // One list per conversation: its measured sizes are its own.
   return (
     <SessionScope sid={props.sid}>
-      <Transcript key={props.sid} {...props} />
+      <MarkdownLinkContext.Provider value={pullLink}>
+        <Transcript key={props.sid} {...props} />
+      </MarkdownLinkContext.Provider>
     </SessionScope>
   )
 }

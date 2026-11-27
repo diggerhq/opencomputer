@@ -1,0 +1,71 @@
+import type { ReactElement } from 'react'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { useS, useSurface } from '../hooks'
+import { mergeable, pullAt, pullNumber, refusalOf, revertOf, underWay } from '../store/pulls'
+import { ResultIcon } from './ResultIcon'
+import { resultTitle } from './result-text'
+import { Tip } from './Tip'
+
+// A link in a message to a pull request that is one of the reader's results
+// (work 118): the result itself, in the line, with its state as it is now and
+// not as it was when the message was written. Where it can merge, Merge is at
+// its end, always: a button that appears only on hover is not found, and one
+// laid over the line hides what follows. Any other link is the plain link. Of several threads' results for one pull request, the open
+// thread's own.
+export function PullLink({ href, plain }: { href: string | undefined; plain: ReactElement }) {
+  const surface = useSurface()
+  const r = useS((s) => (href ? pullAt(s.rows.result, href, s.loc.thread ?? undefined) : undefined))
+  const why = useS((s) => (r ? refusalOf(r, s.unmerged) : null))
+  if (!r) return plain
+  const n = pullNumber(r)
+  const going = underWay(r)
+  const revert = revertOf(r)
+  // An open pull request says nothing: open is what a link is taken to be.
+  const state = going
+    ? going === 'merge'
+      ? 'merging…'
+      : 'reverting…'
+    : why
+      ? 'not merged'
+      : revert?.merged
+        ? 'reverted'
+        : r.state && r.state !== 'open'
+          ? r.state
+          : null
+  const merge = mergeable(r)
+  const chip = (
+    <Button
+      variant="secondary"
+      size="xs"
+      className={cn('max-w-full min-w-0 font-normal', merge && 'rounded-r-none')}
+      onClick={() => surface.openResult(r)}
+    >
+      <ResultIcon result={r} />
+      <span className="max-w-[32ch] truncate">{resultTitle(r)}</span>
+      {n && <span className="text-muted-foreground tabular-nums">#{n}</span>}
+      {state && (
+        <small className={cn('text-muted-foreground text-xs', why && 'text-status-pending')}>
+          {state}
+        </small>
+      )}
+    </Button>
+  )
+  return (
+    <span data-pull-link className="inline-flex max-w-full align-middle">
+      {why ? <Tip label={`Not merged: ${why}`}>{chip}</Tip> : chip}
+      {merge && (
+        <Button
+          variant="secondary"
+          size="xs"
+          data-merge
+          className="border-background rounded-l-none border-l"
+          title={`Merge #${n} into its base branch`}
+          onClick={() => surface.merge(r.id)}
+        >
+          Merge
+        </Button>
+      )}
+    </span>
+  )
+}
