@@ -11,10 +11,6 @@ Everything runs on one VM:
 - **The host agent** runs on the same VM. Each session runs in its own rootless Podman container.
 - **`/setup`** is a browser page where you add the Claude credential, connect the host and connect Slack.
 
-<Warning>
-Neither part has been released yet. The gateway and this page come from [#1253](https://github.com/diggerhq/opencomputer/pull/1253), branch `spike/selfhost-miniflare`. The host installer, `selfhost/host-install.sh`, comes from [#1204](https://github.com/diggerhq/opencomputer/pull/1204), branch `feat/selfhost-host-install`. Until both are merged, use these two branches as the steps below say.
-</Warning>
-
 ## Limits
 
 - **One VM, one organization.** It has no horizontal scaling and no high availability. Every session shares the VM's CPU, memory and disk.
@@ -32,10 +28,10 @@ Neither part has been released yet. The gateway and this page come from [#1253](
 
 ## 1. Install the host
 
-As a user with `sudo`, on #1204's branch until it merges:
+As a user with `sudo`:
 
 ```sh
-git clone -b feat/selfhost-host-install https://github.com/diggerhq/opencomputer.git ~/oc-host
+git clone https://github.com/diggerhq/opencomputer.git ~/oc-host
 cd ~/oc-host
 sudo selfhost/host-install.sh --dry-run   # checks the machine and prints the plan
 sudo selfhost/host-install.sh
@@ -52,11 +48,11 @@ The host agent doesn't start yet, because `/etc/opencomputer/selfhost.env` has n
 
 ## 2. Configure the gateway
 
-As `oc-gateway`, on #1253's branch until it merges:
+As `oc-gateway`:
 
 ```sh
 sudo -iu oc-gateway
-git clone -b spike/selfhost-miniflare https://github.com/diggerhq/opencomputer.git ~/opencomputer
+git clone https://github.com/diggerhq/opencomputer.git ~/opencomputer
 cd ~/opencomputer/selfhost
 cp .env.example .env && chmod 600 .env
 ```
