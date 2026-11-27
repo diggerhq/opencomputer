@@ -1,0 +1,90 @@
+---
+title: "Build offload (AWS)"
+description: "Run heavy builds from a single-VM host in short-lived AWS Lambda MicroVMs"
+---
+
+<Warning>Draft. Build offload is new and has not been run end to end yet.</Warning>
+
+A single-VM host on EC2 can send heavy builds, such as a release build of a large Rust workspace, to a short-lived [Lambda MicroVM](https://docs.aws.amazon.com/lambda/). The session keeps running on the host. The build runs in a VM made from the same session image, so it sees the same toolchains, user and paths. Its artifacts come back into the session's workspace.
+
+Offload is off by default. It needs an EC2 host, one CloudFormation stack and one image build per release.
+
+## Requirements
+
+- A host installed with [Single VM](/self-hosting/single-vm), on EC2, in a region where Lambda MicroVMs are available.
+- Permission to create IAM roles and an S3 bucket in the account, once.
+- The AWS CLI on the machine where you run the image script, with a version that has the `lambda-microvms` commands.
+
+## 1. Create the stack
+
+[`selfhost/aws/offload.yaml`](https://github.com/diggerhq/opencomputer/blob/main/selfhost/aws/offload.yaml) creates:
+
+- an S3 bucket for job sources, artifacts and logs, encrypted, with no public access and TLS-only. Runs expire after 2 days and the build cache after 14.
+- the build role that Lambda uses to build the images
+- an instance role and instance profile for the host, or a policy attached to your existing instance role (`ExistingInstanceRoleName`)
+- a least-privilege policy: this region only, images named `oc-offload-*` only, and no shell into a build VM
+
+```sh
+aws cloudformation deploy \
+  --stack-name opencomputer-offload \
+  --template-file selfhost/aws/offload.yaml \
+  --capabilities CAPABILITY_IAM
+aws cloudformation describe-stacks --stack-name opencomputer-offload \
+  --query 'Stacks[0].Outputs' --output table
+```
+
+If the stack created an instance profile, attach it to the host:
+
+```sh
+aws ec2 associate-iam-instance-profile --instance-id <id> \
+  --iam-instance-profile Arn=<InstanceProfileArn>
+```
+
+The host's own offload service is the only process on the host that can reach the instance metadata service and so these credentials. Sessions cannot.
+
+## 2. Build the images
+
+On the host, from the repository checkout, run the `ImageCommand` from the stack outputs:
+
+```sh
+selfhost/aws/build-offload-image.sh --region <region> --stack opencomputer-offload \
+  --bucket <OffloadBucket> --build-role-arn <BuildRoleArn> --dry-run   # prints the AWS calls
+selfhost/aws/build-offload-image.sh --region <region> --stack opencomputer-offload \
+  --bucket <OffloadBucket> --build-role-arn <BuildRoleArn>
+```
+
+It builds one image per size tier from the session image the host runs (`SP_IMAGE` in the release's `.sp-version.env`): `s` (2 GiB) and `m` (8 GiB) by default, changed with `--tiers s:2048,m:8192`. Each build takes about 5 minutes. At the end it prints:
+
+```sh
+SP_OFFLOAD_IMAGE_S=arn:aws:lambda:…:microvm-image:oc-offload-s-1
+SP_OFFLOAD_IMAGE_M=arn:aws:lambda:…:microvm-image:oc-offload-m-1
+```
+
+Run it again after each host upgrade that changes the session image. If nothing changed, it reuses the existing image versions.
+
+## 3. Turn it on
+
+Add these to `/etc/opencomputer/selfhost.env`, with the two image lines from step 2:
+
+```sh
+SP_OFFLOAD_BACKEND=aws-microvm
+SP_OFFLOAD_BUCKET=<OffloadBucket>
+SP_OFFLOAD_IMAGE_S=…
+SP_OFFLOAD_IMAGE_M=…
+```
+
+Then:
+
+```sh
+sudo selfhost/host-install.sh --enable-offload
+```
+
+The optional limits are `SP_OFFLOAD_MAX_CONCURRENT` (default 2), `SP_OFFLOAD_MAX_MINUTES` (default 60, at most 480), `SP_OFFLOAD_SOURCE_MAX_MB` and `SP_OFFLOAD_ARTIFACT_MAX_MB` (default 2048 each). `SP_OFFLOAD_REGION` defaults to the instance's region.
+
+## Turn it off
+
+```sh
+sudo selfhost/host-install.sh --disable-offload
+```
+
+Running builds are cancelled. To remove everything, delete the images named `oc-offload-*` and then the stack. The bucket is retained, so empty and delete it yourself.

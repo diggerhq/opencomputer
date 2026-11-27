@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["src/**", "scripts/**", "telemetry/collector/src/**", "telemetry/grafana/*.mjs", "*.json", "*.jsonc", "*.ts"]
+    "includes": ["src/**", "scripts/**", "offload/**", "telemetry/collector/src/**", "telemetry/grafana/*.mjs", "*.json", "*.jsonc", "*.ts"]
   },
   // Formatting matches the style the code already has, so enforcing it is a
   // small diff. `npm run format` applies it; `biome format` is not part of
