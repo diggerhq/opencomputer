@@ -73,7 +73,11 @@
   },
   // Work 084: session log segments and event bodies over 8 KiB; the key index the wire Worker reads.
   // The KV id and the bucket are created at rollout (no Cloudflare resources from the build).
-  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "managed-agents-session-log" }],
+  // Work 126: the attachments' objects (`<org>/<session>/<id>`); the bucket is created at rollout.
+  "r2_buckets": [
+    { "binding": "SESSION_LOG_BLOBS", "bucket_name": "managed-agents-session-log" },
+    { "binding": "ATTACHMENTS", "bucket_name": "managed-agents-attachments" }
+  ],
   "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
   "durable_objects": {
     "bindings": [

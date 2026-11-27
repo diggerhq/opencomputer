@@ -68,6 +68,12 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["POST"]),
     pattern: route(`/sessions/${SEG}/asks/${SEG}/(?:answer|dismiss)`),
   },
+  // Attachments (work 126, section 4): blue judges the scope per route, so a
+  // cookie, an app token and a key all pass. `PUT …/content` carries the file
+  // itself (any content-type), streamed through as it is.
+  { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/attachments`) },
+  { methods: new Set(["GET", "DELETE"]), pattern: route(`/sessions/${SEG}/attachments/${SEG}`) },
+  { methods: new Set(["GET", "PUT"]), pattern: route(`/sessions/${SEG}/attachments/${SEG}/content`) },
   // Subagents (docs/api/http/subagents.mdx).
   { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/subagents`) },
   { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/subagents/${SEG}`) },
@@ -251,6 +257,11 @@ const API_REQUEST_HEADERS = [
   // built for.
   "x-oc-trace",
   "x-oc-principal",
+  // Attachments (work 126): an upload's row is made from these before its body
+  // is read; a download may ask for one range.
+  "content-length",
+  "content-disposition",
+  "range",
 ];
 
 /** Response headers passed back from blue. */
@@ -266,6 +277,12 @@ const API_RESPONSE_HEADERS = [
   "etag",
   // When the Work index last saw the branch head (work tracking 3.10), on 200 and 304.
   "work-as-of",
+  // An attachment's content (work 126): its name and disposition, the range
+  // served, and nosniff so the browser trusts the type blue sends.
+  "content-disposition",
+  "accept-ranges",
+  "content-range",
+  "x-content-type-options",
 ];
 
 /** Request headers passed to the wire Worker, beside the caller's key. */
@@ -283,10 +300,7 @@ const WIRE_REQUEST_HEADERS = [
 ];
 
 /** Response headers passed back from the wire Worker. */
-const WIRE_RESPONSE_HEADERS = [
-  ...API_RESPONSE_HEADERS,
-  "content-disposition",
-];
+const WIRE_RESPONSE_HEADERS = [...API_RESPONSE_HEADERS];
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
@@ -416,11 +430,13 @@ export async function proxyComputerWorkspace(
 
 // ── CORS ─────────────────────────────────────────────────────────────────
 
+// `content-type` is allowed whatever its value (an upload's is the file's own);
+// `content-disposition` and `range` are the attachment routes' (work 126).
 const CORS_ALLOW_HEADERS =
-  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal";
+  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, content-disposition, range";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
-  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";
+  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of, content-disposition, accept-ranges, content-range, content-length";
 
 /**
  * Whether a browser origin may call the computer API: the edge's own origin

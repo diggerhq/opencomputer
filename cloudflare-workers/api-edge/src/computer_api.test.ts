@@ -246,6 +246,11 @@ describe("computer API allowlist", () => {
     ["GET", "/computer/sessions/cs_01h/asks/toolu_1"],
     ["POST", "/computer/sessions/cs_01h/asks/toolu_1/answer"],
     ["POST", "/computer/sessions/cs_01h/asks/toolu_1/dismiss"],
+    ["GET", "/computer/sessions/cs_01h/attachments"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["DELETE", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["GET", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h/content"],
     ["GET", "/computer/sessions/cs_01h/subagents"],
     ["GET", "/computer/sessions/cs_01h/subagents/sa_01h"],
     ["POST", "/computer/sessions/cs_01h/subagents/sa_01h/stop"],
@@ -276,6 +281,11 @@ describe("computer API allowlist", () => {
     ["POST", "/computer/sessions/cs_01h/aside"],
     ["PUT", "/computer/sessions/cs_01h/workspace/file"],
     ["POST", "/computer/sessions/cs_01h/turns/tn_1"],
+    // Attachments: the row is created by the PUT of its content, there is no POST; nothing else is writable.
+    ["POST", "/computer/sessions/cs_01h/attachments"],
+    ["PUT", "/computer/sessions/cs_01h/attachments/at_01h"],
+    ["POST", "/computer/sessions/cs_01h/attachments/at_01h/content"],
+    ["DELETE", "/computer/sessions/cs_01h/attachments/at_01h/content"],
     ["GET", "/computer/sessions/../me"],
     ["GET", "/computer/sessions/.hidden"],
     ["GET", "/computer/sessions/a%2Fb"],
@@ -659,6 +669,82 @@ describe("computer API proxy to blue", () => {
   });
 });
 
+describe("attachments go to blue with their bytes", () => {
+  // Unlike workspace routes, attachments are a dashboard surface too: a cookie uploads what the composer picked.
+  it("streams a cookie's PUT of content up with its content headers, no JSON gate", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.body).toBeInstanceOf(ReadableStream);
+      return Response.json(
+        { id: "at_1", name: "a.png", mimetype: "image/png", bytes: 2, state: "ready" },
+        { status: 201, headers: { etag: '"e1"', "x-request-id": "req_a" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(
+      api("/sessions/cs_1/attachments/at_1/content", {
+        method: "PUT",
+        headers: {
+          cookie: await sessionCookie(),
+          origin: ORIGIN,
+          "content-type": "image/png",
+          "content-length": "2",
+          "content-disposition": 'attachment; filename="a.png"',
+        },
+        body: new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array([9, 9]));
+            c.close();
+          },
+        }),
+        duplex: "half",
+      } as RequestInit),
+      testEnv(new FakeDB()),
+      testCtx().ctx,
+    );
+    expect(res.status).toBe(201);
+    expect(res.headers.get("etag")).toBe('"e1"');
+    const { url, init, headers } = sent(fetchMock);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/content`);
+    expect(init.method).toBe("PUT");
+    expect(headers.get("content-type")).toBe("image/png");
+    expect(headers.get("content-disposition")).toBe('attachment; filename="a.png"');
+    expect(headers.get("x-opencomputer-agent-token")).toEqual(expect.any(String));
+  });
+
+  it("passes a key's ranged GET of content through, and the content headers back", async () => {
+    const db = new FakeDB();
+    const key = await addKey(db);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([2, 3]), {
+        status: 206,
+        headers: {
+          "content-type": "image/png",
+          "content-disposition": 'inline; filename="a.png"',
+          "accept-ranges": "bytes",
+          "content-range": "bytes 1-2/3",
+          "x-content-type-options": "nosniff",
+          etag: '"e1"',
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await worker.fetch(
+      api("/sessions/cs_1/attachments/at_1/content", { headers: { authorization: `Bearer ${key}`, range: "bytes=1-2" } }),
+      testEnv(db),
+      testCtx().ctx,
+    );
+    expect(res.status).toBe(206);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([2, 3]));
+    expect(res.headers.get("content-disposition")).toBe('inline; filename="a.png"');
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+    expect(res.headers.get("content-range")).toBe("bytes 1-2/3");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    const { url, headers } = sent(fetchMock);
+    expect(url).toBe(`${BLUE}/v1/computer/sessions/cs_1/attachments/at_1/content`);
+    expect(headers.get("range")).toBe("bytes=1-2");
+  });
+});
+
 describe("workspace files go to the wire Worker", () => {
   it("forwards the caller's own Authorization and streams the archive up and down", async () => {
     const db = new FakeDB();
@@ -786,7 +872,7 @@ describe("computer API CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-allow-headers")).toBe(
-      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal",
+      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, content-disposition, range",
     );
     expect(res.headers.get("access-control-allow-methods")).toBe("GET, POST, PATCH, PUT, DELETE");
     expect(res.headers.get("access-control-max-age")).toBe("600");
@@ -820,7 +906,7 @@ describe("computer API CORS", () => {
     );
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-expose-headers")).toBe(
-      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of",
+      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of, content-disposition, accept-ranges, content-range, content-length",
     );
     expect(res.headers.get("server-timing")).toBe("x;dur=1");
   });
@@ -1111,6 +1197,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         `/computer/sessions/${SID}/events`,
         `/computer/sessions/${SID}/asks/toolu_1/answer`,
         `/computer/sessions/${SID}/subagents`,
+        `/computer/sessions/${SID}/attachments/at_1/content`,
         "/computer/secrets",
         "/computer/me/secrets/X",
         "/computer/organization/secrets/X",
@@ -1122,7 +1209,7 @@ describe("computer API telemetry: one edge.request per call", () => {
       ].map(computerApiRouteFamily),
     ).toEqual([
       "me", "tickets", "sessions", "sessions", "sessions", "sessions", "control", "turns", "events", "asks",
-      "subagents", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
+      "subagents", "attachments", "secrets", "secrets", "secrets", "secrets", "workspace", "work", "work", "other",
     ]);
   });
 });

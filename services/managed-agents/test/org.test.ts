@@ -94,19 +94,22 @@ import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract
 import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
+import type { Attachments } from "../src/actors/org/attachment-store.js";
 import type { AccessCarry } from "../src/actors/computer/contract.js";
 import { firstTurnId } from "../src/ids/session-ids.js";
 
-type Fakes = {
+export type Fakes = {
   calls: [string, ...unknown[]][];
   boardRepository?: StoredRepository;
   accessCarry?: AccessCarry;
   account?: TokenMinter;
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  /** The attachments' store (work 126); absent: none is bound. */
+  attachments?: Attachments;
 };
 
 /** Run `fn` on the Org named `name`, every call out replaced by a recorder. */
-async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fakes, sql: Sql) => Promise<T>, fakes: Fakes = { calls: [] }): Promise<T> {
+export async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fakes, sql: Sql) => Promise<T>, fakes: Fakes = { calls: [] }): Promise<T> {
   return runInDurableObject(ORGS.getByName(name), async (instance, state) => {
     const org = instance as unknown as OrgDurableObject;
     const rec = (call: string) => async (...args: unknown[]) => void fakes.calls.push([call, ...args]);
@@ -119,6 +122,7 @@ async function withActor<T>(name: string, fn: (org: OrgDurableObject, fakes: Fak
       installationIndexed: rec("installation.indexed"),
       boardRepository: async () => fakes.boardRepository ?? null,
       account: () => fakes.account ?? null,
+      attachments: () => fakes.attachments ?? null,
       fetch: (url, init) => (fakes.fetch ?? fetch)(url, init),
     };
     org.out = out;

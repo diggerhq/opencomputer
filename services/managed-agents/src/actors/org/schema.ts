@@ -86,15 +86,33 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "board", 0);
     alarms.set(sql, "accessCarry", 0);
   },
+  // Attachments (work 126, section 5): the rows of what people upload for a message. Not in the feed;
+  // the objects are in the `ATTACHMENTS` store, keyed `<org>/<session>/<id>` (org/attachments.ts).
+  attachmentTable,
 ];
 
+/** The attachment table (step 2); `IF NOT EXISTS` so `completeFolded` gives it to a store whose count skips the step. */
+function attachmentTable(sql: Sql): void {
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS attachment (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, by TEXT NOT NULL,
+       name TEXT NOT NULL, mimetype TEXT NOT NULL, bytes INTEGER NOT NULL,
+       state TEXT NOT NULL, etag TEXT, turn_id TEXT, message_id TEXT,
+       created_at INTEGER NOT NULL, state_at INTEGER NOT NULL)`,
+  );
+  sql.exec("CREATE INDEX IF NOT EXISTS attachment_session ON attachment (session_id)");
+  sql.exec("CREATE INDEX IF NOT EXISTS attachment_state ON attachment (state, state_at)");
+}
+
 /**
- * A store whose steps ran before they were folded into one, and stopped before `meta.slack_access_default`
- * (a development stack deployed between the two): its count says nothing is left to apply, so it is given
- * the column and the carry-over those last steps held. A no-op on every other store.
+ * A store whose steps ran before they were folded into one (a development stack deployed between the
+ * two): its count (6 or 8) says nothing is left to apply, so it is given what it lacks: the
+ * `meta.slack_access_default` column and the carry-over the last folded steps held, when it stopped
+ * before them, and the attachment table (step 2, added after the fold). A no-op on every other store.
  */
 export function completeFolded(sql: Sql): void {
-  if (sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) return;
-  sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
-  alarms.set(sql, "accessCarry", 0);
+  if (!sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) {
+    sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
+    alarms.set(sql, "accessCarry", 0);
+  }
+  if (!sql.exec<{ name: string }>("PRAGMA table_info(attachment)").length) attachmentTable(sql);
 }
