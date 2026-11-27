@@ -70,6 +70,9 @@ export function TrackPane({ tid }: { tid: string }) {
             onSelect: () => surface.trackKeep(tid, !track.keep),
           },
         ]),
+    ...(surface.canLink
+      ? [{ label: 'Copy link', onSelect: () => surface.copyLink({ track: tid }) }]
+      : []),
     'sep',
     {
       label: 'Dissolve track',

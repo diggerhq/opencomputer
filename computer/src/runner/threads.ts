@@ -28,11 +28,20 @@ export function slackLink(url: string): { channel: string; ts: string } | undefi
   return { channel: m[1], ts: thread ?? `${m[2]}.${m[3]}` };
 }
 
-/** The session a tool call names: its id, or the one on a Slack thread. */
+/** The thread a web app link names (Copy link: `…/work/t/cs_…`), when it names one. */
+export function appLink(url: string): string | undefined {
+  const id = url.match(/^https:\/\/[^/?#]+\/(?:[^?#]*\/)?t\/(cs_[0-9a-z]+)(?:[/?#]|$)/)?.[1];
+  return id && SID.test(id) ? id : undefined;
+}
+
+/** The session a tool call names: its id, the one a web app link names, or the one on a Slack thread. */
 export async function sessionOf(w: Work, thread: string): Promise<string> {
   const t = thread.trim();
   if (SID.test(t)) return t;
-  if (!/^https:\/\//.test(t)) throw new Error('give a session id (cs_…) or a Slack thread link');
+  // Read as the bare id would be: the link grants nothing.
+  const app = appLink(t);
+  if (app) return app;
+  if (!/^https:\/\//.test(t)) throw new Error('give a session id (cs_…), a thread\'s link from the web app, or a Slack thread link');
   const r = await w.api.call('GET', '/sessions', { query: { slackThread: t } });
   const id = r?.sessions?.[0]?.id;
   if (typeof id !== 'string') throw new Error('no session runs on that Slack thread, or it is not shared with you');
@@ -56,9 +65,13 @@ export function threadTools(w: Work) {
   const read = tool(
     'read_thread',
     'Read another thread: what was sent to it and what its agent said over its last 20 turns, text only. Give its session id (cs_…), ' +
-      'as start_thread and list_work return, or the link of the Slack thread it runs on. Use it for a thread named in a file, a brief or ' +
+      'as start_thread and list_work return, its link from the web app, or the link of the Slack thread it runs on. Use it for a thread named in a file, a brief or ' +
       'an earlier message, or to see what one you started has done. Only threads you may read; otherwise it says why not.',
-    { thread: z.string().describe('A session id (cs_…) or a Slack thread link (https://<workspace>.slack.com/archives/<channel>/p<ts>)') },
+    {
+      thread: z
+        .string()
+        .describe('A session id (cs_…), a web app link (https://…/work/t/cs_…) or a Slack thread link (https://<workspace>.slack.com/archives/<channel>/p<ts>)'),
+    },
     async ({ thread }) => {
       try {
         const id = await sessionOf(w, thread);
