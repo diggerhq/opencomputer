@@ -130,6 +130,8 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
   { methods: new Set(["PUT"]), pattern: route(`/work/prefs/${SEG}`), scope: "work:write" },
   { methods: new Set(["PUT"]), pattern: route(`/work/results/${SEG}`), scope: "work:write" },
   { methods: new Set(["PUT"]), pattern: route(`/work/results/${SEG}/review`), scope: "work:write" },
+  // A person merges a thread's pull request, and reverts the merge (work 118).
+  { methods: new Set(["POST"]), pattern: route(`/work/results/${SEG}/(?:merge|revert)`), scope: "work:write" },
   { methods: new Set(["POST"]), pattern: route("/work/proposals"), scope: "work:write" },
   {
     methods: new Set(["POST"]),
