@@ -6,6 +6,14 @@ import { NOWHERE } from './host'
 // the URL as the location.
 
 // /<base>, /<base>/new, /<base>/t/<thread>, /<base>/k/<track>; ?r=<result> over any of them.
+const pathOf = (l: Location) =>
+  l.thread ? `/t/${encodeURIComponent(l.thread)}` : l.track ? `/k/${encodeURIComponent(l.track)}` : l.start ? '/new' : ''
+
+/** The full address of a thread or track, without this tab's other parameters. */
+export function urlLink(base: string): NonNullable<Host['link']> {
+  return (l) => `${location.origin}${base}${pathOf(l)}${l.result ? `?r=${encodeURIComponent(l.result)}` : ''}`
+}
+
 export function urlLocation(base: string): Host['location'] {
   const read = (): Location => {
     const rest = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : ''
@@ -20,7 +28,7 @@ export function urlLocation(base: string): Host['location'] {
     }
   }
   const write = (l: Location) => {
-    const path = l.thread ? `/t/${encodeURIComponent(l.thread)}` : l.track ? `/k/${encodeURIComponent(l.track)}` : l.start ? '/new' : ''
+    const path = pathOf(l)
     // Other parameters (the fake's switches) stay.
     const q = new URLSearchParams(location.search)
     if (l.result) q.set('r', l.result)
@@ -173,6 +181,7 @@ export function webHost(o: {
     },
     connect: () => socketChannel(ws, ['oc.live.v1']),
     location: urlLocation(o.base),
+    link: urlLink(o.base),
     ...browserParts(),
   }
 }

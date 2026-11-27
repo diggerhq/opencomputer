@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Star } from 'lucide-react'
 import { ApiError } from '@/api/errors'
@@ -16,7 +17,9 @@ const queryKey = ['github-star']
  * "Star us on GitHub, get $5" beside setup. The check is loose on purpose:
  * the edge only sees the repo's star count go up after the click.
  */
-export function GitHubStarBonus() {
+export const GitHubStarBonus = SELFHOST ? () => null : GitHubStarBonusImpl
+
+function GitHubStarBonusImpl() {
   const queryClient = useQueryClient()
   const star = useQuery({ queryKey, queryFn: getGitHubStar, retry: false })
   const save = (next: GitHubStar) => queryClient.setQueryData(queryKey, next)

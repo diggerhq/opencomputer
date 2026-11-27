@@ -396,10 +396,8 @@ export function createSurface(o: SurfaceOptions) {
     openResult(r: ResultRow) {
       // A preview opens in the browser: the app's shell allows no frames (spec 24.2).
       if (r.type === 'preview') return host.openExternal(r.ref)
-      if (r.type === 'file' || r.type === 'document') {
-        if (/^https?:/.test(r.ref)) host.openExternal(r.ref)
-        return
-      }
+      // A file at an address opens there; one in the workspace opens in the review pane.
+      if ((r.type === 'file' || r.type === 'document') && /^https?:/.test(r.ref)) return host.openExternal(r.ref)
       const s = get()
       go({ ...NOWHERE, thread: s.loc.thread, track: s.loc.track, result: r.id })
     },
@@ -447,6 +445,15 @@ export function createSurface(o: SurfaceOptions) {
     },
     toast,
     dismissToast,
+    // The address of a thread or track, for a person or an agent. It grants nothing.
+    canLink: !!host.link,
+    copyLink(loc: Partial<Pick<Location, 'thread' | 'track'>>) {
+      if (!host.link) return
+      navigator.clipboard.writeText(host.link({ ...NOWHERE, ...loc })).then(
+        () => toast({ text: 'Link copied' }),
+        () => toast({ text: 'Could not copy the link', tone: 'error' }),
+      )
+    },
 
     // -- talking --
     // A1, A22: the agent decides what this becomes; `open` lands on it. The
@@ -461,13 +468,16 @@ export function createSurface(o: SurfaceOptions) {
       if (opt.open) go({ ...NOWHERE, thread: r.id })
       return r.id
     },
-    // A2, A3: a reply to a working agent steers it. `draftKey`: the composer
-    // whose files go with it (work 126); the message waits for their uploads.
-    send(sid: string, input: string, draftKey?: string) {
+    // A2, A3: a reply to a working agent steers it, read at its next step;
+    // `now` stops what it is doing so it reads this at once (work 134).
+    // `draftKey`: the composer whose files go with it (work 126); the
+    // message waits for their uploads.
+    send(sid: string, input: string, opt?: { now?: boolean; draftKey?: string }) {
       const st = get().rows.session.get(sid)?.status
-      const attachments = draftKey ? attachmentsOf(draftKey) : undefined
-      if (draftKey) setDraftAttachments(draftKey, [])
-      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined, attachments }))
+      const busy = st === 'running' || st === 'starting'
+      const attachments = opt?.draftKey ? attachmentsOf(opt.draftKey) : undefined
+      if (opt?.draftKey) setDraftAttachments(opt.draftKey, [])
+      settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined, attachments }))
     },
     // Files for a composer's next message (work 126): kept and uploaded at
     // once by the client, ahead of the message. A file the client refuses
@@ -500,6 +510,8 @@ export function createSurface(o: SurfaceOptions) {
     dismissAsk(sid: string, askId: string) {
       settle(client.dismiss(sid, askId))
     },
+    // Also "Send now" for messages waiting on the running turn: it stops, and
+    // the agent starts again from what is waiting (work 134).
     stop(sid: string) {
       settle(client.interrupt(sid))
     },
@@ -627,7 +639,7 @@ export function createSurface(o: SurfaceOptions) {
     },
 
     // -- reads that are not streams --
-    ...serverReads({ client, store, addUnder, toast }),
+    ...serverReads({ client, fetch: (path, init) => host.api.fetch(path, init), store, addUnder, toast }),
     openExternal(url: string) {
       host.openExternal(url)
     },

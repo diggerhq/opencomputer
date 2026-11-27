@@ -274,7 +274,7 @@ export function ThreadPane({ sid }: { sid: string }) {
 
   // A typed reply to a single open question is its answer (T3); one with
   // files is a message, since an answer carries none.
-  const reply = (text: string) => {
+  const reply = (text: string, e: { meta: boolean }) => {
     const ask = thread.ask
     const qs =
       ask?.kind === 'question'
@@ -285,7 +285,7 @@ export function ThreadPane({ sid }: { sid: string }) {
       surface.answer(sid, ask.id, {
         answers: [{ questionId: qs[0].id ?? '0', choices: [], text }],
       })
-    else surface.send(sid, text, `t:${sid}`)
+    else surface.send(sid, text, { now: e.meta, draftKey: `t:${sid}` })
   }
 
   const menu = (): MenuItem[] => {
@@ -328,6 +328,8 @@ export function ThreadPane({ sid }: { sid: string }) {
         label: thread.keep ? 'Stop keeping' : 'Keep in list',
         onSelect: () => surface.keep(sid, !thread.keep),
       })
+    if (surface.canLink)
+      items.push({ label: 'Copy link', onSelect: () => surface.copyLink({ thread: sid }) })
     items.push('sep', {
       label: 'Delete',
       danger: true,
@@ -441,7 +443,11 @@ export function ThreadPane({ sid }: { sid: string }) {
       </Conversation>
       <Composer
         draftKey={`t:${sid}`}
-        placeholder="Reply in this thread…"
+        placeholder={
+          working
+            ? 'Reply · the agent reads it at its next step'
+            : 'Reply in this thread…'
+        }
         onSend={reply}
         className={COMPOSER}
         // A thread from Slack keeps the settings Slack gave it.

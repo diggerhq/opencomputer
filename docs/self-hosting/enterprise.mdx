@@ -3,9 +3,9 @@ title: "Enterprise Edition"
 description: "What the Enterprise Edition adds to a self-hosted @computer, and how to get a license"
 ---
 
-The Community Edition (CE) is the deployment described in [Start here](/self-hosting/overview): you run it yourself, with one Computer VM per organization and sign-in through WorkOS. The Enterprise Edition (EE) runs the same stack and adds what a larger team needs:
+The standard self-hosted deployment is the one described in [Start here](/self-hosting/overview): you run it yourself, with one Computer VM per organization and sign-in through WorkOS. The Enterprise Edition (EE) runs the same stack and adds what a larger team needs:
 
-| | Community Edition | Enterprise Edition |
+| | Standard | Enterprise Edition |
 | --- | --- | --- |
 | Computer VMs | One VM per organization, sized by you | A pool of VMs per organization that grows and shrinks with the number of sessions |
 | Concurrent sessions | Up to 100 per organization | No cap: the pool grows with demand |
@@ -16,11 +16,11 @@ The Community Edition (CE) is the deployment described in [Start here](/self-hos
 
 ## Sessions on a pool of VMs
 
-In CE every session of an organization runs on its one VM, so the size of that VM caps how many sessions run at once. In EE an organization has a pool of VMs: a new session is placed on a VM with room for it, the pool adds VMs when they are full and removes idle ones, and you set the smallest and largest number of VMs and their size.
+In the standard deployment every session of an organization runs on its one VM, so the size of that VM caps how many sessions run at once. In EE an organization has a pool of VMs: a new session is placed on a VM with room for it, the pool adds VMs when they are full and removes idle ones, and you set the smallest and largest number of VMs and their size.
 
 ## Sandboxes in your cloud account
 
-Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on a cloud sandbox provider, which is the only option in CE. You choose the worker instance types and how far the fleet scales.
+Heavy builds, large monorepos and work whose code must not leave your account run in sandboxes: full Linux VMs on bare-metal workers. In EE the sandbox fleet runs in your own Azure, AWS or Google Cloud account, next to your Computer VMs, instead of on a cloud sandbox provider, which is the only option in the standard deployment. You choose the worker instance types and how far the fleet scales.
 
 ## Sign-in with your identity provider
 

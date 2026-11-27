@@ -67,7 +67,10 @@ export function Composer({
       aria-label="Send"
       title={failed ? 'Remove the failed file to send' : 'Send (Enter)'}
       disabled={!ready}
-      onClick={send}
+      onClick={() => {
+        meta.current = false
+        send()
+      }}
     >
       {I.up}
     </Button>
@@ -110,7 +113,9 @@ export function Composer({
         onChange={(e) => surface.setDraft(draftKey, e.target.value)}
         onSend={send}
         onKeyDown={(e) => {
-          meta.current = e.metaKey || e.ctrlKey
+          // Only the Enter that sends says whether ⌘ was held: a ⌘V before a
+          // click on Send must not interrupt the agent (work 134).
+          if (e.key === 'Enter') meta.current = e.metaKey || e.ctrlKey
           if (e.key === 'Escape') e.currentTarget.blur()
         }}
         onPaste={(e) => {

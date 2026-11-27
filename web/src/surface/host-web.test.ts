@@ -3,7 +3,8 @@
 // person to log in again, once, whatever request found it.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { webHost } from './host-web'
+import { urlLink, webHost } from './host-web'
+import { NOWHERE } from './host'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -38,5 +39,13 @@ describe('webHost', () => {
     const reply = await host(signedOut).api.fetch('/sessions')
     expect(reply.status).toBe(402)
     expect(signedOut).not.toHaveBeenCalled()
+  })
+})
+
+describe('urlLink', () => {
+  it("is this origin's address of a thread or track, without the tab's other parameters", () => {
+    const link = urlLink('/computer/work')
+    expect(link({ ...NOWHERE, thread: 'cs_1' })).toBe(`${location.origin}/computer/work/t/cs_1`)
+    expect(link({ ...NOWHERE, track: 'trk_1', result: 'res_1' })).toBe(`${location.origin}/computer/work/k/trk_1?r=res_1`)
   })
 })

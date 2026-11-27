@@ -14,6 +14,7 @@ import { logRefusalOf, refusalOf, strip, type LogRefused, type Reply } from "./r
 import { asObject, bodyOf, intParam } from "./request-body.js";
 import { delivered, timedDo, timedLog } from "./request-facts.js";
 import { resultDiff, type ResultDiffEnv } from "./result-diff.js";
+import { resultFile } from "./result-file.js";
 import type { Route } from "./route-table.js";
 import { entryId, sendEntry } from "./session-entry.js";
 import { attachmentRoute, type AttachmentsEnv } from "./attachment-routes.js";
@@ -125,6 +126,8 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
       return tellTrack(request, env, p, idem, trace, org, out);
     case "work.diff":
       return resultDiff(request, env, p, route.sub!, org, out);
+    case "work.file":
+      return resultFile(request, env, p, route.sub!, org, out);
     case "slack.post":
       return slackPost(request, env, p, route.sub!, out);
     case "settings.get":

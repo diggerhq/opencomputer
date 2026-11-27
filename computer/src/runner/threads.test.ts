@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CloudError } from './cloud.js';
-import { MAX_POST_CHARS, slackLink, threadTools, transcript } from './threads.js';
+import { MAX_POST_CHARS, appLink, slackLink, threadTools, transcript } from './threads.js';
 import type { Work } from './work.js';
 
 const URL = 'https://acme.slack.com/archives/C0PUB/p1700000001000100';
@@ -47,6 +47,14 @@ describe('read_thread', () => {
     const r = await none.read.handler({ thread: URL });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toMatch(/no session runs on that Slack thread/);
+  });
+
+  it('reads the thread a web app link names as its id, with no lookup', async () => {
+    const t = rig(() => ({ events: [] }));
+    await t.read.handler({ thread: `https://app.opencomputer.dev/computer/work/t/${OTHER}?r=res_1` });
+    expect(t.calls.map((c) => c.path)).toEqual([`/sessions/${OTHER}/events`]);
+    expect(appLink(`https://app.opencomputer.dev/computer/work/k/trk_1`)).toBeUndefined();
+    expect(appLink(`https://evil.example/t/cs_short`)).toBeUndefined();
   });
 
   it("a refusal is the tool's failed result, with the API's code", async () => {

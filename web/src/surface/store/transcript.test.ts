@@ -29,12 +29,40 @@ describe('work', () => {
     expect(items[2]).toMatchObject({ text: 'Found it.' })
   })
 
-  it('a running turn folds a passing message into its work once the agent works on', () => {
+  it('a running turn keeps its latest message in view while the agent works on', () => {
     const items = buildTranscript(running())
-    expect(items.map((i) => i.kind)).toEqual(['user', 'work'])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(items[2]).toMatchObject({ text: 'Found it.' })
     const [w] = works(items)
     expect(w.settled).toBe(false)
-    expect(w.entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'text', 'step'])
+    expect(w.entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'step'])
+  })
+
+  it('a new message takes its predecessor’s place, which folds into the work', () => {
+    const items = buildTranscript([...running(), ev('message.completed', 't1', { text: 'Editing now.' })])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(items[2]).toMatchObject({ text: 'Editing now.' })
+    expect(works(items)[0].entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'text', 'step'])
+  })
+
+  it('the reply being written is the answer from its first token, and keeps its key when complete', () => {
+    const base = running().slice(0, 5)
+    const open = { turnId: 't1', blockId: 'b9', type: 'text', text: 'The cause' }
+    const streaming = buildTranscript(base, undefined, open)
+    expect(streaming.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(streaming[2]).toMatchObject({ key: 'b9', text: 'The cause', streaming: true })
+    const done = buildTranscript([...base, ev('message.completed', 't1', { blockId: 'b9', text: 'The cause is X.' })], undefined, null)
+    expect(done[2]).toMatchObject({ key: 'b9', text: 'The cause is X.' })
+    expect(done[2]).not.toHaveProperty('streaming', true)
+    // The work line keeps its key too.
+    expect(done[1].key).toBe(streaming[1].key)
+  })
+
+  it('a running turn reserves its work line from the start; an ended turn without work drops it', () => {
+    const started = [ev('message.received', 't8', { input: 'Hi' }), ev('turn.started', 't8')]
+    expect(buildTranscript(started).map((i) => i.kind)).toEqual(['user', 'work'])
+    const ended = buildTranscript([...started, ev('message.completed', 't8', { text: 'Hello.' }), ev('turn.completed', 't8')])
+    expect(ended.map((i) => i.kind)).toEqual(['user', 'agent'])
   })
 
   it('an ended turn folds thinking, steps and passing messages into one line before its answer', () => {
@@ -173,5 +201,88 @@ describe('attachments', () => {
         { id: 'at_lost', name: 'file' },
       ],
     })
+  })
+})
+
+// The person's messages the agent has not read yet (work 134).
+describe('delivery', () => {
+  type User = Extract<Item, { kind: 'user' }>
+  const users = (items: Item[]) => items.filter((i): i is User => i.kind === 'user')
+  const start = () => [ev('message.received', 't1', { input: 'Fix it' }), ev('turn.started', 't1')]
+  const steer = (input: string, turnId = 't1') => ev('message.received', turnId, { input, delivery: 'steered' })
+
+  it('a steer waits last, behind the step running longest', () => {
+    const items = buildTranscript([
+      ...start(),
+      ev('tool.started', 't1', { callId: 'c1', title: 'Run tests' }),
+      ev('tool.started', 't1', { callId: 'c2', title: 'Read a file' }),
+      steer('Use pnpm'),
+      ev('message.completed', 't1', { text: 'Looking.' }),
+    ])
+    const last = items[items.length - 1]
+    expect(last).toMatchObject({ kind: 'user', text: 'Use pnpm', state: 'waiting', behind: { title: 'Run tests' } })
+  })
+
+  it('a steer with no step running waits on nothing', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm')])
+    expect(items[items.length - 1]).toMatchObject({ state: 'waiting' })
+    expect(items[items.length - 1]).not.toHaveProperty('behind')
+  })
+
+  it('a steer is drawn where the agent read it, and the next step starts a new work line', () => {
+    const s = steer('Use pnpm')
+    const before = [...start(), ev('tool.started', 't1', { callId: 'c1', title: 'Run tests' }), s, ev('tool.completed', 't1', { callId: 'c1' })]
+    const read = ev('turn.steered', 't1', { messageSeq: s.seq })
+    const items = buildTranscript([...before, read, ev('tool.started', 't1', { callId: 'c2', title: 'Install' })])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'user', 'work'])
+    expect(users(items)[1]).toMatchObject({ text: 'Use pnpm', at: read.createdAt })
+    expect(users(items)[1]).not.toHaveProperty('state')
+  })
+
+  it('of two steers, the one read moves and the other still waits, in order', () => {
+    const a = steer('First')
+    const items = buildTranscript([...start(), a, steer('Second'), ev('turn.steered', 't1', { messageSeq: a.seq })])
+    expect(users(items).map((u) => [u.text, u.state])).toEqual([
+      ['Fix it', undefined],
+      ['First', undefined],
+      ['Second', 'waiting'],
+    ])
+  })
+
+  it('a steer to a turn that has ended is drawn in place', () => {
+    const items = buildTranscript([...start(), ev('turn.completed', 't1'), steer('Late')])
+    expect(users(items)[1]).toMatchObject({ text: 'Late' })
+    expect(users(items)[1]).not.toHaveProperty('state')
+  })
+
+  it('steers not taken are read when their own turn ends, not another', () => {
+    const waiting = (end: string) =>
+      buildTranscript([...start(), steer('Use pnpm'), ev('message.received', 't2', { input: 'Other', delivery: 'queued' }), ev(end, 't2')])
+    expect(users(waiting('turn.completed')).find((u) => u.text === 'Use pnpm')).toMatchObject({ state: 'waiting' })
+    for (const end of ['turn.completed', 'turn.failed']) {
+      const items = buildTranscript([...start(), steer('Use pnpm'), ev(end, 't1')])
+      expect(users(items)[1]).not.toHaveProperty('state')
+    }
+  })
+
+  it('a stopped turn says Stopped, then the steers it did not take', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm'), ev('turn.cancelled', 't1')])
+    expect(items.slice(-2).map((i) => (i.kind === 'line' ? i.text : i.kind))).toEqual(['Stopped', 'user'])
+  })
+
+  it('a queued message is read when its own turn starts, or comes before Stopped when withdrawn', () => {
+    const queued = ev('message.received', 't2', { input: 'Next', delivery: 'queued' })
+    expect(buildTranscript([...start(), queued]).slice(-1)[0]).toMatchObject({ text: 'Next', state: 'next' })
+    const started = buildTranscript([...start(), queued, ev('turn.completed', 't1'), ev('turn.started', 't2')])
+    expect(users(started)[1]).not.toHaveProperty('state')
+    const withdrawn = buildTranscript([...start(), queued, ev('turn.cancelled', 't2')])
+    expect(withdrawn.slice(-2).map((i) => (i.kind === 'line' ? i.text : i.kind))).toEqual(['user', 'Stopped'])
+  })
+
+  it('a turn.steered for an unknown message changes nothing; a track agent’s note never waits', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm'), ev('turn.steered', 't1', { messageSeq: 999 })])
+    expect(items[items.length - 1]).toMatchObject({ state: 'waiting' })
+    const note = { ...steer('From the track'), actor: { id: 'agent', name: null, via: 'agent', client: null } } as ApiEvent
+    expect(buildTranscript([...start(), note]).slice(-1)[0]).toMatchObject({ kind: 'line', text: 'From the track' })
   })
 })

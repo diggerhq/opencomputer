@@ -95,7 +95,7 @@ describe('attaching', () => {
     ])
     expect(s.get().draftAttachments['t:cs_1']).toEqual(['at_1', 'at_2'])
     hold()
-    s.send('cs_1', 'look', 't:cs_1')
+    s.send('cs_1', 'look', { draftKey: 't:cs_1' })
     expect(calls[calls.length - 1]).toEqual({ name: 'send', args: ['cs_1', 'look', { ifBusy: undefined, attachments: ['at_1', 'at_2'] }] })
     expect(s.get().draftAttachments['t:cs_1']).toBeUndefined()
     s.close()
@@ -133,7 +133,7 @@ describe('attaching', () => {
   it('sends only the ids the client still holds, and none when none are held', async () => {
     const { s } = await open()
     s.attach('t:cs_1', [file('a.txt')])
-    s.send('cs_1', 'x', 't:cs_1')
+    s.send('cs_1', 'x', { draftKey: 't:cs_1' })
     expect(calls[calls.length - 1]).toMatchObject({ name: 'send', args: ['cs_1', 'x', { attachments: undefined }] })
     s.close()
   })

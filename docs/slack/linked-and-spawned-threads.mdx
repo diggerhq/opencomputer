@@ -37,7 +37,7 @@ Not in one-machine mode. Parameters: Agent tools.
 
 | Tool | What it does | Limits |
 | --- | --- | --- |
-| `read_thread` | Reads another session by its id (`cs_…`) or the link of the Slack thread it runs on: what was sent to it and what its agent said, over its last 20 turns. | Only this session, sessions it started, and its track's agent and threads. 60,000 characters. Never asks for approval. |
+| `read_thread` | Reads another session by its id (`cs_…`), its link from the web app, or the link of the Slack thread it runs on: what was sent to it and what its agent said, over its last 20 turns. | Only this session, sessions it started, and its track's agent and threads. 60,000 characters. Never asks for approval. |
 | `post_thread` | Posts a reply into another Slack thread for the owner. | Only from a session started in Slack, into a thread whose session `read_thread` could read. 4,000 characters. Asks for approval unless the mode is `bypassPermissions`. |
 
 `post_thread`:

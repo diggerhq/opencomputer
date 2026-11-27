@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { Suspense, useEffect, useState } from 'react'
 import {
   Link,
@@ -223,10 +224,12 @@ function ManagedProfileMenu({ onNavigate }: { onNavigate?: () => void }) {
           <KeyRound className="size-4 opacity-60" aria-hidden />
           API Keys
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => goTo('/billing')}>
-          <CreditCard className="size-4 opacity-60" aria-hidden />
-          Billing
-        </DropdownMenuItem>
+        {!SELFHOST && (
+          <DropdownMenuItem onClick={() => goTo('/billing')}>
+            <CreditCard className="size-4 opacity-60" aria-hidden />
+            Billing
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={() => goTo('/settings')}>
           <Settings className="size-4 opacity-60" aria-hidden />
           Settings

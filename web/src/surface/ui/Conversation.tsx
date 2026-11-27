@@ -1,5 +1,6 @@
 import {
   memo,
+  useMemo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -29,6 +30,7 @@ import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
 import { MEASURE } from './pane-classes'
 import { Rich } from './Rich'
+import { Tip } from './Tip'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
@@ -137,6 +139,10 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 const FOLD_BODY =
   'flex flex-col gap-1.5 border-l pl-3.5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground'
 
+// One fixed slot for a row's status icon, so the small working dot and the
+// chevron or check that replaces it take the same room and the text holds still.
+const SLOT = 'flex size-3.5 flex-none items-center justify-center'
+
 const FOLD =
   'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
@@ -144,17 +150,19 @@ function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground text-meta [&>svg]:text-faint flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground text-meta flex items-start gap-2',
         step.status === 'failed' && WARN,
       )}
     >
-      {step.status === 'running' ? (
-        <Mk mark="working" small />
-      ) : step.status === 'done' ? (
-        I.check
-      ) : (
-        <span>×</span>
-      )}
+      <span className={cn(SLOT, '[&>svg]:text-faint h-lh')}>
+        {step.status === 'running' ? (
+          <Mk mark="working" small />
+        ) : step.status === 'done' ? (
+          I.check
+        ) : (
+          '×'
+        )}
+      </span>
       <span className="min-w-0">
         <Rich text={step.title} />
         {step.status === 'failed' ? ' · failed' : ''}
@@ -185,6 +193,11 @@ function EntryView({ entry }: { entry: Entry }) {
   )
 }
 
+// What a running turn is doing: its latest step or thinking (a message it
+// left is already in view, or was).
+const current = (item: Extract<Item, { kind: 'work' }>) =>
+  [...item.entries].reverse().find((en) => en.kind !== 'text')
+
 // What the line says: once settled, how long the turn worked; while running,
 // what it is doing now.
 function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
@@ -195,7 +208,7 @@ function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
       return `Worked for ${formatDuration(item.ms)}`
     return n ? `Ran ${n} ${n === 1 ? 'step' : 'steps'}` : 'Thought'
   }
-  const now = item.entries[item.entries.length - 1]
+  const now = current(item)
   return (
     <>
       <span className="truncate">
@@ -203,8 +216,10 @@ function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
           <Rich text={now.title} />
         ) : now?.kind === 'thinking' && now.ms !== null ? (
           `Thought for ${seconds(now.ms)}`
-        ) : (
+        ) : now ? (
           'Thought'
+        ) : (
+          'Thinking'
         )}
       </span>
       <span className="flex-none">{counted}</span>
@@ -217,17 +232,19 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
     (en) => en.kind === 'step' && en.status === 'failed',
   ).length
   // The working mark is for a step running now, not for a turn that is waiting.
-  const last = item.entries[item.entries.length - 1]
+  const now = current(item)
   const running =
-    !item.settled && last?.kind === 'step' && last.status === 'running'
+    !item.settled && now?.kind === 'step' && now.status === 'running'
   return (
     <Collapsible className="-my-1 max-w-180">
       <CollapsibleTrigger className={FOLD}>
-        {running ? (
-          <Mk mark="working" small />
-        ) : (
-          <ChevronRight className="size-3.5 flex-none transition-transform group-data-[state=open]:rotate-90" />
-        )}
+        <span className={SLOT}>
+          {running ? (
+            <Mk mark="working" small />
+          ) : (
+            <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
+          )}
+        </span>
         {workLabel(item)}
         {failed > 0 && (
           <span className={cn(WARN, 'flex-none')}>· {failed} failed</span>
@@ -267,13 +284,15 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       data-subagent={sub.status}
     >
       <CollapsibleTrigger className={cn(FOLD, 'w-full')}>
-        {running ? (
-          <Mk mark="working" small />
-        ) : sub.status === 'completed' ? (
-          I.check
-        ) : (
-          <span className={cn(sub.status === 'failed' && WARN)}>×</span>
-        )}
+        <span className={cn(SLOT, sub.status === 'failed' && WARN)}>
+          {running ? (
+            <Mk mark="working" small />
+          ) : sub.status === 'completed' ? (
+            I.check
+          ) : (
+            '×'
+          )}
+        </span>
         <span className="text-foreground truncate font-medium">{sub.name}</span>
         {(sub.agentType || sub.background) && (
           <span className="flex-none">
@@ -328,12 +347,59 @@ const PENDING: Record<string, string> = {
   queued: 'Queued',
 }
 
+// Rows' one-line heights by kind, as drawn (with the gap between rows).
+const ESTIMATE: Partial<Record<Item['kind'], number>> = {
+  user: 60,
+  agent: 40,
+  work: 28,
+}
+
+// A reply, with a caret at the end of its last line while it streams: inside
+// the text, so the reply is as tall streaming as it is when complete.
+function Reply({ text, streaming }: { text: string; streaming: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (!streaming) return
+    const last = [
+      ...(ref.current?.querySelectorAll(
+        'p, li, h1, h2, h3, h4, h5, h6, pre, td',
+      ) ?? []),
+    ].pop()
+    last?.classList.add('caret-end')
+    return () => last?.classList.remove('caret-end')
+  }, [text, streaming])
+  return (
+    <div ref={ref} className="max-w-180">
+      <Rich text={text} size="reading" />
+    </div>
+  )
+}
+
+// A message is drawn as sent at once (B2): "Sending…" only once sending is
+// slow, so the usual echo, a moment later, changes nothing drawn.
+const SLOW_SEND_MS = 1500
+
+function useLate(on: boolean, ms: number): boolean {
+  const [late, setLate] = useState(false)
+  useEffect(() => {
+    if (!on) return
+    const t = setTimeout(() => setLate(true), ms)
+    return () => {
+      clearTimeout(t)
+      setLate(false)
+    }
+  }, [on, ms])
+  return on && late
+}
+
 // On the measure like the agent's text, so the reading edge stays put; a
 // quiet fill says whose turn it is.
 function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
-  const pending = item.state && PENDING[item.state]
+  const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
+  const pending =
+    item.state && (item.state !== 'sending' || slow) && PENDING[item.state]
   return (
-    <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
+    <div className="bg-foreground/7 dark:bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
       {(item.author || item.via) && (
         <div className="text-muted-foreground text-meta">
           {[item.author, item.via].filter(Boolean).join(' · ')}
@@ -359,6 +425,143 @@ function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   )
 }
 
+// ---- what the agent has not read yet (work 134) ----
+
+type UserItem = Extract<Item, { kind: 'user' }>
+
+// A waiting message offers to stop the agent once the wait is long enough to
+// notice: a step that has run this long may run for minutes.
+const LONG_WAIT_MS = 8_000
+
+function useNow(on: boolean, ms = 1000): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!on) return
+    const t = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(t)
+  }, [on, ms])
+  return now
+}
+
+// What waits by the composer: not read yet, or on its way to a working agent.
+const docked = (i: Item, working: boolean): i is UserItem =>
+  i.kind === 'user' &&
+  (i.state === 'waiting' ||
+    i.state === 'next' ||
+    (working && (i.state === 'sending' || i.state === 'queued')))
+
+function dock(
+  all: Item[],
+  working: boolean,
+): { items: Item[]; waiting: UserItem[] } {
+  const items: Item[] = []
+  const waiting: UserItem[] = []
+  for (const i of all) {
+    if (docked(i, working)) waiting.push(i)
+    else items.push(i)
+  }
+  return { items, waiting }
+}
+
+// Above the composer, in the order sent: each message the agent will read,
+// with what it waits on and a way to send it now.
+function Dock({ sid, items }: { sid: string; items: UserItem[] }) {
+  const surface = useSurface()
+  const now = useNow(items.some((i) => i.behind))
+  // One "Send now" for the stack: it stops the turn, and every waiting message goes in.
+  const last = items[items.length - 1]
+  return (
+    <div
+      className={cn('flex flex-none flex-col gap-1.5 pt-2', MEASURE)}
+      data-dock
+    >
+      {items.map((item) => (
+        <Waiting
+          key={item.key}
+          item={item}
+          now={now}
+          action={item === last && item.state !== 'sending'}
+          onSendNow={() => surface.stop(sid)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function Waiting({
+  item,
+  now,
+  action,
+  onSendNow,
+}: {
+  item: UserItem
+  now: number
+  action: boolean
+  onSendNow: () => void
+}) {
+  const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
+  // From when it began waiting: the later of the step's start and its own.
+  const waited = item.behind
+    ? now - Math.max(Date.parse(item.behind.since), Date.parse(item.at))
+    : 0
+  const long = waited >= LONG_WAIT_MS
+  const status =
+    item.state === 'sending'
+      ? slow
+        ? 'Sending…'
+        : 'Sent'
+      : item.state === 'queued'
+        ? 'Queued · the computer is starting'
+        : item.state === 'next'
+          ? 'Read when this turn ends'
+          : item.behind
+            ? null
+            : 'Read at the next step'
+  return (
+    <div
+      className="border-border/80 max-w-180 rounded-lg border border-dashed px-3.5 py-2.5"
+      data-waiting={item.state}
+    >
+      {(item.author || item.via) && (
+        <div className="text-muted-foreground text-meta">
+          {[item.author, item.via].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div className="text-foreground/80 line-clamp-3">
+        <Rich text={item.text} size="reading" />
+      </div>
+      <div className="text-faint text-meta mt-1.5 flex min-h-6 items-center gap-2">
+        <Mk mark="working" small />
+        <span className="min-w-0 flex-1 truncate">
+          {status ?? (
+            <>
+              Waits for <Rich text={item.behind!.title} />
+              {long && (
+                <span className="tabular-nums">
+                  {' '}
+                  · {formatDuration(waited)}
+                </span>
+              )}
+            </>
+          )}
+        </span>
+        {action && (
+          <Tip label="Stop the current step so the agent reads this now (⌘↵ or Ctrl+↵ when sending)">
+            <Button
+              size="xs"
+              variant={long ? 'secondary' : 'ghost'}
+              className="text-meta h-6 flex-none"
+              onClick={onSendNow}
+            >
+              Send now
+            </Button>
+          </Tip>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
 // is a new object with the same fields: compare those.
 const sameItem = (a: { item: Item }, b: { item: Item }) => {
@@ -375,11 +578,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'user':
       return <UserTurn item={item} />
     case 'agent':
-      return (
-        <div className="max-w-180">
-          <Rich text={item.text} size="reading" />
-        </div>
-      )
+      return <Reply text={item.text} streaming={!!item.streaming} />
     case 'work':
       return <Work item={item} />
     case 'ask':
@@ -425,7 +624,13 @@ function Transcript(props: {
   id?: string
 }) {
   const { sid, trackId, children, id } = props
-  const { items, open } = useConversation(sid, trackId)
+  const convo = useConversation(sid, trackId)
+  // What the agent has not read yet waits by the composer, and joins the
+  // conversation where the agent reads it (work 134).
+  const { items, waiting } = useMemo(
+    () => dock(convo.items, convo.working),
+    [convo.items, convo.working],
+  )
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   // Distance from the end to hold when earlier items are revealed above.
@@ -449,7 +654,13 @@ function Transcript(props: {
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
-    estimateSize: (i) => (rows[i].day ? 20 : 72),
+    // A row's height before it is drawn: its kind's one-line height, so a
+    // new row (a reply's first words) mounts at about its size, and following
+    // the end does not overshoot and come back once it is measured.
+    estimateSize: (i) => {
+      const r = rows[i]
+      return r.day ? 36 : (r.item && ESTIMATE[r.item.kind]) || 72
+    },
     getItemKey: (i) => rows[i].key,
     // The list starts below the pane's padding and "Show earlier", which is
     // not counted: the rows drawn either side of the view cover it.
@@ -529,64 +740,61 @@ function Transcript(props: {
   }
 
   return (
-    <div
-      className={cn(
-        "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
-        MEASURE,
-      )}
-      id={id}
-      ref={ref}
-      onScroll={onScroll}
-    >
-      {items.length > n && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="flex-none self-center"
-          onClick={() => {
-            const el = ref.current
-            if (el) hold.current = el.scrollHeight - el.scrollTop
-            setN(n + PAGE)
-          }}
-        >
-          Show earlier
-        </Button>
-      )}
-      {rows.length > 0 && (
-        <div
-          className="relative flex-none"
-          style={{ height: v.getTotalSize() }}
-        >
-          {v.getVirtualItems().map((it) => {
-            const row = rows[it.index]
-            return (
-              <div
-                key={it.key}
-                ref={v.measureElement}
-                data-index={it.index}
-                className={cn(
-                  'absolute top-0 left-0 flex w-full flex-col',
-                  it.index > 0 && 'pt-4',
-                )}
-                style={{ transform: `translateY(${it.start}px)` }}
-              >
-                {row.item ? (
-                  <ItemView item={row.item} />
-                ) : (
-                  <DayLine at={row.day!} />
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-      {open?.text ? (
-        <div className="max-w-180">
-          <Rich text={open.text} size="reading" />
-          <span className="bg-foreground/55 ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[1px] align-[-2px]" />
-        </div>
-      ) : null}
-      {children}
-    </div>
+    <>
+      <div
+        className={cn(
+          "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
+          MEASURE,
+        )}
+        id={id}
+        ref={ref}
+        onScroll={onScroll}
+      >
+        {items.length > n && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-none self-center"
+            onClick={() => {
+              const el = ref.current
+              if (el) hold.current = el.scrollHeight - el.scrollTop
+              setN(n + PAGE)
+            }}
+          >
+            Show earlier
+          </Button>
+        )}
+        {rows.length > 0 && (
+          <div
+            className="relative flex-none"
+            style={{ height: v.getTotalSize() }}
+          >
+            {v.getVirtualItems().map((it) => {
+              const row = rows[it.index]
+              return (
+                <div
+                  key={it.key}
+                  ref={v.measureElement}
+                  data-index={it.index}
+                  className={cn(
+                    'absolute top-0 left-0 flex w-full flex-col',
+                    it.index > 0 && 'pt-4',
+                  )}
+                  style={{ transform: `translateY(${it.start}px)` }}
+                >
+                  {row.item ? (
+                    <ItemView item={row.item} />
+                  ) : (
+                    <DayLine at={row.day!} />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {children}
+      </div>
+      {waiting.length > 0 && <Dock sid={sid} items={waiting} />}
+    </>
   )
 }

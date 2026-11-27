@@ -7,6 +7,7 @@ import {
   type UpgradePlanId,
   type UsagePlanId,
 } from '@/lib/billing-onramp'
+import { SELFHOST } from '@/lib/selfhost'
 
 export interface CreditState {
   billing: AutumnBilling | undefined
@@ -30,6 +31,8 @@ export function useCreditState(): CreditState {
   const { data } = useQuery({
     queryKey: ['autumn-billing'],
     queryFn: getAutumnBilling,
+    // The self-hosted build has no billing: never halted, nothing to poll.
+    enabled: !SELFHOST,
     retry: false,
     refetchInterval: (q) => (q.state.error ? false : 30_000),
   })

@@ -70,6 +70,9 @@ export function TrackPane({ tid }: { tid: string }) {
             onSelect: () => surface.trackKeep(tid, !track.keep),
           },
         ]),
+    ...(surface.canLink
+      ? [{ label: 'Copy link', onSelect: () => surface.copyLink({ track: tid }) }]
+      : []),
     'sep',
     {
       label: 'Dissolve track',
@@ -263,7 +266,9 @@ function Activity({ track }: { track: TrackView }) {
       <Composer
         draftKey={`k:${tid}`}
         placeholder="Message this track…"
-        onSend={(text) => surface.send(track.agentSession, text, `k:${tid}`)}
+        onSend={(text, e) =>
+          surface.send(track.agentSession, text, { now: e.meta, draftKey: `k:${tid}` })
+        }
         className={COMPOSER}
         tools={
           track.agent &&

@@ -60,6 +60,11 @@ describe("managedModelRoute", () => {
     expect(listsProfile([], "openrouter")).toBe(false);
   });
 
+  it("routes a self-hosted organization's Anthropic key or Claude subscription token on its own profile", async () => {
+    expect((await managedModelRoute("sk-ant-api03-org", env, undefined)).route).toMatchObject({ mode: "profile", profile: "anthropic-key", vars: { token: "sk-ant-api03-org" } });
+    expect((await managedModelRoute("sk-ant-oat01-org", env, undefined)).route).toMatchObject({ mode: "profile", profile: "claude-oauth", vars: { token: "sk-ant-oat01-org" } });
+  });
+
   it("refuses when there is no managed credential at all", async () => {
     expect(await managedModelRoute(null, {}, LISTED)).toEqual({ route: { mode: "refuse", reason: NO_MODEL_CREDENTIAL }, fallback: true });
   });

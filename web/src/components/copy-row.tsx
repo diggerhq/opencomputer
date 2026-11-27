@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Check, Copy, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useTransientFlag } from '@/lib/use-transient-flag'
-import { notifyError } from '@/lib/errors'
+import { useCopy } from '@/lib/use-copy'
 import { cn } from '@/lib/utils'
 
 /**
@@ -95,27 +94,11 @@ export function CopyCommand({
   )
 }
 
-function CopyLabel({ copied }: { copied: boolean }) {
+export function CopyLabel({ copied }: { copied: boolean }) {
   return (
     <>
       {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       {copied ? 'Copied' : 'Copy'}
     </>
   )
-}
-
-/** Copy to the clipboard; "Copied" only once the write succeeds (the
- * clipboard can be blocked by permissions or an insecure context). */
-function useCopy(text: string, onCopy?: () => void) {
-  const [copied, markCopied] = useTransientFlag(1500)
-  const copy = () => {
-    void navigator.clipboard.writeText(text).then(
-      () => {
-        markCopied()
-        onCopy?.()
-      },
-      (e: unknown) => notifyError("Couldn't copy to clipboard.", e),
-    )
-  }
-  return [copied, copy] as const
 }

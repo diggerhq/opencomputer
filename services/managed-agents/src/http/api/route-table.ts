@@ -34,6 +34,7 @@ function workRoute(method: string, s: string[]): Route | null {
     case "results":
       if (is("GET", 3) && c === "diff") return { op: "work.diff", sub: b! };
       if (is("GET", 3) && c === "review") return { op: "work.review", sub: b! };
+      if (is("GET", 3) && c === "file") return { op: "work.file", sub: b! };
       return null;
     case "overview":
       return is("GET", 1) ? { op: "work.overview" } : null;
@@ -149,6 +150,6 @@ export const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
+  "live", "work.tell", "work.diff", "work.file", "slack.post", "settings.get", "settings.patch",
   "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.content",
 ]);

@@ -36,6 +36,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "lucide-react": "^1.21.0",
+    "mermaid": "^11.17.2",
     "node-diff3": "^4.0.0",
     "posthog-js": "^1.395.0",
     "radix-ui": "^1.6.0",
