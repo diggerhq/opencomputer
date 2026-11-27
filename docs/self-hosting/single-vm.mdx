@@ -11,14 +11,6 @@ Everything runs on one VM:
 - **The host agent** runs on the same VM. Each session runs in its own rootless Podman container.
 - **`/setup`** is a browser page where you add the Claude credential, connect the host and connect Slack.
 
-## Limits
-
-- **One VM, one organization.** It has no horizontal scaling and no high availability. Every session shares the VM's CPU, memory and disk.
-- **The gateway's state is not production-grade.** Durable Objects, D1, R2 and KV are emulated locally in one Podman volume. If you lose the volume, you lose the gateway's state, so back it up.
-- **While the gateway is down, requests fail.** This covers Slack events and API calls. Nothing queues them.
-- **People can't be invited yet.** There are no email invites and no member list. SSO sign-in isn't available, SAML isn't available, and GitHub App installations aren't available. `/setup` stores the SSO and GitHub App settings, but nothing uses them. The operator signs in with `SETUP_TOKEN`. Once Slack is connected, everyone in the workspace can use @computer from Slack.
-- **There are no previews and no web dashboard.** You use @computer through Slack and the API.
-
 ## Requirements
 
 - **Ubuntu 24.04 on x86-64.** The host installer refuses arm64, and it refuses other distributions. Ubuntu 22.04 works only with Podman 4.7 or newer and `passt`.
@@ -108,7 +100,7 @@ The page has these sections:
 
 1. **Claude credential** (required). Paste the key or token. It is stored encrypted and is never shown again. Sessions never see it: only the host's model proxy uses it.
 2. **Host** (required). It shows **connected** once step 4 is done. Select **I'll connect the host later** to finish without it.
-3. **People.** Nothing to set up yet. See [Limits](#limits).
+3. **People.** Nothing to set up yet.
 4. **Slack app** (optional). See [Slack](#slack).
 5. **SSO** (optional). OIDC and WorkOS settings are stored only.
 6. **GitHub App** (optional). Stored only.
