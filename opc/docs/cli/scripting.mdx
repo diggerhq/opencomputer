@@ -45,7 +45,7 @@ opc: session cs_7f3a9k2m4q8r1t6v turn tn_4m8q2x7c1v9b https://app.opencomputer.d
 In `stream-json`, the first line on standard output carries the same:
 
 ```json
-{"type":"system","subtype":"init","sessionId":"cs_7f3a9k2m4q8r1t6v","turnId":"tn_4m8q2x7c1v9b","url":"https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v","settings":{"model":"claude-opus-5-5","effort":"high","mode":"auto"}}
+{"type":"system","subtype":"init","sessionId":"cs_7f3a9k2m4q8r1t6v","turnId":"tn_4m8q2x7c1v9b","url":"https://app.opencomputer.dev/computer/sessions/cs_7f3a9k2m4q8r1t6v","settings":{"model":"claude-opus-5-5","effort":"high","mode":"bypassPermissions"}}
 ```
 
 So a script that is killed, or gives up, still knows which session to return to. With `--push`, the uploads come before the send, so `opc` first writes `opc: session <id> <url>` as soon as the session exists, then the full line once the message is sent. The `init` line comes after the send, because it carries the turn id.
@@ -141,7 +141,7 @@ In the JSON formats, the Result on standard output has `status: "waiting"` and t
 | `dismiss` | Dismiss it with the message "running unattended" and carry on. The agent decides how to go on, for an approval as if denied. |
 | `wait` | Keep waiting until someone answers it elsewhere, up to `--timeout` |
 
-A [permission mode](/concepts#settings) decides only whether approvals open. Questions and secret requests can open in every mode. When nobody will be there, run with a mode that does not ask for approval, such as `--mode auto` or `--mode dontAsk`, and choose `--on-ask` for the rest. `--mode acceptEdits` still asks before running commands, so a task that runs tests stops with exit `5` there.
+A [permission mode](/concepts#settings) decides only whether approvals open. Questions and secret requests can open in every mode. When nobody will be there, run in `bypassPermissions`, the default for new sessions, which never asks for approval, and choose `--on-ask` for the rest. `--mode acceptEdits` and `--mode default` still ask before running commands, so a task that runs tests stops with exit `5` there.
 
 Asks can also be listed and answered from another process, with the same [Ask](/api/reference/objects#ask) objects the API returns:
 
@@ -272,7 +272,7 @@ set -euo pipefail
 name=$(basename "$PWD")
 rev=$(git rev-parse HEAD)
 
-out=$(opc -p --push . --mode auto --on-ask dismiss --output-format json \
+out=$(opc -p --push . --mode bypassPermissions --on-ask dismiss --output-format json \
   --idempotency-key "fix-tests-$name-$rev" \
   --metadata repo="$name" --metadata rev="$rev" \
   "make the tests in ./$name pass; do not commit")
@@ -282,7 +282,7 @@ opc pull -s "$id" "$name" ./fixed
 jq -r .result <<<"$out"
 ```
 
-`--mode auto` runs the tests without asking for approval, and `--on-ask dismiss` carries on past a question nobody can answer, so the script never stops with exit `5`. Run again for the same commit, it re-attaches to the same turn.
+`--mode bypassPermissions` runs the tests without asking for approval, and `--on-ask dismiss` carries on past a question nobody can answer, so the script never stops with exit `5`. Run again for the same commit, it re-attaches to the same turn.
 
 ## Exit codes
 

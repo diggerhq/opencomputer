@@ -76,8 +76,6 @@ Each session has a **model**, an **effort** level, a **speed** and a **permissio
 | `default` | asks before running commands and editing files that need approval | Approvals, questions, secret requests |
 | `acceptEdits` | edits files freely and asks before running commands that need approval | Approvals for commands, questions, secret requests |
 | `plan` | reads and plans, and changes nothing until you approve the plan | Approval of the plan, questions, secret requests |
-| `auto` | runs without asking for approval; a safety check blocks risky actions instead of asking about them | Questions, secret requests |
-| `dontAsk` | never asks for approval, and skips actions that would need it | Questions, secret requests |
 | `bypassPermissions` | never asks for approval and runs everything. The default for new sessions, as in Slack. | Questions, secret requests |
 
 A permission mode decides approvals only. Questions and secret requests can open in every mode, because only a person can answer them. In a script, `opc -p --on-ask` decides what happens when one opens.
