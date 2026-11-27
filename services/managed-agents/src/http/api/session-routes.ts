@@ -9,6 +9,7 @@ import type { Principal } from "../../auth/principal.js";
 import { cursor } from "../../durable/cursor.js";
 import { firstTurnId, isSessionId } from "../../ids/session-ids.js";
 import { slackPost, tellTrack } from "./agent-posts.js";
+import { resultMerge, resultRevert, seedPull } from "./result-merge.js";
 import { liveUpgrade } from "./live-upgrade.js";
 import { logRefusalOf, refusalOf, strip, type LogRefused, type Reply } from "./reply.js";
 import { asObject, bodyOf, intParam } from "./request-body.js";
@@ -51,7 +52,7 @@ function withSummary(session: SessionRow, summary: LogSummary | null): SessionRo
 }
 
 /** A route of spec 37 served by the actors, as the principal; `routeApi` checked its scope and Idempotency-Key. */
-export async function actorRoute(request: Request, env: ResultDiffEnv, p: Principal, person: CreateSession["person"], route: Route, idem: string | undefined, out: Reply): Promise<Response> {
+export async function actorRoute(request: Request, env: ResultDiffEnv, p: Principal, person: CreateSession["person"], route: Route, idem: string | undefined, out: Reply, waitUntil?: (promise: Promise<unknown>) => void): Promise<Response> {
   const rawTrace = request.headers.get("x-oc-trace");
   const trace = rawTrace && TRACE.test(rawTrace) ? rawTrace : undefined;
   const query = new URL(request.url).searchParams;
@@ -104,6 +105,10 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       return tellTrack(request, env, p, idem, trace, org, out);
     case "work.diff":
       return resultDiff(request, env, p, route.sub!, org, out);
+    case "work.merge":
+      return resultMerge({ request, env, p, person, resultId: route.sub!, idem, trace, org, out, waitUntil });
+    case "work.revert":
+      return resultRevert({ request, env, p, person, resultId: route.sub!, idem, trace, org, out, waitUntil });
     case "work.file":
       return resultFile(request, env, p, route.sub!, org, out);
     case "slack.post":
@@ -117,7 +122,12 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       return r.ok ? out.send(200, { settings: r.settings }) : refusalOf(out, r);
     }
   }
-  if (!route.sessionId) return orgRoute(request, p, person, route, query, idem, trace, org, out);
+  if (!route.sessionId) {
+    const response = await orgRoute(request, p, person, route, query, idem, trace, org, out);
+    // A pull request just added is read from GitHub once (result-merge.ts), after the reply.
+    if (route.name === "result.add" && response.ok && waitUntil) waitUntil(seedPull(env, p, route.args!.resultId!, org, out.requestId).catch(() => undefined));
+    return response;
+  }
 
   const sessionId = route.sessionId;
   if (!isSessionId(sessionId)) return out.error(404, "session_not_found", "No such session.");

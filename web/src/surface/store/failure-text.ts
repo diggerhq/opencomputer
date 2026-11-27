@@ -34,6 +34,31 @@ export function sayFailure(f: Pick<Failure, 'code' | 'reason'>): string {
   return f.reason || CODES[f.code] || f.code
 }
 
+// Why a pull request was not merged, or its merge not reverted (work 118).
+const MERGE: Record<string, string> = {
+  changed: 'it changed since you looked',
+  conflicts: 'it conflicts with its base branch',
+  draft: 'it is a draft',
+  closed: 'it is closed',
+  not_merged: 'it is not merged',
+  stale: 'that click was a while ago, so merge again if you still mean it',
+  checks_failing: 'a check did not pass',
+  checks_running: 'its checks are still running',
+  merging: 'someone else is merging it',
+  writers_only: 'only people who can write to this thread can merge it',
+  github_not_connected: 'GitHub is not connected',
+}
+export function sayMergeFailure(f: Pick<Failure, 'code' | 'reason' | 'detail'>): string {
+  const { message, check } = (f.detail ?? {}) as { message?: unknown; check?: unknown }
+  if (f.reason === 'checks_failing' && typeof check === 'string') return `its check “${check}” did not pass`
+  if (f.reason === 'checks_running' && typeof check === 'string') return `its check “${check}” is still running`
+  const said = MERGE[f.reason] ?? MERGE[f.code]
+  if (said) return said
+  // GitHub's own words: a rule of the repository, a failing required check.
+  if (f.reason === 'blocked' && typeof message === 'string') return `GitHub said “${message.replace(/\.$/, '')}”`
+  return sayFailure(f)
+}
+
 const SAID: Partial<Record<string, string>> = {
   'thread.done': 'Could not mark it done',
   'thread.place': 'Could not move it',
@@ -41,6 +66,8 @@ const SAID: Partial<Record<string, string>> = {
   'track.create': 'Could not make the track',
   'doc.save': 'Could not save the Doc',
   undo: 'Could not undo that',
+  'result.merge': 'Not merged',
+  'result.revert': 'Could not revert the merge',
 }
 // What did not go through, as the start of the toast.
 export function whatFailed(e: Pending): string {

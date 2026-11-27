@@ -16,7 +16,7 @@ const EXISTING: string[] = [
   "http/agent-body.ts -> actors/computer/held-for-org/model-access/model-access.ts (reaches into an actor past its contract)",
   "http/api/dispatch.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
   "http/api/dispatch.ts -> actors/computer/held-for-org/secrets/secrets-store.ts (reaches into an actor past its contract)",
-  "http/api/result-diff.ts -> actors/computer/held-for-org/github.ts (reaches into an actor past its contract)",
+  "http/api/pull-access.ts -> actors/computer/held-for-org/github.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/computer/config.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/computer/durable-object.ts (reaches into an actor past its contract)",
   "http/computer-objects.ts -> actors/connect-codes/codes.ts (reaches into an actor past its contract)",
