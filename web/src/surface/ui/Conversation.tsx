@@ -334,7 +334,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return (
         <div
           className={cn(
-            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-xl rounded-br-sm px-3 py-2',
+            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-2xl rounded-br-sm px-3.5 py-2',
             (item.state === 'sending' || item.state === 'queued') &&
               'opacity-60',
           )}
@@ -344,7 +344,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
               {[item.author, item.via].filter(Boolean).join(' · ')}
             </div>
           )}
-          <Rich text={item.text} />
+          <Rich text={item.text} size="reading" />
           {item.state === 'failed' && (
             <div className={cn(WARN, 'mt-1 text-xs')}>
               Not sent{item.reason ? ` · ${item.reason}` : ''}
@@ -355,7 +355,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'agent':
       return (
         <div className="max-w-180">
-          <Rich text={item.text} />
+          <Rich text={item.text} size="reading" />
         </div>
       )
     case 'work':
@@ -376,7 +376,7 @@ type Row = { key: string; day?: string; item?: Item }
 
 function DayLine({ at }: { at: string }) {
   return (
-    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-[11.5px] font-medium after:h-px after:flex-1 after:content-['']">
+    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
       {dayLabel(at)}
     </div>
   )

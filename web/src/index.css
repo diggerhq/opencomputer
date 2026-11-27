@@ -47,6 +47,15 @@
   /* Headings use the UI sans (Inter) — serif felt out of place in the app. */
   --font-heading: var(--font-sans);
 
+  /* Type sizes beyond Tailwind's scale. reading: agent replies and the
+     person's messages in a thread, read for long stretches. mono: code at
+     that size, a step under it. (Register new names in lib/utils.ts too.) */
+  --text-reading: 15px;
+  --text-reading--line-height: 24px;
+  --text-reading--letter-spacing: -0.005em;
+  --text-mono: 13px;
+  --text-mono--line-height: 21px;
+
   /* shadcn semantic colors -> our tokens */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -60,6 +69,8 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-strong: var(--strong);
+  --color-faint: var(--faint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -157,10 +168,13 @@
   --accent: hsl(40 22% 94%);
   --accent-foreground: hsl(45 8% 8%);
 
-  /* Text ramp (verified on paper) */
+  /* Text ramp (verified on paper): strong for headings and bold, foreground
+     for body, muted for secondary, faint for meta only. */
+  --strong: hsl(45 10% 6%);
   --muted-foreground: hsl(
     40 5% 38%
   ); /* secondary text — ~5.4:1 on paper (site's 53% fails AA) */
+  --faint: hsl(40 4% 44%); /* ~4.7:1 on paper */
 
   /* Lines + focus */
   --border: hsl(40 14% 87%);
@@ -219,65 +233,67 @@
 }
 
 /* Dark theme — the warm-light palette inverted, not a generic cool-dark.
-   Hues stay at 36–40 (paper/ink warmth) and the ramp is lifted off pure
-   black (bg ~12%) so the shell reads as the same product at night rather
-   than a void; surfaces go background → panel → inset as *lighter*
-   steps (light mode's inset-darker relationship mirrors to raised-darker).
-   Status solids brighten for AA text on their now-dark tints; code and
-   terminal surfaces keep their existing warm-dark values since they're
-   already the app's own dark. */
+   Hues stay at 36–40 (paper/ink warmth) with saturation down to 4–6%, so it
+   reads as graphite rather than brown. The shell sits at ~7.5% and surfaces
+   go background → panel → inset as *lighter* steps (light mode's
+   inset-darker relationship mirrors to raised-darker). Body text is held at
+   ~13:1 rather than near-white to cut glare; headings and bold take the
+   brighter --strong. Status tints stay a step off the shell — a tint of the
+   hue, not a slab of it. Work doc 127 has the audit behind these values. */
 .dark {
   color-scheme: dark;
 
-  --background: hsl(36 8% 12%);
-  --foreground: hsl(40 12% 90%);
+  --background: hsl(36 5% 7.5%);
+  --foreground: hsl(38 13% 84%); /* ~13:1 */
+  --strong: hsl(38 17% 91%); /* ~15:1 */
 
-  --card: hsl(36 7% 15%);
-  --card-foreground: hsl(40 12% 90%);
-  --popover: hsl(36 7% 15%);
-  --popover-foreground: hsl(40 12% 90%);
-  --panel: hsl(36 7% 15%);
-  --panel-2: hsl(36 6% 18%);
+  --card: hsl(40 6% 10%);
+  --card-foreground: hsl(38 13% 84%);
+  --popover: hsl(40 6% 10%);
+  --popover-foreground: hsl(38 13% 84%);
+  --panel: hsl(40 6% 10%);
+  --panel-2: hsl(40 5% 12.7%);
 
-  --secondary: hsl(36 6% 19%);
-  --secondary-foreground: hsl(40 12% 90%);
-  --muted: hsl(36 6% 19%);
-  --accent: hsl(36 6% 19%);
-  --accent-foreground: hsl(40 12% 90%);
+  --secondary: hsl(40 5% 12.7%);
+  --secondary-foreground: hsl(38 13% 84%);
+  --muted: hsl(40 5% 12.7%);
+  --accent: hsl(40 5% 12.7%);
+  --accent-foreground: hsl(38 13% 84%);
 
-  --muted-foreground: hsl(40 6% 62%); /* ~6:1 on background */
+  --muted-foreground: hsl(40 6% 60%); /* ~6.6:1 on background */
+  --faint: hsl(38 4% 50%); /* ~4.8:1: meta only */
 
-  --border: hsl(36 6% 22%);
-  --input: hsl(36 6% 28%);
-  --ring: hsl(40 8% 60%);
+  --border: hsl(40 5% 15.7%);
+  --input: hsl(40 6% 21%);
+  --ring: hsl(40 5% 52%);
 
-  --row-hover: hsl(36 6% 17%);
-  --row-selected: hsl(36 7% 21%);
+  --row-hover: hsl(40 5% 10.8%);
+  --row-selected: hsl(40 4% 14.3%);
 
-  --primary: hsl(40 12% 90%);
-  --primary-foreground: hsl(36 8% 12%);
+  --primary: hsl(38 17% 91%);
+  --primary-foreground: hsl(36 5% 7.5%);
 
   --destructive: hsl(0 62% 50%);
   --destructive-foreground: hsl(0 0% 100%);
 
   --status-running: hsl(142 55% 50%);
-  --status-running-bg: hsl(142 30% 16%);
+  --status-running-bg: hsl(142 25% 10%);
   --status-stopped: hsl(40 6% 65%);
-  --status-stopped-bg: hsl(40 8% 19%);
+  --status-stopped-bg: hsl(40 5% 12.7%);
   --status-hibernated: hsl(222 65% 70%);
-  --status-hibernated-bg: hsl(222 30% 19%);
+  --status-hibernated-bg: hsl(222 25% 12%);
   --status-error: hsl(0 70% 65%);
-  --status-error-bg: hsl(0 35% 19%);
-  --status-pending: hsl(38 85% 60%);
-  --status-pending-bg: hsl(38 40% 18%);
+  --status-error-bg: hsl(0 30% 11%);
+  --status-pending: hsl(36 77% 60%);
+  --status-pending-bg: hsl(37 25% 10%);
 
   /* Code blocks sit a step above the shell bg so they still read as a
-     distinct surface; the terminal stays near-black (recessed). */
-  --code: hsl(36 8% 15%);
+     distinct surface; the terminal stays below it (recessed). */
+  --code: hsl(40 6% 10%);
   --code-foreground: hsl(40 12% 88%);
   --code-muted: hsl(40 6% 54%);
-  --code-border: hsl(36 7% 22%);
-  --terminal: hsl(36 13% 8%);
+  --code-border: hsl(40 5% 15.7%);
+  --terminal: hsl(40 4% 5.7%);
 
   /* Charts — neutral paper ramp (dark → light), inverted from light mode */
   --chart-1: hsl(40 12% 85%);
@@ -286,11 +302,11 @@
   --chart-4: hsl(36 6% 36%);
   --chart-5: hsl(36 6% 26%);
 
-  --sidebar: hsl(36 8% 10%);
-  --sidebar-foreground: hsl(40 12% 90%);
-  --sidebar-border: hsl(36 6% 22%);
-  --sidebar-accent: hsl(36 6% 18%);
-  --sidebar-accent-foreground: hsl(40 12% 90%);
+  --sidebar: hsl(40 4% 5.7%);
+  --sidebar-foreground: hsl(38 13% 84%);
+  --sidebar-border: hsl(40 4% 13%);
+  --sidebar-accent: hsl(40 5% 12.7%);
+  --sidebar-accent-foreground: hsl(38 13% 84%);
 
   /* Overlays need real elevation on dark — the light-tinted shadow is
      invisible against a dark shell. */
