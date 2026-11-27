@@ -69,7 +69,7 @@ describe('review_summary', () => {
 describe('fileResult', () => {
   const rigFile = () => {
     const calls: Array<{ path: string; o: { body: Record<string, unknown>; key: string } }> = [];
-    const w: Work = { api: { call: async (_m, p, o) => (calls.push({ path: p, o: o as never }), { protocol: 1 }) }, session: () => ({ id: 'cs_0000000000000001' }) as never };
+    const w: Work = { api: { call: async (_m, p, o) => (calls.push({ path: p, o: o as never }), { protocol: 1 }), stream: async () => Promise.reject(new Error('unused')) }, session: () => ({ id: 'cs_0000000000000001' }) as never };
     return { w, calls };
   };
 
