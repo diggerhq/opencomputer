@@ -32,7 +32,7 @@ Where there is no person to confirm a login, give `opc` an API key. For the comm
         OPENCOMPUTER_API_KEY: ${{ secrets.OPENCOMPUTER_API_KEY }}
       run: |
         curl -fsSL https://raw.githubusercontent.com/diggerhq/opencomputer/main/opc/ci/install.sh | sh
-        ~/.local/bin/opc -p --mode auto --on-ask dismiss --timeout 20m \
+        ~/.local/bin/opc -p --mode bypassPermissions --on-ask dismiss --timeout 20m \
           --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-fix-tests" \
           --metadata repo="$GITHUB_REPOSITORY" --metadata run="$GITHUB_RUN_ID" \
           "the nightly run $GITHUB_RUN_ID failed; find the cause and open a PR with a fix"
@@ -54,7 +54,7 @@ With any JSON output format, errors are printed to standard error as `{"error": 
 
 ## Asks in unattended runs
 
-Nobody is there to answer an [ask](/terminal/asks), so by default `opc -p` exits with code `5` when one opens, and prints the `opc ask` commands that would answer it. Choose a permission mode that does not ask for approval: `--mode auto` runs without asking and blocks risky actions, `--mode dontAsk` skips what would need approval. `--mode acceptEdits` still asks before running commands, so a job that runs tests would stop. Questions and secret requests can open in every mode: `--on-ask dismiss` carries on without them, and `--on-ask wait` waits for someone to answer elsewhere, up to `--timeout`. See [When the agent needs a person](/cli/scripting#when-the-agent-needs-a-person).
+Nobody is there to answer an [ask](/terminal/asks), so by default `opc -p` exits with code `5` when one opens, and prints the `opc ask` commands that would answer it. New sessions start in `bypassPermissions`, which never asks for approval; leave out `--mode` or pass `--mode bypassPermissions`. `--mode acceptEdits` and `--mode default` still ask before running commands, so a job that runs tests would stop. Questions and secret requests can open in every mode: `--on-ask dismiss` carries on without them, and `--on-ask wait` waits for someone to answer elsewhere, up to `--timeout`. See [When the agent needs a person](/cli/scripting#when-the-agent-needs-a-person).
 
 ## Connections
 

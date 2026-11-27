@@ -36,14 +36,14 @@ The objects are the API's, in camelCase, with every documented field present. Th
 ## A CI job that fixes the tests
 
 ```bash
-opc -p --push . --mode auto --on-ask dismiss --timeout 30m --output-format json \
+opc -p --push . --mode bypassPermissions --on-ask dismiss --timeout 30m --output-format json \
   --idempotency-key "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-fix-tests" \
   --metadata repo="$GITHUB_REPOSITORY" --metadata run="$GITHUB_RUN_ID" \
   "make the tests in ./$(basename "$PWD") pass and open a pull request" > result.json
 jq -r .result result.json
 ```
 
-`--mode auto` runs the tests without approvals, `--on-ask dismiss` carries on past a question, and the idempotency key makes a retry within the same workflow attempt re-attach to the same turn. Exit `0` means the turn completed. See [CI and agents](/cli/ci) for the key.
+`--mode bypassPermissions` runs the tests without approvals, `--on-ask dismiss` carries on past a question, and the idempotency key makes a retry within the same workflow attempt re-attach to the same turn. Exit `0` means the turn completed. See [CI and agents](/cli/ci) for the key.
 
 ## An orchestrator that fans out
 
@@ -53,7 +53,7 @@ Ten sessions, one per repository, tagged so they can be found again from anywher
 batch="deps-2026-10-26"
 ids=()
 while read -r repo; do
-  ids+=("$(opc new --mode auto --metadata batch="$batch" --metadata repo="$repo" \
+  ids+=("$(opc new --mode bypassPermissions --metadata batch="$batch" --metadata repo="$repo" \
     --idempotency-key "$batch-$repo" "update the dependencies of $repo and open a pull request")")
 done < repos.txt
 
