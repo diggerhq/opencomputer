@@ -1,3 +1,4 @@
+import { EditorView } from '@codemirror/view'
 import { tinykeys } from 'tinykeys'
 import { mergeable } from '../store/pulls'
 import type { Surface } from '../store/surface-store'
@@ -12,6 +13,12 @@ const typing = (e: KeyboardEvent) => {
     (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)
   )
 }
+
+// Whether the box typed in is empty: a field, or a composer's editor (MarkdownInput).
+const empty = (t: HTMLElement) =>
+  t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement
+    ? t.value === ''
+    : EditorView.findFromDOM(t)?.state.doc.length === 0
 
 export function bindKeys(root: HTMLElement, surface: Surface): () => void {
   const plain = (fn: (e: KeyboardEvent) => void) => (e: KeyboardEvent) => {
@@ -73,7 +80,7 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
             ? `k:${s.loc.track}`
             : 'new'
         root
-          .querySelector<HTMLTextAreaElement>(`textarea[data-draft="${key}"]`)
+          .querySelector<HTMLElement>(`[data-draft="${key}"]`)
           ?.focus()
       }),
       e: plain(() => {
@@ -87,13 +94,13 @@ export function bindKeys(root: HTMLElement, surface: Surface): () => void {
       }),
       // Done lands in the start box: Z in an empty box still takes "Undo Z" while it is offered.
       z: (e) => {
-        const box = e.target as HTMLTextAreaElement
+        const box = e.target as HTMLElement
         if (
           typing(e) &&
           !e.metaKey &&
           !e.ctrlKey &&
           !e.altKey &&
-          box.value === '' &&
+          empty(box) &&
           surface.get().toasts.some((t) => t.undo)
         ) {
           e.preventDefault()
