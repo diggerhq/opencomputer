@@ -209,7 +209,7 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
   const failed = item.entries.filter(
     (en) => en.kind === 'step' && en.status === 'failed',
   ).length
-  // The spinner is for a step running now, not for a turn that is waiting.
+  // The working mark is for a step running now, not for a turn that is waiting.
   const last = item.entries[item.entries.length - 1]
   const running =
     !item.settled && last?.kind === 'step' && last.status === 'running'

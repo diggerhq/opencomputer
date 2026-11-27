@@ -2,24 +2,13 @@ import { useLayoutEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import type { Mark } from '../store/views'
 
-// PROTOTYPE (work 132): ?mark=spin|orbit|breathe picks the working mark.
-const V =
-  typeof location !== 'undefined'
-    ? new URLSearchParams(location.search).get('mark') ?? 'spin'
-    : 'spin'
-const WORKING: Record<string, string> = {
-  spin: 'border-[1.5px] border-muted-foreground border-t-transparent border-r-transparent animate-spin',
-  orbit:
-    'border-[1.5px] border-muted-foreground/25 border-t-muted-foreground/80 animate-[spin_1.6s_linear_infinite] motion-reduce:animate-none',
-  breathe: 'bg-muted-foreground animate-breathe motion-reduce:animate-none motion-reduce:opacity-60',
-}
-const SYNC = V !== 'spin' || location.search.includes('sync')
-
-// The mark of spec section 3: dot (blocked), ring (ready), spinner (working).
+// The mark of spec section 3: dot (blocked), ring (ready), breathing dot
+// (working). Working is quiet on purpose: a muted dot that fades slowly.
 const MARK: Record<string, string> = {
   blocked: 'bg-status-pending',
   ready: 'shadow-[inset_0_0_0_2px_var(--status-pending)]',
-  working: WORKING[V] ?? WORKING.spin,
+  working:
+    'bg-muted-foreground animate-breathe motion-reduce:animate-none motion-reduce:opacity-60',
 }
 export function Mk({
   mark,
@@ -31,9 +20,9 @@ export function Mk({
   className?: string
 }) {
   const ref = useRef<HTMLSpanElement>(null)
-  // Every working mark shares one phase, whenever it mounted.
+  // Every working mark breathes in one phase, whenever it mounted: pin its
+  // animation to the start of the document timeline.
   useLayoutEffect(() => {
-    if (!SYNC) return
     for (const a of ref.current?.getAnimations?.() ?? []) a.startTime = 0
   }, [mark])
   return (
