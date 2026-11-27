@@ -184,6 +184,11 @@ function EntryView({ entry }: { entry: Entry }) {
   )
 }
 
+// What a running turn is doing: its latest step or thinking (a message it
+// left is already in view, or was).
+const current = (item: Extract<Item, { kind: 'work' }>) =>
+  [...item.entries].reverse().find((en) => en.kind !== 'text')
+
 // What the line says: once settled, how long the turn worked; while running,
 // what it is doing now.
 function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
@@ -194,7 +199,7 @@ function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
       return `Worked for ${formatDuration(item.ms)}`
     return n ? `Ran ${n} ${n === 1 ? 'step' : 'steps'}` : 'Thought'
   }
-  const now = item.entries[item.entries.length - 1]
+  const now = current(item)
   return (
     <>
       <span className="truncate">
@@ -202,8 +207,10 @@ function workLabel(item: Extract<Item, { kind: 'work' }>): ReactNode {
           <Rich text={now.title} />
         ) : now?.kind === 'thinking' && now.ms !== null ? (
           `Thought for ${seconds(now.ms)}`
-        ) : (
+        ) : now ? (
           'Thought'
+        ) : (
+          'Thinking'
         )}
       </span>
       <span className="flex-none">{counted}</span>
@@ -216,9 +223,9 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
     (en) => en.kind === 'step' && en.status === 'failed',
   ).length
   // The working mark is for a step running now, not for a turn that is waiting.
-  const last = item.entries[item.entries.length - 1]
+  const now = current(item)
   const running =
-    !item.settled && last?.kind === 'step' && last.status === 'running'
+    !item.settled && now?.kind === 'step' && now.status === 'running'
   return (
     <Collapsible className="-my-1 max-w-180">
       <CollapsibleTrigger className={FOLD}>
@@ -327,10 +334,49 @@ const PENDING: Record<string, string> = {
   queued: 'Queued',
 }
 
+// Rows' one-line heights by kind, as drawn (with the gap between rows).
+const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 60, agent: 40, work: 28 }
+
+// A reply, with a caret at the end of its last line while it streams: inside
+// the text, so the reply is as tall streaming as it is when complete.
+function Reply({ text, streaming }: { text: string; streaming: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (!streaming) return
+    const last = [...(ref.current?.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, td') ?? [])].pop()
+    last?.classList.add('caret-end')
+    return () => last?.classList.remove('caret-end')
+  }, [text, streaming])
+  return (
+    <div ref={ref} className="max-w-180">
+      <Rich text={text} size="reading" />
+    </div>
+  )
+}
+
+// A message is drawn as sent at once (B2): "Sending…" only once sending is
+// slow, so the usual echo, a moment later, changes nothing drawn.
+const SLOW_SEND_MS = 1500
+
+function useLate(on: boolean, ms: number): boolean {
+  const [late, setLate] = useState(false)
+  useEffect(() => {
+    if (!on) return
+    const t = setTimeout(() => setLate(true), ms)
+    return () => {
+      clearTimeout(t)
+      setLate(false)
+    }
+  }, [on, ms])
+  return on && late
+}
+
 // On the measure like the agent's text, so the reading edge stays put; a
 // quiet fill says whose turn it is.
 function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
-  const pending = item.state && PENDING[item.state]
+  const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
+  const pending =
+    item.state && (item.state !== 'sending' || slow) && PENDING[item.state]
   return (
     <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
       {(item.author || item.via) && (
@@ -368,9 +414,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return <UserTurn item={item} />
     case 'agent':
       return (
-        <div className="max-w-180">
-          <Rich text={item.text} size="reading" />
-        </div>
+        <Reply text={item.text} streaming={!!item.streaming} />
       )
     case 'work':
       return <Work item={item} />
@@ -413,7 +457,7 @@ function Transcript(props: {
   id?: string
 }) {
   const { sid, trackId, children, id } = props
-  const { items, open } = useConversation(sid, trackId)
+  const { items } = useConversation(sid, trackId)
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   // Distance from the end to hold when earlier items are revealed above.
@@ -437,7 +481,13 @@ function Transcript(props: {
   const v = useVirtualizer({
     count: rows.length,
     getScrollElement: () => ref.current,
-    estimateSize: (i) => (rows[i].day ? 20 : 72),
+    // A row's height before it is drawn: its kind's one-line height, so a
+    // new row (a reply's first words) mounts at about its size, and following
+    // the end does not overshoot and come back once it is measured.
+    estimateSize: (i) => {
+      const r = rows[i]
+      return r.day ? 36 : (r.item && ESTIMATE[r.item.kind]) || 72
+    },
     getItemKey: (i) => rows[i].key,
     // The list starts below the pane's padding and "Show earlier", which is
     // not counted: the rows drawn either side of the view cover it.
@@ -568,12 +618,6 @@ function Transcript(props: {
           })}
         </div>
       )}
-      {open?.text ? (
-        <div className="max-w-180">
-          <Rich text={open.text} size="reading" />
-          <span className="bg-foreground/55 ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[1px] align-[-2px]" />
-        </div>
-      ) : null}
       {children}
     </div>
   )
