@@ -131,7 +131,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 // ---- a turn's work: one line, open to see its steps, thinking and messages ----
 
 const FOLD =
-  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[12.5px] outline-none'
+  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[13px] outline-none'
 
 function StepLine({ step }: { step: Step }) {
   return (
@@ -334,7 +334,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       return (
         <div
           className={cn(
-            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-xl rounded-br-sm px-3 py-2',
+            'reading bubble bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-xl rounded-br-sm px-3 py-2',
             (item.state === 'sending' || item.state === 'queued') &&
               'opacity-60',
           )}
@@ -354,7 +354,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
       )
     case 'agent':
       return (
-        <div className="max-w-180">
+        <div className="reading max-w-180">
           <Rich text={item.text} />
         </div>
       )
@@ -376,7 +376,7 @@ type Row = { key: string; day?: string; item?: Item }
 
 function DayLine({ at }: { at: string }) {
   return (
-    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-[11.5px] font-medium after:h-px after:flex-1 after:content-['']">
+    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
       {dayLabel(at)}
     </div>
   )

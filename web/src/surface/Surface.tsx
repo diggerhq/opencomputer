@@ -12,6 +12,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { useTheme } from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
 import '@/index.css'
+import './surface.css'
 import type { Host } from './host'
 import {
   SurfaceContext,
