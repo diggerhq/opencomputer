@@ -11,9 +11,9 @@ const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
 export type Item =
   | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
   | { kind: 'agent'; key: string; text: string; at: string }
-  // A turn's work: its steps, thinking and passing messages, in order. Listed
-  // while the turn runs; once it has ended, everything before its last
-  // message folds into this one line (the settled pattern).
+  // A turn's work: its steps, thinking and passing messages, in order. While
+  // the turn runs, only its latest message stays out; once it has ended,
+  // everything before its last message folds into this one line (the settled pattern).
   | { kind: 'work'; key: string; entries: Entry[]; settled: boolean; ms: number | null; at: string }
   | { kind: 'ask'; key: string; ask: Ask; at: string }
   // A subagent, where it was launched: its latest state, and its steps so far.
@@ -52,11 +52,22 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
     return t
   }
   // The turn's open work item: the last item, if it is this turn's; else a new one.
+  // A message the agent left in passing folds into it once the agent works on.
   const work = (e: ApiEvent, key: string): Work => {
     const t = turnOf(e)
-    const last = items[items.length - 1]
-    if (last?.kind === 'work' && t.items.includes(last)) return last
-    const w: Work = { kind: 'work', key, entries: [], settled: t.settled, ms: null, at: e.createdAt }
+    let last = items[items.length - 1]
+    let passing: Agent | null = null
+    if (last?.kind === 'agent' && t.items.includes(last)) {
+      passing = items.pop() as Agent
+      t.items.splice(t.items.indexOf(passing), 1)
+      last = items[items.length - 1]
+    }
+    const text = passing && { kind: 'text' as const, key: passing.key, text: passing.text }
+    if (last?.kind === 'work' && t.items.includes(last)) {
+      if (text) last.entries.push(text)
+      return last
+    }
+    const w: Work = { kind: 'work', key, entries: text ? [text] : [], settled: t.settled, ms: null, at: passing?.at ?? e.createdAt }
     t.items.push(w)
     items.push(w)
     return w

@@ -311,6 +311,14 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
   }
+  /* Geist Mono's ligatures draw " --" as if the space were gone: show code as typed. */
+  code,
+  kbd,
+  samp,
+  pre,
+  .font-mono {
+    font-variant-ligatures: none;
+  }
 }
 
 /* Task-list boxes in a rendered working doc (the item page). The browser's
