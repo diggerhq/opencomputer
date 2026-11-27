@@ -7,16 +7,17 @@ This setup is for a quick proof of concept, and for individual practitioners who
 
 Everything runs on one VM:
 
-- **The gateway** runs the hosted service's code in a container, under Miniflare. Miniflare is a local emulator of Cloudflare's Durable Objects, D1, R2 and KV.
+- **The gateway** runs the hosted service's code in a container, under Miniflare. Miniflare is a local emulator of Cloudflare's Durable Objects, D1, R2 and KV. The gateway also serves the web dashboard, with WorkOS sign-in and without billing.
 - **The host agent** runs on the same VM. Each session runs in its own rootless Podman container.
-- **`/setup`** is a browser page where you add the Claude credential, connect the host and connect Slack.
+- **`/setup`** is a browser page where you add the Claude credential, connect the host, and set up sign-in and Slack.
 
 ## Requirements
 
 - **Ubuntu 24.04 on x86-64.** The host installer refuses arm64, and it refuses other distributions. Ubuntu 22.04 works only with Podman 4.7 or newer and `passt`.
 - **Free space under `/data`:** the installer warns below 20 GiB. The session image takes about 10 GiB, and every session's workspace needs more.
 - **A Claude credential:** an Anthropic API key (`sk-ant-api…`), or a subscription token from `claude setup-token` (`sk-ant-oat…`).
-- **For Slack only:** a public HTTPS URL for the gateway. See [HTTPS](#https).
+- **For the dashboard and Slack:** a public HTTPS URL for the gateway. See [HTTPS](#https).
+- **For the dashboard:** a [WorkOS](https://workos.com) account.
 
 ## 1. Install the host
 
@@ -54,7 +55,7 @@ Set these in `.env`:
 | Variable | Value |
 | --- | --- |
 | `SETUP_TOKEN` | Required. The operator's credential for `/setup` and the API. Generate it with `openssl rand -hex 32`. |
-| `PUBLIC_URL` | The public HTTPS origin, with no trailing slash, for example `https://computer.example.com`. Slack needs it, and you can leave it empty until then. |
+| `PUBLIC_URL` | The public HTTPS origin, with no trailing slash, for example `https://computer.example.com`. The dashboard and Slack need it, and you can leave it empty until then. |
 | `GATEWAY_PORT` | The gateway's port on `127.0.0.1`. The default is `8080`. |
 | `GATEWAY_ORG` | The organization ID. The default is `org_selfhost`. Don't change it after the first start. |
 | `SP_SETUP_OPEN` | Set it to `1` to keep `/setup` open once setup is complete. Otherwise leave it empty. |
@@ -100,12 +101,23 @@ The page has these sections:
 
 1. **Claude credential** (required). Paste the key or token. It is stored encrypted and is never shown again. Sessions never see it: only the host's model proxy uses it.
 2. **Host** (required). It shows **connected** once step 4 is done. Select **I'll connect the host later** to finish without it.
-3. **People.** Nothing to set up yet.
+3. **Sign-in and people** (optional). The WorkOS app for the dashboard. See [Dashboard](#dashboard).
 4. **Slack app** (optional). See [Slack](#slack).
-5. **SSO** (optional). OIDC and WorkOS settings are stored only.
+5. **OIDC** (optional). Stored only.
 6. **GitHub App** (optional). Stored only.
 
 Setup is complete once the Claude credential is set and the host is connected or acknowledged. After that, every `/setup` URL returns 404. To change something later, set `SP_SETUP_OPEN=1` in `.env` and restart the gateway. When you're done, clear it and restart again.
+
+## Dashboard
+
+The dashboard is at `PUBLIC_URL`, which must be an HTTPS origin.
+
+1. In the [WorkOS dashboard](https://dashboard.workos.com), under **Redirects**, add `<PUBLIC_URL>/auth/callback`. `/setup` shows the exact value.
+2. In the **Sign-in and people** section of `/setup`, paste the WorkOS client ID and API key, add the owner's email, then select **Save**.
+3. Open `PUBLIC_URL` and sign in with the owner's email.
+4. To add people, go to **Settings**, then **Members**, and select **Invite**. WorkOS emails the invitation, and the person signs in with that address. Nobody else can sign in.
+
+Sessions start from **Computer** in the dashboard once the Claude credential is set and the host is connected. Anyone in a connected Slack workspace can also use @computer, whether or not they're invited.
 
 ## Slack
 
@@ -180,6 +192,9 @@ systemctl --user restart opencomputer-gateway
 | --- | --- |
 | `/setup` returns 404 | Setup is complete: set `SP_SETUP_OPEN=1` and restart the gateway. Also check that `SETUP_TOKEN` is set in `.env`. |
 | Sign-in loops back to the sign-in page | `PUBLIC_URL` is `https://…` but you opened `http://`, so the browser drops the `Secure` cookie. Open `PUBLIC_URL` instead. |
+| The dashboard says "Sign-in isn't set up yet." | Save the WorkOS app in the **Sign-in and people** section of `/setup`. |
+| WorkOS rejects the redirect URI | Add `<PUBLIC_URL>/auth/callback` under **Redirects** in WorkOS. |
+| "You aren't a member of this OpenComputer." | The owner invites that email from **Settings**, then **Members**. |
 | The host stays **not connected** | Run `sudo journalctl -u slack-presence-host`, then `sudo selfhost/host-install.sh --link-gateway` again. |
 | Sessions reply "No model credential is configured for this computer." | Set the Claude credential in `/setup`. |
 | There is no **Install to Slack** button | Save all three Slack values first. |
