@@ -176,12 +176,19 @@ const TRIAL_HALTS: Record<string, string> = {
 }
 
 // The blocking modal shown on every page while the org is halted, worded by
-// orgs.halt_reason.
-export function haltNotice(reason: string | null | undefined): BillingNotice {
+// orgs.halt_reason. `prices` is what each plan costs this org now (a deal can
+// lower it).
+export function haltNotice(
+  reason: string | null | undefined,
+  prices: Record<PaidPlanId, number> = {
+    pro: PLAN_OFFERS.pro.priceUsd,
+    max: PLAN_OFFERS.max.priceUsd,
+  },
+): BillingNotice {
   if (reason && reason in TRIAL_HALTS) {
     return {
       title: TRIAL_OVER.replace(/\.$/, ''),
-      body: `${TRIAL_HALTS[reason]} Choose Pro ($20/mo) or Max ($200/mo) to keep your computer and automations running.`,
+      body: `${TRIAL_HALTS[reason]} Choose Pro ($${prices.pro}/mo) or Max ($${prices.max}/mo) to keep your computer and automations running.`,
       actions: ['plans'],
     }
   }

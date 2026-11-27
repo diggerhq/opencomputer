@@ -159,6 +159,33 @@ export const AutumnBillingSchema = z.object({
   modelUsage: AutumnModelUsageSchema.optional(),
 })
 
+// A limited-time plan deal (the Black Friday 2026 offer, `bfcm2026`): the same
+// body the public /api/public/promo/:id serves, plus whether this org may
+// still claim it and the claim it already holds.
+export const PromoPlanSchema = z.object({
+  price: z.number(),
+  minutes: z.number(),
+  normalPrice: z.number(),
+  normalMinutes: z.number(),
+})
+
+export const BillingPromoSchema = z.object({
+  id: z.string(),
+  active: z.boolean(),
+  endsAt: z.string(),
+  earlyCap: z.number(),
+  earlyLeft: z.number(),
+  plans: z.object({ pro: PromoPlanSchema, max: PromoPlanSchema }),
+  eligible: z.boolean(),
+  claim: z
+    .object({
+      plan: z.enum(['pro', 'max']),
+      months: z.number(),
+      endsAt: z.string(),
+    })
+    .nullable(),
+})
+
 export const AgentSessionUsageRowSchema = z.object({
   id: z.string(),
   agentId: z.string(),
@@ -206,6 +233,7 @@ export type Credits = z.infer<typeof CreditsSchema>
 export type BillingState = z.infer<typeof BillingStateSchema>
 export type AutumnAutoTopup = z.infer<typeof AutumnAutoTopupSchema>
 export type AutumnBilling = z.infer<typeof AutumnBillingSchema>
+export type BillingPromo = z.infer<typeof BillingPromoSchema>
 export type AgentSessionUsageRow = z.infer<typeof AgentSessionUsageRowSchema>
 export type AgentSessionUsage = z.infer<typeof AgentSessionUsageSchema>
 export type StripeInvoice = z.infer<typeof StripeInvoiceSchema>
