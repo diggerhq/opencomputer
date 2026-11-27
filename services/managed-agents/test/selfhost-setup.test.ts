@@ -184,6 +184,24 @@ describe("selfhost /setup", () => {
     expect(await reveal.text()).toContain(HOST_TOKEN);
   });
 
+  it("shows the host token masked until an authenticated reveal", async () => {
+    const { deps } = fakeDeps();
+    const page = await (await handleSetup(get("/setup", bearer), deps)).text();
+    expect(page).not.toContain(HOST_TOKEN);
+    expect(page).toContain('action="/setup/hosts/reveal"');
+    for (const request of [post("/setup/hosts/reveal", {}, {}), post("/setup/hosts/reveal", {}, { authorization: "Bearer nope" }), get("/setup/hosts/reveal", bearer)]) {
+      const response = await handleSetup(request, deps);
+      expect(response.status).not.toBe(200);
+      expect(await response.text()).not.toContain(HOST_TOKEN);
+    }
+    const { cookie, csrf } = await login(deps);
+    expect(await (await handleSetup(post("/setup/hosts/reveal", {}, { cookie }), deps)).text()).not.toContain(HOST_TOKEN);
+    const revealed = await handleSetup(post("/setup/hosts/reveal", { csrf }, { cookie }), deps);
+    expect(revealed.status).toBe(200);
+    expect(revealed.headers.get("cache-control")).toBe("no-store");
+    expect(await revealed.text()).toContain(HOST_TOKEN);
+  });
+
   it("keeps a stored secret when its field is left empty", async () => {
     const { deps, kept } = fakeDeps();
     await handleSetup(post("/setup/slack", { client_id: "1.2", client_secret: "first", signing_secret: "sign" }), deps);
