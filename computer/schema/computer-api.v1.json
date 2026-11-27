@@ -402,7 +402,9 @@
                     "mentionedInline": {
                       "type": "boolean"
                     },
-                    "context": {},
+                    "context": {
+                      "type": "array"
+                    },
                     "linked": {
                       "type": "array"
                     }

@@ -59,14 +59,14 @@ interface Waiting {
   actor: Actor;
 }
 
-/** `turns.send`'s `slack`: the Slack message the input is, as the Slack actor read it. `context`: the messages held for the thread since its last turn. */
+/** `turns.send`'s `slack`: the Slack message the input is, as the Slack actor read it. `context`: the messages held for the thread since its last turn (none, or one `context` entry). */
 export interface SlackTurn {
   userId: string;
   ts: string;
   files?: SlackFile[];
   mentioned?: boolean;
   mentionedInline?: boolean;
-  context?: Linked;
+  context?: Linked[];
   linked?: Linked[];
 }
 
