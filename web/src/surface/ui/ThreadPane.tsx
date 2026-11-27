@@ -176,7 +176,7 @@ function Results({
             <Button
               key={r.id}
               data-result
-              variant="outline"
+              variant="secondary"
               size="xs"
               className="font-normal"
               onClick={() => surface.openResult(r)}
@@ -409,7 +409,6 @@ export function ThreadPane({ sid }: { sid: string }) {
         {trackId && (
           <ToggleGroup
             type="single"
-            variant="outline"
             size="sm"
             className="max-[960px]:hidden"
             value={layout ?? 'L1'}
@@ -420,7 +419,7 @@ export function ThreadPane({ sid }: { sid: string }) {
                 <ToggleGroupItem
                   value={l.v}
                   aria-label={l.tip}
-                  className="text-muted-foreground px-2"
+                  className="text-muted-foreground data-[state=on]:text-foreground px-2"
                 >
                   {I[l.v]}
                 </ToggleGroupItem>
