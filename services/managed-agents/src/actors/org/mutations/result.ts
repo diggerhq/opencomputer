@@ -3,7 +3,8 @@
 import { Validator, type Schema } from "@cfworker/json-schema";
 // The review summary's schema: defined in the SDK (sdks/typescript/src/computer/review.ts), copied here by its `npm run schema`.
 import reviewSchema from "../review.v1.json" with { type: "json" };
-import { readSession } from "../records.js";
+import { readPlace, readSession } from "../records.js";
+import { summaryOf } from "../summary.js";
 import type { Tx } from "../tx.js";
 import { isOwnSession } from "../who-may.js";
 import type { Principal } from "../../../auth/principal.js";
@@ -45,6 +46,13 @@ const resultAdd: MutationFn = (tx, p, args) => {
       tx.version(),
       s.audience,
     );
+    // R20: a pull request waiting on the person is what makes its thread Ready, whether or not the agent says so.
+    const place = kind === "pr" ? readPlace(tx.sql, sid) : null;
+    if (place && place.done_at === null) {
+      tx.sql.exec("UPDATE place SET ready_seq = ?, ready_what = ?, ready_result = ? WHERE session_id = ?", summaryOf(s).lastSeq, `Pull request: ${title ?? ref}`.slice(0, 500), resultId, sid);
+      tx.stamp("place", sid);
+      tx.occurFor("thread.ready", s, byFor(p, args), place.track_id);
+    }
   }
   tx.occurFor("result.changed", s, byFor(p, args));
   return applied({ resultId: id });

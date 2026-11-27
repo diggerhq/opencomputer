@@ -463,11 +463,29 @@ describe("read, pref, result, review", () => {
       expect(ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000001", ...pr })).value).toEqual({ resultId: "res_0000000000000001" });
       expect(ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000002", ...pr, title: "Fix login redirect" })).value).toEqual({ resultId: "res_0000000000000001" });
       expect(sql.exec("SELECT id, title FROM result")).toEqual([{ id: "res_0000000000000001", title: "Fix login redirect" }]);
-      expect(occurrences(sql)).toEqual(["result.changed", "result.changed"]);
+      expect(occurrences(sql)).toEqual(["thread.ready", "result.changed", "result.changed"]);
       ok(run(sql, agent(sid(1)), "review.save", { resultId: "res_0000000000000001", head: "abc123", parts: [part] }));
       expect(sql.exec("SELECT head, parts FROM review")).toEqual([{ head: "abc123", parts: JSON.stringify([part]) }]);
       expect(run(sql, A, "result.add", { resultId: "res_0000000000000003", ...pr })).toMatchObject({ ok: false, code: "not_found" });
       expect(run(sql, agent(sid(2)), "review.save", { resultId: "res_0000000000000001", head: "x", parts: [part] })).toMatchObject({ ok: false, code: "not_found" });
+    });
+  });
+
+  it("result.add of a new pull request makes its thread Ready on it (R20); other kinds, an update, or a done thread do not", async () => {
+    await withOrg((sql) => {
+      seedThread(sql, sid(1), "usr_a", { summary: { lastSeq: 7 } });
+      ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000001", sid: sid(1), kind: "preview", ref: "https://x.opencomputer.app", title: "Preview" }));
+      expect(place(sql, sid(1))).toMatchObject({ ready_seq: null });
+      ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000002", sid: sid(1), kind: "pr", ref: "https://github.com/o/r/pull/1", title: "Fix login" }));
+      expect(place(sql, sid(1))).toMatchObject({ ready_seq: 7, ready_what: "Pull request: Fix login", ready_result: "res_0000000000000002" });
+      sql.exec("UPDATE place SET ready_seq = NULL WHERE session_id = ?", sid(1));
+      ok(run(sql, agent(sid(1)), "result.add", { resultId: "res_0000000000000003", sid: sid(1), kind: "pr", ref: "https://github.com/o/r/pull/1", title: "Fix login redirect" }));
+      expect(place(sql, sid(1))).toMatchObject({ ready_seq: null });
+
+      seedThread(sql, sid(2), "usr_a", { summary: { lastSeq: 3 } });
+      ok(run(sql, A, "thread.done", { sid: sid(2) }));
+      ok(run(sql, agent(sid(2)), "result.add", { resultId: "res_0000000000000004", sid: sid(2), kind: "pr", ref: "https://github.com/o/r/pull/2", title: "Late" }));
+      expect(place(sql, sid(2))).toMatchObject({ ready_seq: null });
     });
   });
 
