@@ -28,8 +28,8 @@ and lingering starts it at boot.
 
 ```sh
 sudo loginctl enable-linger oc-gateway
-sudo -iu oc-gateway   # the stack in ~/opencomputer/selfhost (compose.yaml, .env)
-install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
+sudo -iu oc-gateway   # the stack in ~/selfhost (compose.yaml, .env)
+install -D -m 0644 ~/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
 systemctl --user daemon-reload && systemctl --user enable --now opencomputer-gateway.service
 systemctl --user status opencomputer-gateway   # podman logs opencomputer_gateway_1: the gateway itself
 ```

@@ -43,6 +43,7 @@ The installer sets up the following:
 - `podman-compose` 1.6.0 in `/opt/podman-compose`
 - the `slack-presence-host` service and the model proxy
 - the `oc-gateway` user (home `/var/lib/oc-gateway`, lingering enabled), which runs the gateway
+- the gateway's files in `/var/lib/oc-gateway/selfhost`, copied from your checkout and owned by `oc-gateway`
 
 The host agent doesn't start yet, because `/etc/opencomputer/selfhost.env` has no token. Step 4 adds it.
 
@@ -52,8 +53,7 @@ As `oc-gateway`:
 
 ```sh
 sudo -iu oc-gateway
-git clone https://github.com/diggerhq/opencomputer.git ~/opencomputer
-cd ~/opencomputer/selfhost
+cd ~/selfhost
 cp .env.example .env && chmod 600 .env
 ```
 
@@ -72,7 +72,7 @@ Set these in `.env`:
 Install the systemd user unit. It runs `podman-compose up` in the foreground and restarts it whenever it exits. Still as `oc-gateway`:
 
 ```sh
-install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service \
+install -D -m 0644 ~/selfhost/systemd/opencomputer-gateway.service \
   ~/.config/systemd/user/opencomputer-gateway.service
 systemctl --user daemon-reload
 systemctl --user enable --now opencomputer-gateway.service
@@ -80,7 +80,7 @@ systemctl --user enable --now opencomputer-gateway.service
 
 The first start builds the gateway image, which takes a few minutes. Then `curl -s 127.0.0.1:8080/healthz` returns `{"ok":true,"mode":"miniflare"}`.
 
-Stop the gateway with `systemctl --user stop opencomputer-gateway`. If you use `podman stop`, systemd starts it again. To try the gateway in the foreground without the unit, run `podman-compose up` from `~/opencomputer/selfhost`.
+Stop the gateway with `systemctl --user stop opencomputer-gateway`. If you use `podman stop`, systemd starts it again. To try the gateway in the foreground without the unit, run `podman-compose up` from `~/selfhost`.
 
 ## 4. Connect the host
 
@@ -174,13 +174,12 @@ Session workspaces live on the host under `/data`, outside the volume. Back them
 Back up the volume first. The gateway applies new database migrations when it starts.
 
 ```sh
-# the gateway, as oc-gateway
-cd ~/opencomputer && git pull
-cd selfhost && podman-compose build gateway
-systemctl --user restart opencomputer-gateway
-
-# the host, as the sudo user
+# as the sudo user: updates the host and the gateway's files in /var/lib/oc-gateway/selfhost (.env is kept)
 cd ~/oc-host && git pull && sudo selfhost/host-install.sh
+
+# as oc-gateway
+cd ~/selfhost && podman-compose build gateway
+systemctl --user restart opencomputer-gateway
 ```
 
 ## Troubleshooting

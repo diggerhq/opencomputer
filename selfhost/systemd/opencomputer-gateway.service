@@ -8,10 +8,10 @@
 # Install, as oc-gateway (lingering on, so the unit starts at boot without a login):
 #   sudo loginctl enable-linger oc-gateway
 #   sudo -iu oc-gateway
-#   install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
+#   install -D -m 0644 ~/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
 #   systemctl --user daemon-reload && systemctl --user enable --now opencomputer-gateway.service
 #
-# The stack's directory is ~/opencomputer/selfhost (compose.yaml and .env). Elsewhere, or with a
+# The stack's directory is ~/selfhost (compose.yaml and .env). Elsewhere, or with a
 # tunnel profile, add a drop-in (`systemctl --user edit opencomputer-gateway`):
 #   [Service]
 #   WorkingDirectory=%h/elsewhere/selfhost
@@ -25,7 +25,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/opencomputer/selfhost
+WorkingDirectory=%h/selfhost
 # The first start may build the gateway image.
 TimeoutStartSec=900
 ExecStart=podman-compose -f compose.yaml up --abort-on-container-exit
