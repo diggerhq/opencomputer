@@ -361,14 +361,13 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
         >
           {t.title}
         </span>
-        <span
-          className={cn(
-            'text-meta ml-auto flex-none whitespace-nowrap',
-            t.mark ? 'text-status-pending' : 'text-muted-foreground',
-          )}
-        >
-          {t.word}
-        </span>
+        {/* The mark says working and ready; only what waits on the person
+            is also said in words. */}
+        {t.mark === 'blocked' && (
+          <span className="text-meta text-status-pending ml-auto flex-none whitespace-nowrap">
+            {t.word}
+          </span>
+        )}
       </div>
       <div className="text-muted-foreground text-meta mt-1 line-clamp-2 wrap-anywhere">
         {t.line ?? 'Just started'}
