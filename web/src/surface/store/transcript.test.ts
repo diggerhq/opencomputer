@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { ApiEvent } from '@opencomputer/sdk/computer'
 import { buildTranscript, type Item } from './transcript'
 
-// The settled pattern: a running turn lists its work where it happened; an
-// ended turn folds everything before its last message into one line.
+// The settled pattern: a running turn shows one work line and its latest
+// message; an ended turn folds everything before its last message into one line.
 
 let seq = 0
 const ev = (type: string, turnId: string, data: Record<string, unknown> = {}): ApiEvent =>
@@ -23,13 +23,18 @@ describe('work', () => {
     ev('tool.started', 't1', { callId: 'c2', title: 'Edit a file' }),
   ]
 
-  it('a running turn lists its work in place, its messages between', () => {
+  it('a running turn keeps its latest message in view', () => {
+    const items = buildTranscript(running().slice(0, -1))
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent'])
+    expect(items[2]).toMatchObject({ text: 'Found it.' })
+  })
+
+  it('a running turn folds a passing message into its work once the agent works on', () => {
     const items = buildTranscript(running())
-    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'agent', 'work'])
-    expect(works(items).map((w) => [w.settled, w.entries.map((en) => en.kind)])).toEqual([
-      [false, ['thinking', 'step']],
-      [false, ['step']],
-    ])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work'])
+    const [w] = works(items)
+    expect(w.settled).toBe(false)
+    expect(w.entries.map((en) => en.kind)).toEqual(['thinking', 'step', 'text', 'step'])
   })
 
   it('an ended turn folds thinking, steps and passing messages into one line before its answer', () => {
