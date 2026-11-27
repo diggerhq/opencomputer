@@ -4,6 +4,7 @@
 #
 #   cp .env.example .env    # fill it in
 #   podman compose up -d                      # gateway only (bring your own tunnel)
+#   # kept up across kills and reboots: systemd/opencomputer-gateway.service (gateway/README.md)
 #   podman compose --profile cloudflared up -d   # or with a Cloudflare tunnel
 #   podman compose --profile ngrok up -d         # or with ngrok
 #

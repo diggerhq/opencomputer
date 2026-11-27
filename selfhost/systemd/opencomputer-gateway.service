@@ -1,0 +1,37 @@
+# The compose stack as a systemd user unit of oc-gateway, so the gateway comes back however it stops.
+# Podman's own `restart: always` does not cover it: Podman treats `podman kill` (and an OOM kill that
+# goes through it) as stopped by the user and leaves the container Exited, and after a reboot only
+# podman-restart.service brings `always` containers back. Here systemd supervises a foreground
+# `podman-compose up`: when the gateway exits for any reason, `up` returns
+# (--abort-on-container-exit), and systemd runs it again, which starts the container again.
+#
+# Install, as oc-gateway (lingering on, so the unit starts at boot without a login):
+#   sudo loginctl enable-linger oc-gateway
+#   sudo -iu oc-gateway
+#   install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
+#   systemctl --user daemon-reload && systemctl --user enable --now opencomputer-gateway.service
+#
+# The stack's directory is ~/opencomputer/selfhost (compose.yaml and .env). Elsewhere, or with a
+# tunnel profile, add a drop-in (`systemctl --user edit opencomputer-gateway`):
+#   [Service]
+#   WorkingDirectory=%h/elsewhere/selfhost
+#   Environment=COMPOSE_PROFILES=cloudflared
+#   Environment=COMPOSE_PROJECT_NAME=opencomputer
+
+[Unit]
+Description=OpenComputer self-host gateway (podman-compose, selfhost/compose.yaml)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/opencomputer/selfhost
+# The first start may build the gateway image.
+TimeoutStartSec=900
+ExecStart=podman-compose -f compose.yaml up --abort-on-container-exit
+ExecStop=podman-compose -f compose.yaml stop
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

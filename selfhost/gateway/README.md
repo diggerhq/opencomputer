@@ -17,3 +17,23 @@ SETUP_TOKEN=$(openssl rand -hex 32) GATEWAY_DATA=/tmp/gw node selfhost/gateway/s
 curl -H "Authorization: Bearer $SETUP_TOKEN" -H 'x-opencomputer-surface: api' -H 'content-type: application/json' \
   -d '{"input":"hello"}' localhost:8080/v1/computer/sessions
 ```
+
+## Keeping it up (rootless Podman)
+
+`restart: always` alone does not keep the gateway up. Podman counts `podman kill` as a stop by the user and leaves the
+container `Exited (137)`, and after a reboot only `podman-restart.service` revives `always` containers. Instead, run the
+stack under systemd as `oc-gateway`, with `selfhost/systemd/opencomputer-gateway.service`. It runs a foreground
+`podman-compose up --abort-on-container-exit` with `Restart=always`, so any exit of the gateway brings it back in about 5 s,
+and lingering starts it at boot.
+
+```sh
+sudo loginctl enable-linger oc-gateway
+sudo -iu oc-gateway   # the stack in ~/opencomputer/selfhost (compose.yaml, .env)
+install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service ~/.config/systemd/user/opencomputer-gateway.service
+systemctl --user daemon-reload && systemctl --user enable --now opencomputer-gateway.service
+systemctl --user status opencomputer-gateway   # podman logs opencomputer_gateway_1: the gateway itself
+```
+
+Another directory, a tunnel profile or a project name: `systemctl --user edit opencomputer-gateway` and set
+`WorkingDirectory=`, `Environment=COMPOSE_PROFILES=cloudflared` or `Environment=COMPOSE_PROJECT_NAME=…`. Stop it with
+`systemctl --user stop`, not `podman stop`, or systemd starts it again.
