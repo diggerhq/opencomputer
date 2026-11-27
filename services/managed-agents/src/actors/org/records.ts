@@ -73,3 +73,8 @@ export const readPlace = (sql: Sql, sessionId: string): PlaceRec | null => sql.e
 export const readTrack = (sql: Sql, id: string): TrackRec | null => sql.exec<TrackRec>("SELECT * FROM track WHERE id = ?", id)[0] ?? null;
 /** The track whose agent is this session, if it holds a track role. */
 export const trackOfAgent = (sql: Sql, sessionId: string): TrackRec | null => sql.exec<TrackRec>("SELECT * FROM track WHERE agent_session = ?", sessionId)[0] ?? null;
+
+/** The sessions a session was shared into (its `share` rows): each one's agent reads it. */
+export const sharedTo = (sql: Sql, sessionId: string): string[] => sql.exec<{ to_session: string }>("SELECT to_session FROM share WHERE session_id = ?", sessionId).map((r) => r.to_session);
+/** Whether `sessionId` was shared into `toSession`. */
+export const isSharedTo = (sql: Sql, sessionId: string, toSession: string): boolean => sql.exec("SELECT 1 FROM share WHERE session_id = ? AND to_session = ?", sessionId, toSession).length > 0;

@@ -66,7 +66,8 @@ export function threadTools(w: Work) {
     'read_thread',
     'Read another thread: what was sent to it and what its agent said over its last 20 turns, text only. Give its session id (cs_…), ' +
       'as start_thread and list_work return, its link from the web app, or the link of the Slack thread it runs on. Use it for a thread named in a file, a brief or ' +
-      'an earlier message, or to see what one you started has done. Only threads you may read; otherwise it says why not.',
+      'an earlier message, or to see what one you started has done. Only threads you may read: your own, ones you started, your track\'s, ' +
+      'and any thread named (by id or link) in a message sent to you by someone who could read it; otherwise it says why not.',
     {
       thread: z
         .string()

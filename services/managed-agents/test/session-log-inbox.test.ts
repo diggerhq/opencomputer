@@ -120,6 +120,23 @@ describe("accept", () => {
     expect(log.fakes.accessReads).toBe(reads + 1);
   });
 
+  it("asks Org to share the threads a turn names, once per entry, and nothing for other kinds or a failing Org (org/shares.ts)", async () => {
+    const log = await openLog();
+    const text = "See cs_0000000000000011 and https://acme.slack.com/archives/C0FFEE/p1700000000000100?thread_ts=1700000000.000100 and cs_0000000000000011 again; cs_short is no id.";
+    expect(await log.stub.accept(member(), turn("tn_s", text))).toMatchObject({ ok: true, duplicate: false });
+    expect(log.fakes.shares).toEqual([["cs_0000000000000011", "https://acme.slack.com/archives/C0FFEE/p1700000000000100?thread_ts=1700000000.000100"]]);
+    expect(await log.stub.accept(member(), turn("tn_s", text))).toMatchObject({ ok: true, duplicate: true });
+    expect(await log.stub.accept(member(), turn("tn_t", "nothing named"))).toMatchObject({ ok: true });
+    expect(await log.stub.accept(member(), { id: "ie_s", kind: "answer", body: { input: "cs_0000000000000012" } })).toMatchObject({ ok: true });
+    expect(log.fakes.shares).toHaveLength(1);
+    // Org down: the turn is still taken.
+    await log.inside((instance) => {
+      const peers = instance.peers;
+      instance.peers = { ...peers, org: (org) => ({ ...peers.org(org), share: async () => { throw new Error("down"); } }) };
+    });
+    expect(await log.stub.accept(member(), turn("tn_u", "cs_0000000000000013"))).toMatchObject({ ok: true, duplicate: false });
+  });
+
   it("is idempotent on the id: duplicate with the entry's outcome, conflict on another body", async () => {
     const log = await openLog();
     expect(await log.stub.accept(member(), turn("tn_a"))).toEqual({ ok: true, id: "tn_a", duplicate: false, outcome: { state: "waiting" } });

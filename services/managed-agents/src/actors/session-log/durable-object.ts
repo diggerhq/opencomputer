@@ -38,7 +38,7 @@ import { sqlOf, type Sql } from "../../durable/sql.js";
 import { type AcceptResult, type DeliveredOutcome, type EntryError, type EntryOutcome, type EventPush, type EventsReset, type Inbox, type InboxEntry, type InboxKind, type Summary } from "./contract.js";
 import { type ComputerRpc } from "../computer/contract.js";
 import { type LiveRpc } from "../live/contract.js";
-import { type OrgRpc, type SummaryPub } from "../org/contract.js";
+import { threadRefs, type OrgRpc, type SummaryPub } from "../org/contract.js";
 import type { FoldSummary } from "./summary.js";
 import { decodeCursor, encodeCursor } from "../../api-objects/list-cursor.js";
 import { crockfordId } from "../../ids/crockford.js";
@@ -80,7 +80,7 @@ export interface SessionLogEnv extends TelemetryEnv, ActorEnv {
 
 /** The actors a log calls (spec 36.2). A seam: tests put fakes here. */
 export interface SessionLogPeers {
-  org(org: string): Pick<OrgRpc, "access" | "acceptSummary">;
+  org(org: string): Pick<OrgRpc, "access" | "acceptSummary" | "share">;
   computer(machine: string): Pick<ComputerRpc, "drain">;
   live(org: string): Pick<LiveRpc, "publish">;
 }
@@ -615,6 +615,13 @@ export class SessionLogDurableObject extends DurableObject<SessionLogEnv> implem
       return { ok: true, duplicate: false };
     });
     if (!taken.ok) return taken;
+    // A turn that names other threads shares them into this one (org/shares.ts), before the turn
+    // runs, so the agent reads them at once. Org refuses what the sender cannot see; a failure here
+    // only leaves the grant for a later turn to make.
+    if (entry.kind === "turn" && !taken.duplicate) {
+      const refs = threadRefs(typeof (body as { input?: unknown } | null)?.input === "string" ? (body as { input: string }).input : "");
+      if (refs.length) await this.peers.org(p.org).share(p, sessionId, refs).catch((e: unknown) => this.emit("share.failed", { error: String(e) }, "warn"));
+    }
     this.kick();
     if (opts.wait && this.outcome(entry.id).state === "waiting") await this.drained(ACCEPT_WAIT_MS);
     return { ok: true, id: entry.id, duplicate: taken.duplicate, outcome: this.outcome(entry.id) };

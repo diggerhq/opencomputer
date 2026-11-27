@@ -2,14 +2,15 @@
 
 import type { Access } from "../../auth/principal.js";
 import type { Sql } from "../../durable/sql.js";
-import { readPlace, readSession, readTrack, trackOfAgent } from "./records.js";
+import { readPlace, readSession, readTrack, sharedTo, trackOfAgent } from "./records.js";
 import { sharedWith } from "./audience.js";
 import { parse } from "./parse-json.js";
 
 /**
  * A session's access as its SessionLog and its machine hold it, from the rows as they are now.
  * `agents`: the track's agent and the session that started it may write and read; a track's agent
- * may be written to by its threads. `readers` also holds the people it is shared with.
+ * may be written to by its threads. `readers` also holds the people it is shared with, and the
+ * agents of the threads it was shared into (`share`).
  */
 export function accessOf(sql: Sql, sessionId: string): Access | null {
   const s = readSession(sql, sessionId);
@@ -21,7 +22,7 @@ export function accessOf(sql: Sql, sessionId: string): Access | null {
     const track = readTrack(sql, place.track_id);
     if (track) agents.add(`agent:${track.agent_session}`);
   }
-  const readers = [...agents, ...sharedWith(s)];
+  const readers = [...new Set([...agents, ...sharedWith(s), ...sharedTo(sql, sessionId).map((id) => `agent:${id}`)])];
   if (s.role === "track") {
     const track = trackOfAgent(sql, sessionId);
     if (track) for (const row of sql.exec<{ session_id: string }>("SELECT session_id FROM place WHERE track_id = ?", track.id)) agents.add(`agent:${row.session_id}`);

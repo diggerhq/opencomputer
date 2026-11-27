@@ -346,8 +346,8 @@ export function listSessions(sql: Sql, p: Principal, q: ListQuery): Reply<Sessio
   const args: unknown[] = [];
   const owner = q.owner ?? (p.kind === "agent" || p.kind === "platform" ? "anyone" : "me");
   if (p.kind === "agent") {
-    where.push("(id = ? OR id IN (SELECT session_id FROM place WHERE parent_session = ? OR track_id IN (SELECT id FROM track WHERE agent_session = ?)))");
-    args.push(p.session ?? "", p.session ?? "", p.session ?? "");
+    where.push("(id = ? OR id IN (SELECT session_id FROM place WHERE parent_session = ? OR track_id IN (SELECT id FROM track WHERE agent_session = ?)) OR id IN (SELECT session_id FROM share WHERE to_session = ?))");
+    args.push(p.session ?? "", p.session ?? "", p.session ?? "", p.session ?? "");
   } else if (p.kind !== "platform") {
     where.push("(audience = 'org' OR owner = ? OR EXISTS (SELECT 1 FROM json_each(session.writers) WHERE value = ?))");
     args.push(p.subject, byOf(p));
