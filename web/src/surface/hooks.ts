@@ -58,6 +58,7 @@ export function useConversation(sid: string | null, trackId?: string): Conversat
     const lines = opLines(ops.values(), trackId ? { trackId } : { sessionId: sid }, {
       track: (id) => rows.track.get(id)?.name ?? 'a track',
       thread: (id) => rows.session.get(id)?.title ?? 'A thread',
+      me: `user:${surface.me}`,
     })
     const base = buildTranscript(events, surface.me, open)
     const merged = lines.length ? [...base, ...lines].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)) : base

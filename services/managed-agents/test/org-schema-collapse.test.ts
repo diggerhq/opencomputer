@@ -10,7 +10,8 @@ import { ORG_STEPS, SESSION_LOG_MIGRATIONS, SLACK_STEPS } from "./fixtures/pre-c
 /**
  * Org's, Slack's and SessionLog's storage steps were collapsed into one initial step each before
  * their first deploy. A fresh store ends with the same tables, columns, indexes and seeded rows
- * either way; only `_migrations.applied` differs (the number of steps).
+ * either way; only `_migrations.applied` differs (the number of steps). Steps added to Org since
+ * (`ORG` past its first) are not part of the fold.
  */
 
 // Org is migrated on first use, so a fresh one is an empty store.

@@ -10,6 +10,7 @@ import type { Layout } from '../store/surface-state'
 import type { ThreadView } from '../store/views'
 import { I } from './icons'
 import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
+import { mergeable, pullNumber, refusalOf } from '../store/pulls'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { ResultIcon } from './ResultIcon'
@@ -77,6 +78,9 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
   const change = thread.results.find(
     (r) => r.type === 'pr' || r.type === 'changes',
   )
+  // Work 118: merging is its own act, not Done. One open pull request that can merge is offered first.
+  const pulls = thread.results.filter((r) => mergeable(r))
+  const pull = pulls.length === 1 ? pulls[0] : null
   const accept = () => surface.accept(p.id)
   const dismiss = () => surface.dismissProposal(p.id)
   return (
@@ -94,11 +98,27 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
       <div className={ACTS}>
         {p.type === 'done' ? (
           <>
-            <Button size="sm" onClick={accept}>
+            {pull && (
+              <Button size="sm" onClick={() => surface.merge(pull.id)}>
+                Merge #{pullNumber(pull)}
+                <Kbd className="bg-primary-foreground/15 text-primary-foreground">
+                  M
+                </Kbd>
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={pull ? 'outline' : 'default'}
+              onClick={accept}
+            >
               Done
-              <Kbd className="bg-primary-foreground/15 text-primary-foreground">
-                E
-              </Kbd>
+              {pull ? (
+                <Kbd>E</Kbd>
+              ) : (
+                <Kbd className="bg-primary-foreground/15 text-primary-foreground">
+                  E
+                </Kbd>
+              )}
             </Button>
             {change && (
               <Button
@@ -143,6 +163,7 @@ function Results({
   ring: string | null
 }) {
   const surface = useSurface()
+  const unmerged = useS((s) => s.unmerged)
   const ref = useRef<HTMLDivElement>(null)
   const [all, setAll] = useState(false)
   // How many sit below the two rows shown.
@@ -171,24 +192,44 @@ function Results({
         )}
       >
         {results.map((r) => {
-          const detail = resultDetail(r)
+          const why = refusalOf(r, unmerged)
+          const detail = why ? `not merged: ${why}` : resultDetail(r)
+          const merge = mergeable(r)
           return (
-            <Button
-              key={r.id}
-              data-result
-              variant="secondary"
-              size="xs"
-              className="font-normal"
-              onClick={() => surface.openResult(r)}
-            >
-              <ResultIcon result={r} ring={ring === r.id} />
-              {resultTitle(r)}
-              {detail && (
-                <small className="text-muted-foreground text-xs tabular-nums @max-[560px]:hidden">
-                  {detail}
-                </small>
+            // One chip: the result, and where it can merge, a segment that merges it (work 118).
+            <span key={r.id} data-result className="inline-flex max-w-full">
+              <Button
+                variant="secondary"
+                size="xs"
+                className={cn('min-w-0 font-normal', merge && 'rounded-r-none')}
+                onClick={() => surface.openResult(r)}
+              >
+                <ResultIcon result={r} ring={ring === r.id} />
+                <span className="truncate">{resultTitle(r)}</span>
+                {detail && (
+                  <small
+                    className={cn(
+                      'text-muted-foreground text-xs tabular-nums @max-[560px]:hidden',
+                      why && 'text-status-pending',
+                    )}
+                  >
+                    {detail}
+                  </small>
+                )}
+              </Button>
+              {merge && (
+                <Button
+                  variant="secondary"
+                  size="xs"
+                  data-merge
+                  className="border-background rounded-l-none border-l"
+                  title={`Merge #${pullNumber(r)} into its base branch`}
+                  onClick={() => surface.merge(r.id)}
+                >
+                  Merge
+                </Button>
               )}
-            </Button>
+            </span>
           )
         })}
         {all && (

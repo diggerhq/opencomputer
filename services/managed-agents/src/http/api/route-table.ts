@@ -1,6 +1,6 @@
 // The API's routes (work 084, spec 37): `METHOD /suffix` to a route, the scope each needs, and which the actors serve.
 
-import { matchMutation } from "../../actors/org/contract.js";
+import { EDGE_MUTATIONS, matchMutation } from "../../actors/org/contract.js";
 import type { ApiScope } from "../../api-objects/objects.js";
 import { isId, isSessionId } from "../../ids/session-ids.js";
 
@@ -16,6 +16,8 @@ export interface Route {
 /** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
   const mutation = matchMutation(method, `/work/${s.join("/")}`);
+  // GitHub's first, then Org's: a route of its own (result-merge.ts), `work.merge` or `work.revert`.
+  if (mutation && EDGE_MUTATIONS.has(mutation.name)) return { op: `work.${mutation.name.split(".")[1]!}`, sub: mutation.args.resultId! };
   if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;
@@ -135,7 +137,7 @@ export function scopeOf(op: string): ApiScope | null {
   if (op === "asks.answer" || op === "asks.dismiss") return "asks:answer";
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
   if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
-  if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
+  if (op === "work.repository.put" || op === "mutate" || op === "work.tell" || op === "work.merge" || op === "work.revert") return "work:write";
   if (op === "live" || op === "attachments.url") return "sessions:read";
   if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
@@ -151,6 +153,6 @@ export const ACTOR_OPS = new Set([
   "events.list", "turns.list", "turns.get", "asks.list", "asks.get", "subagents.list", "subagents.get",
   "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
-  "live", "work.tell", "work.diff", "work.file", "slack.post", "settings.get", "settings.patch",
+  "live", "work.tell", "work.diff", "work.merge", "work.revert", "work.file", "slack.post", "settings.get", "settings.patch",
   "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.complete", "attachments.url",
 ]);

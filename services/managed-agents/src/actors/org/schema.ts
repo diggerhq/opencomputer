@@ -28,7 +28,7 @@ export const FEED_KINDS = Object.keys(FEED_TABLES) as FeedTable[];
 
 const FEED = "version INTEGER NOT NULL, audience TEXT NOT NULL";
 
-/** The tables. One step until the first deploy: the steps before it were folded in, as nothing had stored them yet. */
+/** The tables of the first step: the steps before the first deploy were folded into it, as nothing had stored them yet. */
 const TABLES = [
   `CREATE TABLE meta (k INTEGER PRIMARY KEY CHECK (k = 1), version INTEGER NOT NULL, occ INTEGER NOT NULL,
      floor INTEGER NOT NULL DEFAULT 0, admins TEXT NOT NULL DEFAULT '[]', knowledge TEXT, org TEXT,
@@ -86,12 +86,23 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "board", 0);
     alarms.set(sql, "accessCarry", 0);
   },
+  // `result.pull` (work 118).
+  addPull,
   // Attachments (work 126, section 5): the rows of what people upload for a message. Not in the feed;
   // the objects are in the attachments' store (attachments/store.ts), keyed `<org>/<session>/<id>` (org/attachments.ts).
   attachmentTable,
 ];
 
-/** The attachment table (step 2); `IF NOT EXISTS` so `completeFolded` gives it to a store whose count skips the step. */
+/** `result.pull` (work 118): what the platform holds of a pull request, apart from the agent's `meta`. `checks` moves to it. */
+function addPull(sql: Sql): void {
+  if (sql.exec<{ name: string }>("PRAGMA table_info(result)").some((column) => column.name === "pull")) return;
+  sql.exec("ALTER TABLE result ADD COLUMN pull TEXT");
+  sql.exec(
+    "UPDATE result SET pull = json_object('checks', json_extract(meta, '$.checks')), meta = json_remove(meta, '$.checks') WHERE kind = 'pr' AND json_extract(meta, '$.checks') IS NOT NULL",
+  );
+}
+
+/** The attachment table (step 3); `IF NOT EXISTS` so `completeFolded` gives it to a store whose count skips the step. */
 function attachmentTable(sql: Sql): void {
   sql.exec(
     `CREATE TABLE IF NOT EXISTS attachment (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, by TEXT NOT NULL,
@@ -107,9 +118,11 @@ function attachmentTable(sql: Sql): void {
  * A store whose steps ran before they were folded into one (a development stack deployed between the
  * two): its count (6 or 8) says nothing is left to apply, so it is given what it lacks: the
  * `meta.slack_access_default` column and the carry-over the last folded steps held, when it stopped
- * before them, and the attachment table (step 2, added after the fold). A no-op on every other store.
+ * before them, and the attachment table (step 3, added after the fold). A no-op on every other store.
  */
 export function completeFolded(sql: Sql): void {
+  // Such a store counts more steps applied than there are now, so a step added since the fold is not run for it.
+  addPull(sql);
   if (!sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) {
     sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
     alarms.set(sql, "accessCarry", 0);

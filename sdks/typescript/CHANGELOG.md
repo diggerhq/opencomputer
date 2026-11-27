@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.1.4
+## 3.3.0
 
 - `@opencomputer/sdk/computer`: files attached to a message.
   `attach(sessionId, file)` uploads a file ahead of its message, straight to
@@ -13,6 +13,20 @@
   (default: `fetch`, without credentials and without progress).
 - `Capabilities.features.attachments`: false when the deployment has no
   store for files (missing on an older server: read it as true).
+
+## 3.2.0
+
+- `@opencomputer/sdk/computer`: a `pr` result carries `pull` (`PullRecord`),
+  what the platform knows of its pull request: `head`, `draft`, `checks`, a
+  merge or revert under way (`merging`, `reverting`), and the merge and revert
+  made of it (`merge`, `revert`). It is null until GitHub has said anything.
+- Changed: a pull request's check conclusion is `pull.checks`. It was
+  `meta.checks`; `meta` is now only what the agent wrote.
+- New mutations `result.merge` (`{ resultId, head?, at? }`) and
+  `result.revert` (`{ resultId }`): a person merges a thread's pull request,
+  and reverts the merge. `head` is the commit they saw and `at` when they
+  clicked; a merge of another head, or of a click older than five minutes, is
+  refused.
 
 ## 3.1.3
 
