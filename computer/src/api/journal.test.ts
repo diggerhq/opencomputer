@@ -205,7 +205,7 @@ describe('Journal', () => {
 
   it('redacts every string in data', async () => {
     const j = await take({ redact: (s) => s.replaceAll('sekrit', '[redacted]') });
-    const e = j.append('message.received', { input: 'my sekrit', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: mintId('tn'), actor: ann });
+    const e = j.append('message.received', { input: 'my sekrit', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId: mintId('tn'), actor: ann });
     expect((e.data as { input: string }).input).toBe('my [redacted]');
     expect(fs.readFileSync(file, 'utf8')).not.toContain('sekrit');
   });

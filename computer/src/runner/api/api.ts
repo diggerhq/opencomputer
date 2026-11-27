@@ -35,7 +35,7 @@
 
 import { log } from '../../log.js';
 import { mintId } from '../../session-ids.js';
-import { NOT_ASKED, type ApiActor, type ApiError, type Person, type SlackFile } from '../../protocol.js';
+import { NOT_ASKED, type ApiActor, type ApiAttachment, type ApiError, type Person, type SlackFile } from '../../protocol.js';
 import type { Linked } from '../../links.js';
 import type { Actor } from '../../api/schema-objects.js';
 import type { SessionLog } from '../../api/session-log.js';
@@ -44,6 +44,7 @@ import { apiError, type CallOutcome, type SubscribeOptions, type Subscription, t
 import type { EffortLevel, PermissionMode } from '../../protocol.js';
 import { switchEffort, switchModel, switchSpeed } from '../model-switch.js';
 import type { Session } from '../session.js';
+import type { Attachment } from '../attachments.js';
 import type { AskAnswer } from './asks.js';
 import { mayAnswer, prompts } from '../prompts.js';
 import { type IfBusy, type SentFrom, Tap } from './tap.js';
@@ -57,6 +58,7 @@ interface Waiting {
   turnId: string;
   text: string;
   actor: Actor;
+  attachments: ApiAttachment[];
 }
 
 /** `turns.send`'s `slack`: the Slack message the input is, as the Slack actor read it. `context`: the messages held for the thread since its last turn (none, or one `context` entry). */
@@ -79,6 +81,11 @@ export interface SessionApiOptions {
   serial?<T>(job: () => Promise<T>): Promise<T>;
   /** A Slack message (`turns.send` with `slack`): the runner's Slack handling, in order with its others. Absent: sent as any other message. */
   slack?(text: string, m: SlackTurn, from: SentFrom): Promise<void>;
+  /**
+   * The files of a message (work 126): fetched with the session's credential into its temp directory, as a Slack
+   * message's are (runner/attachments.ts). Absent: the model is told each could not be downloaded.
+   */
+  attachments?(atts: ApiAttachment[]): Promise<Attachment[]>;
   now?: () => number;
   /** Each write call, once it returns (api.write telemetry: write-events.ts). Never awaited. */
   onWrite?(w: ApiWrite): void;
@@ -216,7 +223,7 @@ export class SessionApi implements Writer {
       // A turn without an author was started by the harness (a subagent ended), not by a message to resend.
       if (t.status !== 'queued' || this.taken.has(t.id) || !t.author) continue;
       this.taken.add(t.id);
-      this.queue.push({ turnId: t.id, text: t.input ?? '', actor: t.author });
+      this.queue.push({ turnId: t.id, text: t.input ?? '', actor: t.author, attachments: this.attachmentsOf(t.id) });
     }
     this.idle();
   }
@@ -231,19 +238,34 @@ export class SessionApi implements Writer {
 
   // ---------------------------------------------------------------- sending
 
+  /** The message's files for the session (Session.send awaits them beside the names): none, or no fetcher, is a note per file that it could not be downloaded. */
+  private files(atts: ApiAttachment[]): Attachment[] | Promise<Attachment[]> {
+    if (!atts.length) return [];
+    if (!this.o.attachments) return atts.map((a) => ({ name: a.name, path: '', mimetype: a.mimetype, error: 'this session cannot fetch attachments' }));
+    return this.o.attachments(atts);
+  }
+
+  /** The attachments a queued turn's `message.received` recorded: its first event, by the journal's turn index (a resume, after the runner that queued it). */
+  private attachmentsOf(turnId: string): ApiAttachment[] {
+    const first = this.log.journal.turns().find((t) => t.turnId === turnId)?.seq;
+    const e = first === undefined ? undefined : this.log.journal.read(first - 1, 1)[0];
+    const atts = e?.type === 'message.received' && e.turnId === turnId ? (e.data as { attachments?: ApiAttachment[] }).attachments : undefined;
+    return Array.isArray(atts) ? atts : [];
+  }
+
   /** A message into the session, as `turns.send` has it; `turnId`: the turn it starts, when the caller named one (the cloud's inbox). */
-  async send(text: string, actor: Actor, ifBusy: IfBusy, turnId: string = mintId('tn')): Promise<CallOutcome> {
+  async send(text: string, actor: Actor, ifBusy: IfBusy, turnId: string = mintId('tn'), attachments: ApiAttachment[] = []): Promise<CallOutcome> {
     await this.echo(text, actor);
-    if (!this.busy && !this.queue.length) return this.start({ turnId, text, actor }, { ifBusy });
+    if (!this.busy && !this.queue.length) return this.start({ turnId, text, actor, attachments }, { ifBusy });
     const cur = this.tap.cur;
-    if (ifBusy === 'interrupt') return this.interruptWith(text, actor, turnId);
+    if (ifBusy === 'interrupt') return this.interruptWith(text, actor, turnId, attachments);
     if (ifBusy === 'steer' && cur) {
-      await this.run(() => this.session.send(text, undefined, [], undefined, { actor, ifBusy, turnId }));
+      await this.run(() => this.session.send(text, undefined, this.files(attachments), undefined, { actor, ifBusy, turnId, attachments }));
       return this.sent(cur.id, 'steered');
     }
     if (this.queue.length >= QUEUE_MAX) return fail('queue_full', `at most ${QUEUE_MAX} turns may wait`, 409, { retryable: true, retryAfterMs: 5000 });
-    const w = { turnId, text, actor };
-    this.log.append('message.received', { input: text, ifBusy, delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: w.turnId, actor });
+    const w = { turnId, text, actor, attachments };
+    this.log.append('message.received', { input: text, ifBusy, delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments }, { turnId: w.turnId, actor });
     this.log.append('turn.queued', { position: this.queue.length + 1, trigger: 'message', subagentId: null }, { turnId: w.turnId, actor });
     this.queue.push(w);
     this.taken.add(w.turnId);
@@ -281,7 +303,7 @@ export class SessionApi implements Writer {
   }
 
   private async start(w: Waiting, from: Omit<SentFrom, 'actor' | 'turnId'>): Promise<CallOutcome> {
-    await this.run(() => this.session.send(w.text, undefined, [], undefined, { actor: w.actor, turnId: w.turnId, ...from }));
+    await this.run(() => this.session.send(w.text, undefined, this.files(w.attachments), undefined, { actor: w.actor, turnId: w.turnId, attachments: w.attachments, ...from }));
     return this.sent(w.turnId, from.recorded ? 'queued' : 'started');
   }
 
@@ -297,16 +319,16 @@ export class SessionApi implements Writer {
    * harness stop and the send follow in the background, in order with the
    * API's other sends (Slack's `!!` path, as a person typing it).
    */
-  private interruptWith(text: string, actor: Actor, turnId: string): CallOutcome {
+  private interruptWith(text: string, actor: Actor, turnId: string, attachments: ApiAttachment[]): CallOutcome {
     this.cancelQueued(actor);
     const cur = this.tap.cur;
     if (cur) this.cancelling(cur.id, 'interrupted', actor);
-    const from: SentFrom = { actor, turnId, ifBusy: 'interrupt', interrupts: cur?.id };
+    const from: SentFrom = { actor, turnId, ifBusy: 'interrupt', interrupts: cur?.id, attachments };
     this.tap.sent(text, undefined, false, from);
     const asks = this.tap.asks.openIds().length > 0;
     void this.run(async () => {
       if (asks) await this.session.interrupt(); // a prompt would take the text as its answer
-      await this.session.send(`!! ${text}`, undefined, [], undefined, { ...from, recorded: true });
+      await this.session.send(`!! ${text}`, undefined, this.files(attachments), undefined, { ...from, recorded: true });
     }).catch((e) => log.error('api interrupt send', e));
     return this.sent(turnId, 'started');
   }
@@ -343,7 +365,7 @@ export class SessionApi implements Writer {
       'turns.send': (p, ctx) =>
         p.slack && this.o.slack && ctx.actor.via === 'slack'
           ? this.slackTurn(p.input, p.slack as SlackTurn, actorOf(ctx.actor), p.turnId ?? mintId('tn'))
-          : this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue', p.turnId),
+          : this.send(p.input, actorOf(ctx.actor), p.ifBusy ?? 'queue', p.turnId, ctx.attachments ?? []),
       'sessions.compact': (p, ctx) => this.send(`/compact${p.instructions ? ` ${p.instructions}` : ''}`, actorOf(ctx.actor), 'queue'),
       'sessions.interrupt': (p, ctx) => {
         const actor = actorOf(ctx.actor);

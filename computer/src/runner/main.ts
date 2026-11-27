@@ -47,7 +47,7 @@ import { PromptGuard } from './prompt-guard.js';
 import { codexBin } from '../runner-env.js';
 import { fakeSlack } from '../dev/fake-slack.js';
 import { lines, pidFileFor, secretsFor, send, tokenSocketFor } from '../ipc.js';
-import { HOST_RUN, isSlackSpec, type RunnerApi } from '../protocol.js';
+import { type ApiAttachment, HOST_RUN, isSlackSpec, type RunnerApi } from '../protocol.js';
 import { type AttachedApi, attachApi } from './api/attach.js';
 import { NullSurface } from './api/surface.js';
 import { RunningSubagents } from './api/running.js';
@@ -336,7 +336,7 @@ let api: AttachedApi | undefined;
 /** The session's API writer (work 084): takes the journal's lock, serves the API socket. */
 async function link(b: Bound, a: RunnerApi | undefined = spec.api) {
   if (!a?.token || !s || api) return;
-  api = await attachApi(a, s, { owner: b.owner, spec: b, redact: (t) => guard.redact(secrets.redact(t)), suspend: () => ((exiting = true), quit()), slack: slackMessage, telemetry });
+  api = await attachApi(a, s, { owner: b.owner, spec: b, redact: (t) => guard.redact(secrets.redact(t)), suspend: () => ((exiting = true), quit()), slack: slackMessage, attachments: apiAttachments, telemetry });
 }
 
 // A spare's Claude Code starts with what a session's would, reaching the session late-bound.
@@ -409,6 +409,14 @@ function clearFeedback(ts?: string) {
 const ordered = new Ordered(20_000, () => log.warn('a message is still being handled after 20 s; handling the next one'));
 const slackMessage = (text: string, m: SlackTurn, from: SentFrom) => ordered.run(() => handle(text, m, from));
 
+// An API message's attachments (work 126): fetched from the session's own attachment route with its key (`work.api`),
+// into the same directory and under the same rules as a Slack message's files.
+function apiAttachments(atts: ApiAttachment[]) {
+  if (!ss?.sessionId) return Promise.reject(new Error('this session has no id on the API yet'));
+  const wanted = atts.map((a) => ({ ...a, source: 'api' as const, sessionId: ss!.sessionId! }));
+  return turns.timed('attachments', fetchAttachments(wanted, { api: work.api }, ss.key), { count: atts.length });
+}
+
 async function handle(text: string, m: SlackTurn, from: SentFrom) {
   // On the way out: the host waits for this process to go and starts a new one.
   if (quitting) throw new Error('runner gone');
@@ -429,7 +437,7 @@ async function handle(text: string, m: SlackTurn, from: SentFrom) {
   else if (s.thread.slack) void s.client.reactions.add({ channel: ss.channel!, timestamp: m.ts, name: 'eyes' }).catch(() => {});
   const linked = slackLinked(m);
   const files = [...(m.files ?? []), ...linkedFiles(linked)];
-  const fetching = fetchAttachments(files, botToken, ss.key);
+  const fetching = fetchAttachments(files, { slack: botToken }, ss.key);
   const atts = files.length ? turns.timed('attachments', fetching, { count: files.length }) : fetching;
   await s.send(withLinked(text, linked), m.userId, atts, m.mentioned && m.mentionedInline ? 'inline' : m.mentioned, from, owner ? 'owner' : 'driver');
   // The Slack actor set the status to `processing` on receipt. A reply that only

@@ -37,6 +37,12 @@ export class CloudError extends Error {
 export interface CloudApi {
   /** `path` below the edge's `/api/managed-agents/computer` (spec 34.2), e.g. `/sessions`; resolves with the reply's JSON (null for an empty one). */
   call(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, o?: CloudCall): Promise<any>;
+  /**
+   * A GET whose body is bytes, not JSON (an attachment's content, work 126): the Response as the API streamed it, its
+   * status unread, so the caller streams the body and reads the error. A 401 asks the key again once. `signal` stands in
+   * for the 30 s call timeout: the caller watches the stream's progress.
+   */
+  stream(path: string, signal?: AbortSignal): Promise<Response>;
 }
 
 /** One JSON line to the token socket, one back. */
@@ -74,7 +80,7 @@ export function cloudApi(o: { key: () => Promise<CloudKey>; fetch?: typeof fetch
     held = o.key();
     return held;
   };
-  const once = async (method: string, path: string, c: CloudCall) => {
+  const once = async (method: string, path: string, c: CloudCall, signal?: AbortSignal) => {
     const k = await key();
     if (!k.apiUrl) throw new Error('the host gave a key without its API URL');
     const url = new URL(`${k.apiUrl.replace(/\/$/, '')}${API_PREFIX}${path}`);
@@ -87,10 +93,19 @@ export function cloudApi(o: { key: () => Promise<CloudKey>; fetch?: typeof fetch
         ...(c.key ? { 'idempotency-key': c.key } : {}),
       },
       ...(c.body !== undefined ? { body: JSON.stringify(c.body) } : {}),
-      signal: AbortSignal.timeout(30_000),
+      signal: signal ?? AbortSignal.timeout(30_000),
     });
   };
   return {
+    async stream(path, signal) {
+      let res = await once('GET', path, {}, signal);
+      if (res.status === 401) {
+        held = undefined;
+        await res.body?.cancel().catch(() => {});
+        res = await once('GET', path, {}, signal);
+      }
+      return res;
+    },
     async call(method, path, c = {}) {
       let res = await once(method, path, c);
       if (res.status === 401) (held = undefined), (res = await once(method, path, c));

@@ -36,6 +36,22 @@ describe('cloudApi', () => {
     expect(t.asked.map((a) => a.init.headers.authorization)).toEqual(['Bearer k1', 'Bearer k2']);
   });
 
+  it("stream hands back the response as it came, with the session's key, and asks the key again once after a 401", async () => {
+    const t = rig([{ status: 200, body: 'bytes' }]);
+    const r = await t.api.stream('/sessions/ses_1/attachments/at_1/content');
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('bytes');
+    expect(t.asked[0].url).toBe('https://api.test/api/managed-agents/computer/sessions/ses_1/attachments/at_1/content');
+    expect(t.asked[0].init).toMatchObject({ method: 'GET', headers: { authorization: 'Bearer k1' } });
+    expect(t.asked[0].init.signal).toBeInstanceOf(AbortSignal);
+    const u = rig([{ status: 401, body: { error: { code: 'unauthorized' } } }, { status: 410, body: { error: { code: 'attachment_deleted' } } }]);
+    const signal = new AbortController().signal;
+    const gone = await u.api.stream('/sessions/ses_1/attachments/at_1/content', signal);
+    expect(gone.status).toBe(410); // not an error here: the caller reads the status and the body
+    expect(u.asked.map((a) => a.init.headers.authorization)).toEqual(['Bearer k1', 'Bearer k2']);
+    expect(u.asked.map((a) => a.init.signal)).toEqual([signal, signal]);
+  });
+
   it("an error is the API's code, message and reason", async () => {
     const t = rig([{ status: 409, body: { error: { code: 'refused', message: 'Refused: refused.', reason: 'user_set' } } }]);
     const e = await t.api.call('PUT', '/work/threads/cs_1/title', { body: {} }).catch((x) => x);

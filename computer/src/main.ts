@@ -183,7 +183,7 @@ async function deliver(s: Session, m: Msg, text: string, mentioned = true, midTh
   const linked = [...forwarded(m.attachments), ...(await resolveLinks(s.client, req))];
   // Mentioned mid-thread: the replies above, so the new session sees what it was asked about.
   if (midThread) linked.unshift(await resolveLinks.thread(s.client, req, m.thread_ts!, m.ts));
-  const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], s.client.token ?? env.SLACK_BOT_TOKEN, s.info.key);
+  const atts = await fetchAttachments([...(m.files ?? []), ...linkedFiles(linked)], { slack: s.client.token ?? env.SLACK_BOT_TOKEN }, s.info.key);
   await s.send(withLinked(text, linked), m.user!, atts, mentioned);
 }
 

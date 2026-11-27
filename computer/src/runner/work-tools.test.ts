@@ -23,7 +23,7 @@ const summary = {
 function rig() {
   const calls: Array<{ method: string; path: string; o: any }> = [];
   const w: Work = {
-    api: { call: async (method, path, o) => (calls.push({ method, path, o }), { protocol: 1 }) },
+    api: { call: async (method, path, o) => (calls.push({ method, path, o }), { protocol: 1 }), stream: async () => Promise.reject(new Error('unused')) },
     session: () => ({ id: 'cs_0000000000000001' }) as never,
   };
   const tool = workTools(w).find((t) => t.name === 'review_summary')!;

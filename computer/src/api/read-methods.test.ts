@@ -164,7 +164,7 @@ describe('idempotency', () => {
         runs++;
         await new Promise((r) => setTimeout(r, 20));
         const t = mintId('tn');
-        log().append('message.received', { input: p.input, ifBusy: p.ifBusy ?? 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId: t, actor: ctx.actor });
+        log().append('message.received', { input: p.input, ifBusy: p.ifBusy ?? 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId: t, actor: ctx.actor });
         const e = log().append('turn.queued', { position: 1, trigger: 'message', subagentId: null }, { turnId: t, actor: ctx.actor });
         return { result: { turn: log().fold.turn(t), delivery: 'queued', duplicate: false, seq: e.seq } };
       },

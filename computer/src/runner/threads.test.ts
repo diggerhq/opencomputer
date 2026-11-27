@@ -9,7 +9,7 @@ const OTHER = 'cs_0000000000000002';
 function rig(answers: (method: string, path: string, o: any) => unknown = () => ({}), slackThread: string | undefined = 'T1:C0OWN:1700000000.000100') {
   const calls: Array<{ method: string; path: string; o: any }> = [];
   const w: Work = {
-    api: { call: async (method, path, o) => (calls.push({ method, path, o }), answers(method, path, o)) },
+    api: { call: async (method, path, o) => (calls.push({ method, path, o }), answers(method, path, o)), stream: async () => Promise.reject(new Error('unused')) },
     session: () => ({ id: 'cs_0000000000000001', ...(slackThread ? { slackThread } : {}) }),
   };
   const [read, post] = threadTools(w);
