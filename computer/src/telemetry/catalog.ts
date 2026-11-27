@@ -77,7 +77,7 @@ export const CATALOG = {
   // `fetch_skipped`: the clone's refs were fresh (workspaces/fetch-schedule.ts), no fetch on the fork's path.
   'fork.repo': host('repo', 'fetch_ms', 'worktree_ms', 'lock_wait_ms', 'fetch_error_type', 'fetch_skipped'),
   'fork.done': host('repos', 'fork_error_type'),
-  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms'),
+  'runner.launched': host('launch_mode', 'attempt', 'image', 'container.create_ms', 'container.start_ms', 'container.recreated', 'container.mount_ms', 'container.add_ms', 'resumed', 'resume_missing'),
   // One script in a helper container (work 103): `script` is a workspace script's file name, or `files` for a `/files` script on a stopped thread.
   'sandbox.helper': host('script'),
   // What one sweep of a `podman` host removed, by kind (work 103); emitted only when it removed something.

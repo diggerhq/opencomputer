@@ -93,6 +93,9 @@ export interface ApiRow {
   model: string | null;
   effort: string | null;
   speed: string | null;
+  /** The conversation the runner last reported, which a cold start resumes. */
+  sdkSessionId: string | null;
+  forkPath: string | null;
   status: string | null;
   originType: string;
   originClient: string | null;
@@ -104,11 +107,17 @@ export interface ApiRow {
   role: string | null;
 }
 
-const ROW_SELECT = `SELECT runner_key AS key, session_id AS sessionId, team_id AS teamId, channel_id AS channelId,
-  thread_ts AS threadTs, owner_id AS ownerId, owner_user_id AS ownerUserId, owner_name AS ownerName,
-  owner_email AS ownerEmail, title, mode, model, effort, speed, status, origin_type AS originType,
-  origin_client AS originClient, metadata, created_at AS createdAt, updated_at AS updatedAt,
-  active_turn_id AS activeTurnId, role FROM sessions`;
+/** Each field of `ApiRow` and its `sessions` column: a field without a column, or a column read into no field, does not compile. */
+const ROW_COLUMNS = {
+  key: "runner_key", sessionId: "session_id", teamId: "team_id", channelId: "channel_id", threadTs: "thread_ts",
+  ownerId: "owner_id", ownerUserId: "owner_user_id", ownerName: "owner_name", ownerEmail: "owner_email",
+  title: "title", mode: "mode", model: "model", effort: "effort", speed: "speed",
+  sdkSessionId: "sdk_session_id", forkPath: "fork_path", status: "status", originType: "origin_type",
+  originClient: "origin_client", metadata: "metadata", createdAt: "created_at", updatedAt: "updated_at",
+  activeTurnId: "active_turn_id", role: "role",
+} as const satisfies { [K in keyof ApiRow]-?: string };
+
+const ROW_SELECT = `SELECT ${Object.entries(ROW_COLUMNS).map(([field, column]) => `${column} AS ${field}`).join(", ")} FROM sessions`;
 
 /**
  * Columns work 084 adds to `sessions` (lifecycle.ts's pattern: added when missing). Objects from before
@@ -245,6 +254,8 @@ export class ComputerSessionsApi {
       ...(row.model ? { model: row.model } : {}),
       ...(row.effort ? { effort: row.effort } : {}),
       ...(isSpeed(row.speed) ? { speed: row.speed } : {}),
+      ...(row.sdkSessionId ? { sdkSessionId: row.sdkSessionId } : {}),
+      ...(row.forkPath ? { forkPath: row.forkPath } : {}),
       metadata: parseMetadata(row.metadata),
       ...(row.role ? { role: JSON.parse(row.role) as CalvinRoleSpec } : {}),
     };

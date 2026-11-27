@@ -206,6 +206,21 @@ describe("the Computer actor of tracks and threads", () => {
     expect(api[1]!.params).toEqual({ sessionId: SESSION(1) });
   });
 
+  it("sends the conversation the runner last reported, so a cold start resumes it", async () => {
+    const { stub, fakes } = await computer("tt-resume");
+    const { frames, socket } = await host("tt-resume");
+    await stub.start(spec("tt-resume", SESSION(1)));
+    await until(() => frames, (all) => all.some((frame) => frame.t === "start"), "start frame");
+    // The runner reports its conversation, as a host forwards it.
+    const key = await inside(stub, (_i, state) => [...state.storage.sql.exec<{ k: string }>("SELECT runner_key AS k FROM sessions WHERE session_id = ?", SESSION(1))][0]!.k);
+    socket.send(JSON.stringify({ t: "session", report: { key, sessionId: SESSION(1), status: "idle", sdkSessionId: "sdk-1", forkPath: "/workspace" } }));
+    await until(() => inside(stub, (_i, state) => [...state.storage.sql.exec<{ s: string | null }>("SELECT sdk_session_id AS s FROM sessions WHERE runner_key = ?", key)][0]?.s), (s) => s === "sdk-1", "reported conversation");
+    fakes.entries = [entry("in_1")];
+    await stub.drain(SESSION(1));
+    const api = await until(() => frames.filter((frame) => frame.t === "api"), (all) => all.length === 1, "api frame");
+    expect(api[0].session).toMatchObject({ sessionId: SESSION(1), sdkSessionId: "sdk-1", forkPath: "/workspace" });
+  });
+
   it("takes the drain with no host, owes it, and drains at hello", async () => {
     const { stub, fakes } = await computer("tt-waking");
     fakes.entries = [entry("in_1")];
