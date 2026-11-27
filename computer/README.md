@@ -212,7 +212,7 @@ work 049.
 
 Two tools reach other sessions without a link in the message (split
 deployment only), both answered by the backend. `read_thread` takes a session
-id or a Slack thread link and returns that session's last 20 turns (60,000
+id, its web app link or a Slack thread link and returns that session's last 20 turns (60,000
 characters at most) as data; it reads this session, the ones it started and
 its track's, and never prompts. `post_thread` posts a reply into a Slack
 thread whose session it could read: in the thread, never at the top level,

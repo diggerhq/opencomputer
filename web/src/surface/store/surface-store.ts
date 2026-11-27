@@ -412,6 +412,15 @@ export function createSurface(o: SurfaceOptions) {
     },
     toast,
     dismissToast,
+    // The address of a thread or track, for a person or an agent. It grants nothing.
+    canLink: !!host.link,
+    copyLink(loc: Partial<Pick<Location, 'thread' | 'track'>>) {
+      if (!host.link) return
+      navigator.clipboard.writeText(host.link({ ...NOWHERE, ...loc })).then(
+        () => toast({ text: 'Link copied' }),
+        () => toast({ text: 'Could not copy the link', tone: 'error' }),
+      )
+    },
 
     // -- talking --
     // A1, A22: the agent decides what this becomes; `open` lands on it.

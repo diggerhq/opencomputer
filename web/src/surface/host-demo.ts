@@ -1,6 +1,6 @@
 import type { Channel, ServerFrame } from '@opencomputer/sdk/computer'
 import type { Host } from './host'
-import { browserParts, urlLocation } from './host-web'
+import { browserParts, urlLink, urlLocation } from './host-web'
 import recording from './demo-data.json'
 import { playTurn } from './demo-turn'
 
@@ -126,6 +126,7 @@ export function demoHost(o: {
     },
     connect: channel,
     location: urlLocation(o.base),
+    ...(o.platform === 'desktop' ? {} : { link: urlLink(o.base) }),
     ...browserParts(),
   }
 }

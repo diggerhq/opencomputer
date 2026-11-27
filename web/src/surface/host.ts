@@ -47,6 +47,10 @@ export interface Host {
     read(what: 'queue' | 'drafts'): Promise<Uint8Array | null>
     write(what: 'queue' | 'drafts', v: Uint8Array): Promise<void>
   }
+  // The address of a thread or track to paste elsewhere: the web tab's URL,
+  // which opens only for someone who could open it anyway. None in the Mac
+  // app, whose addresses are its own.
+  link?(loc: Location): string
   // Where the host keeps what is open: the URL on the web.
   location: {
     get(): Location

@@ -326,6 +326,8 @@ export function ThreadPane({ sid }: { sid: string }) {
         label: thread.keep ? 'Stop keeping' : 'Keep in list',
         onSelect: () => surface.keep(sid, !thread.keep),
       })
+    if (surface.canLink)
+      items.push({ label: 'Copy link', onSelect: () => surface.copyLink({ thread: sid }) })
     items.push('sep', {
       label: 'Delete',
       danger: true,
