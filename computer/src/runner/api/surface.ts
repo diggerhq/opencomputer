@@ -13,20 +13,29 @@
 //   History and AgentsPanel are real (the timeline keeps its card state in
 //   them) and write into a client that answers every call and goes nowhere;
 //   `upload` files the file as a result or refuses, and send_file tells the
-//   model which: it never says a file was posted where there is no thread.
+//   model which: it never says a file was posted where there is no thread;
+// - what differs for the model by surface is said here and read from here:
+//   `driven` picks its prompt, `noCards` is post_card's answer. Nothing else
+//   derives either from `slack`.
 
 import type { KnownBlock } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
 import { AgentsPanel } from '../agents.js';
 import type { Names } from '../names.js';
+import { NO_CARDS } from '../post-card.js';
 import { History, Segment, type Target } from '../segment.js';
 import type { FileUpload } from '../send-file.js';
+import type { Driven } from '../system-prompt.js';
 import { SlackThread, type SessionStatus } from '../thread.js';
 
 /** What a session renders through. */
 export interface Surface extends Names {
   /** Renders in Slack: reactions, names and the context bar mean something. */
   readonly slack: boolean;
+  /** Where the session is driven from: which system prompt it gets (system-prompt.ts). */
+  readonly driven: Driven;
+  /** Why post_card draws nothing here, where it draws nothing: the tool answers it before it looks at the card. */
+  readonly noCards?: string;
   /** The Slack client; the runner replaces it when the bot token rotates. */
   client: WebClient;
   readonly target: Target;
@@ -56,6 +65,7 @@ export interface Surface extends Names {
 /** The Slack conversation a session renders into: SlackThread, and what streams into it. */
 export class SlackSurface extends SlackThread implements Surface {
   readonly slack = true;
+  readonly driven = 'slack';
 
   segment(after: Promise<unknown>) {
     return new Segment(this.client, this.target, after);
@@ -84,6 +94,8 @@ export function nullClient(): WebClient {
 /** A session with no Slack binding: renders nowhere. */
 export class NullSurface implements Surface {
   readonly slack = false;
+  readonly driven = 'app';
+  readonly noCards = NO_CARDS;
   client = nullClient();
   readonly target: Target = { channel: '', recipientUserId: '' };
 

@@ -8,8 +8,9 @@
 // one issue per problem, so the model can fix it, never degraded silently.
 // Cards are static: there is no Button (clicks are not routed back yet), only
 // LinkButton. A card holding a secret's value is not posted. The tool never
-// says "posted" for a card nobody sees: a session with no Slack thread is told
-// so (NO_CARDS), until cards are drawn there too.
+// says "posted" for a card nobody sees: where nothing draws one (NO_CARDS, a
+// session with no Slack thread) it says so before it looks at the spec, so the
+// model is not sent to fix a card that cannot be shown.
 
 import { cardToBlockKit, cardToFallbackText, type SlackCardElement } from '@chat-adapter/slack/blocks';
 import { type CardLimits, CardSpecError, schema, standardComponentDefinitions, toCard } from '@json-render/chat';
@@ -43,18 +44,24 @@ export function toSlack(spec: Spec): { blocks: KnownBlock[]; text: string } {
   return { blocks, text: cardToFallbackText(card) || ' ' };
 }
 
-/** What post_card answers where nothing draws a card: a session with no Slack thread. */
+/** What post_card answers where nothing draws a card: a session with no Slack thread (api/surface.ts `noCards`). */
 export const NO_CARDS = 'not posted: this thread is read in the app, which draws no cards yet. Put the numbers in your reply as a markdown table, which it renders.';
 
 /**
- * Posts one card through `post`, which answers why the card was not shown when
- * it was not. `leaks` names a secret the card holds. Never throws: every
+ * Posts one card through `post`. `leaks` names a secret the card holds;
+ * `refused` says why no card is drawn here, where none is. Never throws: every
  * failure is a reason the model can read.
  */
-export function cardSender(post: (text: string, blocks: KnownBlock[]) => Promise<string | void>, leaks: (data: Buffer) => string | undefined = () => undefined) {
+export function cardSender(
+  post: (text: string, blocks: KnownBlock[]) => Promise<void>,
+  leaks: (data: Buffer) => string | undefined = () => undefined,
+  refused: () => string | undefined = () => undefined,
+) {
   let sent = 0;
   return async (spec: Spec): Promise<{ ok: boolean; text: string }> => {
     const fail = (text: string) => ({ ok: false, text });
+    const no = refused();
+    if (no) return fail(no);
     if (sent >= MAX_CARDS) return fail(`this session already posted ${MAX_CARDS} cards; ask the person before posting more`);
     let msg: { blocks: KnownBlock[]; text: string };
     try {
@@ -67,8 +74,7 @@ export function cardSender(post: (text: string, blocks: KnownBlock[]) => Promise
     if (leaked) return fail(`the card contains the value of the secret $${leaked}; not posted`);
     sent++;
     try {
-      const not = await post(msg.text, msg.blocks);
-      if (not) return (sent--, fail(not));
+      await post(msg.text, msg.blocks);
       return { ok: true, text: 'Posted the card to the thread.' };
     } catch (e) {
       sent--;

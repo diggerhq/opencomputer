@@ -120,6 +120,7 @@ export function prewarmHarness(h: SpareSpec): Promise<SpareProcess> {
 /** The spare becomes the session's harness; `spare.claimed` says whether it took (refused: start one cold). */
 export function claimHarness(spare: SpareProcess, inbox: Inbox, c: ClaimSpec): Query {
   const ws = workspacePrompt(c.cwd);
+  const append = systemAppend(c.driven) + (ws?.append ?? '');
   return spare.claim({
     prompt: inbox,
     options: {
@@ -129,7 +130,7 @@ export function claimHarness(spare: SpareProcess, inbox: Inbox, c: ClaimSpec): Q
       settings: { effortLevel: c.effort, fastMode: c.fast, ...(ws ? { claudeMdExcludes: ws.exclude } : {}) },
       // Replaces the prewarm's `append` (measured, SDK 0.3.295), so it carries Calvin's own text too:
       // sent when the session's text is not what the spare parked with.
-      ...(ws || c.driven !== 'slack' ? { appendSystemPrompt: systemAppend(c.driven) + (ws?.append ?? '') } : {}),
+      ...(append !== SYSTEM_PROMPT.append ? { appendSystemPrompt: append } : {}),
     },
   });
 }

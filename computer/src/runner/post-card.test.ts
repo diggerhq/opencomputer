@@ -60,9 +60,12 @@ describe('cardSender', () => {
     expect(r).toMatchObject({ ok: false, text: expect.stringContaining('invalid_blocks') });
   });
 
-  it('says a card was not posted where nothing draws one, and does not count it', async () => {
-    const send = cardSender(async () => NO_CARDS);
-    for (let i = 0; i < 20; i++) expect(await send(spec)).toEqual({ ok: false, text: NO_CARDS });
+  it('says no card is drawn here before it looks at the spec, and counts none', async () => {
+    const post = vi.fn(async () => {});
+    const send = cardSender(post, undefined, () => NO_CARDS);
+    for (let i = 0; i < 60; i++) expect(await send(spec)).toEqual({ ok: false, text: NO_CARDS });
+    expect(await send({ root: 'nope', elements: {} })).toEqual({ ok: false, text: NO_CARDS });
+    expect(post).not.toHaveBeenCalled();
   });
 });
 

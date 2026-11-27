@@ -50,11 +50,14 @@ export function describeChannel(id: string, ch?: { name?: string; is_im?: boolea
 /** How the model reads where a message was typed, by its actor's `via`; a platform's or an agent's own message has no header. */
 const TYPED_IN: Record<string, string> = { dashboard: 'App', app: 'App', opc: 'opc', api: 'API' };
 
+/** A name as one short stretch of a header line: it cannot close the bracket or start a line of its own. */
+const label = (name: string) => name.replace(/[\[\]\r\n\u2028\u2029]/g, ' ').trim().slice(0, 80);
+
 /** `[App: from Sam]` and the text, for a message a person typed outside Slack; `text` as it is otherwise. */
 export function typedIn(text: string, actor?: { id: string; name?: string | null; via: string }): string {
   const where = actor && TYPED_IN[actor.via];
   if (!where || text.startsWith('/')) return text;
   // An actor known only by its id (a key, a member whose name the write did not carry) is not named.
-  const who = actor.name && actor.name !== actor.id ? `: from ${actor.name.replace(/[\[\]\n]/g, ' ').trim()}` : '';
+  const who = actor.name && actor.name !== actor.id ? `: from ${label(actor.name)}` : '';
   return `[${where}${who}]\n${text}`;
 }

@@ -31,12 +31,12 @@ import type { Work } from './work.js';
 import { prefaced } from './role-notes.js';
 import type { PreviewHooks } from './preview.js';
 import { fileSender, type FileSender } from './send-file.js';
-import { cardSender, NO_CARDS } from './post-card.js';
+import { cardSender } from './post-card.js';
 import type { SessionSecrets } from './session-secrets.js';
 import { TIERS, takeTier } from '../tiers.js';
 import { FIRST_THINKING_CARD_MS, OPENING_THINKING_CARD_MS, THINKING_CARD_MS, ThinkingCards } from './thinking.js';
 import { ReminderFilter } from './stream.js';
-import { drivenFrom, SILENT } from './system-prompt.js';
+import { SILENT } from './system-prompt.js';
 import { close, type Compactor, type Gate, type Harness, type HarnessEvent, type HarnessKind, type Running, type StartSpec, type TaskRecord } from './harness/types.js';
 import { claude } from './harness/claude/harness.js';
 import type { SessionStatus, ThreadInfo } from './thread.js';
@@ -159,7 +159,7 @@ export class Session {
   /** Whether the current model message already arrived as deltas. */
   private streamedText = false;
   readonly sendFile: FileSender; // send_file and `calvin-send-file` (the runner serves it): one limit for both
-  readonly postCard = cardSender(async (text, blocks) => (this.thread.slack ? this.below(async (b) => void (await b, await this.thread.post(text, blocks))) : NO_CARDS), (b) => this.hooks.secrets?.foundIn(b));
+  readonly postCard = cardSender((text, blocks) => this.below(async (b) => void (await b, await this.thread.post(text, blocks))), (b) => this.hooks.secrets?.foundIn(b), () => this.thread.noCards);
 
   constructor(
     public info: SessionInfo,
@@ -312,7 +312,7 @@ export class Session {
   /** What a harness for this session starts with, now. */
   spec(): StartSpec {
     const { cwd, sdkSessionId, mode } = this.info;
-    return { cwd, resume: sdkSessionId, mode, model: this.model, effort: effortOf(this.info), speed: speedOf(this.info), driven: drivenFrom(this.thread.slack), gate: this.gate, tools: { cwd: () => cwd, hooks: this.hooks, sendFile: this.sendFile, postCard: this.postCard } };
+    return { cwd, resume: sdkSessionId, mode, model: this.model, effort: effortOf(this.info), speed: speedOf(this.info), driven: this.thread.driven, gate: this.gate, tools: { cwd: () => cwd, hooks: this.hooks, sendFile: this.sendFile, postCard: this.postCard } };
   }
 
   /** A claimed spare's harness (work 069, harness/claude/spare.ts): already up, as a prewarmed one is. */

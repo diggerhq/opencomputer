@@ -277,9 +277,8 @@ export class SessionApi implements Writer {
     if (actor.via === 'slack' || !this.session.thread.slack) return;
     const { owner } = this.o;
     if (owner.slackUserId && actor.id === owner.userId && (await this.session.thread.sayAs(owner.slackUserId, echoPlain(text)))) return;
-    // A message over the wire carries only the member id: the owner's own name is known here; anyone else's is not.
-    const name = actor.id === owner.userId ? personName(owner) : actor.name === actor.id ? 'Someone' : actor.name;
-    await this.session.thread.say(echoText(text, { ...actor, name }));
+    // `send` named the owner; anyone else the wire named only by id is not known here.
+    await this.session.thread.say(echoText(text, { ...actor, name: actor.name === actor.id ? 'Someone' : actor.name }));
   }
 
   private async start(w: Waiting, from: Omit<SentFrom, 'actor' | 'turnId'>): Promise<CallOutcome> {

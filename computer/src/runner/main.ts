@@ -83,7 +83,6 @@ import { Ordered } from './ordered.js';
 import { Spare } from './harness/claude/spare.js';
 import { claudeSpare } from './harness/claude/harness.js';
 import { effortOf, speedOf } from './model-switch.js';
-import { drivenFrom } from './system-prompt.js';
 import { ensureSkills } from './skills.js';
 import { runnerModelAccess } from './model-access.js';
 import type { Harness, HarnessKind } from './harness/types.js';
@@ -360,7 +359,7 @@ async function claim(b: Bound, a?: RunnerApi) {
   if (!p || s) throw new Error(s ? 'already claimed' : 'no spare is parked');
   ensureSkills(b.forkPath); // project skills must be on disk before the claim scans them
   const session = bind(b);
-  const run = parked!.claim(p, { cwd: b.forkPath, mode: session.info.mode, model: session.model, effort: effortOf(session.info), speed: speedOf(session.info), driven: drivenFrom(session.thread.slack) });
+  const run = parked!.claim(p, { cwd: b.forkPath, mode: session.info.mode, model: session.model, effort: effortOf(session.info), speed: speedOf(session.info), driven: session.thread.driven });
   // `option_not_applied`: the model was refused, the session runs regardless; anything else did not take.
   const c = await p.claimed.catch((e) => {
     if (String(e?.message).startsWith('option_not_applied')) return e.claim as { parkedMs?: number } | undefined;

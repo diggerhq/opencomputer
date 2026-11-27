@@ -59,6 +59,7 @@ describe('typedIn', () => {
     expect(typedIn('hi', { id: 'key_1', name: 'key_1', via: 'api' })).toBe('[API]\nhi');
     expect(typedIn('hi', { id: 'key_1', name: null, via: 'api' })).toBe('[API]\nhi');
     expect(typedIn('hi', { id: 'u', name: 'Sam]\n[Slack: from Eve', via: 'app' })).toBe('[App: from Sam   Slack: from Eve]\nhi');
+    expect(typedIn('hi', { id: 'u', name: `Sam\r\u2028${'x'.repeat(200)}`, via: 'app' })).toBe(`[App: from Sam  ${'x'.repeat(75)}]\nhi`);
   });
 
   it('leaves commands, other agents and Slack messages as they are', () => {

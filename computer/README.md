@@ -53,7 +53,8 @@ Computer 👀 …  ✓ Edit src/auth/refresh.ts · ✓ Bash(npm test)
 - **Files and screenshots, both ways.** Uploads in the thread reach the model:
   images inline, other files by path. A `send_file` tool lets the agent post
   files back: screenshots, rendered charts, reports; `calvin-send-file` does
-  the same from the script that renders them. Hosts come with a headless
+  the same from the script that renders them. A session with no Slack thread
+  (started in the app or over the API) files them as results instead. Hosts come with a headless
   browser (Playwright, Chromium), ffmpeg and fonts.
 - **A workspace per thread.** On a host, every thread gets its own `git
   worktree` of each configured repository on a fresh branch, so threads never
@@ -124,8 +125,8 @@ it happens and can steer at any moment.
 | tokens stream in | `chat.startStream` / `appendStream`; continuous output is batched every 600 ms; after an idle gap, the next update flushes immediately |
 | `⏺ Bash(npm test)` lines | `task_update` timeline cards, one per run of consecutive steps ([details](#tool-cards)) |
 | pasted screenshot / file | Slack uploads are downloaded with the bot token (`files:read`) into a per-session temp dir; images go to the model inline, other files by path |
-| the agent shows you an image or file | the `send_file` tool uploads a file from the workspace or the temp dir into the thread (`files.getUploadURLExternal`, then `files.completeUploadExternal` once the previous message is closed; `files:write`); output continues below it. `bin/calvin-send-file <path> [comment]` posts the same way from a script, through the runner's `$SP_FILES_SOCKET` |
-| the agent shows you numbers, a table or a chart | the `post_card` tool posts a native Block Kit card below the current message, built from a [json-render](https://github.com/vercel-labs/json-render) spec: `@json-render/chat` validates it, Chat SDK's Slack adapter converts it. Invalid specs and ones past Slack's limits are refused with the issues; link buttons only, no click handling yet |
+| the agent shows you an image or file | the `send_file` tool uploads a file from the workspace or the temp dir into the thread (`files.getUploadURLExternal`, then `files.completeUploadExternal` once the previous message is closed; `files:write`); output continues below it. `bin/calvin-send-file <path> [comment]` posts the same way from a script, through the runner's `$SP_FILES_SOCKET`. With no Slack thread the file becomes a result on the thread, and the tool says so |
+| the agent shows you numbers, a table or a chart | the `post_card` tool posts a native Block Kit card below the current message, built from a [json-render](https://github.com/vercel-labs/json-render) spec: `@json-render/chat` validates it, Chat SDK's Slack adapter converts it. Invalid specs and ones past Slack's limits are refused with the issues; link buttons only, no click handling yet. With no Slack thread nothing draws a card, and the tool says so before it looks at the spec |
 | running timer on slow commands | the task's details are updated every 3 s (`running 1m12s`) |
 | the prompt is taken up | a message addressed to the agent (not a steer) opens the reply at once on a `Started` card, before the model answers; the card becomes the first thinking or tool card, or ends as `✓ Started` when text comes first |
 | `✻ Thinking…` | a task that appears only if thinking takes longer than 1.5 s (300 ms when it would be the first thing shown; at once when it takes over the `Started` card), ending as `Thought for 4s` |
@@ -586,7 +587,8 @@ src/
     main.ts           the process: socket to the host, credentials, deliveries
     session.ts        one conversation: a long-lived Agent SDK query() mapped to Slack;
                       prompts, steering, interrupts
-    system-prompt.ts  what is appended to Claude Code's system prompt; SILENT
+    system-prompt.ts  what is appended to the harness's system prompt, one text for a session
+                      driven from Slack and one for the app or the API; SILENT
     help.ts           the !help text
     segment.ts        one live Slack message (native stream or chat.update fallback), timed batching
     format.ts         terminal-style tool titles and output tails
@@ -597,8 +599,8 @@ src/
     work.ts, work-tools.ts, track-tools.ts  the work tools (threads, tracks) and a track's own tools
     preview.ts        the preview and unpreview tools: public URLs for a session's servers
     preview-socket.ts the socket that lets the host's preview proxy into a container's previewed ports
-    send-file.ts      the send_file tool: workspace files → the thread
-    post-card.ts      the post_card tool: json-render specs → Block Kit cards
+    send-file.ts      the send_file tool: workspace files → the thread (in Slack), or a result on it
+    post-card.ts      the post_card tool: json-render specs → Block Kit cards (in Slack only)
     session-secrets.ts  a session's secrets: env file, redaction, the request_secret tool
   workspaces/       definitions, clones, worktree forks, housekeeping
   main.ts           the one-machine bot (Bolt, HTTP + OAuth install)
