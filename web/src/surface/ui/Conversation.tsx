@@ -136,6 +136,10 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 const FOLD_BODY =
   'flex flex-col gap-1.5 border-l pl-3.5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground'
 
+// One fixed slot for a row's status icon, so the small working dot and the
+// chevron or check that replaces it take the same room and the text holds still.
+const SLOT = 'flex size-3.5 flex-none items-center justify-center'
+
 const FOLD =
   'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
@@ -143,17 +147,19 @@ function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground text-meta [&>svg]:text-faint flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground text-meta flex items-start gap-2',
         step.status === 'failed' && WARN,
       )}
     >
-      {step.status === 'running' ? (
-        <Mk mark="working" small />
-      ) : step.status === 'done' ? (
-        I.check
-      ) : (
-        <span>×</span>
-      )}
+      <span className={cn(SLOT, '[&>svg]:text-faint h-lh')}>
+        {step.status === 'running' ? (
+          <Mk mark="working" small />
+        ) : step.status === 'done' ? (
+          I.check
+        ) : (
+          '×'
+        )}
+      </span>
       <span className="min-w-0">
         <Rich text={step.title} />
         {step.status === 'failed' ? ' · failed' : ''}
@@ -229,11 +235,13 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
   return (
     <Collapsible className="-my-1 max-w-180">
       <CollapsibleTrigger className={FOLD}>
-        {running ? (
-          <Mk mark="working" small />
-        ) : (
-          <ChevronRight className="size-3.5 flex-none transition-transform group-data-[state=open]:rotate-90" />
-        )}
+        <span className={SLOT}>
+          {running ? (
+            <Mk mark="working" small />
+          ) : (
+            <ChevronRight className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
+          )}
+        </span>
         {workLabel(item)}
         {failed > 0 && (
           <span className={cn(WARN, 'flex-none')}>· {failed} failed</span>
@@ -273,13 +281,15 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       data-subagent={sub.status}
     >
       <CollapsibleTrigger className={cn(FOLD, 'w-full')}>
-        {running ? (
-          <Mk mark="working" small />
-        ) : sub.status === 'completed' ? (
-          I.check
-        ) : (
-          <span className={cn(sub.status === 'failed' && WARN)}>×</span>
-        )}
+        <span className={cn(SLOT, sub.status === 'failed' && WARN)}>
+          {running ? (
+            <Mk mark="working" small />
+          ) : sub.status === 'completed' ? (
+            I.check
+          ) : (
+            '×'
+          )}
+        </span>
         <span className="text-foreground truncate font-medium">{sub.name}</span>
         {(sub.agentType || sub.background) && (
           <span className="flex-none">
@@ -335,7 +345,11 @@ const PENDING: Record<string, string> = {
 }
 
 // Rows' one-line heights by kind, as drawn (with the gap between rows).
-const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 60, agent: 40, work: 28 }
+const ESTIMATE: Partial<Record<Item['kind'], number>> = {
+  user: 60,
+  agent: 40,
+  work: 28,
+}
 
 // A reply, with a caret at the end of its last line while it streams: inside
 // the text, so the reply is as tall streaming as it is when complete.
@@ -343,7 +357,11 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (!streaming) return
-    const last = [...(ref.current?.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, td') ?? [])].pop()
+    const last = [
+      ...(ref.current?.querySelectorAll(
+        'p, li, h1, h2, h3, h4, h5, h6, pre, td',
+      ) ?? []),
+    ].pop()
     last?.classList.add('caret-end')
     return () => last?.classList.remove('caret-end')
   }, [text, streaming])
@@ -413,9 +431,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'user':
       return <UserTurn item={item} />
     case 'agent':
-      return (
-        <Reply text={item.text} streaming={!!item.streaming} />
-      )
+      return <Reply text={item.text} streaming={!!item.streaming} />
     case 'work':
       return <Work item={item} />
     case 'ask':
