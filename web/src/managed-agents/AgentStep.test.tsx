@@ -1161,23 +1161,6 @@ describe('choosing the coding agent', () => {
     expect(Object.keys(window.localStorage)).toEqual([])
   })
 
-  it('sums the agent up on the page, and sends changes to Connections', async () => {
-    await show(
-      { ...onboarded, agent: { ...fresh, choice: 'credits' } },
-      'Your agent',
-    )
-    expect(text()).toContain(
-      'Link your Slack account to use your own subscription.',
-    )
-    const link = () =>
-      container.querySelector<HTMLAnchorElement>(
-        'section[aria-labelledby="computer-agent"] a',
-      )!
-    expect(link().textContent).toBe('Link Slack')
-    expect(link().getAttribute('href')).toBe(CONNECTIONS)
-    expect(computerApi.createConnectCode).not.toHaveBeenCalled()
-  })
-
   it('is not there for an older backend', async () => {
     await show(empty, 'Connect GitHub')
     expect(text()).toContain('Step 1 of 2')

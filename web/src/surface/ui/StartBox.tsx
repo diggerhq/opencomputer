@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { SettingsPatch } from '@opencomputer/sdk/computer'
+import { OpenComputerMark } from '@/components/opencomputer-mark'
 import { useSurface } from '../hooks'
 import { Composer } from './Composer'
 import { SettingsPickers } from './SettingsPickers'
@@ -10,6 +11,7 @@ export function StartBox() {
   const [settings, setSettings] = useState<SettingsPatch>({})
   return (
     <div className="bg-background animate-in fade-in-0 slide-in-from-bottom-1 absolute inset-0 z-[2] flex flex-col items-center justify-center px-10 pb-[12vh] duration-200 max-[700px]:px-4">
+      <OpenComputerMark className="mb-5 size-10" />
       <h2 className="mb-4 text-xl font-semibold tracking-tight">
         What do you want done?
       </h2>
