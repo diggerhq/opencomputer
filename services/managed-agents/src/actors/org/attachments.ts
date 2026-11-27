@@ -5,6 +5,8 @@
 // A row's life (section 3): `uploading` (the row made, the uploader holds a signed URL) → `ready`
 // (the object is stored, `etag` set) → `attached` (a turn named it; more may) ; any of the first
 // two → `deleted` (kept ATTACHMENT_DELETED_KEEP_MS so a late reference answers 410).
+// A signed upload URL outlives the row it was made for, so a deleted row's object is deleted twice:
+// at once, and again when no URL made for it can still be valid (`purge_at`).
 // The quota is taken at create, from the declared size, so parallel uploads cannot overshoot.
 //
 // `by` is the uploader's spec 34.1 string (`user:usr_…`), as `created_by` of a session is.
@@ -17,7 +19,7 @@ import type { Sql } from "../../durable/sql.js";
 import { isId } from "../../ids/session-ids.js";
 import { accessOf } from "./access.js";
 import { sharedWith } from "./audience.js";
-import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_ORG_BYTES_MAX, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "./limits.js";
+import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_LATE_UPLOAD_MS, ATTACHMENT_ORG_BYTES_MAX, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "./limits.js";
 import { readSession, type SessionRec } from "./records.js";
 import { isMember, seesSession } from "./who-may.js";
 
@@ -39,6 +41,7 @@ export interface AttachmentRec {
   message_id: string | null;
   created_at: number;
   state_at: number;
+  purge_at: number | null;
 }
 
 /** The API's object (section 4). */
@@ -132,7 +135,7 @@ function nextDue(sql: Sql): number | null {
     sql.exec<{ at: number | null }>(
       `SELECT MIN(CASE state
          WHEN 'uploading' THEN state_at + ?
-         WHEN 'deleted' THEN state_at + ?
+         WHEN 'deleted' THEN COALESCE(purge_at, state_at + ?)
          ELSE (CASE WHEN EXISTS (SELECT 1 FROM session WHERE id = attachment.session_id) THEN NULL ELSE state_at + ? END)
        END) AS at FROM attachment`,
       ATTACHMENT_UPLOADING_TTL_MS,
@@ -150,6 +153,12 @@ function arm(sql: Sql): void {
 
 function oweDelete(sql: Sql, r: Pick<AttachmentRec, "id" | "session_id">): void {
   owed.add(sql, { group: `attachments:${r.session_id}`, key: `attachment:${r.id}`, call: "Attachments.delete", body: { sessionId: r.session_id, id: r.id } });
+}
+
+/** The row becomes `deleted`: its object's delete is owed now, and once more when an upload can no longer land. */
+function markDeleted(sql: Sql, now: number, r: Pick<AttachmentRec, "id" | "session_id">): void {
+  sql.exec("UPDATE attachment SET state = 'deleted', state_at = ?, turn_id = NULL, message_id = NULL, purge_at = ? WHERE id = ?", now, now + ATTACHMENT_LATE_UPLOAD_MS, r.id);
+  oweDelete(sql, r);
 }
 
 // ------------------------------------------------------------------ create, ready (PUT, POST …/complete)
@@ -237,8 +246,7 @@ export function remove(sql: Sql, now: number, p: Principal, sessionId: string, i
   if (r.by !== byOf(p) && writesSession(sql, p, sessionId) !== "ok") return refusal("forbidden", 403, "Only its uploader or a writer of the session deletes an attachment.", { reason: "not_a_writer" });
   if (r.state === "attached") return inUse();
   return sql.transaction(() => {
-    sql.exec("UPDATE attachment SET state = 'deleted', state_at = ? WHERE id = ?", now, id);
-    oweDelete(sql, r);
+    markDeleted(sql, now, r);
     arm(sql);
     return { ok: true };
   });
@@ -291,7 +299,8 @@ export function reserve(sql: Sql, now: number, p: Principal, sessionId: string, 
 /**
  * The sweep (section 3, 8): an `uploading` row older than a day, and a `ready` or `attached` row
  * of a session Org never came to hold older than a day, are deleted (their objects' deletes owed);
- * a `deleted` row past its keep is dropped. Re-arms itself for the next row due.
+ * a `deleted` row's object is deleted a second time once no upload can land, and the row is
+ * dropped past its keep. Re-arms itself for the next row due.
  */
 export function sweep(sql: Sql, now: number): { swept: number; dropped: number } {
   return sql.transaction(() => {
@@ -301,21 +310,33 @@ export function sweep(sql: Sql, now: number): { swept: number; dropped: number }
       now - ATTACHMENT_UPLOADING_TTL_MS,
       now - ATTACHMENT_ORPHAN_TTL_MS,
     );
-    for (const r of due) {
-      sql.exec("UPDATE attachment SET state = 'deleted', state_at = ?, turn_id = NULL, message_id = NULL WHERE id = ?", now, r.id);
-      oweDelete(sql, r);
-    }
+    for (const r of due) markDeleted(sql, now, r);
+    // A deleted row's second delete: whatever a still-valid upload URL stored after the first.
+    for (const r of sql.exec<AttachmentRec>("UPDATE attachment SET purge_at = NULL WHERE state = 'deleted' AND purge_at <= ? RETURNING *", now)) oweDelete(sql, r);
     const dropped = sql.exec<{ id: string }>("DELETE FROM attachment WHERE state = 'deleted' AND state_at <= ? RETURNING id", now - ATTACHMENT_DELETED_KEEP_MS).length;
     arm(sql);
     return { swept: due.length, dropped };
   });
 }
 
-/** The session is being removed: its rows go with it (a later reference is `attachment_not_found`, as the session is), its objects as one owed call. */
-export function removeForSession(sql: Sql, sessionId: string): void {
-  const rows = sql.exec<{ id: string }>("DELETE FROM attachment WHERE session_id = ? RETURNING id", sessionId);
+/**
+ * The session is being removed: its objects go as one owed call, and its rows with it (a later
+ * reference is `attachment_not_found`, as the session is), but for one an upload may still land
+ * for, which stays as a deleted row until its second delete.
+ */
+export function removeForSession(sql: Sql, now: number, sessionId: string): void {
+  const late = now - ATTACHMENT_LATE_UPLOAD_MS;
+  const rows = sql.exec<{ id: string }>(
+    "DELETE FROM attachment WHERE session_id = ? AND NOT (state = 'uploading' OR (state != 'deleted' AND state_at > ?) OR purge_at IS NOT NULL) RETURNING id",
+    sessionId,
+    late,
+  );
   for (const r of rows) owed.drop(sql, { key: `attachment:${r.id}` });
-  if (rows.length) owed.add(sql, { group: `attachments:${sessionId}`, key: `attachments:${sessionId}`, call: "Attachments.removeAll", body: { sessionId } });
+  for (const r of sql.exec<AttachmentRec>("SELECT * FROM attachment WHERE session_id = ? AND state != 'deleted'", sessionId)) {
+    sql.exec("UPDATE attachment SET state = 'deleted', state_at = ?, turn_id = NULL, message_id = NULL, purge_at = ? WHERE id = ?", now, now + ATTACHMENT_LATE_UPLOAD_MS, r.id);
+  }
+  owed.add(sql, { group: `attachments:${sessionId}`, key: `attachments:${sessionId}`, call: "Attachments.removeAll", body: { sessionId } });
+  arm(sql);
 }
 
 /** The sum of a session's live attachments' bytes (tests, the quota). */

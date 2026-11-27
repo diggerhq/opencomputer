@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "../src/auth/principal.js";
 import type { Attachments } from "../src/attachments/store.js";
 import type { OrgDurableObject } from "../src/actors/org/durable-object.js";
-import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_ORG_BYTES_MAX, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "../src/actors/org/limits.js";
+import { ATTACHMENT_DELETED_KEEP_MS, ATTACHMENT_LATE_UPLOAD_MS, ATTACHMENT_ORG_BYTES_MAX, ATTACHMENT_ORPHAN_TTL_MS, ATTACHMENT_SESSION_BYTES_MAX, ATTACHMENT_UPLOADING_TTL_MS } from "../src/actors/org/limits.js";
 import { bytesOf } from "../src/actors/org/attachments.js";
 import { member, seedThread, withActor, type Fakes } from "./org.test.js";
 
@@ -94,6 +94,15 @@ describe("Org's attachment rows: one upload's states (work 126, section 3)", () 
       expect(await org.attachmentCreate(a, SID, AT1, spec())).toMatchObject({ ok: false, code: "attachment_deleted" });
       expect(await org.attachmentReserve(a, SID, TURN, null, [AT1])).toMatchObject({ ok: false, code: "attachment_deleted", attachmentId: AT1 });
       expect(await org.attachmentList(a, SID)).toEqual({ ok: true, attachments: [] });
+      // An upload URL made before the delete may still store the object: its delete is sent once more when none can.
+      expect(alarmAt(sql)).toBeGreaterThan(Date.now() + ATTACHMENT_LATE_UPLOAD_MS - 60_000);
+      expect(alarmAt(sql)).toBeLessThan(Date.now() + ATTACHMENT_LATE_UPLOAD_MS + 60_000);
+      f.attachments.deleted.length = 0;
+      sql.exec("UPDATE attachment SET purge_at = 1 WHERE id = ?", AT1);
+      sql.exec("UPDATE _alarm SET at = 0 WHERE purpose = 'attachments'");
+      await org.alarm();
+      await org.drain();
+      expect(f.attachments.deleted).toEqual([`at-delete/${SID}/${AT1}`]);
       // The deleted row is kept for its retention, then dropped by the sweep.
       expect(alarmAt(sql)).toBeGreaterThan(Date.now() + ATTACHMENT_DELETED_KEEP_MS - 60_000);
     }, f);
@@ -314,8 +323,9 @@ describe("the sweep on Org's alarm, and a session's removal (sections 3, 8)", ()
       ]);
       await org.drain();
       expect(f.attachments.deleted.sort()).toEqual([`at-sweep/${SID}/${AT1}`, `at-sweep/${DRAFT}/${AT2}`]);
-      // Re-armed for the deleted rows' keep.
-      expect(alarmAt(sql)).toBeGreaterThan(now + ATTACHMENT_DELETED_KEEP_MS - ATTACHMENT_UPLOADING_TTL_MS - 60_000);
+      // Re-armed for the swept rows' second delete.
+      expect(alarmAt(sql)).toBeGreaterThan(now + ATTACHMENT_LATE_UPLOAD_MS - 60_000);
+      expect(alarmAt(sql)).toBeLessThan(now + ATTACHMENT_LATE_UPLOAD_MS + 60_000);
     }, f);
   });
 
@@ -333,14 +343,24 @@ describe("the sweep on Org's alarm, and a session's removal (sections 3, 8)", ()
       // The write's own flush drains the delete it owed; what follows is the session's removal alone.
       await org.drain();
       f.attachments.deleted.length = 0;
+      // A third is still uploading: its URL may store an object after the session is gone.
+      await org.attachmentCreate(a, SID, AT3, spec());
+      // The first two are long past the time an upload could land.
+      sql.exec("UPDATE attachment SET state_at = 1, purge_at = NULL WHERE id IN (?, ?)", AT1, AT2);
       expect(await org.mutate(a, { name: "thread.delete", args: { sid: SID } })).toMatchObject({ protocol: 1 });
-      expect(sql.exec("SELECT id FROM attachment WHERE session_id = ?", SID)).toEqual([]);
+      expect(sql.exec("SELECT id, state FROM attachment WHERE session_id = ?", SID)).toEqual([{ id: AT3, state: "deleted" }]);
       // The single row's delete is dropped for the session's one removeAll.
       expect(owedCalls(sql)).toEqual([{ call: "Attachments.removeAll", key: `attachments:${SID}` }]);
       await org.drain();
       expect(f.attachments.deleted).toEqual([]);
       expect(f.attachments.removed).toEqual([`at-remove/${SID}/`]);
       expect(await org.attachmentRead(a, SID, AT1)).toMatchObject({ ok: false, code: "attachment_not_found" });
+      // The upload that lands late is deleted by the kept row's second delete.
+      sql.exec("UPDATE attachment SET purge_at = 1 WHERE id = ?", AT3);
+      sql.exec("UPDATE _alarm SET at = 0 WHERE purpose = 'attachments'");
+      await org.alarm();
+      await org.drain();
+      expect(f.attachments.deleted).toEqual([`at-remove/${SID}/${AT3}`]);
     }, f);
   });
 });

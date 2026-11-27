@@ -25,6 +25,6 @@ export function removeSession(tx: Tx, s: SessionRec): void {
   owed.drop(tx.sql, { key: `start:${s.id}` });
   tx.stop(s.id, s.machine);
   tx.destroy(s.id);
-  // Its attachments' rows go with it; their objects as one owed call (work 126).
-  removeForSession(tx.sql, s.id);
+  // Its attachments go with it: the objects as one owed call (work 126).
+  removeForSession(tx.sql, tx.now, s.id);
 }

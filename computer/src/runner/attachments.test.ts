@@ -407,5 +407,9 @@ describe('safeName', () => {
     expect(safeName('..', 'at_1')).toBe('at_1');
     expect(safeName('x/', 'at_1')).toBe('at_1');
     expect(safeName(undefined, 'at_1')).toBe('at_1');
+    // 255 characters of three bytes each: cut to 255 bytes, the extension kept.
+    const long = safeName(`${'日'.repeat(251)}.pdf`, 'at_1');
+    expect(Buffer.byteLength(long)).toBeLessThanOrEqual(255);
+    expect(long).toBe(`${'日'.repeat(83)}.pdf`);
   });
 });

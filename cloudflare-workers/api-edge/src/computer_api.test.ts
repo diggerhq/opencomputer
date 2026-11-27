@@ -839,7 +839,7 @@ describe("computer API CORS", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-allow-headers")).toBe(
-      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, content-disposition, range",
+      "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal",
     );
     expect(res.headers.get("access-control-allow-methods")).toBe("GET, POST, PATCH, PUT, DELETE");
     expect(res.headers.get("access-control-max-age")).toBe("600");
@@ -873,7 +873,7 @@ describe("computer API CORS", () => {
     );
     expect(res.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(res.headers.get("access-control-expose-headers")).toBe(
-      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of, content-disposition, accept-ranges, content-range, content-length",
+      "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of",
     );
     expect(res.headers.get("server-timing")).toBe("x;dur=1");
   });
@@ -1164,7 +1164,7 @@ describe("computer API telemetry: one edge.request per call", () => {
         `/computer/sessions/${SID}/events`,
         `/computer/sessions/${SID}/asks/toolu_1/answer`,
         `/computer/sessions/${SID}/subagents`,
-        `/computer/sessions/${SID}/attachments/at_1/content`,
+        `/computer/sessions/${SID}/attachments/at_1/url`,
         "/computer/secrets",
         "/computer/me/secrets/X",
         "/computer/organization/secrets/X",

@@ -97,7 +97,7 @@ function attachmentTable(sql: Sql): void {
     `CREATE TABLE IF NOT EXISTS attachment (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, by TEXT NOT NULL,
        name TEXT NOT NULL, mimetype TEXT NOT NULL, bytes INTEGER NOT NULL,
        state TEXT NOT NULL, etag TEXT, turn_id TEXT, message_id TEXT,
-       created_at INTEGER NOT NULL, state_at INTEGER NOT NULL)`,
+       created_at INTEGER NOT NULL, state_at INTEGER NOT NULL, purge_at INTEGER)`,
   );
   sql.exec("CREATE INDEX IF NOT EXISTS attachment_session ON attachment (session_id)");
   sql.exec("CREATE INDEX IF NOT EXISTS attachment_state ON attachment (state, state_at)");
@@ -114,5 +114,7 @@ export function completeFolded(sql: Sql): void {
     sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
     alarms.set(sql, "accessCarry", 0);
   }
-  if (!sql.exec<{ name: string }>("PRAGMA table_info(attachment)").length) attachmentTable(sql);
+  const attachment = sql.exec<{ name: string }>("PRAGMA table_info(attachment)");
+  if (!attachment.length) attachmentTable(sql);
+  else if (!attachment.some((column) => column.name === "purge_at")) sql.exec("ALTER TABLE attachment ADD COLUMN purge_at INTEGER");
 }

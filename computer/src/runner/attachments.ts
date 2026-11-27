@@ -162,7 +162,18 @@ export function safeName(name: string | undefined, id: string): string {
     .filter((c) => c.charCodeAt(0) > 0x1f && c.charCodeAt(0) !== 0x7f)
     .join('')
     .trim();
-  return clean && clean !== '.' && clean !== '..' ? clean : id;
+  return clean && clean !== '.' && clean !== '..' ? fitName(clean) : id;
+}
+
+/** A file name's limit on Linux is 255 bytes, not characters: cut the stem and keep the extension. */
+const NAME_BYTES_MAX = 255;
+function fitName(name: string): string {
+  if (Buffer.byteLength(name) <= NAME_BYTES_MAX) return name;
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 && Buffer.byteLength(name.slice(dot)) <= 32 ? name.slice(dot) : '';
+  let stem = [...(ext ? name.slice(0, dot) : name)];
+  while (Buffer.byteLength(stem.join('') + ext) > NAME_BYTES_MAX) stem = stem.slice(0, -1);
+  return stem.join('').trimEnd() + ext;
 }
 
 /** Where the bot token may go: Slack's file hosts, over https. A file object's URL is not trusted to be one. */

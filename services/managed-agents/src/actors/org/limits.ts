@@ -22,6 +22,8 @@ export const ATTACHMENT_BYTES_MAX = 1024 * 1024 * 1024;
 export const ATTACHMENT_SESSION_BYTES_MAX = 5 * 1024 * 1024 * 1024;
 /** Bytes of one organization's attachments; past it `attachment_quota` names `organization`. */
 export const ATTACHMENT_ORG_BYTES_MAX = 20 * 1024 * 1024 * 1024;
+/** How long after a row leaves `uploading` a signed upload URL made for it may still store an object: the URL's hour, and a slow upload that began within it. */
+export const ATTACHMENT_LATE_UPLOAD_MS = 3 * 60 * 60_000;
 /** An `uploading` row this old is swept: the common interrupted upload is a laptop that resumes next morning. */
 export const ATTACHMENT_UPLOADING_TTL_MS = DAY_MS;
 /** A `ready` row this old whose session does not exist in Org is swept (a draft cleared without sending). */

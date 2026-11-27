@@ -133,7 +133,7 @@ export interface CalvinWireConfig {
   key: string;
 }
 
-/** One attachment of a turn's message (work 126): the metadata Org reserved; the bytes are at `GET …/attachments/{id}/content`. */
+/** One attachment of a turn's message (work 126): the metadata Org reserved; the bytes are at the signed URL `GET …/attachments/{id}/url` answers. */
 export interface CalvinApiAttachment {
   id: string;
   name: string;

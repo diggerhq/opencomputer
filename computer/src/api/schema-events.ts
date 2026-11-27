@@ -24,7 +24,7 @@ export const FileChange = Schema.Struct({
   removed: Schema.NullOr(Count),
 }).annotate({ identifier: 'FileChange' });
 
-/** A message's attachment (work 126): metadata only; the bytes are `GET /sessions/{id}/attachments/{attachmentId}/content`. */
+/** A message's attachment (work 126): metadata only; the bytes are at the signed URL `GET /sessions/{id}/attachments/{attachmentId}/url` answers. */
 export const MessageAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,

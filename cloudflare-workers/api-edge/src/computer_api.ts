@@ -259,11 +259,6 @@ const API_REQUEST_HEADERS = [
   // built for.
   "x-oc-trace",
   "x-oc-principal",
-  // Attachments (work 126): an upload's row is made from these before its body
-  // is read; a download may ask for one range.
-  "content-length",
-  "content-disposition",
-  "range",
 ];
 
 /** Response headers passed back from blue. */
@@ -279,12 +274,6 @@ const API_RESPONSE_HEADERS = [
   "etag",
   // When the Work index last saw the branch head (work tracking 3.10), on 200 and 304.
   "work-as-of",
-  // An attachment's content (work 126): its name and disposition, the range
-  // served, and nosniff so the browser trusts the type blue sends.
-  "content-disposition",
-  "accept-ranges",
-  "content-range",
-  "x-content-type-options",
 ];
 
 /** Request headers passed to the wire Worker, beside the caller's key. */
@@ -302,7 +291,10 @@ const WIRE_REQUEST_HEADERS = [
 ];
 
 /** Response headers passed back from the wire Worker. */
-const WIRE_RESPONSE_HEADERS = [...API_RESPONSE_HEADERS];
+const WIRE_RESPONSE_HEADERS = [
+  ...API_RESPONSE_HEADERS,
+  "content-disposition",
+];
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
@@ -435,13 +427,11 @@ export async function proxyComputerWorkspace(
 
 // ── CORS ─────────────────────────────────────────────────────────────────
 
-// `content-type` is allowed whatever its value (an upload's is the file's own);
-// `content-disposition` and `range` are the attachment routes' (work 126).
 const CORS_ALLOW_HEADERS =
-  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal, content-disposition, range";
+  "authorization, content-type, idempotency-key, x-request-id, if-none-match, x-oc-trace, x-oc-principal";
 const CORS_ALLOW_METHODS = "GET, POST, PATCH, PUT, DELETE";
 const CORS_EXPOSE_HEADERS =
-  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of, content-disposition, accept-ranges, content-range, content-length";
+  "server-timing, x-request-id, x-opc-latest, retry-after, etag, work-as-of";
 
 /**
  * Whether a browser origin may call the computer API: the edge's own origin
