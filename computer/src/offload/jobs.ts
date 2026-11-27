@@ -215,7 +215,7 @@ export function offloadJobs(d: JobsDeps) {
         if ((await agent.info().catch(() => ({ ok: false }))).ok) break;
       }
       const url = (name: 'src.tgz' | 'out.tgz' | 'build.log', put: boolean) => (put ? aws.presignPut : aws.presignGet)(objectKey(d.hostTag, id, name));
-      await agent.submit({ id, cmd: r.cmd, artifacts: r.artifacts, timeoutSec: r.minutes * 60, workdir: '/work/src',
+      await agent.submit({ id, cmd: r.cmd, artifacts: r.artifacts, timeoutSec: r.minutes * 60,
         srcUrl: await url('src.tgz', false), outUrl: await url('out.tgz', true), logUrl: await url('build.log', true) });
       const { deadline } = update(id, { state: 'running', agentState: 'queued' });
       let offset = 0;
