@@ -268,6 +268,29 @@ describe("track mutations", () => {
     });
   });
 
+  it("track.create wrapping a Slack thread: its agent is not a Slack session, so Computer never runs it as that thread", async () => {
+    await withOrg((sql) => {
+      transact(sql, Date.now(), (tx) => {
+        const s = tx.addSession({
+          id: sid(1),
+          owner: "usr_a",
+          origin: { type: "slack", client: null, slack: { teamId: "T1", channelId: "C1", channelName: null, threadTs: "1.000001", url: null } },
+          machine: "org_t",
+          role: null,
+          createdBy: "user:usr_a",
+          summary: emptySummary({}, "First words"),
+        });
+        tx.addPlace({ sessionId: s.id, placedBy: "user:usr_a", parentSession: null, audience: s.audience });
+      });
+      sql.exec("DELETE FROM _owed");
+      ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), sid: sid(1) }));
+      const origin = JSON.parse(sql.exec<{ origin: string }>("SELECT origin FROM session WHERE id = ?", agentSid(1))[0]!.origin);
+      expect(origin).toEqual({ type: "api", client: null, slack: null });
+      const start = owedCalls(sql).find((c) => c.startsWith("Computer.start") && c.includes(agentSid(1)))!;
+      expect(start).not.toContain("1.000001");
+    });
+  });
+
   it("a new track's Doc reads empty at revision 0 for its owner and its agent, and its agent can edit it at once", async () => {
     await withOrg((sql) => {
       ok(run(sql, A, "track.create", { tid: tid(1), agentSessionId: agentSid(1), firstInput: "Plan the launch" }));

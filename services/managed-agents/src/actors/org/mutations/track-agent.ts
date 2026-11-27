@@ -18,7 +18,8 @@ export function addTrackAgent(
     owner: a.owner,
     ownerName: a.ownerName,
     ownerEmail: a.ownerEmail,
-    origin: a.origin,
+    // Never a Slack thread's: Computer would run the agent as that thread, on its row, posting there and leaving the thread's own session none.
+    origin: a.origin.type === "slack" ? { type: "api", client: null, slack: null } : { ...a.origin, slack: null },
     machine: a.machine,
     role: "track",
     createdBy: a.by,
