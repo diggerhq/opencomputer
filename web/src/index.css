@@ -133,6 +133,17 @@
 /* Non-inline so the overlay shadow resolves through var(--shadow-overlay) at
    runtime and .dark can deepen it below. */
 @theme {
+  /* The working mark (surface Mark.tsx): a slow fade, calmer than a spin. */
+  --animate-breathe: breathe 2.4s ease-in-out infinite;
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
   /* Soft, diffuse elevation for overlays (dialogs, menus, sheets) — large
      blur + negative spread + low opacity, warm-ink tinted, so it reads as a
      gentle lift rather than a crude default drop shadow. */
