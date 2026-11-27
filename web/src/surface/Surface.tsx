@@ -163,10 +163,10 @@ function Shell({
                 {sideButton}
               </div>
               <Button
-                variant="outline"
+                variant="ghost"
                 className={cn(
-                  'text-muted-foreground mx-2 mb-1 justify-start gap-2 px-2 font-normal',
-                  mode === 'new' && 'text-foreground border-input',
+                  'text-muted-foreground hover:bg-row-hover mx-2 mb-1 justify-start gap-2 px-2 font-normal',
+                  mode === 'new' && 'bg-row-selected text-strong',
                 )}
                 onClick={() => surface.openStart()}
               >

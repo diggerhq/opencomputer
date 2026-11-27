@@ -18,8 +18,9 @@ import { Mk } from './Mark'
 
 // A row; `data-sel` marks the open one, which J and K move from.
 const ROW =
-  'group/row relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors hover:bg-row-hover focus-visible:bg-row-hover data-sel:bg-row-selected'
-const SEC = 'text-muted-foreground px-2 pt-3 pb-1 text-xs font-medium'
+  'group/row relative flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors hover:bg-row-hover focus-visible:bg-row-hover data-sel:bg-row-selected data-sel:text-strong'
+// A section's label: furniture, quieter than the rows it heads.
+const SEC = 'text-faint px-2 pt-5 pb-1 text-xs font-medium'
 const FOLD =
   'text-faint hover:bg-row-hover hover:text-muted-foreground flex w-full rounded-md py-1 pr-2 text-left text-meta outline-none focus-visible:bg-row-hover'
 const WH = 'text-faint flex-none text-xs tabular-nums'
@@ -220,7 +221,7 @@ export function List() {
     count: rows.length,
     getScrollElement: () => ref.current,
     estimateSize: (i) =>
-      ({ sec: 32, track: 44, earlier: 38, fold: 26, more: 26 })[
+      ({ sec: 40, track: 44, earlier: 38, fold: 26, more: 26 })[
         rows[i].kind as 'sec'
       ] ?? 28,
     getItemKey: (i) => rows[i].key,

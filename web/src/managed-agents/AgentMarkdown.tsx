@@ -13,7 +13,9 @@ const SIZE = {
     h2: 'mt-5 mb-2 text-lg',
     h3: 'mt-4 mb-2 text-base',
     pre: 'text-xs leading-5',
-    table: 'text-xs',
+    prePad: '',
+    table: 'w-full text-xs',
+    cell: 'py-2',
   },
   reading: {
     wrap: 'text-reading',
@@ -21,8 +23,11 @@ const SIZE = {
     h1: 'mt-7 mb-2 text-xl',
     h2: 'mt-7 mb-1.5 text-lg',
     h3: 'mt-5 mb-1 text-reading',
-    pre: 'my-3.5 px-3.5 text-mono',
-    table: 'text-sm',
+    pre: 'my-3.5 text-mono',
+    prePad: 'px-3.5',
+    // As wide as its columns need, not stretched over the measure.
+    table: 'text-meta',
+    cell: 'py-1.5',
   },
 }
 
@@ -140,21 +145,25 @@ export function AgentMarkdown({
               {...props}
             />
           ),
+          // The frame sits on a wrapper so the scrolling pre can fade its
+          // right edge: a line that runs on shows that it does.
           pre: (props) => (
-            <pre
-              className={cn(
-                'bg-muted my-3 overflow-x-auto rounded-md border p-3 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[1em] [&_code]:text-inherit',
-                s.pre,
-              )}
-              {...props}
-            />
+            <div className={cn('bg-muted my-3 rounded-md border', s.pre)}>
+              <pre
+                className={cn(
+                  'overflow-x-auto mask-r-from-[calc(100%-1.5rem)] p-3 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[1em] [&_code]:text-inherit',
+                  s.prePad,
+                )}
+                {...props}
+              />
+            </div>
           ),
           hr: (props) => <hr className="my-5" {...props} />,
           table: (props) => (
-            <div className="my-3 overflow-x-auto rounded-md border">
+            <div className="my-3 w-fit max-w-full overflow-x-auto rounded-md border">
               <table
                 className={cn(
-                  'w-full border-collapse text-left tabular-nums [&_tr:last-child>td]:border-b-0',
+                  'border-collapse text-left tabular-nums [&_tr:last-child>td]:border-b-0',
                   s.table,
                 )}
                 {...props}
@@ -163,11 +172,16 @@ export function AgentMarkdown({
           ),
           th: (props) => (
             <th
-              className="text-muted-foreground border-b px-3 py-2 font-medium"
+              className={cn(
+                'text-muted-foreground border-b px-3 font-medium',
+                s.cell,
+              )}
               {...props}
             />
           ),
-          td: (props) => <td className="border-b px-3 py-2" {...props} />,
+          td: (props) => (
+            <td className={cn('border-b px-3', s.cell)} {...props} />
+          ),
         }}
       >
         {children}

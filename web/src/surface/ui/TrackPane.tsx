@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
 import { askLine, type ThreadView, type TrackView } from '../store/views'
 import { I } from './icons'
-import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT } from './pane-classes'
+import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT, MEASURE } from './pane-classes'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { Mk } from './Mark'
@@ -470,7 +470,7 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
 
 // ---- Doc (S4) ----
 
-const NOTES = 'flex-1 overflow-auto px-4 pb-6 leading-relaxed'
+const NOTES = cn('flex-1 overflow-auto pb-6 leading-relaxed', MEASURE)
 
 function Doc({ track }: { track: TrackView }) {
   const surface = useSurface()
@@ -640,7 +640,7 @@ function Results({ track }: { track: TrackView }) {
     </div>
   )
   return (
-    <div className="flex-1 overflow-auto px-4 pt-2 pb-4 *:max-w-180">
+    <div className={cn('flex-1 overflow-auto pt-2 pb-4 *:max-w-180', MEASURE)}>
       {withRes.map((t) => (
         <div key={t.id}>
           <div className={RG}>{t.title}</div>
