@@ -18,11 +18,11 @@
    not bundle the cyrillic / greek / latin-ext / vietnamese subsets or the
    unused italic / optical-size variants. */
 @font-face {
-  font-family: 'Inter Variable';
+  font-family: 'Geist Variable';
   font-style: normal;
   font-display: swap;
   font-weight: 100 900;
-  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2')
+  src: url('@fontsource-variable/geist/files/geist-latin-wght-normal.woff2')
     format('woff2-variations');
 }
 @font-face {
@@ -39,20 +39,23 @@
 @theme inline {
   /* Type */
   --font-sans:
-    'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
     Roboto, Helvetica, Arial, sans-serif;
   --font-mono:
     'Geist Mono Variable', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
     monospace;
-  /* Headings use the UI sans (Inter) — serif felt out of place in the app. */
+  /* Headings use the UI sans (Geist) — serif felt out of place in the app. */
   --font-heading: var(--font-sans);
 
   /* Type sizes beyond Tailwind's scale. reading: agent replies and the
-     person's messages in a thread, read for long stretches. mono: code at
-     that size, a step under it. (Register new names in lib/utils.ts too.) */
+     person's messages in a thread, read for long stretches. meta: secondary
+     lines, folds and small controls, between xs and sm. mono: code at the
+     reading size, a step under it. (Register new names in lib/utils.ts.) */
   --text-reading: 15px;
   --text-reading--line-height: 24px;
   --text-reading--letter-spacing: -0.005em;
+  --text-meta: 13px;
+  --text-meta--line-height: 20px;
   --text-mono: 13px;
   --text-mono--line-height: 21px;
 
@@ -130,6 +133,17 @@
 /* Non-inline so the overlay shadow resolves through var(--shadow-overlay) at
    runtime and .dark can deepen it below. */
 @theme {
+  /* The working mark (surface Mark.tsx): a slow fade, calmer than a spin. */
+  --animate-breathe: breathe 2.4s ease-in-out infinite;
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
   /* Soft, diffuse elevation for overlays (dialogs, menus, sheets) — large
      blur + negative spread + low opacity, warm-ink tinted, so it reads as a
      gentle lift rather than a crude default drop shadow. */
@@ -174,7 +188,7 @@
   --muted-foreground: hsl(
     40 5% 38%
   ); /* secondary text — ~5.4:1 on paper (site's 53% fails AA) */
-  --faint: hsl(40 4% 44%); /* ~4.7:1 on paper */
+  --faint: hsl(40 4% 41%); /* ~5.1:1 on paper, 4.9:1 on the sidebar */
 
   /* Lines + focus */
   --border: hsl(40 14% 87%);
@@ -220,7 +234,7 @@
   --chart-5: hsl(40 10% 84%);
 
   /* Sidebar (warm, one step off the app bg) */
-  --sidebar: hsl(40 28% 96%);
+  --sidebar: hsl(40 28% 95%);
   --sidebar-foreground: hsl(45 8% 8%);
   --sidebar-border: hsl(40 14% 87%);
   --sidebar-accent: hsl(40 24% 92%);
@@ -302,7 +316,7 @@
   --chart-4: hsl(36 6% 36%);
   --chart-5: hsl(36 6% 26%);
 
-  --sidebar: hsl(40 4% 5.7%);
+  --sidebar: hsl(40 4% 4.5%);
   --sidebar-foreground: hsl(38 13% 84%);
   --sidebar-border: hsl(40 4% 13%);
   --sidebar-accent: hsl(40 5% 12.7%);

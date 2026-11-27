@@ -25,7 +25,9 @@ import {
 import { AskBlock } from './AskBlock'
 import { MessageAttachments, SessionScope } from './Attachments'
 import { I } from './icons'
+import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
+import { MEASURE } from './pane-classes'
 import { Rich } from './Rich'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
@@ -81,7 +83,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground flex max-w-180 items-center gap-2 text-[12.5px]',
+        'text-muted-foreground text-meta flex max-w-180 items-center gap-2',
         item.tone === 'error' && WARN,
       )}
     >
@@ -121,7 +123,7 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
         {item.undone && (
           <>
             {' · '}
-            <s className="text-muted-foreground/70">Undo</s>
+            <s className="text-faint">Undo</s>
           </>
         )}
       </span>
@@ -131,14 +133,18 @@ function Line({ item }: { item: Extract<Item, { kind: 'line' }> }) {
 
 // ---- a turn's work: one line, open to see its steps, thinking and messages ----
 
+// Inside a fold: a step's arguments read as plain mono, not as chips.
+const FOLD_BODY =
+  'flex flex-col gap-1.5 border-l pl-3.5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-foreground'
+
 const FOLD =
-  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-[12.5px] outline-none'
+  'group text-muted-foreground hover:text-foreground focus-visible:text-foreground flex max-w-full min-w-0 items-center gap-1.5 rounded-sm text-meta outline-none'
 
 function StepLine({ step }: { step: Step }) {
   return (
     <div
       className={cn(
-        'text-muted-foreground flex items-baseline gap-2 text-[12.5px] [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
+        'text-muted-foreground text-meta [&>svg]:text-faint flex items-baseline gap-2 [&>svg]:relative [&>svg]:top-0.5 [&>svg]:flex-none',
         step.status === 'failed' && WARN,
       )}
     >
@@ -163,13 +169,13 @@ function EntryView({ entry }: { entry: Entry }) {
   if (entry.kind === 'step') return <StepLine step={entry} />
   if (entry.kind === 'text')
     return (
-      <div className="text-foreground/85 text-[13px]">
+      <div className="text-foreground/85 text-meta">
         <Rich text={entry.text} />
       </div>
     )
   // Thinking the model hid has nothing to show but its length.
   return (
-    <div className="text-muted-foreground text-[12.5px] italic">
+    <div className="text-faint text-meta">
       {entry.text ? (
         <Rich text={entry.text} />
       ) : (
@@ -210,7 +216,7 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
   const failed = item.entries.filter(
     (en) => en.kind === 'step' && en.status === 'failed',
   ).length
-  // The spinner is for a step running now, not for a turn that is waiting.
+  // The working mark is for a step running now, not for a turn that is waiting.
   const last = item.entries[item.entries.length - 1]
   const running =
     !item.settled && last?.kind === 'step' && last.status === 'running'
@@ -227,7 +233,7 @@ function Work({ item }: { item: Extract<Item, { kind: 'work' }> }) {
           <span className={cn(WARN, 'flex-none')}>· {failed} failed</span>
         )}
       </CollapsibleTrigger>
-      <CollapsibleContent className="mt-1.5 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+      <CollapsibleContent className={cn(FOLD_BODY, 'mt-1.5 ml-1.5')}>
         {item.entries.map((en) => (
           <EntryView key={en.key} entry={en} />
         ))}
@@ -282,26 +288,24 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
       {progress.length > 0 && (
         <div
           className={cn(
-            'text-muted-foreground mt-0.5 truncate pl-5 text-[12px] tabular-nums',
+            'text-muted-foreground text-meta mt-0.5 truncate pl-5 tabular-nums',
             sub.status === 'failed' && WARN,
           )}
         >
           {progress.join(' · ')}
         </div>
       )}
-      <CollapsibleContent className="mt-2 ml-1.5 flex flex-col gap-1.5 border-l pl-3">
+      <CollapsibleContent className={cn(FOLD_BODY, 'mt-2 ml-1.5')}>
         {steps.map((st) => (
           <StepLine key={st.key} step={st} />
         ))}
         {!steps.length && !answer && (
-          <div className="text-muted-foreground text-[12.5px]">
-            No steps yet
-          </div>
+          <div className="text-muted-foreground text-meta">No steps yet</div>
         )}
         {answer && (
           <div
             className={cn(
-              'text-foreground/85 max-h-60 overflow-y-auto text-[13px]',
+              'text-foreground/85 text-meta max-h-60 overflow-y-auto',
               sub.error && WARN,
             )}
           >
@@ -318,6 +322,43 @@ function SubagentView({ item }: { item: Extract<Item, { kind: 'subagent' }> }) {
 
 // ---- one item ----
 
+// A turn on its way, dimmed until it lands, with a word on why.
+const PENDING: Record<string, string> = {
+  sending: 'Sending…',
+  queued: 'Queued',
+}
+
+// On the measure like the agent's text, so the reading edge stays put; a
+// quiet fill says whose turn it is.
+function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
+  const pending = item.state && PENDING[item.state]
+  return (
+    <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
+      {(item.author || item.via) && (
+        <div className="text-muted-foreground text-meta">
+          {[item.author, item.via].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div className={cn(pending && 'opacity-60')}>
+        {item.text && <Rich text={item.text} size="reading" />}
+        {item.attachments && (
+          <MessageAttachments
+            attachments={item.attachments}
+            sending={item.state === 'sending'}
+            className={cn(item.text && 'mt-2')}
+          />
+        )}
+      </div>
+      {pending && <div className="text-faint text-meta mt-1">{pending}</div>}
+      {item.state === 'failed' && (
+        <div className={cn(WARN, 'text-meta mt-1')}>
+          Not sent{item.reason ? ` · ${item.reason}` : ''}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
 // is a new object with the same fields: compare those.
 const sameItem = (a: { item: Item }, b: { item: Item }) => {
@@ -332,34 +373,7 @@ const sameItem = (a: { item: Item }, b: { item: Item }) => {
 const ItemView = memo(function ItemView({ item }: { item: Item }) {
   switch (item.kind) {
     case 'user':
-      return (
-        <div
-          className={cn(
-            'bg-secondary mr-[max(0px,calc(100%-45rem))] max-w-[min(78%,560px)] self-end rounded-2xl rounded-br-sm px-3.5 py-2',
-            (item.state === 'sending' || item.state === 'queued') &&
-              'opacity-60',
-          )}
-        >
-          {(item.author || item.via) && (
-            <div className="text-muted-foreground text-xs">
-              {[item.author, item.via].filter(Boolean).join(' · ')}
-            </div>
-          )}
-          {item.text && <Rich text={item.text} size="reading" />}
-          {item.attachments && (
-            <MessageAttachments
-              attachments={item.attachments}
-              sending={item.state === 'sending'}
-              className={cn(item.text && 'mt-2')}
-            />
-          )}
-          {item.state === 'failed' && (
-            <div className={cn(WARN, 'mt-1 text-xs')}>
-              Not sent{item.reason ? ` · ${item.reason}` : ''}
-            </div>
-          )}
-        </div>
-      )
+      return <UserTurn item={item} />
     case 'agent':
       return (
         <div className="max-w-180">
@@ -384,7 +398,7 @@ type Row = { key: string; day?: string; item?: Item }
 
 function DayLine({ at }: { at: string }) {
   return (
-    <div className="text-muted-foreground/80 after:bg-border flex max-w-180 items-center gap-3 text-xs font-medium after:h-px after:flex-1 after:content-['']">
+    <div className="text-faint after:bg-border text-meta flex max-w-180 items-center gap-3 font-medium after:h-px after:flex-1 after:content-['']">
       {dayLabel(at)}
     </div>
   )
@@ -417,9 +431,8 @@ function Transcript(props: {
   // Distance from the end to hold when earlier items are revealed above.
   const hold = useRef<number | null>(null)
   const lastKey = useRef<string | undefined>(undefined)
-  // Where this pane last put itself. Its scroll event arrives a frame later,
-  // when a pane that is changing width has grown again: it is not the reader's.
-  const own = useRef(-1)
+  // Where the pane was when last looked at, by the reader or by itself.
+  const seen = useRef<Seen>({ top: 0, bottom: 0, view: 0 })
 
   const [n, setN] = useState(PAGE)
   const shown = items.length > n ? items.slice(items.length - n) : items
@@ -447,8 +460,16 @@ function Transcript(props: {
     places.set(sid, { top: el.scrollTop, end, sizes: v.measurementsCache })
   const toEnd = (el: HTMLDivElement) => {
     el.scrollTop = el.scrollHeight
-    own.current = el.scrollTop
+    seen.current = at(el)
     remember(el, true)
+  }
+  // Whether the reader has left the end or come back to it since last seen.
+  // Every render looks first, since the virtualizer re-renders on a scroll
+  // before the pane's own scroll handler runs.
+  const look = (el: HTMLDivElement) => {
+    const now = at(el)
+    pinned.current = following(pinned.current, seen.current, now)
+    seen.current = now
   }
 
   // Opening a conversation: where the reader left it, else its end.
@@ -457,8 +478,10 @@ function Transcript(props: {
     if (!el) return
     const was = places.get(sid)
     pinned.current = was ? was.end : true
-    if (was && !was.end) el.scrollTop = was.top
-    else toEnd(el)
+    if (was && !was.end) {
+      el.scrollTop = was.top
+      seen.current = at(el)
+    } else toEnd(el)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -468,6 +491,7 @@ function Transcript(props: {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    look(el)
     const last = items[items.length - 1]
     // The person's own new message takes them to it.
     if (
@@ -480,6 +504,7 @@ function Transcript(props: {
     lastKey.current = last?.key
     if (hold.current !== null) {
       el.scrollTop = el.scrollHeight - hold.current
+      seen.current = at(el)
       hold.current = null
     } else if (pinned.current) toEnd(el)
   })
@@ -498,15 +523,17 @@ function Transcript(props: {
 
   const onScroll = () => {
     const el = ref.current
-    if (!el || el.scrollTop === own.current) return
-    const end = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-    pinned.current = end
-    remember(el, end)
+    if (!el) return
+    look(el)
+    remember(el, pinned.current)
   }
 
   return (
     <div
-      className="flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto px-4 pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']"
+      className={cn(
+        "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
+        MEASURE,
+      )}
       id={id}
       ref={ref}
       onScroll={onScroll}
@@ -555,7 +582,7 @@ function Transcript(props: {
       )}
       {open?.text ? (
         <div className="max-w-180">
-          <Rich text={open.text} />
+          <Rich text={open.text} size="reading" />
           <span className="bg-foreground/55 ml-0.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[1px] align-[-2px]" />
         </div>
       ) : null}

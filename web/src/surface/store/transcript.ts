@@ -135,11 +135,11 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
         if (!text && !attachments) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
         if (e.actor?.via === 'agent') {
-          if (text) items.push({ kind: 'line', key: e.turnId ?? e.id, text, tone: 'muted', at: e.createdAt })
+          if (text) items.push({ kind: 'line', key: messageKey(e), text, tone: 'muted', at: e.createdAt })
         } else
           items.push({
             kind: 'user',
-            key: e.turnId ?? e.id,
+            key: messageKey(e),
             text,
             author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
             via: e.actor?.via && VIA[e.actor.via],
@@ -244,6 +244,14 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string): Item[
   return items
 }
 
+// The id the sender gave a message. A steer joins the running turn, so its
+// turnId is that turn's and its own id is messageId: two messages in one turn
+// must not share a key.
+const messageKey = (e: ApiEvent): string => {
+  const id = (e.data as { messageId?: unknown } | undefined)?.messageId
+  return typeof id === 'string' ? id : (e.turnId ?? e.id)
+}
+
 // The person's own messages that no event shows yet: queued here, waiting in
 // the session's inbox, or refused by the host (spec 40.2, steps 6 and 7).
 // `attachments`: the client's pending files, for how far a message's uploads are.
@@ -255,7 +263,7 @@ export function unsent(
   attachments: readonly PendingAttachment[] = [],
 ): Item[] {
   const seen = new Set<string>()
-  for (const e of events) if (e.type === 'message.received' && e.turnId) seen.add(e.turnId)
+  for (const e of events) if (e.type === 'message.received') seen.add(messageKey(e))
   const out: Item[] = []
   const mine = new Set<string>()
   const files = (ids: string[] | undefined): Pick<Item & { kind: 'user' }, 'attachments'> => {

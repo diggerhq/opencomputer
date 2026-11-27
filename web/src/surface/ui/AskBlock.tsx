@@ -12,7 +12,7 @@ import { SecretForm } from './SecretForm'
 // An ask in the conversation: its buttons while it waits on the person, what
 // was said once it has closed (R33).
 
-const ASIDE = 'text-muted-foreground text-[12.5px]'
+const ASIDE = 'text-muted-foreground text-meta'
 // An ask still waiting on the person; one that is closed goes quiet.
 const askCls = (open: boolean) =>
   cn(

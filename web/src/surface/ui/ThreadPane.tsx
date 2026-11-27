@@ -41,7 +41,7 @@ function Name({
   if (!editing)
     return (
       <h1
-        className="truncate text-sm font-semibold select-text"
+        className="text-reading truncate font-semibold select-text"
         onDoubleClick={() => setEditing(true)}
       >
         {thread.title}
@@ -52,7 +52,7 @@ function Name({
       ref={(el) => el?.focus()}
       aria-label="Name"
       // The name's own type, so editing it does not move anything.
-      className="min-w-20 flex-[0_1_320px] bg-transparent p-0 text-sm font-semibold outline-none"
+      className="text-reading min-w-20 flex-[0_1_320px] bg-transparent p-0 font-semibold outline-none"
       defaultValue={thread.title}
       onFocus={(e) => e.currentTarget.select()}
       onBlur={() => setEditing(false)}
@@ -151,9 +151,9 @@ function Results({
     const el = ref.current
     if (!el) return
     const count = () => {
-      const below = [...el.querySelectorAll<HTMLElement>('[data-result]')].filter(
-        (b) => b.offsetTop >= el.clientHeight,
-      ).length
+      const below = [
+        ...el.querySelectorAll<HTMLElement>('[data-result]'),
+      ].filter((b) => b.offsetTop >= el.clientHeight).length
       setHidden(below)
     }
     count()
@@ -176,7 +176,7 @@ function Results({
             <Button
               key={r.id}
               data-result
-              variant="outline"
+              variant="secondary"
               size="xs"
               className="font-normal"
               onClick={() => surface.openResult(r)}
@@ -184,7 +184,7 @@ function Results({
               <ResultIcon result={r} ring={ring === r.id} />
               {resultTitle(r)}
               {detail && (
-                <small className="text-muted-foreground text-[11.5px] tabular-nums @max-[560px]:hidden">
+                <small className="text-muted-foreground text-xs tabular-nums @max-[560px]:hidden">
                   {detail}
                 </small>
               )}
@@ -233,8 +233,14 @@ export function ThreadPane({ sid }: { sid: string }) {
 
   if (!thread && missing)
     return (
-      <div className={cn(IN, 'items-center justify-center')} data-pane="thread" data-missing>
-        <p className="text-muted-foreground text-sm">This thread was not found.</p>
+      <div
+        className={cn(IN, 'items-center justify-center')}
+        data-pane="thread"
+        data-missing
+      >
+        <p className="text-muted-foreground text-sm">
+          This thread was not found.
+        </p>
       </div>
     )
   if (!thread && unopened)
@@ -260,7 +266,8 @@ export function ThreadPane({ sid }: { sid: string }) {
 
   const status = thread.session.status
   // A thread opened by link may be someone else's: say whose.
-  const owner = thread.session.owner.id === me ? null : thread.session.owner.name
+  const owner =
+    thread.session.owner.id === me ? null : thread.session.owner.name
   const slack = thread.session.origin.slack
   const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
@@ -350,7 +357,7 @@ export function ThreadPane({ sid }: { sid: string }) {
           editing={renaming === sid}
           setEditing={(on) => setRenaming(on ? sid : null)}
         />
-        <span className="text-muted-foreground truncate text-[13px] select-text">
+        <span className="text-muted-foreground text-meta truncate select-text">
           {thread.done ? (
             <span className="inline-flex items-center gap-1">
               {I.check}
@@ -363,7 +370,10 @@ export function ThreadPane({ sid }: { sid: string }) {
           ) : (
             ''
           )}
-          {owner && (thread.done || thread.waiting || (track && layout === 'L3') ? ` · ${owner}` : owner)}
+          {owner &&
+            (thread.done || thread.waiting || (track && layout === 'L3')
+              ? ` · ${owner}`
+              : owner)}
         </span>
         <span className="flex-1" />
         {slack?.url && (
@@ -401,7 +411,6 @@ export function ThreadPane({ sid }: { sid: string }) {
         {trackId && (
           <ToggleGroup
             type="single"
-            variant="outline"
             size="sm"
             className="max-[960px]:hidden"
             value={layout ?? 'L1'}
@@ -412,7 +421,7 @@ export function ThreadPane({ sid }: { sid: string }) {
                 <ToggleGroupItem
                   value={l.v}
                   aria-label={l.tip}
-                  className="text-muted-foreground px-2"
+                  className="text-muted-foreground data-[state=on]:text-foreground px-2"
                 >
                   {I[l.v]}
                 </ToggleGroupItem>
@@ -423,11 +432,7 @@ export function ThreadPane({ sid }: { sid: string }) {
         <MenuButton items={menu} />
       </div>
       {thread.results.length > 0 && (
-        <Results
-          key={sid}
-          results={thread.results}
-          ring={thread.readyResult}
-        />
+        <Results key={sid} results={thread.results} ring={thread.readyResult} />
       )}
       <Conversation sid={sid}>
         {thread.proposals.map((p) => (

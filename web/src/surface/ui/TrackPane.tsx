@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { useS, useSurface, useTrack } from '../hooks'
 import { askLine, type ThreadView, type TrackView } from '../store/views'
 import { I } from './icons'
-import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT } from './pane-classes'
+import { ACTS, BLOCK, COMPOSER, HD, IN, LEFT, MEASURE } from './pane-classes'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { Mk } from './Mark'
@@ -131,7 +131,7 @@ export function TrackPane({ tid }: { tid: string }) {
           </h1>
         )}
         {track.done && (
-          <span className="text-muted-foreground inline-flex items-center gap-1 text-[13px]">
+          <span className="text-muted-foreground text-meta inline-flex items-center gap-1">
             {I.check}done
           </span>
         )}
@@ -144,14 +144,14 @@ export function TrackPane({ tid }: { tid: string }) {
       >
         {track.stand}
       </div>
-      <div className="flex-none border-b px-4 py-1.5">
+      <div className="flex-none border-b px-4 pt-1">
         <Tabs
           value={tab}
           onValueChange={(v) =>
             surface.setTrackTab(tid, v as 'activity' | 'doc' | 'results')
           }
         >
-          <TabsList>
+          <TabsList variant="line">
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="doc">Doc</TabsTrigger>
             <TabsTrigger value="results">
@@ -187,14 +187,15 @@ function Activity({ track }: { track: TrackView }) {
   return (
     <>
       {(track.threads.length > 0 || track.earlier > 0) && (
-        // Held to part of the pane, so the agent's conversation and composer stay in sight.
-        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-y-auto border-b px-4 pt-3 pb-1">
+        // Held to part of the pane, so the agent's conversation and composer
+        // stay in sight. It scrolls down, never sideways.
+        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-x-hidden overflow-y-auto border-b px-4 pt-3 pb-1">
           {track.threads.map((t) => (
             <Card key={t.id} thread={t} sel={open === t.id} />
           ))}
           {track.earlier > 0 && (
             <button
-              className="text-muted-foreground/80 hover:text-muted-foreground self-start pt-1 pb-2 text-left text-[12.5px] outline-none focus-visible:underline"
+              className="text-faint hover:text-muted-foreground text-meta self-start pt-1 pb-2 text-left outline-none focus-visible:underline"
               aria-expanded={earlierOpen}
               onClick={() => surface.toggleEarlier(tid)}
             >
@@ -208,7 +209,7 @@ function Activity({ track }: { track: TrackView }) {
                   key={t.id}
                   className={cn(
                     ROW,
-                    'text-muted-foreground hover:text-foreground -mx-2 flex h-6.5 items-baseline gap-2 px-2 text-left text-[12.5px]',
+                    'text-muted-foreground hover:text-foreground text-meta -mx-2 flex h-6.5 items-baseline gap-2 px-2 text-left',
                   )}
                   onClick={() => surface.openThread(t.id)}
                 >
@@ -216,7 +217,7 @@ function Activity({ track }: { track: TrackView }) {
                     {t.title}
                   </span>
                   {t.outcome && (
-                    <small className="text-muted-foreground/70 min-w-0 truncate text-[11.5px]">
+                    <small className="text-faint min-w-0 truncate text-xs">
                       {t.outcome}
                     </small>
                   )}
@@ -323,37 +324,57 @@ function choices(ask: Ask): Choice[] {
   }))
 }
 
+// A result is settled once nothing more comes of it: a pull request merged or
+// closed, a preview stopped.
+const settled = (r: ThreadView['results'][number]) =>
+  r.state === 'merged' || r.state === 'closed' || r.state === 'stopped'
+
+// The one result a card shows: the one waiting on the user, else the newest
+// unsettled one. The rest are in the Results view, a click away.
+function cardResult(t: ThreadView) {
+  return (
+    t.results.find((r) => r.id === t.readyResult) ??
+    [...t.results].reverse().find((r) => !settled(r)) ??
+    null
+  )
+}
+
+const CHIP =
+  'hover:bg-accent hover:text-foreground -mx-1.5 -my-0.5 inline-flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 whitespace-nowrap'
+
 function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
   const surface = useSurface()
   const ask = t.mark === 'blocked' ? t.ask : null
   const question = ask ? askLine(ask) : null
   const opts = ask ? choices(ask) : []
+  const shown = cardResult(t)
+  const more = t.results.length - (shown ? 1 : 0)
   const body: ReactNode = (
     <>
       <div className="flex items-baseline gap-2">
         <Mk mark={t.mark} />
         <span
           className={cn(
-            'min-w-0 truncate',
-            t.unread ? 'font-bold' : 'font-medium',
+            'text-reading min-w-0 truncate',
+            t.unread ? 'font-semibold' : 'font-medium',
           )}
         >
           {t.title}
         </span>
-        <span
-          className={cn(
-            'ml-auto flex-none text-xs whitespace-nowrap',
-            t.mark ? 'text-status-pending' : 'text-muted-foreground',
-          )}
-        >
-          {t.word}
-        </span>
+        {/* The mark says working and ready; only what waits on the person
+            is also said in words. */}
+        {t.mark === 'blocked' && (
+          <span className="text-meta text-status-pending ml-auto flex-none whitespace-nowrap">
+            {t.word}
+          </span>
+        )}
       </div>
-      <div className="text-muted-foreground mt-1 line-clamp-2 text-[12.5px]">
+      <div className="text-muted-foreground text-meta mt-1 line-clamp-2 wrap-anywhere">
         {t.line ?? 'Just started'}
       </div>
       {ask && (question !== t.line || opts.length > 0) && (
-        <div className="mt-2 text-[12.5px]">
+        // An approval's line is often a command with nowhere to break.
+        <div className="text-meta mt-2 wrap-anywhere">
           {question !== t.line && <div>{question}</div>}
           {opts.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -362,6 +383,7 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
                   key={o.label}
                   size="xs"
                   variant={o.primary ? 'default' : 'outline'}
+                  className="h-auto min-h-6 max-w-full py-0.5 text-left whitespace-normal"
                   onClick={(e) => {
                     e.stopPropagation()
                     surface.answer(t.id, ask.id, o.answer)
@@ -376,33 +398,52 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
         </div>
       )}
       {t.results.length > 0 && (
-        <div className="text-muted-foreground mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-          {t.results.map((r) => (
+        <div className="text-muted-foreground text-meta mt-2 flex items-center gap-3">
+          {shown && (
             <span
-              key={r.id}
-              className="hover:bg-accent hover:text-foreground -mx-1.5 -my-0.5 inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 whitespace-nowrap"
+              className={cn(CHIP, 'min-w-0')}
               role="button"
               tabIndex={-1}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return
                 e.stopPropagation()
-                surface.openResult(r)
+                surface.openResult(shown)
               }}
               onClick={(e) => {
                 e.stopPropagation()
-                surface.openResult(r)
+                surface.openResult(shown)
               }}
             >
-              <ResultIcon result={r} ring={t.readyResult === r.id} />
-              {resultTitle(r)}
+              <ResultIcon result={shown} ring={t.readyResult === shown.id} />
+              <span className="truncate">{resultTitle(shown)}</span>
             </span>
-          ))}
+          )}
+          {more > 0 && (
+            <span
+              className={cn(CHIP, 'text-faint flex-none')}
+              role="button"
+              tabIndex={-1}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.stopPropagation()
+                surface.setTrackTab(t.trackId!, 'results')
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                surface.setTrackTab(t.trackId!, 'results')
+              }}
+            >
+              {shown
+                ? `+${more} more`
+                : `${more} ${more === 1 ? 'result' : 'results'}`}
+            </span>
+          )}
         </div>
       )}
     </>
   )
   const cls = cn(
-    'animate-in fade-in-0 block max-w-180 rounded-lg border p-3 text-left shadow-xs transition-colors outline-none focus-visible:border-ring',
+    'animate-in fade-in-0 block max-w-180 rounded-lg border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring',
     sel ? 'bg-row-selected' : 'bg-card hover:border-input',
   )
   // Buttons cannot sit inside a button, so a card that carries choices is a
@@ -431,7 +472,7 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
 
 // ---- Doc (S4) ----
 
-const NOTES = 'flex-1 overflow-auto px-4 pb-6 leading-relaxed'
+const NOTES = cn('flex-1 overflow-auto pb-6 leading-relaxed', MEASURE)
 
 function Doc({ track }: { track: TrackView }) {
   const surface = useSurface()
@@ -467,7 +508,7 @@ function Doc({ track }: { track: TrackView }) {
   if (!doc)
     return (
       <div className={NOTES}>
-        <p className="text-muted-foreground/80 pt-4">
+        <p className="text-faint pt-4">
           The Doc appears here once the agent has written the goal.
         </p>
         {proposals}
@@ -544,7 +585,7 @@ function Doc({ track }: { track: TrackView }) {
       {editing ? (
         <>
           {moved && (
-            <p className="text-muted-foreground mb-2 max-w-180 text-[12.5px]">
+            <p className="text-muted-foreground text-meta mb-2 max-w-180">
               The agent changed the Doc while you were editing. Saving keeps
               both; where you both changed the same lines, yours are kept.
             </p>
@@ -571,7 +612,7 @@ function Doc({ track }: { track: TrackView }) {
 
 // ---- Results (R18) ----
 
-const RG = 'text-muted-foreground/80 mt-3 mb-1 text-[11.5px] font-medium'
+const RG = 'text-faint mt-3 mb-1 text-xs font-medium'
 
 function Results({ track }: { track: TrackView }) {
   const surface = useSurface()
@@ -595,13 +636,13 @@ function Results({ track }: { track: TrackView }) {
     >
       <ResultIcon result={r} ring={t?.readyResult === r.id} />
       {resultTitle(r)}
-      <small className="text-muted-foreground/80 ml-auto min-w-0 truncate text-[11.5px] tabular-nums">
+      <small className="text-faint ml-auto min-w-0 truncate text-xs tabular-nums">
         {resultDetail(r)}
       </small>
     </div>
   )
   return (
-    <div className="flex-1 overflow-auto px-4 pt-2 pb-4 *:max-w-180">
+    <div className={cn('flex-1 overflow-auto pt-2 pb-4 *:max-w-180', MEASURE)}>
       {withRes.map((t) => (
         <div key={t.id}>
           <div className={RG}>{t.title}</div>
@@ -615,7 +656,7 @@ function Results({ track }: { track: TrackView }) {
         </div>
       )}
       {!withRes.length && !past.length && (
-        <p className="text-muted-foreground/80 pt-2">
+        <p className="text-faint pt-2">
           Nothing yet. Pull requests, previews and files show up here as the
           threads produce them.
         </p>

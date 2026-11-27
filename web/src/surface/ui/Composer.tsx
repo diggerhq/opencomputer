@@ -59,7 +59,16 @@ export function Composer({
   }
   const hasFiles = (e: DragEvent) => [...e.dataTransfer.types].includes('Files')
   const button = (
-    <Button size="icon-sm" aria-label="Send" title={failed ? 'Remove the failed file to send' : 'Send (Enter)'} disabled={!ready} onClick={send}>
+    // Filled once there is something to send: text, or a file that uploaded.
+    <Button
+      size="icon-sm"
+      variant={ready ? 'default' : 'secondary'}
+      className="rounded-full"
+      aria-label="Send"
+      title={failed ? 'Remove the failed file to send' : 'Send (Enter)'}
+      disabled={!ready}
+      onClick={send}
+    >
       {I.up}
     </Button>
   )
@@ -67,7 +76,8 @@ export function Composer({
     <div
       ref={ref}
       className={cn(
-        'bg-card focus-within:border-ring/60 flex flex-none flex-col gap-1 rounded-xl border p-1 pl-1 shadow-sm transition-colors',
+        // Always a column: the paperclip's row is under the text.
+        'bg-card focus-within:border-input flex flex-none flex-col gap-1 rounded-xl border p-1.5 shadow-sm transition-colors',
         over > 0 && 'border-ring ring-ring/30 ring-3',
         className,
       )}
@@ -109,7 +119,7 @@ export function Composer({
           e.preventDefault()
           attach(files)
         }}
-        className="text-reading md:text-reading min-h-8 flex-1 border-0 bg-transparent px-2.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
+        className="text-reading md:text-reading placeholder:text-faint min-h-10 flex-1 border-0 bg-transparent px-2.5 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
       <DraftChips draftKey={draftKey} ids={ids} />
       <div className="flex items-center gap-1">

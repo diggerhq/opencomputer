@@ -200,9 +200,7 @@ function Open() {
                 <Mk mark={h.mark} />
                 <span className="min-w-0 flex-1 truncate">{h.name}</span>
                 {h.within && (
-                  <span className="text-muted-foreground/80 text-xs">
-                    {h.within}
-                  </span>
+                  <span className="text-faint text-xs">{h.within}</span>
                 )}
               </CommandItem>
             ))}

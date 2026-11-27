@@ -50,9 +50,7 @@ export function SecretForm({ ask }: { ask: Ask }) {
         <div>{label}</div>
         {ask.status === 'open' &&
           (save.isSuccess ? (
-            <div className="text-muted-foreground mt-2 text-[12.5px]">
-              Saved
-            </div>
+            <div className="text-muted-foreground text-meta mt-2">Saved</div>
           ) : (
             <div className={ACTS}>
               <Dismiss ask={ask} />
@@ -68,7 +66,7 @@ export function SecretForm({ ask }: { ask: Ask }) {
     <form onSubmit={submit}>
       <label htmlFor={id}>{label}</label>
       {purpose && (
-        <p className="text-muted-foreground mt-1 text-[12.5px]">{purpose}</p>
+        <p className="text-muted-foreground text-meta mt-1">{purpose}</p>
       )}
       {file ? (
         <Input
@@ -100,17 +98,17 @@ export function SecretForm({ ask }: { ask: Ask }) {
           onChange={(e) => setValue(e.target.value)}
         />
       )}
-      <p className="text-muted-foreground mt-1 text-[12px]">
+      <p className="text-muted-foreground mt-1 text-xs">
         Only this session can use this secret. Its value is never posted in the
         conversation.
       </p>
       {fileError && (
-        <p role="alert" className="text-destructive mt-1 text-[12.5px]">
+        <p role="alert" className="text-destructive text-meta mt-1">
           Choose a readable text file up to 64 KB.
         </p>
       )}
       {save.isError && (
-        <p role="alert" className="text-destructive mt-1 text-[12.5px]">
+        <p role="alert" className="text-destructive text-meta mt-1">
           Could not save the secret. Please retry.
         </p>
       )}
