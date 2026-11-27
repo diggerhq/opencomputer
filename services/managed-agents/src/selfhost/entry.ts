@@ -2,7 +2,8 @@
 // one VM under Miniflare (selfhost/gateway). Hosted-only routes answer 404 here, and their
 // bindings (billing, Modal, Azure, Workers AI, the Account and Session objects, previews, wire,
 // platform) are not bound. The operator signs in with BLUE_API_KEY (auth.ts's self-hosted path),
-// which serve.mjs sets from SETUP_TOKEN.
+// which serve.mjs sets from SETUP_TOKEN. api-edge, in front, serves the dashboard and reaches
+// this Worker with its agent token; SelfhostSignIn gives it /setup's WorkOS app.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import edge from "../edge/index.js";
@@ -78,6 +79,13 @@ export class LiveCredentials extends WorkerEntrypoint<SelfhostEnv> implements Li
     const key = this.env.BLUE_API_KEY;
     if (!key || token !== key) return null;
     return operatorPrincipal(this.env.BLUE_ACCOUNT_ID);
+  }
+}
+
+/** The WorkOS app and owner's email /setup stored, for api-edge's sign-in (its SELFHOST_SETUP binding). */
+export class SelfhostSignIn extends WorkerEntrypoint<SelfhostEnv> {
+  async signIn(): Promise<{ clientId: string; apiKey: string; ownerEmail: string | null } | null> {
+    return this.env.ACCOUNTS.getByName(this.env.BLUE_ACCOUNT_ID).signIn();
   }
 }
 

@@ -24,7 +24,7 @@ interface Stored {
   hostsAcknowledgedAt?: string;
   slack?: { clientId: string; clientSecret?: Sealed; signingSecret?: Sealed };
   oidc?: { issuer: string; clientId: string; clientSecret?: Sealed };
-  workos?: { clientId: string; apiKey?: Sealed };
+  workos?: { clientId: string; apiKey?: Sealed; ownerEmail?: string };
   github?: { appId: string; slug: string; privateKey?: Sealed; webhookSecret?: Sealed };
 }
 
@@ -73,7 +73,7 @@ export class SelfhostAccountDurableObject extends DurableObject<AccountEnv> {
       hostsAcknowledged: !!s.hostsAcknowledgedAt,
       slack: s.slack ? { clientId: s.slack.clientId, clientSecret: !!s.slack.clientSecret, signingSecret: !!s.slack.signingSecret } : null,
       oidc: s.oidc ? { issuer: s.oidc.issuer, clientId: s.oidc.clientId, clientSecret: !!s.oidc.clientSecret } : null,
-      workos: s.workos ? { clientId: s.workos.clientId, apiKey: !!s.workos.apiKey } : null,
+      workos: s.workos ? { clientId: s.workos.clientId, apiKey: !!s.workos.apiKey, ownerEmail: s.workos.ownerEmail ?? null } : null,
       github: s.github ? { appId: s.github.appId, slug: s.github.slug, privateKey: !!s.github.privateKey, webhookSecret: !!s.github.webhookSecret } : null,
     };
   }
@@ -103,7 +103,7 @@ export class SelfhostAccountDurableObject extends DurableObject<AccountEnv> {
         s.oidc = { issuer: w.issuer, clientId: w.clientId, clientSecret: await keep(s.oidc?.clientSecret, w.clientSecret, "oidc.clientSecret") };
         break;
       case "workos":
-        s.workos = { clientId: w.clientId, apiKey: await keep(s.workos?.apiKey, w.apiKey, "workos.apiKey") };
+        s.workos = { clientId: w.clientId, apiKey: await keep(s.workos?.apiKey, w.apiKey, "workos.apiKey"), ownerEmail: w.ownerEmail };
         break;
       case "github":
         s.github = {
@@ -126,6 +126,13 @@ export class SelfhostAccountDurableObject extends DurableObject<AccountEnv> {
       clientSecret: await this.open(slack.clientSecret, "slack.clientSecret"),
       signingSecret: await this.open(slack.signingSecret, "slack.signingSecret"),
     };
+  }
+
+  /** The WorkOS app and owner's email for api-edge's sign-in (entry.ts's SelfhostSignIn); null until both keys are set. */
+  async signIn(): Promise<{ clientId: string; apiKey: string; ownerEmail: string | null } | null> {
+    const workos = (await this.stored()).workos;
+    if (!workos?.apiKey) return null;
+    return { clientId: workos.clientId, apiKey: await this.open(workos.apiKey, "workos.apiKey"), ownerEmail: workos.ownerEmail ?? null };
   }
 
   private async stored(): Promise<Stored> {
