@@ -7,6 +7,9 @@
 // Invariants: an agent proposes and marks, it never decides for a person: a
 // refusal is told, never worked around; every write carries the tool call's id.
 
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import reviewJson from '../../schema/review.v1.json' with { type: 'json' };
 import { CloudError } from './cloud.js';
@@ -160,9 +163,23 @@ export function workTools(w: Work): CalvinTool[] {
   return tools as CalvinTool[];
 }
 
-/** `send_file` on a session with no Slack surface (section 41): the file is a result on the thread. */
+/**
+ * `send_file` on a session with no Slack surface (section 41): the file is a result on the thread,
+ * which the dashboard reads from the workspace by its path. A file outside the workspace (the temp
+ * directory, where render scripts write) is copied into `.sent/` at the workspace's root, beside
+ * the repositories and in none of them, under its content's hash: sending it again is the same result.
+ */
 export async function fileResult(w: Work, cwd: string, f: { path: string; title?: string; filename: string }): Promise<void> {
-  const ref = f.path.startsWith(`${cwd}/`) ? f.path.slice(cwd.length + 1) : f.path;
+  const ref = f.path.startsWith(`${cwd}/`) ? f.path.slice(cwd.length + 1) : await keep(cwd, f.path, f.filename);
   const kind = /\.(md|mdx|txt|pdf|docx?|html?)$/i.test(f.filename) ? 'document' : 'file';
   await w.api.call('PUT', `/work/results/${workId('res')}`, { body: { sid: w.session().id, kind, ref, title: f.title ?? f.filename }, key: `file:${kind}:${ref}` });
+}
+
+/** A copy of `file` in the workspace's `.sent/`; its path there, relative to `cwd`. */
+async function keep(cwd: string, file: string, filename: string): Promise<string> {
+  const data = await readFile(file);
+  const ref = path.join('.sent', createHash('sha256').update(data).digest('hex').slice(0, 16), filename);
+  await mkdir(path.dirname(path.join(cwd, ref)), { recursive: true });
+  await writeFile(path.join(cwd, ref), data);
+  return ref;
 }

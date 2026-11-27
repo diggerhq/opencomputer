@@ -1105,6 +1105,79 @@ function Site({ result }: { result: ResultRow }) {
   )
 }
 
+// A file the agent sent from a session with no Slack thread: an image is
+// shown, text is printed, anything else is offered as a download.
+function SentFile({ result }: { result: ResultRow }) {
+  const surface = useSurface()
+  const thread = useThread(result.sessionId)
+  const name = resultTitle(result)
+  const file = useQuery({
+    queryKey: ['surface', 'file', result.id],
+    queryFn: async () => {
+      const blob = await surface.file(result.id)
+      return {
+        blob,
+        url: URL.createObjectURL(blob),
+        text: isText(blob.type) ? await blob.text() : null,
+      }
+    },
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  })
+  const url = file.data?.url
+  useEffect(
+    () => () => {
+      if (url) URL.revokeObjectURL(url)
+    },
+    [url],
+  )
+  return (
+    <>
+      <Head back={thread?.title}>
+        <span className="flex-1" />
+        <span className={cn(SUB, 'shrink-[99]')}>{name}</span>
+        {url && (
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(BTN, 'ml-3')}
+            asChild
+          >
+            <a href={url} download={result.ref.split('/').pop()}>
+              Download
+            </a>
+          </Button>
+        )}
+      </Head>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+        {file.isError ? (
+          <p className="text-muted-foreground text-meta">
+            Could not load {name}.
+          </p>
+        ) : !file.data ? null : file.data.blob.type.startsWith('image/') ? (
+          <img
+            src={url}
+            alt={name}
+            className="max-h-full max-w-full object-contain"
+          />
+        ) : file.data.text !== null ? (
+          <pre className="text-meta h-full w-full self-start whitespace-pre-wrap select-text">
+            {file.data.text}
+          </pre>
+        ) : (
+          <p className="text-muted-foreground text-meta">
+            No preview for {name}. Download it to open it.
+          </p>
+        )}
+      </div>
+    </>
+  )
+}
+
+const isText = (type: string) =>
+  type.startsWith('text/') || /json|yaml|xml/.test(type)
+
 export default function Review({ resultId }: { resultId: string }) {
   const result = useS((s) => s.rows.result.get(resultId))
   return (
@@ -1117,6 +1190,8 @@ export default function Review({ resultId }: { resultId: string }) {
         <Head back={undefined} />
       ) : result.type === 'preview' ? (
         <Site result={result} />
+      ) : result.type === 'file' || result.type === 'document' ? (
+        <SentFile result={result} key={result.id} />
       ) : (
         <Changes result={result} key={result.id} />
       )}

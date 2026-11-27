@@ -361,10 +361,8 @@ export function createSurface(o: SurfaceOptions) {
     openResult(r: ResultRow) {
       // A preview opens in the browser: the app's shell allows no frames (spec 24.2).
       if (r.type === 'preview') return host.openExternal(r.ref)
-      if (r.type === 'file' || r.type === 'document') {
-        if (/^https?:/.test(r.ref)) host.openExternal(r.ref)
-        return
-      }
+      // A file at an address opens there; one in the workspace opens in the review pane.
+      if ((r.type === 'file' || r.type === 'document') && /^https?:/.test(r.ref)) return host.openExternal(r.ref)
       const s = get()
       go({ ...NOWHERE, thread: s.loc.thread, track: s.loc.track, result: r.id })
     },
@@ -568,7 +566,7 @@ export function createSurface(o: SurfaceOptions) {
     },
 
     // -- reads that are not streams --
-    ...serverReads({ client, store, addUnder, toast }),
+    ...serverReads({ client, fetch: (path, init) => host.api.fetch(path, init), store, addUnder, toast }),
     openExternal(url: string) {
       host.openExternal(url)
     },

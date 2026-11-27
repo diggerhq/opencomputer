@@ -3,14 +3,17 @@ import type { Capabilities, Client, Review, Row, SearchReply, ThreadsPage } from
 import type { State } from './surface-state'
 
 // The surface's reads that are not streams: Earlier's pages, search, a
-// result's review and diff, and what a session may be started with.
+// result's review, diff and file, and what a session may be started with.
 export function serverReads({
   client,
+  fetch,
   store,
   addUnder,
   toast,
 }: {
   client: Client
+  // The API's own fetch, for a read that is bytes, not JSON.
+  fetch: (path: string, init?: RequestInit) => Promise<Response>
   store: StoreApi<State>
   // Rows read by query are held beneath the feed's.
   addUnder: (rows: Row[]) => void
@@ -49,6 +52,12 @@ export function serverReads({
     },
     async diff(resultId: string) {
       return (await client.read<{ head: string; diff: string }>(`/work/results/${resultId}/diff`)).diff
+    },
+    // A file the agent sent (send_file in a session with no Slack thread), as it is in the workspace.
+    async file(resultId: string) {
+      const reply = await fetch(`/work/results/${resultId}/file`)
+      if (!reply.ok) throw new Error(`file: ${reply.status}`)
+      return reply.blob()
     },
   }
 }

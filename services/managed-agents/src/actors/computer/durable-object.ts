@@ -81,6 +81,7 @@ import { PlatformComputerCloud } from "./machine/cloud.js";
 import {
   type ComputerEdgeEnv,
   ComputersNotConfigured,
+  DEFAULT_WIRE_TUNNEL_DOMAIN,
   type PublicComputer,
   defaultDiskGiB,
   gatewayUrl,
@@ -109,6 +110,7 @@ import { type ComputerPlan, type ResolvedPlan, type UsagePlan, resolvePlan, size
 import { POOL_OBJECT, isPoolId } from "../../ids/computer-names.js";
 import { ComputerPool, type PoolClaim, type PoolProbeResult, type PoolSlot, type PoolSlotStatus, SLOT_PROBE_TIMEOUT_MS, poolSize } from "../computer-pool/pool.js";
 import { ComputerPreviews } from "./previews.js";
+import { workspaceFile } from "./workspace-file.js";
 import { ComputerKeys, type SyncedKey } from "./held-for-org/keys/keys.js";
 import { type ApiRow, ComputerSessionsApi } from "./session-drain.js";
 import type { ApiOp, ApiReply, ApiRequest } from "./contract.js";
@@ -1979,6 +1981,19 @@ export class ComputerDurableObject extends DurableObject<ComputerEdgeEnv> implem
     await this.wakeComputer();
     this.noteActivity();
     return "waking";
+  }
+
+  /** The API's `/work/results/{id}/file` (contract.ts): a parked computer is woken, and the client told to try again. */
+  async workspaceFile(q: { member: string; sessionId: string; path: string; ifNoneMatch?: string | null }): Promise<Response> {
+    const unavailable = (retryAfterMs: number) =>
+      Response.json({ code: "computer_unavailable", message: "The computer is not reachable. Try again shortly.", retryAfterMs }, { status: 503 });
+    const tunnelId = this.previews.tunnelId();
+    if (!tunnelId || !this.env.PREVIEW_PLATFORM_KEY) return unavailable(60_000);
+    const target = { platformKey: this.env.PREVIEW_PLATFORM_KEY, tunnelId, tunnelDomain: this.env.WIRE_TUNNEL_DOMAIN || DEFAULT_WIRE_TUNNEL_DOMAIN };
+    const r = await workspaceFile(target, q).catch(() => null);
+    // 530: the tunnel has no connector, as the wire Worker sees a parked computer.
+    if (!r || r.status === 530 || r.status === 502) return unavailable((await this.wireWake()) === "waking" ? 5_000 : 60_000);
+    return r;
   }
 
   /** A preview served a visitor (at most every 30 s per name and isolate): the computer is in use, so it does not park. */
