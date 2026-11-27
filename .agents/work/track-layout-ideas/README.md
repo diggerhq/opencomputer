@@ -30,7 +30,45 @@ All mockups are 1440×900 in the app's palette, built from the same sample track
 | D | Threads as tabs | A tab strip under the track header. One conversation at a time; asks are pulled into the Track tab. | Never more than one conversation; quick to switch | Tabs overflow past about 8; thread lines are hidden; position carries no meaning |
 | E | Rows, not cards | Keeps today's structure. Cards become 34px rows grouped Needs you / Ready / Working, with answers inline. | Cheapest; fits 7 threads above the fold | The duplication and the three-pane problem stay |
 
-## Mockups
+## Round 2: a Threads tab, plus minicards in the chat
+
+Direction from review: move threads out of the top of the pane into a **Threads** tab, and show them as inline minicards in the track conversation, the way subagents appear in a thread. Threads then show up on every surface: the sidebar tree, the chat, and the tab.
+
+### Why the current cards feel off (H.png)
+
+![Card anatomy: now vs proposed](H.png)
+
+- Padding (12–16px) is bigger than the gap between cards (8px). Inside space beats outside space, so they read as four boxes, not one list.
+- Every thread gets a filled, bordered box on a background of nearly the same tone. The borders carry all the structure.
+- The result chip repeats the thread's title.
+- The cards sit on a different left edge from the centered conversation below them.
+- The ready ring, the blocked dot and "blocked on you" all use amber, so nothing stands out.
+
+### The new anatomy
+
+- **One border around a group of threads, hairlines between rows.** This is the subagent block's chrome (`rounded-md border`), so threads and subagents look like siblings.
+- **One line per thread**: mark, title, the latest line muted on the same row, and a short result chip (`#47`, `Preview`) instead of the title again.
+- **Amber means only "needs you"**: ready becomes a neutral ring. Only rows that need the person grow, with a second line carrying the buttons.
+- About 36px per thread (70px when it needs the person), against about 110px today. Same 45rem measure as the conversation.
+
+### Activity: minicards where the track agent started them (F.png)
+
+![Activity with minicards](F.png)
+
+The minicards update live in place. A "2 threads waiting on you" pill above the composer jumps to the Threads tab, so a blocked thread far up the scroll is never lost.
+
+### Threads tab: grouped by what they need (G.png)
+
+![Threads tab](G.png)
+
+The groups are Waiting on you, Ready to review, Working, and Done (collapsed). Each row carries the time since it last changed, and asks are answered inline.
+
+### Open questions
+
+- When a thread blocks, should its minicard also re-post at the bottom of the chat, or is the pill enough? I'd start with the pill.
+- Ready as a neutral ring changes the spec's mark (§3). That needs a decision, since the sidebar uses the same marks.
+
+## Round 1 mockups
 
 ### A
 
