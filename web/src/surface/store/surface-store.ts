@@ -430,10 +430,12 @@ export function createSurface(o: SurfaceOptions) {
       if (opt.open) go({ ...NOWHERE, thread: r.id })
       return r.id
     },
-    // A2, A3: a reply to a working agent steers it.
-    send(sid: string, input: string) {
+    // A2, A3: a reply to a working agent steers it, read at its next step;
+    // `now` stops what it is doing so it reads this at once (work 134).
+    send(sid: string, input: string, opt?: { now?: boolean }) {
       const st = get().rows.session.get(sid)?.status
-      settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined }))
+      const busy = st === 'running' || st === 'starting'
+      settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined }))
     },
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))
@@ -441,6 +443,8 @@ export function createSurface(o: SurfaceOptions) {
     dismissAsk(sid: string, askId: string) {
       settle(client.dismiss(sid, askId))
     },
+    // Also "Send now" for messages waiting on the running turn: it stops, and
+    // the agent starts again from what is waiting (work 134).
     stop(sid: string) {
       settle(client.interrupt(sid))
     },
