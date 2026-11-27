@@ -337,7 +337,11 @@ const PENDING: Record<string, string> = {
 }
 
 // Rows' one-line heights by kind, as drawn (with the gap between rows).
-const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 60, agent: 40, work: 28 }
+const ESTIMATE: Partial<Record<Item['kind'], number>> = {
+  user: 60,
+  agent: 40,
+  work: 28,
+}
 
 // A reply, with a caret at the end of its last line while it streams: inside
 // the text, so the reply is as tall streaming as it is when complete.
@@ -345,7 +349,11 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (!streaming) return
-    const last = [...(ref.current?.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, pre, td') ?? [])].pop()
+    const last = [
+      ...(ref.current?.querySelectorAll(
+        'p, li, h1, h2, h3, h4, h5, h6, pre, td',
+      ) ?? []),
+    ].pop()
     last?.classList.add('caret-end')
     return () => last?.classList.remove('caret-end')
   }, [text, streaming])
@@ -417,6 +425,26 @@ function useNow(on: boolean, ms = 1000): number {
   return now
 }
 
+// What waits by the composer: not read yet, or on its way to a working agent.
+const docked = (i: Item, working: boolean): i is UserItem =>
+  i.kind === 'user' &&
+  (i.state === 'waiting' ||
+    i.state === 'next' ||
+    (working && (i.state === 'sending' || i.state === 'queued')))
+
+function dock(
+  all: Item[],
+  working: boolean,
+): { items: Item[]; waiting: UserItem[] } {
+  const items: Item[] = []
+  const waiting: UserItem[] = []
+  for (const i of all) {
+    if (docked(i, working)) waiting.push(i)
+    else items.push(i)
+  }
+  return { items, waiting }
+}
+
 // Above the composer, in the order sent: each message the agent will read,
 // with what it waits on and a way to send it now.
 function Dock({ sid, items }: { sid: string; items: UserItem[] }) {
@@ -425,14 +453,17 @@ function Dock({ sid, items }: { sid: string; items: UserItem[] }) {
   // One "Send now" for the stack: it stops the turn, and every waiting message goes in.
   const last = items[items.length - 1]
   return (
-    <div className={cn('flex flex-none flex-col gap-1.5 pt-2', MEASURE)} data-dock>
+    <div
+      className={cn('flex flex-none flex-col gap-1.5 pt-2', MEASURE)}
+      data-dock
+    >
       {items.map((item) => (
         <Waiting
           key={item.key}
           item={item}
           now={now}
-          action={item === last && item.state !== 'sending' && item.state !== 'failed'}
-          onSendNow={() => surface.sendNow(sid)}
+          action={item === last && item.state !== 'sending'}
+          onSendNow={() => surface.stop(sid)}
         />
       ))}
     </div>
@@ -451,7 +482,10 @@ function Waiting({
   onSendNow: () => void
 }) {
   const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
-  const waited = item.behind ? now - Date.parse(item.behind.since) : 0
+  // From when it began waiting: the later of the step's start and its own.
+  const waited = item.behind
+    ? now - Math.max(Date.parse(item.behind.since), Date.parse(item.at))
+    : 0
   const long = waited >= LONG_WAIT_MS
   const status =
     item.state === 'sending'
@@ -484,12 +518,17 @@ function Waiting({
           {status ?? (
             <>
               Waits for <Rich text={item.behind!.title} />
-              {long && <span className="tabular-nums"> · {formatDuration(waited)}</span>}
+              {long && (
+                <span className="tabular-nums">
+                  {' '}
+                  · {formatDuration(waited)}
+                </span>
+              )}
             </>
           )}
         </span>
         {action && (
-          <Tip label="Stop the current step so the agent reads this now (⌘↵ when sending)">
+          <Tip label="Stop the current step so the agent reads this now (⌘↵ or Ctrl+↵ when sending)">
             <Button
               size="xs"
               variant={long ? 'secondary' : 'ghost'}
@@ -521,9 +560,7 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
     case 'user':
       return <UserTurn item={item} />
     case 'agent':
-      return (
-        <Reply text={item.text} streaming={!!item.streaming} />
-      )
+      return <Reply text={item.text} streaming={!!item.streaming} />
     case 'work':
       return <Work item={item} />
     case 'ask':
@@ -568,11 +605,10 @@ function Transcript(props: {
   const convo = useConversation(sid, trackId)
   // What the agent has not read yet waits by the composer, and joins the
   // conversation where the agent reads it (work 134).
-  const docked = (i: Item) =>
-    i.kind === 'user' &&
-    (i.state === 'waiting' || i.state === 'next' || (convo.working && (i.state === 'sending' || i.state === 'queued')))
-  const items = useMemo(() => convo.items.filter((i) => !docked(i)), [convo.items, convo.working])
-  const waiting = useMemo(() => convo.items.filter(docked) as UserItem[], [convo.items, convo.working])
+  const { items, waiting } = useMemo(
+    () => dock(convo.items, convo.working),
+    [convo.items, convo.working],
+  )
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   // Distance from the end to hold when earlier items are revealed above.
@@ -683,60 +719,60 @@ function Transcript(props: {
 
   return (
     <>
-    <div
-      className={cn(
-        "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
-        MEASURE,
-      )}
-      id={id}
-      ref={ref}
-      onScroll={onScroll}
-    >
-      {items.length > n && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="flex-none self-center"
-          onClick={() => {
-            const el = ref.current
-            if (el) hold.current = el.scrollHeight - el.scrollTop
-            setN(n + PAGE)
-          }}
-        >
-          Show earlier
-        </Button>
-      )}
-      {rows.length > 0 && (
-        <div
-          className="relative flex-none"
-          style={{ height: v.getTotalSize() }}
-        >
-          {v.getVirtualItems().map((it) => {
-            const row = rows[it.index]
-            return (
-              <div
-                key={it.key}
-                ref={v.measureElement}
-                data-index={it.index}
-                className={cn(
-                  'absolute top-0 left-0 flex w-full flex-col',
-                  it.index > 0 && 'pt-4',
-                )}
-                style={{ transform: `translateY(${it.start}px)` }}
-              >
-                {row.item ? (
-                  <ItemView item={row.item} />
-                ) : (
-                  <DayLine at={row.day!} />
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-      {children}
-    </div>
-    {waiting.length > 0 && <Dock sid={sid} items={waiting} />}
+      <div
+        className={cn(
+          "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
+          MEASURE,
+        )}
+        id={id}
+        ref={ref}
+        onScroll={onScroll}
+      >
+        {items.length > n && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-none self-center"
+            onClick={() => {
+              const el = ref.current
+              if (el) hold.current = el.scrollHeight - el.scrollTop
+              setN(n + PAGE)
+            }}
+          >
+            Show earlier
+          </Button>
+        )}
+        {rows.length > 0 && (
+          <div
+            className="relative flex-none"
+            style={{ height: v.getTotalSize() }}
+          >
+            {v.getVirtualItems().map((it) => {
+              const row = rows[it.index]
+              return (
+                <div
+                  key={it.key}
+                  ref={v.measureElement}
+                  data-index={it.index}
+                  className={cn(
+                    'absolute top-0 left-0 flex w-full flex-col',
+                    it.index > 0 && 'pt-4',
+                  )}
+                  style={{ transform: `translateY(${it.start}px)` }}
+                >
+                  {row.item ? (
+                    <ItemView item={row.item} />
+                  ) : (
+                    <DayLine at={row.day!} />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {children}
+      </div>
+      {waiting.length > 0 && <Dock sid={sid} items={waiting} />}
     </>
   )
 }

@@ -69,11 +69,13 @@ export function playTurn(o: {
     const words = text.match(/\S+\s*/g) ?? []
     let offset = 0
     for (const w of words) {
+      if (stopped) return
       o.emit({ t: 'delta', session: o.sid, type: 'message.delta', turnId: o.turnId, data: { blockId, text: w }, offset })
       offset += w.length
       await sleep(25)
     }
     await sleep(40)
+    if (stopped) return
     send(ev('message.completed', { blockId, parentCallId: null, text }))
   }
   let stopped = false
@@ -107,6 +109,7 @@ export function playTurn(o: {
 
   void (async () => {
     await sleep(300)
+    if (stopped) return
     send(
       ...(o.held ? [] : [{ type: 'message.received', turnId: o.turnId, actor: { id: o.me, name: null, via: null, client: null }, data: { input: o.input } } as never]),
       { ...ev('session.status_changed', { from: 'idle', to: 'running' }), turnId: null },

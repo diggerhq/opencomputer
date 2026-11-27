@@ -170,3 +170,86 @@ describe('subagents', () => {
     expect(s.steps.every((x) => x.status === 'done')).toBe(true)
   })
 })
+
+// The person's messages the agent has not read yet (work 134).
+describe('delivery', () => {
+  type User = Extract<Item, { kind: 'user' }>
+  const users = (items: Item[]) => items.filter((i): i is User => i.kind === 'user')
+  const start = () => [ev('message.received', 't1', { input: 'Fix it' }), ev('turn.started', 't1')]
+  const steer = (input: string, turnId = 't1') => ev('message.received', turnId, { input, delivery: 'steered' })
+
+  it('a steer waits last, behind the step running longest', () => {
+    const items = buildTranscript([
+      ...start(),
+      ev('tool.started', 't1', { callId: 'c1', title: 'Run tests' }),
+      ev('tool.started', 't1', { callId: 'c2', title: 'Read a file' }),
+      steer('Use pnpm'),
+      ev('message.completed', 't1', { text: 'Looking.' }),
+    ])
+    const last = items[items.length - 1]
+    expect(last).toMatchObject({ kind: 'user', text: 'Use pnpm', state: 'waiting', behind: { title: 'Run tests' } })
+  })
+
+  it('a steer with no step running waits on nothing', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm')])
+    expect(items[items.length - 1]).toMatchObject({ state: 'waiting' })
+    expect(items[items.length - 1]).not.toHaveProperty('behind')
+  })
+
+  it('a steer is drawn where the agent read it, and the next step starts a new work line', () => {
+    const s = steer('Use pnpm')
+    const before = [...start(), ev('tool.started', 't1', { callId: 'c1', title: 'Run tests' }), s, ev('tool.completed', 't1', { callId: 'c1' })]
+    const read = ev('turn.steered', 't1', { messageSeq: s.seq })
+    const items = buildTranscript([...before, read, ev('tool.started', 't1', { callId: 'c2', title: 'Install' })])
+    expect(items.map((i) => i.kind)).toEqual(['user', 'work', 'user', 'work'])
+    expect(users(items)[1]).toMatchObject({ text: 'Use pnpm', at: read.createdAt })
+    expect(users(items)[1]).not.toHaveProperty('state')
+  })
+
+  it('of two steers, the one read moves and the other still waits, in order', () => {
+    const a = steer('First')
+    const items = buildTranscript([...start(), a, steer('Second'), ev('turn.steered', 't1', { messageSeq: a.seq })])
+    expect(users(items).map((u) => [u.text, u.state])).toEqual([
+      ['Fix it', undefined],
+      ['First', undefined],
+      ['Second', 'waiting'],
+    ])
+  })
+
+  it('a steer to a turn that has ended is drawn in place', () => {
+    const items = buildTranscript([...start(), ev('turn.completed', 't1'), steer('Late')])
+    expect(users(items)[1]).toMatchObject({ text: 'Late' })
+    expect(users(items)[1]).not.toHaveProperty('state')
+  })
+
+  it('steers not taken are read when their own turn ends, not another', () => {
+    const waiting = (end: string) =>
+      buildTranscript([...start(), steer('Use pnpm'), ev('message.received', 't2', { input: 'Other', delivery: 'queued' }), ev(end, 't2')])
+    expect(users(waiting('turn.completed')).find((u) => u.text === 'Use pnpm')).toMatchObject({ state: 'waiting' })
+    for (const end of ['turn.completed', 'turn.failed']) {
+      const items = buildTranscript([...start(), steer('Use pnpm'), ev(end, 't1')])
+      expect(users(items)[1]).not.toHaveProperty('state')
+    }
+  })
+
+  it('a stopped turn says Stopped, then the steers it did not take', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm'), ev('turn.cancelled', 't1')])
+    expect(items.slice(-2).map((i) => (i.kind === 'line' ? i.text : i.kind))).toEqual(['Stopped', 'user'])
+  })
+
+  it('a queued message is read when its own turn starts, or comes before Stopped when withdrawn', () => {
+    const queued = ev('message.received', 't2', { input: 'Next', delivery: 'queued' })
+    expect(buildTranscript([...start(), queued]).slice(-1)[0]).toMatchObject({ text: 'Next', state: 'next' })
+    const started = buildTranscript([...start(), queued, ev('turn.completed', 't1'), ev('turn.started', 't2')])
+    expect(users(started)[1]).not.toHaveProperty('state')
+    const withdrawn = buildTranscript([...start(), queued, ev('turn.cancelled', 't2')])
+    expect(withdrawn.slice(-2).map((i) => (i.kind === 'line' ? i.text : i.kind))).toEqual(['user', 'Stopped'])
+  })
+
+  it('a turn.steered for an unknown message changes nothing; a track agent’s note never waits', () => {
+    const items = buildTranscript([...start(), steer('Use pnpm'), ev('turn.steered', 't1', { messageSeq: 999 })])
+    expect(items[items.length - 1]).toMatchObject({ state: 'waiting' })
+    const note = { ...steer('From the track'), actor: { id: 'agent', name: null, via: 'agent', client: null } } as ApiEvent
+    expect(buildTranscript([...start(), note]).slice(-1)[0]).toMatchObject({ kind: 'line', text: 'From the track' })
+  })
+})

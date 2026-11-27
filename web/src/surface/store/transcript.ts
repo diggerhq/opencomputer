@@ -25,8 +25,8 @@ export type Item =
 // Where the person's own message is on its way to the agent (work 134). No
 // state: the agent has read it, and it is drawn where it did.
 // `sending`: not yet accepted. `queued`: accepted, the machine not yet up.
-// `waiting`: with the running turn, read at its next step. `next`: read when
-// the running turn ends. `failed`: refused, with the reason.
+// `waiting` (the server's `delivery: 'steered'`): with the running turn, read
+// at its next step. `next` (`delivery: 'queued'`): read when the running turn ends. `failed`: refused, with the reason.
 export type Delivery = 'sending' | 'queued' | 'waiting' | 'next' | 'failed'
 
 // What a waiting message waits behind: the step running longest, and since when.
@@ -257,6 +257,9 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
       }
       case 'turn.cancelled':
         settle(e.turnId, e.createdAt)
+        // A queued message whose turn is withdrawn before it starts comes
+        // first; steers the stopped turn did not take start the next one.
+        read((u) => u.queued && u.turnId === e.turnId, e.createdAt)
         items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
         read((u) => u.turnId === e.turnId, e.createdAt)
         break

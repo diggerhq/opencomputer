@@ -428,17 +428,14 @@ export function createSurface(o: SurfaceOptions) {
       const busy = st === 'running' || st === 'starting'
       settle(client.send(sid, input, { ifBusy: busy ? (opt?.now ? 'interrupt' : 'steer') : undefined }))
     },
-    // A message waiting for the agent's next step, sent now: the running turn
-    // stops, and the agent starts again from what is waiting.
-    sendNow(sid: string) {
-      settle(client.interrupt(sid))
-    },
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))
     },
     dismissAsk(sid: string, askId: string) {
       settle(client.dismiss(sid, askId))
     },
+    // Also "Send now" for messages waiting on the running turn: it stops, and
+    // the agent starts again from what is waiting (work 134).
     stop(sid: string) {
       settle(client.interrupt(sid))
     },

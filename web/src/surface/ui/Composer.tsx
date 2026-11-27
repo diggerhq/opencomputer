@@ -48,7 +48,10 @@ export function Composer({
       aria-label="Send"
       title="Send (Enter)"
       disabled={!text.trim()}
-      onClick={send}
+      onClick={() => {
+        meta.current = false
+        send()
+      }}
     >
       {I.up}
     </Button>
@@ -70,7 +73,9 @@ export function Composer({
         onChange={(e) => surface.setDraft(draftKey, e.target.value)}
         onSend={send}
         onKeyDown={(e) => {
-          meta.current = e.metaKey || e.ctrlKey
+          // Only the Enter that sends says whether ⌘ was held: a ⌘V before a
+          // click on Send must not interrupt the agent (work 134).
+          if (e.key === 'Enter') meta.current = e.metaKey || e.ctrlKey
           if (e.key === 'Escape') e.currentTarget.blur()
         }}
         className="text-reading md:text-reading placeholder:text-faint min-h-10 flex-1 border-0 bg-transparent px-2.5 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent"

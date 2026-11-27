@@ -81,7 +81,8 @@ const play = (sid: string, turnId: string, input: string, held = false) => {
     // Steers a turn did not take start the next one, as the runner's harness does.
     ended: (left) => {
       playing.delete(sid)
-      if (left.length) play(sid, left[0].id, left.map((l) => l.input).join('\n\n'), true)
+      if (left.length)
+        play(sid, left[0].id, left.map((l) => l.input).join('\n\n'), true)
     },
   })
   playing.set(sid, t)
@@ -92,15 +93,20 @@ function write(path: string, init?: RequestInit): Promise<Response> {
   const interrupt = /^\/sessions\/([^/]+)\/interrupt$/.exec(path)
   if (interrupt) playing.get(interrupt[1])?.stop()
   if (turn && typeof init?.body === 'string') {
-    const body = JSON.parse(init.body) as { id: string; input: string; ifBusy?: string }
+    const body = JSON.parse(init.body) as {
+      id: string
+      input: string
+      ifBusy?: string
+    }
     const running = playing.get(turn[1])
     // The demo sends no session rows, so the store may think it idle: a reply
-    // to a running turn steers it unless it asks to interrupt.
-    if (running && body.ifBusy !== 'interrupt') running.steer(body.id, body.input)
-    else {
-      running?.stop()
-      play(turn[1], body.id, body.input)
-    }
+    // to a running turn steers it.
+    // An interrupt stops it, and the next turn starts from every message
+    // waiting, this one last, as the runner's does.
+    if (running) {
+      running.steer(body.id, body.input)
+      if (body.ifBusy === 'interrupt') running.stop()
+    } else play(turn[1], body.id, body.input)
   }
   // Accepted: the SDK's queue sends the next write once this one is answered.
   if (turn || interrupt) return Promise.resolve(json(200, {}))
