@@ -85,6 +85,8 @@ export function computerApiRouteFamily(suffix: string): string {
       return "asks";
     case "subagents":
       return "subagents";
+    case "attachments":
+      return "attachments";
     case "secrets":
       return "secrets";
     case "workspace":

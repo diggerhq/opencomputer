@@ -47,6 +47,12 @@ services:
       GATEWAY_ORG: ${GATEWAY_ORG:-org_selfhost}
       # The sessions' Anthropic key (the hosted shared-key fallback); optional.
       COMPUTER_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # An S3-compatible store for attachments; unset, the gateway keeps them in its volume.
+      ATTACHMENTS_S3_ENDPOINT: ${ATTACHMENTS_S3_ENDPOINT:-}
+      ATTACHMENTS_S3_BUCKET: ${ATTACHMENTS_S3_BUCKET:-}
+      ATTACHMENTS_S3_ACCESS_KEY_ID: ${ATTACHMENTS_S3_ACCESS_KEY_ID:-}
+      ATTACHMENTS_S3_SECRET_ACCESS_KEY: ${ATTACHMENTS_S3_SECRET_ACCESS_KEY:-}
+      ATTACHMENTS_S3_REGION: ${ATTACHMENTS_S3_REGION:-}
     volumes:
       # Durable Objects, D1, R2 and KV state, the generated keys and the host token.
       - gateway-data:/data

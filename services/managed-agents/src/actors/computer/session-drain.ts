@@ -27,10 +27,11 @@ import type { Sql } from "../../durable/sql.js";
 import { owed } from "../../durable/outbox.js";
 import type { Ask, LogSummary } from "../../api-objects/objects.js";
 import { DEFAULT_MODE, MODELS, capabilities } from "../../api-objects/capabilities.js";
+import { attachmentsOf } from "../../attachments/store.js";
 import type { ComputerEdgeEnv } from "./config.js";
 import type { ComputerKeys } from "./held-for-org/keys/keys.js";
 import type { CalvinApiError, CalvinJournalReport } from "../../host-protocol/api-shapes.js";
-import type { CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
+import type { CalvinApiAttachment, CalvinGatewayToHost, CalvinHostToGatewayV4 } from "../../host-protocol/frames.js";
 import { type CalvinPerson, personForMember } from "../../host-protocol/person.js";
 import type { SessionSecret } from "../../host-protocol/secrets.js";
 import { sessionKey } from "../../host-protocol/session-key.js";
@@ -296,7 +297,7 @@ export class ComputerSessionsApi {
           : { id: null, name: null, kind: "login", scopes: caller.principal.scopes, expiresAt: null, createdAt: null },
         computer: { status: this.deps.computerStatus(), region: null, wireUrl: this.deps.env.WIRE_PUBLIC_URL || null },
         defaults: { model: MODELS[0]!.id, effort: null, mode: DEFAULT_MODE, speed: null },
-        capabilities: capabilities(),
+        capabilities: capabilities(attachmentsOf(this.deps.env) !== null),
       },
     };
   }
@@ -535,7 +536,9 @@ export class ComputerSessionsApi {
       }
     }
     const secrets = this.deps.secretsFor && (await this.deps.secretsFor(row));
-    const body = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
+    // A turn's attachments (work 126) ride beside `params`, not in them: the runner reads the frame's own
+    // `attachments` and takes an unknown field in `params` as `invalid_request`.
+    const { attachments, ...body } = entry.body && typeof entry.body === "object" ? (entry.body as Record<string, unknown>) : {};
     const method = DRAIN_METHODS[entry.kind];
     const dims = { ...dispatchOf(entry), session_key: row.key, method };
     let sentAt: number | undefined;
@@ -550,6 +553,7 @@ export class ComputerSessionsApi {
       method: DRAIN_METHODS[entry.kind],
       // One turn id end to end (spec 40.2): the entry's id is the turn's in the log. An id the host would not take is left to it.
       params: { ...body, sessionId: row.sessionId, ...(entry.kind === "turn" && isId("tn", entry.id) ? { turnId: entry.id } : {}) },
+      ...(Array.isArray(attachments) && attachments.length ? { attachments: attachments as CalvinApiAttachment[] } : {}),
       actor: { id: entry.actor.subject, name: null, via: entry.actor.via, client: null },
       member: entry.actor.subject,
       idempotencyKey: entry.id,

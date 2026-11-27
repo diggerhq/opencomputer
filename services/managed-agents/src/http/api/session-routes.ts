@@ -7,7 +7,7 @@ import type { CreateSession, OrgSettings, SessionRow } from "../../actors/org/co
 import type { LogSummary, TurnStatus } from "../../api-objects/objects.js";
 import type { Principal } from "../../auth/principal.js";
 import { cursor } from "../../durable/cursor.js";
-import { firstTurnId, isSessionId } from "../../ids/session-ids.js";
+import { firstTurnId, isSessionId, mintId } from "../../ids/session-ids.js";
 import { slackPost, tellTrack } from "./agent-posts.js";
 import { resultMerge, resultRevert, seedPull } from "./result-merge.js";
 import { liveUpgrade } from "./live-upgrade.js";
@@ -18,7 +18,8 @@ import { resultDiff, type ResultDiffEnv } from "./result-diff.js";
 import { resultFile } from "./result-file.js";
 import type { Route } from "./route-table.js";
 import { entryId, sendEntry } from "./session-entry.js";
-import { createInput, listQuery, writeParams } from "./session-input.js";
+import { attachmentRoute, type AttachmentsEnv } from "./attachment-routes.js";
+import { checkAttachments, createInput, listQuery, writeParams } from "./session-input.js";
 import { patchSession } from "./session-patch.js";
 import { orgRoute } from "./work-routes.js";
 
@@ -52,11 +53,16 @@ function withSummary(session: SessionRow, summary: LogSummary | null): SessionRo
 }
 
 /** A route of spec 37 served by the actors, as the principal; `routeApi` checked its scope and Idempotency-Key. */
-export async function actorRoute(request: Request, env: ResultDiffEnv, p: Principal, person: CreateSession["person"], route: Route, idem: string | undefined, out: Reply, waitUntil?: (promise: Promise<unknown>) => void): Promise<Response> {
+export async function actorRoute(request: Request, env: ResultDiffEnv & AttachmentsEnv, p: Principal, person: CreateSession["person"], route: Route, idem: string | undefined, out: Reply, waitUntil?: (promise: Promise<unknown>) => void): Promise<Response> {
   const rawTrace = request.headers.get("x-oc-trace");
   const trace = rawTrace && TRACE.test(rawTrace) ? rawTrace : undefined;
   const query = new URL(request.url).searchParams;
   const org = () => orgOf(env, p.org);
+  /**
+   * A turn's attachments (work 126): named in Org before the accept (`attached`). A turn may name
+   * ones another already did, so an accept that refuses leaves nothing to undo: they are sent again.
+   */
+  const reserve = async (sessionId: string, turnId: string, messageId: string | null, ids: string[]) => timedDo(out.facts, org().attachmentReserve(p, sessionId, turnId, messageId, ids));
 
   if (route.op === "list") {
     const q = listQuery(query);
@@ -73,12 +79,21 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
     const create = input.value;
     if (create.role && p.kind !== "member") return out.error(403, "forbidden", "Only a member starts a session with a role.", { reason: "members_only" });
     // An Idempotency-Key without an id is hashed into the id, so a retry is the same create.
-    const id = create.id ?? (idem ? await entryId("cs", 16, ["create", p.org, p.subject, idem]) : undefined);
+    // With attachments the id is made here: the reserve names the session and its first turn before Org holds them.
+    const id = create.id ?? (idem ? await entryId("cs", 16, ["create", p.org, p.subject, idem]) : input.attachments ? mintId("cs") : undefined);
+    const turnId = create.turnId ?? firstTurnId(id ?? "");
+    let attachments: { id: string; name: string; mimetype: string; bytes: number }[] | undefined;
+    if (input.attachments) {
+      const reserved = await reserve(id!, turnId, null, input.attachments);
+      if (!reserved.ok) return refusalOf(out, reserved);
+      attachments = reserved.attachments;
+    }
     const made = await timedDo(out.facts, org().createSession(p, {
       ...create,
       ...(id ? { id } : {}),
       ...(person ? { person } : {}),
       ...(trace ? { trace } : {}),
+      ...(attachments ? { attachments } : {}),
       ...(p.kind === "agent" && p.session ? { parent: p.session } : {}),
     }));
     if (!made.ok) return refusalOf(out, made);
@@ -89,10 +104,9 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
       return out.send(made.duplicate ? 200 : 201, { session, turn: null, delivery: null, duplicate: made.duplicate, seq: session.lastSeq });
     }
     // Org owed the first turn with the session; accepting it again (the same id and body, so a duplicate) waits for it.
-    const turnId = create.turnId ?? firstTurnId(session.id);
-    const sent = await sendEntry(env, p, session.id, { id: turnId, kind: "turn", body: { input: create.input, ifBusy: "queue" } }, trace, out);
+    const sent = await sendEntry(env, p, session.id, { id: create.turnId ?? firstTurnId(session.id), kind: "turn", body: { input: create.input, ifBusy: "queue", ...(attachments ? { attachments } : {}) } }, trace, out);
     if ("response" in sent) return sent.response;
-    if ("waking" in sent) return out.send(202, { accepted: true, id: turnId, session });
+    if ("waking" in sent) return out.send(202, { accepted: true, id: create.turnId ?? firstTurnId(session.id), session });
     const result = (asObject(sent.delivered) ?? {}) as { turn?: unknown; delivery?: unknown; seq?: number; duplicate?: boolean };
     const duplicate = made.duplicate && result.duplicate !== false;
     return out.send(duplicate ? 200 : 201, { session, turn: result.turn ?? null, delivery: result.delivery ?? null, duplicate, seq: result.seq ?? session.lastSeq });
@@ -163,6 +177,9 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
     return r.ok ? out.send(200, { session: r.session }) : refusalOf(out, r);
   }
 
+  // Attachments (work 126): Org's rows and the object store.
+  if (route.op.startsWith("attachments.")) return attachmentRoute(request, env, p, route, org, out);
+
   // Every write, through the session's inbox (spec 37.2, 40.2).
   if (route.op in ENTRY_KINDS) {
     const op = route.op as keyof typeof ENTRY_KINDS;
@@ -172,10 +189,18 @@ export async function actorRoute(request: Request, env: ResultDiffEnv, p: Princi
     if (!input) return out.error(400, "invalid_request", "The body must be a JSON object.", { field: "" });
     const params = writeParams(route, input);
     if ("error" in params) return out.error(400, params.code ?? "invalid_request", params.error, { field: params.field });
-    const { id: askedId, ...body } = params.value;
+    const { id: askedId, attachments: askedAttachments, ...body } = params.value;
     const kind = ENTRY_KINDS[op];
     const [prefix, length] = kind === "turn" ? ["tn", 12] as const : ["ie", 16] as const;
     const id = typeof askedId === "string" ? askedId : await entryId(prefix, length, idem ? [kind, p.org, p.subject, sessionId, idem] : undefined);
+    // A turn's attachments: named in Org before the accept; what it carries replaces the ids.
+    // A steer's message is its own (doc 126: `attachedTo` names the turn and the message): the entry's id names it.
+    const ids = kind === "turn" ? checkAttachments(askedAttachments) : undefined;
+    if (ids && "ids" in ids) {
+      const reserved = await reserve(sessionId, id, body.ifBusy === "steer" ? id : null, ids.ids);
+      if (!reserved.ok) return refusalOf(out, reserved);
+      body.attachments = reserved.attachments;
+    }
     const sent = await sendEntry(env, p, sessionId, { id, kind, body }, trace, out);
     if ("response" in sent) return sent.response;
     if ("waking" in sent) return out.send(202, { accepted: true, id });

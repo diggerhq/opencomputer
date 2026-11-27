@@ -12,7 +12,11 @@
       "custom_domain": true
     }
   ],
+  // Work 126: the attachments' store is any S3 endpoint (R2's here). The key pair is two secrets,
+  // ATTACHMENTS_S3_ACCESS_KEY_ID and ATTACHMENTS_S3_SECRET_ACCESS_KEY; without all four there are no attachments.
   "vars": {
+    "ATTACHMENTS_S3_ENDPOINT": "https://example.r2.cloudflarestorage.com",
+    "ATTACHMENTS_S3_BUCKET": "managed-agents-attachments",
     "BLUE_AWS_REGION": "us-east-1",
     "COMPUTER_HOST_GATEWAY_URL": "wss://managedagents.example.com",
     "TINYBIRD_API_URL": "https://api.us-east.tinybird.co",
@@ -73,7 +77,9 @@
   },
   // Work 084: session log segments and event bodies over 8 KiB; the key index the wire Worker reads.
   // The KV id and the bucket are created at rollout (no Cloudflare resources from the build).
-  "r2_buckets": [{ "binding": "SESSION_LOG_BLOBS", "bucket_name": "managed-agents-session-log" }],
+  "r2_buckets": [
+    { "binding": "SESSION_LOG_BLOBS", "bucket_name": "managed-agents-session-log" }
+  ],
   "kv_namespaces": [{ "binding": "WIRE_KEYS", "id": "00000000000000000000000000000084" }],
   "durable_objects": {
     "bindings": [

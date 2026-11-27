@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.3.0
+
+- `@opencomputer/sdk/computer`: files attached to a message.
+  `attach(sessionId, file)` uploads a file ahead of its message, straight to
+  a signed URL, and answers its id and a `Signal<PendingAttachment>` with the
+  progress; `send` and `createSession` take the ids in `attachments` (at most
+  `ATTACHMENTS_PER_MESSAGE`) and wait until every one is `ready`.
+  `attachments()` lists the pending ones, `removeAttachment(id)` drops one,
+  and `attachmentUrl(sessionId, id, { download })` answers a signed URL of a
+  sent one. `ClientOptions.uploadTo(url, req)` sends the bytes with progress
+  (default: `fetch`, without credentials and without progress).
+- `Capabilities.features.attachments`: false when the deployment has no
+  store for files (missing on an older server: read it as true).
+
 ## 3.2.0
 
 - `@opencomputer/sdk/computer`: a `pr` result carries `pull` (`PullRecord`),

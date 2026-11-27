@@ -1,4 +1,4 @@
-import type { Channel, ServerFrame } from '@opencomputer/sdk/computer'
+import type { AttachmentRef, Channel, ServerFrame, UploadRequest } from '@opencomputer/sdk/computer'
 import type { Host } from './host'
 import { browserParts, urlLink, urlLocation } from './host-web'
 import recording from './demo-data.json'
@@ -12,6 +12,12 @@ import { playTurn, type DemoTurn } from './demo-turn'
 // A message sent to a thread is the one exception: the thread plays a scripted
 // turn (demo-turn.ts) over the socket, so sending and streaming can be watched.
 // `?fake=empty` is the same organization with nothing in it.
+//
+// Attachments (work 126) are the one thing the fake plays: a message of the
+// recording carries files so their chips can be seen, their bytes are drawn
+// here, and an upload is answered the way the server and its store would, so
+// the composer's chips can be looked at in every state. A file named "slow"
+// uploads part way and stops; one named "large" is refused as too large.
 
 const replies = recording.replies as Record<string, unknown>
 const json = (status: number, body: unknown) =>
@@ -19,6 +25,80 @@ const json = (status: number, body: unknown) =>
     status,
     headers: { 'content-type': 'application/json' },
   })
+
+// The message of the recording that is shown with files.
+const WITH_FILES = 'ev_cs_0pmnvt9w0pba00an_read_1'
+const FILES: AttachmentRef[] = [
+  { id: 'at_demo_profile', name: 'build-profile.png', mimetype: 'image/png', bytes: 184_320 },
+  { id: 'at_demo_flame', name: 'flamegraph.png', mimetype: 'image/png', bytes: 96_512 },
+  { id: 'at_demo_log', name: 'ci-run-4821.log', mimetype: 'text/plain', bytes: 2_359_296 },
+]
+
+// A picture drawn here, in the file's own colours, as the bytes of a demo attachment.
+function picture(name: string): Promise<Blob> {
+  const canvas = document.createElement('canvas')
+  canvas.width = 640
+  canvas.height = 400
+  const g = canvas.getContext('2d')!
+  const hue = [...name].reduce((n, c) => n + c.charCodeAt(0), 0) % 360
+  const fill = g.createLinearGradient(0, 0, 640, 400)
+  fill.addColorStop(0, `hsl(${hue} 60% 55%)`)
+  fill.addColorStop(1, `hsl(${(hue + 60) % 360} 60% 35%)`)
+  g.fillStyle = fill
+  g.fillRect(0, 0, 640, 400)
+  g.fillStyle = 'rgba(255,255,255,0.85)'
+  for (let i = 0; i < 12; i++) g.fillRect(40 + i * 48, 360 - (((i * 97) % 11) + 1) * 26, 32, (((i * 97) % 11) + 1) * 26)
+  g.font = '600 28px system-ui, sans-serif'
+  g.fillText(name, 40, 56)
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b ?? new Blob()), 'image/png'))
+}
+
+// The "signed URL" of a recorded file: an object URL of bytes drawn here, made once.
+const urls = new Map<string, Promise<string>>()
+function signedUrl(path: string): Promise<Response> | null {
+  const m = /^\/sessions\/[^/]+\/attachments\/([^/]+)\/url$/.exec(new URL(path, 'http://demo').pathname)
+  if (!m) return null
+  const file = FILES.find((f) => f.id === m[1])
+  if (!file) return Promise.resolve(json(404, { error: { code: 'attachment_not_found', message: 'Not recorded.' } }))
+  const bytes = () => (file.mimetype.startsWith('image/') ? picture(file.name) : Promise.resolve(new Blob([`[demo] ${file.name}\n`], { type: file.mimetype })))
+  let url = urls.get(file.id)
+  if (!url) urls.set(file.id, (url = bytes().then((b) => URL.createObjectURL(b))))
+  return url.then((u) => json(200, { url: u, expiresAt: new Date(Date.now() + 300_000).toISOString() }))
+}
+
+// The three steps of an upload (work 126). The row: refused for a file named
+// "large", else it answers where the bytes go.
+const UPLOAD = 'https://demo.invalid/upload/'
+function attachment(path: string, init?: RequestInit): Response | null {
+  const m = /^\/sessions\/[^/]+\/attachments\/([^/]+)(\/complete)?$/.exec(path)
+  if (!m) return null
+  if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+  if (m[2]) return json(200, { attachment: { id: m[1], state: 'ready' } })
+  const { name, mimetype } = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { name?: string; mimetype?: string }
+  if (name?.includes('large')) return json(413, { error: { code: 'attachment_too_large', message: 'A file can be at most 1 GB.' } })
+  const upload = { url: `${UPLOAD}${m[1]}?name=${encodeURIComponent(name ?? '')}`, method: 'PUT', headers: { 'content-type': mimetype ?? 'application/octet-stream' }, expiresAt: new Date(Date.now() + 900_000).toISOString() }
+  return json(201, { attachment: { id: m[1], state: 'uploading' }, upload })
+}
+
+// The store's reply to the bytes, after their progress: nearly all of it for
+// a file named "slow", which then never ends.
+async function upload(url: string, req: UploadRequest): Promise<Response> {
+  const slow = (new URL(url).searchParams.get('name') ?? '').includes('slow')
+  const steps = slow ? 6 : 10
+  for (let i = 1; i <= steps; i++) {
+    await new Promise((r) => setTimeout(r, 120))
+    if (req.signal.aborted) throw new DOMException('aborted', 'AbortError')
+    req.onProgress((req.body.size * i) / 10, req.body.size)
+  }
+  if (slow) return new Promise<Response>(() => {})
+  return new Response(null, { status: 200 })
+}
+
+function withFiles(recorded: unknown): unknown {
+  const r = recorded as { events?: { id: string; data: Record<string, unknown> }[] }
+  if (!r?.events) return recorded
+  return { ...r, events: r.events.map((e) => (e.id === WITH_FILES ? { ...e, data: { ...e.data, attachments: FILES } } : e)) }
+}
 
 function reply(path: string, empty: boolean): Response {
   const url = new URL(path, 'http://demo')
@@ -45,7 +125,7 @@ function reply(path: string, empty: boolean): Response {
       : replies[url.pathname]
   return recorded === undefined
     ? json(404, { error: { code: 'not_found', message: 'Not recorded.' } })
-    : json(200, recorded)
+    : json(200, withFiles(recorded))
 }
 
 // The frame callback of the open socket, for the scripted turn.
@@ -91,6 +171,8 @@ const play = (sid: string, turnId: string, input: string, held = false) => {
 function write(path: string, init?: RequestInit): Promise<Response> {
   const turn = /^\/sessions\/([^/]+)\/turns$/.exec(path)
   const interrupt = /^\/sessions\/([^/]+)\/interrupt$/.exec(path)
+  const file = attachment(path, init)
+  if (file) return Promise.resolve(file)
   if (interrupt) playing.get(interrupt[1])?.stop()
   if (turn && typeof init?.body === 'string') {
     const body = JSON.parse(init.body) as {
@@ -152,8 +234,9 @@ export function demoHost(o: {
     api: {
       fetch: (path, init) =>
         (init?.method ?? 'GET') === 'GET'
-          ? Promise.resolve(reply(path, !!o.empty))
+          ? (signedUrl(path) ?? Promise.resolve(reply(path, !!o.empty)))
           : write(path, init),
+      uploadTo: (url, req) => upload(url, req),
     },
     connect: channel,
     location: urlLocation(o.base),

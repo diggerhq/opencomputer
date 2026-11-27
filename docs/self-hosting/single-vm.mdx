@@ -129,6 +129,22 @@ Slack needs `PUBLIC_URL` set to an HTTPS origin.
 
 To start a session, mention the app in a channel or DM it.
 
+## Attachments
+
+Files that people attach to a message are stored in the gateway's volume, and the gateway serves them itself. Nothing needs to be set up. A browser uploads to and reads from a short-lived signed URL on the address it opened the dashboard at. Sessions read attachments at `PUBLIC_URL`.
+
+To keep attachments in an S3-compatible store instead (Cloudflare R2, Amazon S3, MinIO), set these in `.env` and restart the gateway:
+
+```sh
+ATTACHMENTS_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+ATTACHMENTS_S3_BUCKET=attachments
+ATTACHMENTS_S3_ACCESS_KEY_ID=…
+ATTACHMENTS_S3_SECRET_ACCESS_KEY=…
+ATTACHMENTS_S3_REGION=auto   # optional; `auto` is the default, for R2
+```
+
+All four of the first values are needed; with any missing, the gateway uses its volume. The bucket's CORS must allow `PUT`, `GET` and `HEAD` from any origin, with the `content-type` and `range` headers. Files already stored in the volume are not copied to the bucket.
+
 ## HTTPS
 
 The gateway listens only on `127.0.0.1`. To expose it, run a Cloudflare Tunnel on a custom domain, which needs no inbound ports:
@@ -149,7 +165,7 @@ Any other reverse proxy that terminates TLS in front of `127.0.0.1:8080` also wo
 
 All of the gateway's state is in the `opencomputer_gateway-data` volume:
 
-- Miniflare's data
+- Miniflare's data, including attachments (unless an S3-compatible store holds them)
 - `keys.json`, which decrypts the stored secrets
 - `host-token`
 

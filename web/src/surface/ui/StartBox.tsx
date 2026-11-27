@@ -22,7 +22,6 @@ export function StartBox() {
         // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus
         onSend={(text) => surface.start(text, { open: true, settings })}
-        onAttach={(text, files) => surface.startWithFiles(text, files, { open: true, settings })}
         tools={
           <SettingsPickers
             value={settings}

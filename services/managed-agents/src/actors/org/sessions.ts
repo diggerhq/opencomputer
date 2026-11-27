@@ -227,7 +227,7 @@ export function createSession(
     tx.addPlace({ sessionId: id, trackId: track?.id ?? null, placedBy: by, parentSession: parent?.id ?? null, audience: session.audience });
 
     // The first turn, owed with the session and from its creator: one turn whoever retries (spec 40.1).
-    tx.start(id, { harness: body.harness, trace: body.trace, firstInput: body.input, turnId: body.turnId, as: p });
+    tx.start(id, { harness: body.harness, trace: body.trace, firstInput: body.input, turnId: body.turnId, as: p, attachments: body.attachments });
     tx.sendAccess(id);
     tx.owe({ group: id, call: "usage.created", body: { sessionId: id, createdAt: now } });
     // The track's agent may now be told by this thread (spec 40.7 step 4).

@@ -68,6 +68,14 @@ const COMPUTER_API_ROUTES: ReadonlyArray<{
     methods: new Set(["POST"]),
     pattern: route(`/sessions/${SEG}/asks/${SEG}/(?:answer|dismiss)`),
   },
+  // Attachments (work 126, section 4): blue judges the scope per route, so a
+  // cookie, an app token and a key all pass. The file itself never comes
+  // here: `PUT` makes the row and answers a signed URL of the store, and
+  // `/url` answers one to read it from.
+  { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/attachments`) },
+  { methods: new Set(["GET", "PUT", "DELETE"]), pattern: route(`/sessions/${SEG}/attachments/${SEG}`) },
+  { methods: new Set(["POST"]), pattern: route(`/sessions/${SEG}/attachments/${SEG}/complete`) },
+  { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/attachments/${SEG}/url`) },
   // Subagents (docs/api/http/subagents.mdx).
   { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/subagents`) },
   { methods: new Set(["GET"]), pattern: route(`/sessions/${SEG}/subagents/${SEG}`) },
@@ -355,6 +363,9 @@ export const computerApiFamily: RouteFamily = {
     // session here carries no key claims to tell them apart. The proxy copies
     // only listed headers, so a client-sent value never reaches blue.
     headers.set("x-opencomputer-surface", "api");
+    // Where the caller reached us: a store whose URLs are blue's own (the
+    // self-host's attachments) hands them back on this origin.
+    headers.set("x-opencomputer-public-origin", new URL(request.url).origin);
     const requestID = clientRequestID(request);
     if (requestID) headers.set("x-request-id", requestID);
     else headers.delete("x-request-id");

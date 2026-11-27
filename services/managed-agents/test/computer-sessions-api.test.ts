@@ -351,6 +351,24 @@ describe("writes: every one through the inbox and the drain (spec 36.2, 36.3)", 
     ]);
   });
 
+  it("a turn's attachments (work 126) ride on the frame, not in params: the runner takes an unknown param as an error", async () => {
+    const f = fixture();
+    await created(f);
+    f.answers.set("turns.send", () => ({ result: { turn: {}, delivery: "started", duplicate: false, seq: 1 } }));
+    const attachments = [{ id: "at_0000000000000001", name: "notes.txt", mimetype: "text/plain", bytes: 5 }];
+    f.logOf(SID).entries = [
+      entry("tn_4m8q2x7c1v9b", "turn", { input: "see the file", ifBusy: "queue", attachments }),
+      entry("tn_4m8q2x7c1v9c", "turn", { input: "no file", ifBusy: "queue" }),
+    ];
+    await f.api.drain(SID);
+    const frames = f.frames("api");
+    expect(frames.map((frame) => [frame.params, frame.attachments])).toEqual([
+      [{ input: "see the file", ifBusy: "queue", sessionId: SID, turnId: "tn_4m8q2x7c1v9b" }, attachments],
+      [{ input: "no file", ifBusy: "queue", sessionId: SID, turnId: "tn_4m8q2x7c1v9c" }, undefined],
+    ]);
+    expect(frames[1]).not.toHaveProperty("attachments");
+  });
+
   it("a host's error keeps its code, status and fields through the drain and the inbox", async () => {
     const f = fixture();
     await created(f);

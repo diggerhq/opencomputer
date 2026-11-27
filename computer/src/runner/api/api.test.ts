@@ -164,7 +164,7 @@ describe('SessionApi', () => {
   it('an inbox entry the journal already holds (the host recorded it, its idempotency record is gone) is answered, not run twice', async () => {
     const turnId = 'tn_0000000000r1';
     const w = await world((log) => {
-      log.append('message.received', { input: 'deploy it', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] }, { turnId, actor: ANN });
+      log.append('message.received', { input: 'deploy it', ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] }, { turnId, actor: ANN });
       log.append('turn.queued', { position: 1 }, { turnId, actor: ANN });
     });
     await w.t.settle();
@@ -512,7 +512,7 @@ describe('SessionApi', () => {
 
   it('a runner that attaches runs the turns the journal holds queued, in order, once each', async () => {
     const [run, b, c] = ['tn_0000000000a1', 'tn_0000000000b2', 'tn_0000000000c3'];
-    const received = (input: string) => ({ input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [] });
+    const received = (input: string) => ({ input, ifBusy: 'queue', delivery: 'queued', interruptedTurnIds: [], declinedAskIds: [], attachments: [] });
     const w = await world((log) => {
       // The runner that died: one turn running (the host's recovery failed it), two queued behind it.
       log.append('message.received', { ...received('first'), delivery: 'started' }, { turnId: run, actor: ANN });

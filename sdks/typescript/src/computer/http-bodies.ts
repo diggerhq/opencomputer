@@ -72,6 +72,8 @@ export interface CreateSessionBody {
   mode?: string;
   /** Absent: the organization's `apiAccessDefault`. */
   access?: AccessInput;
+  /** Ids of `ready` attachments (work 126), at most `ATTACHMENTS_PER_MESSAGE`. */
+  attachments?: string[];
 }
 
 /** A change of a session's model, effort or mode (`PATCH /sessions/{id}`, spec 19.1). */
@@ -81,5 +83,6 @@ export type SettingsPatch = { model?: string; effort?: string; mode?: string };
 export interface Capabilities {
   models: { id: string; name: string; efforts: string[]; default: boolean }[];
   modes: string[];
-  features: { steer: boolean };
+  /** `attachments`: the deployment has a store for files (work 126). An older server does not say: read a missing value as true. */
+  features: { steer: boolean; attachments?: boolean };
 }

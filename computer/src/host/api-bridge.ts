@@ -298,7 +298,7 @@ export function apiBridge(d: BridgeDeps) {
       return reply({ error: apiError('invalid_request', `${m.method} is not a session writer's method`, 400, { field: 'method' }) });
     const params = withSession(m.params, m.sessionId);
     if ('error' in params) return reply(params);
-    const ctx: CallContext = { actor: m.actor, member: m.member, idempotencyKey: m.idempotencyKey, requestId: m.requestId };
+    const ctx: CallContext = { actor: m.actor, member: m.member, idempotencyKey: m.idempotencyKey, requestId: m.requestId, ...(m.attachments?.length && { attachments: m.attachments }) };
     let issued: Promise<CallOutcome> = Promise.resolve({ error: apiError('session_not_found', `no session ${m.sessionId} on this computer`, 404) });
     const step = (chains.get(m.sessionId) ?? Promise.resolve()).then(async () => {
       const w = await d.writer(m.sessionId, true);

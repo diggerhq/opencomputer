@@ -7,7 +7,11 @@
 // each after the previous is answered; each session's writes (create, turns, answers, dismiss,
 // interrupt, settings) in order the same way; the lanes in parallel. An entry that names a row an earlier
 // entry would create (a session by `createSession`; a track and its agent's session by
-// `track.create`; a result; a proposal) waits until that entry is answered 2xx.
+// `track.create`; a result; a proposal) waits until that entry is answered 2xx. A turn or a create
+// with `attachments` waits until every one is `ready` (attachments.ts; work 126, D2), and fails
+// without being sent when one of them failed or was removed; an entry without them never waits.
+// When the server refuses the entry for one of its files (it expired, it is not there), that file
+// is marked `failed` too.
 //
 // Replies. 2xx: answered. 429, 5xx and a network error: again after 1 s doubling to 60 s, or at
 // once when the socket comes online. Any other 4xx: the entry fails.
@@ -36,6 +40,7 @@
 // `mutate` and the session writes throw before `ready`: the list is read from storage first.
 
 import { refusal, transient, type Ctx, type Reply } from "./ctx.js";
+import type { Attachments } from "./attachments.js";
 import { makeId } from "./ids.js";
 import { mutationRequest } from "./mutation-table.js";
 import { emitter, signal, type Emitter, type WritableSignal } from "./signal.js";
@@ -84,6 +89,7 @@ export interface FeedView {
 }
 
 const pad = (ms: number) => String(ms).padStart(15, "0");
+const attachmentsOf = (p: Pending): string[] => (p.kind === "turn" ? p.attachments : p.kind === "session" ? p.body.attachments : undefined) ?? [];
 const lane = (p: Pending) => (p.kind === "mutation" ? "m" : `s:${p.sessionId}`);
 
 function creates(p: Pending): string[] {
@@ -105,6 +111,8 @@ function names(p: Pending): string[] {
 
 function request(e: Stored): [path: string, init: RequestInit] {
   const p = e.p;
+  const ids = attachmentsOf(p);
+  const refs = ids.length ? ids : undefined;
   const headers: Record<string, string> = { "content-type": "application/json", "x-oc-trace": e.trace, "Idempotency-Key": e.idem };
   const write = (method: string, path: string, body: unknown): [string, RequestInit] => [path, { method, headers, body: JSON.stringify(body) }];
   const post = (path: string, body: unknown) => write("POST", path, body);
@@ -114,9 +122,9 @@ function request(e: Stored): [path: string, init: RequestInit] {
       return [path, { method, headers, body: JSON.stringify(body) }];
     }
     case "session":
-      return post("/sessions", p.body);
+      return post("/sessions", refs ? { ...p.body, attachments: refs } : p.body);
     case "turn":
-      return post(`/sessions/${p.sessionId}/turns`, { id: p.turnId, input: p.input, ifBusy: p.ifBusy });
+      return post(`/sessions/${p.sessionId}/turns`, { id: p.turnId, input: p.input, ifBusy: p.ifBusy, attachments: refs });
     case "answer":
       return post(`/sessions/${p.sessionId}/asks/${p.askId}/answer`, p.answer);
     case "dismiss":
@@ -128,7 +136,7 @@ function request(e: Stored): [path: string, init: RequestInit] {
   }
 }
 
-export function createQueue(ctx: Ctx, feed: FeedView): Queue {
+export function createQueue(ctx: Ctx, feed: FeedView, attachments: Attachments): Queue {
   const pending = signal<Pending[]>([]);
   const failures = emitter<Failure>();
   const entries: Entry[] = [];
@@ -177,6 +185,8 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
   const done = (e: Entry) => leave(new Map([[e, null]]))();
 
   function blocked(e: Entry): boolean {
+    const ids = attachmentsOf(e.p);
+    if (ids.length && !attachments.ready(ids)) return true;
     const wants = names(e.p);
     for (const x of entries) {
       if (x === e) return false;
@@ -193,6 +203,12 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
 
   function pump(): void {
     if (!loaded || ctx.closed) return;
+    // A message whose file failed or went cannot go: it fails here, unsent.
+    for (const e of [...entries]) {
+      const ids = attachmentsOf(e.p);
+      const why = ids.length && !e.answered ? attachments.refusal(ids) : null;
+      if (why && held(e)) fail(e, why);
+    }
     if (sender === "holding") return startLanes();
     if (sender === "waiting" || !lanes().some(next)) return;
     sender = "waiting";
@@ -242,8 +258,17 @@ export function createQueue(ctx: Ctx, feed: FeedView): Queue {
 
   function answer(e: Entry, reply: Reply): void {
     const p = e.p;
-    if (reply.status >= 300) return fail(e, refusal(reply));
+    const ids = attachmentsOf(p);
+    if (reply.status >= 300) {
+      const why = refusal(reply);
+      fail(e, why);
+      // Refused for one of its files: that file is `failed`, so the person sees which to remove.
+      if (ids.length) attachments.refused(ids, why);
+      return;
+    }
     e.answered = true;
+    // Its attachments are `attached` on the server now: the local files go.
+    if (ids.length) attachments.forget(ids);
     if (p.kind === "mutation") {
       e.version = Number(reply.body?.version ?? 0);
       if (!feed.active() || feed.version() >= e.version) return done(e);

@@ -51,6 +51,7 @@ import { Compaction } from './compaction.js';
 import { effortOf, speedOf, switchModel } from './model-switch.js';
 import { TurnCloser } from './turn-close.js';
 import { HeldSteer } from './held-steer.js';
+import { LateNotes } from './late-notes.js';
 
 export { SILENT, prompts };
 
@@ -158,6 +159,7 @@ export class Session {
   private ctxTokens = 0;
   /** Whether the current model message already arrived as deltas. */
   private streamedText = false;
+  readonly notes = new LateNotes(() => this.busy, (t) => ((this.pending = true), Effect.runSync(this.ensureHarness().send({ text: t, attachments: [] }, 'steer')))); // no person's message: unrecorded
   readonly sendFile: FileSender; // send_file and `calvin-send-file` (the runner serves it): one limit for both
   readonly postCard = cardSender((text, blocks) => this.below(async (b) => void (await b, await this.thread.post(text, blocks))), (b) => this.hooks.secrets?.foundIn(b));
 
@@ -222,7 +224,7 @@ export class Session {
     if (stopping) await (this.hooks.turns?.interrupting('interrupted'), this.stopTurn());
     else if (this.busy) this.rotate();
     const h = this.ensureHarness();
-    const body = this.used ? text : prefaced(this.hooks.work, text);
+    const body = this.notes.with(this.used ? text : prefaced(this.hooks.work, text));
     this.used = true;
     if (this.busy) this.pending = true;
     if (!stopping) this.hooks.api?.sent(text, userId, this.busy && !urgent, from);
@@ -540,9 +542,7 @@ export class Session {
 
   // ---------------------------------------------------------------- live message
 
-  patchTask(id: string, patch: Partial<Task>) {
-    this.timeline.patchTask(id, patch);
-  }
+  patchTask(id: string, patch: Partial<Task>) { this.timeline.patchTask(id, patch); }
 
   /**
    * New narration is starting after the live message already holds FOLD_AT

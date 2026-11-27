@@ -141,7 +141,7 @@ function connection(sock: net.Socket, writer: Writer, token: string, answering: 
     }
     switch (m?.t) {
       case 'call': {
-        const ctx: CallContext = { actor: m.actor, member: m.member, idempotencyKey: m.idempotencyKey, requestId: m.requestId };
+        const ctx: CallContext = { actor: m.actor, member: m.member, idempotencyKey: m.idempotencyKey, requestId: m.requestId, ...(m.attachments?.length && { attachments: m.attachments }) };
         const isWrite = WRITES.has(m.method as never);
         if (isWrite) writing++;
         answering(
@@ -252,7 +252,7 @@ export function dialApi(path: string, token: string, connect: (path: string) => 
       resolve({
         closed,
         call: (method, params, ctx) =>
-          request((id) => ({ t: 'call', id, method, params, actor: ctx.actor, member: ctx.member, idempotencyKey: ctx.idempotencyKey, requestId: ctx.requestId })),
+          request((id) => ({ t: 'call', id, method, params, actor: ctx.actor, member: ctx.member, idempotencyKey: ctx.idempotencyKey, requestId: ctx.requestId, attachments: ctx.attachments })),
         subscribe: async (o) => {
           handlers = o;
           const out = await request((id) => ({ t: 'subscribe', id, after: o.after, tailTurns: o.tailTurns, deltas: o.deltas, resume: o.resume, mirror: o.mirror }));

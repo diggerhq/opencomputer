@@ -9,6 +9,22 @@ import type { Route } from "./route-table.js";
 
 export type Params = { value: Record<string, unknown> } | { error: string; field: string; code?: string };
 
+/** Attachments per message (work 126, section 8): the edge's constant; the SDK holds its own. */
+export const ATTACHMENTS_PER_MESSAGE_MAX = 10;
+
+/**
+ * A turn's `attachments`: at most ATTACHMENTS_PER_MESSAGE_MAX distinct `at_` ids. Undefined when
+ * absent (or empty: nothing to reserve); the error otherwise.
+ */
+export function checkAttachments(value: unknown): { error: string; field: string } | { ids: string[] } | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > ATTACHMENTS_PER_MESSAGE_MAX || value.some((id) => !isId("at", id))) {
+    return { error: `attachments is at most ${ATTACHMENTS_PER_MESSAGE_MAX} attachment ids (at_ and 16 lowercase Crockford base32 characters).`, field: "attachments" };
+  }
+  if (new Set(value).size !== value.length) return { error: "attachments names an attachment twice.", field: "attachments" };
+  return value.length ? { ids: value as string[] } : undefined;
+}
+
 /** A write's body as the method's params; unknown fields are refused (the writer decodes strictly too). */
 export function writeParams(route: Route, body: Record<string, unknown>): Params {
   const allow = (...fields: string[]): Params => {
@@ -17,8 +33,11 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
   };
   switch (route.op) {
     case "turns.send": {
-      if (typeof body.input !== "string" || body.input.length < 1 || body.input.length > 100_000) {
-        return { error: "input must be a string of 1 to 100,000 characters.", field: "input" };
+      const attachments = checkAttachments(body.attachments);
+      if (attachments && "error" in attachments) return attachments;
+      // With attachments the text may be empty (a file alone is a message, work 126).
+      if (typeof body.input !== "string" || body.input.length < (attachments ? 0 : 1) || body.input.length > 100_000) {
+        return { error: attachments ? "input must be a string of at most 100,000 characters." : "input must be a string of 1 to 100,000 characters.", field: "input" };
       }
       if (body.ifBusy !== undefined && body.ifBusy !== "queue" && body.ifBusy !== "steer" && body.ifBusy !== "interrupt") {
         return { error: "ifBusy is queue, steer or interrupt.", field: "ifBusy" };
@@ -29,7 +48,7 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
       }
       if (body.id !== undefined && body.turnId !== undefined && body.id !== body.turnId) return { error: "id and turnId name the same turn: send one.", field: "turnId" };
       const { turnId, ...rest } = body;
-      const named = allow("id", "input", "ifBusy", "turnId");
+      const named = allow("id", "input", "ifBusy", "turnId", "attachments");
       return "error" in named || turnId === undefined ? named : { value: { ...rest, id: turnId } };
     }
     case "turns.cancel":
@@ -66,12 +85,16 @@ export function writeParams(route: Route, body: Record<string, unknown>): Params
 }
 
 /** `POST /sessions`'s body. `parent`, `writers`, `slackThread`, `origin` and `harness` are the actors' own, never a request's. */
-export function createInput(body: unknown): { value: CreateSession } | { error: [number, string, string, Record<string, unknown>] } {
+export function createInput(body: unknown): { value: CreateSession; attachments?: string[] } | { error: [number, string, string, Record<string, unknown>] } {
   const input = asObject(body);
   const bad = (field: string, message: string) => ({ error: [400, "invalid_request", message, { field }] as [number, string, string, Record<string, unknown>] });
   if (!input) return bad("", "The body must be a JSON object.");
-  const fields = new Set(["id", "input", "turnId", "title", "model", "effort", "mode", "speed", "metadata", "trackId", "role", "access"]);
+  const fields = new Set(["id", "input", "turnId", "title", "model", "effort", "mode", "speed", "metadata", "trackId", "role", "access", "attachments"]);
   for (const field of Object.keys(input)) if (!fields.has(field)) return bad(field, `Unknown field ${field}.`);
+  // The first turn's attachments (work 126): ids the route reserves before the create; with them `input` may be empty.
+  const attachments = checkAttachments(input.attachments);
+  if (attachments && "error" in attachments) return bad(attachments.field, attachments.error);
+  if (attachments && typeof input.input !== "string") return bad("attachments", "attachments is sent with input.");
   const value: CreateSession = {};
   if (input.id !== undefined) {
     if (!isSessionId(input.id)) return bad("id", "id must be cs_ and 16 lowercase Crockford base32 characters.");
@@ -82,7 +105,7 @@ export function createInput(body: unknown): { value: CreateSession } | { error: 
     if (input.input === undefined) return bad("turnId", "turnId is sent only with input.");
     value.turnId = input.turnId;
   }
-  for (const [field, min, max] of [["input", 1, 100_000], ["title", 0, 200], ["model", 1, 200], ["effort", 1, 50], ["mode", 1, 50]] as const) {
+  for (const [field, min, max] of [["input", attachments ? 0 : 1, 100_000], ["title", 0, 200], ["model", 1, 200], ["effort", 1, 50], ["mode", 1, 50]] as const) {
     const v = input[field];
     if (v === undefined) continue;
     if (typeof v !== "string" || v.length < min || v.length > max) return bad(field, `${field} must be a string of ${min} to ${max} characters.`);
@@ -116,7 +139,7 @@ export function createInput(body: unknown): { value: CreateSession } | { error: 
     ...(value.mode !== undefined ? { mode: value.mode } : {}),
   });
   if (!settings.ok) return { error: [400, settings.code, settings.message, { field: settings.field }] };
-  return { value };
+  return { value, ...(attachments ? { attachments: attachments.ids } : {}) };
 }
 
 /** `GET /sessions`'s query; Org checks the rest. */
