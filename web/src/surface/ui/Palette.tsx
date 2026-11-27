@@ -55,6 +55,8 @@ function Open() {
   const q = text.trim().toLowerCase()
   const [sel, setSel] = useState(-1)
   const [found, setFound] = useState<Hit[]>([])
+  // The server's search failed: only what the list holds is shown.
+  const [unsearched, setUnsearched] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const meta = useRef(false)
   useEffect(() => box.current?.querySelector('textarea')?.focus(), [])
@@ -85,8 +87,9 @@ function Open() {
               })
           }
           setFound(hits)
+          setUnsearched(false)
         },
-        () => {},
+        () => live && setUnsearched(true),
       )
     }, 200)
     return () => {
@@ -208,7 +211,9 @@ function Open() {
       )}
       <div className="text-muted-foreground flex items-center gap-4 border-t px-4 py-2 text-xs">
         <span>
-          Starts a thread. It becomes a track if the work turns out bigger.
+          {unsearched && q.length >= 2
+            ? 'Search could not reach the server: only what the list holds is shown.'
+            : 'Starts a thread. It becomes a track if the work turns out bigger.'}
         </span>
         <span className="flex-1" />
         <span className="flex items-center gap-1 max-[700px]:hidden">

@@ -8,11 +8,13 @@ export function serverReads({
   client,
   store,
   addUnder,
+  toast,
 }: {
   client: Client
   store: StoreApi<State>
   // Rows read by query are held beneath the feed's.
   addUnder: (rows: Row[]) => void
+  toast: (t: { text: string; tone?: 'error' }) => void
 }) {
   const get = store.getState
   const set = store.setState
@@ -29,7 +31,8 @@ export function serverReads({
         set({ earlierNext: { ...get().earlierNext, [key]: page.next } })
         addUnder(page.rows)
       } catch {
-        // Offline: Earlier shows what is held.
+        // Offline: Earlier shows what is held. Online, a failed read says so.
+        if (get().status === 'online') toast({ text: 'Could not load earlier threads', tone: 'error' })
       }
     },
     async search(q: string) {

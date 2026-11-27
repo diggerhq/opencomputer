@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import { useList, useS, useSurface } from '../hooks'
 import type { ListView, ThreadView, TrackView } from '../store/views'
 import { I } from './icons'
-import { when } from './day-label'
+import { ago, when } from './day-label'
 import { Mk } from './Mark'
 
 // S1: the list. Tracks, then threads on their own, then Earlier, drawn as one
@@ -40,6 +40,9 @@ function ThreadRow({ t, kid }: { t: ThreadView; kid?: boolean }) {
         className={cn('min-w-0 flex-1 truncate', t.unread && 'font-semibold')}
       >
         {t.title}
+      </span>
+      <span className={cn(WH, 'hidden group-hover/row:inline')}>
+        {ago(t.session.lastActiveAt)}
       </span>
     </button>
   )

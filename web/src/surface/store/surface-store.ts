@@ -559,7 +559,7 @@ export function createSurface(o: SurfaceOptions) {
     },
 
     // -- reads that are not streams --
-    ...serverReads({ client, store, addUnder }),
+    ...serverReads({ client, store, addUnder, toast }),
     openExternal(url: string) {
       host.openExternal(url)
     },
