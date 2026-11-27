@@ -32,6 +32,14 @@ export class Reply {
     return response;
   }
 
+  /** A streamed body (an attachment's bytes, work 126) with the caller's headers, the request id and `Server-Timing`. */
+  stream(status: number, body: ReadableStream | null, headers: Record<string, string>): Response {
+    const h = new Headers(headers);
+    h.set("x-request-id", this.requestId);
+    h.set("server-timing", `blue;dur=${(performance.now() - this.started).toFixed(1)}`);
+    return new Response(status === 304 ? null : body, { status, headers: h });
+  }
+
   of(reply: ApiReply): Response {
     if ((reply.body as { duplicate?: unknown } | undefined)?.duplicate === true) this.facts.replayed = true;
     if (reply.error) {
@@ -57,6 +65,13 @@ const STATUS_OF: Record<string, number> = {
   inbox_full: 429,
   unavailable: 503,
   computer_unavailable: 503,
+  // Attachments (work 126, section 9); `attachment_not_found` is 404 by the suffix rule.
+  attachment_too_large: 413,
+  attachment_quota: 429,
+  content_mismatch: 400,
+  attachment_in_use: 409,
+  attachment_deleted: 410,
+  attachment_not_ready: 409,
   // The host's refusals of a delivered entry (spec 40.2); the host's own `status` comes first (an entry refused before it was kept had none).
   ask_closed: 409,
   session_busy: 409,

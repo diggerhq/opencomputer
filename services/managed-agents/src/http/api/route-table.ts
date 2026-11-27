@@ -112,6 +112,15 @@ export function matchApiRoute(method: string, suffix: string): Route | null {
     if (is("GET", 4)) return { op: "subagents.get", sessionId, sub: p[3] };
     if (is("POST", 5) && p[4] === "stop") return { op: "subagents.stop", sessionId, sub: p[3] };
   }
+  // Attachments (work 126, section 4): Org's rows and the object store, served by http/api/attachment-routes.ts.
+  if (r === "attachments") {
+    if (is("GET", 3)) return { op: "attachments.list", sessionId };
+    if (is("GET", 4)) return { op: "attachments.get", sessionId, sub: p[3] };
+    if (is("DELETE", 4)) return { op: "attachments.delete", sessionId, sub: p[3] };
+    if (is("PUT", 5) && p[4] === "content") return { op: "attachments.put", sessionId, sub: p[3] };
+    if (is("GET", 5) && p[4] === "content") return { op: "attachments.content", sessionId, sub: p[3] };
+    return null;
+  }
   if (r === "secrets" && is("GET", 3)) return { op: "secrets.session.list", sessionId };
   if (r === "secrets" && is("PUT", 4)) return { op: "secrets.session.put", sessionId, sub: p[3] };
   if (r === "secrets" && is("DELETE", 4)) return { op: "secrets.session.delete", sessionId, sub: p[3] };
@@ -125,7 +134,7 @@ export function scopeOf(op: string): ApiScope | null {
   if (op === "secrets" || op === "secrets.put" || op === "secrets.delete" || op === "secrets.session.put" || op === "secrets.session.delete") return "secrets:write";
   if (op === "secrets.events" || op === "secrets.session.list") return "sessions:read";
   if (op === "work.repository.put" || op === "mutate" || op === "work.tell") return "work:write";
-  if (op === "live") return "sessions:read";
+  if (op === "live" || op === "attachments.content") return "sessions:read";
   if (op === "feed" || op === "occurrences") return "sessions:read";
   if (op.startsWith("work.")) return "work:read";
   if (op === "list" || op === "get" || op === "capabilities" || op.endsWith(".list") || op.endsWith(".get")) return "sessions:read";
@@ -141,4 +150,5 @@ export const ACTOR_OPS = new Set([
   "feed", "occurrences", "mutate",
   "work.threads", "work.thread", "work.overview", "work.doc", "work.doc.revisions", "work.review", "work.search", "work.repository.get", "work.repository.put", "work.repositories",
   "live", "work.tell", "work.diff", "slack.post", "settings.get", "settings.patch",
+  "attachments.list", "attachments.get", "attachments.delete", "attachments.put", "attachments.content",
 ]);
