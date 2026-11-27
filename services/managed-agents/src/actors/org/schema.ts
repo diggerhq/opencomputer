@@ -86,7 +86,17 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "board", 0);
     alarms.set(sql, "accessCarry", 0);
   },
+  SHARE_STEP,
 ];
+
+/**
+ * Threads shared into a thread (sharing throughout): `session_id` was named in a turn sent to
+ * `to_session` by `by`, who could see it; `to_session`'s agent reads `session_id` from then on.
+ */
+function SHARE_STEP(sql: Sql): void {
+  sql.exec("CREATE TABLE share (session_id TEXT, to_session TEXT, by TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session_id, to_session))");
+  sql.exec("CREATE INDEX share_to ON share (to_session)");
+}
 
 /**
  * A store whose steps ran before they were folded into one, and stopped before `meta.slack_access_default`
@@ -94,6 +104,8 @@ export const STEPS: ((sql: Sql) => void)[] = [
  * the column and the carry-over those last steps held. A no-op on every other store.
  */
 export function completeFolded(sql: Sql): void {
+  // Such a store's step count also passes the `share` step: given here.
+  if (!sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'share'").length) SHARE_STEP(sql);
   if (sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) return;
   sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
   alarms.set(sql, "accessCarry", 0);

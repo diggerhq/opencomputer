@@ -102,7 +102,7 @@ Returns what was sent to another session and what its agent said over its last 2
 | Rule | Value |
 | --- | --- |
 | Approval | Never asked |
-| Readable sessions | This session, sessions it started, and, in a track, the track's agent; a track's own session also reads the track's threads. Otherwise the tool returns the reason. |
+| Readable sessions | This session, sessions it started, and, in a track, the track's agent; a track's own session also reads the track's threads. Also any session shared into this one: named by its id (`cs_…`, bare or in an app link) or by its Slack thread link in a message sent to this session, by a person or session that could read it. Sharing is not taken back. Otherwise the tool returns the reason. |
 
 ## post_thread
 

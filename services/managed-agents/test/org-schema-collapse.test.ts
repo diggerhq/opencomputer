@@ -43,15 +43,17 @@ async function fresh(name: string, setup: (sql: Sql) => void) {
   });
 }
 
+/** `before`'s steps, then `after`'s past its first (the steps added since the collapse), against `after` alone. */
 async function same(name: string, before: Step[], after: Step[], first?: string) {
   const setup = (steps: Step[]) => (sql: Sql) => {
     if (first) sql.exec(first);
     migrate(sql, steps);
   };
-  const old = await fresh(`${name}-before`, setup(before));
+  const since = after.slice(1);
+  const old = await fresh(`${name}-before`, setup([...before, ...since]));
   const now = await fresh(`${name}-after`, setup(after));
-  expect(old.applied).toBe(before.length);
-  expect(now.applied).toBe(1);
+  expect(old.applied).toBe(before.length + since.length);
+  expect(now.applied).toBe(after.length);
   expect(Object.keys(now.shape.tables).length).toBeGreaterThan(1);
   expect(now.shape).toEqual(old.shape);
 }

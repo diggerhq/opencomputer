@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { migrate } from "../src/durable/migrations.js";
 import { owed } from "../src/durable/outbox.js";
 import { sqlOf, type Sql } from "../src/durable/sql.js";
-import { type Principal } from "../src/auth/principal.js";
+import { platformPrincipal, type Access, type Principal } from "../src/auth/principal.js";
 import { runMutation } from "../src/actors/org/mutations/run.js";
 import { STEPS } from "../src/actors/org/schema.js";
 import { sessionRow } from "../src/actors/org/feed-rows.js";
@@ -384,6 +384,46 @@ describe("Org: session access (spec 36.2)", () => {
       // Its owner still renames or archives it.
       expect(await org.patchSession(a, SID, { title: "Mine" })).toMatchObject({ ok: true, session: { title: "Mine" } });
       expect(await org.patchSession(b, SID, { title: "Theirs" })).toMatchObject({ ok: false, code: "forbidden", reason: "owner_only" });
+    });
+  });
+
+  it("shares a thread into another when a turn names it, by id or Slack link, if the sender sees it (org/shares.ts)", async () => {
+    await withActor("access-share", async (org, fakes) => {
+      const a = member("usr_a", "access-share");
+      const b = member("usr_b", "access-share");
+      const mine = "cs_0000000000000037";
+      const target = "cs_0000000000000038";
+      const theirs = "cs_0000000000000039";
+      const slack = "cs_000000000000003a";
+      await org.createSession(a, { id: mine, input: "Mine" });
+      await org.createSession(a, { id: target, input: "Target" });
+      await org.createSession(b, { id: theirs, input: "Theirs" });
+      await org.createSession(a, { id: slack, origin: slackOrigin, slackThread: "T1:C0FFEE:1700000000.000100" });
+      const agent: Principal = { ...a, subject: target, kind: "agent", via: "agent", audiences: [], session: target };
+      expect(await org.getSession(agent, mine)).toMatchObject({ ok: false, code: "session_not_found" });
+      await org.drain();
+      fakes.calls.length = 0;
+
+      // A's turn into `target` names `mine`, `theirs` (B's, not A's to share), `target` itself and the Slack thread.
+      const refs = [mine, theirs, target, "https://acme.slack.com/archives/C0FFEE/p1700000000000100"];
+      expect(await org.share(a, target, refs)).toEqual({ shared: [mine, slack] });
+      expect(await org.getSession(agent, mine)).toMatchObject({ ok: true, session: { id: mine } });
+      expect(await org.getSession(agent, slack)).toMatchObject({ ok: true, session: { id: slack } });
+      expect(await org.getSession(agent, theirs)).toMatchObject({ ok: false, code: "session_not_found" });
+      const access = await org.access(mine);
+      expect(access).toMatchObject({ readers: [`agent:${target}`] });
+      await org.drain();
+      expect(fakes.calls.filter((c) => c[0] === "SessionLog.setAccess").map((c) => (c[1] as Access).readers)).toEqual([[`agent:${target}`], [`agent:${target}`]]);
+      const listed = await org.listSessions(agent, { slackThread: "https://acme.slack.com/archives/C0FFEE/p1700000000000100" });
+      expect(listed.ok && listed.sessions.map((s) => s.id)).toEqual([slack]);
+
+      // Again: nothing new, nothing owed. B cannot share A's into A's target: B cannot write there.
+      expect(await org.share(a, target, [mine])).toEqual({ shared: [] });
+      expect(await org.share(b, target, [theirs])).toEqual({ shared: [] });
+      expect(await org.getSession(agent, theirs)).toMatchObject({ ok: false, code: "session_not_found" });
+      // The platform sees everything but relays others' text (a track's first input, a digest): it shares nothing.
+      expect(await org.share(platformPrincipal("access-share"), target, [theirs])).toEqual({ shared: [] });
+      expect(await org.getSession(agent, theirs)).toMatchObject({ ok: false, code: "session_not_found" });
     });
   });
 

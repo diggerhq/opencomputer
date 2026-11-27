@@ -28,6 +28,7 @@ import type { Fetch, StoredRepository, TokenMinter } from "./repository.js";
 import { completeFolded, STEPS } from "./schema.js";
 import * as sessions from "./sessions.js";
 import { accessOf } from "./access.js";
+import * as shares from "./shares.js";
 import { readSession, trackOfAgent } from "./records.js";
 import type { PublishOwed } from "./tx.js";
 import * as work from "./work.js";
@@ -369,6 +370,12 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
 
   async access(sessionId: string): Promise<Access | null> {
     return sessions.access(this.sql, sessionId);
+  }
+
+  async share(p: Principal, to: string, refs: string[]): Promise<{ shared: string[] }> {
+    const out = shares.share(this.sql, Date.now(), p, to, refs);
+    if (out.shared.length) this.flush();
+    return out;
   }
 
   async dead(): Promise<Dead[]> {

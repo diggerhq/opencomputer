@@ -2,7 +2,7 @@
 
 import { byOf, type Principal } from "../../auth/principal.js";
 import type { Sql } from "../../durable/sql.js";
-import { readPlace, readTrack, trackOfAgent, type PlaceRec, type SessionRec, type TrackRec } from "./records.js";
+import { isSharedTo, readPlace, readTrack, trackOfAgent, type PlaceRec, type SessionRec, type TrackRec } from "./records.js";
 import { isPerson, sharedWith } from "./audience.js";
 
 /**
@@ -51,12 +51,13 @@ export function agentArranges(sql: Sql, p: Principal, place: PlaceRec | null): b
  * Whether `p` may see a session at all; a mutation answers `not_found` when not (spec 39). The one
  * rule for reading a session: `getSession`, `patchSession`, the mutations, Org's work reads; the
  * member filter of `listSessions` is its SQL, and SessionLog's `mayRead` its copy over `Access`. A
- * member, or a member's key (`sessions:read` is the route's), by audience or as a person it is shared with; an agent its own session, one it started, its track's threads, and its
- * track's agent.
+ * member, or a member's key (`sessions:read` is the route's), by audience or as a person it is shared with; an agent its own session, one it started, its track's threads, its
+ * track's agent, and any session shared into its own (`share`: named in a turn by someone who saw it).
  */
 export function seesSession(sql: Sql, p: Principal, s: SessionRec): boolean {
   if (p.kind !== "agent") return visible(p, s.audience) || (isMember(p) && sharedWith(s).includes(byOf(p)));
   if (p.session === s.id) return true;
+  if (p.session && isSharedTo(sql, s.id, p.session)) return true;
   const place = readPlace(sql, s.id);
   if (place?.parent_session === p.session) return true;
   if (place?.track_id) {

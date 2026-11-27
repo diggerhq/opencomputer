@@ -10,6 +10,8 @@ import type { Summary } from "../session-log/contract.js";
 
 /** The mutation table: the API's `/work` routes match it (org/mutations/table.ts, which the SDK copies). */
 export { matchMutation } from "./mutations/table.js";
+/** The threads a turn's text names, for `share` (org/shares.ts): SessionLog reads them from a turn it takes. */
+export { threadRefs } from "./shares.js";
 
 /** The `session` feed row and the API's object (spec 35.1): today's `Session` and Org's fields. */
 export interface SessionRow extends Session {
@@ -206,6 +208,8 @@ export interface OrgRpc {
   acceptPull(pub: PullPub): Promise<void>;
   /** SessionLog only, when it holds none. */
   access(sessionId: string): Promise<Access | null>;
+  /** SessionLog only: a turn sent to `to` by `p` named these threads (org/shares.ts `threadRefs`); each one `p` sees is shared into `to`. */
+  share(p: Principal, to: string, refs: string[]): Promise<{ shared: string[] }>;
   /** Computer only. */
   forHost(machine: string): Promise<{ sessions: { sessionId: string; access: Access }[]; admins: string[]; knowledge: string | null }>;
   /** Computer only: whether a member (`usr_…`) is an admin, as Org last saw them (a session secret's owner rule in Slack). */

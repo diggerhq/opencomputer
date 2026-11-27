@@ -52,6 +52,8 @@ export interface Fakes {
   summaries: SummaryPub[];
   /** The revision `Org.acceptSummary` answers; default: the one sent. A function may throw. */
   orgAnswers: ((pub: SummaryPub, log: SessionLogDurableObject) => number | Promise<number>) | null;
+  /** Every `Org.share` call's references (a turn that named other threads). */
+  shares: string[][];
   /** Every drain call's machine. */
   drains: string[];
   /** What `Computer.drain` does; default: takes it and delivers nothing (the machine is waking). */
@@ -72,6 +74,7 @@ export async function openLog(over: Partial<Fakes> = {}) {
     accessReads: 0,
     summaries: [],
     orgAnswers: null,
+    shares: [],
     drains: [],
     drain: () => undefined,
     published: [],
@@ -85,6 +88,10 @@ export async function openLog(over: Partial<Fakes> = {}) {
         access: async () => {
           fakes.accessReads++;
           return fakes.access;
+        },
+        share: async (_p, _to, refs) => {
+          fakes.shares.push(refs);
+          return { shared: [] };
         },
         acceptSummary: async (pub) => {
           // A real stub never answers in the caller's own tick.
