@@ -1,0 +1,215 @@
+---
+title: "Single VM"
+description: "Run @computer on one Ubuntu VM with Podman, for a quick proof of concept or for one practitioner"
+---
+
+This setup is for a quick proof of concept, and for individual practitioners who want to use coding agents on a machine they control. It is not built for a team that depends on it. For that, use the [Azure](/self-hosting/azure), [AWS](/self-hosting/aws) or [Google Cloud](/self-hosting/gcp) deployments.
+
+Everything runs on one VM:
+
+- **The gateway** runs the hosted service's code in a container, under Miniflare. Miniflare is a local emulator of Cloudflare's Durable Objects, D1, R2 and KV.
+- **The host agent** runs on the same VM. Each session runs in its own rootless Podman container.
+- **`/setup`** is a browser page where you add the Claude credential, connect the host and connect Slack.
+
+<Warning>
+Neither part has been released yet. The gateway and this page come from [#1253](https://github.com/diggerhq/opencomputer/pull/1253), branch `spike/selfhost-miniflare`. The host installer, `selfhost/host-install.sh`, comes from [#1204](https://github.com/diggerhq/opencomputer/pull/1204), branch `feat/selfhost-host-install`. Until both are merged, use these two branches as the steps below say.
+</Warning>
+
+## Limits
+
+- **One VM, one organization.** It has no horizontal scaling and no high availability. Every session shares the VM's CPU, memory and disk.
+- **The gateway's state is not production-grade.** Durable Objects, D1, R2 and KV are emulated locally in one Podman volume. If you lose the volume, you lose the gateway's state, so back it up.
+- **While the gateway is down, requests fail.** This covers Slack events and API calls. Nothing queues them.
+- **People can't be invited yet.** There are no email invites and no member list. SSO sign-in isn't available, SAML isn't available, and GitHub App installations aren't available. `/setup` stores the SSO and GitHub App settings, but nothing uses them. The operator signs in with `SETUP_TOKEN`. Once Slack is connected, everyone in the workspace can use @computer from Slack.
+- **There are no previews and no web dashboard.** You use @computer through Slack and the API.
+
+## Requirements
+
+- **Ubuntu 24.04 on x86-64.** The host installer refuses arm64, and it refuses other distributions. Ubuntu 22.04 works only with Podman 4.7 or newer and `passt`.
+- **Free space under `/data`:** the installer warns below 20 GiB. The session image takes about 10 GiB, and every session's workspace needs more.
+- **A Claude credential:** an Anthropic API key (`sk-ant-api…`), or a subscription token from `claude setup-token` (`sk-ant-oat…`).
+- **For Slack only:** a public HTTPS URL for the gateway. See [HTTPS](#https).
+
+## 1. Install the host
+
+As a user with `sudo`, on #1204's branch until it merges:
+
+```sh
+git clone -b feat/selfhost-host-install https://github.com/diggerhq/opencomputer.git ~/oc-host
+cd ~/oc-host
+sudo selfhost/host-install.sh --dry-run   # checks the machine and prints the plan
+sudo selfhost/host-install.sh
+```
+
+The installer sets up the following:
+
+- Node.js and rootless Podman
+- `podman-compose` 1.6.0 in `/opt/podman-compose`
+- the `slack-presence-host` service and the model proxy
+- the `oc-gateway` user (home `/var/lib/oc-gateway`, lingering enabled), which runs the gateway
+
+The host agent doesn't start yet, because `/etc/opencomputer/selfhost.env` has no token. Step 4 adds it.
+
+## 2. Configure the gateway
+
+As `oc-gateway`, on #1253's branch until it merges:
+
+```sh
+sudo -iu oc-gateway
+git clone -b spike/selfhost-miniflare https://github.com/diggerhq/opencomputer.git ~/opencomputer
+cd ~/opencomputer/selfhost
+cp .env.example .env && chmod 600 .env
+```
+
+Set these in `.env`:
+
+| Variable | Value |
+| --- | --- |
+| `SETUP_TOKEN` | Required. The operator's credential for `/setup` and the API. Generate it with `openssl rand -hex 32`. |
+| `PUBLIC_URL` | The public HTTPS origin, with no trailing slash, for example `https://computer.example.com`. Slack needs it, and you can leave it empty until then. |
+| `GATEWAY_PORT` | The gateway's port on `127.0.0.1`. The default is `8080`. |
+| `GATEWAY_ORG` | The organization ID. The default is `org_selfhost`. Don't change it after the first start. |
+| `SP_SETUP_OPEN` | Set it to `1` to keep `/setup` open once setup is complete. Otherwise leave it empty. |
+
+## 3. Start the gateway
+
+Install the systemd user unit. It runs `podman-compose up` in the foreground and restarts it whenever it exits. Still as `oc-gateway`:
+
+```sh
+install -D -m 0644 ~/opencomputer/selfhost/systemd/opencomputer-gateway.service \
+  ~/.config/systemd/user/opencomputer-gateway.service
+systemctl --user daemon-reload
+systemctl --user enable --now opencomputer-gateway.service
+```
+
+The first start builds the gateway image, which takes a few minutes. Then `curl -s 127.0.0.1:8080/healthz` returns `{"ok":true,"mode":"miniflare"}`.
+
+Stop the gateway with `systemctl --user stop opencomputer-gateway`. If you use `podman stop`, systemd starts it again. To try the gateway in the foreground without the unit, run `podman-compose up` from `~/opencomputer/selfhost`.
+
+## 4. Connect the host
+
+As the sudo user, from the host checkout:
+
+```sh
+cd ~/oc-host && sudo selfhost/host-install.sh --link-gateway
+```
+
+This reads the gateway container's `GATEWAY_ORG`, `GATEWAY_PORT` and `/data/host-token`. It writes `SP_GATEWAY_URL`, `SP_HOST_ID` and `SP_HOST_TOKEN` to `/etc/opencomputer/selfhost.env` (root, mode 0600), then starts `slack-presence-host`. The token is never printed. The host dials `ws://127.0.0.1:<GATEWAY_PORT>/v1/computer/host?organizationId=<GATEWAY_ORG>`.
+
+The Host step of `/setup` shows an equivalent command, with the token masked until you select **Reveal the command with the token**. That command replaces all of `selfhost.env`, and it puts the token on your command line. Prefer `--link-gateway`.
+
+## 5. Set up in the browser
+
+Open `https://<PUBLIC_URL>/setup`. Before you have a public URL, use an SSH tunnel and open `http://localhost:8080/setup`:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 you@your-vm
+```
+
+Sign in with `SETUP_TOKEN`. The sign-in lasts 12 hours, and changing `SETUP_TOKEN` ends it. Scripts can send `Authorization: Bearer <SETUP_TOKEN>` instead.
+
+The page has these sections:
+
+1. **Claude credential** (required). Paste the key or token. It is stored encrypted and is never shown again. Sessions never see it: only the host's model proxy uses it.
+2. **Host** (required). It shows **connected** once step 4 is done. Select **I'll connect the host later** to finish without it.
+3. **People.** Nothing to set up yet. See [Limits](#limits).
+4. **Slack app** (optional). See [Slack](#slack).
+5. **SSO** (optional). OIDC and WorkOS settings are stored only. SAML isn't available.
+6. **GitHub App** (optional). Stored only.
+
+Setup is complete once the Claude credential is set and the host is connected or acknowledged. After that, every `/setup` URL returns 404. To change something later, set `SP_SETUP_OPEN=1` in `.env` and restart the gateway. When you're done, clear it and restart again.
+
+## Slack
+
+Slack needs `PUBLIC_URL` set to an HTTPS origin.
+
+1. In `/setup`, open the **manifest** link. At [api.slack.com/apps](https://api.slack.com/apps?new_app=1), choose **Create New App**, then **From a manifest**, and paste it.
+2. From the app's **Basic Information** page, paste the client ID, the client secret and the signing secret into `/setup`, then select **Save**.
+3. Select **Install to Slack** and approve.
+
+To start a session, mention the app in a channel or DM it.
+
+## HTTPS
+
+The gateway listens only on `127.0.0.1`. Put one of the following in front of it, set `PUBLIC_URL` to its origin, and restart the gateway.
+
+**Caddy**, on a VM with a public IP, a DNS name, and ports 80 and 443 open. Caddy gets the certificate itself:
+
+```sh
+sudo apt install -y caddy
+printf 'computer.example.com {\n  reverse_proxy 127.0.0.1:8080\n}\n' | sudo tee /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+**Cloudflare Tunnel**, with no inbound ports:
+
+1. Create a named tunnel in Cloudflare Zero Trust.
+2. Add a public hostname to it, with the service `http://gateway:8080`.
+3. Put the tunnel's token in `.env` as `CLOUDFLARE_TUNNEL_TOKEN`.
+4. Enable the `cloudflared` profile. Run `systemctl --user edit opencomputer-gateway`, add the lines below, then restart the gateway.
+
+```ini
+[Service]
+Environment=COMPOSE_PROFILES=cloudflared
+```
+
+**ngrok** uses the `ngrok` profile the same way. Set `NGROK_AUTHTOKEN` and a reserved domain in `NGROK_URL`, and set `PUBLIC_URL=https://<NGROK_URL>`.
+
+## On a laptop or workstation
+
+A Linux machine running Ubuntu 24.04 on x86-64 works with the same steps. Use `http://localhost:8080/setup`, and skip Slack unless you run a tunnel.
+
+On a Mac, the host can't run: the installer needs Ubuntu on x86-64. Run it in an Ubuntu VM on the Mac instead. On Apple Silicon, that VM runs x86-64 under emulation, which is much slower.
+
+## Back up and restore
+
+All of the gateway's state is in the `opencomputer_gateway-data` volume:
+
+- Miniflare's data
+- `keys.json`, which decrypts the stored secrets
+- `host-token`
+
+Store the backup encrypted. As `oc-gateway`:
+
+```sh
+systemctl --user stop opencomputer-gateway
+podman volume export opencomputer_gateway-data > gateway-data-$(date +%F).tar
+systemctl --user start opencomputer-gateway
+```
+
+To restore, stop the gateway first, then recreate the volume from the backup and start the gateway again:
+
+```sh
+systemctl --user stop opencomputer-gateway
+podman volume rm -f opencomputer_gateway-data   # -f also removes the stopped container
+podman volume create opencomputer_gateway-data
+podman volume import opencomputer_gateway-data gateway-data-<date>.tar
+systemctl --user start opencomputer-gateway
+```
+
+Session workspaces live on the host under `/data`, outside the volume. Back them up with disk snapshots.
+
+## Upgrade
+
+Back up the volume first. The gateway applies new database migrations when it starts.
+
+```sh
+# the gateway, as oc-gateway
+cd ~/opencomputer && git pull
+cd selfhost && podman-compose build gateway
+systemctl --user restart opencomputer-gateway
+
+# the host, as the sudo user
+cd ~/oc-host && git pull && sudo selfhost/host-install.sh
+```
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| `/setup` returns 404 | Setup is complete: set `SP_SETUP_OPEN=1` and restart the gateway. Also check that `SETUP_TOKEN` is set in `.env`. |
+| Sign-in loops back to the sign-in page | `PUBLIC_URL` is `https://…` but you opened `http://`, so the browser drops the `Secure` cookie. Open `PUBLIC_URL` instead. |
+| The host stays **not connected** | Run `sudo journalctl -u slack-presence-host`, then `sudo selfhost/host-install.sh --link-gateway` again. |
+| Sessions reply "No model credential is configured for this computer." | Set the Claude credential in `/setup`. |
+| There is no **Install to Slack** button | Save all three Slack values first. |
+| The gateway restarts in a loop | As `oc-gateway`, run `podman logs opencomputer_gateway_1` and `systemctl --user status opencomputer-gateway`. |

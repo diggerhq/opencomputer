@@ -8,7 +8,7 @@
 #   podman compose --profile cloudflared up -d   # or with a Cloudflare tunnel
 #   podman compose --profile ngrok up -d         # or with ngrok
 #
-# `docker compose` reads the same file. Guide: docs/self-hosting/community-edition.mdx.
+# `docker compose` reads the same file. Guide: docs/self-hosting/single-vm.mdx.
 #
 # Who connects to whom: Slack calls the gateway over HTTPS through the tunnel
 # (PUBLIC_URL). The host agent on the VM dials the gateway's WebSocket at
@@ -70,7 +70,7 @@ services:
     depends_on:
       - gateway
 
-  # ngrok on a reserved domain: SP_ORIGIN must be https://<NGROK_URL>.
+  # ngrok on a reserved domain: PUBLIC_URL must be https://<NGROK_URL>.
   ngrok:
     image: docker.io/ngrok/ngrok:${NGROK_VERSION:-latest}
     profiles: ["ngrok"]
