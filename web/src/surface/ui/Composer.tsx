@@ -43,7 +43,8 @@ export function Composer({
     // Filled once there is something to send.
     <Button
       size="icon-sm"
-      variant={text.trim() ? 'default' : 'outline'}
+      variant={text.trim() ? 'default' : 'secondary'}
+      className="rounded-full"
       aria-label="Send"
       title="Send (Enter)"
       disabled={!text.trim()}
@@ -56,7 +57,7 @@ export function Composer({
     <div
       ref={ref}
       className={cn(
-        'bg-card focus-within:border-ring focus-within:ring-ring/25 flex flex-none gap-1 rounded-xl border p-1.5 shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]',
+        'bg-card focus-within:border-input flex flex-none gap-1 rounded-xl border p-1.5 shadow-sm transition-colors',
         tools ? 'flex-col' : 'items-end',
         className,
       )}

@@ -334,10 +334,8 @@ const PENDING: Record<string, string> = {
   queued: 'Queued',
 }
 
-// On the measure like the agent's text, so the reading edge stays put; the
-// card and the stronger text say whose turn it is.
 // Rows' one-line heights by kind, as drawn (with the gap between rows).
-const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 62, agent: 40, work: 28 }
+const ESTIMATE: Partial<Record<Item['kind'], number>> = { user: 60, agent: 40, work: 28 }
 
 // A reply, with a caret at the end of its last line while it streams: inside
 // the text, so the reply is as tall streaming as it is when complete.
@@ -373,12 +371,14 @@ function useLate(on: boolean, ms: number): boolean {
   return on && late
 }
 
+// On the measure like the agent's text, so the reading edge stays put; a
+// quiet fill says whose turn it is.
 function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
   const pending =
     item.state && (item.state !== 'sending' || slow) && PENDING[item.state]
   return (
-    <div className="bg-card text-strong max-w-180 rounded-lg border px-3.5 py-2.5">
+    <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
       {(item.author || item.via) && (
         <div className="text-muted-foreground text-meta">
           {[item.author, item.via].filter(Boolean).join(' · ')}

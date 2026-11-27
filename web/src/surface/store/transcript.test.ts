@@ -99,6 +99,14 @@ describe('work', () => {
     expect(items.map((i) => i.kind)).toEqual(['user', 'agent'])
   })
 
+  it('a message steered into the running turn keeps its own key', () => {
+    const items = buildTranscript([
+      ev('message.received', 't1', { input: 'Fix it' }),
+      ev('message.received', 't1', { input: 'Use pnpm', delivery: 'steered', messageId: 'tn_2' }),
+    ])
+    expect(items.map((i) => i.key)).toEqual(['t1', 'tn_2'])
+  })
+
   it('the next turn starts its own', () => {
     const items = buildTranscript([...running(), ev('turn.cancelled', 't1'), ev('tool.started', 't2', { callId: 'c3', title: 'Run tests' })])
     expect(works(items).map((w) => w.settled)).toEqual([true, false])

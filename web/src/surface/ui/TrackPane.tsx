@@ -144,14 +144,14 @@ export function TrackPane({ tid }: { tid: string }) {
       >
         {track.stand}
       </div>
-      <div className="flex-none border-b px-4 py-1.5">
+      <div className="flex-none border-b px-4 pt-1">
         <Tabs
           value={tab}
           onValueChange={(v) =>
             surface.setTrackTab(tid, v as 'activity' | 'doc' | 'results')
           }
         >
-          <TabsList>
+          <TabsList variant="line">
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="doc">Doc</TabsTrigger>
             <TabsTrigger value="results">
@@ -361,14 +361,13 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
         >
           {t.title}
         </span>
-        <span
-          className={cn(
-            'text-meta ml-auto flex-none whitespace-nowrap',
-            t.mark ? 'text-status-pending' : 'text-muted-foreground',
-          )}
-        >
-          {t.word}
-        </span>
+        {/* The mark says working and ready; only what waits on the person
+            is also said in words. */}
+        {t.mark === 'blocked' && (
+          <span className="text-meta text-status-pending ml-auto flex-none whitespace-nowrap">
+            {t.word}
+          </span>
+        )}
       </div>
       <div className="text-muted-foreground text-meta mt-1 line-clamp-2 wrap-anywhere">
         {t.line ?? 'Just started'}
