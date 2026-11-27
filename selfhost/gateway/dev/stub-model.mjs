@@ -24,7 +24,11 @@ createServer({ cert: readFileSync(cert), key: readFileSync(key) }, async (req, r
   console.log(JSON.stringify({ at: new Date().toISOString(), method: req.method, path, model: body.model, apiKey: req.headers["x-api-key"] ? "present" : "absent", stream: body.stream }));
   if (path === "/v1/messages/count_tokens") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ input_tokens: 42 }));
   if (path !== "/v1/messages") return res.writeHead(404).end();
-  const text = `echo: ${lastUserText(body).slice(0, 500)}`;
+  const prompt = lastUserText(body);
+  // "slow:<seconds>" in the prompt holds the answer that long (the durability test kills the gateway meanwhile).
+  const slow = Number(prompt.match(/slow:(\d+)/)?.[1] ?? 0);
+  if (slow) await new Promise((r) => setTimeout(r, slow * 1000));
+  const text = `echo: ${prompt.slice(-300)}`;
   const id = `msg_stub_${Date.now()}`;
   const usage = { input_tokens: 42, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   const message = { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage };
