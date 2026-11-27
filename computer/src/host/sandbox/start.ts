@@ -165,7 +165,14 @@ export function sandboxStarts(d: SandboxStartDeps) {
           await d.workspace.dirs(record, names);
           const inventory = found && !found.unclaimed && (await c.inventory());
           // The transcript is in the home: resumed only into one that was there before this start.
-          if (sdkSessionId && inventory && inventory.volumes.some((v) => v.id === id)) session = { ...fresh, sdkSessionId };
+          const home = !!inventory && inventory.volumes.some((v) => v.id === id);
+          if (sdkSessionId && home) session = { ...fresh, sdkSessionId };
+          data.resumed = !!session.sdkSessionId;
+          // A home that was there with no conversation to resume: the gateway sent none, which the thread sees as forgetting.
+          if (home && !sdkSessionId) {
+            data.resume_missing = true;
+            log.warn(`sandbox ${id} (${spec.key}) has a home but its start carries no conversation to resume: the thread starts fresh`);
+          }
           api = await d.mint(session, id, run);
           rs = { ...rs, session: { ...session, forkPath: WORKSPACE }, api: api && { ...api, token: '' } };
           if (inventory) {
