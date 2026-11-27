@@ -20,6 +20,7 @@ import { saveMerged } from './doc-save'
 import { OUT_OF_CREDITS, sayFailure, whatFailed } from './failure-text'
 import { hurriedClient } from './hurried-client'
 import { overlay } from './overlay'
+import { safeNames, tar, uploadName } from './upload'
 import { pageWake } from './page-wake'
 import { serverReads } from './server-reads'
 import { readRow, applyFrame, Draft, emptyRows, type Rows } from './rows'
@@ -282,6 +283,20 @@ export function createSurface(o: SurfaceOptions) {
     sync()
   }
 
+  // Uploads the files, and returns the message with a line saying where they are.
+  const uploadOrSay = async (sid: string, input: string, files: File[]) => {
+    const name = uploadName(new Date())
+    try {
+      await client.upload(sid, name, tar(files))
+    } catch (e) {
+      const f = e instanceof Refused ? e : { code: 'internal', reason: '' }
+      toast({ text: `Could not upload ${files.length === 1 ? 'the file' : 'the files'}: ${sayFailure(f)}`, tone: 'error' })
+      throw e
+    }
+    const paths = safeNames(files.map((f) => f.name)).map((n) => `\`${name}/${n}\``)
+    return `${input || 'See the attached files.'}\n\nAttached, in the workspace: ${paths.join(', ')}`
+  }
+
   const onFailure = (f: Failure) => {
     answered.delete(f.entry.key)
     sync()
@@ -295,7 +310,7 @@ export function createSurface(o: SurfaceOptions) {
     if (e.kind === 'turn' || e.kind === 'session') {
       const input = e.kind === 'turn' ? e.input : e.body.input
       const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
-      if (!get().drafts[key]) actions.setDraft(key, input)
+      if (input && !get().drafts[key]) actions.setDraft(key, input)
     }
     const billing = host.billing
     toast({
@@ -434,6 +449,22 @@ export function createSurface(o: SurfaceOptions) {
     send(sid: string, input: string) {
       const st = get().rows.session.get(sid)?.status
       settle(client.send(sid, input, { ifBusy: st === 'running' || st === 'starting' ? 'steer' : undefined }))
+    },
+    // Files attached in a composer go first, to the session's workspace
+    // (upload.ts), then the message, which names where they are. A start
+    // makes the session without a message, so there is somewhere to put them.
+    // On a refused upload it toasts and throws, so the composer keeps them.
+    async startWithFiles(input: string, files: File[], opt: { open: boolean; settings?: SettingsPatch }) {
+      const r = client.createSession({ role: 'start', ...opt.settings })
+      settle(r)
+      await r.settled
+      const said = await uploadOrSay(r.id, input, files)
+      settle(client.send(r.id, said, { ifBusy: 'queue' }))
+      if (opt.open) go({ ...NOWHERE, thread: r.id })
+      return r.id
+    },
+    async sendWithFiles(sid: string, input: string, files: File[]) {
+      actions.send(sid, await uploadOrSay(sid, input, files))
     },
     answer(sid: string, askId: string, answer: Answer) {
       settle(client.answer(sid, askId, answer))

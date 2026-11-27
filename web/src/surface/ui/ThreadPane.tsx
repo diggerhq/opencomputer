@@ -443,6 +443,7 @@ export function ThreadPane({ sid }: { sid: string }) {
         draftKey={`t:${sid}`}
         placeholder="Reply in this thread…"
         onSend={reply}
+        onAttach={(text, files) => surface.sendWithFiles(sid, text, files)}
         className={COMPOSER}
         // A thread from Slack keeps the settings Slack gave it.
         tools={

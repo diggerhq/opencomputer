@@ -14,6 +14,7 @@ import { createQueue } from "./queue.js";
 import { emitter, signal, type Emitter } from "./signal.js";
 import type { Channel, Client, ClientOptions, Stream } from "./client-interface.js";
 import type { Row } from "./feed-rows.js";
+import type { UploadReply } from "./http-bodies.js";
 import type { Delta, ServerFrame } from "./socket-frames.js";
 
 interface Watch {
@@ -180,7 +181,8 @@ export function createClient(o: ClientOptions): Client {
     createSession(body) {
       const id = body.id ?? makeId("cs", ctx.random);
       const turnId = body.turnId ?? makeId("tn", ctx.random);
-      const { settled } = queue.add({ kind: "session", sessionId: id, body: { ...body, id, turnId } }, id);
+      // Without input there is no first turn to name.
+      const { settled } = queue.add({ kind: "session", sessionId: id, body: body.input === undefined ? { ...body, id } : { ...body, id, turnId } }, id);
       return { id, turnId, settled };
     },
     send(sessionId, input, opts) {
@@ -199,6 +201,15 @@ export function createClient(o: ClientOptions): Client {
         body: JSON.stringify(secret),
       });
       if (reply.status >= 300) throw refusal(reply);
+    },
+    async upload(sessionId, name, tar) {
+      const reply = await ctx.request(`/sessions/${encodeURIComponent(sessionId)}/workspace/archive?path=${encodeURIComponent(name)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/x-tar" },
+        body: tar,
+      });
+      if (reply.status >= 300) throw refusal(reply);
+      return reply.body as UploadReply;
     },
     pending: () => queue.pending,
     failures: {

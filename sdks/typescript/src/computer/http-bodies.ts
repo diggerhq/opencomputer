@@ -48,6 +48,11 @@ export interface ThreadsPage {
   next: string | null;
 }
 
+/** `PUT /sessions/{id}/workspace/archive`: what was written to `workspace/{path}`. */
+export interface UploadReply {
+  upload: { path: string; files: number; bytes: number; replaced: unknown };
+}
+
 /** `GET /work/search?q&limit`. */
 export interface SearchReply {
   rows: (SessionRow | PlaceRow | TrackRow | ResultRow)[];
@@ -56,7 +61,8 @@ export interface SearchReply {
 export interface CreateSessionBody {
   /** A `cs_` id; made by the client so a retry lands on the same session. */
   id?: string;
-  input: string;
+  /** Absent: no first turn yet, so files can be uploaded before the first message (`opc new --push`). */
+  input?: string;
   /** The first turn's `tn_` id. */
   turnId?: string;
   trackId?: string | null;

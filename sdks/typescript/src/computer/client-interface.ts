@@ -1,7 +1,7 @@
 // What a caller gives the client and what the client gives back (spec section 42.1).
 
 import type { MutationArgs, MutationName } from "./mutation-table.js";
-import type { CreateSessionBody, FeedFrame, SettingsPatch } from "./http-bodies.js";
+import type { CreateSessionBody, FeedFrame, SettingsPatch, UploadReply } from "./http-bodies.js";
 import type { Answer, ApiEvent, IfBusy } from "./session-objects.js";
 import type { ClientFrame, Delta, ServerFrame } from "./socket-frames.js";
 
@@ -44,7 +44,7 @@ export interface Principal {
 
 export type Pending =
   | { key: string; kind: "mutation"; name: MutationName; args: Record<string, unknown>; at: number }
-  | { key: string; kind: "session"; sessionId: string; body: CreateSessionBody & { id: string; turnId: string }; at: number }
+  | { key: string; kind: "session"; sessionId: string; body: CreateSessionBody & { id: string; turnId?: string }; at: number }
   | { key: string; kind: "turn"; sessionId: string; turnId: string; input: string; ifBusy?: IfBusy; at: number }
   | { key: string; kind: "answer"; sessionId: string; askId: string; answer: Answer; at: number }
   | { key: string; kind: "dismiss"; sessionId: string; askId: string; at: number }
@@ -117,6 +117,12 @@ export interface Client {
    * and never queued, so the value is never stored; throws `Refused` on an error reply.
    */
   setSecret(sessionId: string, name: string, secret: { value: string; file: boolean }): Promise<void>;
+  /**
+   * Writes a tar archive to `workspace/{name}` (`PUT /sessions/{id}/workspace/archive`), the way
+   * `opc push` does; the session's next turn begins with a note that it arrived. Sent at once and
+   * never queued, so the bytes are never stored; throws `Refused` on an error reply.
+   */
+  upload(sessionId: string, name: string, tar: Blob): Promise<UploadReply>;
   pending(): Signal<Pending[]>;
   failures: Stream<Failure>;
   /** A read that is not a stream (`/work/threads`, `/work/search`, a review, a diff). Throws `Refused` on an error body. */

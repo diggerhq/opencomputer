@@ -12,11 +12,13 @@ import {
   Globe,
   ListTree,
   PanelLeft,
+  Paperclip,
   PanelRight,
   RectangleHorizontal,
   SquarePen,
   Square,
   SunMoon,
+  X,
 } from 'lucide-react'
 
 // The surface's icons, at the sizes it shows them.
@@ -34,6 +36,8 @@ export const I = {
   check: <Check className={ic} />,
   clock: <Clock className={ic} />,
   up: <ArrowUp className={ic} />,
+  clip: <Paperclip className={ic} />,
+  x: <X className="size-3" />,
   back: <ArrowLeft className={ic} />,
   side: <PanelLeft className="size-4" />,
   compose: <SquarePen className="size-4" />,
