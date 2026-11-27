@@ -340,7 +340,8 @@ export class SlackDurableObject extends DurableObject<SlackEnv> implements Slack
     if (!teamId || teamId !== job.teamId) return false;
     const key = sessionKey(teamId, job.channelId, job.threadTs);
     const known = threads.sessionOf(this.sql, key);
-    if (!known && !job.mentioned && job.channelType !== "im") return false;
+    // A reply in a thread Computer ran before this actor knew threads (the carry has none) goes on as one this actor knows.
+    if (!known && !job.mentioned && job.channelType !== "im" && !(job.threadTs !== job.messageTs && (await computerOf(this.env, this.org()).slackThreadRan(key)))) return false;
 
     const p = await this.principal(job.userId);
     if (!p) {
