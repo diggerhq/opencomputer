@@ -12,6 +12,16 @@ On Google Cloud the gateway runs with `COMPUTER_VMS` set to `self-managed`: it c
 
 The examples use `app.example.com` and `gateway.example.com`, as in [On Azure](/self-hosting/azure).
 
+## Before you start
+
+Check [What you need](/self-hosting/overview#what-you-need). The account you sign in to `gcloud` with must be able to, in the project:
+
+- Create a Cloud Storage bucket, upload to it, and grant a role on it.
+- Create a service account, and attach it to instances (`iam.serviceAccounts.actAs`).
+- Create a VPC network, and instances with an extra disk.
+
+The Compute Engine API must be enabled in the project.
+
 ## 1. Get the code
 
 ```bash

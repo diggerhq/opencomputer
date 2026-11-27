@@ -12,6 +12,16 @@ On AWS the gateway runs with `COMPUTER_VMS` set to `self-managed`: it creates no
 
 The examples use `app.example.com` and `gateway.example.com`, as in [On Azure](/self-hosting/azure).
 
+## Before you start
+
+Check [What you need](/self-hosting/overview#what-you-need). The credentials you use with `aws` must be able to, in the region:
+
+- Create an S3 bucket and upload to it. `aws s3 presign` signs the download URL with these same credentials, so they also need read access to the object.
+- Read the public SSM parameter for the Ubuntu AMI.
+- Create a security group in the default VPC, and run instances with two EBS volumes.
+
+The VMs need no instance profile, unless you check them through Session Manager (see [Check a VM](#check-a-vm)).
+
 ## 1. Get the code
 
 ```bash

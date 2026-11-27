@@ -17,6 +17,16 @@ The examples use two hostnames on your Cloudflare zone:
 | `app.example.com` | The app Worker: dashboard, sign-in, Slack and GitHub callbacks |
 | `gateway.example.com` | The gateway Worker: sessions and the VMs' WebSocket |
 
+## Before you start
+
+Check [What you need](/self-hosting/overview#what-you-need). The account you sign in to `az` with must be able to, in the subscription:
+
+- Create a resource group, a storage account and a blob container, and read the storage account's keys: the upload and the download URL use `--auth-mode key`.
+- Create VMs with a data disk, and the virtual network, public IP address and network security group that `az vm create` makes with them.
+- Run commands on the VMs with Run Command, to check and update them.
+
+The VMs need no managed identity: they download the release with a time-limited URL.
+
 ## 1. Get the code
 
 ```bash
