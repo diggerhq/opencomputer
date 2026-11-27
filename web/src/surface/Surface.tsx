@@ -21,7 +21,7 @@ import {
   useSurface,
 } from './hooks'
 import { createSurface, type Surface as SurfaceApi } from './store/surface-store'
-import { idbStorage } from './store/idb'
+import { idbFiles, idbStorage } from './store/idb'
 import { I } from './ui/icons'
 import { DRAG } from './ui/pane-classes'
 import { Tip } from './ui/Tip'
@@ -272,6 +272,7 @@ export function Surface({
     const made = createSurface({
       host,
       storage: idbStorage(host.principal),
+      files: idbFiles(host.principal),
       kept: {
         get: () => localStorage.getItem(key),
         set: (v) => localStorage.setItem(key, v),

@@ -23,6 +23,7 @@ import {
   type Step,
 } from '../store/transcript'
 import { AskBlock } from './AskBlock'
+import { MessageAttachments, SessionScope } from './Attachments'
 import { I } from './icons'
 import { Mk } from './Mark'
 import { Rich } from './Rich'
@@ -344,7 +345,14 @@ const ItemView = memo(function ItemView({ item }: { item: Item }) {
               {[item.author, item.via].filter(Boolean).join(' · ')}
             </div>
           )}
-          <Rich text={item.text} size="reading" />
+          {item.text && <Rich text={item.text} size="reading" />}
+          {item.attachments && (
+            <MessageAttachments
+              attachments={item.attachments}
+              sending={item.state === 'sending'}
+              className={cn(item.text && 'mt-2')}
+            />
+          )}
           {item.state === 'failed' && (
             <div className={cn(WARN, 'mt-1 text-xs')}>
               Not sent{item.reason ? ` · ${item.reason}` : ''}
@@ -389,7 +397,11 @@ export function Conversation(props: {
   id?: string
 }) {
   // One list per conversation: its measured sizes are its own.
-  return <Transcript key={props.sid} {...props} />
+  return (
+    <SessionScope sid={props.sid}>
+      <Transcript key={props.sid} {...props} />
+    </SessionScope>
+  )
 }
 
 function Transcript(props: {

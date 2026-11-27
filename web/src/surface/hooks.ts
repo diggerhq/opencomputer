@@ -49,6 +49,7 @@ export function useConversation(sid: string | null, trackId?: string): Conversat
   const convo = useS((s) => (sid ? s.convos[sid] : undefined))
   const session = useS((s) => (sid ? s.rows.session.get(sid) : undefined))
   const pending = useS((s) => s.pending)
+  const attachments = useS((s) => s.attachments)
   const ops = useS((s) => s.rows.op)
   const events = convo?.events ?? NO_EVENTS
   const items = useMemo(() => {
@@ -60,8 +61,8 @@ export function useConversation(sid: string | null, trackId?: string): Conversat
     })
     const base = buildTranscript(events, surface.me)
     const merged = lines.length ? [...base, ...lines].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)) : base
-    return [...merged, ...unsent(events, pending, session?.inbox ?? NO_EVENTS, sid)]
-  }, [surface, sid, trackId, events, pending, session?.inbox, ops])
+    return [...merged, ...unsent(events, pending, session?.inbox ?? NO_EVENTS, sid, attachments)]
+  }, [surface, sid, trackId, events, pending, attachments, session?.inbox, ops])
   return {
     items,
     open: convo?.open ?? null,
