@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -92,6 +93,7 @@ function Organization() {
   const { data: billing, isLoading: isBillingLoading } = useQuery({
     queryKey: ['billing'],
     queryFn: getBilling,
+    enabled: !SELFHOST,
   })
   const usesAutumnBilling = billing?.billingProvider === 'autumn'
   const { data: autumn, isLoading: isAutumnLoading } = useQuery({
@@ -183,18 +185,20 @@ function Organization() {
               />
             </form>
           </SettingsRow>
-          <SettingsRow
-            label="Plan"
-            action={
-              <SettingsAction asChild>
-                <Link to="/billing">Manage billing</Link>
-              </SettingsAction>
-            }
-          >
-            <span className="font-medium">
-              {organizationPlanLabel(org, billing, autumn)}
-            </span>
-          </SettingsRow>
+          {!SELFHOST && (
+            <SettingsRow
+              label="Plan"
+              action={
+                <SettingsAction asChild>
+                  <Link to="/billing">Manage billing</Link>
+                </SettingsAction>
+              }
+            >
+              <span className="font-medium">
+                {organizationPlanLabel(org, billing, autumn)}
+              </span>
+            </SettingsRow>
+          )}
           <SettingsRow
             label="Organization ID"
             action={org?.id ? <CopyButton value={org.id} /> : null}

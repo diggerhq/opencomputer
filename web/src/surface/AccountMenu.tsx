@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarClock,
@@ -70,10 +71,12 @@ export function AccountMenu() {
           <KeyRound className="size-4 opacity-60" aria-hidden />
           API keys
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={go('/billing')}>
-          <CreditCard className="size-4 opacity-60" aria-hidden />
-          Billing
-        </DropdownMenuItem>
+        {!SELFHOST && (
+          <DropdownMenuItem onClick={go('/billing')}>
+            <CreditCard className="size-4 opacity-60" aria-hidden />
+            Billing
+          </DropdownMenuItem>
+        )}
         {user?.capabilities?.signOut !== false && (
           <>
             <DropdownMenuSeparator />

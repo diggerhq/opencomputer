@@ -1,3 +1,4 @@
+import { SELFHOST } from '@/lib/selfhost'
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { AuthProvider } from './hooks/auth-provider'
@@ -145,7 +146,10 @@ export default function App() {
             />
             <Route path="new" element={<NewProject />} />
             <Route path="api-keys" element={<APIKeys />} />
-            <Route path="billing" element={<Billing />} />
+            <Route
+              path="billing"
+              element={SELFHOST ? <Navigate to="/" replace /> : <Billing />}
+            />
             <Route path="settings" element={<Settings />} />
           </Route>
           {/* A swarm run is its own full-screen view: no app-shell sidebar, so
