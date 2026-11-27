@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { migrate } from "../src/durable/migrations.js";
 import { owed } from "../src/durable/outbox.js";
 import { sqlOf, type Sql } from "../src/durable/sql.js";
-import { type Access, type Principal } from "../src/auth/principal.js";
+import { platformPrincipal, type Access, type Principal } from "../src/auth/principal.js";
 import { runMutation } from "../src/actors/org/mutations/run.js";
 import { STEPS } from "../src/actors/org/schema.js";
 import { sessionRow } from "../src/actors/org/feed-rows.js";
@@ -420,6 +420,9 @@ describe("Org: session access (spec 36.2)", () => {
       // Again: nothing new, nothing owed. B cannot share A's into A's target: B cannot write there.
       expect(await org.share(a, target, [mine])).toEqual({ shared: [] });
       expect(await org.share(b, target, [theirs])).toEqual({ shared: [] });
+      expect(await org.getSession(agent, theirs)).toMatchObject({ ok: false, code: "session_not_found" });
+      // The platform sees everything but relays others' text (a track's first input, a digest): it shares nothing.
+      expect(await org.share(platformPrincipal("access-share"), target, [theirs])).toEqual({ shared: [] });
       expect(await org.getSession(agent, theirs)).toMatchObject({ ok: false, code: "session_not_found" });
     });
   });

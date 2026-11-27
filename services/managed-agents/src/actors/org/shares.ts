@@ -40,6 +40,9 @@ function sessionOfRef(sql: Sql, ref: string): SessionRec | null {
  * reader. `p` must be able to send `to` a turn, as the log checked. Returns the ids newly shared.
  */
 export function share(sql: Sql, now: number, p: Principal, to: string, refs: string[]): { shared: string[] } {
+  // The platform sees everything, so a turn it sends (a track's first input, a wake digest) carries
+  // text others wrote: it shares nothing, or any id in that text would open the thread it names.
+  if (p.kind === "platform") return { shared: [] };
   if (!readSession(sql, to)) return { shared: [] };
   const access = accessOf(sql, to);
   if (!access || !mayWrite(p, "turn", access, to)) return { shared: [] };
