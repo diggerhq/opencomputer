@@ -14,7 +14,7 @@ Everything here runs without a terminal: nothing prompts, opens a browser or wai
 | `opc send` | Sends to a session, returns once accepted | The turn id. `--json`: `{ turn, delivery, duplicate, seq }`. `--wait`: the Result. |
 | `opc wait` | Waits for a session, a turn, or several | The Result; one per line with several ids |
 | `opc watch` | Follows sessions as they work | `stream-json`: events. `json`: the Result of the last turn it saw end. |
-| `opc log` | Prints history and exits | `stream-json`: recorded events. `json`: `{ events, lastSeq, hasMore }` |
+| `opc log` | Prints history and exits | `stream-json`: recorded events. `json`: `{ events, lastSeq, hasMore, cursor }` |
 | `opc ls` | Lists sessions, filtered by status or `--metadata` | `[Session…]` |
 | `opc interrupt` | Stops the running turn and the queue | `{ cancelled: [Turn…] }` |
 | `opc ask ls` | Lists open asks | `{ asks: [Ask…] }` |

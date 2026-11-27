@@ -117,10 +117,10 @@ Prints a session's history and exits. Reads the recorded log: it never resumes a
 | Option | Does |
 | --- | --- |
 | `--details` | Everything, as the session screen shows it with details open. The default is one line per message, tool call and answer. |
-| `--after <cursor>` | Only events after this cursor, the `cursor` of an earlier `--json` read |
+| `--after <cursor>` | Only events after this cursor, the `cursor` of an earlier `--json` read. A cursor the server does not recognize, a bare `seq` included, prints from the start (opc follows the server's reset) |
 | `--turn <tn_…>` | Only this turn |
 | `--types <glob>` | Only these event types, such as `tool.*`. Repeatable. |
-| `--output-format <format>` | `text`, `json` for `{ events, lastSeq, hasMore }`, or `stream-json` for one recorded [event](/api/reference/events) per line |
+| `--output-format <format>` | `text`, `json` for `{ events, lastSeq, hasMore, cursor }`, or `stream-json` for one recorded [event](/api/reference/events) per line |
 | `--json` | Short for `--output-format json` |
 
 ## opc send
