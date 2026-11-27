@@ -136,6 +136,23 @@ describe("the Slack actor: accept, the queue, turns", () => {
     expect(await inSlack(org, (exec) => exec("SELECT key, session_id FROM thread"))).toEqual([{ key, session_id: sid }]);
   });
 
+  it("goes on in a thread Computer ran before tracks and threads, unmentioned, and no other", async () => {
+    const org = "org_old_thread";
+    await linked(org);
+    await computerOf(org).set({ ran: ["T1:C1:4300.1"] });
+    await slackOf(org).accept(message({ text: "and the tests?", ts: "4300.5", thread: "4300.1", mention: false }));
+    await slackOf(org).accept(message({ text: "chatter", ts: "4301.5", thread: "4301.1", mention: false }));
+    await slackOf(org).accept(message({ text: "top level", ts: "4302.1", mention: false }));
+    await settled(org);
+    const key = "T1:C1:4300.1";
+    const sid = await sessionIdFor(key);
+    const creates = (await callsOf(orgOf(org))).filter((c) => c.method === "createSession");
+    expect(creates.map((c) => (c.args[1] as Record<string, unknown>).slackThread)).toEqual([key]);
+    expect(await inSlack(org, (exec) => exec("SELECT key, session_id FROM thread"))).toEqual([{ key, session_id: sid }]);
+    // A message that starts no thread is never one Computer ran: not asked.
+    expect((await callsOf(computerOf(org))).filter((c) => c.method === "slackThreadRan").map((c) => c.args[0])).toEqual([key, "T1:C1:4301.1"]);
+  });
+
   it("makes a linked person's principal from the member", async () => {
     const org = "org_linked";
     await linked(org);

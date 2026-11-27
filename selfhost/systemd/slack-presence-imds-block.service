@@ -1,0 +1,28 @@
+# Template: selfhost/host-install.sh fills the @NAMES@ in and writes the result
+# to /etc/systemd/system/slack-presence-imds-block.service.
+#
+# Sessions run tools as @AGENT_USER@ with no permission prompts. On a cloud VM
+# this keeps them away from the instance metadata service (the VM's cloud
+# credentials). Nothing on a self-hosted computer uses the metadata service;
+# this only blocks it, and is harmless where there is none. Same rules as the
+# fleet's unit (provision.sh), Azure's wireserver (168.63.129.16) included; it
+# is also Azure's DNS, so port 53 to it stays open, from rules above the REJECT.
+# deploy/vm/sp-host.sh writes sp-host-imds-block.service for sp-host and the
+# model proxy.
+[Unit]
+Description=Block the cloud instance metadata service for the @AGENT_USER@ user
+After=network-pre.target
+Before=slack-presence-host.service user@@AGENT_UID@.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254 -m owner --uid-owner @AGENT_UID@ -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner @AGENT_UID@ -j REJECT'
+ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd00:ec2::254 -m owner --uid-owner @AGENT_UID@ -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd00:ec2::254 -m owner --uid-owner @AGENT_UID@ -j REJECT'
+ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd20:ce::254 -m owner --uid-owner @AGENT_UID@ -j REJECT 2>/dev/null || ip6tables -I OUTPUT -d fd20:ce::254 -m owner --uid-owner @AGENT_UID@ -j REJECT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 168.63.129.16 -m owner --uid-owner @AGENT_UID@ -j REJECT 2>/dev/null || { iptables -D OUTPUT -d 168.63.129.16 -p udp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT 2>/dev/null; iptables -D OUTPUT -d 168.63.129.16 -p tcp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT 2>/dev/null; iptables -I OUTPUT -d 168.63.129.16 -m owner --uid-owner @AGENT_UID@ -j REJECT; }'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 168.63.129.16 -p udp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT 2>/dev/null || iptables -I OUTPUT -d 168.63.129.16 -p udp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT'
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 168.63.129.16 -p tcp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT 2>/dev/null || iptables -I OUTPUT -d 168.63.129.16 -p tcp --dport 53 -m owner --uid-owner @AGENT_UID@ -j ACCEPT'
+
+[Install]
+WantedBy=multi-user.target

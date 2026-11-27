@@ -1,0 +1,44 @@
+# Template: selfhost/host-install.sh fills the @NAMES@ in and writes the result
+# to /etc/systemd/system/slack-presence-host.service.
+#
+# The fleet's unit (computer/deploy/vm/provision.sh) with one difference: the
+# gateway URL, host token and host id come from @SELFHOST_ENV@ instead of
+# /etc/slack-presence/host.env. deploy/vm/sp-host.sh adds the drop-in
+# 20-sp-host.conf (User=sp-host, SP_RUNNER_USER, SP_MODEL_PROXY, SP_LAUNCH=podman)
+# and limits.sh the drop-in 10-limits.conf (MemoryMax).
+# Runners are not in this unit's cgroup (each is its own container or user
+# unit), so restarting the host never stops a session.
+[Unit]
+Description=slack-presence host agent (dials the local gateway; starts session containers)
+Wants=network-online.target
+After=network-online.target user@@AGENT_UID@.service
+Requires=user@@AGENT_UID@.service
+RequiresMountsFor=@DATA@
+ConditionPathExists=@SELFHOST_ENV@
+
+[Service]
+Type=simple
+User=@AGENT_USER@
+Group=@AGENT_USER@
+WorkingDirectory=@SP_CURRENT@
+Environment=HOME=@AGENT_HOME@
+# sp-host.sh reads the runners' PATH from this line (SP_RUNNER_PATH); its drop-in sets the host's own.
+Environment=PATH=@AGENT_PATH@
+Environment=SP_DATA=@DATA@
+Environment=SP_RUN=@SP_RUN@
+Environment=SP_DEFINITION=@SP_CURRENT@/definitions/computer.json
+Environment=DISABLE_AUTOUPDATER=1
+Environment=XDG_RUNTIME_DIR=/run/user/@AGENT_UID@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/@AGENT_UID@/bus
+# SP_VERSION, SP_IMAGE, SP_IMAGE_ABI of the release.
+EnvironmentFile=@SP_CURRENT@/.sp-version.env
+# SP_GATEWAY_URL, SP_HOST_TOKEN, SP_HOST_ID and optional tuning (selfhost/selfhost.env.example).
+EnvironmentFile=@SELFHOST_ENV@
+ExecStart=@SP_CURRENT@/node_modules/.bin/tsx src/host/main.ts
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -95,9 +95,12 @@ export class FakeComputer extends Recorder {
   private carry: SlackCarry = { settings: {}, people: [], links: [] };
   /** As the old team router (`computer-slack-team:<T>`): the organization it names. */
   private account: string | null = null;
+  /** The Slack threads this Computer ran before the Slack actor knew them. */
+  private ran: string[] = [];
 
-  async set(next: { carry?: SlackCarry; teamAccount?: string }): Promise<void> {
+  async set(next: { carry?: SlackCarry; teamAccount?: string; ran?: string[] }): Promise<void> {
     if (next.carry) this.carry = next.carry;
+    if (next.ran) this.ran = next.ran;
     if (next.teamAccount !== undefined) this.account = next.teamAccount || null;
   }
 
@@ -127,6 +130,11 @@ export class FakeComputer extends Recorder {
   async slackCarry(): Promise<SlackCarry> {
     this.record("slackCarry");
     return this.carry;
+  }
+
+  async slackThreadRan(key: string): Promise<boolean> {
+    this.record("slackThreadRan", key);
+    return this.ran.includes(key);
   }
 }
 
