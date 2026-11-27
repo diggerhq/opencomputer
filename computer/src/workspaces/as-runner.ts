@@ -51,7 +51,8 @@ function run(cmd: string, args: string[], input?: string) {
   });
 }
 
-export const mkdir = async (dir: string, o?: { recursive?: boolean }) => void (as() ? await run('mkdir', ['-p', '--', dir]) : await fsp.mkdir(dir, o));
+// `mkdir -p` either way: a fork's parents may not exist yet without a runner user too (start-runner.ts).
+export const mkdir = async (dir: string, o?: { recursive?: boolean }) => void (as() ? await run('mkdir', ['-p', '--', dir]) : await fsp.mkdir(dir, { recursive: true, ...o }));
 /** Always recursive and forced, as every caller wants. */
 export const rm = (p: string) => (as() ? run('rm', ['-rf', '--', p]) : fsp.rm(p, { recursive: true, force: true }));
 export const rename = (from: string, to: string) => (as() ? run('mv', ['-T', '--', from, to]) : fsp.rename(from, to));
