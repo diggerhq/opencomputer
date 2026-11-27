@@ -147,13 +147,13 @@ const TABLE: { [N in MutationName]: Apply<N> } = {
   'result.add': () => {},
   'review.save': () => {},
   // GitHub merges it; until the feed says so, the chip says it is on its way.
-  'result.merge': (d, a) => {
+  'result.merge': (d, a, c) => {
     const r = d.get('result', a.resultId)
-    if (r) d.patch('result', a.resultId, { meta: { ...r.meta, pending: 'merge' } })
+    if (r) d.patch('result', a.resultId, { pull: { ...r.pull, merging: { by: `user:${c.me}`, at: Date.now(), head: a.head ?? '' } } })
   },
-  'result.revert': (d, a) => {
+  'result.revert': (d, a, c) => {
     const r = d.get('result', a.resultId)
-    if (r) d.patch('result', a.resultId, { meta: { ...r.meta, pending: 'revert' } })
+    if (r) d.patch('result', a.resultId, { pull: { ...r.pull, reverting: { by: `user:${c.me}`, at: Date.now() } } })
   },
   'proposal.create': () => {},
   'proposal.accept': (d, a, c) => {

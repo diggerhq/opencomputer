@@ -10,7 +10,7 @@ import type { Layout } from '../store/surface-state'
 import type { ThreadView } from '../store/views'
 import { I } from './icons'
 import { ACTS, BLOCK, COMPOSER, HD, IN } from './pane-classes'
-import { mergeable, pullNumber } from '../store/pulls'
+import { mergeable, pullNumber, refusalOf } from '../store/pulls'
 import { resultDetail, resultTitle } from './result-text'
 import { useConfirm } from './use-confirm'
 import { ResultIcon } from './ResultIcon'
@@ -79,7 +79,7 @@ function Proposal({ p, thread }: { p: ProposalRow; thread: ThreadView }) {
     (r) => r.type === 'pr' || r.type === 'changes',
   )
   // Work 118: merging is its own act, not Done. One open pull request that can merge is offered first.
-  const pulls = thread.results.filter(mergeable)
+  const pulls = thread.results.filter((r) => mergeable(r))
   const pull = pulls.length === 1 ? pulls[0] : null
   const accept = () => surface.accept(p.id)
   const dismiss = () => surface.dismissProposal(p.id)
@@ -192,7 +192,7 @@ function Results({
         )}
       >
         {results.map((r) => {
-          const why = unmerged[r.id]
+          const why = refusalOf(r, unmerged)
           const detail = why ? `not merged: ${why}` : resultDetail(r)
           const merge = mergeable(r)
           return (

@@ -76,10 +76,30 @@ export interface ResultRow extends RowBase<"result"> {
   /** A pull request's URL, a preview's URL, a file's path. */
   ref: string;
   title: string | null;
-  /** pr: draft | open | merged | closed, with `meta.checks`; preview: running | stopped. */
+  /** pr: open | merged | closed; preview: running | stopped. */
   state: string | null;
   stateAt: number | null;
+  /** The agent's own notes on the result (`result.add`). */
   meta: Record<string, unknown> | null;
+  /** A `pr` result: what the platform knows of the pull request. Null until GitHub has said anything. */
+  pull: PullRecord | null;
+}
+
+export type MergeMethod = "squash" | "merge" | "rebase";
+
+/** A pull request as GitHub reported it, and the merge or revert made of it from the surface. Times are ms. */
+export interface PullRecord {
+  /** The head commit, whether it is a draft, and the conclusion of the last check suite completed on that head. */
+  head?: string | null;
+  draft?: boolean | null;
+  checks?: string | null;
+  /** A merge or revert a person began here and GitHub has not answered yet. */
+  merging?: { by: string; at: number; head: string };
+  reverting?: { by: string; at: number };
+  /** A merge made here. `op`: the row of its line. `method` is null until known. */
+  merge?: { by: string; at: number; method: MergeMethod | null; base: string | null; sha: string | null; branchDeleted: boolean; op: string };
+  /** The revert of that merge: its pull request, merged or left open (`why`, in GitHub's words). */
+  revert?: { number: number; url: string; merged: boolean; by: string; at: number; why: string | null };
 }
 
 export type ProposalKind = "done" | "wrap" | "move" | "edit";

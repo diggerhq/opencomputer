@@ -9,7 +9,7 @@ import type { PublicComputerState } from "../computer/contract.js";
 import type { Summary } from "../session-log/contract.js";
 
 /** The mutation table: the API's `/work` routes match it (org/mutations/table.ts, which the SDK copies). */
-export { matchMutation } from "./mutations/table.js";
+export { EDGE_MUTATIONS, matchMutation } from "./mutations/table.js";
 
 /** The `session` feed row and the API's object (spec 35.1): today's `Session` and Org's fields. */
 export interface SessionRow extends Session {
@@ -26,7 +26,25 @@ export interface SessionRow extends Session {
 export type Row = { kind: string; id: string; version: number; audience?: string; [field: string]: unknown };
 export type PlaceRow = Row & { kind: "place"; trackId: string | null; position: number; parentSession: string | null; doneAt: string | null };
 /** `kind` is the table; the table's own `kind` column is sent as `type` (lane 4's log). */
-export type ResultRow = Row & { kind: "result"; sessionId: string; type: string; ref: string; title: string | null; state: string | null };
+/**
+ * What the platform holds of a result's pull request: GitHub's facts, and a merge or revert made from the surface (work 118).
+ * A key is absent until it is known. An agent writes `meta`, never this.
+ */
+export type PullRecord = {
+  /** The head commit, whether it is a draft, and the conclusion of the last check suite completed on that head. */
+  head?: string | null;
+  draft?: boolean | null;
+  checks?: string | null;
+  /** A merge or revert begun from the surface and not yet answered by GitHub. `at`: ms. */
+  merging?: { by: string; at: number; head: string };
+  reverting?: { by: string; at: number };
+  /** A merge made from the surface. `op`: its line's row. `method` null until the edge says which. */
+  merge?: { by: string; at: number; method: MergeMethod | null; base: string | null; sha: string | null; branchDeleted: boolean; op: string };
+  /** The revert of that merge: its pull request, merged or left open (`why`, in GitHub's words). */
+  revert?: { number: number; url: string; merged: boolean; by: string; at: number; why: string | null };
+};
+export type MergeMethod = "squash" | "merge" | "rebase";
+export type ResultRow = Row & { kind: "result"; sessionId: string; type: string; ref: string; title: string | null; state: string | null; pull: PullRecord | null };
 export type ReviewRow = { resultId: string; head: string; parts: unknown };
 export type DocRev = { trackId: string; rev: number; by: string; at: string; text: string };
 
@@ -146,12 +164,15 @@ export type MutateRequest = {
   /** A member's or key's name and email, from the edge's credential, never a body's: `Session.owner` of a session the mutation makes (`track.create`'s agent). */
   person?: { name: string | null; email: string | null };
   /** What GitHub did, as the edge saw it, never a body's: `result.merge` and `result.revert` record it (http/api/result-merge.ts). */
-  github?: MergeFacts | RevertFacts;
+  merge?: MergeFacts;
+  revert?: RevertFacts;
 };
-/** A merge GitHub made. `method` null: the pull request was already merged, by someone else. */
-export type MergeFacts = { number: number; base: string; method: "squash" | "merge" | "rebase" | null; sha: string | null; branchDeleted: boolean };
-/** A merge's revert: its pull request, and whether GitHub merged it. */
-export type RevertFacts = { number: number; url: string; merged: boolean };
+/** What the edge knows and a body cannot claim: a mutation's fourth argument. */
+export type EdgeFacts = Pick<MutateRequest, "person" | "merge" | "revert">;
+/** A merge GitHub made, of the commit `head`. `method` null: the pull request was found merged. */
+export type MergeFacts = { number: number; base: string; head: string; method: MergeMethod | null; sha: string | null; branchDeleted: boolean };
+/** A merge's revert: its pull request, and whether GitHub merged it (`why` not, in its words). */
+export type RevertFacts = { number: number; url: string; title: string; merged: boolean; why: string | null };
 export type MutateReply =
   /** `version`: the feed version that holds the effect; a client's feed that reached it shows it. */
   | { protocol: 1; version: number; value?: unknown }
@@ -173,7 +194,8 @@ export type MachinePub = {
   previews: { sessionId: string; name: string; url: string }[];
 };
 /** `head` and `draft`: null when GitHub's object lacked them (they stay as they were). */
-export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number; head?: string | null; draft?: boolean | null };
+/** `checks`: a completed check suite's conclusion for `head`; null on a pull request event. `base`, `sha` (the merge commit): of a merged one. */
+export type PullPub = { url: string; state: "open" | "merged" | "closed"; checks: string | null; title: string; at: number; head?: string | null; draft?: boolean | null; base?: string | null; sha?: string | null };
 
 export interface OrgRpc {
   // the directory
@@ -196,8 +218,10 @@ export interface OrgRpc {
   thread(p: Principal, sessionId: string): Promise<{ rows: Row[] } | null>;
   search(p: Principal, q: { q: string; limit?: number }): Promise<{ rows: Row[] }>;
   result(p: Principal, id: string): Promise<ResultRow | null>;
-  /** Before the edge merges or reverts a result's pull request: whether `p` may, and the row. A merge is marked as begun, so `rule:pr-merged` leaves its thread alone. */
-  mergeStart(p: Principal, id: string, what: "merge" | "revert"): Promise<Reply<{ result: ResultRow }>>;
+  /** Before the edge merges or reverts a result's pull request: whether `p` may, and the row. `replay`: the reply this request already got (its `Idempotency-Key`), to send again. */
+  mergeStart(p: Principal, id: string, m: Pick<MutateRequest, "name" | "args" | "idem">): Promise<Reply<{ result: ResultRow; replay: MutateReply | null }>>;
+  /** The merge (of `head`) or revert `p` is about to ask GitHub for, so the webhook of it is theirs and nobody else begins one; null: GitHub refused, it is off. */
+  mergeIntent(p: Principal, id: string, intent: { head: string } | "revert" | null): Promise<Reply<object>>;
   overview(p: Principal): Promise<Overview>;
   /** tell_track: the agent session of the caller's track. */
   trackAgent(p: Principal): Promise<string | null>;

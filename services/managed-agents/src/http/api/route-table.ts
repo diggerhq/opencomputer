@@ -1,6 +1,6 @@
 // The API's routes (work 084, spec 37): `METHOD /suffix` to a route, the scope each needs, and which the actors serve.
 
-import { matchMutation } from "../../actors/org/contract.js";
+import { EDGE_MUTATIONS, matchMutation } from "../../actors/org/contract.js";
 import type { ApiScope } from "../../api-objects/objects.js";
 import { isId, isSessionId } from "../../ids/session-ids.js";
 
@@ -16,8 +16,8 @@ export interface Route {
 /** The work routes of tracks and threads (spec 37.1, 37.3): a mutation's, from the table, or a read. */
 function workRoute(method: string, s: string[]): Route | null {
   const mutation = matchMutation(method, `/work/${s.join("/")}`);
-  // A merge and its revert are GitHub's first: the edge's, not Org's alone (result-merge.ts).
-  if (mutation?.name === "result.merge" || mutation?.name === "result.revert") return { op: mutation.name === "result.merge" ? "work.merge" : "work.revert", sub: mutation.args.resultId! };
+  // GitHub's first, then Org's: a route of its own (result-merge.ts), `work.merge` or `work.revert`.
+  if (mutation && EDGE_MUTATIONS.has(mutation.name)) return { op: `work.${mutation.name.split(".")[1]!}`, sub: mutation.args.resultId! };
   if (mutation) return { op: "mutate", ...mutation };
   const [a, b, c, d] = s;
   const n = s.length;

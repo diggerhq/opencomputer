@@ -316,9 +316,15 @@ export class OrgDurableObject extends DurableObject<OrgEnv> implements OrgRpc {
     return work.result(this.sql, p, id);
   }
 
-  async mergeStart(p: Principal, id: string, what: "merge" | "revert"): Promise<Reply<{ result: ResultRow }>> {
+  async mergeStart(p: Principal, id: string, m: Pick<MutateRequest, "name" | "args" | "idem">): Promise<Reply<{ result: ResultRow; replay: MutateReply | null }>> {
     this.seen(p);
-    const out = work.mergeStart(this.sql, Date.now(), p, id, what);
+    const replay = m.idem === undefined ? null : feeds.replayOf(this.sql, p, m.idem, await hashOf({ name: m.name, args: m.args }));
+    return work.mergeStart(this.sql, p, id, replay);
+  }
+
+  async mergeIntent(p: Principal, id: string, intent: { head: string } | "revert" | null): Promise<Reply<object>> {
+    this.seen(p);
+    const out = work.mergeIntent(this.sql, Date.now(), p, id, intent);
     this.flush();
     return out;
   }

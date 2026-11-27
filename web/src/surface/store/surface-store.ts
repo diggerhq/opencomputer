@@ -18,7 +18,7 @@ import { blockedIn } from './blocked'
 import { watchConversations } from './conversations'
 import { saveMerged } from './doc-save'
 import { OUT_OF_CREDITS, sayFailure, sayMergeFailure, whatFailed } from './failure-text'
-import { mergeable, pullNumber, revertOf } from './pulls'
+import { mergeable, pullNumber, revertOf, underWay } from './pulls'
 import { hurriedClient } from './hurried-client'
 import { overlay } from './overlay'
 import { safeNames, tar, uploadName } from './upload'
@@ -310,7 +310,7 @@ export function createSurface(o: SurfaceOptions) {
     if (e.kind === 'mutation' && (e.name === 'result.merge' || e.name === 'result.revert')) {
       const why = sayMergeFailure(f)
       const id = (e.args as { resultId: string }).resultId
-      if (e.name === 'result.merge') set({ unmerged: { ...get().unmerged, [id]: why } })
+      if (e.name === 'result.merge') set({ unmerged: { ...get().unmerged, [id]: { why, head: get().base.result.get(id)?.pull?.head ?? null } } })
       return toast({ text: `${what}: ${why}`, tone: 'error' })
     }
     // What the person typed is not lost: it goes back in its box, unless
@@ -609,24 +609,29 @@ export function createSurface(o: SurfaceOptions) {
       const unmerged = { ...get().unmerged }
       delete unmerged[resultId]
       set({ unmerged })
-      const head = typeof r.meta?.head === 'string' ? r.meta.head : undefined
-      const sent = mutate('result.merge', { resultId, ...(head ? { head } : {}) })
-      const n = pullNumber(r)
+      // `head`: what they saw; `at`: when they clicked, so one queued offline does not land much later.
+      const head = r.pull?.head
+      const sent = mutate('result.merge', { resultId, ...(head ? { head } : {}), at: Date.now() })
+      const n = pullNumber(r) ?? ''
       sent.settled.then(
-        () => toast({ text: n ? `Merged #${n}` : 'Merged', undo: () => actions.revert(resultId) }),
+        () => {
+          // Theirs offers Undo. One found already merged (on GitHub, or by someone else) is not theirs to undo.
+          const mine = get().rows.result.get(resultId)?.pull?.merge?.by === `user:${me}`
+          toast(mine ? { text: `Merged #${n}`, undo: () => actions.revert(resultId) } : { text: `#${n} was already merged` })
+        },
         () => {},
       )
     },
     revert(resultId: string) {
       const r = get().rows.result.get(resultId)
-      if (!r || r.state !== 'merged' || r.meta?.pending) return
+      if (!r || r.state !== 'merged' || underWay(r)) return
       mutate('result.revert', { resultId }).settled.then(
         () => {
           const now = get().rows.result.get(resultId)
           const revert = now ? revertOf(now) : null
           if (!revert) return
           if (revert.merged) toast({ text: `Reverted with #${revert.number}` })
-          else toast({ text: `Could not revert it cleanly: #${revert.number} is open on GitHub`, tone: 'error' })
+          else toast({ text: `Not reverted: #${revert.number} is open on GitHub${revert.why ? ` (${revert.why.replace(/\.$/, '')})` : ''}`, tone: 'error' })
         },
         () => {},
       )

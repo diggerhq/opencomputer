@@ -1,5 +1,6 @@
 import type { ApiEvent, Pending, Storage } from '@opencomputer/sdk/computer'
 import type { Host, Location } from '../host'
+import type { Refusal } from './pulls'
 import type { Rows } from './rows'
 import type { OpenBlock } from './transcript'
 import type { Counts } from './views'
@@ -56,8 +57,8 @@ export interface State extends Kept {
   counts: Counts
   convos: Record<string, Convo>
   toasts: Toast[]
-  // Why a result's pull request was not merged, until it is tried again (work 118).
-  unmerged: Record<string, string>
+  // Why a result's pull request was not merged, and at which head: read with `refusalOf`, which drops it once the pull request moves (work 118).
+  unmerged: Record<string, Refusal>
   palette: boolean
   keysSheet: boolean
   earlierNext: Record<string, string | null | undefined>

@@ -55,7 +55,7 @@ export async function routeComputerApi(
   const out = new Reply(incoming && REQUEST_ID.test(incoming) ? incoming : crockfordId("req", 12));
   let response: Response | undefined;
   try {
-    response = await routeApi(request, env, identity, accountId, computer, suffix, out);
+    response = await routeApi(request, env, identity, accountId, computer, suffix, out, waitUntil);
     return response;
   } finally {
     requestFact(env, identity, request.method, out, response?.status ?? 500, waitUntil);
@@ -70,6 +70,7 @@ async function routeApi(
   stub: ComputerApiStub,
   suffix: string,
   out: Reply,
+  waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<Response> {
   const computer = timedStub(stub, out.facts);
   const route = matchApiRoute(request.method, suffix);
@@ -97,7 +98,7 @@ async function routeApi(
   if (ACTOR_OPS.has(route.op)) {
     // `Session.owner`'s name and email: the credential's, for a person or their key.
     const person = p.kind === "member" || p.kind === "key" ? { name: identity.userName ?? null, email: identity.userEmail ?? null } : undefined;
-    return actorRoute(request, env, p, person, route, idem, out);
+    return actorRoute(request, env, p, person, route, idem, out, waitUntil);
   }
   // The Computer's own routes (secrets, tickets), as the same principal.
   const ua = request.headers.get("user-agent");

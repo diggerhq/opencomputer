@@ -41,14 +41,20 @@ const MERGE: Record<string, string> = {
   draft: 'it is a draft',
   closed: 'it is closed',
   not_merged: 'it is not merged',
+  stale: 'that click was a while ago, so merge again if you still mean it',
+  checks_failing: 'a check did not pass',
+  checks_running: 'its checks are still running',
+  merging: 'someone else is merging it',
   writers_only: 'only people who can write to this thread can merge it',
   github_not_connected: 'GitHub is not connected',
 }
 export function sayMergeFailure(f: Pick<Failure, 'code' | 'reason' | 'detail'>): string {
+  const { message, check } = (f.detail ?? {}) as { message?: unknown; check?: unknown }
+  if (f.reason === 'checks_failing' && typeof check === 'string') return `its check “${check}” did not pass`
+  if (f.reason === 'checks_running' && typeof check === 'string') return `its check “${check}” is still running`
   const said = MERGE[f.reason] ?? MERGE[f.code]
   if (said) return said
   // GitHub's own words: a rule of the repository, a failing required check.
-  const message = (f.detail as { message?: unknown } | undefined)?.message
   if (f.reason === 'blocked' && typeof message === 'string') return `GitHub said “${message.replace(/\.$/, '')}”`
   return sayFailure(f)
 }

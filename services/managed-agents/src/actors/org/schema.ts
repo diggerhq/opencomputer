@@ -28,7 +28,7 @@ export const FEED_KINDS = Object.keys(FEED_TABLES) as FeedTable[];
 
 const FEED = "version INTEGER NOT NULL, audience TEXT NOT NULL";
 
-/** The tables. One step until the first deploy: the steps before it were folded in, as nothing had stored them yet. */
+/** The tables of the first step: the steps before the first deploy were folded into it, as nothing had stored them yet. */
 const TABLES = [
   `CREATE TABLE meta (k INTEGER PRIMARY KEY CHECK (k = 1), version INTEGER NOT NULL, occ INTEGER NOT NULL,
      floor INTEGER NOT NULL DEFAULT 0, admins TEXT NOT NULL DEFAULT '[]', knowledge TEXT, org TEXT,
@@ -86,7 +86,18 @@ export const STEPS: ((sql: Sql) => void)[] = [
     alarms.set(sql, "board", 0);
     alarms.set(sql, "accessCarry", 0);
   },
+  // `result.pull` (work 118).
+  addPull,
 ];
+
+/** `result.pull` (work 118): what the platform holds of a pull request, apart from the agent's `meta`. `checks` moves to it. */
+function addPull(sql: Sql): void {
+  if (sql.exec<{ name: string }>("PRAGMA table_info(result)").some((column) => column.name === "pull")) return;
+  sql.exec("ALTER TABLE result ADD COLUMN pull TEXT");
+  sql.exec(
+    "UPDATE result SET pull = json_object('checks', json_extract(meta, '$.checks')), meta = json_remove(meta, '$.checks') WHERE kind = 'pr' AND json_extract(meta, '$.checks') IS NOT NULL",
+  );
+}
 
 /**
  * A store whose steps ran before they were folded into one, and stopped before `meta.slack_access_default`
@@ -94,6 +105,8 @@ export const STEPS: ((sql: Sql) => void)[] = [
  * the column and the carry-over those last steps held. A no-op on every other store.
  */
 export function completeFolded(sql: Sql): void {
+  // Such a store counts more steps applied than there are now, so a step added since the fold is not run for it.
+  addPull(sql);
   if (sql.exec<{ name: string }>("PRAGMA table_info(meta)").some((column) => column.name === "slack_access_default")) return;
   sql.exec("ALTER TABLE meta ADD COLUMN slack_access_default TEXT");
   alarms.set(sql, "accessCarry", 0);

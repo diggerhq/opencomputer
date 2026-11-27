@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Failure, FeedFrame, OpRow, Pending, ResultRow, Row } from '@opencomputer/sdk/computer'
 import type { Host } from '../host'
 import { NOWHERE } from '../host'
-import { mergeable, revertOf } from './pulls'
+import { mergeable, refusalOf, revertOf } from './pulls'
 import { opLines } from './transcript'
 import { resultDetail } from '../ui/result-text'
 
@@ -46,7 +46,7 @@ const { memoryStorage } = await import('@opencomputer/sdk/computer')
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 const HEAD = 'a'.repeat(40)
 const pr = (over: Partial<ResultRow> = {}): ResultRow =>
-  ({ kind: 'result', id: 'res_1', version: 1, sessionId: 'cs_1', type: 'pr', ref: 'https://github.com/o/r/pull/7', title: 'Fix', state: 'open', meta: { checks: 'success', head: HEAD }, ...over }) as ResultRow
+  ({ kind: 'result', id: 'res_1', version: 1, sessionId: 'cs_1', type: 'pr', ref: 'https://github.com/o/r/pull/7', title: 'Fix', state: 'open', meta: null, pull: { checks: 'success', head: HEAD }, ...over }) as ResultRow
 
 async function open(rows: Row[]) {
   feedRows = rows
@@ -70,19 +70,23 @@ async function open(rows: Row[]) {
 describe('whether one click merges it', () => {
   it('an open pull request whose checks passed, or that has none', () => {
     expect(mergeable(pr())).toBe(true)
-    expect(mergeable(pr({ meta: null }))).toBe(true)
-    expect(mergeable(pr({ state: null, meta: null }))).toBe(true)
-    expect(mergeable(pr({ meta: { checks: 'neutral' } }))).toBe(true)
+    expect(mergeable(pr({ pull: null }))).toBe(true)
+    expect(mergeable(pr({ state: null, pull: null }))).toBe(true)
+    expect(mergeable(pr({ pull: { checks: 'neutral' } }))).toBe(true)
   })
 
   it('not a draft, one with failing or running checks, one merged or closed, or one being merged', () => {
-    expect(mergeable(pr({ meta: { draft: true } }))).toBe(false)
-    expect(mergeable(pr({ meta: { checks: 'failure' } }))).toBe(false)
-    expect(mergeable(pr({ meta: { checks: 'pending' } }))).toBe(false)
+    expect(mergeable(pr({ pull: { draft: true } }))).toBe(false)
+    expect(mergeable(pr({ pull: { checks: 'failure' } }))).toBe(false)
     expect(mergeable(pr({ state: 'merged' }))).toBe(false)
     expect(mergeable(pr({ state: 'closed' }))).toBe(false)
-    expect(mergeable(pr({ meta: { pending: 'merge' } }))).toBe(false)
+    expect(mergeable(pr({ pull: { merging: { by: 'user:usr_b', at: Date.now(), head: HEAD } } }))).toBe(false)
     expect(mergeable(pr({ type: 'preview' }))).toBe(false)
+  })
+
+  it('what the agent wrote in meta decides nothing, and a merge begun long ago is not under way', () => {
+    expect(mergeable(pr({ meta: { draft: true, checks: 'failure', pending: 'merge' } }))).toBe(true)
+    expect(mergeable(pr({ pull: { merging: { by: 'user:usr_b', at: Date.now() - 3 * 60_000, head: HEAD } } }))).toBe(true)
   })
 })
 
@@ -90,16 +94,28 @@ describe('merge', () => {
   it('sends the head the person saw, and the toast offers Undo, which is the revert', async () => {
     const s = await open([pr()])
     s.merge('res_1')
-    expect(sent).toEqual([['result.merge', { resultId: 'res_1', head: HEAD }]])
-    await settle()
-    const t = s.get().toasts.slice(-1)[0]
-    expect(t.text).toBe('Merged #7')
-    expect(t.undo).toBeTypeOf('function')
+    expect(sent).toEqual([['result.merge', { resultId: 'res_1', head: HEAD, at: expect.any(Number) as number }]])
     s.close()
   })
 
+  it('the toast offers Undo for their own merge, and not for one found already merged', async () => {
+    const merge = { by: 'user:usr_me', at: 1, method: 'squash' as const, base: 'main', sha: null, branchDeleted: true, op: 'op_1' }
+    const mine = await open([pr({ pull: { head: HEAD, merge } })])
+    mine.merge('res_1')
+    await settle()
+    expect(mine.get().toasts.slice(-1)[0]).toMatchObject({ text: 'Merged #7', undo: expect.any(Function) as () => void })
+    mine.close()
+    const theirs = await open([pr()])
+    theirs.merge('res_1')
+    await settle()
+    const t = theirs.get().toasts.slice(-1)[0]
+    expect(t.text).toBe('#7 was already merged')
+    expect(t.undo).toBeUndefined()
+    theirs.close()
+  })
+
   it('sends nothing for a pull request that cannot merge', async () => {
-    const s = await open([pr({ meta: { checks: 'failure' } })])
+    const s = await open([pr({ pull: { checks: 'failure' } })])
     s.merge('res_1')
     s.revert('res_1')
     expect(sent).toEqual([])
@@ -111,12 +127,21 @@ describe('merge', () => {
     const entry = { key: 'k1', kind: 'mutation', name: 'result.merge', args: { resultId: 'res_1' }, at: 0 } as unknown as Pending
     fail({ entry, code: 'refused', reason: 'conflicts' })
     expect(s.get().toasts.slice(-1)[0]?.text).toBe('Not merged: it conflicts with its base branch')
-    expect(s.get().unmerged).toEqual({ res_1: 'it conflicts with its base branch' })
+    expect(s.get().unmerged).toEqual({ res_1: { why: 'it conflicts with its base branch', head: HEAD } })
     fail({ entry, code: 'refused', reason: 'blocked', detail: { message: 'Required status check "ci" is expected.' } })
-    expect(s.get().unmerged.res_1).toBe('GitHub said “Required status check "ci" is expected”')
+    expect(s.get().unmerged.res_1.why).toBe('GitHub said “Required status check "ci" is expected”')
+    fail({ entry, code: 'refused', reason: 'checks_running', detail: { message: 'Checks are still running: build.', check: 'build' } })
+    expect(s.get().unmerged.res_1.why).toBe('its check “build” is still running')
     s.merge('res_1')
     expect(s.get().unmerged).toEqual({})
     s.close()
+  })
+
+  it('a refusal is dropped once the pull request moves: a new commit, or a merge made elsewhere', () => {
+    const refusals = { res_1: { why: 'it conflicts with its base branch', head: HEAD } }
+    expect(refusalOf(pr(), refusals)).toBe('it conflicts with its base branch')
+    expect(refusalOf(pr({ pull: { head: 'b'.repeat(40) } }), refusals)).toBeNull()
+    expect(refusalOf(pr({ state: 'merged' }), refusals)).toBeNull()
   })
 
   it('undo of a merge line reverts on GitHub; of anything else it is the undo mutation', async () => {
@@ -144,9 +169,9 @@ describe('the line in the conversation', () => {
   })
 
   it('the pull request says a merge under way, and its revert', () => {
-    expect(resultDetail(pr({ meta: { pending: 'merge' } }))).toContain('merging…')
-    expect(revertOf(pr({ state: 'merged', meta: { revert: { number: 8, merged: false } } }))).toEqual({ number: 8, merged: false })
-    expect(resultDetail(pr({ state: 'merged', meta: { revert: { number: 8, merged: false } } }))).toContain('revert #8 open')
-    expect(resultDetail(pr({ state: 'merged', meta: { revert: { number: 8, merged: true } } }))).toContain('reverted')
+    expect(resultDetail(pr({ pull: { merging: { by: 'user:usr_b', at: Date.now(), head: HEAD } } }))).toContain('merging…')
+    expect(revertOf(pr({ state: 'merged', pull: { revert: { number: 8, url: 'u', merged: false, by: 'user:usr_me', at: 1, why: 'The revert conflicts with main.' } } }))).toEqual({ number: 8, merged: false, why: 'The revert conflicts with main.' })
+    expect(resultDetail(pr({ state: 'merged', pull: { revert: { number: 8, url: 'u', merged: false, by: 'user:usr_me', at: 1, why: 'The revert conflicts with main.' } } }))).toContain('revert #8 open')
+    expect(resultDetail(pr({ state: 'merged', pull: { revert: { number: 8, url: 'u', merged: true, by: 'user:usr_me', at: 1, why: null } } }))).toContain('reverted')
   })
 })

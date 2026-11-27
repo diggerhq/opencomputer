@@ -10,7 +10,8 @@ import { ORG_STEPS, SESSION_LOG_MIGRATIONS, SLACK_STEPS } from "./fixtures/pre-c
 /**
  * Org's, Slack's and SessionLog's storage steps were collapsed into one initial step each before
  * their first deploy. A fresh store ends with the same tables, columns, indexes and seeded rows
- * either way; only `_migrations.applied` differs (the number of steps).
+ * either way; only `_migrations.applied` differs (the number of steps). Steps added to Org since
+ * (`ORG` past its first) are not part of the fold.
  */
 
 // Org is migrated on first use, so a fresh one is an empty store.
@@ -57,7 +58,7 @@ async function same(name: string, before: Step[], after: Step[], first?: string)
 }
 
 describe("storage steps collapsed before the first deploy", () => {
-  it("Org: a fresh store has the schema and the carry-over alarms the eight steps gave it", () => same("collapse-org", ORG_STEPS, ORG));
+  it("Org: a fresh store has the schema and the carry-over alarms the eight steps gave it", () => same("collapse-org", ORG_STEPS, ORG.slice(0, 1)));
   it("Org: a store that stopped before `slack_access_default` under the old steps is completed", async () => {
     // The first six of the eight: through `api_access_default`, as a development stack held it.
     const stopped = await fresh("collapse-org-stopped", (sql) => {

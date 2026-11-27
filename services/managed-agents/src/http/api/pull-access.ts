@@ -5,6 +5,7 @@ import type { ActorEnv } from "../../actors/addresses.js";
 import { type ComputerInstallation, selectTokenTarget } from "../../actors/computer/held-for-org/github.js";
 import type { ResultRow } from "../../actors/org/contract.js";
 import type { Principal } from "../../auth/principal.js";
+import { repoCall, type RepoCall } from "../../edge/github-pull.js";
 import type { GitHubTokenMint } from "../../protocol.js";
 import type { Reply } from "./reply.js";
 import { timedDo } from "./request-facts.js";
@@ -18,8 +19,8 @@ export type PullAccess = {
   owner: string;
   repo: string;
   number: string;
-  /** A call to GitHub's API with the token. `path`: under the repository (`/pulls/1`), or absolute (`https://…`). */
-  github(path: string, init?: { method?: string; accept?: string; body?: unknown }): Promise<Response>;
+  /** A call to GitHub's API with the token. */
+  github: RepoCall;
   unavailable(): Response;
 };
 
@@ -40,17 +41,7 @@ export async function pullAccess(env: PullEnv, p: Principal, row: ResultRow | nu
   if (!target.ok) return out.error(409, "github_not_connected", target.error);
   const minted = await timedDo(out.facts, account.mintGitHubInstallationToken({ installationId: target.installationId, repositories: [repo], permissions }));
   if (minted.outcome !== "minted") return unavailable();
-  const github: PullAccess["github"] = (path, init = {}) =>
-    timedDo(out.facts, fetch(path.startsWith("https://") ? path : `https://api.github.com/repos/${owner}/${repo}${path}`, {
-      method: init.method ?? "GET",
-      headers: {
-        authorization: `Bearer ${minted.token}`,
-        accept: init.accept ?? "application/vnd.github+json",
-        "user-agent": "opencomputer-managed-agents",
-        "x-github-api-version": "2022-11-28",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-      },
-      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-    }));
+  const call = repoCall(minted.token, owner, repo);
+  const github: RepoCall = (path, init) => timedDo(out.facts, call(path, init));
   return { owner, repo, number, github, unavailable };
 }

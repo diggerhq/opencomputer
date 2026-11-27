@@ -1,13 +1,13 @@
 // Org's arrows in from the machine and GitHub, the work reads, the digest, the Slack echo
 // and ageing (spec 36.1, 37.1, 40.6, 40.8, 40.9). Pure functions over `Sql`.
 
-import type { DocRev, MachinePub, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "./contract.js";
+import type { DocRev, MachinePub, MutateReply, Overview, PullPub, ResultRow, ReviewRow, Row, SlackEcho } from "./contract.js";
 import type { Reply } from "../../durable/rpc-reply.js";
 import { cursor } from "../../durable/cursor.js";
-import { byOf, platformPrincipal, type Principal } from "../../auth/principal.js";
+import { platformPrincipal, type Principal } from "../../auth/principal.js";
 import { crockfordId } from "../../ids/crockford.js";
 import type { Sql } from "../../durable/sql.js";
-import { pullFor } from "./mutations/result.js";
+import { begunBy, intend, pullFor, pullOf, recordMerge, setPull, settleReverts, type PullRec } from "./pulls.js";
 import { runMutation } from "./mutations/run.js";
 import { FEED_KINDS, FEED_TABLES } from "./schema.js";
 import { feedRow, forClient, sessionRow } from "./feed-rows.js";
@@ -68,25 +68,27 @@ export function acceptMachine(sql: Sql, now: number, pub: MachinePub): { accepte
 
 export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
   transact(sql, now, (tx) => {
-    const results = sql.exec<{ id: string; session_id: string; state: string | null; title: string | null; meta: string | null; audience: string }>(
-      "SELECT id, session_id, state, title, meta, audience FROM result WHERE kind = 'pr' AND ref = ?",
-      pub.url,
-    );
+    const results = sql.exec<PullRec & { title: string | null }>("SELECT id, session_id, kind, ref, state, pull, audience, title FROM result WHERE kind = 'pr' AND ref = ?", pub.url);
     const sessions = new Set<string>();
+    const isRevert = sql.exec("SELECT 1 FROM result WHERE kind = 'pr' AND json_extract(pull, '$.revert.url') = ? LIMIT 1", pub.url).length > 0;
     for (const r of results) {
-      const meta = parse<Record<string, unknown>>(r.meta, {});
-      // `checks: null` (a pull_request event): the checks are as they were. So too `head` and `draft`.
-      const checks = pub.checks ?? meta.checks ?? null;
-      const head = pub.head ?? meta.head ?? null;
-      const draft = pub.draft ?? meta.draft ?? null;
-      // A person's merge from the surface (`result.merge`) is not the thread's end (work 118): `rule:pr-merged` leaves it alone.
-      const byPerson = meta.merge !== undefined || pub.at - ((meta.merging as { at?: number } | undefined)?.at ?? 0) < MERGING_MS;
-      if (r.state === pub.state && r.title === pub.title && (meta.checks ?? null) === checks && (meta.head ?? null) === head && (meta.draft ?? null) === draft) continue;
-      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ?, meta = ? WHERE id = ?", pub.state, pub.at, pub.title, JSON.stringify({ ...meta, checks, head, draft }), r.id);
-      tx.stamp("result", r.id);
+      const pull = pullOf(r);
+      // Absent from the event (`head` and `draft` of an older sender): as it was. Checks are of one head: a new head has none yet.
+      const head = pub.head ?? pull.head ?? null;
+      const draft = pub.draft ?? pull.draft ?? null;
+      const checks = pub.checks ?? (head === (pull.head ?? null) ? (pull.checks ?? null) : null);
+      const same = r.state === pub.state && r.title === pub.title && (pull.checks ?? null) === checks && (pull.head ?? null) === head && (pull.draft ?? null) === draft;
+      // A merge a person began from the surface, said by GitHub before the edge (or instead of it, if the edge's request died).
+      const by = pub.state === "merged" && !pull.merge ? begunBy(pull, pub.head, pub.at) : null;
+      if (same && by === null) continue;
+      sql.exec("UPDATE result SET state = ?, state_at = ?, title = ? WHERE id = ?", pub.state, pub.at, pub.title, r.id);
+      setPull(tx, r.id, { ...pull, head, draft, checks });
+      if (by !== null) recordMerge(tx, { ...r, state: pub.state, pull: JSON.stringify({ ...pull, head, draft, checks }) }, by, { method: null, base: pub.base ?? null, sha: pub.sha ?? null, branchDeleted: false });
       const place = readPlace(sql, r.session_id);
       tx.occur({ key: `${r.id}:${pub.state}`, kind: "result.changed", sessionId: r.session_id, trackId: place?.track_id ?? null, by: "platform", audience: r.audience });
-      if (!byPerson) sessions.add(r.session_id);
+      if (pub.state === "merged") settleReverts(tx, pub.url, "platform");
+      // A person's merge from the surface is not the thread's end (work 118), and neither is the revert of one: `rule:pr-merged` is for a merge made on GitHub.
+      if (by === null && !pull.merge && !isRevert) sessions.add(r.session_id);
     }
     if (pub.state !== "merged") return;
     for (const sid of sessions) {
@@ -101,20 +103,16 @@ export function acceptPull(sql: Sql, now: number, pub: PullPub): void {
   });
 }
 
-/** How long a begun merge (`mergeStart`) answers for the webhook of its merge. */
-const MERGING_MS = 10 * 60_000;
+/** Before the edge merges or reverts a result's pull request (http/api/result-merge.ts): whether `p` may, the row, and the reply the request already got. */
+export function mergeStart(sql: Sql, p: Principal, id: string, replay: MutateReply | null): Reply<{ result: ResultRow; replay: MutateReply | null }> {
+  const found = pullFor(sql, p, id);
+  if ("ok" in found) return found;
+  return { ok: true, result: result(sql, p, id)!, replay };
+}
 
-/** Before the edge merges or reverts a result's pull request (http/api/result-merge.ts): whether `p` may, and the row. */
-export function mergeStart(sql: Sql, now: number, p: Principal, id: string, what: "merge" | "revert"): Reply<{ result: ResultRow }> {
-  return transact(sql, now, (tx) => {
-    const found = pullFor(sql, p, id);
-    if ("ok" in found) return found;
-    if (what === "merge" && found.r.state !== "merged") {
-      sql.exec("UPDATE result SET meta = ? WHERE id = ?", JSON.stringify({ ...parse<Record<string, unknown>>(found.r.meta, {}), merging: { by: byOf(p), at: now } }), id);
-      tx.stamp("result", id);
-    }
-    return { ok: true, result: result(sql, p, id)! };
-  });
+/** The merge or revert `p` is about to ask GitHub for, or (null) that GitHub refused it. */
+export function mergeIntent(sql: Sql, now: number, p: Principal, id: string, intent: { head: string } | "revert" | null): Reply<object> {
+  return transact(sql, now, (tx) => tx.attempt(() => intend(tx, p, id, intent)));
 }
 
 // ------------------------------------------------------------------ a Slack person became a member (spec 36.1)

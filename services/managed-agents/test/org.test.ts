@@ -90,7 +90,7 @@ describe("Org's transaction", () => {
 
 // ------------------------------------------------------------------ the actor, with fakes for the others
 
-import type { FeedFrame, FeedPush, SummaryPub } from "../src/actors/org/contract.js";
+import type { FeedFrame, FeedPush, OrgRpc, SummaryPub } from "../src/actors/org/contract.js";
 import type { Summary } from "../src/actors/session-log/contract.js";
 import type { OrgDurableObject, OrgOut } from "../src/actors/org/durable-object.js";
 import type { StoredRepository, TokenMinter } from "../src/actors/org/repository.js";
@@ -697,45 +697,120 @@ describe("Org: a track, its agent, a pull request and the work reads", () => {
 });
 
 describe("Org: a merge made with the button (work 118)", () => {
+  const HEAD = "a".repeat(40);
+  const setUp = async (org: OrgRpc, key: string, n: number, access: "owner" | "org" = "owner") => {
+    const a = member("usr_a", key);
+    const thread = `cs_00000000000000${String(n)}`;
+    const agent: Principal = { ...a, subject: thread, kind: "agent", via: "agent", audiences: [], session: thread };
+    const url = `https://github.com/o/r/pull/${String(n)}`;
+    const id = `res_00${String(n)}`;
+    await org.createSession(a, { id: thread, input: "Fix the login redirect", access: { mode: access } });
+    await org.mutate(agent, { name: "result.add", args: { resultId: id, sid: thread, kind: "pr", ref: url, title: "Login PR" } });
+    await org.acceptPull({ url, state: "open", checks: "success", title: "Login PR", head: HEAD, draft: false, at: Date.now() });
+    const merged = (over: Record<string, unknown> = {}) => org.acceptPull({ url, state: "merged", checks: null, title: "Login PR", head: HEAD, draft: false, base: "main", sha: "b".repeat(40), at: Date.now(), ...over });
+    const facts = { number: n, base: "main", head: HEAD, method: "squash" as const, sha: "b".repeat(40), branchDeleted: true };
+    return { a, thread, agent, url, id, merged, facts };
+  };
+  const lines = (sql: Sql) => sql.exec<{ id: string; name: string; by: string; undone_by: string | null }>("SELECT id, name, by, undone_by FROM op WHERE name IN ('result.merge', 'result.revert') ORDER BY version");
+  const doneBy = (sql: Sql, thread: string) => sql.exec<{ done_by: string | null }>("SELECT done_by FROM place WHERE session_id = ?", thread)[0]!.done_by;
+
   it("records the merge as its person's line, leaves the thread open, and takes a revert; an agent and someone outside the thread do not", async () => {
     await withActor("merge", async (org, _fakes, sql) => {
-      const a = member("usr_a", "merge");
-      const thread = "cs_0000000000000060";
-      const agent: Principal = { ...a, subject: thread, kind: "agent", via: "agent", audiences: [], session: thread };
-      const url = "https://github.com/o/r/pull/1";
-      const facts = { number: 1, base: "main", method: "squash" as const, sha: "b".repeat(40), branchDeleted: true };
-      await org.createSession(a, { id: thread, input: "Fix the login redirect", access: { mode: "owner" } });
-      await org.mutate(agent, { name: "result.add", args: { resultId: "res_0001", sid: thread, kind: "pr", ref: url, title: "Login PR" } });
-      await org.acceptPull({ url, state: "open", checks: "success", title: "Login PR", head: "a".repeat(40), draft: false, at: Date.now() });
-      expect((await org.result(a, "res_0001"))!.meta).toMatchObject({ head: "a".repeat(40), draft: false });
+      const { a, thread, agent, id, merged, facts } = await setUp(org, "merge", 60);
+      const start = { name: "result.merge", args: { resultId: id }, idem: "m1" };
+      expect((await org.result(a, id))!.pull).toMatchObject({ head: HEAD, draft: false, checks: "success" });
 
-      expect(await org.mergeStart(agent, "res_0001", "merge")).toMatchObject({ ok: false, code: "forbidden" });
-      expect(await org.mergeStart(member("usr_b", "merge"), "res_0001", "merge")).toMatchObject({ ok: false, code: "not_found" });
-      // Only the edge says GitHub merged it: a body's claim is not one.
-      expect(await org.mutate(a, { name: "result.merge", args: { resultId: "res_0001", github: facts } })).toMatchObject({ error: { code: "refused", reason: "unmerged" } });
-      expect(sql.exec("SELECT state FROM result WHERE id = 'res_0001'")).toEqual([{ state: "open" }]);
+      expect(await org.mergeStart(agent, id, start)).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await org.mergeStart(member("usr_b", "merge"), id, start)).toMatchObject({ ok: false, code: "not_found" });
+      expect(await org.mergeIntent(agent, id, { head: HEAD })).toMatchObject({ ok: false, code: "forbidden" });
+      // Only the edge says GitHub merged it: a body's claim is not one, and neither is an agent's `meta`.
+      expect(await org.mutate(a, { name: "result.merge", args: { resultId: id, merge: facts } })).toMatchObject({ error: { code: "refused", reason: "unmerged" } });
+      await org.mutate(agent, { name: "result.add", args: { resultId: id, sid: thread, kind: "pr", ref: (await org.result(a, id))!.ref, title: "Login PR", meta: { merge: { by: "user:usr_a" }, revert: { number: 9, merged: true } } } });
+      expect((await org.result(a, id))!.pull).toEqual({ head: HEAD, draft: false, checks: "success" });
+      expect(sql.exec("SELECT state FROM result WHERE id = ?", id)).toEqual([{ state: "open" }]);
 
-      expect(await org.mergeStart(a, "res_0001", "merge")).toMatchObject({ ok: true, result: { id: "res_0001", meta: { merging: { by: "user:usr_a" } } } });
-      // GitHub's webhook comes first or last: either way the merge is this person's and the thread stays open.
-      await org.acceptPull({ url, state: "merged", checks: "success", title: "Login PR", head: "a".repeat(40), draft: false, at: Date.now() });
-      expect(sql.exec("SELECT done_at FROM place WHERE session_id = ?", thread)).toEqual([{ done_at: null }]);
-      const merged = await org.mutate(a, { name: "result.merge", args: { resultId: "res_0001" }, github: facts, idem: "m1" });
-      expect(merged).toMatchObject({ protocol: 1 });
-      expect(await org.mutate(a, { name: "result.merge", args: { resultId: "res_0001" }, github: facts, idem: "m1" })).toEqual(merged);
-      const row = (await org.result(a, "res_0001"))!;
-      expect(row).toMatchObject({ state: "merged", meta: { merge: { by: "user:usr_a", method: "squash", base: "main", branchDeleted: true } } });
-      expect((row.meta as Record<string, unknown>).merging).toBeUndefined();
-      const ops = () => sql.exec<{ id: string; name: string; undone_by: string | null }>("SELECT id, name, undone_by FROM op WHERE name LIKE 'result.%' AND name != 'result.add' ORDER BY version");
-      expect(ops()).toMatchObject([{ name: "result.merge", undone_by: null }]);
-      expect(sql.exec("SELECT done_at FROM place WHERE session_id = ?", thread)).toEqual([{ done_at: null }]);
+      expect(await org.mergeStart(a, id, start)).toMatchObject({ ok: true, replay: null, result: { id } });
+      expect(await org.mergeIntent(a, id, { head: HEAD })).toEqual({ ok: true });
+      expect((await org.result(a, id))!.pull).toMatchObject({ merging: { by: "user:usr_a", head: HEAD } });
+      // GitHub's webhook comes first or last: either way the merge is this person's, one line, and the thread stays open.
+      await merged();
+      expect(lines(sql)).toMatchObject([{ name: "result.merge", by: "user:usr_a" }]);
+      const reply = await org.mutate(a, { ...start, merge: facts });
+      expect(reply).toMatchObject({ protocol: 1, value: { op: lines(sql)[0]!.id, method: "squash", base: "main", branchDeleted: true } });
+      expect(await org.mutate(a, { ...start, merge: facts })).toEqual(reply);
+      expect(await org.mergeStart(a, id, start)).toMatchObject({ ok: true, replay: reply });
+      const row = (await org.result(a, id))!;
+      expect(row).toMatchObject({ state: "merged", pull: { merge: { by: "user:usr_a", method: "squash", base: "main", branchDeleted: true, sha: "b".repeat(40) } } });
+      expect(row.pull!.merging).toBeUndefined();
+      expect(lines(sql)).toHaveLength(1);
+      expect(JSON.parse(sql.exec<{ args: string }>("SELECT args FROM op WHERE id = ?", lines(sql)[0]!.id)[0]!.args)).toMatchObject({ method: "squash", branchDeleted: true });
+      expect(doneBy(sql, thread)).toBeNull();
 
-      // Undo is the revert, on GitHub: not Org's undo.
-      expect(await org.mutate(a, { name: "undo", args: { opId: ops()[0]!.id } })).toMatchObject({ error: { code: "refused", reason: "on_github" } });
-      expect(await org.mutate(a, { name: "result.revert", args: { resultId: "res_0001" }, github: { number: 2, url: "https://github.com/o/r/pull/2", merged: false } })).toMatchObject({ value: { merged: false, number: 2 } });
-      expect(ops()).toHaveLength(1);
-      expect(await org.mutate(a, { name: "result.revert", args: { resultId: "res_0001" }, github: { number: 2, url: "https://github.com/o/r/pull/2", merged: true } })).toMatchObject({ protocol: 1 });
-      expect(ops()).toMatchObject([{ name: "result.merge", undone_by: expect.any(String) }, { name: "result.revert" }]);
-      expect((await org.result(a, "res_0001"))!.meta).toMatchObject({ revert: { number: 2, merged: true, by: "user:usr_a" } });
+      // Undo is the revert, on GitHub: not Org's undo. Left open, it is a result of the thread itself.
+      expect(await org.mutate(a, { name: "undo", args: { opId: lines(sql)[0]!.id } })).toMatchObject({ error: { code: "refused", reason: "on_github" } });
+      const revertUrl = "https://github.com/o/r/pull/2";
+      const revert = { number: 2, url: revertUrl, title: "Revert \"Login PR\"", merged: false, why: "The revert conflicts with main." };
+      expect(await org.mergeIntent(a, id, "revert")).toEqual({ ok: true });
+      expect(await org.mutate(a, { name: "result.revert", args: { resultId: id }, revert })).toMatchObject({ value: { merged: false, number: 2, why: "The revert conflicts with main." } });
+      expect(lines(sql)).toHaveLength(1);
+      expect((await org.result(a, id))!.pull).toMatchObject({ revert: { number: 2, merged: false, why: "The revert conflicts with main." } });
+      expect((await org.result(a, id))!.pull!.reverting).toBeUndefined();
+      expect(sql.exec("SELECT kind, state, title FROM result WHERE session_id = ? AND ref = ?", thread, revertUrl)).toEqual([{ kind: "pr", state: "open", title: "Revert \"Login PR\"" }]);
+      // Merged later, on GitHub: the original is reverted all the same, once.
+      await org.acceptPull({ url: revertUrl, state: "merged", checks: null, title: "Revert", at: Date.now() });
+      expect(lines(sql)).toMatchObject([{ name: "result.merge", undone_by: expect.any(String) }, { name: "result.revert" }]);
+      expect((await org.result(a, id))!.pull).toMatchObject({ revert: { number: 2, merged: true, by: "user:usr_a", why: null } });
+      expect(await org.mutate(a, { name: "result.revert", args: { resultId: id }, revert: { ...revert, merged: true, why: null } })).toMatchObject({ value: { merged: true } });
+      expect(lines(sql)).toHaveLength(2);
+      expect(doneBy(sql, thread)).toBeNull();
+    });
+  });
+
+  it("a merge whose record the edge lost is still its person's: the webhook makes the line, and a retry finds it", async () => {
+    await withActor("merge-lost", async (org, _fakes, sql) => {
+      const { a, thread, id, merged, facts } = await setUp(org, "merge-lost", 62);
+      await org.mergeIntent(a, id, { head: HEAD });
+      await merged();
+      expect(lines(sql)).toMatchObject([{ name: "result.merge", by: "user:usr_a" }]);
+      expect(doneBy(sql, thread)).toBeNull();
+      expect((await org.result(a, id))!.pull).toMatchObject({ merge: { by: "user:usr_a", method: null, base: "main" } });
+      // The retry reads GitHub, finds it merged (no method), and gets the line with its Undo.
+      expect(await org.mutate(a, { name: "result.merge", args: { resultId: id }, merge: { ...facts, method: null, branchDeleted: false } })).toMatchObject({ value: { op: lines(sql)[0]!.id } });
+      expect(lines(sql)).toHaveLength(1);
+    });
+  });
+
+  it("a merge GitHub refused leaves nothing: one made on GitHub afterwards is not the person's, and the rule ends the thread", async () => {
+    await withActor("merge-refused", async (org, _fakes, sql) => {
+      const { a, thread, id, merged, facts } = await setUp(org, "merge-refused", 63);
+      await org.mergeIntent(a, id, { head: HEAD });
+      expect(await org.mergeIntent(a, id, null)).toEqual({ ok: true });
+      expect((await org.result(a, id))!.pull!.merging).toBeUndefined();
+      await merged();
+      expect(lines(sql)).toEqual([]);
+      expect(doneBy(sql, thread)).toBe("rule:pr-merged");
+      expect(await org.mutate(a, { name: "result.merge", args: { resultId: id }, merge: { ...facts, method: null, branchDeleted: false } })).toMatchObject({ value: { method: null } });
+      expect(lines(sql)).toEqual([]);
+    });
+  });
+
+  it("a merge begun on one head is not a merge of another, and one person merges at a time", async () => {
+    await withActor("merge-two", async (org, _fakes, sql) => {
+      const { a, thread, id, url, merged } = await setUp(org, "merge-two", 64, "org");
+      const b = member("usr_b", "merge-two");
+      await org.mergeIntent(a, id, { head: HEAD });
+      expect(await org.mergeIntent(b, id, { head: HEAD })).toMatchObject({ ok: false, code: "refused", reason: "merging", by: "user:usr_a" });
+      expect(await org.mergeIntent(b, id, "revert")).toMatchObject({ ok: false, code: "refused", reason: "merging" });
+      // Another's refusal does not take the first's off.
+      await org.mergeIntent(b, id, null);
+      expect((await org.result(a, id))!.pull).toMatchObject({ merging: { by: "user:usr_a" } });
+      // A push: the checks were of the old head.
+      const next = "c".repeat(40);
+      await org.acceptPull({ url, state: "open", checks: null, title: "Login PR", head: next, draft: false, at: Date.now() });
+      expect((await org.result(a, id))!.pull).toMatchObject({ head: next, checks: null });
+      await merged({ head: next });
+      expect(lines(sql)).toEqual([]);
+      expect(doneBy(sql, thread)).toBe("rule:pr-merged");
     });
   });
 
@@ -748,9 +823,9 @@ describe("Org: a merge made with the button (work 118)", () => {
       const agent: Principal = { ...a, subject: thread, kind: "agent", via: "agent", audiences: [], session: thread };
       await org.mutate(agent, { name: "result.add", args: { resultId: "res_0002", sid: thread, kind: "pr", ref: url, title: "PR" } });
       await org.acceptPull({ url, state: "merged", checks: null, title: "PR", at: Date.now() });
-      expect(sql.exec("SELECT done_by FROM place WHERE session_id = ?", thread)).toEqual([{ done_by: "rule:pr-merged" }]);
-      expect(await org.mutate(a, { name: "result.merge", args: { resultId: "res_0002" }, github: { number: 3, base: "main", method: null, sha: null, branchDeleted: false } })).toMatchObject({ protocol: 1 });
-      expect(sql.exec("SELECT 1 FROM op WHERE name = 'result.merge'")).toEqual([]);
+      expect(doneBy(sql, thread)).toBe("rule:pr-merged");
+      expect(await org.mutate(a, { name: "result.merge", args: { resultId: "res_0002" }, merge: { number: 3, base: "main", head: HEAD, method: null, sha: null, branchDeleted: false } })).toMatchObject({ protocol: 1 });
+      expect(lines(sql)).toEqual([]);
     });
   });
 });
