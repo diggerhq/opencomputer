@@ -20,6 +20,7 @@ import type { Attachment } from '../attachments.js';
 import type { CardSender } from '../post-card.js';
 import type { FileSender } from '../send-file.js';
 import type { SessionHooks } from '../session.js';
+import type { Driven } from '../system-prompt.js';
 import type { SessionStatus } from '../thread.js';
 import type { EffortLevel, HarnessName, PermissionMode, Speed } from '../../protocol.js';
 import type { Naming } from './title.js';
@@ -269,6 +270,8 @@ export interface StartSpec {
   model: string;
   effort: Effort;
   speed: Speed;
+  /** Where the session is driven from: which system prompt it gets (system-prompt.ts). */
+  driven: Driven;
   /** May this call run: the person's answer, or the mode's. */
   gate: Gate;
   tools: CalvinTools;

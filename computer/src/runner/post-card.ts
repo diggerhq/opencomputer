@@ -7,7 +7,9 @@
 // Invariants: a spec that is invalid or exceeds Slack's limits is refused with
 // one issue per problem, so the model can fix it, never degraded silently.
 // Cards are static: there is no Button (clicks are not routed back yet), only
-// LinkButton. A card holding a secret's value is not posted.
+// LinkButton. A card holding a secret's value is not posted. The tool never
+// says "posted" for a card nobody sees: a session with no Slack thread is told
+// so (NO_CARDS), until cards are drawn there too.
 
 import { cardToBlockKit, cardToFallbackText, type SlackCardElement } from '@chat-adapter/slack/blocks';
 import { type CardLimits, CardSpecError, schema, standardComponentDefinitions, toCard } from '@json-render/chat';
@@ -41,11 +43,15 @@ export function toSlack(spec: Spec): { blocks: KnownBlock[]; text: string } {
   return { blocks, text: cardToFallbackText(card) || ' ' };
 }
 
+/** What post_card answers where nothing draws a card: a session with no Slack thread. */
+export const NO_CARDS = 'not posted: this thread is read in the app, which draws no cards yet. Put the numbers in your reply as a markdown table, which it renders.';
+
 /**
- * Posts one card through `post`. `leaks` names a secret the card holds. Never
- * throws: every failure is a reason the model can read.
+ * Posts one card through `post`, which answers why the card was not shown when
+ * it was not. `leaks` names a secret the card holds. Never throws: every
+ * failure is a reason the model can read.
  */
-export function cardSender(post: (text: string, blocks: KnownBlock[]) => Promise<void>, leaks: (data: Buffer) => string | undefined = () => undefined) {
+export function cardSender(post: (text: string, blocks: KnownBlock[]) => Promise<string | void>, leaks: (data: Buffer) => string | undefined = () => undefined) {
   let sent = 0;
   return async (spec: Spec): Promise<{ ok: boolean; text: string }> => {
     const fail = (text: string) => ({ ok: false, text });
@@ -61,7 +67,8 @@ export function cardSender(post: (text: string, blocks: KnownBlock[]) => Promise
     if (leaked) return fail(`the card contains the value of the secret $${leaked}; not posted`);
     sent++;
     try {
-      await post(msg.text, msg.blocks);
+      const not = await post(msg.text, msg.blocks);
+      if (not) return (sent--, fail(not));
       return { ok: true, text: 'Posted the card to the thread.' };
     } catch (e) {
       sent--;
@@ -86,7 +93,7 @@ const element = z.object({
 export function postCardTool(send: CardSender) {
   return tool(
     'post_card',
-    'Post a native Slack card into this thread: key numbers, a small table, a chart, link buttons. ' +
+    'Post a native card into this thread: key numbers, a small table, a chart, link buttons. Drawn in a Slack thread only; elsewhere it says so and posts nothing. ' +
       'Use it when structured data reads better as a card than as markdown; prose stays in your reply. ' +
       'The spec is a json-render spec: `root` names the root element, `elements` maps keys to ' +
       '`{ type, props, children }` (leaf elements have `children: []`), optional `state` feeds `{ "$state": "/path" }` props and `repeat`. ' +

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cardSender, componentList, toSlack } from './post-card.js';
+import { cardSender, componentList, NO_CARDS, toSlack } from './post-card.js';
 
 const spec = {
   root: 'c',
@@ -58,6 +58,11 @@ describe('cardSender', () => {
   it('reports why Slack refused', async () => {
     const r = await cardSender(async () => Promise.reject({ data: { error: 'invalid_blocks' } }))(spec);
     expect(r).toMatchObject({ ok: false, text: expect.stringContaining('invalid_blocks') });
+  });
+
+  it('says a card was not posted where nothing draws one, and does not count it', async () => {
+    const send = cardSender(async () => NO_CARDS);
+    for (let i = 0; i < 20; i++) expect(await send(spec)).toEqual({ ok: false, text: NO_CARDS });
   });
 });
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PromptGuard, WITHHELD, guardStream, shingles } from './prompt-guard.js';
-import { CANARY, SYSTEM_APPEND } from './system-prompt.js';
+import { CANARY, PROMPTS, systemAppend } from './system-prompt.js';
+
+const SYSTEM_APPEND = systemAppend();
 
 const SECRET = 'the quick brown fox jumps over the lazy dog while the cat sleeps by the warm fire tonight';
 const set = shingles([SECRET]);
@@ -82,5 +84,10 @@ describe('prompt guard', () => {
     out += f('', true);
     expect(out).toBe(WITHHELD);
     expect(trips.map((t) => t.split(':')[0])).toEqual(['slack', 'slack', 'stream']);
+  });
+
+  it('withholds a copy of either prompt: the one for Slack and the one for the app', () => {
+    const guard = new PromptGuard(true);
+    for (const p of PROMPTS) for (const para of p.split('\n\n').slice(1, 4)) expect(guard.redact(`It says:\n\n${para}`)).toBe(`It says:\n\n${WITHHELD}`);
   });
 });

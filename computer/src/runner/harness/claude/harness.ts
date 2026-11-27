@@ -141,6 +141,7 @@ function processSpec(spec: StartSpec, t: Translator): HarnessSpec {
     model: spec.model,
     effort: claudeEffort(spec.effort),
     fast: spec.speed !== 'standard',
+    driven: spec.driven,
     canUseTool: claudeGate(spec.gate),
     calvin: calvinServer(spec.tools),
     hooks: compactionHooks((chars) => t.summarized(chars)),

@@ -14,7 +14,7 @@ import { type CanUseTool, type EffortLevel, type HookCallbackMatcher, type HookE
   prewarm, query } from '@anthropic-ai/claude-agent-sdk';
 import type { Inbox } from './inbox.js';
 import { DEFAULT_EFFORT } from '../../../tiers.js';
-import { SYSTEM_APPEND } from '../../system-prompt.js';
+import { type Driven, systemAppend } from '../../system-prompt.js';
 import { READ_THREAD_TOOL } from '../../threads.js';
 import { workspacePrompt } from './workspace-prompt.js';
 
@@ -27,6 +27,8 @@ export interface HarnessSpec {
   effort: EffortLevel;
   /** Claude Code's fast mode: on unless the session's speed is `standard`. */
   fast: boolean;
+  /** Where the session is driven from: which of Calvin's prompts it gets. */
+  driven: Driven;
   canUseTool: CanUseTool;
   /** Calvin's own tools (tools.ts). */
   calvin: McpSdkServerConfigWithInstance;
@@ -42,10 +44,11 @@ const DENIED = { behavior: 'deny', message: 'Not now: this conversation is being
 
 /** What a spare is started with: everything but the session. */
 export type SpareSpec = Pick<HarnessSpec, 'canUseTool' | 'calvin' | 'hooks'>;
-/** What a claim sets: the session's folder, mode, model, effort and speed. */
-export type ClaimSpec = Pick<HarnessSpec, 'cwd' | 'mode' | 'model' | 'effort' | 'fast'>;
+/** What a claim sets: the session's folder, mode, model, effort, speed and prompt. */
+export type ClaimSpec = Pick<HarnessSpec, 'cwd' | 'mode' | 'model' | 'effort' | 'fast' | 'driven'>;
 
-const SYSTEM_PROMPT = { type: 'preset', preset: 'claude_code', append: SYSTEM_APPEND, snapshot: true } as const;
+/** A spare has no session yet: it parks with Slack's text, and a claim replaces it where the session's differs. */
+const SYSTEM_PROMPT = { type: 'preset', preset: 'claude_code', append: systemAppend(), snapshot: true } as const;
 
 /** The options that are not per session: the same for a cold start and a spare (a spare parks fast). */
 function shared(h: SpareSpec, fast = true): Options {
@@ -58,7 +61,7 @@ function shared(h: SpareSpec, fast = true): Options {
     effort: DEFAULT_EFFORT,
     canUseTool: h.canUseTool,
     // Recorded on the conversation's first request and reused, so the cached
-    // prefix survives deploys; a changed SYSTEM_APPEND reaches an existing
+    // prefix survives deploys; a changed prompt reaches an existing
     // conversation at its next compaction (no effect where not rolled out).
     systemPrompt: SYSTEM_PROMPT,
     settingSources: ['project'],
@@ -95,12 +98,8 @@ export function startHarness(inbox: Inbox, h: HarnessSpec): Query {
     prompt: inbox,
     options: {
       ...base,
-      ...(ws
-        ? {
-            systemPrompt: { ...SYSTEM_PROMPT, append: SYSTEM_APPEND + ws.append },
-            settings: { ...(base.settings as object), claudeMdExcludes: ws.exclude },
-          }
-        : {}),
+      systemPrompt: { ...SYSTEM_PROMPT, append: systemAppend(h.driven) + (ws?.append ?? '') },
+      ...(ws ? { settings: { ...(base.settings as object), claudeMdExcludes: ws.exclude } } : {}),
       cwd: h.cwd,
       resume: h.sdkSessionId,
       ...(h.forkTo ? { forkSession: true, sessionId: h.forkTo } : {}),
@@ -128,8 +127,9 @@ export function claimHarness(spare: SpareProcess, inbox: Inbox, c: ClaimSpec): Q
       permissionMode: c.mode,
       model: c.model,
       settings: { effortLevel: c.effort, fastMode: c.fast, ...(ws ? { claudeMdExcludes: ws.exclude } : {}) },
-      // Replaces the prewarm's `append` (measured, SDK 0.3.295), so it carries Calvin's own text too.
-      ...(ws ? { appendSystemPrompt: SYSTEM_APPEND + ws.append } : {}),
+      // Replaces the prewarm's `append` (measured, SDK 0.3.295), so it carries Calvin's own text too:
+      // sent when the session's text is not what the spare parked with.
+      ...(ws || c.driven !== 'slack' ? { appendSystemPrompt: systemAppend(c.driven) + (ws?.append ?? '') } : {}),
     },
   });
 }

@@ -2,7 +2,14 @@
 // the model after a header naming the sender and the conversation, and the
 // bare `@U…` mentions in its text (the gateway decodes `<@U…>` to `@U…`) carry
 // the person's name. Names come from SlackThread's cached lookups; a lookup
-// that fails or is slow leaves the id and never holds the message.
+// that fails or is slow leaves the id and never holds the message. A message
+// typed outside Slack (the app, opc, an API client) gets the same kind of
+// header from the actor its write carried, so the model always knows who is
+// speaking and from where.
+//
+// Invariants: the Slack header is part of the message the event log records
+// (the app strips it); the header of a message from outside Slack is not, it
+// only reaches the model. A harness's own command (`/compact`) gets none.
 
 export interface Names {
   /** A person's Slack name, or undefined when it can't be had. */
@@ -38,4 +45,16 @@ export function describeChannel(id: string, ch?: { name?: string; is_im?: boolea
   if (ch?.is_im) return 'a DM';
   if (ch?.is_mpim) return 'a group DM';
   return ch?.name ? `#${ch.name}` : `channel ${id}`;
+}
+
+/** How the model reads where a message was typed, by its actor's `via`; a platform's or an agent's own message has no header. */
+const TYPED_IN: Record<string, string> = { dashboard: 'App', app: 'App', opc: 'opc', api: 'API' };
+
+/** `[App: from Sam]` and the text, for a message a person typed outside Slack; `text` as it is otherwise. */
+export function typedIn(text: string, actor?: { id: string; name?: string | null; via: string }): string {
+  const where = actor && TYPED_IN[actor.via];
+  if (!where || text.startsWith('/')) return text;
+  // An actor known only by its id (a key, a member whose name the write did not carry) is not named.
+  const who = actor.name && actor.name !== actor.id ? `: from ${actor.name.replace(/[\[\]\n]/g, ' ').trim()}` : '';
+  return `[${where}${who}]\n${text}`;
 }
