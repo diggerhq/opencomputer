@@ -14,7 +14,6 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import { Ellipsis, Loader2 } from 'lucide-react'
-import { Link } from 'react-router-dom'
 import { ApiError } from '@/api/errors'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyCommand, CopyRow } from '@/components/copy-row'
@@ -1317,38 +1316,5 @@ export function AgentChangeAction({ agent }: { agent: ComputerAgent }) {
         </DialogContent>
       </Dialog>
     </>
-  )
-}
-
-/**
- * The Your agent line on the page once setup is done: what runs threads, and
- * where to change it. Subscriptions are managed on Connections, one place
- * for every account (work 083).
- */
-export function AgentCard({ status }: { status: ComputerStatus }) {
-  const { agent } = status
-  if (!agent) return null
-  const needsLink = status.slack.installed && !agent.linked
-  return (
-    <section aria-labelledby="computer-agent">
-      <h2 id="computer-agent" className="mb-3 text-sm font-semibold">
-        Your agent
-      </h2>
-      <div className="bg-panel flex flex-wrap items-center justify-between gap-3 rounded-lg border px-5 py-3 text-sm">
-        <div className="min-w-0">
-          <p className="text-foreground font-medium">{agentSummary(agent)}</p>
-          {needsLink ? (
-            <p className="text-muted-foreground">
-              Link your Slack account to use your own subscription.
-            </p>
-          ) : null}
-        </div>
-        <Button variant={needsLink ? 'default' : 'outline'} size="sm" asChild>
-          <Link to="/managed-agents/connections">
-            {needsLink ? 'Link Slack' : 'Manage'}
-          </Link>
-        </Button>
-      </div>
-    </section>
   )
 }

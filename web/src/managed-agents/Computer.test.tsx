@@ -535,14 +535,7 @@ describe('Computer page', () => {
     computerApi.getComputerSessions.mockResolvedValue([doneSession])
 
     render('/computer?slack=connected')
-    await settle(() => location() === '/computer', 'clean URL')
-    await settle(
-      () => container.textContent?.includes('Acme') === true,
-      'linked workspace',
-    )
-    expect(
-      container.querySelector('button[aria-label="Connection options"]'),
-    ).not.toBeNull()
+    await settle(() => location() === '/computer/work/new', 'new work')
   })
 
   it('welcomes someone whose Slack workspace is already another organization', async () => {
@@ -628,63 +621,12 @@ describe('Computer page', () => {
     await settle(() => location() === '/computer', 'redirect to /computer')
   })
 
-  it('lists the work, live first, once onboarded', async () => {
+  it('goes straight to new work once set up', async () => {
     computerApi.getComputer.mockResolvedValue(onboarded)
-    computerApi.getComputerSessions.mockResolvedValue([
-      doneSession,
-      liveSession,
-    ])
-
-    render('/computer')
-    await settle(
-      () => container.textContent?.includes('Fix the flaky') === true,
-      'sessions',
-    )
-
-    const list = container.querySelector(
-      'section[aria-labelledby="computer-sessions"]',
-    )!
-    const rows = [...list.querySelectorAll('tbody tr')].map(
-      (row) => row.textContent,
-    )
-    expect(rows[0]).toContain('Fix the flaky checkout test')
-    expect(rows[0]).toContain('Working')
-    expect(rows[0]).toContain('2 min ago')
-    expect(rows[1]).toContain('Explain the billing flow')
-    expect(rows[1]).toContain('1 hr ago')
-    expect(list.textContent).toContain('1 working now')
-    expect(
-      list
-        .querySelector('a[href="https://acme.slack.com/archives/C1/p11"]')
-        ?.getAttribute('aria-label'),
-    ).toBe('Open in Slack')
-    expect(container.textContent).toContain('Online')
-    expect(container.textContent).toContain('Acme')
-    expect(container.textContent).toContain('acme')
-    expect(container.querySelector('a[href="/new"]')).not.toBeNull()
-
-    // No setup, no chatter; specs never appear.
-    expect(container.textContent).not.toContain('Set up your computer')
-    expect(container.textContent).not.toContain('Add to Slack')
-    expect(container.textContent).not.toContain('in flight')
-    expect(container.textContent).not.toMatch(/vCPU|GiB/)
-  })
-
-  it('keeps a resting computer and the upgrade visible once onboarded', async () => {
-    computerApi.getComputer.mockResolvedValue({
-      ...onboarded,
-      computer: { ...onboarded.computer, state: 'parked', connected: false },
-    })
     computerApi.getComputerSessions.mockResolvedValue([doneSession])
 
     render('/computer')
-    await settle(
-      () => container.textContent?.includes('Sleeping') === true,
-      'resting header',
-    )
-    expect(container.querySelector('a[href="/billing"]')?.textContent).toBe(
-      'Upgrade to keep it awake',
-    )
+    await settle(() => location() === '/computer/work/new', 'new work')
   })
 
   it('keeps the setup page until GitHub is connected too', async () => {
@@ -731,67 +673,6 @@ describe('Computer page', () => {
     expect(container.textContent).toContain('Repositories in acme')
     expect(container.textContent).not.toContain('Live now')
   })
-  it('shows the first task landing, live, once it has waited for it', async () => {
-    computerApi.getComputer.mockResolvedValue(onboarded)
-    computerApi.getComputerSessions.mockResolvedValue([])
-
-    render('/computer')
-    await settle(
-      () => container.textContent?.includes('Step 2 of 2') === true,
-      'last setup step',
-    )
-
-    computerApi.getComputerSessions.mockResolvedValue([
-      { ...liveSession, updatedAt: minutesAgo(0) },
-    ])
-    await act(async () => {
-      await client.invalidateQueries({ queryKey: ['managed-computer'] })
-    })
-    const panel = () =>
-      container.querySelector('section[aria-labelledby="first-task-title"]')
-    await settle(() => panel() !== null, 'first task')
-    expect(panel()!.textContent).toContain("It's on your first task")
-    expect(panel()!.textContent).toContain('Fix the flaky checkout test')
-    expect(panel()!.textContent).toContain('just now')
-    expect(
-      panel()!.querySelector('a[href="https://acme.slack.com/archives/C1/p11"]')
-        ?.textContent,
-    ).toBe('Open the thread')
-    // Nothing to dismiss while it works.
-    expect(panel()!.querySelector('button[aria-label="Dismiss"]')).toBeNull()
-
-    computerApi.getComputerSessions.mockResolvedValue([
-      { ...liveSession, status: 'idle' },
-    ])
-    await act(async () => {
-      await client.invalidateQueries({ queryKey: ['managed-computer'] })
-    })
-    await settle(
-      () => panel()?.textContent?.includes('It answered') === true,
-      'first task answered',
-    )
-    act(() => {
-      panel()!
-        .querySelector<HTMLButtonElement>('button[aria-label="Dismiss"]')!
-        .click()
-    })
-    expect(panel()).toBeNull()
-  })
-
-  it('leaves a finished first task out of a later visit', async () => {
-    computerApi.getComputer.mockResolvedValue(onboarded)
-    computerApi.getComputerSessions.mockResolvedValue([doneSession])
-
-    render('/computer')
-    await settle(
-      () => container.textContent?.includes('Explain the billing') === true,
-      'sessions',
-    )
-    expect(
-      container.querySelector('section[aria-labelledby="first-task-title"]'),
-    ).toBeNull()
-  })
-
   it('shows a new computer coming to life during setup', async () => {
     computerApi.getComputer.mockResolvedValue({
       ...onboarded,
@@ -849,52 +730,5 @@ describe('Computer page', () => {
       container.querySelector('aside[aria-label="About your computer"]')
         ?.textContent,
     ).toContain('More to try')
-  })
-
-  it('nudges toward Slack once set up without it', async () => {
-    computerApi.getComputer.mockResolvedValue({
-      ...onboarded,
-      slack: { installed: false },
-    })
-    computerApi.getComputerSessions.mockResolvedValue([doneSession])
-    computerApi.startComputerSlackInstall.mockReturnValue(new Promise(() => {}))
-
-    render('/computer')
-    await settle(
-      () => container.textContent?.includes('Explain the billing') === true,
-      'sessions',
-    )
-    expect(container.textContent).not.toContain('Set up your computer')
-    const nudge = container.querySelector(
-      'section[aria-label="Connect Slack"]',
-    )!
-    expect(nudge.textContent).toContain('Coding is more fun with your team')
-    // Only what is connected is listed.
-    const header = container.querySelector('header')!
-    expect(header.textContent).toContain('GitHub')
-    expect(header.textContent).not.toContain('Slack')
-    act(() =>
-      [...nudge.querySelectorAll('button')]
-        .find((button) => button.textContent === 'Add to Slack')!
-        .click(),
-    )
-    await settle(
-      () => computerApi.startComputerSlackInstall.mock.calls.length === 1,
-      'Slack install started',
-    )
-  })
-
-  it('leaves the Slack nudge out once Slack is in', async () => {
-    computerApi.getComputer.mockResolvedValue(onboarded)
-    computerApi.getComputerSessions.mockResolvedValue([doneSession])
-
-    render('/computer')
-    await settle(
-      () => container.textContent?.includes('Explain the billing') === true,
-      'sessions',
-    )
-    expect(
-      container.querySelector('section[aria-label="Connect Slack"]'),
-    ).toBeNull()
   })
 })

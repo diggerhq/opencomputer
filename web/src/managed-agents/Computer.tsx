@@ -1,11 +1,4 @@
-import {
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -13,18 +6,14 @@ import {
   Check,
   Computer as ComputerIcon,
   ExternalLink,
-  Ellipsis,
-  ChevronRight,
   Copy,
   GitBranch,
   Loader2,
   MessagesSquare,
-  Plug,
   RotateCcw,
   ShieldCheck,
   Terminal,
   TriangleAlert,
-  Unplug,
   UsersRound,
   X,
 } from 'lucide-react'
@@ -32,8 +21,6 @@ import { EmptyState } from '@/components/empty-state'
 import { GithubMark } from '@/components/github-mark'
 import { CopyRow } from '@/components/copy-row'
 import { Panel } from '@/components/panel'
-import { ResourceTable, type Column } from '@/components/resource-table'
-import { StatusBadge } from '@/components/status-badge'
 import {
   Alert,
   AlertAction,
@@ -41,12 +28,6 @@ import {
   AlertTitle,
 } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { notifyError, notifySuccess } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { useTransientFlag } from '@/lib/use-transient-flag'
@@ -55,18 +36,13 @@ import { AuthContext } from '@/hooks/useAuth'
 import { addManagedGitHubConnection } from './api'
 import { GitHubStarBonus } from './GitHubStarBonus'
 import { launchAuthorizationWindow } from './authorization-window'
-import {
-  SlackInstallButton,
-  SlackInstallLink,
-  UnlinkSlackDialog,
-} from './computer-slack'
+import { SlackInstallButton, SlackInstallLink } from './computer-slack'
 import {
   trackFirstSessionStartClicked,
   trackSetupSlackClicked,
 } from './computer-analytics'
 import { ChatTextarea } from '@/components/chat-textarea'
 import {
-  AgentCard,
   AgentChangeAction,
   AgentSetup,
   type AgentCardChoice,
@@ -78,7 +54,6 @@ import {
   createSession,
   getComputer,
   getComputerSessions,
-  type ComputerSession,
   type ComputerStatus,
 } from './computer-api'
 import {
@@ -87,23 +62,17 @@ import {
   agentSummary,
   SLACK_RETURN_PARAMS,
   alreadyLinkedCopy,
-  SESSION_STATUS,
   START_SESSION_COPY,
   computerPollInterval,
   BOOT_STAGES,
   bootProgress,
   computerPresentation,
   elapsedClock,
-  firstSession,
-  firstTaskCopy,
-  relativeTime,
-  sessionIsLive,
   sessionPollInterval,
   firstTaskLead,
   setupStep,
   slackLinks,
   slackReturnFromSearch,
-  splitSessions,
   type SetupStep,
   type SlackReturn,
 } from './computer-state'
@@ -184,9 +153,6 @@ function ComputerPageContent() {
     setSearchParams(next, { replace: true })
   }, [queryClient, searchParams, setSearchParams])
 
-  // Someone who waited here for the first task sees it land: setup gives way
-  // to the work with that task on top, live, and a way into its thread.
-  // Without the wait, only a first task still under way earns the panel.
   const [githubSkipped, setGithubSkipped] = useState(
     () => localStorage.getItem(GITHUB_SKIPPED_KEY) === '1',
   )
@@ -197,9 +163,6 @@ function ComputerPageContent() {
   const step = status.data
     ? setupStep(status.data, sessions.data, githubSkipped)
     : null
-  const [waitedForFirstTask, setWaitedForFirstTask] = useState(false)
-  const [firstTaskDismissed, setFirstTaskDismissed] = useState(false)
-  if (step === 'start' && !waitedForFirstTask) setWaitedForFirstTask(true)
 
   if (status.isLoading) {
     return (
@@ -230,7 +193,6 @@ function ComputerPageContent() {
     )
   }
 
-  const { live, recent } = splitSessions(sessions.data ?? [])
   const sessionsLoading = hasComputer && sessions.isLoading
   const createError = create.isError ? create.error : null
   const dismissSlackProblem = () => setSlackProblem(null)
@@ -263,44 +225,11 @@ function ComputerPageContent() {
     )
   }
 
-  // Once it knows the code and has had its first session, the page is about
-  // the work.
+  // Once it knows the code and has had its first session, there is no page
+  // here: the work is. A Slack install that went wrong still says so first.
   if (step === null) {
-    const first = firstSession(sessions.data)
-    const showFirstTask =
-      first !== null &&
-      !firstTaskDismissed &&
-      (waitedForFirstTask || sessionIsLive(first))
-    return (
-      <WithDeveloperFooter>
-        <div className="space-y-8">
-          <Overview
-            status={status.data}
-            createError={createError}
-            creating={create.isPending}
-            onRetry={() => create.mutate()}
-          />
-          {slackProblemPanel}
-          {status.data.slack.installed ? null : <SlackNudge />}
-          {showFirstTask ? (
-            <FirstTask
-              session={first}
-              readAt={sessions.dataUpdatedAt}
-              onDismiss={() => setFirstTaskDismissed(true)}
-            />
-          ) : null}
-          <SessionsPanel
-            live={live}
-            recent={recent}
-            readAt={sessions.dataUpdatedAt}
-            loading={sessionsLoading}
-            failed={sessions.isError}
-          />
-          <AgentCard status={status.data} />
-          <IdeasToTry />
-        </div>
-      </WithDeveloperFooter>
-    )
+    if (!slackProblemPanel) return <Navigate to="/computer/work/new" replace />
+    return <div className="space-y-8">{slackProblemPanel}</div>
   }
 
   return (
@@ -511,110 +440,6 @@ function RetryButton({
   )
 }
 
-function Overview({
-  status,
-  createError,
-  creating,
-  onRetry,
-}: {
-  status: ComputerStatus
-  createError: Error | null
-  creating: boolean
-  onRetry: () => void
-}) {
-  const { computer } = status
-  const failedToCreate = !computer && createError !== null
-  const offerUpgrade = computer?.state === 'parked' && status.plan === 'free'
-  // Only what needs attention: the status speaks for itself otherwise.
-  const problem = failedToCreate
-    ? createError.message
-    : computer?.state === 'failed'
-      ? (computer.lastError ??
-        'Your computer could not start. Try again, or tell us if it keeps happening.')
-      : null
-  const canRetry = failedToCreate || computer?.state === 'failed'
-  const accounts = status.github.installations.map(
-    (installation) => installation.accountLogin,
-  )
-  return (
-    <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
-      <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight">Computer</h1>
-        <p className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 text-sm">
-          <StatusLabel status={status} failedToCreate={failedToCreate} />
-          {offerUpgrade ? (
-            <>
-              <span aria-hidden>·</span>
-              <Link
-                to="/billing"
-                className="decoration-muted-foreground/40 hover:text-foreground underline underline-offset-4 transition-colors"
-              >
-                Upgrade to keep it awake
-              </Link>
-            </>
-          ) : null}
-          {problem ? (
-            <>
-              <span aria-hidden>·</span>
-              <span>{problem}</span>
-            </>
-          ) : null}
-        </p>
-        {canRetry ? (
-          <RetryButton className="mt-4" creating={creating} onRetry={onRetry} />
-        ) : null}
-      </div>
-      <div className="flex items-center gap-5 text-sm">
-        {status.slack.installed ? (
-          <Connection label="Slack">
-            {status.slack.teamName ?? 'Connected'}
-          </Connection>
-        ) : null}
-        {status.github.connected ? (
-          <Connection label="GitHub">
-            {accounts.length ? accounts.join(', ') : 'Connected'}
-          </Connection>
-        ) : null}
-        <ConnectionsMenu status={status} manage />
-      </div>
-    </header>
-  )
-}
-
-function Connection({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
-  return (
-    <span className="inline-flex max-w-56 items-baseline gap-1.5">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="truncate font-medium">{children}</span>
-    </span>
-  )
-}
-
-function IdeasToTry() {
-  return (
-    <details className="group">
-      <summary className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex cursor-pointer list-none items-center gap-1.5 rounded-sm text-sm transition-colors outline-none focus-visible:ring-3 [&::-webkit-details-marker]:hidden">
-        <ChevronRight
-          className="size-3.5 transition-transform group-open:rotate-90"
-          aria-hidden
-        />
-        Ideas to try
-      </summary>
-      <div className="mt-3 grid gap-2">
-        {EXAMPLE_ASKS.map((ask) => (
-          <CopyRow key={ask} value={`@OpenComputer ${ask}`} />
-        ))}
-      </div>
-    </details>
-  )
-}
-
 /**
  * Someone tried to link a Slack workspace that already works with
  * OpenComputer in another organization. Not an error: their team is already
@@ -665,94 +490,6 @@ function AlreadyLinked({
               <SlackInstallButton variant="outline" />
             </div>
           )}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-/**
- * The payoff of setup: the first task, landed. Where it is, live, and the way
- * into its thread, so the person sees the loop close.
- */
-function FirstTask({
-  session,
-  readAt,
-  onDismiss,
-}: {
-  session: ComputerSession
-  readAt: number
-  onDismiss: () => void
-}) {
-  const now = Math.max(useNow(30_000), readAt)
-  const copy = firstTaskCopy(session.status)
-  const live = sessionIsLive(session)
-  return (
-    <section
-      aria-labelledby="first-task-title"
-      aria-live="polite"
-      className="bg-panel relative rounded-xl border px-6 py-5 shadow-sm"
-    >
-      {live ? null : (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground absolute top-3 right-3"
-          aria-label="Dismiss"
-          onClick={onDismiss}
-        >
-          <X className="size-4" aria-hidden />
-        </Button>
-      )}
-      <div className="flex gap-5">
-        <div
-          className={cn(
-            'flex size-11 shrink-0 items-center justify-center rounded-full',
-            session.status === 'error'
-              ? 'bg-destructive/10 text-destructive'
-              : live
-                ? 'bg-amber-500/10'
-                : 'bg-primary/15 text-primary',
-          )}
-          aria-hidden
-        >
-          {session.status === 'error' ? (
-            <TriangleAlert className="size-5" />
-          ) : live ? (
-            <PulseDot tone="busy" className="size-2.5" />
-          ) : (
-            <Check className="size-5" />
-          )}
-        </div>
-        <div className="max-w-2xl min-w-0 pr-8">
-          <h2
-            id="first-task-title"
-            className="text-lg font-semibold tracking-tight text-balance"
-          >
-            {copy.headline}
-          </h2>
-          <p className="text-muted-foreground mt-1 flex min-w-0 items-baseline gap-2 text-sm">
-            <span className="text-foreground truncate font-medium">
-              {session.title || 'Untitled session'}
-            </span>
-            <span aria-hidden>·</span>
-            <time
-              className="whitespace-nowrap"
-              dateTime={session.updatedAt}
-              title={new Date(session.updatedAt).toLocaleString()}
-            >
-              {relativeTime(session.updatedAt, now)}
-            </time>
-          </p>
-          <p className="text-muted-foreground mt-3 text-sm">{copy.body}</p>
-          {session.slackUrl ? (
-            <Button className="mt-5" asChild>
-              <a href={session.slackUrl} target="_blank" rel="noreferrer">
-                <MessagesSquare className="size-4" aria-hidden />
-                Open the thread
-              </a>
-            </Button>
-          ) : null}
         </div>
       </div>
     </section>
@@ -1160,27 +897,6 @@ function WebStart() {
   )
 }
 
-/** Set up without Slack: keep it on offer, quietly, until it is in. */
-function SlackNudge() {
-  return (
-    <section
-      aria-label="Connect Slack"
-      className="bg-panel text-muted-foreground flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-xl border px-5 py-4 text-sm shadow-sm"
-    >
-      <div className="min-w-0">
-        <p className="text-foreground font-medium">
-          Coding is more fun with your team
-        </p>
-        <p className="mt-0.5">
-          Add OpenComputer to Slack and work tasks through together in any
-          thread.
-        </p>
-      </div>
-      <SlackInstallButton variant="outline" label="Add to Slack" />
-    </section>
-  )
-}
-
 /**
  * Why each step matters, beside the steps: quiet, never a call to action
  * (Igor, 2026-10-13: setup lost the what and the why).
@@ -1401,60 +1117,6 @@ function githubSummary(github: ComputerStatus['github']) {
     : 'GitHub is connected'
 }
 
-/**
- * Connection housekeeping behind one quiet menu: unlinking stops the computer
- * answering in Slack, so it is never a button in plain view.
- */
-function ConnectionsMenu({
-  status,
-  manage = false,
-}: {
-  status: ComputerStatus
-  manage?: boolean
-}) {
-  const [confirmUnlink, setConfirmUnlink] = useState(false)
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground"
-            aria-label="Connection options"
-          >
-            <Ellipsis className="size-4" aria-hidden />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-48">
-          {manage ? (
-            <DropdownMenuItem asChild>
-              <Link to="/managed-agents/connections">
-                <Plug aria-hidden />
-                Manage connections
-              </Link>
-            </DropdownMenuItem>
-          ) : null}
-          {status.slack.installed ? (
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => setConfirmUnlink(true)}
-            >
-              <Unplug aria-hidden />
-              Unlink Slack workspace
-            </DropdownMenuItem>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <UnlinkSlackDialog
-        teamName={status.slack.teamName}
-        open={confirmUnlink}
-        onOpenChange={setConfirmUnlink}
-      />
-    </>
-  )
-}
-
 function GitHubAction({
   size = 'default',
   variant = 'default',
@@ -1488,121 +1150,5 @@ function GitHubAction({
       )}
       Connect GitHub
     </Button>
-  )
-}
-
-function sessionColumns(now: number): Column<ComputerSession>[] {
-  return [
-    {
-      key: 'title',
-      header: 'Session',
-      cell: (session) => (
-        <span className="block max-w-md truncate font-medium">
-          {session.title || 'Untitled session'}
-        </span>
-      ),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      cell: (session) => (
-        <StatusBadge
-          status={SESSION_STATUS[session.status].badge}
-          label={SESSION_STATUS[session.status].label}
-        />
-      ),
-    },
-    {
-      key: 'updated',
-      header: 'Updated',
-      cell: (session) => (
-        <time
-          className="text-muted-foreground whitespace-nowrap"
-          dateTime={session.updatedAt}
-          title={new Date(session.updatedAt).toLocaleString()}
-        >
-          {relativeTime(session.updatedAt, now)}
-        </time>
-      ),
-    },
-    {
-      key: 'open',
-      header: <span className="sr-only">Open</span>,
-      align: 'right',
-      cell: (session) =>
-        session.slackUrl ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground"
-            asChild
-          >
-            <a
-              href={session.slackUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Open in Slack"
-              title="Open in Slack"
-            >
-              <ExternalLink className="size-3.5" aria-hidden />
-            </a>
-          </Button>
-        ) : null,
-    },
-  ]
-}
-
-/** Every session in one list, the live ones first. */
-function SessionsPanel({
-  live,
-  recent,
-  readAt,
-  loading,
-  failed,
-}: {
-  live: ComputerSession[]
-  recent: ComputerSession[]
-  /** When the sessions were read; relative times never predate it. */
-  readAt: number
-  loading: boolean
-  failed: boolean
-}) {
-  const now = Math.max(useNow(30_000), readAt)
-  const columns = useMemo(() => sessionColumns(now), [now])
-  return (
-    <section aria-labelledby="computer-sessions">
-      <div className="mb-3 flex items-baseline justify-between gap-4">
-        <h2 id="computer-sessions" className="text-sm font-semibold">
-          Sessions
-        </h2>
-        {live.length > 0 ? (
-          <span className="text-muted-foreground text-sm">
-            {live.length} working now
-          </span>
-        ) : null}
-      </div>
-      <Panel>
-        <ResourceTable
-          columns={columns}
-          rows={[...live, ...recent]}
-          rowKey={(session) => session.key}
-          loading={loading}
-          skeletonRows={3}
-          empty={
-            <EmptyState
-              icon={MessagesSquare}
-              title={
-                failed
-                  ? 'Sessions are temporarily unavailable'
-                  : 'No sessions yet'
-              }
-              description={
-                failed ? 'They reload by themselves.' : START_SESSION_COPY
-              }
-            />
-          }
-        />
-      </Panel>
-    </section>
   )
 }
