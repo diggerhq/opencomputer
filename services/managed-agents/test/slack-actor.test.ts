@@ -5,6 +5,7 @@ import type { SlackDurableObject } from "../src/actors/slack/durable-object.js";
 import { seal } from "../src/crypto/seal.js";
 import { routeSlackDashboard, routeSlackPublic, type SlackRouteEnv } from "../src/http/slack/webhooks.js";
 import { entryIdFor, sessionIdFor, turnIdFor } from "../src/ids/slack-ids.js";
+import { memberId } from "../src/ids/session-ids.js";
 import type { Call, FakeComputer, FakeOrg, FakeSessionLog } from "./fixtures/slack-test-worker.js";
 
 const bindings = env as unknown as {
@@ -427,6 +428,29 @@ describe("the Slack actor: install, unlink, import", () => {
     expect(await inSlack(org, (exec) => exec("SELECT imported FROM meta"))).toEqual([{ imported: 1 }]);
     // The workspace routes to this organization.
     expect(await slackOf("slack-team:T9").teamOrg()).toBe(org);
+  });
+
+  it("names a carried or stored link by its member id, not Computer's dashboard user id, and moves its sessions", async () => {
+    const org = "org_import_raw";
+    const raw = "user_01KAW3QZ8N9Y5C7D2E4F6G8H0J";
+    const member = "usr_01kaw3qz8n9y5c7d2e4f6g8h0j";
+    await computerOf(org).set({ carry: { settings: { slackTeamId: "T7", slackBotUserId: "UBOT" }, people: [], links: [{ slackUser: "UP1", member: raw }] } });
+    await slackOf(org).forHost();
+    expect(await inSlack(org, (exec) => exec("SELECT slack_user, member FROM link"))).toEqual([{ slack_user: "UP1", member }]);
+    // A link an earlier version stored raw (here a dashboard id that is not WorkOS's, hashed to `usr_x…`):
+    // rewritten on the next touch, and Org moves what it owned.
+    const hashed = await memberId("dash-user-7");
+    expect(hashed).toMatch(/^usr_x[0-9a-f]{26}$/);
+    await inSlack(org, (exec) => exec("INSERT INTO link (slack_user, member) VALUES ('UP2', 'dash-user-7')"));
+    await slackOf(org).forHost();
+    const linkCalls = async () => (await callsOf(orgOf(org))).filter((c) => c.method === "linkPerson");
+    for (let i = 0; i < 100 && (await linkCalls()).length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await inSlack(org, (exec) => exec("SELECT slack_user, member FROM link ORDER BY slack_user"))).toEqual([
+      { slack_user: "UP1", member },
+      { slack_user: "UP2", member: hashed },
+    ]);
+    expect(await linkCalls()).toEqual([{ method: "linkPerson", args: ["dash-user-7", hashed] }]);
+    await slackOf("slack-team:T7").releaseTeam(org);
   });
 
   it("imports on the first `forHost`, so Computer reads the carried install", async () => {

@@ -101,7 +101,7 @@ export function linkPerson(sql: Sql, now: number, from: string, to: string): voi
   transact(sql, now, (tx) => {
     const old = `member:${from}`;
     const next = `member:${to}`;
-    const owned = sql.exec<{ id: string }>("SELECT id FROM session WHERE owner = ?", from);
+    const owned = sql.exec<{ id: string; writers: string | null }>("SELECT id, writers FROM session WHERE owner = ?", from);
     if (owned.length === 0) return;
     for (const table of FEED_KINDS) {
       const keys = FEED_TABLES[table] as readonly string[];
@@ -110,8 +110,13 @@ export function linkPerson(sql: Sql, now: number, from: string, to: string): voi
       for (const row of moved) tx.gone(table, String(row.id), [old]);
     }
     sql.exec("UPDATE occurrence SET audience = ? WHERE audience = ?", next, old);
+    // A track started from their thread is theirs too.
+    sql.exec("UPDATE track SET owner = ?, version = ? WHERE owner = ?", to, tx.version(), from);
     for (const s of owned) {
-      sql.exec("UPDATE session SET owner = ?, version = ? WHERE id = ?", to, tx.version(), s.id);
+      // A list of writers names the owner too (`user:<owner>`): it follows them.
+      const writers = parse<"members" | string[]>(s.writers, "members");
+      const moved = writers === "members" ? writers : [...new Set(writers.map((by) => (by === `user:${from}` ? `user:${to}` : by)))];
+      sql.exec("UPDATE session SET owner = ?, writers = ?, version = ? WHERE id = ?", to, JSON.stringify(moved), tx.version(), s.id);
       tx.sendAccess(s.id);
     }
   });
