@@ -273,7 +273,7 @@ export function ThreadPane({ sid }: { sid: string }) {
   const working = status === 'running' || status === 'starting'
 
   // A typed reply to a single open question is its answer (T3).
-  const reply = (text: string) => {
+  const reply = (text: string, e: { meta: boolean }) => {
     const ask = thread.ask
     const qs =
       ask?.kind === 'question'
@@ -283,7 +283,7 @@ export function ThreadPane({ sid }: { sid: string }) {
       surface.answer(sid, ask.id, {
         answers: [{ questionId: qs[0].id ?? '0', choices: [], text }],
       })
-    else surface.send(sid, text)
+    else surface.send(sid, text, { now: e.meta })
   }
 
   const menu = (): MenuItem[] => {
@@ -439,7 +439,11 @@ export function ThreadPane({ sid }: { sid: string }) {
       </Conversation>
       <Composer
         draftKey={`t:${sid}`}
-        placeholder="Reply in this thread…"
+        placeholder={
+          working
+            ? 'Reply · the agent reads it at its next step'
+            : 'Reply in this thread…'
+        }
         onSend={reply}
         className={COMPOSER}
         // A thread from Slack keeps the settings Slack gave it.

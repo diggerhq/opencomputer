@@ -19,6 +19,16 @@ Two things to decide:
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+// A demo turn still running: what a message sent to it meanwhile steers, or
+// stops (work 134).
+export type DemoTurn = {
+  turnId: string
+  // Steers sent, by the seq of their `message.received`, not yet taken.
+  steers: number[]
+  steer(id: string, input: string): void
+  stop(): void
+}
+
 export function playTurn(o: {
   sid: string
   turnId: string
@@ -27,7 +37,13 @@ export function playTurn(o: {
   // The session's last seq and cursor, moved on as events are sent.
   log: { seq: number; cursor: string | null }
   emit: Emit
-}) {
+  // The step that runs long, so a message sent meanwhile waits on it.
+  slow?: boolean
+  // A turn started by steers its predecessor left: their messages are already recorded.
+  held?: boolean
+  // Told the turn has ended, with the steers it did not take.
+  ended?: (steers: { id: string; input: string }[]) => void
+}): DemoTurn {
   let n = 0
   const id = () => `ev_demo_${o.turnId}_${++n}`
   const send = (...events: Omit<ApiEvent, 'id' | 'seq' | 'createdAt' | 'sessionId'>[]) => {
@@ -60,16 +76,39 @@ export function playTurn(o: {
     await sleep(40)
     send(ev('message.completed', { blockId, parentCallId: null, text }))
   }
+  let stopped = false
+  const held: { id: string; input: string; seq: number }[] = []
+  // A step's result goes back with every waiting message: the model reads them.
+  const take = () => {
+    for (const h of held.splice(0)) send(ev('turn.steered', { messageSeq: h.seq }))
+  }
   const step = async (callId: string, title: string, ms: number) => {
+    if (stopped) return
+    take()
     send(ev('tool.started', { callId, toolName: 'Bash', title, parentCallId: null }))
-    await sleep(ms)
+    for (let t = 0; t < ms && !stopped; t += 50) await sleep(50)
+    if (stopped) return
     send(ev('tool.completed', { callId, toolName: 'Bash', title, parentCallId: null }))
+  }
+  const turn: DemoTurn = {
+    turnId: o.turnId,
+    steers: [],
+    steer(id, input) {
+      send({ type: 'message.received', turnId: o.turnId, actor: { id: o.me, name: null, via: null, client: null }, data: { input, ifBusy: 'steer', delivery: 'steered', messageId: id } } as never)
+      held.push({ id, input, seq: o.log.seq })
+    },
+    stop() {
+      if (stopped) return
+      stopped = true
+      send(ev('turn.cancelled', { reason: 'interrupted', forced: false, input: null }), { ...ev('session.status_changed', { from: 'running', to: 'idle' }), turnId: null })
+      o.ended?.(held.splice(0))
+    },
   }
 
   void (async () => {
     await sleep(300)
     send(
-      { type: 'message.received', turnId: o.turnId, actor: { id: o.me, name: null, via: null, client: null }, data: { input: o.input } } as never,
+      ...(o.held ? [] : [{ type: 'message.received', turnId: o.turnId, actor: { id: o.me, name: null, via: null, client: null }, data: { input: o.input } } as never]),
       { ...ev('session.status_changed', { from: 'idle', to: 'running' }), turnId: null },
       ev('turn.started', { turn: { trigger: 'message' } }),
     )
@@ -78,11 +117,17 @@ export function playTurn(o: {
     await stream(NOTE)
     await sleep(80)
     await step(`${o.turnId}_1`, 'Read `.github/workflows/ci.yml`', 600)
-    await step(`${o.turnId}_2`, 'Run `act -j build --dryrun`', 900)
+    await step(`${o.turnId}_2`, 'Run `act -j build --dryrun`', o.slow ? 30_000 : 900)
+    if (stopped) return
+    take()
     send(ev('reasoning.completed', { text: '', redacted: true, durationMs: 400 }))
     await stream(ANSWER)
     await sleep(80)
     await step(`${o.turnId}_3`, 'Mark ready', 300)
+    if (stopped) return
+    stopped = true
     send(ev('turn.completed'), { ...ev('session.status_changed', { from: 'running', to: 'idle' }), turnId: null })
+    o.ended?.(held.splice(0))
   })()
+  return turn
 }

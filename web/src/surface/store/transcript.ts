@@ -9,7 +9,7 @@ import type { ApiEvent, Ask, InboxEntry, OpRow, Pending, Subagent } from '@openc
 const VIA: Record<string, string> = { slack: 'Slack', opc: 'CLI', api: 'API' }
 
 export type Item =
-  | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: 'sending' | 'queued' | 'failed'; reason?: string }
+  | { kind: 'user'; key: string; text: string; author: string | null; via?: string; at: string; state?: Delivery; reason?: string; behind?: Behind }
   // `streaming`: still being written; its key is the one it keeps once whole.
   | { kind: 'agent'; key: string; text: string; at: string; streaming?: boolean }
   // A turn's work: its steps, thinking and earlier messages, in order, drawn
@@ -21,6 +21,16 @@ export type Item =
   | { kind: 'subagent'; key: string; sub: Subagent; steps: Step[]; activity: string | null; at: string }
   // A line that is not a message: a structural change, "Stopped", a failure.
   | { kind: 'line'; key: string; text: string; tone: 'muted' | 'error'; at: string; undo?: string; undone?: boolean }
+
+// Where the person's own message is on its way to the agent (work 134). No
+// state: the agent has read it, and it is drawn where it did.
+// `sending`: not yet accepted. `queued`: accepted, the machine not yet up.
+// `waiting`: with the running turn, read at its next step. `next`: read when
+// the running turn ends. `failed`: refused, with the reason.
+export type Delivery = 'sending' | 'queued' | 'waiting' | 'next' | 'failed'
+
+// What a waiting message waits behind: the step running longest, and since when.
+export type Behind = { title: string; since: string }
 
 export type Step = { kind: 'step'; key: string; title: string; status: 'running' | 'done' | 'failed' }
 
@@ -57,6 +67,23 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
   const asks = new Map<string, Extract<Item, { kind: 'ask' }>>()
   type Sub = Extract<Item, { kind: 'subagent' }>
   const subs = new Map<string, Sub>()
+  // The person's messages the agent has not read yet (work 134): a steer
+  // until `turn.steered` names its seq or its turn ends, a queued message
+  // until its own turn starts. Each is drawn where it was read.
+  type User = Extract<Item, { kind: 'user' }>
+  const unread: { item: User; seq: number; turnId: string; queued: boolean }[] = []
+  const read = (match: (u: (typeof unread)[number]) => boolean, at: string) => {
+    for (let i = 0; i < unread.length; ) {
+      if (!match(unread[i])) {
+        i++
+        continue
+      }
+      items.push({ ...unread[i].item, at })
+      unread.splice(i, 1)
+    }
+  }
+  // Steps running in each turn, by when they began, for what a steer waits behind.
+  const running = new Map<string, { title: string; since: string; turnId: string }>()
   const turnOf = (id: string, at: string) => {
     let t = turns.get(id)
     if (!t) turns.set(id, (t = { segments: [], began: at, settled: false }))
@@ -127,15 +154,20 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
         if (!text) break
         // What a track's agent passes to a thread is a marked line, not the person speaking (G4).
         if (e.actor?.via === 'agent') items.push({ kind: 'line', key: messageKey(e), text, tone: 'muted', at: e.createdAt })
-        else
-          items.push({
+        else {
+          const item: User = {
             kind: 'user',
             key: messageKey(e),
             text,
             author: name && name !== e.actor?.id && e.actor?.id !== me ? name : null,
             via: e.actor?.via && VIA[e.actor.via],
             at: e.createdAt,
-          })
+          }
+          const delivery = str(d.delivery)
+          if ((delivery === 'steered' || delivery === 'queued') && e.turnId && !turns.get(e.turnId)?.settled)
+            unread.push({ item, seq: e.seq, turnId: e.turnId, queued: delivery === 'queued' })
+          else items.push(item)
+        }
         break
       }
       case 'message.completed': {
@@ -155,6 +187,8 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
         if (!sub && d.parentCallId) break
         const callId = str(d.callId) ?? e.id
         const status = e.type === 'tool.started' ? 'running' : e.type === 'tool.completed' ? 'done' : 'failed'
+        if (!sub && status === 'running') running.set(callId, { title: str(d.title) ?? str(d.toolName) ?? 'Tool', since: e.createdAt, turnId: e.turnId ?? '' })
+        else running.delete(callId)
         let step = steps.get(callId)
         if (step) step.status = status
         else {
@@ -217,17 +251,27 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
         settle(e.turnId, e.createdAt)
         const err = d.error as { message?: unknown } | undefined
         items.push({ kind: 'line', key: e.id, text: str(err?.message) ?? 'The turn failed.', tone: 'error', at: e.createdAt })
+        // Steers its turn did not take start the next one.
+        read((u) => !u.queued && u.turnId === e.turnId, e.createdAt)
         break
       }
       case 'turn.cancelled':
         settle(e.turnId, e.createdAt)
         items.push({ kind: 'line', key: e.id, text: 'Stopped', tone: 'muted', at: e.createdAt })
+        read((u) => u.turnId === e.turnId, e.createdAt)
         break
       case 'turn.completed':
         settle(e.turnId, e.createdAt)
+        read((u) => !u.queued && u.turnId === e.turnId, e.createdAt)
         break
+      case 'turn.steered': {
+        const seq = d.messageSeq
+        read((u) => u.seq === seq, e.createdAt)
+        break
+      }
       case 'turn.started': {
         const id = e.turnId ?? ''
+        read((u) => u.queued && u.turnId === id, e.createdAt)
         const t = turnOf(id, e.createdAt)
         t.began = e.createdAt
         // The turn's work line is drawn from its start, so what comes later does not move it.
@@ -240,6 +284,13 @@ export function buildTranscript(events: readonly ApiEvent[], me?: string, open?:
   if (open?.text && !turns.get(open.turnId)?.settled && !items.some((i) => i.key === open.blockId)) {
     const last = events[events.length - 1]
     say(open.turnId, { kind: 'agent', key: open.blockId, text: open.text, at: last?.createdAt ?? new Date(0).toISOString(), streaming: true })
+  }
+  // Not read yet: last, with where each waits.
+  for (const u of unread) {
+    let behind: Behind | undefined
+    if (!u.queued)
+      for (const r of running.values()) if (r.turnId === u.turnId && (!behind || r.since < behind.since)) behind = { title: r.title, since: r.since }
+    items.push({ ...u.item, state: u.queued ? 'next' : 'waiting', ...(behind ? { behind } : {}) })
   }
   return items
 }

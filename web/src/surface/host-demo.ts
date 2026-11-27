@@ -2,7 +2,7 @@ import type { Channel, ServerFrame } from '@opencomputer/sdk/computer'
 import type { Host } from './host'
 import { browserParts, urlLocation } from './host-web'
 import recording from './demo-data.json'
-import { playTurn } from './demo-turn'
+import { playTurn, type DemoTurn } from './demo-turn'
 
 // The surface over recorded data, to look at without a backend: `?fake` in
 // development and previews. demo-data.json is what the real server answered
@@ -65,19 +65,45 @@ const logOf = (sid: string) => {
   return log
 }
 
+// Each session's demo turn while it runs: a message sent to it steers it.
+const playing = new Map<string, DemoTurn>()
+
+const play = (sid: string, turnId: string, input: string, held = false) => {
+  const t = playTurn({
+    sid,
+    turnId,
+    input,
+    me: recording.principal.subject,
+    log: logOf(sid),
+    emit: (f) => toSocket(f),
+    slow: /wait|slow/i.test(input),
+    held,
+    // Steers a turn did not take start the next one, as the runner's harness does.
+    ended: (left) => {
+      playing.delete(sid)
+      if (left.length) play(sid, left[0].id, left.map((l) => l.input).join('\n\n'), true)
+    },
+  })
+  playing.set(sid, t)
+}
+
 function write(path: string, init?: RequestInit): Promise<Response> {
   const turn = /^\/sessions\/([^/]+)\/turns$/.exec(path)
+  const interrupt = /^\/sessions\/([^/]+)\/interrupt$/.exec(path)
+  if (interrupt) playing.get(interrupt[1])?.stop()
   if (turn && typeof init?.body === 'string') {
-    const body = JSON.parse(init.body) as { id: string; input: string }
-    playTurn({
-      sid: turn[1],
-      turnId: body.id,
-      input: body.input,
-      me: recording.principal.subject,
-      log: logOf(turn[1]),
-      emit: (f) => toSocket(f),
-    })
+    const body = JSON.parse(init.body) as { id: string; input: string; ifBusy?: string }
+    const running = playing.get(turn[1])
+    // The demo sends no session rows, so the store may think it idle: a reply
+    // to a running turn steers it unless it asks to interrupt.
+    if (running && body.ifBusy !== 'interrupt') running.steer(body.id, body.input)
+    else {
+      running?.stop()
+      play(turn[1], body.id, body.input)
+    }
   }
+  // Accepted: the SDK's queue sends the next write once this one is answered.
+  if (turn || interrupt) return Promise.resolve(json(200, {}))
   return new Promise<Response>(() => {})
 }
 

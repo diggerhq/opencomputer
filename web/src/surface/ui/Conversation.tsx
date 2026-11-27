@@ -1,5 +1,6 @@
 import {
   memo,
+  useMemo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -28,6 +29,7 @@ import { at, following, type Seen } from './follow'
 import { Mk } from './Mark'
 import { MEASURE } from './pane-classes'
 import { Rich } from './Rich'
+import { Tip } from './Tip'
 
 // The conversation of a thread or of a track's agent: messages, a turn's
 // steps (one line once it has ended), structural lines with their Undo, and asks as blocks.
@@ -397,6 +399,112 @@ function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   )
 }
 
+// ---- what the agent has not read yet (work 134) ----
+
+type UserItem = Extract<Item, { kind: 'user' }>
+
+// A waiting message offers to stop the agent once the wait is long enough to
+// notice: a step that has run this long may run for minutes.
+const LONG_WAIT_MS = 8_000
+
+function useNow(on: boolean, ms = 1000): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!on) return
+    const t = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(t)
+  }, [on, ms])
+  return now
+}
+
+// Above the composer, in the order sent: each message the agent will read,
+// with what it waits on and a way to send it now.
+function Dock({ sid, items }: { sid: string; items: UserItem[] }) {
+  const surface = useSurface()
+  const now = useNow(items.some((i) => i.behind))
+  // One "Send now" for the stack: it stops the turn, and every waiting message goes in.
+  const last = items[items.length - 1]
+  return (
+    <div className={cn('flex flex-none flex-col gap-1.5 pt-2', MEASURE)} data-dock>
+      {items.map((item) => (
+        <Waiting
+          key={item.key}
+          item={item}
+          now={now}
+          action={item === last && item.state !== 'sending' && item.state !== 'failed'}
+          onSendNow={() => surface.sendNow(sid)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function Waiting({
+  item,
+  now,
+  action,
+  onSendNow,
+}: {
+  item: UserItem
+  now: number
+  action: boolean
+  onSendNow: () => void
+}) {
+  const slow = useLate(item.state === 'sending', SLOW_SEND_MS)
+  const waited = item.behind ? now - Date.parse(item.behind.since) : 0
+  const long = waited >= LONG_WAIT_MS
+  const status =
+    item.state === 'sending'
+      ? slow
+        ? 'Sending…'
+        : 'Sent'
+      : item.state === 'queued'
+        ? 'Queued · the computer is starting'
+        : item.state === 'next'
+          ? 'Read when this turn ends'
+          : item.behind
+            ? null
+            : 'Read at the next step'
+  return (
+    <div
+      className="border-border/80 max-w-180 rounded-lg border border-dashed px-3.5 py-2.5"
+      data-waiting={item.state}
+    >
+      {(item.author || item.via) && (
+        <div className="text-muted-foreground text-meta">
+          {[item.author, item.via].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <div className="text-foreground/80 line-clamp-3">
+        <Rich text={item.text} size="reading" />
+      </div>
+      <div className="text-faint text-meta mt-1.5 flex min-h-6 items-center gap-2">
+        <Mk mark="working" small />
+        <span className="min-w-0 flex-1 truncate">
+          {status ?? (
+            <>
+              Waits for <Rich text={item.behind!.title} />
+              {long && <span className="tabular-nums"> · {formatDuration(waited)}</span>}
+            </>
+          )}
+        </span>
+        {action && (
+          <Tip label="Stop the current step so the agent reads this now (⌘↵ when sending)">
+            <Button
+              size="xs"
+              variant={long ? 'secondary' : 'ghost'}
+              className="text-meta h-6 flex-none"
+              onClick={onSendNow}
+            >
+              Send now
+            </Button>
+          </Tip>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // The transcript is rebuilt whenever an event arrives, so an unchanged item
 // is a new object with the same fields: compare those.
 const sameItem = (a: { item: Item }, b: { item: Item }) => {
@@ -457,7 +565,14 @@ function Transcript(props: {
   id?: string
 }) {
   const { sid, trackId, children, id } = props
-  const { items } = useConversation(sid, trackId)
+  const convo = useConversation(sid, trackId)
+  // What the agent has not read yet waits by the composer, and joins the
+  // conversation where the agent reads it (work 134).
+  const docked = (i: Item) =>
+    i.kind === 'user' &&
+    (i.state === 'waiting' || i.state === 'next' || (convo.working && (i.state === 'sending' || i.state === 'queued')))
+  const items = useMemo(() => convo.items.filter((i) => !docked(i)), [convo.items, convo.working])
+  const waiting = useMemo(() => convo.items.filter(docked) as UserItem[], [convo.items, convo.working])
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   // Distance from the end to hold when earlier items are revealed above.
@@ -567,6 +682,7 @@ function Transcript(props: {
   }
 
   return (
+    <>
     <div
       className={cn(
         "flex flex-1 [scrollbar-width:thin] flex-col gap-4 overflow-y-auto pt-4 pb-2 [overflow-anchor:none] before:flex-1 before:content-['']",
@@ -620,5 +736,7 @@ function Transcript(props: {
       )}
       {children}
     </div>
+    {waiting.length > 0 && <Dock sid={sid} items={waiting} />}
+    </>
   )
 }
