@@ -354,6 +354,15 @@ describe("a turn's attachments (sections 4, 6): reserved before the accept, rele
     expect(o.attachmentRelease).not.toHaveBeenCalled();
   });
 
+  it("a steer's attachments are the message's own: the entry's id is the messageId of the reserve", async () => {
+    const o = org();
+    const log = { accept: vi.fn(async (_p: Principal, entry: { id: string }) => ({ ok: true, id: entry.id, duplicate: false, outcome: { state: "delivered", result: { turn: { id: entry.id }, delivery: "steered", seq: 5 } } })) };
+    const { call } = setup({ org: o, log });
+    const r = await call("POST", `/sessions/${SID}/turns`, { body: { id: "tn_000000000002", input: "also this", ifBusy: "steer", attachments: [AT] } });
+    expect(r.status).toBe(200);
+    expect(o.attachmentReserve).toHaveBeenCalledWith(memberP, SID, "tn_000000000002", "tn_000000000002", [AT]);
+  });
+
   it("refuses the turn with Org's reserve refusal before the accept; releases when the accept refuses", async () => {
     const o = org();
     o.attachmentReserve.mockResolvedValueOnce(refusal("attachment_not_ready", 409, { attachmentId: AT }) as never);

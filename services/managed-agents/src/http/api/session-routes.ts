@@ -61,7 +61,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
    * accept refuses. A failed release leaves them `attached` to a turn that never was: the sweep does
    * not touch those while the session exists, so a client sees `attachment_in_use` until it re-uploads.
    */
-  const reserve = async (sessionId: string, turnId: string, ids: string[]) => timedDo(out.facts, org().attachmentReserve(p, sessionId, turnId, null, ids));
+  const reserve = async (sessionId: string, turnId: string, messageId: string | null, ids: string[]) => timedDo(out.facts, org().attachmentReserve(p, sessionId, turnId, messageId, ids));
   const release = (sessionId: string, turnId: string, ids: string[]) => timedDo(out.facts, org().attachmentRelease(sessionId, turnId, ids)).catch(() => undefined);
 
   if (route.op === "list") {
@@ -84,7 +84,7 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
     const turnId = create.turnId ?? firstTurnId(id ?? "");
     let attachments: { id: string; name: string; mimetype: string; bytes: number }[] | undefined;
     if (input.attachments) {
-      const reserved = await reserve(id!, turnId, input.attachments);
+      const reserved = await reserve(id!, turnId, null, input.attachments);
       if (!reserved.ok) return refusalOf(out, reserved);
       attachments = reserved.attachments;
     }
@@ -189,9 +189,10 @@ export async function actorRoute(request: Request, env: ResultDiffEnv & Attachme
     const [prefix, length] = kind === "turn" ? ["tn", 12] as const : ["ie", 16] as const;
     const id = typeof askedId === "string" ? askedId : await entryId(prefix, length, idem ? [kind, p.org, p.subject, sessionId, idem] : undefined);
     // A turn's attachments: reserved (`attached` to this turn) before the accept; what it carries replaces the ids.
+    // A steer's message is its own (doc 126: `attachedTo` names the turn and the message): the entry's id names it.
     const ids = kind === "turn" ? checkAttachments(askedAttachments) : undefined;
     if (ids && "ids" in ids) {
-      const reserved = await reserve(sessionId, id, ids.ids);
+      const reserved = await reserve(sessionId, id, body.ifBusy === "steer" ? id : null, ids.ids);
       if (!reserved.ok) return refusalOf(out, reserved);
       body.attachments = reserved.attachments;
     }
