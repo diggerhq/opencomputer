@@ -141,12 +141,6 @@ Environment=COMPOSE_PROFILES=cloudflared
 
 Any other reverse proxy that terminates TLS in front of `127.0.0.1:8080` also works.
 
-## On a laptop or workstation
-
-A Linux machine running Ubuntu 24.04 on x86-64 works with the same steps. Use `http://localhost:8080/setup`, and skip Slack unless you set up the tunnel.
-
-On a Mac, the host can't run: the installer needs Ubuntu on x86-64. Run it in an Ubuntu VM on the Mac instead. On Apple Silicon, that VM runs x86-64 under emulation, which is much slower.
-
 ## Back up and restore
 
 All of the gateway's state is in the `opencomputer_gateway-data` volume:
