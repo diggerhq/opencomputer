@@ -300,8 +300,8 @@ ${status.slack?.clientSecret && status.slack.signingSecret ? form("/setup/slack/
     : `<p class="pending">Set <code>PUBLIC_URL</code> to the gateway's public https origin (a reverse proxy or tunnel) and restart it: Slack only calls https URLs.</p>`
 }
 
-<h2>5. OIDC (optional, not used yet)</h2>
-<p class="pending">Stored only: sign-in uses the WorkOS app above.</p>
+<h2>5. OIDC (optional, stored only)</h2>
+<p class="pending">Sign-in uses the WorkOS app above.</p>
 ${form(
   "/setup/sso/oidc",
   field("issuer", "Issuer URL", status.oidc?.issuer ?? "", "url") + field("client_id", "Client ID", status.oidc?.clientId ?? "") + secret("client_secret", "Client secret", !!status.oidc?.clientSecret) +
@@ -374,7 +374,7 @@ async function step(path: string, form: URLSearchParams, deps: SetupDeps): Promi
       const clientSecret = text(form, "client_secret", SECRET_MAX) ?? "";
       if (!httpsUrl(issuer)) return { error: "The issuer must be an https URL." };
       if (!plainId(clientId)) return { error: "The client ID is required." };
-      return { write: { step: "oidc", issuer: issuer!, clientId: clientId!, ...(clientSecret ? { clientSecret } : {}) }, done: "OIDC settings saved (sign-in coming soon)." };
+      return { write: { step: "oidc", issuer: issuer!, clientId: clientId!, ...(clientSecret ? { clientSecret } : {}) }, done: "OIDC settings saved." };
     }
     case "/setup/sso/workos": {
       const clientId = text(form, "client_id", 200);
@@ -394,7 +394,7 @@ async function step(path: string, form: URLSearchParams, deps: SetupDeps): Promi
       if (privateKey && !/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(privateKey)) return { error: "The private key must be the PEM file's contents." };
       return {
         write: { step: "github", appId, slug, ...(privateKey ? { privateKey } : {}), ...(webhookSecret ? { webhookSecret } : {}) },
-        done: "GitHub App saved (not used yet).",
+        done: "GitHub App saved.",
       };
     }
   }
