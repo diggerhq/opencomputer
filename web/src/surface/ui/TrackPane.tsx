@@ -187,8 +187,9 @@ function Activity({ track }: { track: TrackView }) {
   return (
     <>
       {(track.threads.length > 0 || track.earlier > 0) && (
-        // Held to part of the pane, so the agent's conversation and composer stay in sight.
-        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-y-auto border-b px-4 pt-3 pb-1">
+        // Held to part of the pane, so the agent's conversation and composer
+        // stay in sight. It scrolls down, never sideways.
+        <div className="flex max-h-[40%] flex-none flex-col gap-2 overflow-x-hidden overflow-y-auto border-b px-4 pt-3 pb-1">
           {track.threads.map((t) => (
             <Card key={t.id} thread={t} sel={open === t.id} />
           ))}
@@ -369,11 +370,12 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
           {t.word}
         </span>
       </div>
-      <div className="text-muted-foreground text-meta mt-1 line-clamp-2">
+      <div className="text-muted-foreground text-meta mt-1 line-clamp-2 wrap-anywhere">
         {t.line ?? 'Just started'}
       </div>
       {ask && (question !== t.line || opts.length > 0) && (
-        <div className="text-meta mt-2">
+        // An approval's line is often a command with nowhere to break.
+        <div className="text-meta mt-2 wrap-anywhere">
           {question !== t.line && <div>{question}</div>}
           {opts.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -382,6 +384,7 @@ function Card({ thread: t, sel }: { thread: ThreadView; sel: boolean }) {
                   key={o.label}
                   size="xs"
                   variant={o.primary ? 'default' : 'outline'}
+                  className="h-auto min-h-6 max-w-full py-0.5 text-left whitespace-normal"
                   onClick={(e) => {
                     e.stopPropagation()
                     surface.answer(t.id, ask.id, o.answer)
