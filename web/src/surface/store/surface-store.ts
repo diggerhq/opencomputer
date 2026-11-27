@@ -299,7 +299,7 @@ export function createSurface(o: SurfaceOptions) {
     if (e.kind === 'turn' || e.kind === 'session') {
       const input = e.kind === 'turn' ? e.input : e.body.input
       const key = e.kind === 'session' ? 'new' : draftKeyOf(e.sessionId)
-      if (!get().drafts[key]) actions.setDraft(key, input)
+      if (input && !get().drafts[key]) actions.setDraft(key, input)
       // Its files too (work 126): the client still holds them, and a failed
       // one shows why, to be taken out.
       const ids = e.kind === 'turn' ? e.attachments : e.body.attachments

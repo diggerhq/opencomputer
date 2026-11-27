@@ -353,6 +353,8 @@ export function unsent(
   }
   for (const p of pending) {
     if (p.kind === 'session' && p.sessionId === sid) {
+      // Created without a message (files go first): nothing of the person's to show.
+      if (!p.body.turnId || p.body.input === undefined) continue
       mine.add(p.body.turnId)
       if (!seen.has(p.body.turnId))
         out.push({ kind: 'user', key: p.body.turnId, text: p.body.input, author: null, at: new Date(p.at).toISOString(), state: 'sending', ...files(p.body.attachments) })
