@@ -327,12 +327,12 @@ const PENDING: Record<string, string> = {
   queued: 'Queued',
 }
 
-// On the measure like the agent's text, so the reading edge stays put; the
-// card and the stronger text say whose turn it is.
+// On the measure like the agent's text, so the reading edge stays put; a
+// quiet fill says whose turn it is.
 function UserTurn({ item }: { item: Extract<Item, { kind: 'user' }> }) {
   const pending = item.state && PENDING[item.state]
   return (
-    <div className="bg-card text-strong max-w-180 rounded-lg border px-3.5 py-2.5">
+    <div className="bg-muted/60 max-w-180 rounded-lg px-3.5 py-2.5">
       {(item.author || item.via) && (
         <div className="text-muted-foreground text-meta">
           {[item.author, item.via].filter(Boolean).join(' · ')}

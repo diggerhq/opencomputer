@@ -144,14 +144,14 @@ export function TrackPane({ tid }: { tid: string }) {
       >
         {track.stand}
       </div>
-      <div className="flex-none border-b px-4 py-1.5">
+      <div className="flex-none border-b px-4 pt-1">
         <Tabs
           value={tab}
           onValueChange={(v) =>
             surface.setTrackTab(tid, v as 'activity' | 'doc' | 'results')
           }
         >
-          <TabsList>
+          <TabsList variant="line">
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="doc">Doc</TabsTrigger>
             <TabsTrigger value="results">
