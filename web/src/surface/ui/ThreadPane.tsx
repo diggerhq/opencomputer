@@ -151,9 +151,9 @@ function Results({
     const el = ref.current
     if (!el) return
     const count = () => {
-      const below = [...el.querySelectorAll<HTMLElement>('[data-result]')].filter(
-        (b) => b.offsetTop >= el.clientHeight,
-      ).length
+      const below = [
+        ...el.querySelectorAll<HTMLElement>('[data-result]'),
+      ].filter((b) => b.offsetTop >= el.clientHeight).length
       setHidden(below)
     }
     count()
@@ -184,7 +184,7 @@ function Results({
               <ResultIcon result={r} ring={ring === r.id} />
               {resultTitle(r)}
               {detail && (
-                <small className="text-muted-foreground text-[11.5px] tabular-nums @max-[560px]:hidden">
+                <small className="text-muted-foreground text-xs tabular-nums @max-[560px]:hidden">
                   {detail}
                 </small>
               )}
@@ -233,8 +233,14 @@ export function ThreadPane({ sid }: { sid: string }) {
 
   if (!thread && missing)
     return (
-      <div className={cn(IN, 'items-center justify-center')} data-pane="thread" data-missing>
-        <p className="text-muted-foreground text-sm">This thread was not found.</p>
+      <div
+        className={cn(IN, 'items-center justify-center')}
+        data-pane="thread"
+        data-missing
+      >
+        <p className="text-muted-foreground text-sm">
+          This thread was not found.
+        </p>
       </div>
     )
   if (!thread && unopened)
@@ -260,7 +266,8 @@ export function ThreadPane({ sid }: { sid: string }) {
 
   const status = thread.session.status
   // A thread opened by link may be someone else's: say whose.
-  const owner = thread.session.owner.id === me ? null : thread.session.owner.name
+  const owner =
+    thread.session.owner.id === me ? null : thread.session.owner.name
   const slack = thread.session.origin.slack
   const settings = thread.session.settings
   const working = status === 'running' || status === 'starting'
@@ -348,7 +355,7 @@ export function ThreadPane({ sid }: { sid: string }) {
           editing={renaming === sid}
           setEditing={(on) => setRenaming(on ? sid : null)}
         />
-        <span className="text-muted-foreground truncate text-[13px] select-text">
+        <span className="text-muted-foreground text-meta truncate select-text">
           {thread.done ? (
             <span className="inline-flex items-center gap-1">
               {I.check}
@@ -361,7 +368,10 @@ export function ThreadPane({ sid }: { sid: string }) {
           ) : (
             ''
           )}
-          {owner && (thread.done || thread.waiting || (track && layout === 'L3') ? ` · ${owner}` : owner)}
+          {owner &&
+            (thread.done || thread.waiting || (track && layout === 'L3')
+              ? ` · ${owner}`
+              : owner)}
         </span>
         <span className="flex-1" />
         {slack?.url && (
@@ -421,11 +431,7 @@ export function ThreadPane({ sid }: { sid: string }) {
         <MenuButton items={menu} />
       </div>
       {thread.results.length > 0 && (
-        <Results
-          key={sid}
-          results={thread.results}
-          ring={thread.readyResult}
-        />
+        <Results key={sid} results={thread.results} ring={thread.readyResult} />
       )}
       <Conversation sid={sid}>
         {thread.proposals.map((p) => (

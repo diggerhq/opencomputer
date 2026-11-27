@@ -29,7 +29,7 @@ export function StartBox() {
           />
         }
       />
-      <p className="text-muted-foreground mt-4 text-[12.5px]">
+      <p className="text-muted-foreground text-meta mt-4">
         No need to say what kind of thing it is.
         {surface.host.platform === 'desktop' && ' From any other app: ⌥Space.'}
       </p>

@@ -20,7 +20,10 @@ import {
   useS,
   useSurface,
 } from './hooks'
-import { createSurface, type Surface as SurfaceApi } from './store/surface-store'
+import {
+  createSurface,
+  type Surface as SurfaceApi,
+} from './store/surface-store'
 import { idbStorage } from './store/idb'
 import { I } from './ui/icons'
 import { DRAG } from './ui/pane-classes'
@@ -170,7 +173,7 @@ function Shell({
                 {I.compose}New<Kbd className="ml-auto">N</Kbd>
               </Button>
               {ready ? <List /> : <div className="flex-1" />}
-              <div className="text-muted-foreground flex items-center gap-1 border-t px-2 py-2 text-[13px]">
+              <div className="text-muted-foreground text-meta flex items-center gap-1 border-t px-2 py-2">
                 {meSlot ?? (
                   <>
                     {me && (
@@ -182,7 +185,7 @@ function Shell({
                   </>
                 )}
                 {status === 'offline' && (
-                  <span className="text-muted-foreground/70 ml-2">Offline</span>
+                  <span className="text-faint ml-2">Offline</span>
                 )}
                 <span className="flex-1" />
                 <Tip label="Light or dark">
