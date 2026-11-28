@@ -58,6 +58,7 @@
           "self-hosting/aws",
           "self-hosting/gcp",
           "self-hosting/single-vm",
+          "self-hosting/offload",
           "self-hosting/enterprise"
         ]
       },

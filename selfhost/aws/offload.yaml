@@ -1,0 +1,402 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  OpenComputer single-VM self-host - build offload to AWS Lambda MicroVMs
+  (bucket, build role, optional execution role, instance policy).
+  Guide: docs/self-hosting/offload.mdx
+
+# One stack per account and region. Its name is the value of the
+# opencomputer:offload tag the instance policy requires on new images, so
+# pass the same name to selfhost/aws/build-offload-image.sh --stack.
+#
+# VERIFY markers are facts the SDK types could not confirm; each needs one
+# check in a real account (work/136 section 17):
+#   V1  the lambda: action prefix and the MicroVM action names
+#   V1c aws:RequestTag support on CreateMicrovmImage
+#   V1d whether CreateMicrovmImage also authorizes the managed base image ARN
+#   V4  the service principal of build and execution roles, and iam:PassedToService
+#   V7  the Cost Explorer service name MicroVM charges appear under
+#
+# Verified on AWS: the microvm-image and microvm ARN shapes (was V1b), and
+# MicroVMs are not taggable (was V3): TagResource on a microvm ARN fails
+# ValidationException, so MicroVMs are owned by image ARN, not by tag.
+#
+# A change to the instance policy (update-stack) takes 3-4 minutes to reach the
+# MicroVM service: retries within about 2 minutes still failed (seen on AWS).
+
+Parameters:
+  ExistingInstanceRoleName:
+    Type: String
+    Default: ''
+    Description: >-
+      Attach the offload policy to this existing instance role (name, not ARN)
+      instead of creating a role and instance profile
+  CreateExecRole:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create the MicroVM execution role for the shared build cache (cache/ prefix).
+      Not used by the first release; leave false until the cache ships
+  AttachSsmManagedInstanceCore:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Also attach AmazonSSMManagedInstanceCore to the created instance role (Session Manager access)
+  RunRetentionDays:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: Days to keep job sources, artifacts and logs under runs/
+  CacheRetentionDays:
+    Type: Number
+    Default: 14
+    MinValue: 1
+    Description: Days to keep build cache objects under cache/
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: Monthly AWS Budgets alert for MicroVM spend; 0 = no budget
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email for the budget alert; empty = no budget
+
+Conditions:
+  CreateRole: !Equals [!Ref ExistingInstanceRoleName, '']
+  HasExecRole: !Equals [!Ref CreateExecRole, 'true']
+  HasSsm: !And
+    - !Condition CreateRole
+    - !Equals [!Ref AttachSsmManagedInstanceCore, 'true']
+  HasBudget: !And
+    - !Not [!Equals [!Ref AlertEmail, '']]
+    - !Not [!Equals [!Ref MonthlyBudgetUsd, 0]]
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'oc-offload-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      # images/ is not expired here: oc-offload deletes old builder zips at image GC.
+      LifecycleConfiguration:
+        Rules:
+          - Id: runs
+            Status: Enabled
+            Prefix: runs/
+            ExpirationInDays: !Ref RunRetentionDays
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: cache
+            Status: Enabled
+            Prefix: cache/
+            ExpirationInDays: !Ref CacheRetentionDays
+      Tags:
+        - Key: opencomputer:offload
+          Value: !Ref AWS::StackName
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TLSOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub '${Bucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # Passed to CreateMicrovmImage (buildRoleArn); reads the builder zip.
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: OpenComputer offload - MicroVM image builds read the builder zip
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com   # VERIFY V4: MicroVM image builds may use a different principal
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: read-builder-zips
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${Bucket.Arn}/images/*'
+      Tags:
+        - Key: opencomputer:offload
+          Value: !Ref AWS::StackName
+
+  # RunMicrovm executionRoleArn for the shared build cache; cache/sccache/ only.
+  ExecRole:
+    Type: AWS::IAM::Role
+    Condition: HasExecRole
+    Properties:
+      Description: OpenComputer offload - MicroVM execution role, shared build cache prefix only
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com   # VERIFY V4
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          # Fallback if guest processes cannot see execution-role credentials
+          # (VERIFY V2): oc-offload assumes this role and hands the VM a session.
+          - Effect: Allow
+            Principal:
+              AWS: !If
+                - CreateRole
+                - !GetAtt InstanceRole.Arn
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ExistingInstanceRoleName}'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: build-cache
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${Bucket.Arn}/cache/sccache/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: 'cache/sccache/*'
+      Tags:
+        - Key: opencomputer:offload
+          Value: !Ref AWS::StackName
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Condition: CreateRole
+    Properties:
+      Description: OpenComputer self-host instance role (build offload)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: !If
+        - HasSsm
+        - [!Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore']
+        - !Ref AWS::NoValue
+      Tags:
+        - Key: opencomputer:offload
+          Value: !Ref AWS::StackName
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: CreateRole
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # Everything oc-offload on the instance may do. Region-pinned, limited to
+  # images named oc-offload-*, and without CreateMicrovmShellAuthToken (no
+  # interactive shell into a build VM). The instance role has no access to
+  # cache/; only the execution role does.
+  OffloadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: OpenComputer build offload - what oc-offload on the instance may do
+      Roles:
+        - !If [CreateRole, !Ref InstanceRole, !Ref ExistingInstanceRoleName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InventoryAndManagedBaseImages
+            Effect: Allow
+            Action:                                     # VERIFY V1
+              - lambda:ListMicrovms
+              - lambda:ListMicrovmImages
+              - lambda:ListManagedMicrovmImages
+              - lambda:ListManagedMicrovmImageVersions
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: CreateOurImagesTaggedOnly
+            Effect: Allow
+            Action: lambda:CreateMicrovmImage           # VERIFY V1, V1c, V1d
+            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+                aws:RequestTag/opencomputer:offload: !Ref AWS::StackName
+          - Sid: ManageOurImages
+            Effect: Allow
+            Action:
+              - lambda:UpdateMicrovmImage
+              - lambda:GetMicrovmImage
+              - lambda:GetMicrovmImageVersion
+              - lambda:GetMicrovmImageBuild
+              - lambda:ListMicrovmImageVersions
+              - lambda:ListMicrovmImageBuilds
+              - lambda:UpdateMicrovmImageVersion
+              - lambda:DeleteMicrovmImageVersion
+              - lambda:DeleteMicrovmImage
+              - lambda:TagResource
+              - lambda:UntagResource
+              - lambda:ListTags
+            Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: RunOnlyOurImages
+            Effect: Allow
+            Action:
+              - lambda:RunMicrovm
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: DriveMicrovms
+            Effect: Allow
+            Action:
+              - lambda:GetMicrovm
+              - lambda:TerminateMicrovm
+              - lambda:SuspendMicrovm
+              - lambda:ResumeMicrovm
+              - lambda:CreateMicrovmAuthToken
+            Resource:                                   # MicroVM actions are authorized against the image ARN as well (verified on AWS)
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm:*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:oc-offload-*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: PassDefaultNetworkConnectors       # RunMicrovm passes the default HTTP_INGRESS and INTERNET_EGRESS connectors (verified on AWS)
+            Effect: Allow
+            Action: lambda:PassNetworkConnector
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:HTTP_INGRESS'
+          - Sid: PassOnlyOurServiceRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - !GetAtt BuildRole.Arn
+              - !If [HasExecRole, !GetAtt ExecRole.Arn, !Ref AWS::NoValue]
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com   # VERIFY V4
+          - Sid: BucketObjects
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+              - s3:AbortMultipartUpload
+            Resource:
+              - !Sub '${Bucket.Arn}/runs/*'
+              - !Sub '${Bucket.Arn}/images/*'
+          - Sid: BucketListOurPrefixes
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt Bucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - 'runs/*'
+                  - 'images/*'
+          - Sid: BucketHead
+            Effect: Allow
+            Action: s3:GetBucketLocation
+            Resource: !GetAtt Bucket.Arn
+          - !If
+            - HasExecRole
+            - Sid: CacheFallbackAssumeExecRole       # delete if V2 confirms guest credentials work
+              Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !GetAtt ExecRole.Arn
+            - !Ref AWS::NoValue
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-offload'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUsd
+          Unit: USD
+        CostFilters:
+          Service:
+            - AWS Lambda        # VERIFY V7: the Cost Explorer service name MicroVM charges appear under
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+Outputs:
+  OffloadBucket:
+    Value: !Ref Bucket
+  BuildRoleArn:
+    Value: !GetAtt BuildRole.Arn
+  ExecRoleArn:
+    Condition: HasExecRole
+    Value: !GetAtt ExecRole.Arn
+  InstanceProfileArn:
+    Condition: CreateRole
+    Description: Attach to the self-host instance (aws ec2 associate-iam-instance-profile)
+    Value: !GetAtt InstanceProfile.Arn
+  OffloadPolicyArn:
+    Value: !Ref OffloadPolicy
+  ImageCommand:
+    Description: Builds the MicroVM images; run from the repository checkout on the instance
+    Value: !Sub 'selfhost/aws/build-offload-image.sh --region ${AWS::Region} --stack ${AWS::StackName} --bucket ${Bucket} --build-role-arn ${BuildRole.Arn}'
+  SelfhostEnv:
+    Description: Add to selfhost.env with the SP_OFFLOAD_IMAGE_* lines the image command printed, then run host-install.sh --enable-offload
+    Value: !Sub 'SP_OFFLOAD_BACKEND=aws-microvm SP_OFFLOAD_REGION=${AWS::Region} SP_OFFLOAD_BUCKET=${Bucket}'
